@@ -143,6 +143,7 @@ function sampleLifecycleHandle(): ServiceInstallLifecycleHandle {
       stoppedBeforeSwap: true,
       postSwapAction: "install",
       postSwapError: null,
+      retiredCompetingRegistration: { kind: "not-applicable" },
     },
     lifecycle: {
       beforeSwap: async () => {},

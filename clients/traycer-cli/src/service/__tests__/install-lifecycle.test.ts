@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import type { ServiceController, ServiceLabel } from "../index";
+import type {
+  CompetingRegistrationRetirement,
+  ServiceController,
+  ServiceLabel,
+} from "../index";
 import {
   createServiceInstallLifecycle,
   type BootstrapServiceOptions,
@@ -46,6 +50,9 @@ interface ControllerHarness {
   readonly start: Mock<() => Promise<void>>;
   readonly restart: Mock<() => Promise<void>>;
   readonly stop: Mock<() => Promise<void>>;
+  readonly retireCompetingRegistration: Mock<
+    () => Promise<CompetingRegistrationRetirement>
+  >;
 }
 
 function makeController(initialState: HarnessServiceState): ControllerHarness {
@@ -54,6 +61,11 @@ function makeController(initialState: HarnessServiceState): ControllerHarness {
   const start = vi.fn(async () => undefined);
   const restart = vi.fn(async () => undefined);
   const stop = vi.fn(async () => undefined);
+  const retireCompetingRegistration = vi.fn(
+    async (): Promise<CompetingRegistrationRetirement> => ({
+      kind: "nothing-to-retire",
+    }),
+  );
   const controller: ServiceController = {
     status: vi.fn(async () => ({
       state: currentState,
@@ -66,6 +78,7 @@ function makeController(initialState: HarnessServiceState): ControllerHarness {
     stop,
     start,
     restart,
+    retireCompetingRegistration,
   };
   return {
     controller,
@@ -73,6 +86,7 @@ function makeController(initialState: HarnessServiceState): ControllerHarness {
     start,
     restart,
     stop,
+    retireCompetingRegistration,
   };
 }
 
@@ -211,7 +225,7 @@ describe("service install lifecycle re-registration", () => {
     expect(harness.restart).not.toHaveBeenCalled();
   });
 
-  it("leaves an externally-managed (SMAppService-owned) registration completely untouched, even with bootstrap options", async () => {
+  it("leaves an externally-managed (SMAppService-owned) registration itself untouched, even with bootstrap options", async () => {
     // Desktop owns this label. Any stop / manifest rewrite / bootstrap from
     // the CLI would either corrupt the BTM registration or run into
     // installService's SMAppService refusal - the swapped bytes go live at
@@ -235,6 +249,34 @@ describe("service install lifecycle re-registration", () => {
       expect(harness.stop).not.toHaveBeenCalled();
     }
   });
+
+  // The repair half: leaving Desktop's registration alone must NOT mean
+  // leaving a competing CLI-label registration alone. This is the one
+  // routine flow that reaches a machine poisoned during the v1.1.7 window,
+  // and a refusal alone can never clean up what already exists.
+  it("retires a competing CLI registration on the externally-managed path", async () => {
+    const { state, harness } = await runLifecycle(
+      "externally-managed",
+      bootstrap,
+    );
+
+    expect(harness.retireCompetingRegistration).toHaveBeenCalledWith(label);
+    expect(state.retiredCompetingRegistration).toEqual({
+      kind: "nothing-to-retire",
+    });
+  });
+
+  // Every other prior state either registers the CLI label itself or
+  // deliberately leaves the service alone; there is no Desktop-owned agent
+  // to defer to, so a competing registration cannot exist to repair.
+  it.each(["running", "stopped", "not-installed"] as const)(
+    "does not attempt a competing-registration repair from prior state %s",
+    async (priorState) => {
+      const { harness } = await runLifecycle(priorState, bootstrap);
+
+      expect(harness.retireCompetingRegistration).not.toHaveBeenCalled();
+    },
+  );
 
   it.skipIf(process.platform !== "darwin")(
     "host update preserves the registered plist's CLI invocation instead of repointing to freshly resolved binaries",

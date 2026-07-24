@@ -166,6 +166,7 @@ function makeFakeChild(): FakeChildHandle {
 const {
   registerHostLoginItem,
   readHostLoginItemStatus,
+  retireCompetingCliRegistrationAtLaunch,
   runLaunchctlBootout,
   hasPendingLoginItemRevision,
   hasUnappliedPendingLoginItemRevision,
@@ -613,5 +614,107 @@ describe("hasUnappliedPendingLoginItemRevision (M-B)", () => {
     await expect(
       hasUnappliedPendingLoginItemRevision("production"),
     ).resolves.toBe(true);
+  });
+});
+
+// The launch-time dual-registration repair. Unlike the register cycle it
+// runs on EVERY launch, so its gates carry the whole safety burden: the
+// asymmetry is that failing to retire leaves a duplicate host, while
+// retiring on the wrong machine takes away its only host.
+describe("retireCompetingCliRegistrationAtLaunch", () => {
+  // The outer `beforeAll` pins the platform off-darwin so the register
+  // cycle's `bootoutStaleAgent` can never touch the developer's real
+  // launchd domain. This repair spawns nothing at all (deliberately - see
+  // its doc comment), so darwin is safe to restore here, and required:
+  // `hostManagesHostLoginItem()` short-circuits on every other platform.
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", {
+      value: "darwin",
+      writable: true,
+      configurable: true,
+    });
+    // Point the bundle inside the per-test temp dir rather than the shared
+    // fixed path, so `hostManagesHostLoginItem`'s in-bundle plist probe is
+    // hermetic per test.
+    Object.defineProperty(process, "resourcesPath", {
+      value: join(workHome, "Traycer.app", "Contents", "Resources"),
+      writable: true,
+      configurable: true,
+    });
+    const bundleAgents = join(
+      workHome,
+      "Traycer.app",
+      "Contents",
+      "Library",
+      "LaunchAgents",
+    );
+    mkdirSync(bundleAgents, { recursive: true });
+    writeFileSync(
+      join(bundleAgents, "ai.traycer.host.agent.plist"),
+      "<plist/>",
+      "utf8",
+    );
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", {
+      value: "linux",
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  it("removes a competing CLI manifest when the agent is enabled", async () => {
+    getLoginItemSettings.mockReturnValue({ status: "enabled" });
+    writeLegacyCliManifest();
+
+    await expect(retireCompetingCliRegistrationAtLaunch()).resolves.toBe(
+      "retired",
+    );
+    expect(existsSync(legacyCliManifestPath())).toBe(false);
+  });
+
+  // The availability gate. Under `requires-approval` launchd will not spawn
+  // the agent, so the CLI registration may be the only thing that starts a
+  // host at login - removing it would leave the machine with none.
+  it("leaves the competing manifest alone when the agent is not enabled", async () => {
+    getLoginItemSettings.mockReturnValue({ status: "requires-approval" });
+    writeLegacyCliManifest();
+
+    await expect(retireCompetingCliRegistrationAtLaunch()).resolves.toBe(
+      "agent-not-enabled",
+    );
+    expect(existsSync(legacyCliManifestPath())).toBe(true);
+  });
+
+  it("does not repair a host the user removed on this device", async () => {
+    isHostRemovedByUserMock.mockResolvedValue(true);
+    getLoginItemSettings.mockReturnValue({ status: "enabled" });
+    writeLegacyCliManifest();
+
+    await expect(retireCompetingCliRegistrationAtLaunch()).resolves.toBe(
+      "not-applicable",
+    );
+    expect(existsSync(legacyCliManifestPath())).toBe(true);
+  });
+
+  it("is a no-op on a healthy machine with no competing manifest", async () => {
+    getLoginItemSettings.mockReturnValue({ status: "enabled" });
+
+    await expect(retireCompetingCliRegistrationAtLaunch()).resolves.toBe(
+      "nothing-to-retire",
+    );
+  });
+
+  // Repair only - it must never register, unregister, or bootout anything.
+  // Eviction authority stays with the register cycle and the CLI's explicit
+  // install, both of which know they are allowed to disrupt a running host.
+  it("never mutates SMAppService state", async () => {
+    getLoginItemSettings.mockReturnValue({ status: "enabled" });
+    writeLegacyCliManifest();
+
+    await retireCompetingCliRegistrationAtLaunch();
+
+    expect(setLoginItemSettings).not.toHaveBeenCalled();
   });
 });

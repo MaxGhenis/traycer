@@ -378,6 +378,97 @@ async function retireLegacyLabelRegistrations(): Promise<void> {
 }
 
 /**
+ * What `retireCompetingCliRegistrationAtLaunch` did this launch. Returned
+ * (rather than logged and swallowed) so the startup caller can log one line
+ * and tests can assert the gates without reading the logger.
+ *
+ *   - `not-applicable` - not a build/platform where Desktop owns
+ *     registration, or the user removed the host on this device.
+ *   - `agent-not-enabled` - SMAppService is not reporting `enabled`, so we
+ *     have no proof a host would still start at login without the CLI
+ *     registration. Deliberately does nothing (see the doc below).
+ *   - `nothing-to-retire` - no competing manifest on disk. Steady state.
+ *   - `retired` / `retire-failed` - a competing manifest was found, and the
+ *     removal did or did not succeed.
+ */
+export type LaunchCompetingRegistrationRepair =
+  | "not-applicable"
+  | "agent-not-enabled"
+  | "nothing-to-retire"
+  | "retired"
+  | "retire-failed";
+
+/**
+ * Remove a `~/Library/LaunchAgents/<cli-label>.plist` that would start a
+ * SECOND host beside this app's SMAppService agent at the next login.
+ *
+ * Why this exists separately from `retireLegacyLabelRegistrations`, which
+ * does strictly more: that runs ONLY inside a committed register cycle, and
+ * the routine "open the app, host is already healthy" path never runs one.
+ * A machine that acquired a dual registration during the v1.1.7 window
+ * therefore keeps it indefinitely - updating to v1.1.8 does not clear it,
+ * because a desktop auto-update swaps bytes without a register cycle and
+ * the CLI now refuses to touch the plist rather than removing it. Both jobs
+ * are `RunAtLoad`, so every login starts two hosts against one data dir;
+ * they start simultaneously, which is precisely the case the CLI
+ * supervisor's incumbent probe cannot see (no `pid.json` exists yet).
+ *
+ * Two deliberate narrowings versus the register cycle:
+ *
+ *   1. Gated on SMAppService reporting `enabled` - positive proof a host
+ *      will still start at login once the CLI registration is gone. Under
+ *      `requires-approval` the user has disabled the login item and launchd
+ *      will not spawn the agent; removing the CLI plist there would take
+ *      away the machine's only auto-starting host. Same availability bias
+ *      as `findLiveIncumbentHost` in the CLI: never leave a machine with no
+ *      host to prevent a duplicate.
+ *   2. Removes the manifest but does NOT bootout the running job. Boot-out
+ *      would kill a host that may be serving this session's tabs right now
+ *      - and at launch we have no idea whether the competing host or the
+ *      agent is the one `pid.json` currently names. Deleting the manifest
+ *      is the durable half: the duplicate cannot return at the next login,
+ *      and the machine converges to one host without anything being ripped
+ *      away mid-session. The residual is that a machine already running two
+ *      hosts keeps running two until the next login. The CLI's
+ *      `retireCompetingRegistration` DOES bootout, because it only runs
+ *      inside an explicit `host install` the user asked for.
+ *
+ * Best-effort and idempotent; safe to call on every launch. Serialized
+ * through the same registration lock as the register cycle so the two can
+ * never interleave on the CLI label.
+ */
+export function retireCompetingCliRegistrationAtLaunch(): Promise<LaunchCompetingRegistrationRepair> {
+  return withHostLoginItemRegistrationLock(
+    retireCompetingCliRegistrationUnserialized,
+  );
+}
+
+async function retireCompetingCliRegistrationUnserialized(): Promise<LaunchCompetingRegistrationRepair> {
+  if (!(await hostManagesHostLoginItem())) return "not-applicable";
+  // A host the user removed on this device must not be repaired back into
+  // existence; `unregisterHostLoginItem` deliberately leaves the machine
+  // alone once the sentinel is set.
+  if (await isHostRemovedByUser()) return "not-applicable";
+  if (readHostLoginItemStatus() !== "enabled") return "agent-not-enabled";
+  const competingManifest = userLaunchAgentPlistPath(CLI_HOST_LABEL);
+  if (!(await fileExists(competingManifest))) return "nothing-to-retire";
+  try {
+    await rm(competingManifest, { force: true });
+  } catch (err) {
+    log.warn(
+      "[host-login-item] failed to remove competing CLI LaunchAgent manifest — a second host will start beside the agent at next login",
+      { competingManifest, err },
+    );
+    return "retire-failed";
+  }
+  log.info(
+    "[host-login-item] retired competing CLI LaunchAgent manifest (dual-registration repair)",
+    { competingManifest },
+  );
+  return "retired";
+}
+
+/**
  * Whether `scripts/desktop-install-cloud.js` (internal repo) left a pending
  * LaunchAgent revision marker for `environment` - see `getHostFsLayout`'s
  * doc comment for the full cross-repo contract. Best-effort: a read error

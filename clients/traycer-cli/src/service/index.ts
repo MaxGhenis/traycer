@@ -46,6 +46,29 @@ export interface UninstallServiceOptions {
   readonly label: ServiceLabel;
 }
 
+// Outcome of `ServiceController.retireCompetingRegistration`.
+//
+//   - `not-applicable` - there is nothing to repair, either because the
+//     platform has no SMAppService at all (Linux/Windows) or because
+//     Desktop does not own registration on this machine. Also the answer
+//     when the CLI label ITSELF is SMAppService-owned: that is Desktop's
+//     own registration on a pre-label-split machine, not a competitor, and
+//     the CLI must never bootout/delete it.
+//   - `retired` - Desktop owns registration under the agent label AND a
+//     competing CLI-label registration existed; it has now been booted out
+//     and/or its manifest removed. `bootedOut` / `manifestRemoved` say
+//     which halves actually applied.
+//   - `nothing-to-retire` - Desktop owns registration and the CLI label is
+//     already clean. The healthy post-split steady state.
+export type CompetingRegistrationRetirement =
+  | { readonly kind: "not-applicable" }
+  | { readonly kind: "nothing-to-retire" }
+  | {
+      readonly kind: "retired";
+      readonly bootedOut: boolean;
+      readonly manifestRemoved: boolean;
+    };
+
 export interface ServiceController {
   install(options: InstallServiceOptions): Promise<void>;
   uninstall(options: UninstallServiceOptions): Promise<void>;
@@ -53,6 +76,21 @@ export interface ServiceController {
   stop(label: ServiceLabel): Promise<void>;
   start(label: ServiceLabel): Promise<void>;
   restart(label: ServiceLabel): Promise<void>;
+  // Repair, not refusal: remove a CLI-label registration that would run a
+  // SECOND host beside Desktop's SMAppService agent. The v1.1.7 label split
+  // let both coexist, and until v1.1.8 the ownership probe was blind to the
+  // current `launchctl print` format - so machines in the field carry a
+  // dual registration that nothing else removes (`installService` now
+  // refuses to CREATE one, but a refusal cannot clean up what already
+  // exists, and Desktop's `retireLegacyLabelRegistrations` only runs inside
+  // a full SMAppService register cycle).
+  //
+  // Best-effort by contract: never throws. A launchctl that hangs or cannot
+  // spawn reads as "not loaded" and the repair is skipped, exactly like the
+  // advisory probes in `uninstallService` / `assertNotDesktopAgentManaged`.
+  retireCompetingRegistration(
+    label: ServiceLabel,
+  ): Promise<CompetingRegistrationRetirement>;
 }
 
 // Shared human-readable warning suffix for the host install/update

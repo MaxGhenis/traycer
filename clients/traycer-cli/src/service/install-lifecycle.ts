@@ -3,6 +3,7 @@ import { resolveServiceCliInvocation, type CliInvocation } from "./cli-binary";
 import {
   createServiceController,
   serviceLabelFor,
+  type CompetingRegistrationRetirement,
   type ServiceController,
   type ServiceLabel,
   type ServiceState,
@@ -48,6 +49,11 @@ export interface ServiceInstallLifecycleState {
   // `restart`/`start` strings from older CLIs.
   postSwapAction: "install" | "none";
   postSwapError: string | null;
+  // What the externally-managed path did about a competing CLI-label
+  // registration (see `afterSwap`). `not-applicable` on every non-macOS
+  // platform and on any machine Desktop does not own - i.e. almost always.
+  // Reporting-only, like `stoppedBeforeSwap`.
+  retiredCompetingRegistration: CompetingRegistrationRetirement;
 }
 
 export interface ServiceInstallLifecycleHandle {
@@ -93,6 +99,7 @@ export function createServiceInstallLifecycle(
     stoppedBeforeSwap: false,
     postSwapAction: "none",
     postSwapError: null,
+    retiredCompetingRegistration: { kind: "not-applicable" },
   };
   const lifecycle: InstallHostLifecycle = {
     beforeSwap: async () => {
@@ -112,13 +119,28 @@ export function createServiceInstallLifecycle(
     },
     afterSwap: async () => {
       if (state.priorState === "externally-managed") {
-        // Traycer Desktop's SMAppService owns this label. Any launchctl
-        // bootstrap/bootout (or manifest rewrite) from the CLI would
-        // corrupt the BTM registration it manages - `installService`
-        // refuses exactly that. Leave the service alone: the swapped
-        // bytes go live at Desktop's next SMAppService register cycle
-        // (ensure fast path / pending-revision monitor / relaunch).
+        // Traycer Desktop's SMAppService owns registration here. Any
+        // launchctl bootstrap/bootout (or manifest rewrite) against ITS
+        // label would corrupt the BTM registration it manages -
+        // `installService` refuses exactly that. Leave the service alone:
+        // the swapped bytes go live at Desktop's next SMAppService register
+        // cycle (ensure fast path / pending-revision monitor / relaunch).
         state.postSwapAction = "none";
+        // ...but a COMPETING CLI-label registration is a different object
+        // from the one Desktop owns, and leaving it alone is what produced
+        // the dual-host bug. Retire it here rather than merely declining to
+        // add another: this is the one routine flow that both reaches a
+        // poisoned machine (`host install` / `host update` on a
+        // desktop-owned host) and is already an explicit host-lifecycle
+        // operation the user asked for. `retireCompetingRegistration`
+        // re-probes ownership itself and no-ops unless Desktop's agent is
+        // the registered owner and the CLI label is genuinely a competitor
+        // - `externally-managed` alone cannot distinguish that from a
+        // pre-split machine whose CLI label IS Desktop's registration.
+        // Contractually non-throwing, so it cannot fail the install whose
+        // bytes are already swapped in.
+        state.retiredCompetingRegistration =
+          await controller.retireCompetingRegistration(label);
         return;
       }
       if (state.priorState === "not-installed") {

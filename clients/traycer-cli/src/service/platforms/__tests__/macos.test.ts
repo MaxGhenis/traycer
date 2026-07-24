@@ -25,7 +25,7 @@ import {
   type ProcessRunner,
 } from "../macos";
 import { ProcessRunError, type RunResult } from "../../process-runner";
-import { serviceLabelFor } from "../../label";
+import { serviceLabelFor, smAppServiceAgentLabelId } from "../../label";
 import { CLI_ERROR_CODES } from "../../../runner/errors";
 
 const MOCKS = vi.hoisted(() => ({
@@ -1278,6 +1278,177 @@ describe("macOS service lifecycle", () => {
       version: null,
       listenUrl: null,
       pid: null,
+    });
+  });
+
+  // The repair counterpart to the SMAppService refusals: the classifier fix
+  // stops a dual registration being CREATED, this removes one already on
+  // disk from the v1.1.7 window. Both preconditions are load-bearing and
+  // asymmetric - failing to retire leaves a duplicate host, but retiring on
+  // the wrong machine takes away its ONLY host.
+  describe("retireCompetingRegistration (dual-registration repair)", () => {
+    const agentLabelId = smAppServiceAgentLabelId(label);
+
+    const SMAPPSERVICE_PRINT = [
+      "\tpath = (submitted by smd.321)",
+      "\ttype = Submitted",
+      "\tmanaged_by = com.apple.xpc.ServiceManagement",
+    ].join("\n");
+    const CLI_PRINT = [
+      `\tpath = /Users/me/Library/LaunchAgents/${label.id}.plist`,
+      "\ttype = LaunchAgent",
+    ].join("\n");
+
+    // Drives `launchctl print` per target so each test states exactly which
+    // labels are loaded and by whom. Anything unlisted reads as not-loaded.
+    function makeRunner(
+      loaded: Readonly<Record<string, string>>,
+      calls: RecordedCall[],
+    ): ProcessRunner {
+      return async (command, args) => {
+        calls.push({ command, args });
+        if (args[0] === "print") {
+          const target = args[1] ?? "";
+          const printOutput = Object.entries(loaded).find(([labelId]) =>
+            target.endsWith(`/${labelId}`),
+          )?.[1];
+          return printOutput === undefined
+            ? { stdout: "", stderr: "Could not find service", exitCode: 113 }
+            : {
+                stdout: `${target} = {\n${printOutput}\n}\n`,
+                stderr: "",
+                exitCode: 0,
+              };
+        }
+        return buildSuccessResult();
+      };
+    }
+
+    function bootoutTargets(calls: readonly RecordedCall[]): readonly string[] {
+      return calls
+        .filter((call) => call.args[0] === "bootout")
+        .map((call) => call.args[1] ?? "");
+    }
+
+    it("retires a competing CLI registration when Desktop's agent owns the host", async () => {
+      const calls: RecordedCall[] = [];
+      const runner = makeRunner(
+        { [agentLabelId]: SMAPPSERVICE_PRINT, [label.id]: CLI_PRINT },
+        calls,
+      );
+      createdPlistPath = join(tempPlistDir, `${label.id}.plist`);
+      await writeFile(createdPlistPath, "<plist/>", "utf8");
+
+      await expect(
+        createMacosController(runner).retireCompetingRegistration(label),
+      ).resolves.toEqual({
+        kind: "retired",
+        bootedOut: true,
+        manifestRemoved: true,
+      });
+
+      // Only the CLI label is booted out - never the agent Desktop owns.
+      const booted = bootoutTargets(calls);
+      expect(booted).toHaveLength(1);
+      expect(booted[0]?.endsWith(`/${label.id}`)).toBe(true);
+      await expect(readFile(createdPlistPath, "utf8")).rejects.toThrow();
+    });
+
+    // The availability guard. Without an SMAppService-owned agent there is
+    // no proof anything else would start a host at login, so the CLI
+    // registration may be the machine's only one.
+    it("does nothing when Desktop's agent does not own the host", async () => {
+      const calls: RecordedCall[] = [];
+      const runner = makeRunner({ [label.id]: CLI_PRINT }, calls);
+      createdPlistPath = join(tempPlistDir, `${label.id}.plist`);
+      await writeFile(createdPlistPath, "<plist/>", "utf8");
+
+      await expect(
+        createMacosController(runner).retireCompetingRegistration(label),
+      ).resolves.toEqual({ kind: "not-applicable" });
+
+      expect(bootoutTargets(calls)).toEqual([]);
+      await expect(readFile(createdPlistPath, "utf8")).resolves.toBe(
+        "<plist/>",
+      );
+    });
+
+    // Pre-label-split machine: the CLI label IS Desktop's SMAppService
+    // registration. Booting it out or deleting a manifest here would
+    // corrupt the BTM state Desktop manages - the exact thing
+    // `installService`'s first refusal exists to prevent.
+    it("never touches a CLI label that is itself SMAppService-owned", async () => {
+      const calls: RecordedCall[] = [];
+      const runner = makeRunner(
+        {
+          [agentLabelId]: SMAPPSERVICE_PRINT,
+          [label.id]: SMAPPSERVICE_PRINT,
+        },
+        calls,
+      );
+      createdPlistPath = join(tempPlistDir, `${label.id}.plist`);
+      await writeFile(createdPlistPath, "<plist/>", "utf8");
+
+      await expect(
+        createMacosController(runner).retireCompetingRegistration(label),
+      ).resolves.toEqual({ kind: "not-applicable" });
+
+      expect(bootoutTargets(calls)).toEqual([]);
+      await expect(readFile(createdPlistPath, "utf8")).resolves.toBe(
+        "<plist/>",
+      );
+    });
+
+    it("reports nothing-to-retire on a healthy post-split machine", async () => {
+      const calls: RecordedCall[] = [];
+      const runner = makeRunner({ [agentLabelId]: SMAPPSERVICE_PRINT }, calls);
+
+      await expect(
+        createMacosController(runner).retireCompetingRegistration(label),
+      ).resolves.toEqual({ kind: "nothing-to-retire" });
+
+      expect(bootoutTargets(calls)).toEqual([]);
+    });
+
+    // Contractually non-throwing: this runs as a side effect of an install
+    // whose bytes are already swapped in, so it must never fail it. The
+    // manifest removal is the durable half and still applies.
+    it("removes the manifest and resolves even when the bootout fails", async () => {
+      const calls: RecordedCall[] = [];
+      const runner: ProcessRunner = async (command, args) => {
+        calls.push({ command, args });
+        if (args[0] === "print") {
+          const target = args[1] ?? "";
+          const printOutput = target.endsWith(`/${agentLabelId}`)
+            ? SMAPPSERVICE_PRINT
+            : CLI_PRINT;
+          return {
+            stdout: `${target} = {\n${printOutput}\n}\n`,
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        throw buildLaunchctlError({
+          stderr: "Operation not permitted",
+          stdout: "",
+          exitCode: 1,
+          command,
+          cmdArgs: args,
+        });
+      };
+      createdPlistPath = join(tempPlistDir, `${label.id}.plist`);
+      await writeFile(createdPlistPath, "<plist/>", "utf8");
+
+      await expect(
+        createMacosController(runner).retireCompetingRegistration(label),
+      ).resolves.toEqual({
+        kind: "retired",
+        bootedOut: false,
+        manifestRemoved: true,
+      });
+
+      expect(MOCKS.cliLoggerWarn).toHaveBeenCalled();
+      await expect(readFile(createdPlistPath, "utf8")).rejects.toThrow();
     });
   });
 

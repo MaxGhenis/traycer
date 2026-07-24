@@ -25,6 +25,7 @@ import {
   type RunResult,
 } from "../process-runner";
 import type {
+  CompetingRegistrationRetirement,
   InstallServiceOptions,
   ServiceController,
   ServiceStatus,
@@ -63,6 +64,8 @@ export function createMacosController(
     stop: (label) => stopService(label, run),
     start: (label) => startService(label, run),
     restart: (label) => restartService(label, run),
+    retireCompetingRegistration: (label) =>
+      retireCompetingRegistration(label, run),
   };
 }
 
@@ -697,6 +700,120 @@ async function assertNotDesktopAgentManaged(
       exitCode: 1,
     });
   }
+}
+
+/**
+ * The repair counterpart to `assertNotDesktopAgentManaged` /
+ * `installService`'s agent refusal: those stop a competing CLI registration
+ * from being CREATED, this removes one that already exists.
+ *
+ * Both halves of the dual-registration bug are needed to reach this state,
+ * and both shipped in v1.1.7: the label split let a CLI-label job coexist
+ * with Desktop's `<label>.agent` SMAppService job (launchd sees no
+ * collision), and the ownership probe was blind to the `launchctl print`
+ * format current macOS emits - so every guard that should have refused the
+ * second registration passed. Machines that ran `host install` /
+ * `host status` / `host ensure` in a terminal during that window carry two
+ * `RunAtLoad` registrations and start two hosts at every login. Neither the
+ * v1.1.8 classifier fix nor the supervisor's incumbent guard cleans that up:
+ * the classifier only prevents new ones, and at login both jobs start
+ * simultaneously - `pid.json` does not exist yet, so neither sees an
+ * incumbent to defer to.
+ *
+ * Preconditions, both required, both probed here rather than inferred from
+ * the caller's `ServiceState` (which folds two very different machines into
+ * one `externally-managed` value):
+ *
+ *   1. The AGENT label is SMAppService-owned - positive proof Desktop owns
+ *      registration and a host will still start at login after we retire
+ *      the CLI one. Without this the CLI label may be the machine's only
+ *      host, and retiring it would leave no host at all.
+ *   2. The CLI label is NOT SMAppService-owned. When it is, that IS
+ *      Desktop's registration on a pre-label-split machine, and
+ *      bootout/manifest-removal against the raw path would corrupt the BTM
+ *      state Desktop manages - the exact thing `installService`'s first
+ *      refusal exists to prevent.
+ *
+ * Bootout precedes the manifest removal so a failed bootout never leaves a
+ * loaded job with no backing file. The manifest is removed even if the
+ * bootout failed: "does not come back at next login" is the durable half of
+ * the repair and is worth having on its own. Unlike `uninstallService`,
+ * removing the manifest here cannot make `statusService` misreport a
+ * still-loaded job as `not-installed` - its agent-label probe returns
+ * `externally-managed` before it ever looks at the manifest.
+ *
+ * Never throws: every failure is logged and folded into the returned
+ * summary. This runs as a side effect of an install the user asked for, so
+ * it must not be able to fail that install.
+ */
+async function retireCompetingRegistration(
+  label: ServiceLabel,
+  run: ProcessRunner,
+): Promise<CompetingRegistrationRetirement> {
+  const guiTarget = guiDomain();
+  const agentLabelId = smAppServiceAgentLabelId(label);
+  // Advisory probes throughout (a hung / unspawnable launchctl reads as
+  // not-loaded): a repair must never be the thing that breaks a machine it
+  // could not even inspect.
+  const agentOwnership = await inspectLaunchdOwnership(
+    `${guiTarget}/${agentLabelId}`,
+    run,
+  ).catch((): LaunchdOwnership => ({ kind: "not-loaded" }));
+  if (agentOwnership.kind !== "smappservice") {
+    return { kind: "not-applicable" };
+  }
+  const serviceTarget = `${guiTarget}/${label.id}`;
+  const ownership = await inspectLaunchdOwnership(serviceTarget, run).catch(
+    (): LaunchdOwnership => ({ kind: "not-loaded" }),
+  );
+  if (ownership.kind === "smappservice") {
+    return { kind: "not-applicable" };
+  }
+  const manifestPath = serviceManifestPath(label);
+  const manifestExists = await fileExists(manifestPath);
+  if (ownership.kind === "not-loaded" && !manifestExists) {
+    return { kind: "nothing-to-retire" };
+  }
+  const logger = createCliLogger(label.environment);
+  let bootedOut = false;
+  if (ownership.kind !== "not-loaded") {
+    try {
+      await run("launchctl", ["bootout", serviceTarget], {
+        env: undefined,
+        cwd: undefined,
+        timeoutMs: 10_000,
+        tolerateNonZeroExit: false,
+      });
+      bootedOut = true;
+    } catch (cause) {
+      if (!isBenignBootoutFailure(cause)) {
+        logger.warn(
+          "Service repair: failed to bootout the competing CLI-label host beside Traycer Desktop's agent; it keeps running until the next login.",
+          { label: label.id, cause: describeCause(cause) },
+        );
+      }
+    }
+  }
+  let manifestRemoved = false;
+  if (manifestExists) {
+    try {
+      await rm(manifestPath, { force: true });
+      manifestRemoved = true;
+    } catch (cause) {
+      logger.warn(
+        "Service repair: failed to remove the competing CLI LaunchAgent manifest; it will start a second host at the next login.",
+        { label: label.id, manifestPath, cause: describeCause(cause) },
+      );
+    }
+  }
+  if (!bootedOut && !manifestRemoved) {
+    return { kind: "nothing-to-retire" };
+  }
+  logger.info(
+    "Service repair: retired the competing CLI registration - Traycer Desktop's SMAppService agent owns the host on this machine.",
+    { label: label.id, agentLabel: agentLabelId, bootedOut, manifestRemoved },
+  );
+  return { kind: "retired", bootedOut, manifestRemoved };
 }
 
 async function stopService(
