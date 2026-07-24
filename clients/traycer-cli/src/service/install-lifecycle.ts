@@ -3,7 +3,6 @@ import { resolveServiceCliInvocation, type CliInvocation } from "./cli-binary";
 import {
   createServiceController,
   serviceLabelFor,
-  type CompetingRegistrationRetirement,
   type ServiceController,
   type ServiceLabel,
   type ServiceState,
@@ -49,11 +48,6 @@ export interface ServiceInstallLifecycleState {
   // `restart`/`start` strings from older CLIs.
   postSwapAction: "install" | "none";
   postSwapError: string | null;
-  // What the externally-managed path did about a competing CLI-label
-  // registration (see `afterSwap`). `not-applicable` on every non-macOS
-  // platform and on any machine Desktop does not own - i.e. almost always.
-  // Reporting-only, like `stoppedBeforeSwap`.
-  retiredCompetingRegistration: CompetingRegistrationRetirement;
 }
 
 export interface ServiceInstallLifecycleHandle {
@@ -99,7 +93,6 @@ export function createServiceInstallLifecycle(
     stoppedBeforeSwap: false,
     postSwapAction: "none",
     postSwapError: null,
-    retiredCompetingRegistration: { kind: "not-applicable" },
   };
   const lifecycle: InstallHostLifecycle = {
     beforeSwap: async () => {
@@ -137,10 +130,19 @@ export function createServiceInstallLifecycle(
         // the registered owner and the CLI label is genuinely a competitor
         // - `externally-managed` alone cannot distinguish that from a
         // pre-split machine whose CLI label IS Desktop's registration.
-        // Contractually non-throwing, so it cannot fail the install whose
-        // bytes are already swapped in.
-        state.retiredCompetingRegistration =
-          await controller.retireCompetingRegistration(label);
+        // Contractually non-throwing - but caught anyway rather than trusted:
+        // the install's bytes are already swapped in at this point, so an
+        // opportunistic cleanup must not be able to abort the lifecycle no
+        // matter how a future platform implementation behaves.
+        //
+        // Its outcome is deliberately NOT recorded on `state`: nothing builds
+        // a `serviceLifecycle` payload from it (every caller assembles that
+        // field-by-field), so a field here would be dead state. The repair
+        // reports itself through the CLI logger, which is where a field
+        // diagnosis for "my host went away after an install" starts.
+        await controller.retireCompetingRegistration(label).catch(() => {
+          // Already logged at its own seam; nothing actionable here.
+        });
         return;
       }
       if (state.priorState === "not-installed") {

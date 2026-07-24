@@ -734,13 +734,31 @@ async function assertNotDesktopAgentManaged(
  *      state Desktop manages - the exact thing `installService`'s first
  *      refusal exists to prevent.
  *
- * Bootout precedes the manifest removal so a failed bootout never leaves a
- * loaded job with no backing file. The manifest is removed even if the
- * bootout failed: "does not come back at next login" is the durable half of
- * the repair and is worth having on its own. Unlike `uninstallService`,
- * removing the manifest here cannot make `statusService` misreport a
- * still-loaded job as `not-installed` - its agent-label probe returns
- * `externally-managed` before it ever looks at the manifest.
+ * The manifest is removed even when the bootout failed: "does not come back
+ * at the next login" is the durable half of the repair and is worth having
+ * on its own. That deliberately can leave a loaded job with no backing file,
+ * which is harmless - launchd holds the job definition in memory, so the
+ * orphaned job keeps running (and keeps `KeepAlive`-respawning on crash)
+ * until logout, which is exactly the intended "converges at next login"
+ * outcome. The ordering is therefore not load-bearing in either direction.
+ * Unlike `uninstallService`, removing the manifest here cannot make
+ * `statusService` misreport a still-loaded job as `not-installed` - its
+ * agent-label probe returns `externally-managed` before it ever looks at the
+ * manifest.
+ *
+ * AVAILABILITY: a successful bootout is followed by a best-effort
+ * `kickstart` of the agent label, because precondition 1 proves the agent
+ * job is LOADED, not that it has a live process. On this exact cohort it
+ * frequently does not: both jobs are `RunAtLoad`, so at login they race, the
+ * loser declines via `findLiveIncumbentHost` and exits 0, and
+ * `KeepAlive{SuccessfulExit:false}` never respawns a clean exit - leaving
+ * that job loaded-but-dead for the rest of the session. When the decliner
+ * was the agent, the CLI-label job we are about to evict is the machine's
+ * ONLY live host, and nothing downstream would start another: this branch
+ * sets `postSwapAction: "none"`, and `startService`/`restartService` both
+ * refuse via `assertNotDesktopAgentManaged` on precisely this machine. The
+ * kickstart also makes the just-swapped bytes go live immediately instead of
+ * at the next login.
  *
  * Never throws: every failure is logged and folded into the returned
  * summary. This runs as a side effect of an install the user asked for, so
@@ -776,6 +794,7 @@ async function retireCompetingRegistration(
   }
   const logger = createCliLogger(label.environment);
   let bootedOut = false;
+  let bootoutFailed = false;
   if (ownership.kind !== "not-loaded") {
     try {
       await run("launchctl", ["bootout", serviceTarget], {
@@ -786,7 +805,10 @@ async function retireCompetingRegistration(
       });
       bootedOut = true;
     } catch (cause) {
+      // A benign failure means the job was already gone - nothing was
+      // evicted, but nothing failed either.
       if (!isBenignBootoutFailure(cause)) {
+        bootoutFailed = true;
         logger.warn(
           "Service repair: failed to bootout the competing CLI-label host beside Traycer Desktop's agent; it keeps running until the next login.",
           { label: label.id, cause: describeCause(cause) },
@@ -794,26 +816,70 @@ async function retireCompetingRegistration(
       }
     }
   }
+  // Only after an eviction actually happened: this is the step that keeps the
+  // machine from being left with no live host at all (see AVAILABILITY
+  // above). Plain `kickstart`, never `-k` - the plist sets
+  // `ThrottleInterval: 10`, so force-killing a healthy agent would make
+  // launchd block its respawn. Starting an already-loaded job does not touch
+  // BTM, so it stays within the "CLI must not mutate Desktop's registration"
+  // rule that `installService`'s refusals enforce.
+  let agentKickstarted = false;
+  if (bootedOut) {
+    try {
+      await run("launchctl", ["kickstart", `${guiTarget}/${agentLabelId}`], {
+        env: undefined,
+        cwd: undefined,
+        timeoutMs: 10_000,
+        tolerateNonZeroExit: false,
+      });
+      agentKickstarted = true;
+    } catch (cause) {
+      logger.warn(
+        "Service repair: evicted the competing CLI-label host but could not start Traycer Desktop's agent; open Traycer or log out and back in if the host is unreachable.",
+        {
+          label: label.id,
+          agentLabel: agentLabelId,
+          cause: describeCause(cause),
+        },
+      );
+    }
+  }
   let manifestRemoved = false;
+  let manifestRemovalFailed = false;
   if (manifestExists) {
     try {
       await rm(manifestPath, { force: true });
       manifestRemoved = true;
     } catch (cause) {
+      manifestRemovalFailed = true;
       logger.warn(
         "Service repair: failed to remove the competing CLI LaunchAgent manifest; it will start a second host at the next login.",
         { label: label.id, manifestPath, cause: describeCause(cause) },
       );
     }
   }
+  // A hard failure must never read as `nothing-to-retire`. That value means
+  // "this machine is already clean", and conflating the two hides a repair
+  // that did not happen - reachable whenever the job is loaded but the
+  // manifest is already gone, which is now a NORMAL steady state because
+  // Desktop's launch repair removes manifests without booting out.
+  if (bootoutFailed || manifestRemovalFailed) {
+    return { kind: "retire-failed", bootoutFailed, manifestRemovalFailed };
+  }
   if (!bootedOut && !manifestRemoved) {
     return { kind: "nothing-to-retire" };
   }
   logger.info(
     "Service repair: retired the competing CLI registration - Traycer Desktop's SMAppService agent owns the host on this machine.",
-    { label: label.id, agentLabel: agentLabelId, bootedOut, manifestRemoved },
+    {
+      label: label.id,
+      agentLabel: agentLabelId,
+      bootedOut,
+      manifestRemoved,
+      agentKickstarted,
+    },
   );
-  return { kind: "retired", bootedOut, manifestRemoved };
+  return { kind: "retired", bootedOut, manifestRemoved, agentKickstarted };
 }
 
 async function stopService(

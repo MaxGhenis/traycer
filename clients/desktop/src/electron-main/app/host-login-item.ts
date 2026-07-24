@@ -196,10 +196,14 @@ const REGISTER_STATUS_POLL_INTERVAL_MS = 100;
  * to make registration succeed. They are best-effort; step 5 does not
  * depend on any of them. They are also deliberately coupled to the
  * committed cycle: a deferred (`deferred-busy` / `removed-by-user`) cycle
- * touches nothing, so a busy host paused mid-update keeps its intact
- * legacy registration (manifest included - deleting it earlier would leave
- * a running legacy job with no backing file, i.e. no auto-restart after a
- * crash or reboot) until a cycle actually proceeds.
+ * runs none of them, so a busy host paused mid-update keeps its legacy
+ * *job* loaded until a cycle actually proceeds.
+ *
+ * That coupling no longer extends to the manifest FILE:
+ * `retireCompetingCliRegistrationAtLaunch` deletes it on every launch with
+ * no busy check. Deliberate - an orphaned loaded job keeps running on
+ * launchd's in-memory definition, so the only thing lost is its auto-restart
+ * after a crash, and that is precisely the competing host we want gone.
  *
  * The agent-label bootout (step 4) is the load-bearing LWCR step on macOS
  * 26+; the SMAppService unregister → register pair is kept for
@@ -354,27 +358,41 @@ async function registerHostLoginItemUnserialized(
  * no worse than before the cycle ran.
  */
 async function retireLegacyLabelRegistrations(): Promise<void> {
-  const legacyManifest = userLaunchAgentPlistPath(CLI_HOST_LABEL);
-  if (await fileExists(legacyManifest)) {
-    try {
-      await rm(legacyManifest, { force: true });
-      log.info(
-        "[host-login-item] removed legacy CLI LaunchAgent manifest (label split migration)",
-        { legacyManifest },
-      );
-    } catch (err) {
-      log.warn(
-        "[host-login-item] failed to remove legacy CLI LaunchAgent manifest — the old label's agent may auto-start a competing host at next login",
-        { legacyManifest, err },
-      );
-    }
-  }
+  await removeCliLabelManifest();
   await bootoutStaleAgent(CLI_HOST_LABEL);
   const unregistered = trySetLoginItemSettings(false, LEGACY_HOST_SERVICE_NAME);
   log.info("[host-login-item] retired legacy-label SMAppService registration", {
     serviceName: LEGACY_HOST_SERVICE_NAME,
     unregistered,
   });
+}
+
+/**
+ * Delete `~/Library/LaunchAgents/<cli-label>.plist` - the manifest that would
+ * `RunAtLoad` a second host beside the agent-label one.
+ *
+ * Single implementation shared by the register cycle's step 1 and the
+ * launch-time repair, so the two can never drift on what "retired" means.
+ * The register cycle pairs it with a bootout of the same label; the launch
+ * repair deliberately does not (see
+ * `retireCompetingCliRegistrationAtLaunch`).
+ */
+async function removeCliLabelManifest(): Promise<
+  "removed" | "absent" | "failed"
+> {
+  const manifest = userLaunchAgentPlistPath(CLI_HOST_LABEL);
+  if (!(await fileExists(manifest))) return "absent";
+  try {
+    await rm(manifest, { force: true });
+  } catch (err) {
+    log.warn(
+      "[host-login-item] failed to remove CLI LaunchAgent manifest — the CLI label may auto-start a competing host at next login",
+      { manifest, err },
+    );
+    return "failed";
+  }
+  log.info("[host-login-item] removed CLI LaunchAgent manifest", { manifest });
+  return "removed";
 }
 
 /**
@@ -415,13 +433,26 @@ export type LaunchCompetingRegistrationRepair =
  *
  * Two deliberate narrowings versus the register cycle:
  *
- *   1. Gated on SMAppService reporting `enabled` - positive proof a host
- *      will still start at login once the CLI registration is gone. Under
- *      `requires-approval` the user has disabled the login item and launchd
- *      will not spawn the agent; removing the CLI plist there would take
- *      away the machine's only auto-starting host. Same availability bias
- *      as `findLiveIncumbentHost` in the CLI: never leave a machine with no
+ *   1. Gated on SMAppService reporting `enabled`. Under `requires-approval`
+ *      the user has disabled the login item and launchd will not spawn the
+ *      agent; removing the CLI plist there would take away the machine's
+ *      only auto-starting host. `not-registered` / `not-found` /
+ *      `not-supported` fail into the same no-op. Same availability bias as
+ *      `findLiveIncumbentHost` in the CLI: never leave a machine with no
  *      host to prevent a duplicate.
+ *
+ *      ACCEPTED GAP: `enabled` proves the agent is REGISTERED and enabled,
+ *      not that launchd can actually spawn it. An agent wedged by a stale
+ *      BTM Lightweight Code Requirement (the LWCR / `EX_CONFIG` failure
+ *      documented on `registerHostLoginItem` above) also reads `enabled`
+ *      while every spawn is SIGKILLed inside dyld init - and that is the
+ *      same v1.1.7 cohort this repair targets. On such a machine the CLI
+ *      registration may be the only one that works, and this deletes it.
+ *      Accepted rather than gated harder: distinguishing a wedged agent
+ *      needs a real spawn observation this code has no access to at launch,
+ *      and the damage self-heals on the next app launch, whose register
+ *      cycle does the bootout + re-register that clears the LWCR. Revisit
+ *      if the wedge is seen in the field alongside a dual registration.
  *   2. Removes the manifest but does NOT bootout the running job. Boot-out
  *      would kill a host that may be serving this session's tabs right now
  *      - and at launch we have no idea whether the competing host or the
@@ -450,20 +481,11 @@ async function retireCompetingCliRegistrationUnserialized(): Promise<LaunchCompe
   // alone once the sentinel is set.
   if (await isHostRemovedByUser()) return "not-applicable";
   if (readHostLoginItemStatus() !== "enabled") return "agent-not-enabled";
-  const competingManifest = userLaunchAgentPlistPath(CLI_HOST_LABEL);
-  if (!(await fileExists(competingManifest))) return "nothing-to-retire";
-  try {
-    await rm(competingManifest, { force: true });
-  } catch (err) {
-    log.warn(
-      "[host-login-item] failed to remove competing CLI LaunchAgent manifest — a second host will start beside the agent at next login",
-      { competingManifest, err },
-    );
-    return "retire-failed";
-  }
+  const outcome = await removeCliLabelManifest();
+  if (outcome === "absent") return "nothing-to-retire";
+  if (outcome === "failed") return "retire-failed";
   log.info(
-    "[host-login-item] retired competing CLI LaunchAgent manifest (dual-registration repair)",
-    { competingManifest },
+    "[host-login-item] retired competing CLI registration (dual-registration repair)",
   );
   return "retired";
 }

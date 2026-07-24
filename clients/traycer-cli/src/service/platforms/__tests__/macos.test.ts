@@ -1345,6 +1345,7 @@ describe("macOS service lifecycle", () => {
         kind: "retired",
         bootedOut: true,
         manifestRemoved: true,
+        agentKickstarted: true,
       });
 
       // Only the CLI label is booted out - never the agent Desktop owns.
@@ -1352,6 +1353,79 @@ describe("macOS service lifecycle", () => {
       expect(booted).toHaveLength(1);
       expect(booted[0]?.endsWith(`/${label.id}`)).toBe(true);
       await expect(readFile(createdPlistPath, "utf8")).rejects.toThrow();
+    });
+
+    // The availability step. The agent job being LOADED (which is all the
+    // ownership probe proves) does not mean it has a live process: the loser
+    // of the login race declines and exits 0, and
+    // `KeepAlive{SuccessfulExit:false}` never respawns a clean exit. Without
+    // this kickstart, evicting the CLI-label job can leave the machine with
+    // no running host at all, and the CLI cannot recover - start/restart both
+    // refuse via `assertNotDesktopAgentManaged` on exactly this machine.
+    it("kickstarts Desktop's agent after evicting the competing host", async () => {
+      const calls: RecordedCall[] = [];
+      const runner = makeRunner(
+        { [agentLabelId]: SMAPPSERVICE_PRINT, [label.id]: CLI_PRINT },
+        calls,
+      );
+
+      await createMacosController(runner).retireCompetingRegistration(label);
+
+      const kickstarts = calls.filter((call) => call.args[0] === "kickstart");
+      expect(kickstarts).toHaveLength(1);
+      expect(kickstarts[0]?.args[1]?.endsWith(`/${agentLabelId}`)).toBe(true);
+      // Never `-k`: the plist sets ThrottleInterval 10, so force-killing a
+      // healthy agent would make launchd block its respawn.
+      expect(kickstarts[0]?.args).not.toContain("-k");
+    });
+
+    // Nothing was evicted, so there is nothing to compensate for - and
+    // kickstarting anyway would start a host on a machine whose agent
+    // launchd had deliberately left down.
+    it("does not kickstart the agent when nothing was evicted", async () => {
+      const calls: RecordedCall[] = [];
+      const runner = makeRunner({ [agentLabelId]: SMAPPSERVICE_PRINT }, calls);
+      createdPlistPath = join(tempPlistDir, `${label.id}.plist`);
+      await writeFile(createdPlistPath, "<plist/>", "utf8");
+
+      await createMacosController(runner).retireCompetingRegistration(label);
+
+      expect(calls.filter((call) => call.args[0] === "kickstart")).toEqual([]);
+    });
+
+    // A hard bootout failure must not read as "this machine was already
+    // clean". Loaded job + already-removed manifest is a NORMAL steady state
+    // now that Desktop's launch repair deletes manifests without booting out,
+    // so this exact combination is reachable in the field.
+    it("reports retire-failed when a loaded job survives a failed bootout", async () => {
+      const calls: RecordedCall[] = [];
+      const runner: ProcessRunner = async (command, args) => {
+        calls.push({ command, args });
+        if (args[0] === "print") {
+          const target = args[1] ?? "";
+          return {
+            stdout: `${target} = {\n${target.endsWith(`/${agentLabelId}`) ? SMAPPSERVICE_PRINT : CLI_PRINT}\n}\n`,
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        throw buildLaunchctlError({
+          stderr: "Operation not permitted",
+          stdout: "",
+          exitCode: 1,
+          command,
+          cmdArgs: args,
+        });
+      };
+
+      // No manifest on disk - only the loaded job remains to retire.
+      await expect(
+        createMacosController(runner).retireCompetingRegistration(label),
+      ).resolves.toEqual({
+        kind: "retire-failed",
+        bootoutFailed: true,
+        manifestRemovalFailed: false,
+      });
     });
 
     // The availability guard. Without an SMAppService-owned agent there is
@@ -1442,12 +1516,14 @@ describe("macOS service lifecycle", () => {
       await expect(
         createMacosController(runner).retireCompetingRegistration(label),
       ).resolves.toEqual({
-        kind: "retired",
-        bootedOut: false,
-        manifestRemoved: true,
+        kind: "retire-failed",
+        bootoutFailed: true,
+        manifestRemovalFailed: false,
       });
 
       expect(MOCKS.cliLoggerWarn).toHaveBeenCalled();
+      // The durable half still applies: reporting the failure must not cost
+      // us the "does not come back at the next login" outcome.
       await expect(readFile(createdPlistPath, "utf8")).rejects.toThrow();
     });
   });

@@ -57,9 +57,16 @@ export interface UninstallServiceOptions {
 //   - `retired` - Desktop owns registration under the agent label AND a
 //     competing CLI-label registration existed; it has now been booted out
 //     and/or its manifest removed. `bootedOut` / `manifestRemoved` say
-//     which halves actually applied.
+//     which halves actually applied, and `agentKickstarted` whether the
+//     surviving agent job was successfully started after an eviction.
 //   - `nothing-to-retire` - Desktop owns registration and the CLI label is
 //     already clean. The healthy post-split steady state.
+//   - `retire-failed` - there WAS something to retire and an operation on it
+//     failed hard. Distinct from `nothing-to-retire` on purpose: a loaded job
+//     whose manifest is already gone (now a normal steady state, since
+//     Desktop's launch repair removes manifests without booting out) plus a
+//     failed bootout would otherwise be indistinguishable from a clean
+//     machine.
 export type CompetingRegistrationRetirement =
   | { readonly kind: "not-applicable" }
   | { readonly kind: "nothing-to-retire" }
@@ -67,6 +74,12 @@ export type CompetingRegistrationRetirement =
       readonly kind: "retired";
       readonly bootedOut: boolean;
       readonly manifestRemoved: boolean;
+      readonly agentKickstarted: boolean;
+    }
+  | {
+      readonly kind: "retire-failed";
+      readonly bootoutFailed: boolean;
+      readonly manifestRemovalFailed: boolean;
     };
 
 export interface ServiceController {

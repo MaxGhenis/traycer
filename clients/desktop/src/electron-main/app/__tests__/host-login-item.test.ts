@@ -168,6 +168,7 @@ const {
   readHostLoginItemStatus,
   retireCompetingCliRegistrationAtLaunch,
   runLaunchctlBootout,
+  withHostLoginItemRegistrationLock,
   hasPendingLoginItemRevision,
   hasUnappliedPendingLoginItemRevision,
 } = await import("../host-login-item");
@@ -709,6 +710,8 @@ describe("retireCompetingCliRegistrationAtLaunch", () => {
   // Repair only - it must never register, unregister, or bootout anything.
   // Eviction authority stays with the register cycle and the CLI's explicit
   // install, both of which know they are allowed to disrupt a running host.
+  // A regression fence rather than evidence: no path here can currently
+  // reach `setLoginItemSettings`, and the point is that none ever should.
   it("never mutates SMAppService state", async () => {
     getLoginItemSettings.mockReturnValue({ status: "enabled" });
     writeLegacyCliManifest();
@@ -716,5 +719,72 @@ describe("retireCompetingCliRegistrationAtLaunch", () => {
     await retireCompetingCliRegistrationAtLaunch();
 
     expect(setLoginItemSettings).not.toHaveBeenCalled();
+  });
+
+  // The gate that keeps this off every non-packaged build. Without it a dev
+  // build - or any run outside an .app bundle, including this very test
+  // suite - would delete the developer's REAL
+  // `~/Library/LaunchAgents/ai.traycer.host.plist` and deregister their
+  // running host. Every other test here stages a valid bundle, so this is
+  // the only place the gate is exercised.
+  it("never runs on a build that does not own registration", async () => {
+    // No in-bundle LaunchAgent plist => `hostManagesHostLoginItem()` false.
+    rmSync(
+      join(
+        workHome,
+        "Traycer.app",
+        "Contents",
+        "Library",
+        "LaunchAgents",
+        "ai.traycer.host.agent.plist",
+      ),
+      { force: true },
+    );
+    getLoginItemSettings.mockReturnValue({ status: "enabled" });
+    writeLegacyCliManifest();
+
+    await expect(retireCompetingCliRegistrationAtLaunch()).resolves.toBe(
+      "not-applicable",
+    );
+    expect(existsSync(legacyCliManifestPath())).toBe(true);
+  });
+
+  it("reports retire-failed when the manifest cannot be removed", async () => {
+    getLoginItemSettings.mockReturnValue({ status: "enabled" });
+    writeLegacyCliManifest();
+    // Read-only parent directory: the file still stats, but unlink fails.
+    const agentsDir = join(workHome, "Library", "LaunchAgents");
+    chmodSync(agentsDir, 0o500);
+    try {
+      await expect(retireCompetingCliRegistrationAtLaunch()).resolves.toBe(
+        "retire-failed",
+      );
+    } finally {
+      chmodSync(agentsDir, 0o755);
+    }
+    expect(existsSync(legacyCliManifestPath())).toBe(true);
+  });
+
+  // The doc comment sells serialization through the registration lock as a
+  // safety property; pin it. A repair must not interleave with a register
+  // cycle's own CLI-label cleanup.
+  it("serializes against an in-flight register cycle", async () => {
+    getLoginItemSettings.mockReturnValue({ status: "enabled" });
+    writeLegacyCliManifest();
+
+    const order: string[] = [];
+    const cycle = withHostLoginItemRegistrationLock(async () => {
+      order.push("cycle:start");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      order.push("cycle:end");
+    });
+    const repair = retireCompetingCliRegistrationAtLaunch().then((outcome) => {
+      order.push("repair");
+      return outcome;
+    });
+
+    await Promise.all([cycle, repair]);
+
+    expect(order).toEqual(["cycle:start", "cycle:end", "repair"]);
   });
 });

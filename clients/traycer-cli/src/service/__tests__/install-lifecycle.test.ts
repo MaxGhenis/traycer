@@ -255,15 +255,28 @@ describe("service install lifecycle re-registration", () => {
   // routine flow that reaches a machine poisoned during the v1.1.7 window,
   // and a refusal alone can never clean up what already exists.
   it("retires a competing CLI registration on the externally-managed path", async () => {
-    const { state, harness } = await runLifecycle(
-      "externally-managed",
-      bootstrap,
-    );
+    const { harness } = await runLifecycle("externally-managed", bootstrap);
 
     expect(harness.retireCompetingRegistration).toHaveBeenCalledWith(label);
-    expect(state.retiredCompetingRegistration).toEqual({
-      kind: "nothing-to-retire",
+  });
+
+  // The repair is contractually non-throwing, but the lifecycle must not rely
+  // on that politely holding: an install whose bytes are already swapped in
+  // must never be failed by its own opportunistic cleanup.
+  it("does not fail the install when the competing-registration repair throws", async () => {
+    const harness = makeController("externally-managed");
+    harness.retireCompetingRegistration.mockRejectedValue(
+      new Error("launchctl exploded"),
+    );
+    mocks.createServiceControllerMock.mockReturnValue(harness.controller);
+    const handle = createServiceInstallLifecycle({
+      environment: "production",
+      bootstrap,
     });
+    await handle.lifecycle.beforeSwap();
+
+    await expect(handle.lifecycle.afterSwap()).resolves.toBeUndefined();
+    expect(handle.state.postSwapAction).toBe("none");
   });
 
   // Every other prior state either registers the CLI label itself or
