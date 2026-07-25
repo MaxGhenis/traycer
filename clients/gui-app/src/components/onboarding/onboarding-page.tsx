@@ -667,7 +667,11 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
               data-testid="onboarding-skip"
               onClick={() => finish("skipped")}
               disabled={agentGuideSaving}
-              className="absolute right-10 flex h-9 items-center justify-center gap-2 rounded px-2 font-heading text-[0.875rem] leading-[1.125rem] font-normal tracking-normal text-white transition-colors hover:bg-white/10 disabled:pointer-events-none disabled:opacity-55 [@media(min-height:920px)]:h-10 [@media(min-height:920px)]:text-[0.9375rem] max-sm:right-5"
+              // Frameless desktop: the OS window controls overlay this corner
+              // (Windows draws min/max/close on the right), so shift the
+              // button past them while they are visible. Same env()-inset
+              // pattern as the app header's trailing padding.
+              className="absolute right-10 flex h-9 items-center justify-center gap-2 rounded px-2 font-heading text-[0.875rem] leading-[1.125rem] font-normal tracking-normal text-white transition-colors hover:bg-white/10 disabled:pointer-events-none disabled:opacity-55 wco:right-[max(2.5rem,calc(100vw-env(titlebar-area-x,82px)-env(titlebar-area-width,100vw)+0.75rem))] [@media(min-height:920px)]:h-10 [@media(min-height:920px)]:text-[0.9375rem] max-sm:right-5 max-sm:wco:right-[max(1.25rem,calc(100vw-env(titlebar-area-x,82px)-env(titlebar-area-width,100vw)+0.75rem))]"
             >
               <span>Skip intro</span>
               <Kbd tone="light">Esc</Kbd>
