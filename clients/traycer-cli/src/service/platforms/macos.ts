@@ -713,6 +713,13 @@ async function assertNotDesktopAgentManaged(
   }
 }
 
+// Whether the competing CLI manifest is there. `unreadable` is distinct from
+// `absent` on purpose - see the probe in `retireCompetingRegistration`.
+type ManifestProbe =
+  | { readonly kind: "present" }
+  | { readonly kind: "absent" }
+  | { readonly kind: "unreadable"; readonly cause: unknown };
+
 /**
  * The repair counterpart to `assertNotDesktopAgentManaged` /
  * `installService`'s agent refusal: those stop a competing CLI registration
@@ -800,8 +807,19 @@ async function retireCompetingRegistration(
     return { kind: "not-applicable" };
   }
   const manifestPath = serviceManifestPath(label);
-  const manifestExists = await fileExists(manifestPath);
-  if (ownership.kind === "not-loaded" && !manifestExists) {
+  // `fileExists` swallows only ENOENT and rethrows the rest, so an
+  // unreadable `~/Library/LaunchAgents` would escape the never-throws
+  // contract above. It is kept as a THIRD state rather than folded into
+  // "absent": absent means "this machine is already clean", and reporting an
+  // unreadable manifest that way would hide a login-time relapse behind
+  // `nothing-to-retire` - the same conflation the summary below refuses to
+  // make for a failed bootout.
+  const manifestProbe: ManifestProbe = await fileExists(manifestPath).then(
+    (exists): ManifestProbe =>
+      exists ? { kind: "present" } : { kind: "absent" },
+    (cause: unknown): ManifestProbe => ({ kind: "unreadable", cause }),
+  );
+  if (ownership.kind === "not-loaded" && manifestProbe.kind === "absent") {
     return { kind: "nothing-to-retire" };
   }
   const logger = createCliLogger(label.environment);
@@ -870,7 +888,22 @@ async function retireCompetingRegistration(
   // kickstart rather than behind a subprocess that can burn its timeout.
   let manifestRemoved = false;
   let manifestRemovalFailed = false;
-  if (manifestExists) {
+  if (manifestProbe.kind === "unreadable") {
+    // No `rm` attempt: `rm(force)` cannot distinguish "removed" from "was
+    // never there", so on a path we could not even stat it would report a
+    // durable half that may not have happened. Counting it as a removal
+    // failure is the honest reading - the manifest is still there for all
+    // we know, and that is exactly what the user needs told.
+    manifestRemovalFailed = true;
+    logger.warn(
+      "Service repair: could not read the competing CLI LaunchAgent manifest, so it was left in place; it will start a second host at the next login.",
+      {
+        label: label.id,
+        manifestPath,
+        cause: describeCause(manifestProbe.cause),
+      },
+    );
+  } else if (manifestProbe.kind === "present") {
     try {
       await rm(manifestPath, { force: true });
       manifestRemoved = true;

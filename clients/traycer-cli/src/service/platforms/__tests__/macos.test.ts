@@ -8,7 +8,7 @@ import {
   vi,
 } from "vitest";
 import { existsSync, mkdtempSync } from "node:fs";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -1619,6 +1619,84 @@ describe("macOS service lifecycle", () => {
       // us the "does not come back at the next login" outcome.
       await expect(readFile(createdPlistPath, "utf8")).rejects.toThrow();
     });
+
+    // Runs the body with the LaunchAgents directory unreadable, so `stat` on
+    // the manifest inside it fails with EACCES rather than ENOENT. Skipped
+    // under root, which bypasses permission checks entirely.
+    const itUnlessRoot = it.skipIf(process.getuid?.() === 0);
+
+    async function withUnreadableLaunchAgentsDir(
+      body: () => Promise<void>,
+    ): Promise<void> {
+      await chmod(tempPlistDir, 0o000);
+      try {
+        await body();
+      } finally {
+        await chmod(tempPlistDir, 0o700);
+      }
+    }
+
+    itUnlessRoot(
+      "reports an unreadable manifest as a failed repair, never as a clean machine",
+      async () => {
+        const calls: RecordedCall[] = [];
+        // Nothing loaded under the CLI label: the ONLY thing separating
+        // "already clean" from "we could not look" is the probe outcome.
+        const runner = makeRunner(
+          { [agentLabelId]: SMAPPSERVICE_PRINT },
+          calls,
+        );
+
+        await withUnreadableLaunchAgentsDir(async () => {
+          await expect(
+            createMacosController(runner).retireCompetingRegistration(label),
+          ).resolves.toEqual({
+            kind: "retire-failed",
+            bootoutFailed: false,
+            manifestRemovalFailed: true,
+          });
+        });
+
+        const warned = MOCKS.cliLoggerWarn.mock.calls.some((call) =>
+          String(call[0]).includes("could not read"),
+        );
+        expect(warned).toBe(true);
+      },
+    );
+
+    itUnlessRoot(
+      "still evicts the competing host when the manifest cannot be read",
+      async () => {
+        const calls: RecordedCall[] = [];
+        const runner = makeRunner(
+          { [agentLabelId]: SMAPPSERVICE_PRINT, [label.id]: CLI_PRINT },
+          calls,
+        );
+
+        await withUnreadableLaunchAgentsDir(async () => {
+          await expect(
+            createMacosController(runner).retireCompetingRegistration(label),
+          ).resolves.toEqual({
+            kind: "retire-failed",
+            bootoutFailed: false,
+            manifestRemovalFailed: true,
+          });
+        });
+
+        // An unreadable manifest costs us the durable half only. The live
+        // dual-host state is still resolved, agent restarted.
+        expect(bootoutTargets(calls)).toHaveLength(1);
+        expect(
+          calls.some(
+            (call) =>
+              call.args[0] === "kickstart" &&
+              (call.args[call.args.length - 1] ?? "").endsWith(
+                `/${agentLabelId}`,
+              ),
+          ),
+        ).toBe(true);
+      },
+    );
   });
 
   describe("readRegisteredCliInvocation (host update's no-repoint contract)", () => {
