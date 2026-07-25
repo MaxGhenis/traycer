@@ -832,9 +832,23 @@ async function retireCompetingRegistration(
       // evicted, but nothing failed either.
       if (!isBenignBootoutFailure(cause)) {
         bootoutFailed = true;
+        // Deliberately does NOT claim the competing host is still running.
+        // With `--wait` the likeliest way here is the timeout, and the
+        // timeout kills `launchctl` - the waiter - not the job: launchd
+        // already accepted the bootout, so the host is probably gone or
+        // going. A hard failure (EPERM, wedged launchd) genuinely does leave
+        // it running. We cannot tell which from here, so say what is
+        // certain - the eviction was not confirmed - and carry the same
+        // recovery guidance as the kickstart-failure warning, because this
+        // branch runs neither the kickstart nor the eviction log and is
+        // therefore the user's only signal.
         logger.warn(
-          "Service repair: failed to bootout the competing CLI-label host beside Traycer Desktop's agent; it keeps running until the next login.",
-          { label: label.id, cause: describeCause(cause) },
+          "Service repair: could not confirm the competing CLI-label host was evicted; if the host is unreachable, open Traycer or log out and back in.",
+          {
+            label: label.id,
+            agentLabel: agentLabelId,
+            cause: describeCause(cause),
+          },
         );
       }
     }

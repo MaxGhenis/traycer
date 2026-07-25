@@ -15,7 +15,24 @@ const mocks = vi.hoisted(() => ({
   serviceLabelForMock: vi.fn(),
   resolveServiceCliInvocationMock: vi.fn(),
   readRegisteredCliInvocationMock: vi.fn(),
+  cliLoggerWarnMock: vi.fn(),
 }));
+
+// The externally-managed branch reports an unforeseen repair failure through
+// the real CLI logger, which appends to the invoking user's `~/.traycer` log
+// file. Stub it so the suite stays hermetic and that warning is assertable.
+vi.mock("../../logger", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../logger")>();
+  return {
+    ...actual,
+    createCliLogger: () => ({
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: mocks.cliLoggerWarnMock,
+      error: vi.fn(),
+    }),
+  };
+});
 
 vi.mock("../index", () => ({
   createServiceController: mocks.createServiceControllerMock,
@@ -277,6 +294,10 @@ describe("service install lifecycle re-registration", () => {
 
     await expect(handle.lifecycle.afterSwap()).resolves.toBeUndefined();
     expect(handle.state.postSwapAction).toBe("none");
+    // Caught, but never silent. Every failure the repair anticipates is
+    // logged at its own seam, so the only way into that catch is an
+    // unforeseen throw - exactly the case that escaped the logging.
+    expect(mocks.cliLoggerWarnMock).toHaveBeenCalled();
   });
 
   // Every other prior state either registers the CLI label itself or

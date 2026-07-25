@@ -32,6 +32,7 @@ const MOCKS = vi.hoisted(() => ({
   readHostPidMetadata: vi.fn(),
   isProcessAlive: vi.fn(),
   cliLoggerWarn: vi.fn(),
+  cliLoggerInfo: vi.fn(),
 }));
 
 // `uninstallService` warns through the real CLI logger when it boots out an
@@ -44,7 +45,11 @@ vi.mock("../../../logger", async (importOriginal) => {
     ...actual,
     createCliLogger: () => ({
       debug: vi.fn(),
-      info: vi.fn(),
+      // `info` is assertable (not an anonymous fn) because the eviction line
+      // IS the contract: `retireCompetingRegistration`'s outcome is
+      // deliberately not threaded through the install lifecycle, so this log
+      // is the only record that a running host was booted out.
+      info: MOCKS.cliLoggerInfo,
       warn: MOCKS.cliLoggerWarn,
       error: vi.fn(),
     }),
@@ -147,6 +152,7 @@ describe("macOS service lifecycle", () => {
     MOCKS.isProcessAlive.mockReset();
     MOCKS.isProcessAlive.mockReturnValue(false);
     MOCKS.cliLoggerWarn.mockReset();
+    MOCKS.cliLoggerInfo.mockReset();
   });
 
   afterEach(async () => {
@@ -1400,6 +1406,74 @@ describe("macOS service lifecycle", () => {
       await createMacosController(runner).retireCompetingRegistration(label);
 
       expect(calls.filter((call) => call.args[0] === "kickstart")).toEqual([]);
+    });
+
+    // The eviction log is the CONTRACT, not decoration: this function's
+    // outcome is deliberately not threaded through the install lifecycle, so
+    // this line is the only record anywhere that a running host was booted
+    // out. It must survive a later step failing, which is why it is emitted
+    // immediately and not folded into the success line.
+    it("logs the eviction as soon as it happens, even when a later step fails", async () => {
+      const calls: RecordedCall[] = [];
+      const runner: ProcessRunner = async (command, args) => {
+        calls.push({ command, args });
+        if (args[0] === "print") {
+          const target = args[1] ?? "";
+          return {
+            stdout: `${target} = {\n${target.endsWith(`/${agentLabelId}`) ? SMAPPSERVICE_PRINT : CLI_PRINT}\n}\n`,
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        // Bootout succeeds; the kickstart that follows fails.
+        if (args[0] === "kickstart") {
+          throw buildLaunchctlError({
+            stderr: "Operation not permitted",
+            stdout: "",
+            exitCode: 1,
+            command,
+            cmdArgs: args,
+          });
+        }
+        return buildSuccessResult();
+      };
+
+      await createMacosController(runner).retireCompetingRegistration(label);
+
+      const evictionLogged = MOCKS.cliLoggerInfo.mock.calls.some(
+        ([message]) =>
+          typeof message === "string" && message.includes("evicted"),
+      );
+      expect(evictionLogged).toBe(true);
+    });
+
+    // The manifest removal is the durable half of the repair and is local and
+    // instantaneous; the kickstart is a subprocess that can burn its timeout.
+    // Ordering them the other way risks losing the durable half to a slow
+    // launchctl.
+    it("removes the manifest before starting the agent", async () => {
+      let manifestPresentAtKickstart: boolean | null = null;
+      const manifestPath = join(tempPlistDir, `${label.id}.plist`);
+      createdPlistPath = manifestPath;
+      await writeFile(manifestPath, "<plist/>", "utf8");
+      const runner: ProcessRunner = async (command, args) => {
+        if (args[0] === "print") {
+          const target = args[1] ?? "";
+          return {
+            stdout: `${target} = {\n${target.endsWith(`/${agentLabelId}`) ? SMAPPSERVICE_PRINT : CLI_PRINT}\n}\n`,
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        if (args[0] === "kickstart") {
+          manifestPresentAtKickstart = existsSync(manifestPath);
+        }
+        return buildSuccessResult();
+      };
+
+      await createMacosController(runner).retireCompetingRegistration(label);
+
+      expect(manifestPresentAtKickstart).toBe(false);
     });
 
     // A hard bootout failure must not read as "this machine was already
