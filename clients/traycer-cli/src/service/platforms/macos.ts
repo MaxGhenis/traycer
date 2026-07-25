@@ -670,7 +670,18 @@ const STOP_EXIT_TIMEOUT_MS = SHUTDOWN_FORCE_EXIT_MS + STOP_EXIT_GRACE_MARGIN_MS;
 const STOP_EXIT_POLL_MS = 150;
 
 // Fail fast when Traycer Desktop's post-label-split SMAppService agent owns
-// the host for this environment. stop/start/restart operate on the CLI
+// the host for this environment.
+//
+// "Does not manage this host's lifecycle" is the precise claim, and it is
+// narrower than "never touches this label": `retireCompetingRegistration`
+// deliberately issues one `launchctl kickstart` against the agent label to
+// restore availability after evicting a competing CLI-label host. Kickstart
+// only starts an already-loaded job - no bootstrap, no bootout, no BTM or
+// LWCR mutation - so Desktop's registration remains untouched. What stays
+// refused here is the CLI driving this host's stop/start/restart on the
+// user's behalf.
+//
+// stop/start/restart operate on the CLI
 // label's launchd job; on a migrated machine that job doesn't exist - `stop`
 // would signal nothing, wait out the full shutdown grace against a host that
 // never received SIGTERM, and report a misleading "stop did not take
@@ -691,7 +702,7 @@ async function assertNotDesktopAgentManaged(
   if (agentOwnership.kind === "smappservice") {
     throw cliError({
       code: CLI_ERROR_CODES.SERVICE_CONTROL_FAILED,
-      message: `host ${operation}: Traycer Desktop owns host registration on this machine (SMAppService agent '${agentLabelId}' loaded from ${agentOwnership.path}); the CLI does not manage this host. Use the Traycer app to ${operation} it.`,
+      message: `host ${operation}: Traycer Desktop owns host registration on this machine (SMAppService agent '${agentLabelId}' loaded from ${agentOwnership.path}); the CLI does not manage this host's lifecycle. Use the Traycer app to ${operation} it.`,
       details: {
         label: label.id,
         agentLabel: agentLabelId,
@@ -746,9 +757,10 @@ async function assertNotDesktopAgentManaged(
  * agent-label probe returns `externally-managed` before it ever looks at the
  * manifest.
  *
- * AVAILABILITY: a successful bootout is followed by a best-effort
- * `kickstart` of the agent label, because precondition 1 proves the agent
- * job is LOADED, not that it has a live process. On this exact cohort it
+ * AVAILABILITY: a successful bootout - which waits for the evicted process
+ * to actually exit - is followed by a best-effort `kickstart` of the agent
+ * label, because precondition 1 proves the agent job is LOADED, not that it
+ * has a live process. On this exact cohort it
  * frequently does not: both jobs are `RunAtLoad`, so at login they race, the
  * loser declines via `findLiveIncumbentHost` and exits 0, and
  * `KeepAlive{SuccessfulExit:false}` never respawns a clean exit - leaving
@@ -797,10 +809,21 @@ async function retireCompetingRegistration(
   let bootoutFailed = false;
   if (ownership.kind !== "not-loaded") {
     try {
-      await run("launchctl", ["bootout", serviceTarget], {
+      // `--wait` is load-bearing, not tidiness: a bare bootout returns when
+      // launchd ACCEPTS the request, not when the process is gone, and the
+      // agent we start below runs `findLiveIncumbentHost` as its very first
+      // act. The evicted host publishes `pid.json` until the very end of its
+      // teardown (the RPC handle closes last, after adapter/child-server and
+      // store shutdown, budgeted at `SHUTDOWN_FORCE_EXIT_MS`), so without
+      // this barrier the new agent would routinely see the corpse as a live
+      // incumbent, decline, and exit 0 - which `KeepAlive{SuccessfulExit:
+      // false}` leaves DOWN until the next login. That is the exact outcome
+      // this whole repair exists to prevent. Same barrier, same timeout as
+      // `uninstallService`'s bootout.
+      await run("launchctl", ["bootout", "--wait", serviceTarget], {
         env: undefined,
         cwd: undefined,
-        timeoutMs: 10_000,
+        timeoutMs: STOP_EXIT_TIMEOUT_MS,
         tolerateNonZeroExit: false,
       });
       bootedOut = true;
@@ -816,34 +839,21 @@ async function retireCompetingRegistration(
       }
     }
   }
-  // Only after an eviction actually happened: this is the step that keeps the
-  // machine from being left with no live host at all (see AVAILABILITY
-  // above). Plain `kickstart`, never `-k` - the plist sets
-  // `ThrottleInterval: 10`, so force-killing a healthy agent would make
-  // launchd block its respawn. Starting an already-loaded job does not touch
-  // BTM, so it stays within the "CLI must not mutate Desktop's registration"
-  // rule that `installService`'s refusals enforce.
-  let agentKickstarted = false;
   if (bootedOut) {
-    try {
-      await run("launchctl", ["kickstart", `${guiTarget}/${agentLabelId}`], {
-        env: undefined,
-        cwd: undefined,
-        timeoutMs: 10_000,
-        tolerateNonZeroExit: false,
-      });
-      agentKickstarted = true;
-    } catch (cause) {
-      logger.warn(
-        "Service repair: evicted the competing CLI-label host but could not start Traycer Desktop's agent; open Traycer or log out and back in if the host is unreachable.",
-        {
-          label: label.id,
-          agentLabel: agentLabelId,
-          cause: describeCause(cause),
-        },
-      );
-    }
+    // Logged unconditionally, and BEFORE any later step can fail us out of
+    // this function: evicting a host the user was using is the single most
+    // consequential thing this repair does, and "my host went away after an
+    // install" is diagnosed from this log. A partially-failed repair returns
+    // early below, so recording the eviction only in the success line would
+    // hide exactly the case worth reading about.
+    logger.info(
+      "Service repair: evicted the competing CLI-label host - Traycer Desktop's SMAppService agent owns the host on this machine.",
+      { label: label.id, agentLabel: agentLabelId },
+    );
   }
+  // The manifest removal is local, instantaneous and the durable half of the
+  // repair ("does not come back at the next login"), so it runs before the
+  // kickstart rather than behind a subprocess that can burn its timeout.
   let manifestRemoved = false;
   let manifestRemovalFailed = false;
   if (manifestExists) {
@@ -858,6 +868,35 @@ async function retireCompetingRegistration(
       );
     }
   }
+  // ONLY after an eviction actually happened. A failed bootout means the
+  // competing host is still running, and starting the agent beside it would
+  // manufacture the very dual-host state this repair removes. Plain
+  // `kickstart`, never `-k` - the plist sets `ThrottleInterval: 10`, so
+  // force-killing a healthy agent would make launchd block its respawn.
+  // Starting an already-loaded job does not touch BTM, so it stays within
+  // the "CLI must not mutate Desktop's registration" rule that
+  // `installService`'s refusals enforce.
+  let agentStartRequested = false;
+  if (bootedOut) {
+    try {
+      await run("launchctl", ["kickstart", `${guiTarget}/${agentLabelId}`], {
+        env: undefined,
+        cwd: undefined,
+        timeoutMs: 10_000,
+        tolerateNonZeroExit: false,
+      });
+      agentStartRequested = true;
+    } catch (cause) {
+      logger.warn(
+        "Service repair: evicted the competing CLI-label host but could not start Traycer Desktop's agent; open Traycer or log out and back in if the host is unreachable.",
+        {
+          label: label.id,
+          agentLabel: agentLabelId,
+          cause: describeCause(cause),
+        },
+      );
+    }
+  }
   // A hard failure must never read as `nothing-to-retire`. That value means
   // "this machine is already clean", and conflating the two hides a repair
   // that did not happen - reachable whenever the job is loaded but the
@@ -869,17 +908,14 @@ async function retireCompetingRegistration(
   if (!bootedOut && !manifestRemoved) {
     return { kind: "nothing-to-retire" };
   }
-  logger.info(
-    "Service repair: retired the competing CLI registration - Traycer Desktop's SMAppService agent owns the host on this machine.",
-    {
-      label: label.id,
-      agentLabel: agentLabelId,
-      bootedOut,
-      manifestRemoved,
-      agentKickstarted,
-    },
-  );
-  return { kind: "retired", bootedOut, manifestRemoved, agentKickstarted };
+  logger.info("Service repair: retired the competing CLI registration.", {
+    label: label.id,
+    agentLabel: agentLabelId,
+    bootedOut,
+    manifestRemoved,
+    agentStartRequested,
+  });
+  return { kind: "retired", bootedOut, manifestRemoved, agentStartRequested };
 }
 
 async function stopService(

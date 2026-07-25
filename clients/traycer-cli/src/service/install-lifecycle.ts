@@ -1,4 +1,5 @@
 import type { InstallHostLifecycle } from "../installer";
+import { createCliLogger } from "../logger";
 import { resolveServiceCliInvocation, type CliInvocation } from "./cli-binary";
 import {
   createServiceController,
@@ -140,9 +141,19 @@ export function createServiceInstallLifecycle(
         // field-by-field), so a field here would be dead state. The repair
         // reports itself through the CLI logger, which is where a field
         // diagnosis for "my host went away after an install" starts.
-        await controller.retireCompetingRegistration(label).catch(() => {
-          // Already logged at its own seam; nothing actionable here.
-        });
+        await controller
+          .retireCompetingRegistration(label)
+          .catch((cause: unknown) => {
+            // Logged HERE rather than swallowed: every failure the repair
+            // anticipates is already reported at its own seam, so the only
+            // way to land in this catch is an unforeseen throw - precisely
+            // the case that escaped that logging. A silent swallow would
+            // make it invisible everywhere.
+            createCliLogger(options.environment).warn(
+              "Competing-registration repair threw unexpectedly; the host install itself was unaffected.",
+              { cause: cause instanceof Error ? cause.message : String(cause) },
+            );
+          });
         return;
       }
       if (state.priorState === "not-installed") {

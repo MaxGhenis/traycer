@@ -749,21 +749,27 @@ describe("retireCompetingCliRegistrationAtLaunch", () => {
     expect(existsSync(legacyCliManifestPath())).toBe(true);
   });
 
-  it("reports retire-failed when the manifest cannot be removed", async () => {
-    getLoginItemSettings.mockReturnValue({ status: "enabled" });
-    writeLegacyCliManifest();
-    // Read-only parent directory: the file still stats, but unlink fails.
-    const agentsDir = join(workHome, "Library", "LaunchAgents");
-    chmodSync(agentsDir, 0o500);
-    try {
-      await expect(retireCompetingCliRegistrationAtLaunch()).resolves.toBe(
-        "retire-failed",
-      );
-    } finally {
-      chmodSync(agentsDir, 0o755);
-    }
-    expect(existsSync(legacyCliManifestPath())).toBe(true);
-  });
+  // Skipped as root: root ignores directory mode bits, so the `unlink` would
+  // succeed and the test would assert the wrong branch. Real CI runs
+  // unprivileged; this only bites in a root container.
+  it.skipIf(process.getuid?.() === 0)(
+    "reports retire-failed when the manifest cannot be removed",
+    async () => {
+      getLoginItemSettings.mockReturnValue({ status: "enabled" });
+      writeLegacyCliManifest();
+      // Read-only parent directory: the file still stats, but unlink fails.
+      const agentsDir = join(workHome, "Library", "LaunchAgents");
+      chmodSync(agentsDir, 0o500);
+      try {
+        await expect(retireCompetingCliRegistrationAtLaunch()).resolves.toBe(
+          "retire-failed",
+        );
+      } finally {
+        chmodSync(agentsDir, 0o755);
+      }
+      expect(existsSync(legacyCliManifestPath())).toBe(true);
+    },
+  );
 
   // The doc comment sells serialization through the registration lock as a
   // safety property; pin it. A repair must not interleave with a register

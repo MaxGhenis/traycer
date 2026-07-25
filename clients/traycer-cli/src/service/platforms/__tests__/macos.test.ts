@@ -7,7 +7,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1324,10 +1324,12 @@ describe("macOS service lifecycle", () => {
       };
     }
 
+    // Flag-agnostic: the target is the last positional, so inserting
+    // `--wait` (or any future flag) doesn't silently shift what we assert on.
     function bootoutTargets(calls: readonly RecordedCall[]): readonly string[] {
       return calls
         .filter((call) => call.args[0] === "bootout")
-        .map((call) => call.args[1] ?? "");
+        .map((call) => call.args[call.args.length - 1] ?? "");
     }
 
     it("retires a competing CLI registration when Desktop's agent owns the host", async () => {
@@ -1345,7 +1347,7 @@ describe("macOS service lifecycle", () => {
         kind: "retired",
         bootedOut: true,
         manifestRemoved: true,
-        agentKickstarted: true,
+        agentStartRequested: true,
       });
 
       // Only the CLI label is booted out - never the agent Desktop owns.
@@ -1377,11 +1379,18 @@ describe("macOS service lifecycle", () => {
       // Never `-k`: the plist sets ThrottleInterval 10, so force-killing a
       // healthy agent would make launchd block its respawn.
       expect(kickstarts[0]?.args).not.toContain("-k");
+      // `--wait` on the eviction is what makes the kickstart meaningful: a
+      // bare bootout returns before the process is gone, and the agent we
+      // just started would then see the corpse as a live incumbent, decline,
+      // and exit 0 - leaving the machine with no host at all.
+      const booted = calls.find((call) => call.args[0] === "bootout");
+      expect(booted?.args).toContain("--wait");
     });
 
     // Nothing was evicted, so there is nothing to compensate for - and
     // kickstarting anyway would start a host on a machine whose agent
-    // launchd had deliberately left down.
+    // launchd had deliberately left down. Covers the CLI-label-not-loaded
+    // branch; the loaded-but-bootout-failed branch is pinned below.
     it("does not kickstart the agent when nothing was evicted", async () => {
       const calls: RecordedCall[] = [];
       const runner = makeRunner({ [agentLabelId]: SMAPPSERVICE_PRINT }, calls);
@@ -1418,7 +1427,11 @@ describe("macOS service lifecycle", () => {
         });
       };
 
-      // No manifest on disk - only the loaded job remains to retire.
+      // Only the loaded job remains to retire - assert that rather than
+      // assume it, so a manifest leaked by an earlier test cannot silently
+      // change which branch this exercises.
+      expect(existsSync(join(tempPlistDir, `${label.id}.plist`))).toBe(false);
+
       await expect(
         createMacosController(runner).retireCompetingRegistration(label),
       ).resolves.toEqual({
@@ -1426,6 +1439,12 @@ describe("macOS service lifecycle", () => {
         bootoutFailed: true,
         manifestRemovalFailed: false,
       });
+
+      // The competing host is STILL RUNNING (its bootout failed), so starting
+      // the agent now would manufacture the exact dual-host state this repair
+      // exists to remove. The `bootedOut` guard - not merely "the CLI label
+      // was loaded" - is what prevents that.
+      expect(calls.filter((call) => call.args[0] === "kickstart")).toEqual([]);
     });
 
     // The availability guard. Without an SMAppService-owned agent there is

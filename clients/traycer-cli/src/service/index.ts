@@ -57,8 +57,11 @@ export interface UninstallServiceOptions {
 //   - `retired` - Desktop owns registration under the agent label AND a
 //     competing CLI-label registration existed; it has now been booted out
 //     and/or its manifest removed. `bootedOut` / `manifestRemoved` say
-//     which halves actually applied, and `agentKickstarted` whether the
-//     surviving agent job was successfully started after an eviction.
+//     which halves actually applied, and `agentStartRequested` whether the
+//     surviving agent job was asked to start after an eviction. "Requested",
+//     not "started": `launchctl kickstart` returns once launchd accepts the
+//     request, so a job that is registered but unspawnable (e.g. wedged by a
+//     stale BTM code requirement) still reports success here.
 //   - `nothing-to-retire` - Desktop owns registration and the CLI label is
 //     already clean. The healthy post-split steady state.
 //   - `retire-failed` - there WAS something to retire and an operation on it
@@ -74,7 +77,7 @@ export type CompetingRegistrationRetirement =
       readonly kind: "retired";
       readonly bootedOut: boolean;
       readonly manifestRemoved: boolean;
-      readonly agentKickstarted: boolean;
+      readonly agentStartRequested: boolean;
     }
   | {
       readonly kind: "retire-failed";
