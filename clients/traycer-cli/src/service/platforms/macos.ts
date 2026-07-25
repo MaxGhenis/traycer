@@ -892,11 +892,13 @@ async function retireCompetingRegistration(
     // No `rm` attempt: `rm(force)` cannot distinguish "removed" from "was
     // never there", so on a path we could not even stat it would report a
     // durable half that may not have happened. Counting it as a removal
-    // failure is the honest reading - the manifest is still there for all
-    // we know, and that is exactly what the user needs told.
+    // failure is the honest reading - for all we know the manifest is still
+    // there. The warning stays hedged for the same reason: we cannot tell a
+    // present manifest from an absent one through an unreadable directory,
+    // so it names the risk without asserting the relapse.
     manifestRemovalFailed = true;
     logger.warn(
-      "Service repair: could not read the competing CLI LaunchAgent manifest, so it was left in place; it will start a second host at the next login.",
+      "Service repair: could not read the competing CLI LaunchAgent manifest, so it was not removed; if one is present it will start a second host at the next login.",
       {
         label: label.id,
         manifestPath,
