@@ -1620,6 +1620,69 @@ describe("macOS service lifecycle", () => {
       await expect(readFile(createdPlistPath, "utf8")).rejects.toThrow();
     });
 
+    // Only the CLI-label probe fails. The agent probe must still succeed, or
+    // the repair bails out at `not-applicable` before ownership matters.
+    function makeRunnerWithFailingCliProbe(
+      calls: RecordedCall[],
+    ): ProcessRunner {
+      return async (command, args) => {
+        calls.push({ command, args });
+        const target = args[1] ?? "";
+        if (args[0] === "print") {
+          if (target.endsWith(`/${agentLabelId}`)) {
+            return {
+              stdout: `${target} = {\n${SMAPPSERVICE_PRINT}\n}\n`,
+              stderr: "",
+              exitCode: 0,
+            };
+          }
+          // Not a non-zero exit (that reads as not-loaded) - a genuine
+          // spawn/timeout failure, the only way the probe rejects.
+          throw new Error("launchctl print timed out");
+        }
+        return buildSuccessResult();
+      };
+    }
+
+    it("never claims success when it could not read who owns the CLI label", async () => {
+      const calls: RecordedCall[] = [];
+      createdPlistPath = join(tempPlistDir, `${label.id}.plist`);
+      await writeFile(createdPlistPath, "<plist/>", "utf8");
+
+      await expect(
+        createMacosController(
+          makeRunnerWithFailingCliProbe(calls),
+        ).retireCompetingRegistration(label),
+      ).resolves.toEqual({
+        kind: "retire-failed",
+        bootoutFailed: true,
+        manifestRemovalFailed: false,
+      });
+
+      // Never bootout an owner we could not identify: the CLI label may BE
+      // Desktop's pre-split SMAppService registration, and evicting that
+      // corrupts the BTM state Desktop manages.
+      expect(bootoutTargets(calls)).toHaveLength(0);
+      expect(calls.some((call) => call.args[0] === "kickstart")).toBe(false);
+      // The durable half is safe either way, so it still happens.
+      await expect(readFile(createdPlistPath, "utf8")).rejects.toThrow();
+    });
+
+    it("does not report an unprobeable machine as already clean", async () => {
+      const calls: RecordedCall[] = [];
+      // No manifest on disk: folding a failed probe into not-loaded would
+      // make this the `nothing-to-retire` ("already clean") path.
+      await expect(
+        createMacosController(
+          makeRunnerWithFailingCliProbe(calls),
+        ).retireCompetingRegistration(label),
+      ).resolves.toEqual({
+        kind: "retire-failed",
+        bootoutFailed: true,
+        manifestRemovalFailed: false,
+      });
+    });
+
     // Runs the body with the LaunchAgents directory unreadable, so `stat` on
     // the manifest inside it fails with EACCES rather than ENOENT. Skipped
     // under root, which bypasses permission checks entirely.

@@ -789,9 +789,10 @@ async function retireCompetingRegistration(
 ): Promise<CompetingRegistrationRetirement> {
   const guiTarget = guiDomain();
   const agentLabelId = smAppServiceAgentLabelId(label);
-  // Advisory probes throughout (a hung / unspawnable launchctl reads as
-  // not-loaded): a repair must never be the thing that breaks a machine it
-  // could not even inspect.
+  // The AGENT probe collapses failure into not-loaded on purpose: this whole
+  // repair is predicated on positive proof that Desktop owns registration,
+  // so anything short of that must bail out at `not-applicable`. A repair
+  // must never be the thing that breaks a machine it could not inspect.
   const agentOwnership = await inspectLaunchdOwnership(
     `${guiTarget}/${agentLabelId}`,
     run,
@@ -800,10 +801,15 @@ async function retireCompetingRegistration(
     return { kind: "not-applicable" };
   }
   const serviceTarget = `${guiTarget}/${label.id}`;
+  // The CLI-label probe canNOT be collapsed the same way. `null` is a fourth
+  // state - "we could not read who owns this label" - and it has to stay
+  // distinct from not-loaded in BOTH directions: folding it into not-loaded
+  // would let an unprobeable machine report `nothing-to-retire` ("already
+  // clean") or `retired` while a competing host is still running.
   const ownership = await inspectLaunchdOwnership(serviceTarget, run).catch(
-    (): LaunchdOwnership => ({ kind: "not-loaded" }),
+    (): LaunchdOwnership | null => null,
   );
-  if (ownership.kind === "smappservice") {
+  if (ownership !== null && ownership.kind === "smappservice") {
     return { kind: "not-applicable" };
   }
   const manifestPath = serviceManifestPath(label);
@@ -819,13 +825,32 @@ async function retireCompetingRegistration(
       exists ? { kind: "present" } : { kind: "absent" },
     (cause: unknown): ManifestProbe => ({ kind: "unreadable", cause }),
   );
-  if (ownership.kind === "not-loaded" && manifestProbe.kind === "absent") {
+  if (
+    ownership !== null &&
+    ownership.kind === "not-loaded" &&
+    manifestProbe.kind === "absent"
+  ) {
     return { kind: "nothing-to-retire" };
   }
   const logger = createCliLogger(label.environment);
   let bootedOut = false;
   let bootoutFailed = false;
-  if (ownership.kind !== "not-loaded") {
+  if (ownership === null) {
+    // Deliberately no bootout on an unknown owner. The one thing that would
+    // make eviction catastrophic here is the CLI label BEING Desktop's
+    // pre-split SMAppService registration - bootout/manifest-removal against
+    // that corrupts the BTM state Desktop manages - and identifying it is
+    // precisely what the failed probe could not do. So we skip the live half
+    // rather than gamble, and record it as unconfirmed so it cannot read as
+    // success. The durable half below still runs: removing a stale
+    // user-domain manifest is safe even on a pre-split machine, whose
+    // registration is loaded from inside the .app bundle.
+    bootoutFailed = true;
+    logger.warn(
+      "Service repair: could not read who owns the competing CLI label, so it was not evicted; if the host is unreachable, open Traycer or log out and back in.",
+      { label: label.id, agentLabel: agentLabelId },
+    );
+  } else if (ownership.kind !== "not-loaded") {
     try {
       // `--wait` is load-bearing, not tidiness: a bare bootout returns when
       // launchd ACCEPTS the request, not when the process is gone, and the
