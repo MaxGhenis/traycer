@@ -2,6 +2,7 @@ import "../../../../../__tests__/test-browser-apis";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 
 import { LandingComposer } from "@/components/home/composer/landing-composer";
@@ -41,6 +42,17 @@ vi.mock("@/lib/host", () => ({
     getActiveHostId: () => "host-1",
     getActiveHost: () => null,
     getRequestContextUserId: () => "user-1",
+    onChange: () => () => undefined,
+  }),
+}));
+
+vi.mock("@/providers/use-runner-host", () => ({
+  useRunnerHost: () => ({
+    fileDrops: {
+      resolveDroppedFilePaths: () => Promise.resolve([]),
+      copyDroppedFilePaths: (paths: readonly string[]) =>
+        Promise.resolve(paths),
+    },
   }),
 }));
 
@@ -168,12 +180,14 @@ describe("<LandingComposer /> render stability", () => {
     });
 
     render(
-      <LandingComposer
-        draftId={draftId}
-        pendingCreateId={null}
-        initialSettings={null}
-        workspaceControls={null}
-      />,
+      <QueryClientProvider client={new QueryClient()}>
+        <LandingComposer
+          draftId={draftId}
+          pendingCreateId={null}
+          initialSettings={null}
+          workspaceControls={null}
+        />
+      </QueryClientProvider>,
     );
 
     expect(screen.getByTestId("landing-attachments").textContent).toContain(

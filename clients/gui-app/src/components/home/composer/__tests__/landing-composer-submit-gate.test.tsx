@@ -60,6 +60,7 @@ vi.mock("@/stores/composer/landing-composer-store", () => {
   return {
     useLandingComposerStore,
     flushPendingLandingDraftContent: vi.fn(),
+    readLandingComposerDraftContent: () => dirtyContent,
   };
 });
 
