@@ -1,5 +1,6 @@
 import { HostPicker } from "@/components/layout/header/host-picker";
 import { AppUpdateToastController } from "@/components/layout/bridges/app-update-toast-controller";
+import { BrowserLabsMarkerSync } from "@/components/layout/bridges/browser-labs-marker-sync";
 import { DesktopZoomController } from "@/components/layout/bridges/desktop-zoom-controller";
 import { HostOperationStatusListener } from "@/components/layout/bridges/host-operation-status-listener";
 import { HostRegistryUpdateListener } from "@/components/layout/bridges/host-registry-update-listener";
@@ -198,6 +199,7 @@ function TraycerAppRuntimeSurface(props: TraycerAppRuntimeSurfaceProps) {
   return (
     <>
       <RunnerHostBridges />
+      <BrowserLabsMarkerSync />
       <HostRegistryUpdateListener />
       <HostOperationStatusListener />
       <AppUpdateToastController />

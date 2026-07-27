@@ -54,7 +54,7 @@ export function createMacosController(
   return {
     install: (options) => installService(options, run),
     uninstall: (options) => uninstallService(options, run),
-    status: (label) => statusService(label),
+    status: (label) => statusService(label, run),
     stop: (label) => stopService(label, run),
     start: (label) => startService(label, run),
     restart: (label) => restartService(label, run),
@@ -141,26 +141,7 @@ async function installService(
   // recovery cards, so the previous blanket tolerance was masking real
   // bugs (the user saw a clean install + later a host-not-ready
   // failure with no service-install diagnostic to link them).
-  try {
-    await run("launchctl", ["bootstrap", guiTarget, manifestPath], {
-      env: undefined,
-      cwd: undefined,
-      timeoutMs: 10_000,
-      tolerateNonZeroExit: false,
-    });
-  } catch (cause) {
-    if (!isBenignBootstrapFailure(cause)) {
-      throw cliError({
-        code: CLI_ERROR_CODES.SERVICE_INSTALL_FAILED,
-        message: `launchctl bootstrap failed for ${options.label.id}: ${describeCause(cause)}`,
-        details: { label: options.label.id, cause: describeCause(cause) },
-        exitCode: 1,
-      });
-    }
-    // Already-loaded is fine - the agent's plist on disk has been
-    // refreshed by the writeFile above; the kickstart below ensures it
-    // is running against the new manifest.
-  }
+  await bootstrapManifest(options.label, manifestPath, run);
   try {
     await run("launchctl", ["kickstart", `${guiTarget}/${options.label.id}`], {
       env: undefined,
@@ -199,6 +180,68 @@ async function isServiceLoaded(
     tolerateNonZeroExit: true,
   });
   return result.exitCode === 0;
+}
+
+// Load the on-disk manifest into launchd, tolerating the idempotent
+// "already bootstrapped" case (see `isBenignBootstrapFailure`). Shared by
+// the install path and by `ensureBootstrapped` so both register an agent
+// the same way.
+async function bootstrapManifest(
+  label: ServiceLabel,
+  manifestPath: string,
+  run: ProcessRunner,
+): Promise<void> {
+  try {
+    await run("launchctl", ["bootstrap", guiDomain(), manifestPath], {
+      env: undefined,
+      cwd: undefined,
+      timeoutMs: 10_000,
+      tolerateNonZeroExit: false,
+    });
+  } catch (cause) {
+    if (!isBenignBootstrapFailure(cause)) {
+      throw cliError({
+        code: CLI_ERROR_CODES.SERVICE_INSTALL_FAILED,
+        message: `launchctl bootstrap failed for ${label.id}: ${describeCause(cause)}`,
+        details: { label: label.id, cause: describeCause(cause) },
+        exitCode: 1,
+      });
+    }
+    // Already-loaded is fine: the caller has just refreshed the plist on
+    // disk, and the kickstart that follows runs it against that manifest.
+  }
+}
+
+/**
+ * Reconcile launchd's registration with the on-disk manifest before a
+ * kickstart.
+ *
+ * `kickstart` only *starts* a job launchd already knows about - it will
+ * never create the registration, and fails with `Could not find service
+ * "<label>" in domain for user gui: <uid>` when the job is absent. Only
+ * `bootstrap` registers.
+ *
+ * A manifest easily outlives its registration: a `bootstrap` that failed
+ * after the plist was written, an external `bootout`, or a login session
+ * that never loaded the agent all leave the plist on disk with nothing
+ * loaded. Reconciling here is what keeps that state recoverable - see the
+ * note on `statusService` for why it would otherwise be terminal.
+ */
+async function ensureBootstrapped(
+  label: ServiceLabel,
+  run: ProcessRunner,
+): Promise<void> {
+  if (await isServiceLoaded(`${guiDomain()}/${label.id}`, run)) return;
+  const manifestPath = serviceManifestPath(label);
+  if (!(await fileExists(manifestPath))) {
+    throw cliError({
+      code: CLI_ERROR_CODES.SERVICE_CONTROL_FAILED,
+      message: `service ${label.id} is not registered with launchd and no LaunchAgent exists at ${manifestPath} - run 'traycer host service install'`,
+      details: { label: label.id, manifestPath },
+      exitCode: 1,
+    });
+  }
+  await bootstrapManifest(label, manifestPath, run);
 }
 
 // launchctl returns ENOENT / "Service is already loaded" / "Bootstrap
@@ -242,9 +285,31 @@ async function uninstallService(
   await rm(serviceManifestPath(options.label), { force: true });
 }
 
-async function statusService(label: ServiceLabel): Promise<ServiceStatus> {
+// What makes the service "installed" is the launchd *registration*, not the
+// presence of a plist. launchd is therefore the source of truth here.
+//
+// Treating a plist on disk as proof of installation was a permanent wedge:
+// an orphaned manifest (bootstrap that failed after the writeFile, an
+// external `bootout`, a session that never loaded the agent) got reported as
+// `stopped`, i.e. "registered, just not running". Every caller keys off that
+// - `install-lifecycle` takes its `start`/`restart` branch, `auto-bootstrap`
+// and `provision` set `serviceRegistered = true` and skip registering, Doctor
+// reports a merely-stopped service - and each of those paths reaches for
+// `kickstart`, which cannot register an unknown job. The result was a host
+// that could never be started again by any normal path, failing forever with
+// `Could not find service "..." in domain for user gui: <uid>`.
+//
+// Reporting `not-installed` instead routes all of them back through
+// `install`/`bootstrap`, which is the only thing that actually recovers it.
+async function statusService(
+  label: ServiceLabel,
+  run: ProcessRunner,
+): Promise<ServiceStatus> {
   const manifestExists = await fileExists(serviceManifestPath(label));
   if (!manifestExists) {
+    return statusNotInstalled();
+  }
+  if (!(await isServiceLoaded(`${guiDomain()}/${label.id}`, run))) {
     return statusNotInstalled();
   }
   const pidMetadata = await readHostPidMetadata(label.environment);
@@ -339,6 +404,7 @@ async function startService(
   label: ServiceLabel,
   run: ProcessRunner,
 ): Promise<void> {
+  await ensureBootstrapped(label, run);
   try {
     await run("launchctl", ["kickstart", `${guiDomain()}/${label.id}`], {
       env: undefined,
@@ -360,6 +426,7 @@ async function restartService(
   label: ServiceLabel,
   run: ProcessRunner,
 ): Promise<void> {
+  await ensureBootstrapped(label, run);
   try {
     await run("launchctl", ["kickstart", "-k", `${guiDomain()}/${label.id}`], {
       env: undefined,

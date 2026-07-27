@@ -87,11 +87,23 @@ export function useChatComposerSubmit(args: UseChatComposerSubmitArgs) {
     if (toolbar.selection.modelSlug.length === 0) return;
     const editor = editorRef.current;
     if (editor === null) return;
+    const draft = useComposerDraftStore.getState().drafts[taskId];
+    const browserContextAttachments =
+      draft?.browserContextAttachments?.map((payload) => ({
+        kind: "browser-context" as const,
+        payload,
+      })) ?? [];
     const editorContent = editor.getJSON();
     const contentText = extractPlainTextFromComposerJSONContent(editorContent);
     const trimmed = contentText.trim();
     const hasImages = containsImageAtoms(editorContent);
-    if (trimmed.length === 0 && !hasImages) return;
+    if (
+      trimmed.length === 0 &&
+      !hasImages &&
+      browserContextAttachments.length === 0
+    ) {
+      return;
+    }
 
     // `toolbar.serviceTier` is already clamped to the selected model in the
     // toolbar store (the single site shared with the picker display), so a tier
@@ -108,7 +120,10 @@ export function useChatComposerSubmit(args: UseChatComposerSubmitArgs) {
     });
 
     const submittedContent = buildSubmittedChatJSONContent(editorContent);
-    const attachments = buildAttachmentsFromJSONContent(submittedContent);
+    const attachments: ReadonlyArray<Attachment> = [
+      ...buildAttachmentsFromJSONContent(submittedContent),
+      ...browserContextAttachments,
+    ];
     const send = (): boolean => {
       if (onSubmitMessage !== null) {
         return onSubmitMessage({

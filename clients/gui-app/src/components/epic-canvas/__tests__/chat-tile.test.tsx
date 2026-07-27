@@ -516,6 +516,7 @@ function renderChatTile() {
                   <ChatTile
                     node={CHAT_ARTIFACT}
                     viewTabId="tab-test"
+                    tileId="pane-test"
                     isActive
                   />
                 </TabHostProvider>

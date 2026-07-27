@@ -59,6 +59,7 @@ import { registerPlatformIpc } from "./platform-ipc";
 import { registerPowerIpc } from "./power-ipc";
 import { registerAppUpdateIpc } from "./app-update-ipc";
 import { registerZoomIpc } from "./zoom-ipc";
+import { registerBrowserViewIpc } from "./browser-view-ipc";
 import { getAppUpdateSnapshot } from "../app/updater";
 import type { HostTrayCommand } from "../../ipc-contracts/host-management-types";
 import {
@@ -345,6 +346,7 @@ export class RunnerIpcBridge {
     registerPlatformIpc(this);
     registerAppUpdateIpc(this);
     registerZoomIpc(this);
+    registerBrowserViewIpc(this);
     // Power IPC (renderer-driven sleep prevention) registers a `disposeFn`
     // that releases the OS power-save blocker on teardown.
     registerPowerIpc(this);

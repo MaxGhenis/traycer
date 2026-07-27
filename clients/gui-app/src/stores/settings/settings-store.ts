@@ -31,6 +31,8 @@ import { type EditorId } from "@traycer/protocol/host";
 
 export type ThemeMode = "system" | "light" | "dark";
 export type EpicNodeIconColorMode = "byType" | "none";
+export type BrowserLinkOpenMode = "in-app" | "external";
+export type BrowserLinkDefaultMode = BrowserLinkOpenMode | "per-kind";
 // Mirrors xterm's `cursorStyle` union; kept as our own type so the settings
 // surface doesn't take a value import from `@xterm/xterm`.
 export type TerminalCursorStyle = "block" | "bar" | "underline";
@@ -120,6 +122,16 @@ export interface SettingsState {
    * the chat composer as a blockquote.
    */
   quoteReplyEnabled: boolean;
+  /** Labs gate for the native in-app browser surface. */
+  inAppBrowserBetaEnabled: boolean;
+  /** Global default for http(s) links when the browser beta is enabled. */
+  browserLinkDefaultMode: BrowserLinkDefaultMode;
+  /** Terminal plain URL / OSC-8 default used when global mode is per-kind. */
+  terminalBrowserLinkOpenMode: BrowserLinkOpenMode;
+  /** Markdown anchor default used when global mode is per-kind. */
+  markdownBrowserLinkOpenMode: BrowserLinkOpenMode;
+  /** Origins designated from terminal URL output for the host classifier. */
+  browserDevOrigins: ReadonlyArray<string>;
   /**
    * Shared, user-level diff viewer configuration consumed by every git and
    * snapshot diff renderer. Persisted globally so the choice survives restarts
@@ -152,6 +164,12 @@ export interface SettingsState {
   setVoiceInputEnabled: (value: boolean) => void;
   setVoiceLanguage: (value: string) => void;
   setQuoteReplyEnabled: (value: boolean) => void;
+  setInAppBrowserBetaEnabled: (value: boolean) => void;
+  setBrowserLinkDefaultMode: (mode: BrowserLinkDefaultMode) => void;
+  setTerminalBrowserLinkOpenMode: (mode: BrowserLinkOpenMode) => void;
+  setMarkdownBrowserLinkOpenMode: (mode: BrowserLinkOpenMode) => void;
+  addBrowserDevOrigin: (origin: string) => void;
+  removeBrowserDevOrigin: (origin: string) => void;
   setDiffViewerPreferences: (preferences: DiffViewerPreferences) => void;
   patchDiffViewerPreferences: (patch: DiffViewerPreferencesPatch) => void;
 }
@@ -186,6 +204,11 @@ type PersistedSettingsState = Pick<
   | "voiceInputEnabled"
   | "voiceLanguage"
   | "quoteReplyEnabled"
+  | "inAppBrowserBetaEnabled"
+  | "browserLinkDefaultMode"
+  | "terminalBrowserLinkOpenMode"
+  | "markdownBrowserLinkOpenMode"
+  | "browserDevOrigins"
   | "diffViewerPreferences"
 >;
 
@@ -253,6 +276,11 @@ function partializeSettingsState(state: SettingsState): PersistedSettingsState {
     voiceInputEnabled: state.voiceInputEnabled,
     voiceLanguage: state.voiceLanguage,
     quoteReplyEnabled: state.quoteReplyEnabled,
+    inAppBrowserBetaEnabled: state.inAppBrowserBetaEnabled,
+    browserLinkDefaultMode: state.browserLinkDefaultMode,
+    terminalBrowserLinkOpenMode: state.terminalBrowserLinkOpenMode,
+    markdownBrowserLinkOpenMode: state.markdownBrowserLinkOpenMode,
+    browserDevOrigins: state.browserDevOrigins,
     diffViewerPreferences: state.diffViewerPreferences,
   };
 }
@@ -288,6 +316,11 @@ export const useSettingsStore = create<SettingsState>()(
       voiceInputEnabled: true,
       voiceLanguage: "auto",
       quoteReplyEnabled: true,
+      inAppBrowserBetaEnabled: false,
+      browserLinkDefaultMode: "in-app",
+      terminalBrowserLinkOpenMode: "in-app",
+      markdownBrowserLinkOpenMode: "in-app",
+      browserDevOrigins: [],
       diffViewerPreferences: DEFAULT_DIFF_VIEWER_PREFERENCES,
       setTheme: makeSetter(set, "theme"),
       setThemePreset: makeSetter(set, "themePreset"),
@@ -354,6 +387,34 @@ export const useSettingsStore = create<SettingsState>()(
       setVoiceInputEnabled: makeSetter(set, "voiceInputEnabled"),
       setVoiceLanguage: makeSetter(set, "voiceLanguage"),
       setQuoteReplyEnabled: makeSetter(set, "quoteReplyEnabled"),
+      setInAppBrowserBetaEnabled: makeSetter(set, "inAppBrowserBetaEnabled"),
+      setBrowserLinkDefaultMode: makeSetter(set, "browserLinkDefaultMode"),
+      setTerminalBrowserLinkOpenMode: makeSetter(
+        set,
+        "terminalBrowserLinkOpenMode",
+      ),
+      setMarkdownBrowserLinkOpenMode: makeSetter(
+        set,
+        "markdownBrowserLinkOpenMode",
+      ),
+      addBrowserDevOrigin: (origin) => {
+        set((s) => {
+          if (s.browserDevOrigins.includes(origin)) return s;
+          return {
+            browserDevOrigins: [...s.browserDevOrigins, origin].slice(-50),
+          };
+        });
+      },
+      removeBrowserDevOrigin: (origin) => {
+        set((s) => {
+          const browserDevOrigins = s.browserDevOrigins.filter(
+            (candidate) => candidate !== origin,
+          );
+          return browserDevOrigins.length === s.browserDevOrigins.length
+            ? s
+            : { browserDevOrigins };
+        });
+      },
       setDiffViewerPreferences: makeSetter(set, "diffViewerPreferences"),
       patchDiffViewerPreferences: (patch) => {
         set((s) => ({

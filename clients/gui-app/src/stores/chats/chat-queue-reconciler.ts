@@ -6,6 +6,7 @@ import type {
   PendingChatAction,
   PendingUserMessage,
 } from "@/stores/chats/chat-session-store";
+import { buildAttachmentsFromJSONContent } from "@/lib/composer/tiptap-json-content";
 
 /**
  * Input for queue reconciliation. Contains the immutable state slices needed
@@ -241,6 +242,7 @@ function pendingUserMessageFromPendingAction(
     clientActionId: action.clientActionId,
     messageId: action.messageId,
     content: action.restoreContent,
+    attachments: buildAttachmentsFromJSONContent(action.restoreContent),
     sender: action.sender,
     settings: action.settings,
     timestamp: action.createdAt,

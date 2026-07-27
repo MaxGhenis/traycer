@@ -1963,7 +1963,8 @@ function renderPendingUserMessage(
           ]
         : [],
     structuredContent: message.content,
-    attachments: buildAttachmentsFromJSONContent(message.content),
+    attachments:
+      message.attachments ?? buildAttachmentsFromJSONContent(message.content),
     settings: message.settings,
     createdAt: message.timestamp,
     completedAt: null,

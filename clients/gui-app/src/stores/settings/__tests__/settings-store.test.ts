@@ -21,6 +21,11 @@ function resetSettingsStore(): void {
     showNavigatorResourceStats: false,
     pinContextUsageBreakdown: false,
     quoteReplyEnabled: true,
+    inAppBrowserBetaEnabled: false,
+    browserLinkDefaultMode: "in-app",
+    terminalBrowserLinkOpenMode: "in-app",
+    markdownBrowserLinkOpenMode: "in-app",
+    browserDevOrigins: [],
     diffViewerPreferences: DEFAULT_DIFF_VIEWER_PREFERENCES,
   });
 }
@@ -308,6 +313,54 @@ describe("useSettingsStore", () => {
     await useSettingsStore.persist.rehydrate();
 
     expect(useSettingsStore.getState().quoteReplyEnabled).toBe(true);
+  });
+
+  it("defaults in-app browser link settings to labs-off and in-app mode", () => {
+    expect(useSettingsStore.getState().inAppBrowserBetaEnabled).toBe(false);
+    expect(useSettingsStore.getState().browserLinkDefaultMode).toBe("in-app");
+    expect(useSettingsStore.getState().terminalBrowserLinkOpenMode).toBe(
+      "in-app",
+    );
+    expect(useSettingsStore.getState().markdownBrowserLinkOpenMode).toBe(
+      "in-app",
+    );
+    expect(useSettingsStore.getState().browserDevOrigins).toEqual([]);
+  });
+
+  it("persists in-app browser link settings", () => {
+    useSettingsStore.getState().setInAppBrowserBetaEnabled(true);
+    useSettingsStore.getState().setBrowserLinkDefaultMode("per-kind");
+    useSettingsStore.getState().setTerminalBrowserLinkOpenMode("external");
+    useSettingsStore.getState().setMarkdownBrowserLinkOpenMode("in-app");
+    useSettingsStore.getState().addBrowserDevOrigin("http://localhost:5173");
+    const persisted = window.localStorage.getItem("traycer-gui-app:settings");
+
+    expect(persisted ?? "").toContain('"inAppBrowserBetaEnabled":true');
+    expect(persisted ?? "").toContain('"browserLinkDefaultMode":"per-kind"');
+    expect(persisted ?? "").toContain(
+      '"terminalBrowserLinkOpenMode":"external"',
+    );
+    expect(persisted ?? "").toContain('"browserDevOrigins"');
+  });
+
+  it("dedupes, trims, and removes detected browser dev origins", () => {
+    for (let index = 0; index < 52; index += 1) {
+      useSettingsStore
+        .getState()
+        .addBrowserDevOrigin(`http://localhost:${5100 + index}`);
+    }
+    useSettingsStore.getState().addBrowserDevOrigin("http://localhost:5151");
+
+    const origins = useSettingsStore.getState().browserDevOrigins;
+    expect(origins).toHaveLength(50);
+    expect(origins[0]).toBe("http://localhost:5102");
+    expect(origins.at(-1)).toBe("http://localhost:5151");
+
+    useSettingsStore.getState().removeBrowserDevOrigin("http://localhost:5151");
+
+    expect(useSettingsStore.getState().browserDevOrigins).not.toContain(
+      "http://localhost:5151",
+    );
   });
 
   it("defaults new chats to full access permissions", () => {

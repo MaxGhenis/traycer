@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -9,10 +9,19 @@ import { VoiceSettingsSection } from "@/components/settings/voice-settings-secti
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
 import { ConfirmDestructiveDialog } from "@/components/ui/confirm-destructive-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import { useRunnerUninstallTraycer } from "@/hooks/runner/use-runner-uninstall-traycer-mutation";
 import { requestAppQuit } from "@/lib/desktop-app-lifecycle";
+import { resolveDesktopBrowserViewBridge } from "@/lib/browser-view/desktop-browser-view";
+import { useBrowserCookieCryptoState } from "@/lib/browser-view/use-browser-cookie-crypto-state";
 import { useHostQuery, useHostMutation } from "@/hooks/host/use-host-query";
 import { useHostClient, type HostRpcRegistry } from "@/lib/host";
 import {
@@ -35,13 +44,27 @@ import {
   type MigrationRunState,
 } from "@/stores/migration/migration-run-store";
 import { startMigrationRun } from "@/components/migration/migration-run-handle";
-import { useSettingsStore } from "@/stores/settings/settings-store";
+import {
+  useSettingsStore,
+  type BrowserLinkDefaultMode,
+  type BrowserLinkOpenMode,
+} from "@/stores/settings/settings-store";
 import { useAuthStore } from "@/stores/auth/auth-store";
 import { useLocalSnapshotClearStore } from "@/stores/settings/local-snapshot-clear-store";
 import { useOnboardingStore } from "@/stores/onboarding/onboarding-store";
 
 const MIGRATION_PROGRESS_LABEL = "Migrating tasks";
 const SNAPSHOTS_LOCAL_STORAGE_PARAMS = {};
+const BROWSER_LINK_DEFAULT_MODE_LABELS: Record<BrowserLinkDefaultMode, string> =
+  {
+    "in-app": "In app",
+    external: "External",
+    "per-kind": "Per kind",
+  };
+const BROWSER_LINK_OPEN_MODE_LABELS: Record<BrowserLinkOpenMode, string> = {
+  "in-app": "In app",
+  external: "External",
+};
 
 interface ClearLocalSnapshotsMutationContext {
   readonly hostId: string | null;
@@ -57,7 +80,23 @@ function formatMigrationProgress(state: MigrationRunState): string | null {
   return `${MIGRATION_PROGRESS_LABEL} - tasks ${tasks}, epics ${epics}`;
 }
 
+function isBrowserLinkDefaultMode(
+  value: string,
+): value is BrowserLinkDefaultMode {
+  return value === "in-app" || value === "external" || value === "per-kind";
+}
+
+function isBrowserLinkOpenMode(value: string): value is BrowserLinkOpenMode {
+  return value === "in-app" || value === "external";
+}
+
 export function GeneralSettingsPanel() {
+  const runnerHost = useRunnerHost();
+  const browserView = useMemo(
+    () => resolveDesktopBrowserViewBridge(runnerHost),
+    [runnerHost],
+  );
+  const browserCookieCryptoState = useBrowserCookieCryptoState(browserView);
   const navigate = useNavigate();
   const restartOnboarding = useOnboardingStore((s) => s.restart);
   const migrationState = useMigrationRunStore(
@@ -104,6 +143,34 @@ export function GeneralSettingsPanel() {
   );
   const quoteReplyEnabled = useSettingsStore((s) => s.quoteReplyEnabled);
   const setQuoteReplyEnabled = useSettingsStore((s) => s.setQuoteReplyEnabled);
+  const inAppBrowserBetaEnabled = useSettingsStore(
+    (s) => s.inAppBrowserBetaEnabled,
+  );
+  const setInAppBrowserBetaEnabled = useSettingsStore(
+    (s) => s.setInAppBrowserBetaEnabled,
+  );
+  const browserLinkDefaultMode = useSettingsStore(
+    (s) => s.browserLinkDefaultMode,
+  );
+  const setBrowserLinkDefaultMode = useSettingsStore(
+    (s) => s.setBrowserLinkDefaultMode,
+  );
+  const terminalBrowserLinkOpenMode = useSettingsStore(
+    (s) => s.terminalBrowserLinkOpenMode,
+  );
+  const setTerminalBrowserLinkOpenMode = useSettingsStore(
+    (s) => s.setTerminalBrowserLinkOpenMode,
+  );
+  const markdownBrowserLinkOpenMode = useSettingsStore(
+    (s) => s.markdownBrowserLinkOpenMode,
+  );
+  const setMarkdownBrowserLinkOpenMode = useSettingsStore(
+    (s) => s.setMarkdownBrowserLinkOpenMode,
+  );
+  const browserDevOrigins = useSettingsStore((s) => s.browserDevOrigins);
+  const removeBrowserDevOrigin = useSettingsStore(
+    (s) => s.removeBrowserDevOrigin,
+  );
 
   return (
     <SettingsPanelShell title="General">
@@ -173,6 +240,72 @@ export function GeneralSettingsPanel() {
           />
         }
       />
+      <SettingsRow
+        label="In-app browser (beta)"
+        description="Enable browser tiles and route web links into Traycer by default."
+        hint={
+          inAppBrowserBetaEnabled &&
+          browserCookieCryptoState?.reason === "mock-keychain"
+            ? "Restart Traycer to enable persistent logins"
+            : undefined
+        }
+        control={
+          <Switch
+            checked={inAppBrowserBetaEnabled}
+            onCheckedChange={setInAppBrowserBetaEnabled}
+            aria-label="In-app browser (beta)"
+          />
+        }
+      />
+      <SettingsRow
+        label="Web link default"
+        description="Choose where http and https links open while the in-app browser beta is enabled."
+        control={
+          <BrowserLinkDefaultModeSelect
+            value={browserLinkDefaultMode}
+            disabled={!inAppBrowserBetaEnabled}
+            onValueChange={setBrowserLinkDefaultMode}
+          />
+        }
+      />
+      {browserLinkDefaultMode === "per-kind" ? (
+        <>
+          <SettingsRow
+            label="Terminal links"
+            description="Applies to plain terminal URLs and OSC-8 hyperlinks."
+            control={
+              <BrowserLinkOpenModeSelect
+                value={terminalBrowserLinkOpenMode}
+                disabled={!inAppBrowserBetaEnabled}
+                onValueChange={setTerminalBrowserLinkOpenMode}
+              />
+            }
+          />
+          <SettingsRow
+            label="Markdown links"
+            description="Applies to rendered markdown http and https anchors."
+            control={
+              <BrowserLinkOpenModeSelect
+                value={markdownBrowserLinkOpenMode}
+                disabled={!inAppBrowserBetaEnabled}
+                onValueChange={setMarkdownBrowserLinkOpenMode}
+              />
+            }
+          />
+        </>
+      ) : null}
+      {browserDevOrigins.length > 0 ? (
+        <SettingsRow
+          label="Detected dev origins"
+          description="Terminal URLs with local hosts or explicit ports are kept for browser-origin classification."
+          control={
+            <BrowserDevOriginsControl
+              origins={browserDevOrigins}
+              onRemove={removeBrowserDevOrigin}
+            />
+          }
+        />
+      ) : null}
       <VoiceSettingsSection />
       <SettingsRow
         label="Data migration"
@@ -225,6 +358,108 @@ export function GeneralSettingsPanel() {
       />
       <DangerZoneSection />
     </SettingsPanelShell>
+  );
+}
+
+interface BrowserLinkDefaultModeSelectProps {
+  readonly value: BrowserLinkDefaultMode;
+  readonly disabled: boolean;
+  readonly onValueChange: (value: BrowserLinkDefaultMode) => void;
+}
+
+function BrowserLinkDefaultModeSelect(
+  props: BrowserLinkDefaultModeSelectProps,
+) {
+  return (
+    <Select
+      value={props.value}
+      disabled={props.disabled}
+      onValueChange={(value) => {
+        if (isBrowserLinkDefaultMode(value)) props.onValueChange(value);
+      }}
+    >
+      <SelectTrigger
+        aria-label="Web link default"
+        className="w-[min(42vw,11rem)]"
+        size="sm"
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {Object.entries(BROWSER_LINK_DEFAULT_MODE_LABELS).map(
+          ([value, label]) => (
+            <SelectItem key={value} value={value}>
+              {label}
+            </SelectItem>
+          ),
+        )}
+      </SelectContent>
+    </Select>
+  );
+}
+
+interface BrowserLinkOpenModeSelectProps {
+  readonly value: BrowserLinkOpenMode;
+  readonly disabled: boolean;
+  readonly onValueChange: (value: BrowserLinkOpenMode) => void;
+}
+
+function BrowserLinkOpenModeSelect(props: BrowserLinkOpenModeSelectProps) {
+  return (
+    <Select
+      value={props.value}
+      disabled={props.disabled}
+      onValueChange={(value) => {
+        if (isBrowserLinkOpenMode(value)) props.onValueChange(value);
+      }}
+    >
+      <SelectTrigger
+        aria-label="Link open mode"
+        className="w-[min(42vw,10rem)]"
+        size="sm"
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {Object.entries(BROWSER_LINK_OPEN_MODE_LABELS).map(([value, label]) => (
+          <SelectItem key={value} value={value}>
+            {label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+interface BrowserDevOriginsControlProps {
+  readonly origins: ReadonlyArray<string>;
+  readonly onRemove: (origin: string) => void;
+}
+
+function BrowserDevOriginsControl(props: BrowserDevOriginsControlProps) {
+  return (
+    <div className="flex max-w-[min(48vw,24rem)] flex-col gap-2">
+      {props.origins.map((origin) => (
+        <div
+          key={origin}
+          className="flex min-w-0 items-center justify-end gap-2 text-ui-sm"
+        >
+          <span className="min-w-0 truncate font-mono text-muted-foreground">
+            {origin}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={() => {
+              props.onRemove(origin);
+            }}
+          >
+            Remove
+          </Button>
+        </div>
+      ))}
+    </div>
   );
 }
 

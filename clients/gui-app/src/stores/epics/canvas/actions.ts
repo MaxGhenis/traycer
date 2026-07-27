@@ -22,12 +22,14 @@ import { v4 as uuidv4 } from "uuid";
 import type {
   EpicCanvasTileRef,
   EpicCanvasState,
+  BrowserTileRef,
   GitDiffTileRef,
   GitDiffTileViewState,
   TilesByInstanceId,
 } from "./types";
 import {
   isBlankTileRef,
+  isBrowserTileRef,
   isGitDiffTileRef,
   isSnapshotDiffTileRef,
 } from "./types";
@@ -51,6 +53,7 @@ import {
   replacePane,
 } from "./tile-tree";
 import { createEmptyCanvas } from "./canvas-state";
+import { cloneBrowserTileForNewPageSession } from "./tile-schema/browser-tile";
 import { makeBlankTileRef } from "./tile-schema/blank-tile";
 
 // ---------------------------------------------------------------------------
@@ -378,6 +381,16 @@ function seedRootPane(
   };
 }
 
+function cloneTileForCanvasDuplicate(
+  ref: EpicCanvasTileRef,
+  instanceId: string,
+): EpicCanvasTileRef {
+  if (isBrowserTileRef(ref)) {
+    return cloneBrowserTileForNewPageSession(ref, instanceId);
+  }
+  return { ...ref, instanceId };
+}
+
 /** Canvas containing exactly one pane with one tab (tear-off, open-in-new-tab). */
 export function createSingleTileCanvas(
   node: EpicCanvasTileRef,
@@ -417,7 +430,10 @@ export function cloneEpicCanvasState(state: EpicCanvasState): EpicCanvasState {
       instanceIdMap.set(instanceId, nextInstanceId);
       const ref = state.tilesByInstanceId[instanceId];
       if (ref !== undefined) {
-        tiles[nextInstanceId] = { ...ref, instanceId: nextInstanceId };
+        tiles[nextInstanceId] = cloneTileForCanvasDuplicate(
+          ref,
+          nextInstanceId,
+        );
       }
       return nextInstanceId;
     });
@@ -1310,6 +1326,42 @@ export function renameArtifact(
       return { ...ref, name, titleSource: "manual" };
     },
   );
+}
+
+export function updateBrowserTileUrl(
+  state: EpicCanvasState,
+  tileInstanceId: string,
+  url: string,
+): EpicCanvasState {
+  const ref = state.tilesByInstanceId[tileInstanceId];
+  if (ref === undefined || !isBrowserTileRef(ref) || ref.url === url) {
+    return state;
+  }
+  return {
+    ...state,
+    tilesByInstanceId: {
+      ...state.tilesByInstanceId,
+      [tileInstanceId]: { ...ref, url },
+    },
+  };
+}
+
+export function updateBrowserTileViewportPreset(
+  state: EpicCanvasState,
+  tileInstanceId: string,
+  viewportPreset: BrowserTileRef["viewportPreset"],
+): EpicCanvasState {
+  const current = state.tilesByInstanceId[tileInstanceId];
+  if (current === undefined) return state;
+  if (!isBrowserTileRef(current)) return state;
+  if (current.viewportPreset === viewportPreset) return state;
+  return {
+    ...state,
+    tilesByInstanceId: {
+      ...state.tilesByInstanceId,
+      [tileInstanceId]: { ...current, viewportPreset },
+    },
+  };
 }
 
 export function updateGitDiffTileView(

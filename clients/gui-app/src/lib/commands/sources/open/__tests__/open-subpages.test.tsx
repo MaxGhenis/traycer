@@ -183,7 +183,12 @@ vi.mock("@/hooks/agent/use-create-tui-agent", () => ({
 import { useChatsOpenerItems } from "@/lib/commands/sources/open/chats-subpage";
 import { useTuiOpenerItems } from "@/lib/commands/sources/open/tui-subpage";
 import { useTerminalsOpenerItems } from "@/lib/commands/sources/open/terminals-subpage";
+import { useBrowserOpenerItems } from "@/lib/commands/sources/open/browser-subpage";
 import { useArtifactsOpenerItems } from "@/lib/commands/sources/open/artifacts-subpage";
+import {
+  DEFAULT_BROWSER_TILE_URL,
+  DEFAULT_BROWSER_VIEWPORT_PRESET,
+} from "@/stores/epics/canvas/tile-schema/browser-tile";
 import { useNewConversationModalStore } from "@/stores/epics/new-conversation-modal-store";
 import { useNewConversationModalOpenStore } from "@/stores/epics/new-conversation-modal-open-store";
 
@@ -300,6 +305,34 @@ describe("Terminals opener sub-page", () => {
     const existing = lastTileOpen();
     expect(existing.ref.id).toBe("term-1");
     expect(existing.ref.type).toBe("terminal");
+  });
+});
+
+describe("Browser opener sub-page", () => {
+  it("opens New browser into the target with a fresh page-session id per run", () => {
+    const items = renderItems(useBrowserOpenerItems);
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe("open:browser:new");
+    expect(items[0].label).toBe("New browser");
+
+    runById(items, "open:browser:new");
+    const first = lastTileOpen();
+    runById(items, "open:browser:new");
+    const second = lastTileOpen();
+
+    expect(first.groupId).toBe("group-1");
+    expect(first.tabId).toBe("tab-1");
+    expect(first.ref.type).toBe("browser");
+    expect(second.ref.type).toBe("browser");
+    if (first.ref.type !== "browser" || second.ref.type !== "browser") {
+      throw new Error("expected browser refs");
+    }
+    expect(first.ref.hostId).toBe("default-host");
+    expect(first.ref.url).toBe(DEFAULT_BROWSER_TILE_URL);
+    expect(first.ref.viewportPreset).toBe(DEFAULT_BROWSER_VIEWPORT_PRESET);
+    expect(first.ref.id).toMatch(/^browser-/);
+    expect(second.ref.id).toMatch(/^browser-/);
+    expect(second.ref.id).not.toBe(first.ref.id);
   });
 });
 

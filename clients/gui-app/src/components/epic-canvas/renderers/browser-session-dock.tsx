@@ -1,0 +1,939 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
+import { Eye, ExternalLink, KeyRound, Radio } from "lucide-react";
+import { z } from "zod";
+import {
+  browserSessionsServerFrameSchema,
+  type BrowserSessionInfo,
+  type BrowserSessionsClientFrame,
+  type BrowserSessionsServerFrame,
+} from "@traycer/protocol/host/browser/contracts";
+import type {
+  StreamCloseReason,
+  StreamConnectionStatus,
+} from "@traycer-clients/shared/host-transport/i-stream-session";
+import type { WsStreamClient } from "@traycer-clients/shared/host-transport/ws-stream-client";
+import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
+import { Button } from "@/components/ui/button";
+import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
+import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
+import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
+import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
+import {
+  browserTileNameForUrl,
+  openFreshBrowserTileFromBrowserPage,
+} from "@/lib/browser-view/browser-link-routing-core";
+import {
+  clearBrowserTileControlRequest,
+  publishBrowserTileControlActionRequest,
+  publishBrowserTileControlRequest,
+} from "@/lib/browser-view/browser-tile-control-store";
+import {
+  resolveDesktopBrowserViewBridge,
+  type BrowserViewStorageStateCaptureResult,
+  type BrowserViewStorageStateApplyResult,
+  type BrowserViewTileKey,
+} from "@/lib/browser-view/desktop-browser-view";
+import { cn } from "@/lib/utils";
+import { useRunnerHost } from "@/providers/use-runner-host";
+import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import { makeBrowserPeekTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
+import { collectPanes } from "@/stores/epics/canvas/tile-tree";
+import {
+  isBrowserTileRef,
+  type EpicCanvasState,
+} from "@/stores/epics/canvas/types";
+
+type PromoteStateFrame = Extract<
+  BrowserSessionsServerFrame,
+  { readonly kind: "promoteState" }
+>;
+
+type LendResultFrame = Extract<
+  BrowserSessionsServerFrame,
+  { readonly kind: "lendResult" }
+>;
+
+type BrowserStorageLendPayload = Extract<
+  BrowserSessionsClientFrame,
+  { readonly kind: "lendStorage" }
+>["storage"];
+
+const browserStorageLendPayloadSchema = z.json();
+
+type BrowserSessionsLifecycle =
+  "connecting" | "live" | "reconnecting" | "closed" | "failed";
+
+interface BrowserAuthLendSource {
+  readonly id: string;
+  readonly label: string;
+  readonly origin: string;
+  readonly bestEffort: boolean;
+  readonly tileKey: BrowserViewTileKey;
+}
+
+interface BrowserAuthLendPreview {
+  readonly session: BrowserSessionInfo;
+  readonly source: BrowserAuthLendSource;
+  readonly capture: BrowserViewStorageStateCaptureResult;
+}
+
+interface BrowserSessionsRenderState {
+  readonly client: WsStreamClient<HostStreamRpcRegistry> | null;
+  readonly items: readonly BrowserSessionInfo[];
+  readonly lifecycle: BrowserSessionsLifecycle;
+  readonly errorMessage: string | null;
+}
+
+export interface BrowserSessionDockProps {
+  readonly chatId: string;
+  readonly viewTabId: string;
+  readonly paneId: string;
+}
+
+export function BrowserSessionDock(props: BrowserSessionDockProps) {
+  const hostId = useTabHostId();
+  const runnerHost = useRunnerHost();
+  const browserView = useMemo(
+    () => resolveDesktopBrowserViewBridge(runnerHost),
+    [runnerHost],
+  );
+  const sessions = useBrowserSessions(props.chatId);
+  const splitPaneWithNode = useEpicCanvasStore((s) => s.splitPaneWithNode);
+  const [handoffPendingId, setHandoffPendingId] = useState<string | null>(null);
+  const [handoffMessage, setHandoffMessage] = useState<string | null>(null);
+  const [lendPendingId, setLendPendingId] = useState<string | null>(null);
+  const [lendMessage, setLendMessage] = useState<string | null>(null);
+  const [lendPreview, setLendPreview] = useState<BrowserAuthLendPreview | null>(
+    null,
+  );
+  const [selectedLendSourceId, setSelectedLendSourceId] = useState<
+    string | null
+  >(null);
+  const canvas = useEpicCanvasStore(
+    (state) => state.canvasByTabId[props.viewTabId] ?? null,
+  );
+  const lendSources = useMemo(
+    () => selectBrowserAuthLendSources(canvas, props.viewTabId),
+    [canvas, props.viewTabId],
+  );
+  const selectedLendSource =
+    lendSources.find((source) => source.id === selectedLendSourceId) ??
+    lendSources.at(0) ??
+    null;
+
+  const openPeek = useCallback(
+    (session: BrowserSessionInfo) => {
+      const tile = makeBrowserPeekTileRef({
+        name: `Peek ${browserTileNameForUrl(session.url)}`,
+        hostId,
+        chatId: props.chatId,
+        sessionId: session.sessionId,
+        initialUrl: session.url,
+      });
+      splitPaneWithNode(props.viewTabId, props.paneId, "right", tile);
+    },
+    [hostId, props.chatId, props.paneId, props.viewTabId, splitPaneWithNode],
+  );
+
+  const continueAtUrl = useCallback(
+    (session: BrowserSessionInfo) => {
+      setHandoffPendingId(session.sessionId);
+      setHandoffMessage(null);
+      sessions
+        .requestPromoteState(session.sessionId)
+        .then(async (state) => {
+          const replayResult =
+            browserView === null
+              ? null
+              : await browserView.applyStorageState({
+                  storageState: state.storageState,
+                });
+          openFreshBrowserTileFromBrowserPage({
+            viewTabId: props.viewTabId,
+            paneId: props.paneId,
+            hostId,
+            url: state.url,
+          });
+          setHandoffMessage(handoffResultMessage(replayResult));
+        })
+        .catch((error: unknown) => {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          setHandoffMessage(message);
+        })
+        .finally(() => {
+          setHandoffPendingId(null);
+        });
+    },
+    [browserView, hostId, props.paneId, props.viewTabId, sessions],
+  );
+
+  const reviewLendAuth = useCallback(
+    (session: BrowserSessionInfo) => {
+      const source = selectedLendSource;
+      if (source === null) {
+        setLendMessage("Open a browser tile at the site to lend first.");
+        return;
+      }
+      if (browserView === null) {
+        setLendMessage("Native browser storage capture is unavailable.");
+        return;
+      }
+      setLendPendingId(session.sessionId);
+      setLendMessage(null);
+      setLendPreview(null);
+      browserView
+        .captureStorageState({
+          ...source.tileKey,
+          origin: source.origin,
+        })
+        .then((capture) => {
+          setLendPreview({ session, source, capture });
+        })
+        .catch((error: unknown) => {
+          setLendMessage(
+            error instanceof Error ? error.message : String(error),
+          );
+        })
+        .finally(() => {
+          setLendPendingId(null);
+        });
+    },
+    [browserView, selectedLendSource],
+  );
+
+  const confirmLendAuth = useCallback(() => {
+    if (lendPreview === null) return;
+    setLendPendingId(lendPreview.session.sessionId);
+    setLendMessage(null);
+    sessions
+      .requestLendStorage(
+        lendPreview.session.sessionId,
+        lendPreview.source.origin,
+        browserStorageLendPayloadSchema.parse(lendPreview.capture.storageState),
+      )
+      .then((result) => {
+        setLendMessage(
+          lendResultMessage(lendPreview.source, lendPreview.capture, result),
+        );
+        setLendPreview(null);
+      })
+      .catch((error: unknown) => {
+        setLendMessage(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        setLendPendingId(null);
+      });
+  }, [lendPreview, sessions]);
+
+  if (sessions.items.length === 0 && sessions.lifecycle !== "failed") {
+    return null;
+  }
+
+  return (
+    <div
+      className="border-t border-border bg-muted/35 px-3 py-2"
+      data-testid="browser-session-dock"
+    >
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2 text-ui-sm font-medium">
+          <Radio
+            className={cn(
+              "size-3.5 shrink-0",
+              sessions.lifecycle === "live"
+                ? "text-emerald-500"
+                : "text-muted-foreground",
+            )}
+            aria-hidden
+          />
+          <span className="truncate">Agent browser sessions</span>
+        </div>
+        <div className="shrink-0 text-ui-xs text-muted-foreground">
+          {browserSessionsLabel(sessions.lifecycle)}
+        </div>
+      </div>
+      <div className="mb-2 flex min-w-0 items-center gap-2 text-ui-xs">
+        <span className="shrink-0 text-muted-foreground">Review from</span>
+        <select
+          aria-label="Browser auth lend source site"
+          className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-ui-xs"
+          disabled={lendSources.length === 0 || lendPendingId !== null}
+          value={selectedLendSource === null ? "" : selectedLendSource.id}
+          onChange={(event) => {
+            setSelectedLendSourceId(event.target.value);
+            setLendPreview(null);
+          }}
+        >
+          {lendSources.length === 0 ? (
+            <option value="">No visible browser site</option>
+          ) : null}
+          {lendSources.map((source) => (
+            <option key={source.id} value={source.id}>
+              {source.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="space-y-1.5">
+        {sessions.items.map((session) => (
+          <div
+            key={session.sessionId}
+            className="flex min-w-0 items-center gap-2 rounded border border-border bg-background px-2 py-1.5"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-ui-sm font-medium">
+                {session.title ?? browserTileNameForUrl(session.url)}
+              </div>
+              <div className="truncate font-mono text-ui-xs text-muted-foreground">
+                {session.url}
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 gap-1.5 px-2 text-ui-xs"
+              onClick={() => openPeek(session)}
+            >
+              <Eye className="size-3.5" />
+              Peek
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 gap-1.5 px-2 text-ui-xs"
+              disabled={handoffPendingId !== null}
+              onClick={() => continueAtUrl(session)}
+            >
+              <ExternalLink className="size-3.5" />
+              Continue at URL (handoff)
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 shrink-0 gap-1.5 px-2 text-ui-xs"
+              disabled={
+                lendPendingId !== null ||
+                browserView === null ||
+                selectedLendSource === null
+              }
+              onClick={() => reviewLendAuth(session)}
+            >
+              <KeyRound className="size-3.5" />
+              Review auth
+            </Button>
+          </div>
+        ))}
+      </div>
+      {lendPreview === null ? null : (
+        <BrowserAuthLendConsent
+          preview={lendPreview}
+          pending={lendPendingId !== null}
+          onCancel={() => setLendPreview(null)}
+          onConfirm={confirmLendAuth}
+        />
+      )}
+      <div className="mt-2 text-ui-xs text-muted-foreground">
+        Handoff opens the captured URL in a visible browser and replays cookies
+        when desktop cookie persistence is available. localStorage,
+        sessionStorage, in-page JS, SPA state, and live sockets are not carried.
+      </div>
+      <div className="mt-1 text-ui-xs text-muted-foreground">
+        Auth lending is one-shot from the selected visible browser site to one
+        agent session. It lends the cookies your browser would send to that site
+        plus same-origin localStorage when available. Localhost/dev sites are
+        supported; external sites are best-effort and may reject replayed
+        credentials.
+      </div>
+      {sessions.errorMessage === null &&
+      handoffMessage === null &&
+      lendMessage === null ? null : (
+        <div className="mt-2 rounded border border-border bg-background px-2 py-1.5 text-ui-xs text-muted-foreground">
+          {lendMessage ?? handoffMessage ?? sessions.errorMessage}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BrowserAuthLendConsent(props: {
+  readonly preview: BrowserAuthLendPreview;
+  readonly pending: boolean;
+  readonly onCancel: () => void;
+  readonly onConfirm: () => void;
+}) {
+  const cookieDomains = props.preview.capture.cookieDomains;
+  const localStorageStatus = props.preview.capture.localStorageAvailable
+    ? `${props.preview.capture.localStorageCount} ${localStorageItemLabel(
+        props.preview.capture.localStorageCount,
+      )} included`
+    : `localStorage not included (${props.preview.capture.localStorageReason ?? "unavailable"})`;
+  const scopeNotes = cookieScopeNotes(
+    props.preview.source.origin,
+    cookieDomains,
+  );
+  return (
+    <div className="mt-2 rounded border border-border bg-background px-2 py-2 text-ui-xs">
+      <div
+        className="font-medium text-foreground"
+        data-testid="browser-auth-lend-consent"
+      >
+        Lends the cookies your browser would send to{" "}
+        <span className="font-mono">{props.preview.source.origin}</span>
+      </div>
+      <div className="mt-1 text-muted-foreground">
+        Cookie domains ({props.preview.capture.cookieCount}):{" "}
+        {cookieDomains.length === 0 ? "none" : cookieDomains.join(", ")}.
+      </div>
+      <div className="mt-1 text-muted-foreground">{localStorageStatus}.</div>
+      {scopeNotes.map((note) => (
+        <div key={note} className="mt-1 text-muted-foreground">
+          {note}
+        </div>
+      ))}
+      <div className="mt-2 flex justify-end gap-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-ui-xs"
+          disabled={props.pending}
+          onClick={props.onCancel}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 px-2 text-ui-xs"
+          disabled={props.pending}
+          onClick={props.onConfirm}
+        >
+          Confirm lend
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function handoffResultMessage(
+  result: BrowserViewStorageStateApplyResult | null,
+): string {
+  if (result === null) {
+    return "Opened a visible browser handoff at the captured URL. Cookie replay is unavailable in this runtime; localStorage, sessionStorage, in-page JS, SPA state, and live sockets are not carried.";
+  }
+  if (result.status === "skipped-degraded") {
+    return `Opened a visible browser handoff at the captured URL without cookie replay because secure persistent browser cookies are unavailable (${result.reason}). localStorage, sessionStorage, in-page JS, SPA state, and live sockets are not carried.`;
+  }
+  const cookieLabel = result.cookieCount === 1 ? "cookie" : "cookies";
+  return `Opened a visible browser handoff at the captured URL after replaying ${result.cookieCount} ${cookieLabel}. localStorage, sessionStorage, in-page JS, SPA state, and live sockets are not carried.`;
+}
+
+function lendResultMessage(
+  source: BrowserAuthLendSource,
+  capture: BrowserViewStorageStateCaptureResult,
+  result: LendResultFrame,
+): string {
+  if (!result.ok) {
+    return result.reason ?? "Auth lending failed.";
+  }
+  const cookieLabel = capture.cookieCount === 1 ? "cookie" : "cookies";
+  const storageLabel =
+    capture.localStorageCount === 1
+      ? "localStorage item"
+      : "localStorage items";
+  const scope = source.bestEffort
+    ? "External-site auth lending is best-effort; if the page still appears logged out, the site likely rejected replayed credentials."
+    : "Localhost/dev auth lending is supported for agent verification.";
+  const localStorageStatus = capture.localStorageAvailable
+    ? `${capture.localStorageCount} ${storageLabel}`
+    : `localStorage not captured (${capture.localStorageReason ?? "unavailable"})`;
+  const hostReason = result.reason === null ? "" : ` ${result.reason}.`;
+  return `Lent ${capture.cookieCount} ${cookieLabel} your browser would send to ${source.origin} and ${localStorageStatus}.${hostReason} ${scope}`;
+}
+
+function selectBrowserAuthLendSources(
+  canvas: EpicCanvasState | null,
+  viewTabId: string,
+): readonly BrowserAuthLendSource[] {
+  if (canvas === null || canvas.root === null) return [];
+  const sources = collectPanes(canvas.root).flatMap(
+    (pane): BrowserAuthLendSource[] => {
+      if (pane.activeTabId === null) return [];
+      const tile = canvas.tilesByInstanceId[pane.activeTabId];
+      if (tile === undefined || !isBrowserTileRef(tile)) return [];
+      const origin = httpOriginFromUrl(tile.url);
+      if (origin === null) return [];
+      const bestEffort = !isLocalDevOrigin(origin);
+      return [
+        {
+          id: `${pane.id}:${tile.instanceId}`,
+          label: `${origin}${bestEffort ? " (external best-effort)" : " (dev)"}`,
+          origin,
+          bestEffort,
+          tileKey: {
+            viewTabId,
+            paneId: pane.id,
+            tileInstanceId: tile.instanceId,
+            pageSessionId: tile.id,
+          },
+        },
+      ];
+    },
+  );
+  const seen = new Set<string>();
+  return sources.filter((source) => {
+    const key = `${source.origin}\u001f${source.tileKey.tileInstanceId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function httpOriginFromUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function isLocalDevOrigin(origin: string): boolean {
+  try {
+    const hostname = new URL(origin).hostname.toLowerCase();
+    return (
+      hostname === "localhost" ||
+      hostname.endsWith(".localhost") ||
+      hostname === "0.0.0.0" ||
+      hostname === "127.0.0.1" ||
+      hostname.startsWith("127.") ||
+      hostname === "::1" ||
+      hostname === "[::1]"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function localStorageItemLabel(count: number): string {
+  return count === 1 ? "localStorage item" : "localStorage items";
+}
+
+function cookieScopeNotes(
+  origin: string,
+  cookieDomains: readonly string[],
+): readonly string[] {
+  const notes: string[] = [];
+  const parentDomains = cookieDomains.filter((domain) =>
+    domain.startsWith("."),
+  );
+  if (parentDomains.length > 0) {
+    notes.push(
+      `Parent-domain cookies in this set can be shared with sibling apps: ${parentDomains.join(", ")}.`,
+    );
+  }
+  if (isLocalhostCookieScopeOrigin(origin)) {
+    notes.push("Localhost cookies are shared across ports.");
+  }
+  return notes;
+}
+
+function isLocalhostCookieScopeOrigin(origin: string): boolean {
+  try {
+    const hostname = new URL(origin).hostname.toLowerCase();
+    return (
+      hostname === "localhost" ||
+      hostname.endsWith(".localhost") ||
+      hostname === "0.0.0.0" ||
+      hostname === "127.0.0.1" ||
+      hostname.startsWith("127.") ||
+      hostname === "::1" ||
+      hostname === "[::1]"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function useBrowserSessions(chatId: string): {
+  readonly lifecycle: BrowserSessionsLifecycle;
+  readonly items: readonly BrowserSessionInfo[];
+  readonly errorMessage: string | null;
+  readonly requestPromoteState: (
+    sessionId: string,
+  ) => Promise<PromoteStateFrame>;
+  readonly requestLendStorage: (
+    sessionId: string,
+    origin: string,
+    storage: BrowserStorageLendPayload,
+  ) => Promise<LendResultFrame>;
+} {
+  const hostId = useTabHostId();
+  const hostEntry = useHostDirectoryEntry(hostId);
+  const auth = useStreamAuthRevalidator();
+  const client = useHostStreamClientFor(hostEntry, auth);
+  const sessionRef = useRef<{
+    sendClientFrame: (
+      frame: BrowserSessionsClientFrame,
+      binaryPayload: Uint8Array | null,
+    ) => void;
+  } | null>(null);
+  const pendingPromotesRef = useRef<Map<
+    string,
+    {
+      readonly resolve: (frame: PromoteStateFrame) => void;
+      readonly reject: (error: Error) => void;
+    }
+  > | null>(null);
+  const pendingLendsRef = useRef<Map<
+    string,
+    {
+      readonly resolve: (frame: LendResultFrame) => void;
+      readonly reject: (error: Error) => void;
+    }
+  > | null>(null);
+  if (pendingPromotesRef.current === null) {
+    pendingPromotesRef.current = new Map();
+  }
+  if (pendingLendsRef.current === null) {
+    pendingLendsRef.current = new Map();
+  }
+  const [streamState, setStreamState] = useState<BrowserSessionsRenderState>(
+    () => ({
+      client,
+      items: [],
+      lifecycle: "connecting",
+      errorMessage: null,
+    }),
+  );
+  const stateMatchesClient = streamState.client === client;
+  const items = stateMatchesClient ? streamState.items : [];
+  const lifecycle = stateMatchesClient ? streamState.lifecycle : "connecting";
+  const errorMessage = stateMatchesClient ? streamState.errorMessage : null;
+
+  useEffect(() => {
+    if (client === null) {
+      sessionRef.current = null;
+      return;
+    }
+    const pendingPromotes = pendingPromotesRef.current;
+    const pendingLends = pendingLendsRef.current;
+    if (pendingPromotes === null || pendingLends === null) return;
+    const stream = client.subscribe("browser.sessions", { chatId });
+    sessionRef.current = stream;
+    stream.onStatusChange((status, reason) => {
+      setStreamState((current) => ({
+        client,
+        items: current.client === client ? current.items : [],
+        lifecycle: browserSessionsLifecycle(status, reason),
+        errorMessage: browserSessionsError(status, reason),
+      }));
+    });
+    stream.onServerFrame((envelope, binaryPayload) => {
+      if (binaryPayload !== null) return;
+      const parsed = browserSessionsServerFrameSchema.safeParse(envelope);
+      if (!parsed.success) return;
+      handleBrowserSessionsFrame({
+        frame: parsed.data,
+        setItems: (value) => {
+          setStreamState((current) => {
+            const currentItems = current.client === client ? current.items : [];
+            const nextItems =
+              typeof value === "function" ? value(currentItems) : value;
+            return {
+              client,
+              items: nextItems,
+              lifecycle:
+                current.client === client ? current.lifecycle : "connecting",
+              errorMessage:
+                current.client === client ? current.errorMessage : null,
+            };
+          });
+        },
+        pendingPromotes,
+        pendingLends,
+        sendClientFrame: (frame) => {
+          stream.sendClientFrame(frame, null);
+        },
+      });
+    });
+    return () => {
+      if (sessionRef.current === stream) {
+        sessionRef.current = null;
+      }
+      stream.close();
+      rejectPendingPromotes(
+        pendingPromotes,
+        new Error("Browser sessions stream closed."),
+      );
+      rejectPendingLends(
+        pendingLends,
+        new Error("Browser sessions stream closed."),
+      );
+    };
+  }, [chatId, client]);
+
+  const requestPromoteState = useCallback((sessionId: string) => {
+    const session = sessionRef.current;
+    const pendingPromotes = pendingPromotesRef.current;
+    if (session === null) {
+      return Promise.reject(new Error("Browser sessions stream is not ready."));
+    }
+    if (pendingPromotes === null) {
+      return Promise.reject(new Error("Browser sessions stream is not ready."));
+    }
+    const requestId = crypto.randomUUID();
+    const promise = new Promise<PromoteStateFrame>((resolve, reject) => {
+      pendingPromotes.set(requestId, { resolve, reject });
+    });
+    session.sendClientFrame(
+      {
+        kind: "getPromoteState",
+        hasBinaryPayload: false,
+        requestId,
+        sessionId,
+      },
+      null,
+    );
+    return promise;
+  }, []);
+
+  const requestLendStorage = useCallback(
+    (sessionId: string, origin: string, storage: BrowserStorageLendPayload) => {
+      const session = sessionRef.current;
+      const pendingLends = pendingLendsRef.current;
+      if (session === null || pendingLends === null) {
+        return Promise.reject(
+          new Error("Browser sessions stream is not ready."),
+        );
+      }
+      const requestId = crypto.randomUUID();
+      const promise = new Promise<LendResultFrame>((resolve, reject) => {
+        pendingLends.set(requestId, { resolve, reject });
+      });
+      session.sendClientFrame(
+        {
+          kind: "lendStorage",
+          hasBinaryPayload: false,
+          requestId,
+          sessionId,
+          origin,
+          storage,
+        },
+        null,
+      );
+      return promise;
+    },
+    [],
+  );
+
+  return {
+    lifecycle,
+    items,
+    errorMessage,
+    requestPromoteState,
+    requestLendStorage,
+  };
+}
+
+function handleBrowserSessionsFrame(args: {
+  readonly frame: BrowserSessionsServerFrame;
+  readonly setItems: Dispatch<SetStateAction<readonly BrowserSessionInfo[]>>;
+  readonly pendingPromotes: Map<
+    string,
+    {
+      readonly resolve: (frame: PromoteStateFrame) => void;
+      readonly reject: (error: Error) => void;
+    }
+  >;
+  readonly pendingLends: Map<
+    string,
+    {
+      readonly resolve: (frame: LendResultFrame) => void;
+      readonly reject: (error: Error) => void;
+    }
+  >;
+  readonly sendClientFrame: (frame: BrowserSessionsClientFrame) => void;
+}): void {
+  if (args.frame.kind === "snapshot") {
+    args.setItems(args.frame.sessions);
+    return;
+  }
+  if (args.frame.kind === "sessionCreated") {
+    const session = args.frame.session;
+    args.setItems((current) => upsertSession(current, session));
+    return;
+  }
+  if (args.frame.kind === "sessionUpdated") {
+    const session = args.frame.session;
+    args.setItems((current) => upsertSession(current, session));
+    return;
+  }
+  if (args.frame.kind === "sessionClosed") {
+    const sessionId = args.frame.sessionId;
+    args.setItems((current) =>
+      current.filter((session) => session.sessionId !== sessionId),
+    );
+    return;
+  }
+  if (args.frame.kind === "promoteState") {
+    const pending = args.pendingPromotes.get(args.frame.requestId);
+    if (pending === undefined) return;
+    args.pendingPromotes.delete(args.frame.requestId);
+    pending.resolve(args.frame);
+    return;
+  }
+  if (args.frame.kind === "lendResult") {
+    const pending = args.pendingLends.get(args.frame.requestId);
+    if (pending === undefined) return;
+    args.pendingLends.delete(args.frame.requestId);
+    pending.resolve(args.frame);
+    return;
+  }
+  if (args.frame.kind === "actionAck" && !args.frame.ok) {
+    const pending = args.pendingPromotes.get(args.frame.requestId);
+    if (pending !== undefined) {
+      args.pendingPromotes.delete(args.frame.requestId);
+      pending.reject(new Error(args.frame.reason ?? "Browser action failed."));
+    }
+    const pendingLend = args.pendingLends.get(args.frame.requestId);
+    if (pendingLend !== undefined) {
+      args.pendingLends.delete(args.frame.requestId);
+      pendingLend.reject(
+        new Error(args.frame.reason ?? "Browser action failed."),
+      );
+    }
+    return;
+  }
+  if (
+    handleVisibleTileControlFrame({
+      frame: args.frame,
+      sendClientFrame: args.sendClientFrame,
+    })
+  ) {
+    return;
+  }
+}
+
+function handleVisibleTileControlFrame(args: {
+  readonly frame: BrowserSessionsServerFrame;
+  readonly sendClientFrame: (frame: BrowserSessionsClientFrame) => void;
+}): boolean {
+  if (args.frame.kind === "visibleTileControlRequest") {
+    publishBrowserTileControlRequest({
+      requestId: args.frame.requestId,
+      grantId: args.frame.grantId,
+      chatId: args.frame.chatId,
+      agentRunId: args.frame.agentRunId,
+      agentLabel: args.frame.agentLabel,
+      tileInstanceId: args.frame.tileInstanceId,
+      origin: args.frame.origin,
+      url: args.frame.url,
+      requestedAt: args.frame.requestedAt,
+      expiresAt: args.frame.expiresAt,
+      sendFrame: args.sendClientFrame,
+    });
+    return true;
+  }
+  if (args.frame.kind === "visibleTileControlAction") {
+    publishBrowserTileControlActionRequest({
+      requestId: args.frame.requestId,
+      grantId: args.frame.grantId,
+      tileInstanceId: args.frame.tileInstanceId,
+      action: args.frame.action,
+      sendFrame: args.sendClientFrame,
+    });
+    return true;
+  }
+  if (args.frame.kind === "visibleTileControlResult" && !args.frame.ok) {
+    clearBrowserTileControlRequest({
+      tileInstanceId: args.frame.tileInstanceId,
+      requestId: args.frame.requestId,
+    });
+    return true;
+  }
+  return false;
+}
+
+function upsertSession(
+  current: readonly BrowserSessionInfo[],
+  next: BrowserSessionInfo,
+): readonly BrowserSessionInfo[] {
+  const existing = current.findIndex(
+    (session) => session.sessionId === next.sessionId,
+  );
+  if (existing === -1) return [...current, next];
+  return current.map((session, index) => (index === existing ? next : session));
+}
+
+function browserSessionsLifecycle(
+  status: StreamConnectionStatus,
+  reason: StreamCloseReason | null,
+): BrowserSessionsLifecycle {
+  if (reason?.kind === "fatalError") return "failed";
+  if (status === "open") return "live";
+  if (status === "reconnecting") return "reconnecting";
+  if (status === "closed") return "closed";
+  return "connecting";
+}
+
+function browserSessionsError(
+  status: StreamConnectionStatus,
+  reason: StreamCloseReason | null,
+): string | null {
+  if (reason?.kind === "fatalError") return reason.details.reason;
+  if (status === "reconnecting") return "Reconnecting browser sessions.";
+  if (status === "closed") return "Browser sessions stream closed.";
+  return null;
+}
+
+function browserSessionsLabel(lifecycle: BrowserSessionsLifecycle): string {
+  if (lifecycle === "live") return "Live";
+  if (lifecycle === "reconnecting") return "Reconnecting";
+  if (lifecycle === "failed") return "Unavailable";
+  if (lifecycle === "closed") return "Closed";
+  return "Connecting";
+}
+
+function rejectPendingPromotes(
+  pendingPromotes: Map<
+    string,
+    {
+      readonly resolve: (frame: PromoteStateFrame) => void;
+      readonly reject: (error: Error) => void;
+    }
+  >,
+  error: Error,
+): void {
+  pendingPromotes.forEach((pending) => pending.reject(error));
+  pendingPromotes.clear();
+}
+
+function rejectPendingLends(
+  pendingLends: Map<
+    string,
+    {
+      readonly resolve: (frame: LendResultFrame) => void;
+      readonly reject: (error: Error) => void;
+    }
+  >,
+  error: Error,
+): void {
+  pendingLends.forEach((pending) => pending.reject(error));
+  pendingLends.clear();
+}

@@ -44,6 +44,7 @@ describe("openSource", () => {
       "Chats",
       "TUI agents",
       "Terminals",
+      "Browser",
       "Artifacts",
       "Files",
       "Diff",

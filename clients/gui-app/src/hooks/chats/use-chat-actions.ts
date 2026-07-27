@@ -16,6 +16,7 @@ import type {
 } from "@/stores/chats/chat-session-store";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
+import type { Attachment } from "@/lib/composer/types";
 
 /**
  * Memoised stable callbacks bound to a `ChatSessionStoreHandle`.
@@ -35,6 +36,7 @@ export interface ChatActions {
     content: JsonContent,
     sender: UserMessageSender,
     settings: ChatRunSettings,
+    attachments: ReadonlyArray<Attachment>,
   ) => SentChatMessageAction | null;
   readonly deleteMessageSuffix: (fromMessageId: string) => string | null;
   readonly editUserMessage: (
@@ -102,13 +104,18 @@ export interface ChatActions {
 export function useChatActions(handle: ChatSessionStoreHandle): ChatActions {
   return useMemo<ChatActions>(
     () => ({
-      sendMessage: (content, sender, settings) => {
+      sendMessage: (content, sender, settings, attachments) => {
         Analytics.getInstance().track(AnalyticsEvent.ChatMessageSent, {
           harness: settings.harnessId,
           model: settings.model,
           mode: settings.agentMode,
         });
-        return handle.store.getState().sendMessage(content, sender, settings);
+        return handle.store.getState().sendMessageWithAttachments({
+          content,
+          sender,
+          settings,
+          attachments,
+        });
       },
       deleteMessageSuffix: (fromMessageId) =>
         handle.store.getState().deleteMessageSuffix(fromMessageId),

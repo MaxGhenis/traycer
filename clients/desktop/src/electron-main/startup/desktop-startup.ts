@@ -81,6 +81,7 @@ import {
   installPowerMonitorListeners,
   trimUnusedChromiumFeatures,
 } from "../app/lifecycle";
+import { resolveBrowserCookieCryptoStateAtReady } from "../browser-view/browser-cookie-crypto";
 import { installProductionProxyAuthHandler } from "../app/proxy-auth";
 import {
   installCertificateErrorHandler,
@@ -240,6 +241,9 @@ async function runOnReady(state: BootState): Promise<void> {
     timed("on-ready", "user-agent", () => configureUserAgent()),
     timed("on-ready", "host-resolver-doh", () => configureHostResolverDoH()),
     timed("on-ready", "harden-session", () => hardenDefaultSession()),
+    timed("on-ready", "browser-cookie-crypto", () => {
+      resolveBrowserCookieCryptoStateAtReady();
+    }),
     timed("on-ready", "spell-check", () => enableSpellCheck()),
     timed("on-ready", "notification-handler", () =>
       installNotificationActivationHandler(),

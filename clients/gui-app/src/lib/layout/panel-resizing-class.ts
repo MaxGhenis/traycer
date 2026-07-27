@@ -10,7 +10,7 @@
  * `SplitResizeHandle` and the hoisted sidebar's width handle - so consumers
  * never care which surface drove the drag.
  */
-const PANEL_RESIZING_CLASS_NAME = "traycer-panel-resizing";
+export const PANEL_RESIZING_CLASS_NAME = "traycer-panel-resizing";
 
 let stopPanelResizeInteraction: (() => void) | null = null;
 

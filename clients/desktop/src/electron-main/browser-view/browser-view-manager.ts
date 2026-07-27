@@ -1,0 +1,2343 @@
+import { createHash, randomUUID } from "node:crypto";
+import type { BrowserWindowConstructorOptions } from "electron";
+import type {
+  BrowserViewBounds,
+  BrowserViewBoundsUpdate,
+  BrowserViewCapturePageResult,
+  BrowserViewCertificateErrorChange,
+  BrowserViewControlAction,
+  BrowserViewControlActionResult,
+  BrowserViewControlGrant,
+  BrowserViewControlGrantResult,
+  BrowserViewControlRevokedChange,
+  BrowserViewControlRevoke,
+  BrowserViewDebugSnapshotChange,
+  BrowserViewDebugSnapshotData,
+  BrowserViewDownloadChange,
+  BrowserViewElementPickResult,
+  BrowserViewFindChange,
+  BrowserViewFindRequest,
+  BrowserViewFindStop,
+  BrowserViewOpenTileRequest,
+  BrowserViewOverlayOcclusion,
+  BrowserViewOverlayOcclusionResult,
+  BrowserViewOverlayRelease,
+  BrowserViewOverlayReleaseResult,
+  BrowserViewOverlaySnapshot,
+  BrowserViewSnapshotInvalidatedChange,
+  BrowserViewStatus,
+  BrowserViewStatusChange,
+  BrowserViewStorageStateApply,
+  BrowserViewStorageStateApplyResult,
+  BrowserViewStorageStateCapture,
+  BrowserViewStorageStateCaptureResult,
+  BrowserViewTileKey,
+  BrowserViewTileUpsert,
+  BrowserViewViewportPresetChange,
+  BrowserViewViewportPresetId,
+} from "../../ipc-contracts/browser-view-types";
+import { describeLogError, log } from "../app/logger";
+import { BrowserDebugSession } from "./browser-debug-session";
+import { BrowserElementPickerSession } from "./browser-element-picker-session";
+import type {
+  BrowserViewCertificateErrorChange as BrowserSessionCertificateErrorChange,
+  BrowserViewDownloadChange as BrowserSessionDownloadChange,
+} from "./browser-session";
+
+const DEBUG_SNAPSHOT_COALESCE_MS = 16;
+const DEVTOOLS_TITLE = "Traycer Browser DevTools";
+const VIEWPORT_PRESETS: Readonly<
+  Record<
+    BrowserViewViewportPresetId,
+    { readonly width: number | null; readonly height: number | null }
+  >
+> = {
+  responsive: { width: null, height: null },
+  mobile: { width: 390, height: 844 },
+  tablet: { width: 820, height: 1180 },
+  desktop: { width: 1440, height: 900 },
+};
+
+export interface BrowserViewDebugger {
+  isAttached(): boolean;
+  attach(protocolVersion: string): void;
+  detach(): void;
+  sendCommand(
+    method: string,
+    commandParams: Record<string, unknown>,
+    sessionId: string | undefined,
+  ): Promise<unknown>;
+  on(event: string, listener: (...args: unknown[]) => void): void;
+  off(event: string, listener: (...args: unknown[]) => void): void;
+}
+
+export interface BrowserViewNavigationHistory {
+  canGoBack(): boolean;
+  canGoForward(): boolean;
+  goBack(): void;
+  goForward(): void;
+}
+
+export interface BrowserViewOpenDevToolsOptions {
+  readonly mode: "detach";
+  readonly activate: boolean;
+  readonly title: string;
+}
+
+export interface BrowserViewWebContents {
+  readonly id: number;
+  readonly debugger: BrowserViewDebugger;
+  readonly navigationHistory: BrowserViewNavigationHistory | undefined;
+  loadURL(url: string): Promise<unknown>;
+  executeJavaScript(script: string, userGesture: boolean): Promise<unknown>;
+  capturePage(): Promise<BrowserViewCapturedImage>;
+  getURL(): string;
+  getTitle(): string;
+  isDestroyed(): boolean;
+  close(): void;
+  reload(): void;
+  findInPage(text: string, options: BrowserViewFindInPageOptions): number;
+  stopFindInPage(action: "clearSelection"): void;
+  getZoomFactor(): number;
+  setZoomFactor(factor: number): void;
+  setDevToolsWebContents(webContents: BrowserViewDevToolsWebContents): void;
+  openDevTools(options: BrowserViewOpenDevToolsOptions): void;
+  setWindowOpenHandler(
+    handler: (
+      details: BrowserViewWindowOpenDetails,
+    ) => BrowserViewWindowOpenResult,
+  ): void;
+  on(event: string, listener: (...args: unknown[]) => void): void;
+  off(event: string, listener: (...args: unknown[]) => void): void;
+}
+
+export interface BrowserViewFindInPageOptions {
+  readonly forward: boolean;
+  readonly findNext: boolean;
+  readonly matchCase: boolean;
+}
+
+export interface BrowserViewWindowOpenDetails {
+  readonly url: string;
+  readonly frameName: string;
+  readonly features: string;
+  readonly disposition: string;
+}
+
+export type BrowserViewWindowOpenResult =
+  | { readonly action: "deny" }
+  | {
+      readonly action: "allow";
+      readonly overrideBrowserWindowOptions: BrowserWindowConstructorOptions;
+      readonly outlivesOpener: boolean;
+    };
+
+export interface BrowserViewCapturedImage {
+  toDataURL(): string;
+}
+
+export interface BrowserViewDevToolsWebContents {
+  readonly id: number;
+}
+
+export interface BrowserViewDevToolsWindow {
+  readonly webContents: BrowserViewDevToolsWebContents;
+  isDestroyed(): boolean;
+  destroy(): void;
+}
+
+export interface ManagedBrowserView {
+  readonly webContents: BrowserViewWebContents;
+  setBounds(bounds: BrowserViewBounds): void;
+  setVisible(visible: boolean): void;
+}
+
+export interface ManagedContentView {
+  addChildView(view: ManagedBrowserView): void;
+  removeChildView(view: ManagedBrowserView): void;
+}
+
+export interface BrowserViewWindow {
+  readonly contentView: ManagedContentView;
+  isDestroyed(): boolean;
+  isVisible(): boolean;
+  isMinimized(): boolean;
+}
+
+export interface BrowserViewPopupWebContents {
+  readonly id: number;
+  once(event: "destroyed", listener: () => void): void;
+  on(event: string, listener: (...args: unknown[]) => void): void;
+  off(event: string, listener: (...args: unknown[]) => void): void;
+}
+
+export interface BrowserViewPopupWindow {
+  readonly webContents: BrowserViewPopupWebContents;
+  isDestroyed(): boolean;
+  close(): void;
+  on(event: string, listener: () => void): void;
+  off(event: string, listener: () => void): void;
+}
+
+export interface BrowserViewManagerOptions {
+  readonly createView: () => ManagedBrowserView;
+  readonly getWindow: (windowId: string) => BrowserViewWindow | null;
+  readonly createPopupWindowOptions: (
+    windowId: string,
+  ) => BrowserWindowConstructorOptions;
+  readonly createDevToolsWindow: (
+    windowId: string,
+  ) => BrowserViewDevToolsWindow;
+  readonly registerPopupWebContents: (
+    webContents: BrowserViewPopupWebContents,
+  ) => void;
+  readonly onDownloadChange: (
+    listener: (change: BrowserSessionDownloadChange) => void,
+  ) => () => void;
+  readonly onCertificateError: (
+    listener: (change: BrowserSessionCertificateErrorChange) => void,
+  ) => () => void;
+  readonly onWindowChange: (listener: () => void) => () => void;
+  readonly notifyStatus: (
+    windowId: string,
+    change: BrowserViewStatusChange,
+  ) => void;
+  readonly notifyFind: (
+    windowId: string,
+    change: BrowserViewFindChange,
+  ) => void;
+  readonly notifyDownload: (
+    windowId: string,
+    change: BrowserViewDownloadChange,
+  ) => void;
+  readonly notifyCertificateError: (
+    windowId: string,
+    change: BrowserViewCertificateErrorChange,
+  ) => void;
+  readonly notifyOpenTileRequest: (
+    windowId: string,
+    change: BrowserViewOpenTileRequest,
+  ) => void;
+  readonly notifySnapshotInvalidated: (
+    windowId: string,
+    change: BrowserViewSnapshotInvalidatedChange,
+  ) => void;
+  readonly notifyDebugSnapshot: (
+    windowId: string,
+    change: BrowserViewDebugSnapshotChange,
+  ) => void;
+  readonly notifyControlRevoked: (
+    windowId: string,
+    change: BrowserViewControlRevokedChange,
+  ) => void;
+  readonly scheduleDebugSnapshot: (
+    callback: () => void,
+  ) => BrowserViewScheduledTask;
+  readonly applyStorageState: (
+    input: BrowserViewStorageStateApply,
+  ) => Promise<BrowserViewStorageStateApplyResult>;
+  readonly captureStorageState: (
+    input: BrowserViewStorageStateCapture,
+    webContents: ManagedBrowserView["webContents"],
+  ) => Promise<BrowserViewStorageStateCaptureResult>;
+  readonly releaseGraceMs: number;
+}
+
+export interface BrowserViewScheduledTask {
+  cancel(): void;
+}
+
+export function scheduleBrowserViewDebugSnapshot(
+  callback: () => void,
+): BrowserViewScheduledTask {
+  const timer = setTimeout(callback, DEBUG_SNAPSHOT_COALESCE_MS);
+  return {
+    cancel: () => {
+      clearTimeout(timer);
+    },
+  };
+}
+
+interface BrowserViewEntry {
+  key: BrowserViewEntryKey;
+  readonly view: ManagedBrowserView;
+  readonly listeners: BrowserViewListeners;
+  parentWindowId: string | null;
+  desiredVisible: boolean;
+  bounds: BrowserViewBounds | null;
+  requestedUrl: string;
+  currentUrl: string;
+  currentTitle: string;
+  status: BrowserViewStatus;
+  statusReason: string | null;
+  findState: BrowserViewEntryFindState;
+  certificateError: BrowserViewCertificateErrorChange | null;
+  debugSession: BrowserDebugSession | null;
+  pickerSession: BrowserElementPickerSession | null;
+  devToolsWindow: BrowserViewDevToolsWindow | null;
+  viewportPreset: BrowserViewViewportPresetId;
+  overlayOwnerIds: string[];
+  overlaySnapshotStale: boolean;
+  control: BrowserViewControlState | null;
+}
+
+interface BrowserViewControlState {
+  readonly controlId: string;
+  readonly chatId: string;
+  readonly agentRunId: string | null;
+  readonly agentLabel: string;
+  readonly origin: string;
+  readonly expiresAt: number;
+  generation: number;
+  queue: Promise<unknown>;
+  readonly pendingSensitiveApprovals: Map<
+    string,
+    {
+      readonly actionId: string;
+      readonly action: BrowserViewControlAction["action"];
+    }
+  >;
+}
+
+interface BrowserViewEntryFindState {
+  readonly appRequestId: number;
+  readonly query: string;
+  readonly matchCase: boolean;
+  readonly sessionsByElectronRequestId: Map<
+    number,
+    BrowserViewEntryFindSession
+  >;
+}
+
+interface BrowserViewEntryFindSession {
+  readonly appRequestId: number;
+  readonly query: string;
+  readonly matchCase: boolean;
+}
+
+interface BrowserViewListeners {
+  readonly beforeInputEvent: (...args: unknown[]) => void;
+  readonly inputEvent: (...args: unknown[]) => void;
+  readonly contextMenu: (...args: unknown[]) => void;
+  readonly blur: (...args: unknown[]) => void;
+  readonly didCreateWindow: (...args: unknown[]) => void;
+  readonly didFrameNavigate: (...args: unknown[]) => void;
+  readonly didFrameFinishLoad: (...args: unknown[]) => void;
+  readonly didFinishLoad: (...args: unknown[]) => void;
+  readonly didNavigate: (...args: unknown[]) => void;
+  readonly didNavigateInPage: (...args: unknown[]) => void;
+  readonly foundInPage: (...args: unknown[]) => void;
+  readonly pageTitleUpdated: (...args: unknown[]) => void;
+  readonly paint: (...args: unknown[]) => void;
+  readonly renderProcessGone: (...args: unknown[]) => void;
+}
+
+interface BrowserViewEntryKey extends BrowserViewTileKey {
+  readonly windowId: string;
+}
+
+interface BrowserViewPopupEntry {
+  readonly popupId: string;
+  readonly openerKey: BrowserViewEntryKey;
+  readonly window: BrowserViewPopupWindow;
+  readonly listeners: BrowserViewPopupListeners;
+}
+
+interface BrowserViewPopupListeners {
+  readonly closed: () => void;
+  readonly renderProcessGone: (...args: unknown[]) => void;
+}
+
+export class BrowserViewManager {
+  private readonly createView: () => ManagedBrowserView;
+  private readonly getWindow: (windowId: string) => BrowserViewWindow | null;
+  private readonly createPopupWindowOptions: (
+    windowId: string,
+  ) => BrowserWindowConstructorOptions;
+  private readonly createDevToolsWindow: (
+    windowId: string,
+  ) => BrowserViewDevToolsWindow;
+  private readonly registerPopupWebContents: (
+    webContents: BrowserViewPopupWebContents,
+  ) => void;
+  private readonly notifyStatus: (
+    windowId: string,
+    change: BrowserViewStatusChange,
+  ) => void;
+  private readonly notifyFind: (
+    windowId: string,
+    change: BrowserViewFindChange,
+  ) => void;
+  private readonly notifyDownload: (
+    windowId: string,
+    change: BrowserViewDownloadChange,
+  ) => void;
+  private readonly notifyCertificateError: (
+    windowId: string,
+    change: BrowserViewCertificateErrorChange,
+  ) => void;
+  private readonly notifyOpenTileRequest: (
+    windowId: string,
+    change: BrowserViewOpenTileRequest,
+  ) => void;
+  private readonly notifySnapshotInvalidated: (
+    windowId: string,
+    change: BrowserViewSnapshotInvalidatedChange,
+  ) => void;
+  private readonly notifyDebugSnapshot: (
+    windowId: string,
+    change: BrowserViewDebugSnapshotChange,
+  ) => void;
+  private readonly notifyControlRevoked: (
+    windowId: string,
+    change: BrowserViewControlRevokedChange,
+  ) => void;
+  private readonly scheduleDebugSnapshot: (
+    callback: () => void,
+  ) => BrowserViewScheduledTask;
+  private readonly applyStorageStateToBrowser: (
+    input: BrowserViewStorageStateApply,
+  ) => Promise<BrowserViewStorageStateApplyResult>;
+  private readonly captureStorageStateFromBrowser: (
+    input: BrowserViewStorageStateCapture,
+    webContents: ManagedBrowserView["webContents"],
+  ) => Promise<BrowserViewStorageStateCaptureResult>;
+  private readonly releaseGraceMs: number;
+  private readonly offWindowChange: () => void;
+  private readonly offDownloadChange: () => void;
+  private readonly offCertificateError: () => void;
+  private readonly entriesByKey = new Map<string, BrowserViewEntry>();
+  private readonly popupEntriesByWebContentsId = new Map<
+    number,
+    BrowserViewPopupEntry
+  >();
+  private readonly releaseTimersByKey = new Map<string, NodeJS.Timeout>();
+  private readonly overlayEntryKeysByOwnerId = new Map<
+    string,
+    readonly string[]
+  >();
+  private readonly pendingDebugSnapshotsByKey = new Map<
+    string,
+    BrowserViewScheduledTask
+  >();
+
+  constructor(options: BrowserViewManagerOptions) {
+    this.createView = options.createView;
+    this.getWindow = options.getWindow;
+    this.createPopupWindowOptions = options.createPopupWindowOptions;
+    this.createDevToolsWindow = options.createDevToolsWindow;
+    this.registerPopupWebContents = options.registerPopupWebContents;
+    this.notifyStatus = options.notifyStatus;
+    this.notifyFind = options.notifyFind;
+    this.notifyDownload = options.notifyDownload;
+    this.notifyCertificateError = options.notifyCertificateError;
+    this.notifyOpenTileRequest = options.notifyOpenTileRequest;
+    this.notifySnapshotInvalidated = options.notifySnapshotInvalidated;
+    this.notifyDebugSnapshot = options.notifyDebugSnapshot;
+    this.notifyControlRevoked = options.notifyControlRevoked;
+    this.scheduleDebugSnapshot = options.scheduleDebugSnapshot;
+    this.applyStorageStateToBrowser = options.applyStorageState;
+    this.captureStorageStateFromBrowser = options.captureStorageState;
+    this.releaseGraceMs = options.releaseGraceMs;
+    this.offWindowChange = options.onWindowChange(() => {
+      this.reconcileWindowVisibility();
+    });
+    this.offDownloadChange = options.onDownloadChange((change) => {
+      this.handleDownloadChange(change);
+    });
+    this.offCertificateError = options.onCertificateError((change) => {
+      this.handleCertificateError(change);
+    });
+  }
+
+  upsertTile(windowId: string, input: BrowserViewTileUpsert): void {
+    const key = { ...input, windowId };
+    const keyId = entryKeyId(key);
+    const existing =
+      this.entriesByKey.get(keyId) ?? this.findTransferableEntry(key);
+    const entry =
+      existing === null
+        ? this.createEntry(key, input.url, input.viewportPreset)
+        : existing;
+
+    this.cancelRelease(entry);
+    if (entryKeyId(entry.key) !== keyId) {
+      this.rekeyEntry(entry, key);
+    }
+
+    entry.desiredVisible = input.visible;
+    if (entry.viewportPreset !== input.viewportPreset) {
+      entry.viewportPreset = input.viewportPreset;
+      this.applyEntryBounds(entry);
+    }
+    if (entry.requestedUrl !== input.url) {
+      this.navigate(entry, input.url);
+    }
+    this.attachToCurrentWindow(entry);
+    this.applyEntryVisibility(entry);
+  }
+
+  applyStorageState(
+    input: BrowserViewStorageStateApply,
+  ): Promise<BrowserViewStorageStateApplyResult> {
+    return this.applyStorageStateToBrowser(input);
+  }
+
+  captureStorageState(
+    windowId: string,
+    input: BrowserViewStorageStateCapture,
+  ): Promise<BrowserViewStorageStateCaptureResult> {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) {
+      throw new Error("Browser view tile is not available for storage capture");
+    }
+    return this.captureStorageStateFromBrowser(input, entry.view.webContents);
+  }
+
+  updateBounds(windowId: string, input: BrowserViewBoundsUpdate): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    const bounds = normalizeBounds(input.bounds);
+    entry.bounds = bounds;
+    this.applyEntryBounds(entry);
+    this.applyEntryVisibility(entry);
+  }
+
+  setViewportPreset(
+    windowId: string,
+    input: BrowserViewViewportPresetChange,
+  ): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    entry.viewportPreset = input.viewportPreset;
+    this.applyEntryBounds(entry);
+    this.applyEntryVisibility(entry);
+  }
+
+  releaseTile(windowId: string, input: BrowserViewTileKey): void {
+    const keyId = entryKeyId({ ...input, windowId });
+    const entry = this.entriesByKey.get(keyId);
+    if (entry === undefined) {
+      return;
+    }
+    this.endPickerSession(entry);
+    entry.desiredVisible = false;
+    entry.view.setVisible(false);
+    if (this.releaseTimersByKey.has(keyId)) return;
+    const timer = setTimeout(() => {
+      this.releaseTimersByKey.delete(keyId);
+      const releasedEntry = this.entriesByKey.get(keyId);
+      if (releasedEntry !== undefined) this.closeEntry(releasedEntry);
+    }, this.releaseGraceMs);
+    this.releaseTimersByKey.set(keyId, timer);
+  }
+
+  reloadTile(windowId: string, input: BrowserViewTileKey): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    this.setStatus(entry, "loading", null);
+    this.invalidateOverlaySnapshot(entry, "reload");
+    entry.view.webContents.reload();
+    this.applyEntryVisibility(entry);
+  }
+
+  goBack(windowId: string, input: BrowserViewTileKey): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    const navigationHistory = this.readNavigationHistory(entry);
+    if (navigationHistory === null) {
+      this.emitStatus(entry);
+      return;
+    }
+    const canGoBack = this.readCanGoBack(navigationHistory);
+    if (canGoBack !== true) {
+      this.emitStatus(entry);
+      return;
+    }
+    this.setStatus(entry, "loading", null);
+    this.invalidateOverlaySnapshot(entry, "go-back");
+    try {
+      navigationHistory.goBack();
+    } catch (err) {
+      log.warn("[browser-view] goBack failed", {
+        error: describeLogError(err),
+        webContentsId: entry.view.webContents.id,
+      });
+      this.emitStatus(entry);
+    }
+    this.applyEntryVisibility(entry);
+  }
+
+  goForward(windowId: string, input: BrowserViewTileKey): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    const navigationHistory = this.readNavigationHistory(entry);
+    if (navigationHistory === null) {
+      this.emitStatus(entry);
+      return;
+    }
+    const canGoForward = this.readCanGoForward(navigationHistory);
+    if (canGoForward !== true) {
+      this.emitStatus(entry);
+      return;
+    }
+    this.setStatus(entry, "loading", null);
+    this.invalidateOverlaySnapshot(entry, "go-forward");
+    try {
+      navigationHistory.goForward();
+    } catch (err) {
+      log.warn("[browser-view] goForward failed", {
+        error: describeLogError(err),
+        webContentsId: entry.view.webContents.id,
+      });
+      this.emitStatus(entry);
+    }
+    this.applyEntryVisibility(entry);
+  }
+
+  findInPage(windowId: string, input: BrowserViewFindRequest): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    if (input.query.length === 0) {
+      this.stopFindInPage(windowId, input);
+      return;
+    }
+    const sameAppSession =
+      entry.findState.appRequestId === input.requestId &&
+      entry.findState.query === input.query &&
+      entry.findState.matchCase === input.matchCase;
+    const sessionsByElectronRequestId = sameAppSession
+      ? new Map(entry.findState.sessionsByElectronRequestId)
+      : new Map<number, BrowserViewEntryFindSession>();
+    entry.findState = {
+      appRequestId: input.requestId,
+      query: input.query,
+      matchCase: input.matchCase,
+      sessionsByElectronRequestId,
+    };
+    this.emitFind(entry, {
+      appRequestId: input.requestId,
+      query: input.query,
+      matchCase: input.matchCase,
+      status: "searching",
+      current: 0,
+      total: 0,
+      finalUpdate: false,
+      errorMessage: null,
+    });
+    try {
+      const electronRequestId = entry.view.webContents.findInPage(input.query, {
+        forward: input.forward,
+        findNext: input.findNext,
+        matchCase: input.matchCase,
+      });
+      sessionsByElectronRequestId.set(electronRequestId, {
+        appRequestId: input.requestId,
+        query: input.query,
+        matchCase: input.matchCase,
+      });
+    } catch (err) {
+      log.warn("[browser-view] findInPage failed", {
+        error: describeLogError(err),
+        webContentsId: entry.view.webContents.id,
+      });
+      this.emitFind(entry, {
+        appRequestId: input.requestId,
+        query: input.query,
+        matchCase: input.matchCase,
+        status: "error",
+        current: 0,
+        total: 0,
+        finalUpdate: true,
+        errorMessage: "Browser search failed.",
+      });
+    }
+  }
+
+  stopFindInPage(windowId: string, input: BrowserViewFindStop): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    entry.findState = {
+      appRequestId: input.requestId,
+      query: "",
+      matchCase: entry.findState.matchCase,
+      sessionsByElectronRequestId: new Map(),
+    };
+    entry.view.webContents.stopFindInPage("clearSelection");
+    this.emitFind(entry, {
+      appRequestId: input.requestId,
+      query: "",
+      matchCase: entry.findState.matchCase,
+      status: "idle",
+      current: 0,
+      total: 0,
+      finalUpdate: true,
+      errorMessage: null,
+    });
+  }
+
+  zoomIn(windowId: string, input: BrowserViewTileKey): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    this.applyZoomStep(entry, 1);
+  }
+
+  zoomOut(windowId: string, input: BrowserViewTileKey): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    this.applyZoomStep(entry, -1);
+  }
+
+  resetZoom(windowId: string, input: BrowserViewTileKey): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    this.setEntryZoomFactor(entry, 1);
+  }
+
+  canTrustCertificateError(
+    windowId: string,
+    input: BrowserViewTileKey & { readonly certificateErrorId: string },
+  ): boolean {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined || entry.certificateError === null) return false;
+    return (
+      entry.certificateError.certificateErrorId === input.certificateErrorId
+    );
+  }
+
+  clearCertificateError(
+    windowId: string,
+    input: BrowserViewTileKey & { readonly certificateErrorId: string },
+  ): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    if (
+      entry.certificateError?.certificateErrorId !== input.certificateErrorId
+    ) {
+      return;
+    }
+    entry.certificateError = null;
+    this.reloadTile(windowId, input);
+  }
+
+  async occludeForOverlay(
+    windowId: string,
+    input: BrowserViewOverlayOcclusion,
+  ): Promise<BrowserViewOverlayOcclusionResult> {
+    const previousKeyIds =
+      this.overlayEntryKeysByOwnerId.get(input.overlayId) ?? [];
+    const nextKeyIds = input.tiles.map((tile) =>
+      entryKeyId({ ...tile, windowId }),
+    );
+    const nextKeyIdSet = new Set(nextKeyIds);
+    const released = previousKeyIds.filter((keyId) => !nextKeyIdSet.has(keyId));
+    const restoredTiles = this.releaseOverlayEntries(input.overlayId, released);
+    this.overlayEntryKeysByOwnerId.set(input.overlayId, nextKeyIds);
+
+    const snapshots = await Promise.all(
+      nextKeyIds.map((keyId) =>
+        this.occludeEntryForOverlay(input.overlayId, keyId),
+      ),
+    );
+
+    return {
+      snapshots: snapshots.filter(
+        (snapshot): snapshot is BrowserViewOverlaySnapshot => snapshot !== null,
+      ),
+      restoredTiles,
+    };
+  }
+
+  releaseOverlay(
+    _windowId: string,
+    input: BrowserViewOverlayRelease,
+  ): BrowserViewOverlayReleaseResult {
+    const keyIds = this.overlayEntryKeysByOwnerId.get(input.overlayId) ?? [];
+    this.overlayEntryKeysByOwnerId.delete(input.overlayId);
+    return {
+      restoredTiles: this.releaseOverlayEntries(input.overlayId, keyIds),
+    };
+  }
+
+  async capturePage(
+    windowId: string,
+    input: BrowserViewTileKey,
+  ): Promise<BrowserViewCapturePageResult> {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) {
+      throw new Error("Browser view tile is not available for capture");
+    }
+    assertEntryCapturable(entry, this.getWindow(entry.key.windowId));
+    const dataUrl = (await entry.view.webContents.capturePage()).toDataURL();
+    const image = parseCapturedDataUrl(dataUrl);
+    return {
+      ...toTileKey(entry.key),
+      ...image,
+      capturedAt: Date.now(),
+    };
+  }
+
+  getDebugSnapshot(
+    windowId: string,
+    input: BrowserViewTileKey,
+  ): BrowserViewDebugSnapshotChange {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) {
+      return {
+        ...input,
+        consoleEntries: [],
+        networkEntries: [],
+      };
+    }
+    return {
+      ...toTileKey(entry.key),
+      ...this.readDebugSnapshot(entry),
+    };
+  }
+
+  clearDebugEvents(windowId: string, input: BrowserViewTileKey): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    if (entry.debugSession === null) {
+      this.queueDebugSnapshot(entry);
+      return;
+    }
+    entry.debugSession.clear();
+  }
+
+  pickElement(
+    windowId: string,
+    input: BrowserViewTileKey,
+  ): Promise<BrowserViewElementPickResult> {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) {
+      return Promise.resolve({
+        outcome: "unavailable",
+        reason: "tile-not-found",
+      });
+    }
+    if (entry.status !== "ready") {
+      return Promise.resolve({
+        outcome: "unavailable",
+        reason: "page-not-ready",
+      });
+    }
+    this.endPickerSession(entry);
+    const session = new BrowserElementPickerSession(
+      entry.view.webContents,
+      entry.currentUrl,
+    );
+    entry.pickerSession = session;
+    const result = session.run();
+    void result.finally(() => {
+      if (entry.pickerSession === session) entry.pickerSession = null;
+    });
+    return result;
+  }
+
+  cancelElementPick(windowId: string, input: BrowserViewTileKey): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    // Same terminal path as navigation/close: settle the session and drop the
+    // reference so a renderer toggle-off leaves no active manager picker.
+    this.endPickerSession(entry);
+  }
+
+  openDevTools(windowId: string, input: BrowserViewTileKey): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    this.destroyDevToolsWindow(entry);
+    const devToolsWindow = this.createDevToolsWindow(windowId);
+    entry.devToolsWindow = devToolsWindow;
+    entry.view.webContents.setDevToolsWebContents(devToolsWindow.webContents);
+    entry.view.webContents.openDevTools({
+      mode: "detach",
+      activate: true,
+      title: DEVTOOLS_TITLE,
+    });
+  }
+
+  grantControl(
+    windowId: string,
+    input: BrowserViewControlGrant,
+  ): BrowserViewControlGrantResult {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) {
+      return { status: "denied", reason: "Browser tile is not available." };
+    }
+    if (entry.control !== null && entry.control.controlId !== input.controlId) {
+      return { status: "queued", controlId: input.controlId };
+    }
+    entry.control = {
+      controlId: input.controlId,
+      chatId: input.chatId,
+      agentRunId: input.agentRunId,
+      agentLabel: input.agentLabel,
+      origin: input.origin,
+      expiresAt: input.expiresAt,
+      generation: 0,
+      queue: Promise.resolve(null),
+      pendingSensitiveApprovals: new Map(),
+    };
+    return { status: "granted", controlId: input.controlId };
+  }
+
+  revokeControl(windowId: string, input: BrowserViewControlRevoke): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    this.cancelControl(entry, input.reason, input.controlId);
+  }
+
+  executeControlAction(
+    windowId: string,
+    input: BrowserViewControlAction,
+  ): Promise<BrowserViewControlActionResult> {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) {
+      return Promise.resolve({
+        status: "denied",
+        reason: "Browser tile is not available.",
+      });
+    }
+    const control = entry.control;
+    if (control === null || control.controlId !== input.controlId) {
+      return Promise.resolve({
+        status: "denied",
+        reason: "Browser control lock is not active.",
+      });
+    }
+    if (control.expiresAt <= Date.now()) {
+      this.cancelControl(entry, "control grant expired", input.controlId);
+      return Promise.resolve({
+        status: "cancelled",
+        reason: "control grant expired",
+      });
+    }
+    const generation = control.generation;
+    const run = control.queue.then(async () => {
+      const latest = entry.control;
+      if (
+        latest === null ||
+        latest.controlId !== input.controlId ||
+        latest.generation !== generation
+      ) {
+        return {
+          status: "cancelled" as const,
+          reason: "user took over",
+        };
+      }
+      const result = await this.sendControlCommand(entry, input);
+      const after = entry.control;
+      if (
+        after === null ||
+        after.controlId !== input.controlId ||
+        after.generation !== generation
+      ) {
+        return {
+          status: "cancelled" as const,
+          reason: "user took over",
+        };
+      }
+      return result;
+    });
+    control.queue = run.catch(() => null);
+    return run.catch((error: unknown) => ({
+      status: "denied",
+      reason: error instanceof Error ? error.message : String(error),
+    }));
+  }
+
+  private endPickerSession(entry: BrowserViewEntry): void {
+    const session = entry.pickerSession;
+    if (session === null) return;
+    entry.pickerSession = null;
+    session.dispose();
+  }
+
+  dispose(): void {
+    this.offWindowChange();
+    this.offDownloadChange();
+    this.offCertificateError();
+    for (const timer of this.releaseTimersByKey.values()) {
+      clearTimeout(timer);
+    }
+    this.releaseTimersByKey.clear();
+    for (const entry of Array.from(this.entriesByKey.values())) {
+      this.closeEntry(entry);
+    }
+    for (const popup of Array.from(this.popupEntriesByWebContentsId.values())) {
+      this.closePopupEntry(popup, true);
+    }
+    for (const task of this.pendingDebugSnapshotsByKey.values()) {
+      task.cancel();
+    }
+    this.pendingDebugSnapshotsByKey.clear();
+    this.overlayEntryKeysByOwnerId.clear();
+  }
+
+  snapshotForTests(): ReadonlyArray<{
+    readonly key: BrowserViewEntryKey;
+    readonly webContentsId: number;
+    readonly parentWindowId: string | null;
+    readonly visible: boolean;
+    readonly status: BrowserViewStatus;
+    readonly requestedUrl: string;
+    readonly bounds: BrowserViewBounds | null;
+    readonly overlayOwnerIds: readonly string[];
+    readonly overlaySnapshotStale: boolean;
+  }> {
+    return Array.from(this.entriesByKey.values()).map((entry) => ({
+      key: entry.key,
+      webContentsId: entry.view.webContents.id,
+      parentWindowId: entry.parentWindowId,
+      visible: entry.desiredVisible,
+      status: entry.status,
+      requestedUrl: entry.requestedUrl,
+      bounds: entry.bounds,
+      overlayOwnerIds: entry.overlayOwnerIds,
+      overlaySnapshotStale: entry.overlaySnapshotStale,
+    }));
+  }
+
+  private createEntry(
+    key: BrowserViewEntryKey,
+    requestedUrl: string,
+    viewportPreset: BrowserViewViewportPresetId,
+  ): BrowserViewEntry {
+    const view = this.createView();
+    const entry: BrowserViewEntry = {
+      key,
+      view,
+      listeners: {
+        beforeInputEvent: (...args) => {
+          this.handleBeforeInputEvent(entry, args);
+        },
+        inputEvent: () => {
+          this.handleNativeUserInput(entry, "user took over");
+        },
+        contextMenu: () => {
+          this.handleNativeUserInput(entry, "user took over");
+        },
+        blur: () => {
+          // Electron does not expose every file-picker/native-modal seam for
+          // embedded views, so focus loss revokes control conservatively.
+          this.handleNativeUserInput(
+            entry,
+            "user took over via native dialog or focus change",
+          );
+        },
+        didCreateWindow: (...args) => {
+          this.handleDidCreateWindow(entry, args);
+        },
+        didFrameNavigate: (...args) => {
+          this.handleCommittedNavigation(entry, args);
+        },
+        didFrameFinishLoad: () => {
+          this.invalidateOverlaySnapshot(entry, "frame-finish-load");
+        },
+        didFinishLoad: () => {
+          this.invalidateOverlaySnapshot(entry, "finish-load");
+        },
+        didNavigate: (...args) => {
+          this.handleCommittedNavigation(entry, args);
+        },
+        didNavigateInPage: (...args) => {
+          this.handleInPageNavigation(entry, args);
+        },
+        foundInPage: (...args) => {
+          this.handleFoundInPage(entry, args);
+        },
+        pageTitleUpdated: () => {
+          entry.currentTitle = entry.view.webContents.getTitle();
+          this.invalidateOverlaySnapshot(entry, "page-title-updated");
+          this.emitStatus(entry);
+        },
+        paint: () => {
+          this.invalidateOverlaySnapshot(entry, "paint");
+        },
+        renderProcessGone: (...args) => {
+          this.handleRenderProcessGone(entry, args);
+        },
+      },
+      parentWindowId: null,
+      desiredVisible: false,
+      bounds: null,
+      requestedUrl,
+      currentUrl: requestedUrl,
+      currentTitle: "",
+      status: "loading",
+      statusReason: null,
+      findState: {
+        appRequestId: 0,
+        query: "",
+        matchCase: false,
+        sessionsByElectronRequestId: new Map(),
+      },
+      certificateError: null,
+      debugSession: null,
+      pickerSession: null,
+      devToolsWindow: null,
+      viewportPreset,
+      overlayOwnerIds: [],
+      overlaySnapshotStale: false,
+      control: null,
+    };
+    const webContents = view.webContents;
+    webContents.setWindowOpenHandler((details) =>
+      this.handleWindowOpen(entry, details),
+    );
+    webContents.on("before-input-event", entry.listeners.beforeInputEvent);
+    webContents.on("input-event", entry.listeners.inputEvent);
+    webContents.on("context-menu", entry.listeners.contextMenu);
+    webContents.on("blur", entry.listeners.blur);
+    webContents.on("did-create-window", entry.listeners.didCreateWindow);
+    webContents.on("did-frame-navigate", entry.listeners.didFrameNavigate);
+    webContents.on("did-frame-finish-load", entry.listeners.didFrameFinishLoad);
+    webContents.on("did-finish-load", entry.listeners.didFinishLoad);
+    webContents.on("did-navigate", entry.listeners.didNavigate);
+    webContents.on("did-navigate-in-page", entry.listeners.didNavigateInPage);
+    webContents.on("found-in-page", entry.listeners.foundInPage);
+    webContents.on("page-title-updated", entry.listeners.pageTitleUpdated);
+    webContents.on("paint", entry.listeners.paint);
+    webContents.on("render-process-gone", entry.listeners.renderProcessGone);
+    this.entriesByKey.set(entryKeyId(key), entry);
+    this.navigate(entry, requestedUrl);
+    return entry;
+  }
+
+  private findTransferableEntry(
+    key: BrowserViewEntryKey,
+  ): BrowserViewEntry | null {
+    for (const entry of this.entriesByKey.values()) {
+      if (
+        entry.key.tileInstanceId === key.tileInstanceId &&
+        entry.key.pageSessionId === key.pageSessionId
+      ) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  private rekeyEntry(entry: BrowserViewEntry, key: BrowserViewEntryKey): void {
+    this.cancelDebugSnapshot(entry);
+    this.entriesByKey.delete(entryKeyId(entry.key));
+    entry.key = key;
+    this.entriesByKey.set(entryKeyId(key), entry);
+    this.attachToCurrentWindow(entry);
+    this.emitStatus(entry);
+    this.queueDebugSnapshot(entry);
+  }
+
+  private cancelRelease(entry: BrowserViewEntry): void {
+    const candidates = Array.from(this.releaseTimersByKey.entries()).filter(
+      ([keyId]) => {
+        const released = this.entriesByKey.get(keyId);
+        return released === entry;
+      },
+    );
+    for (const [keyId, timer] of candidates) {
+      clearTimeout(timer);
+      this.releaseTimersByKey.delete(keyId);
+    }
+  }
+
+  private navigate(entry: BrowserViewEntry, url: string): void {
+    this.endPickerSession(entry);
+    entry.requestedUrl = url;
+    entry.status = "loading";
+    entry.statusReason = null;
+    entry.certificateError = null;
+    this.invalidateOverlaySnapshot(entry, "navigation-started");
+    entry.view.webContents.loadURL(url).catch((err: unknown) => {
+      log.warn("[browser-view] loadURL failed", {
+        error: describeLogError(err),
+        url,
+      });
+      if (!this.isEntryCurrent(entry)) return;
+      this.setStatus(entry, "dead", "Navigation failed");
+      this.applyEntryVisibility(entry);
+    });
+    this.emitStatus(entry);
+  }
+
+  private handleCommittedNavigation(
+    entry: BrowserViewEntry,
+    args: readonly unknown[],
+  ): void {
+    const isMainFrame = readMainFrameFlag(args);
+    if (!isMainFrame) return;
+    const url = readNavigationUrl(args) ?? entry.view.webContents.getURL();
+    entry.currentUrl = url;
+    entry.requestedUrl = url;
+    entry.currentTitle = entry.view.webContents.getTitle();
+    entry.certificateError = null;
+    this.cancelControl(entry, "navigation committed", null);
+    this.invalidateOverlaySnapshot(entry, "navigation-committed");
+    this.setStatus(entry, "ready", null);
+    this.enableDebugAfterCommit(entry);
+    this.applyEntryVisibility(entry);
+  }
+
+  private handleInPageNavigation(
+    entry: BrowserViewEntry,
+    args: readonly unknown[],
+  ): void {
+    if (!readInPageMainFrameFlag(args)) return;
+    const url = readNavigationUrl(args) ?? entry.view.webContents.getURL();
+    entry.currentUrl = url;
+    entry.requestedUrl = url;
+    entry.currentTitle = entry.view.webContents.getTitle();
+    // Same-document navigation (SPA pushState) keeps status "ready", so the
+    // setStatus choke point never fires. End the picker here too - its captured
+    // pageUrl is now stale and the shield should not survive the route change.
+    this.endPickerSession(entry);
+    this.cancelControl(entry, "navigation committed", null);
+    this.invalidateOverlaySnapshot(entry, "in-page-navigation");
+    this.emitStatus(entry);
+  }
+
+  private handleRenderProcessGone(
+    entry: BrowserViewEntry,
+    args: readonly unknown[],
+  ): void {
+    const detail = readRenderGoneReason(args);
+    this.endPickerSession(entry);
+    this.cancelControl(entry, "renderer process gone", null);
+    this.invalidateOverlaySnapshot(entry, "render-process-gone");
+    this.setStatus(entry, "dead", detail);
+    this.applyEntryVisibility(entry);
+  }
+
+  private handleFoundInPage(
+    entry: BrowserViewEntry,
+    args: readonly unknown[],
+  ): void {
+    const result = readFoundInPageResult(args);
+    if (result === null) return;
+    const session = entry.findState.sessionsByElectronRequestId.get(
+      result.requestId,
+    );
+    if (session === undefined) return;
+    this.emitFind(entry, {
+      appRequestId: session.appRequestId,
+      query: session.query,
+      matchCase: session.matchCase,
+      status: "ready",
+      current: result.current,
+      total: result.total,
+      finalUpdate: result.finalUpdate,
+      errorMessage: null,
+    });
+  }
+
+  private handleBeforeInputEvent(
+    entry: BrowserViewEntry,
+    args: readonly unknown[],
+  ): void {
+    const input = readBeforeInput(args);
+    if (input === null) return;
+    this.handleNativeUserInput(entry, "user took over");
+    if (!input.modifier) return;
+    const step = browserZoomStepForKey(input.key);
+    if (step === null) return;
+    preventInputDefault(args);
+    if (step === 0) {
+      this.setEntryZoomFactor(entry, 1);
+      return;
+    }
+    this.applyZoomStep(entry, step);
+  }
+
+  private handleWindowOpen(
+    entry: BrowserViewEntry,
+    details: BrowserViewWindowOpenDetails,
+  ): BrowserViewWindowOpenResult {
+    // Decision #22: real popups keep opener, while target=_blank gets a tile.
+    // Electron exposes featureless scripted window.open the same as _blank
+    // tab opens, so the available guardrail is non-empty popup features.
+    if (windowOpenShouldCreateTile(details)) {
+      this.notifyOpenTileRequest(entry.key.windowId, {
+        ...toTileKey(entry.key),
+        url: normalizeOpenedUrl(details.url, entry.currentUrl),
+        disposition: details.disposition,
+      });
+      return { action: "deny" };
+    }
+    return {
+      action: "allow",
+      overrideBrowserWindowOptions: this.createPopupWindowOptions(
+        entry.key.windowId,
+      ),
+      outlivesOpener: false,
+    };
+  }
+
+  private handleDidCreateWindow(
+    entry: BrowserViewEntry,
+    args: readonly unknown[],
+  ): void {
+    const window = readPopupWindow(args);
+    if (window === null) {
+      log.warn("[browser-view] popup created without trackable window", {
+        webContentsId: entry.view.webContents.id,
+      });
+      return;
+    }
+    this.registerPopupWebContents(window.webContents);
+    const popupId = `${entry.key.tileInstanceId}:${window.webContents.id}`;
+    const popupEntry: BrowserViewPopupEntry = {
+      popupId,
+      openerKey: entry.key,
+      window,
+      listeners: {
+        closed: () => {
+          this.closePopupEntry(popupEntry, false);
+        },
+        renderProcessGone: (...renderArgs) => {
+          log.warn("[browser-view] popup renderer gone", {
+            popupId,
+            reason: readRenderGoneReason(renderArgs),
+          });
+        },
+      },
+    };
+    this.popupEntriesByWebContentsId.set(window.webContents.id, popupEntry);
+    window.on("closed", popupEntry.listeners.closed);
+    window.webContents.on(
+      "render-process-gone",
+      popupEntry.listeners.renderProcessGone,
+    );
+    log.info("[browser-view] popup created", {
+      popupId,
+      openerWebContentsId: entry.view.webContents.id,
+      popupWebContentsId: window.webContents.id,
+    });
+  }
+
+  private closePopupEntry(
+    entry: BrowserViewPopupEntry,
+    closeWindow: boolean,
+  ): void {
+    this.popupEntriesByWebContentsId.delete(entry.window.webContents.id);
+    entry.window.off("closed", entry.listeners.closed);
+    entry.window.webContents.off(
+      "render-process-gone",
+      entry.listeners.renderProcessGone,
+    );
+    if (closeWindow && !entry.window.isDestroyed()) {
+      entry.window.close();
+    }
+  }
+
+  private handleDownloadChange(change: BrowserSessionDownloadChange): void {
+    const entry = this.findEntryByWebContentsId(change.webContentsId);
+    if (entry !== null) {
+      this.notifyDownload(entry.key.windowId, {
+        ...toTileKey(entry.key),
+        downloadId: change.downloadId,
+        url: change.url,
+        filename: change.filename,
+        mimeType: change.mimeType,
+        totalBytes: change.totalBytes,
+        receivedBytes: change.receivedBytes,
+        state: change.state,
+        savePath: change.savePath,
+        dangerType: change.dangerType,
+        canCancel: change.canCancel,
+      });
+      return;
+    }
+    const popup = this.popupEntriesByWebContentsId.get(change.webContentsId);
+    if (popup !== undefined) {
+      log.info("[browser-view] popup download state", {
+        popupId: popup.popupId,
+        state: change.state,
+        filename: change.filename,
+      });
+    }
+  }
+
+  private handleCertificateError(
+    change: BrowserSessionCertificateErrorChange,
+  ): void {
+    const entry = this.findEntryByWebContentsId(change.webContentsId);
+    if (entry !== null) {
+      const tileChange: BrowserViewCertificateErrorChange = {
+        ...toTileKey(entry.key),
+        certificateErrorId: change.certificateErrorId,
+        url: change.url,
+        hostname: change.hostname,
+        error: change.error,
+        fingerprint: change.fingerprint,
+        subject: change.subject,
+        issuer: change.issuer,
+      };
+      entry.certificateError = tileChange;
+      this.notifyCertificateError(entry.key.windowId, tileChange);
+      this.setStatus(entry, "dead", "Certificate error");
+      this.applyEntryVisibility(entry);
+      return;
+    }
+    const popup = this.popupEntriesByWebContentsId.get(change.webContentsId);
+    if (popup !== undefined) {
+      log.warn("[browser-view] popup certificate error", {
+        popupId: popup.popupId,
+        hostname: change.hostname,
+        error: change.error,
+      });
+    }
+  }
+
+  private findEntryByWebContentsId(
+    webContentsId: number,
+  ): BrowserViewEntry | null {
+    for (const entry of this.entriesByKey.values()) {
+      if (entry.view.webContents.id === webContentsId) return entry;
+    }
+    return null;
+  }
+
+  private async occludeEntryForOverlay(
+    overlayId: string,
+    keyId: string,
+  ): Promise<BrowserViewOverlaySnapshot | null> {
+    const entry = this.entriesByKey.get(keyId);
+    if (entry === undefined) return null;
+    if (entry.overlayOwnerIds.includes(overlayId)) return null;
+
+    if (entry.overlayOwnerIds.length > 0) {
+      entry.overlayOwnerIds.push(overlayId);
+      this.applyEntryVisibility(entry);
+      return null;
+    }
+
+    let dataUrl: string | null = null;
+    try {
+      dataUrl = (await entry.view.webContents.capturePage()).toDataURL();
+    } catch (err) {
+      log.warn("[browser-view] overlay snapshot capture failed", {
+        error: describeLogError(err),
+        webContentsId: entry.view.webContents.id,
+      });
+    }
+
+    const activeKeyIds = this.overlayEntryKeysByOwnerId.get(overlayId) ?? [];
+    if (!activeKeyIds.includes(keyId)) return null;
+    const currentEntry = this.entriesByKey.get(keyId);
+    if (currentEntry === undefined) return null;
+
+    currentEntry.overlayOwnerIds.push(overlayId);
+    currentEntry.overlaySnapshotStale = false;
+    currentEntry.view.setVisible(false);
+    return {
+      ...toTileKey(currentEntry.key),
+      dataUrl,
+      stale: false,
+    };
+  }
+
+  private releaseOverlayEntries(
+    overlayId: string,
+    keyIds: readonly string[],
+  ): BrowserViewTileKey[] {
+    return keyIds
+      .slice()
+      .reverse()
+      .flatMap((keyId): BrowserViewTileKey[] => {
+        const entry = this.entriesByKey.get(keyId);
+        if (entry === undefined) return [];
+        entry.overlayOwnerIds = entry.overlayOwnerIds.filter(
+          (ownerId) => ownerId !== overlayId,
+        );
+        if (entry.overlayOwnerIds.length > 0) {
+          this.applyEntryVisibility(entry);
+          return [];
+        }
+        entry.overlaySnapshotStale = false;
+        this.applyEntryVisibility(entry);
+        return [toTileKey(entry.key)];
+      });
+  }
+
+  private enableDebugAfterCommit(entry: BrowserViewEntry): void {
+    this.ensureDebugSession(entry).enableAfterCommit();
+  }
+
+  private ensureDebugSession(entry: BrowserViewEntry): BrowserDebugSession {
+    if (entry.debugSession !== null) return entry.debugSession;
+    const session = new BrowserDebugSession({
+      webContents: entry.view.webContents,
+      onSnapshotChange: () => {
+        this.queueDebugSnapshot(entry);
+      },
+      onDetached: (reason) => {
+        log.warn("[browser-view] debugger detached", {
+          reason,
+          webContentsId: entry.view.webContents.id,
+        });
+      },
+    });
+    entry.debugSession = session;
+    return session;
+  }
+
+  private readDebugSnapshot(
+    entry: BrowserViewEntry,
+  ): BrowserViewDebugSnapshotData {
+    return (
+      entry.debugSession?.snapshot() ?? {
+        consoleEntries: [],
+        networkEntries: [],
+      }
+    );
+  }
+
+  private queueDebugSnapshot(entry: BrowserViewEntry): void {
+    const keyId = entryKeyId(entry.key);
+    if (this.pendingDebugSnapshotsByKey.has(keyId)) return;
+    const task = this.scheduleDebugSnapshot(() => {
+      this.pendingDebugSnapshotsByKey.delete(keyId);
+      if (this.entriesByKey.get(keyId) !== entry) return;
+      this.emitDebugSnapshotNow(entry);
+    });
+    this.pendingDebugSnapshotsByKey.set(keyId, task);
+  }
+
+  private cancelDebugSnapshot(entry: BrowserViewEntry): void {
+    const keyId = entryKeyId(entry.key);
+    const task = this.pendingDebugSnapshotsByKey.get(keyId);
+    if (task === undefined) return;
+    task.cancel();
+    this.pendingDebugSnapshotsByKey.delete(keyId);
+  }
+
+  private emitDebugSnapshotNow(entry: BrowserViewEntry): void {
+    this.notifyDebugSnapshot(entry.key.windowId, {
+      ...toTileKey(entry.key),
+      ...this.readDebugSnapshot(entry),
+    });
+  }
+
+  private setStatus(
+    entry: BrowserViewEntry,
+    status: BrowserViewStatus,
+    reason: string | null,
+  ): void {
+    if (!this.isEntryCurrent(entry)) return;
+    if (entry.status === status && entry.statusReason === reason) return;
+    // Any move out of "ready" (reload/back/forward, cert error, renderer gone)
+    // invalidates the isolated world the picker runs in - end it so the awaiting
+    // renderer promise settles instead of hanging over a stale page.
+    if (status !== "ready") {
+      this.endPickerSession(entry);
+      this.cancelControl(entry, reason ?? "browser tile is not ready", null);
+    }
+    entry.status = status;
+    entry.statusReason = reason;
+    this.emitStatus(entry);
+  }
+
+  private emitStatus(entry: BrowserViewEntry): void {
+    const webContents = this.readLiveWebContents(entry);
+    if (webContents === null) return;
+    const navigationState = this.readNavigationState(webContents);
+    if (navigationState === null) return;
+    const zoomPercent = this.readZoomPercent(webContents);
+    if (zoomPercent === null) return;
+    this.notifyStatus(entry.key.windowId, {
+      viewTabId: entry.key.viewTabId,
+      paneId: entry.key.paneId,
+      tileInstanceId: entry.key.tileInstanceId,
+      pageSessionId: entry.key.pageSessionId,
+      url: entry.currentUrl,
+      title: entry.currentTitle,
+      status: entry.status,
+      reason: entry.statusReason,
+      canGoBack: navigationState.canGoBack,
+      canGoForward: navigationState.canGoForward,
+      zoomPercent,
+    });
+  }
+
+  private isEntryCurrent(entry: BrowserViewEntry): boolean {
+    return this.entriesByKey.get(entryKeyId(entry.key)) === entry;
+  }
+
+  private readLiveWebContents(
+    entry: BrowserViewEntry,
+  ): BrowserViewWebContents | null {
+    if (!this.isEntryCurrent(entry)) return null;
+    const webContents = entry.view.webContents;
+    if (webContents.isDestroyed()) return null;
+    return webContents;
+  }
+
+  private readNavigationHistory(
+    entry: BrowserViewEntry,
+  ): BrowserViewNavigationHistory | null {
+    const webContents = this.readLiveWebContents(entry);
+    if (webContents === null) return null;
+    return webContents.navigationHistory ?? null;
+  }
+
+  private readNavigationState(
+    webContents: BrowserViewWebContents,
+  ): { readonly canGoBack: boolean; readonly canGoForward: boolean } | null {
+    const navigationHistory = webContents.navigationHistory;
+    if (navigationHistory === undefined) return null;
+    const canGoBack = this.readCanGoBack(navigationHistory);
+    const canGoForward = this.readCanGoForward(navigationHistory);
+    if (canGoBack === null || canGoForward === null) return null;
+    return { canGoBack, canGoForward };
+  }
+
+  private readCanGoBack(
+    navigationHistory: BrowserViewNavigationHistory,
+  ): boolean | null {
+    try {
+      return navigationHistory.canGoBack();
+    } catch {
+      return null;
+    }
+  }
+
+  private readCanGoForward(
+    navigationHistory: BrowserViewNavigationHistory,
+  ): boolean | null {
+    try {
+      return navigationHistory.canGoForward();
+    } catch {
+      return null;
+    }
+  }
+
+  private readZoomPercent(webContents: BrowserViewWebContents): number | null {
+    try {
+      return zoomPercentFromFactor(webContents.getZoomFactor());
+    } catch {
+      return null;
+    }
+  }
+
+  private emitFind(
+    entry: BrowserViewEntry,
+    result: {
+      readonly appRequestId: number;
+      readonly query: string;
+      readonly matchCase: boolean;
+      readonly status: BrowserViewFindChange["status"];
+      readonly current: number;
+      readonly total: number;
+      readonly finalUpdate: boolean;
+      readonly errorMessage: string | null;
+    },
+  ): void {
+    this.notifyFind(entry.key.windowId, {
+      ...toTileKey(entry.key),
+      requestId: result.appRequestId,
+      query: result.query,
+      matchCase: result.matchCase,
+      status: result.status,
+      current: result.current,
+      total: result.total,
+      finalUpdate: result.finalUpdate,
+      errorMessage: result.errorMessage,
+    });
+  }
+
+  private applyZoomStep(entry: BrowserViewEntry, direction: 1 | -1): void {
+    const current = entry.view.webContents.getZoomFactor();
+    const next = nextZoomFactor(current, direction);
+    this.setEntryZoomFactor(entry, next);
+  }
+
+  private setEntryZoomFactor(entry: BrowserViewEntry, factor: number): void {
+    entry.view.webContents.setZoomFactor(factor);
+    this.emitStatus(entry);
+  }
+
+  private attachToCurrentWindow(entry: BrowserViewEntry): void {
+    const targetWindow = this.getWindow(entry.key.windowId);
+    const currentWindow =
+      entry.parentWindowId === null
+        ? null
+        : this.getWindow(entry.parentWindowId);
+    if (entry.parentWindowId === entry.key.windowId && targetWindow !== null) {
+      return;
+    }
+    if (currentWindow !== null) {
+      currentWindow.contentView.removeChildView(entry.view);
+    }
+    entry.parentWindowId = null;
+    if (targetWindow === null || targetWindow.isDestroyed()) return;
+    targetWindow.contentView.addChildView(entry.view);
+    entry.parentWindowId = entry.key.windowId;
+  }
+
+  private applyEntryBounds(entry: BrowserViewEntry): void {
+    if (entry.bounds === null) return;
+    const bounds = effectiveViewportBounds(entry.bounds, entry.viewportPreset);
+    if (bounds.width > 0 && bounds.height > 0) {
+      entry.view.setBounds(bounds);
+    }
+  }
+
+  private applyEntryVisibility(entry: BrowserViewEntry): void {
+    const window = this.getWindow(entry.key.windowId);
+    const hasUsableBounds =
+      entry.bounds !== null &&
+      entry.bounds.width > 0 &&
+      entry.bounds.height > 0;
+    const visible =
+      entry.desiredVisible &&
+      entry.overlayOwnerIds.length === 0 &&
+      hasUsableBounds &&
+      entry.status !== "dead" &&
+      window !== null &&
+      !window.isDestroyed() &&
+      window.isVisible() &&
+      !window.isMinimized();
+    entry.view.setVisible(visible);
+  }
+
+  private reconcileWindowVisibility(): void {
+    for (const entry of Array.from(this.entriesByKey.values())) {
+      const window = this.getWindow(entry.key.windowId);
+      if (window === null || window.isDestroyed()) {
+        this.closeEntry(entry);
+        continue;
+      }
+      this.attachToCurrentWindow(entry);
+      this.applyEntryVisibility(entry);
+    }
+  }
+
+  private closeEntry(entry: BrowserViewEntry): void {
+    this.destroyDevToolsWindow(entry);
+    this.cancelControl(entry, "browser tile closed", null);
+    const keyId = entryKeyId(entry.key);
+    this.entriesByKey.delete(keyId);
+    const timer = this.releaseTimersByKey.get(keyId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.releaseTimersByKey.delete(keyId);
+    }
+    const window =
+      entry.parentWindowId === null
+        ? null
+        : this.getWindow(entry.parentWindowId);
+    if (window !== null && !window.isDestroyed()) {
+      window.contentView.removeChildView(entry.view);
+    }
+    this.cancelDebugSnapshot(entry);
+    const webContents = entry.view.webContents;
+    webContents.off("before-input-event", entry.listeners.beforeInputEvent);
+    webContents.off("input-event", entry.listeners.inputEvent);
+    webContents.off("context-menu", entry.listeners.contextMenu);
+    webContents.off("blur", entry.listeners.blur);
+    webContents.off("did-create-window", entry.listeners.didCreateWindow);
+    webContents.off("did-frame-navigate", entry.listeners.didFrameNavigate);
+    webContents.off(
+      "did-frame-finish-load",
+      entry.listeners.didFrameFinishLoad,
+    );
+    webContents.off("did-finish-load", entry.listeners.didFinishLoad);
+    webContents.off("did-navigate", entry.listeners.didNavigate);
+    webContents.off("did-navigate-in-page", entry.listeners.didNavigateInPage);
+    webContents.off("found-in-page", entry.listeners.foundInPage);
+    webContents.off("page-title-updated", entry.listeners.pageTitleUpdated);
+    webContents.off("paint", entry.listeners.paint);
+    webContents.off("render-process-gone", entry.listeners.renderProcessGone);
+    entry.pickerSession?.dispose();
+    entry.pickerSession = null;
+    entry.debugSession?.dispose();
+    entry.debugSession = null;
+    entry.view.setVisible(false);
+    webContents.close();
+  }
+
+  private destroyDevToolsWindow(entry: BrowserViewEntry): void {
+    const devToolsWindow = entry.devToolsWindow;
+    entry.devToolsWindow = null;
+    if (devToolsWindow === null || devToolsWindow.isDestroyed()) return;
+    devToolsWindow.destroy();
+  }
+
+  private invalidateOverlaySnapshot(
+    entry: BrowserViewEntry,
+    reason: string,
+  ): void {
+    if (entry.overlayOwnerIds.length === 0) return;
+    if (!entry.overlaySnapshotStale) {
+      entry.overlaySnapshotStale = true;
+    }
+    this.notifySnapshotInvalidated(entry.key.windowId, {
+      ...toTileKey(entry.key),
+      reason,
+    });
+  }
+
+  private handleNativeUserInput(entry: BrowserViewEntry, reason: string): void {
+    this.cancelControl(entry, reason, null);
+  }
+
+  private cancelControl(
+    entry: BrowserViewEntry,
+    reason: string,
+    controlId: string | null,
+  ): void {
+    const control = entry.control;
+    if (control === null) return;
+    if (controlId !== null && control.controlId !== controlId) return;
+    control.generation += 1;
+    entry.control = null;
+    this.notifyControlRevoked(entry.key.windowId, {
+      ...entry.key,
+      controlId: control.controlId,
+      reason,
+    });
+    log.info("[browser-view] visible tile control revoked", {
+      tileInstanceId: entry.key.tileInstanceId,
+      controlId: control.controlId,
+      reason,
+    });
+  }
+
+  private sendControlCommand(
+    entry: BrowserViewEntry,
+    input: BrowserViewControlAction,
+  ): Promise<BrowserViewControlActionResult> {
+    const browserDebugger = entry.view.webContents.debugger;
+    if (!browserDebugger.isAttached()) {
+      browserDebugger.attach("1.3");
+    }
+    if (input.action.kind === "navigate") {
+      return browserDebugger
+        .sendCommand("Page.navigate", { url: input.action.url }, undefined)
+        .then((value) => ({ status: "completed" as const, value }));
+    }
+    if (input.action.kind === "scroll") {
+      return browserDebugger
+        .sendCommand(
+          "Input.dispatchMouseEvent",
+          {
+            type: "mouseWheel",
+            x: 1,
+            y: 1,
+            deltaX: input.action.deltaX,
+            deltaY: input.action.deltaY,
+          },
+          undefined,
+        )
+        .then((value) => ({ status: "completed" as const, value }));
+    }
+    if (input.action.kind === "click") {
+      return this.clickSelector(browserDebugger, input.action.selector).then(
+        (value) => ({ status: "completed" as const, value }),
+      );
+    }
+    return this.typeIntoSelector(entry.control, browserDebugger, input);
+  }
+
+  private async clickSelector(
+    browserDebugger: BrowserViewDebugger,
+    selector: string,
+  ): Promise<unknown> {
+    const point = await this.resolveSelectorCenter(browserDebugger, selector);
+    await browserDebugger.sendCommand(
+      "Input.dispatchMouseEvent",
+      { type: "mouseMoved", x: point.x, y: point.y },
+      undefined,
+    );
+    await browserDebugger.sendCommand(
+      "Input.dispatchMouseEvent",
+      {
+        type: "mousePressed",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        clickCount: 1,
+      },
+      undefined,
+    );
+    return await browserDebugger.sendCommand(
+      "Input.dispatchMouseEvent",
+      {
+        type: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        clickCount: 1,
+      },
+      undefined,
+    );
+  }
+
+  private async typeIntoSelector(
+    control: BrowserViewControlState | null,
+    browserDebugger: BrowserViewDebugger,
+    input: BrowserViewControlAction,
+  ): Promise<BrowserViewControlActionResult> {
+    if (control === null || input.action.kind !== "type") {
+      return {
+        status: "cancelled",
+        reason: "Browser control lock is not active.",
+      };
+    }
+    const target = await this.focusSelectorForTyping(
+      browserDebugger,
+      input.action.selector,
+    );
+    if (target.sensitive) {
+      const approval = this.consumeSensitiveApproval(control, input);
+      if (!approval) {
+        const approvalId = randomUUID();
+        control.pendingSensitiveApprovals.set(approvalId, {
+          actionId: input.actionId,
+          action: input.action,
+        });
+        return {
+          status: "needs-approval",
+          approvalId,
+          reason: "Typing into a password field requires explicit approval.",
+        };
+      }
+    }
+    const value = await browserDebugger.sendCommand(
+      "Input.insertText",
+      { text: input.action.text },
+      undefined,
+    );
+    return { status: "completed", value };
+  }
+
+  private consumeSensitiveApproval(
+    control: BrowserViewControlState,
+    input: BrowserViewControlAction,
+  ): boolean {
+    if (input.sensitiveApprovalId === null || input.action.kind !== "type") {
+      return false;
+    }
+    const approval = control.pendingSensitiveApprovals.get(
+      input.sensitiveApprovalId,
+    );
+    if (approval === undefined) return false;
+    if (
+      approval.actionId !== input.actionId ||
+      !browserViewControlActionsEqual(approval.action, input.action)
+    ) {
+      return false;
+    }
+    control.pendingSensitiveApprovals.delete(input.sensitiveApprovalId);
+    return true;
+  }
+
+  private async resolveSelectorCenter(
+    browserDebugger: BrowserViewDebugger,
+    selector: string,
+  ): Promise<{ readonly x: number; readonly y: number }> {
+    const result = await browserDebugger.sendCommand(
+      "Runtime.evaluate",
+      {
+        expression: selectorCenterExpression(selector),
+        returnByValue: true,
+      },
+      undefined,
+    );
+    if (!isRecord(result)) {
+      throw new Error("Could not resolve selector center.");
+    }
+    const payload = result.result;
+    if (!isRecord(payload) || !isRecord(payload.value)) {
+      throw new Error("Could not resolve selector center.");
+    }
+    const x = payload.value.x;
+    const y = payload.value.y;
+    if (typeof x !== "number" || typeof y !== "number") {
+      throw new Error("Could not resolve selector center.");
+    }
+    return { x, y };
+  }
+
+  private async focusSelectorForTyping(
+    browserDebugger: BrowserViewDebugger,
+    selector: string,
+  ): Promise<{ readonly sensitive: boolean }> {
+    const result = await browserDebugger.sendCommand(
+      "Runtime.evaluate",
+      {
+        expression: focusSelectorForTypingExpression(selector),
+        returnByValue: true,
+      },
+      undefined,
+    );
+    if (!isRecord(result)) {
+      throw new Error("Could not focus selector.");
+    }
+    const payload = result.result;
+    if (!isRecord(payload) || !isRecord(payload.value)) {
+      throw new Error("Could not focus selector.");
+    }
+    const focused = payload.value.focused;
+    const sensitive = payload.value.sensitive;
+    if (focused !== true || typeof sensitive !== "boolean") {
+      throw new Error("Could not focus selector.");
+    }
+    return { sensitive };
+  }
+}
+
+function entryKeyId(key: BrowserViewEntryKey): string {
+  return [key.windowId, key.viewTabId, key.paneId, key.tileInstanceId].join(
+    "\u001f",
+  );
+}
+
+function normalizeBounds(bounds: BrowserViewBounds): BrowserViewBounds {
+  return {
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    width: Math.max(0, Math.round(bounds.width)),
+    height: Math.max(0, Math.round(bounds.height)),
+  };
+}
+
+function effectiveViewportBounds(
+  container: BrowserViewBounds,
+  presetId: BrowserViewViewportPresetId,
+): BrowserViewBounds {
+  const preset = VIEWPORT_PRESETS[presetId];
+  if (preset.width === null || preset.height === null) return container;
+  const width = Math.min(container.width, preset.width);
+  const height = Math.min(container.height, preset.height);
+  return {
+    x: container.x + Math.floor((container.width - width) / 2),
+    y: container.y + Math.floor((container.height - height) / 2),
+    width,
+    height,
+  };
+}
+
+function toTileKey(key: BrowserViewEntryKey): BrowserViewTileKey {
+  return {
+    viewTabId: key.viewTabId,
+    paneId: key.paneId,
+    tileInstanceId: key.tileInstanceId,
+    pageSessionId: key.pageSessionId,
+  };
+}
+
+function readNavigationUrl(args: readonly unknown[]): string | null {
+  const value = args[1];
+  return typeof value === "string" ? value : null;
+}
+
+function readMainFrameFlag(args: readonly unknown[]): boolean {
+  const value = args[4];
+  return typeof value === "boolean" ? value : true;
+}
+
+function readInPageMainFrameFlag(args: readonly unknown[]): boolean {
+  const value = args[2];
+  return typeof value === "boolean" ? value : true;
+}
+
+function readRenderGoneReason(args: readonly unknown[]): string {
+  const detail = args.find(
+    (value): value is { readonly reason: string } =>
+      isRecord(value) && typeof value.reason === "string",
+  );
+  return detail?.reason ?? "Renderer process gone";
+}
+
+function readFoundInPageResult(args: readonly unknown[]): {
+  readonly requestId: number;
+  readonly current: number;
+  readonly total: number;
+  readonly finalUpdate: boolean;
+} | null {
+  const value = args.find(
+    (candidate): candidate is Record<string, unknown> =>
+      isRecord(candidate) && typeof candidate.requestId === "number",
+  );
+  if (value === undefined) return null;
+  const requestId = value.requestId;
+  const matches = value.matches;
+  const activeMatchOrdinal = value.activeMatchOrdinal;
+  if (
+    typeof requestId !== "number" ||
+    typeof matches !== "number" ||
+    typeof activeMatchOrdinal !== "number"
+  ) {
+    return null;
+  }
+  return {
+    requestId,
+    current: matches > 0 ? activeMatchOrdinal : 0,
+    total: matches,
+    finalUpdate: value.finalUpdate === true,
+  };
+}
+
+function readBeforeInput(args: readonly unknown[]): {
+  readonly key: string;
+  readonly modifier: boolean;
+} | null {
+  const value = args.find(
+    (candidate): candidate is Record<string, unknown> =>
+      isRecord(candidate) && typeof candidate.key === "string",
+  );
+  if (value === undefined) return null;
+  const key = value.key;
+  if (typeof key !== "string") return null;
+  if (typeof value.type === "string" && value.type !== "keyDown") return null;
+  return {
+    key,
+    modifier: value.control === true || value.meta === true,
+  };
+}
+
+function browserZoomStepForKey(key: string): 1 | -1 | 0 | null {
+  if (key === "+" || key === "=") return 1;
+  if (key === "-" || key === "_") return -1;
+  if (key === "0" || key === ")") return 0;
+  return null;
+}
+
+function preventInputDefault(args: readonly unknown[]): void {
+  const event = args[0];
+  if (!isRecord(event)) return;
+  const preventDefault = Reflect.get(event, "preventDefault");
+  if (typeof preventDefault !== "function") return;
+  Reflect.apply(preventDefault, event, []);
+}
+
+function windowOpenShouldCreateTile(
+  details: BrowserViewWindowOpenDetails,
+): boolean {
+  if (
+    details.disposition === "foreground-tab" ||
+    details.disposition === "background-tab"
+  ) {
+    return true;
+  }
+  if (details.features.trim().length > 0) return false;
+  if (details.frameName === "_blank") return true;
+  return false;
+}
+
+function normalizeOpenedUrl(url: string, baseUrl: string): string {
+  if (url.length === 0) return "about:blank";
+  try {
+    return new URL(url, baseUrl).href;
+  } catch {
+    return url;
+  }
+}
+
+function readPopupWindow(
+  args: readonly unknown[],
+): BrowserViewPopupWindow | null {
+  const value = args[0];
+  if (!isRecord(value)) return null;
+  const webContents = toPopupWebContents(Reflect.get(value, "webContents"));
+  const isDestroyed = Reflect.get(value, "isDestroyed");
+  const close = Reflect.get(value, "close");
+  const on = Reflect.get(value, "on");
+  const off = Reflect.get(value, "off");
+  if (
+    webContents === null ||
+    typeof isDestroyed !== "function" ||
+    typeof close !== "function" ||
+    typeof on !== "function" ||
+    typeof off !== "function"
+  ) {
+    return null;
+  }
+  return {
+    webContents,
+    isDestroyed: () => Boolean(Reflect.apply(isDestroyed, value, [])),
+    close: () => {
+      Reflect.apply(close, value, []);
+    },
+    on: (event, listener) => {
+      Reflect.apply(on, value, [event, listener]);
+    },
+    off: (event, listener) => {
+      Reflect.apply(off, value, [event, listener]);
+    },
+  };
+}
+
+function toPopupWebContents(
+  value: unknown,
+): BrowserViewPopupWebContents | null {
+  if (!isRecord(value)) return null;
+  const id = Reflect.get(value, "id");
+  const once = Reflect.get(value, "once");
+  const on = Reflect.get(value, "on");
+  const off = Reflect.get(value, "off");
+  if (
+    typeof id !== "number" ||
+    typeof once !== "function" ||
+    typeof on !== "function" ||
+    typeof off !== "function"
+  ) {
+    return null;
+  }
+  return {
+    id,
+    once: (event, listener) => {
+      Reflect.apply(once, value, [event, listener]);
+    },
+    on: (event, listener) => {
+      Reflect.apply(on, value, [event, listener]);
+    },
+    off: (event, listener) => {
+      Reflect.apply(off, value, [event, listener]);
+    },
+  };
+}
+
+function zoomPercentFromFactor(factor: number): number {
+  return Math.round(factor * 100);
+}
+
+function nextZoomFactor(current: number, direction: 1 | -1): number {
+  if (direction === 1) {
+    return (
+      BROWSER_ZOOM_FACTORS.find((factor) => factor > current + 0.001) ??
+      BROWSER_ZOOM_FACTORS[BROWSER_ZOOM_FACTORS.length - 1]
+    );
+  }
+  const previous = BROWSER_ZOOM_FACTORS.slice()
+    .reverse()
+    .find((factor) => factor < current - 0.001);
+  return previous ?? BROWSER_ZOOM_FACTORS[0];
+}
+
+const BROWSER_ZOOM_FACTORS: readonly number[] = [
+  0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2,
+];
+
+function assertEntryCapturable(
+  entry: BrowserViewEntry,
+  window: BrowserViewWindow | null,
+): void {
+  if (entry.status === "loading") {
+    throw new Error("Browser screenshot unavailable: tile is still loading");
+  }
+  if (entry.status === "dead") {
+    throw new Error("Browser screenshot unavailable: tile is not live");
+  }
+  if (entry.overlayOwnerIds.length > 0) {
+    throw new Error("Browser screenshot unavailable: tile is occluded");
+  }
+  if (!entry.desiredVisible) {
+    throw new Error("Browser screenshot unavailable: tile is not visible");
+  }
+  if (
+    entry.bounds === null ||
+    entry.bounds.width <= 0 ||
+    entry.bounds.height <= 0
+  ) {
+    throw new Error(
+      "Browser screenshot unavailable: tile has no visible bounds",
+    );
+  }
+  if (
+    window === null ||
+    window.isDestroyed() ||
+    !window.isVisible() ||
+    window.isMinimized()
+  ) {
+    throw new Error("Browser screenshot unavailable: window is not visible");
+  }
+}
+
+function parseCapturedDataUrl(dataUrl: string): {
+  readonly mediaType: string;
+  readonly base64: string;
+  readonly byteLength: number;
+  readonly sha256: string;
+} {
+  const match = /^data:([^;,]+);base64,(.*)$/u.exec(dataUrl);
+  const mediaType = match?.[1] ?? "image/png";
+  const base64 = match?.[2] ?? "";
+  const bytes = Buffer.from(base64, "base64");
+  return {
+    mediaType,
+    base64,
+    byteLength: bytes.byteLength,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function selectorCenterExpression(selector: string): string {
+  return `(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!(element instanceof Element)) return null;
+    const rect = element.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+  })()`;
+}
+
+function focusSelectorForTypingExpression(selector: string): string {
+  return `(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!(element instanceof HTMLElement)) return { focused: false, sensitive: false };
+    element.focus();
+    const sensitiveAutocomplete = new Set([
+      "current-password",
+      "new-password",
+      "one-time-code",
+    ]);
+    const autocompleteTokens = element
+      .autocomplete
+      .toLowerCase()
+      .split(/\\s+/u)
+      .filter((token) => token.length > 0);
+    const isInput = element instanceof HTMLInputElement;
+    const sensitive =
+      isInput &&
+      (element.type.toLowerCase() === "password" ||
+        autocompleteTokens.some(
+          (token) =>
+            sensitiveAutocomplete.has(token) || token.startsWith("cc-"),
+        ));
+    return { focused: document.activeElement === element, sensitive };
+  })()`;
+}
+
+function browserViewControlActionsEqual(
+  left: BrowserViewControlAction["action"],
+  right: BrowserViewControlAction["action"],
+): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "click") {
+    return right.kind === "click" && left.selector === right.selector;
+  }
+  if (left.kind === "type") {
+    return (
+      right.kind === "type" &&
+      left.selector === right.selector &&
+      left.text === right.text
+    );
+  }
+  if (left.kind === "scroll") {
+    return (
+      right.kind === "scroll" &&
+      left.deltaX === right.deltaX &&
+      left.deltaY === right.deltaY
+    );
+  }
+  return right.kind === "navigate" && left.url === right.url;
+}

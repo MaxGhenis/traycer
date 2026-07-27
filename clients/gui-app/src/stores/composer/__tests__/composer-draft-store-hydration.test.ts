@@ -1,10 +1,16 @@
 import "../../../../__tests__/test-browser-apis";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  readComposerDraftSnapshot,
   useComposerDraftStore,
   type DraftState,
 } from "../composer-draft-store";
+import { createBrowserConsoleAttachment } from "@/lib/browser-view/browser-context-attachments";
+import type {
+  BrowserViewConsoleEntry,
+  BrowserViewTileKey,
+} from "@/lib/browser-view/desktop-browser-view";
 
 const STORAGE_KEY = "traycer-gui-app:composer-drafts";
 
@@ -36,6 +42,25 @@ const MENTION_DRAFT: DraftState = {
   },
   selection: null,
   resetEpoch: 0,
+};
+
+const TILE: BrowserViewTileKey = {
+  viewTabId: "view-tab",
+  paneId: "pane",
+  tileInstanceId: "tile",
+  pageSessionId: "page",
+};
+
+const CONSOLE_ENTRY: BrowserViewConsoleEntry = {
+  id: "console-1",
+  timestamp: 1000,
+  source: "console-api",
+  level: "error",
+  text: "boom",
+  url: "https://example.com/app.js",
+  lineNumber: 4,
+  columnNumber: 2,
+  stackTrace: [],
 };
 
 beforeEach(() => {
@@ -71,5 +96,42 @@ describe("composer draft store hydration", () => {
   it("leaves drafts map empty on first-ever load", async () => {
     await useComposerDraftStore.persist.rehydrate();
     expect(useComposerDraftStore.getState().drafts).toEqual({});
+  });
+
+  it("returns a stable empty draft snapshot without creating store state", () => {
+    const notify = vi.fn();
+    const unsubscribe = useComposerDraftStore.subscribe(notify);
+
+    const first = readComposerDraftSnapshot("missing-task");
+    const second = readComposerDraftSnapshot("missing-task");
+
+    unsubscribe();
+    expect(first).toBe(second);
+    expect(first.browserContextAttachments).toBe(
+      second.browserContextAttachments,
+    );
+    expect(useComposerDraftStore.getState().drafts).toEqual({});
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("keeps browser context attachment references stable between reads", () => {
+    const payload = createBrowserConsoleAttachment({
+      tile: TILE,
+      pageUrl: "https://example.com/page",
+      entry: CONSOLE_ENTRY,
+    });
+
+    useComposerDraftStore
+      .getState()
+      .addBrowserContextAttachment("task-1", payload);
+
+    const first = readComposerDraftSnapshot("task-1");
+    const second = readComposerDraftSnapshot("task-1");
+
+    expect(first).toBe(second);
+    expect(first.browserContextAttachments).toBe(
+      second.browserContextAttachments,
+    );
+    expect(first.browserContextAttachments).toEqual([payload]);
   });
 });

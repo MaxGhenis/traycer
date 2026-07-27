@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import { basePersistOptions, persistKey, STORE_KEYS } from "@/lib/persist";
+import type { BrowserContextAttachmentPayload } from "@/lib/browser-view/browser-context-attachments";
 
 export interface DraftSelection {
   readonly from: number;
@@ -11,6 +12,7 @@ export interface DraftSelection {
 export interface DraftState {
   readonly content: JsonContent;
   readonly selection: DraftSelection | null;
+  readonly browserContextAttachments?: ReadonlyArray<BrowserContextAttachmentPayload>;
   /**
    * Bumped only when the draft is replaced from outside the editor
    * (queue-edit restore, failed-send handoff). The composer watches
@@ -32,6 +34,10 @@ interface ComposerDraftStore {
     content: JsonContent,
     selection: DraftSelection | null,
   ) => void;
+  readonly addBrowserContextAttachment: (
+    taskId: string,
+    attachment: BrowserContextAttachmentPayload,
+  ) => void;
   readonly clearDraft: (taskId: string) => void;
 }
 const EMPTY_COMPOSER_CONTENT: JsonContent = {
@@ -42,6 +48,7 @@ const EMPTY_COMPOSER_CONTENT: JsonContent = {
 export const EMPTY_COMPOSER_DRAFT: DraftState = {
   content: EMPTY_COMPOSER_CONTENT,
   selection: null,
+  browserContextAttachments: [],
   resetEpoch: 0,
 };
 
@@ -84,6 +91,22 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
                 ...current,
                 content,
                 selection,
+                resetEpoch: current.resetEpoch + 1,
+              },
+            },
+          };
+        });
+      },
+      addBrowserContextAttachment: (taskId, attachment) => {
+        set((state) => {
+          const current = ensureDraft(state.drafts, taskId);
+          const attachments = current.browserContextAttachments ?? [];
+          return {
+            drafts: {
+              ...state.drafts,
+              [taskId]: {
+                ...current,
+                browserContextAttachments: [...attachments, attachment],
                 resetEpoch: current.resetEpoch + 1,
               },
             },

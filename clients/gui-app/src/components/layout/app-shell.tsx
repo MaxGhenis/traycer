@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import { DiffWorkerPoolProvider } from "@/components/diff-worker-pool-provider";
+import { BrowserOverlayCoordinatorBridge } from "@/components/epic-canvas/browser-overlay-coordinator";
 import { RootDndProvider } from "@/components/epic-canvas/dnd/root-dnd-provider";
 import { TileFindOwnerBridge } from "@/components/epic-canvas/tile-find/tile-find-owner-bridge";
 import { QuitInterceptBridge } from "@/components/layout/bridges/quit-intercept-bridge";
@@ -30,6 +31,7 @@ export function AppShell(props: AppShellProps) {
             <AppHeader variant="app" />
             <main className="relative flex min-h-0 flex-1 flex-col">
               {children}
+              <BrowserOverlayCoordinatorBridge />
               <TileFindOwnerBridge />
             </main>
             <OpenFolderDialog />

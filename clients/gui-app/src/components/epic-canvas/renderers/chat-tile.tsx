@@ -158,6 +158,9 @@ import {
   ChatLowerInteractionSurfaces,
   InertChatComposer,
 } from "./chat-tile-lower-surfaces";
+import { BrowserSessionDock } from "./browser-session-dock";
+import { BrowserComposerContextChip } from "./browser-composer-context-chip";
+import { useBrowserContextAttachmentHandler } from "./browser-context-attachment-handler";
 import {
   chatTileUiReducer,
   createInitialChatTileUiState,
@@ -182,6 +185,7 @@ const EMPTY_BACKGROUND_STOP_TASK_IDS: ReadonlySet<string> = new Set();
 interface ChatTileProps {
   node: EpicNodeRef;
   viewTabId: string;
+  tileId: string;
   /**
    * True when this tile is the active leaf in the epic canvas. The
    * value is drilled into `ChatComposer` so only the active tile's
@@ -195,6 +199,7 @@ interface ChatTileSessionViewProps {
   readonly handle: ChatSessionStoreHandle;
   readonly node: EpicNodeRef;
   readonly viewTabId: string;
+  readonly tileId: string;
   readonly isActive: boolean;
   readonly currentEpicId: string;
 }
@@ -286,6 +291,7 @@ export function ChatTile(props: ChatTileProps) {
         handle={handle}
         node={node}
         viewTabId={viewTabId}
+        tileId={props.tileId}
         isActive={isActive}
         currentEpicId={epicId}
       />
@@ -609,6 +615,11 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
             planActions={view.planActions}
           />
           <ChatTileErrorNoticeToasts handle={view.handle} />
+          <BrowserSessionDock
+            chatId={view.node.id}
+            viewTabId={view.viewTabId}
+            paneId={view.tileId}
+          />
           {/*
            * SurfaceActivityProvider narrows catalog/provider query subscriptions
            * to the pane+tab that is actually visible. Hidden keep-alive chat panes
@@ -671,7 +682,7 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
 // independent UI concerns surfaced for one tile, not reducible nesting.
 // eslint-disable-next-line complexity
 function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
-  const { handle, node, viewTabId, isActive, currentEpicId } = props;
+  const { handle, node, viewTabId, tileId, isActive, currentEpicId } = props;
   const projectedChatTitle = useEpicLiveArtifactTitle(node.id);
   // Surface visibility for the stream-flush coordinator's tiered flush rate:
   // on screen = the pane is shown AND this tab is the pane's front tab. Pane
@@ -980,6 +991,10 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     scope: handoffScope,
     profileUserId: profile?.userId ?? null,
   });
+  useBrowserContextAttachmentHandler({
+    chatId: node.id,
+    viewTabId,
+  });
   useChatSetupFailureRestoreDriver({
     handle,
     nodeId: node.id,
@@ -1235,6 +1250,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
         input.content,
         sender,
         input.settings,
+        input.attachments,
       );
       if (sent === null) return false;
       if (shouldMarkTitlePending) {
@@ -1265,7 +1281,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
         plainTextPromptContent(option.prompt),
       );
       return (
-        chatActions.sendMessage(content, sender, nextStepSettings) !== null
+        chatActions.sendMessage(content, sender, nextStepSettings, []) !== null
       );
     },
     [canAct, chatActions, nextStepSettings, profile],
@@ -1284,7 +1300,9 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     const content = buildSubmittedChatJSONContent(
       plainTextPromptContent("Implement the plan above."),
     );
-    return chatActions.sendMessage(content, sender, nextStepSettings) !== null;
+    return (
+      chatActions.sendMessage(content, sender, nextStepSettings, []) !== null
+    );
   }, [canAct, chatActions, nextStepSettings, profile]);
   const planActions = useMemo<ChatPlanActionsContextValue>(
     () => ({
@@ -1375,6 +1393,16 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     () => <ContextUsageChipForChat handle={handle} />,
     [handle],
   );
+  const browserContextChip = useMemo(
+    () => (
+      <BrowserComposerContextChip
+        chatId={node.id}
+        chatInstanceId={node.instanceId}
+        viewTabId={viewTabId}
+      />
+    ),
+    [node.id, node.instanceId, viewTabId],
+  );
   // Composer v3 cluster: host select + Workspace rail picker on the left, with
   // the context-usage leaf owning its trailing chip and optional full-width
   // pinned strip. Per-folder Environment config lives inside the selected
@@ -1383,10 +1411,11 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     () => (
       <>
         <div className="min-w-0 overflow-hidden">{hostWorkspaceSelector}</div>
+        {browserContextChip}
         {usageChip}
       </>
     ),
-    [hostWorkspaceSelector, usageChip],
+    [browserContextChip, hostWorkspaceSelector, usageChip],
   );
 
   const lowerRuntime = useMemo(
@@ -1515,6 +1544,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     handle,
     node,
     viewTabId,
+    tileId,
     tabHostId: activeHostId,
     mentionRoots,
     linkResolutionRoots,

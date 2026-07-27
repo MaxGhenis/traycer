@@ -36,6 +36,7 @@ function PopoverContent({
     <PopoverPrimitive.Portal container={container}>
       <PopoverPrimitive.Content
         data-slot="popover-content"
+        data-browser-overlay="popover"
         align={align}
         sideOffset={sideOffset}
         className={cn(

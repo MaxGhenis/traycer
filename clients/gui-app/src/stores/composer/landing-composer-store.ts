@@ -90,6 +90,8 @@ function cancelPendingLandingDraftContent(): void {
  */
 interface LandingComposerStore {
   readonly currentContent: JsonContent;
+  readonly openedDraftId: string | null;
+  readonly hasOpenedDraft: boolean;
   /**
    * Draft created by `setSnapshot(null, ...)` while this binding session is
    * still `null` (the remount keyed on the new id hasn't committed yet). Routes
@@ -124,21 +126,41 @@ interface LandingComposerStore {
   readonly reset: () => void;
 }
 
+export function readLandingComposerDraftContent(
+  draftId: string | null,
+): JsonContent {
+  if (draftId === null) return EMPTY_CONTENT;
+  return (
+    useLandingDraftStore.getState().drafts.find((draft) => draft.id === draftId)
+      ?.content ?? EMPTY_CONTENT
+  );
+}
+
 export const useLandingComposerStore = create<LandingComposerStore>(
   (set, get) => ({
     currentContent: EMPTY_CONTENT,
+    openedDraftId: null,
+    hasOpenedDraft: false,
     createdDraftId: null,
 
     openDraft: (draftId) => {
       flushPendingLandingDraftContent();
-      const content =
-        draftId === null
-          ? EMPTY_CONTENT
-          : (useLandingDraftStore
-              .getState()
-              .drafts.find((draft) => draft.id === draftId)?.content ??
-            EMPTY_CONTENT);
-      set({ currentContent: content, createdDraftId: null });
+      const content = readLandingComposerDraftContent(draftId);
+      const current = get();
+      if (
+        current.currentContent === content &&
+        current.createdDraftId === null &&
+        current.hasOpenedDraft &&
+        current.openedDraftId === draftId
+      ) {
+        return content;
+      }
+      set({
+        currentContent: content,
+        openedDraftId: draftId,
+        hasOpenedDraft: true,
+        createdDraftId: null,
+      });
       return content;
     },
 
@@ -177,7 +199,12 @@ export const useLandingComposerStore = create<LandingComposerStore>(
 
     reset: () => {
       cancelPendingLandingDraftContent();
-      set({ currentContent: EMPTY_CONTENT, createdDraftId: null });
+      set({
+        currentContent: EMPTY_CONTENT,
+        openedDraftId: null,
+        hasOpenedDraft: false,
+        createdDraftId: null,
+      });
     },
   }),
 );

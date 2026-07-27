@@ -29,6 +29,7 @@ function HoverCardContent({
     <HoverCardPrimitive.Portal>
       <HoverCardPrimitive.Content
         data-slot="hover-card-content"
+        data-browser-overlay="hover-card"
         align={align}
         sideOffset={sideOffset}
         className={cn(

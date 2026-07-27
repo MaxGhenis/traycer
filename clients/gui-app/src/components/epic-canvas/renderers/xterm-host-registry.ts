@@ -7,6 +7,7 @@ import type {
 import type { CanvasAddon } from "@xterm/addon-canvas";
 import type { TerminalDataWriter } from "@/stores/terminals/terminal-session-store";
 import { getTerminalSessionRegistry } from "@/lib/registries/terminal-session-registry";
+import type { BrowserLinkClickEvent } from "@/lib/browser-view/browser-link-routing-core";
 
 /**
  * Per-mount callbacks the live xterm engine reaches through. The engine is
@@ -18,7 +19,7 @@ import { getTerminalSessionRegistry } from "@/lib/registries/terminal-session-re
 export interface XtermHostLiveCallbacks {
   onUserInput: (data: string) => void;
   onContainerResize: (cols: number, rows: number) => void;
-  openExternalLink: (uri: string) => void;
+  openExternalLink: (uri: string, event: BrowserLinkClickEvent | null) => void;
   getFindTargetId: () => string | null;
   onSearchResults: (result: ISearchResultChangeEvent) => void;
 }

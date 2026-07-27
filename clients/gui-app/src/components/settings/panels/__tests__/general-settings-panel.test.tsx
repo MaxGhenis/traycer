@@ -125,6 +125,25 @@ const runnerHostMock = vi.hoisted((): { current: TestRunnerHost } => ({
   current: { hostManagement: null },
 }));
 
+const browserCryptoStateMock = vi.hoisted(
+  (): {
+    current: {
+      readonly mode: "real" | "basic" | "degraded";
+      readonly persistence: "persistent" | "ephemeral";
+      readonly reason:
+        | "os-backed"
+        | "linux-basic-text"
+        | "mock-keychain"
+        | "keychain-denied"
+        | "encryption-unavailable"
+        | "unresolved";
+      readonly storageBackend: null;
+      readonly encryptionAvailable: boolean;
+      readonly mockKeychainEnabled: boolean;
+    } | null;
+  } => ({ current: null }),
+);
+
 const hostQueryMocks = vi.hoisted((): HostQueryMocks => ({
   queryResult: {
     data: { bytes: 432 * 1024 * 1024 },
@@ -189,6 +208,10 @@ vi.mock("@/providers/use-runner-host", () => ({
   useRunnerHost: () => runnerHostMock.current,
 }));
 
+vi.mock("@/lib/browser-view/use-browser-cookie-crypto-state", () => ({
+  useBrowserCookieCryptoState: () => browserCryptoStateMock.current,
+}));
+
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@tanstack/react-router")>();
@@ -232,6 +255,7 @@ describe("GeneralSettingsPanel", () => {
     navigateMock.mockReset();
     windowsBridgeMock.current = null;
     runnerHostMock.current = { hostManagement: null };
+    browserCryptoStateMock.current = null;
     clearAllPersistedStoresMock.mockClear();
     clearAllPersistedStoresMock.mockResolvedValue(undefined);
     useAuthStore.setState({
@@ -253,6 +277,11 @@ describe("GeneralSettingsPanel", () => {
       showNavigatorResourceStats: false,
       pinContextUsageBreakdown: false,
       quoteReplyEnabled: true,
+      inAppBrowserBetaEnabled: false,
+      browserLinkDefaultMode: "in-app",
+      terminalBrowserLinkOpenMode: "in-app",
+      markdownBrowserLinkOpenMode: "in-app",
+      browserDevOrigins: [],
     });
   });
 
@@ -321,6 +350,56 @@ describe("GeneralSettingsPanel", () => {
     fireEvent.click(toggle);
 
     expect(useSettingsStore.getState().quoteReplyEnabled).toBe(false);
+  });
+
+  it("renders the in-app browser labs row and toggles the setting", () => {
+    renderPanel();
+
+    expect(useSettingsStore.getState().inAppBrowserBetaEnabled).toBe(false);
+    const toggle = screen.getByRole("switch", {
+      name: "In-app browser (beta)",
+    });
+
+    fireEvent.click(toggle);
+
+    expect(useSettingsStore.getState().inAppBrowserBetaEnabled).toBe(true);
+    expect(screen.getByText("Web link default")).toBeTruthy();
+  });
+
+  it("shows the persistent-login restart hint while browser crypto is pending relaunch", () => {
+    useSettingsStore.setState({ inAppBrowserBetaEnabled: true });
+    browserCryptoStateMock.current = {
+      mode: "degraded",
+      persistence: "ephemeral",
+      reason: "mock-keychain",
+      storageBackend: null,
+      encryptionAvailable: false,
+      mockKeychainEnabled: true,
+    };
+
+    renderPanel();
+
+    expect(
+      screen.getByText("Restart Traycer to enable persistent logins"),
+    ).toBeTruthy();
+  });
+
+  it("renders per-kind browser link settings and removable dev origins", () => {
+    useSettingsStore.setState({
+      inAppBrowserBetaEnabled: true,
+      browserLinkDefaultMode: "per-kind",
+      browserDevOrigins: ["http://localhost:5173"],
+    });
+
+    renderPanel();
+
+    expect(screen.getByText("Terminal links")).toBeTruthy();
+    expect(screen.getByText("Markdown links")).toBeTruthy();
+    expect(screen.getByText("http://localhost:5173")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    expect(useSettingsStore.getState().browserDevOrigins).toEqual([]);
   });
 
   it("navigates to replay onboarding without clearing first-run completion", () => {

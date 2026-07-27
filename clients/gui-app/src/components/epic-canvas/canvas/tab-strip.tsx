@@ -8,7 +8,13 @@ import {
   type ReactNode,
 } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-import { FileDiff, FilePlus, SplitSquareHorizontal, X } from "lucide-react";
+import {
+  FileDiff,
+  FilePlus,
+  Globe,
+  SplitSquareHorizontal,
+  X,
+} from "lucide-react";
 import { AnimatePresence, LayoutGroup } from "motion/react";
 import * as m from "motion/react-m";
 import { mergeRefs } from "@/lib/merge-refs";
@@ -42,6 +48,8 @@ import { useTabStripDropIndex } from "@/components/epic-canvas/dnd/dnd-store";
 import type { EpicCanvasTileRef } from "@/stores/epics/canvas/types";
 import {
   isBlankTileRef,
+  isBrowserPeekTileRef,
+  isBrowserTileRef,
   isDiffTileRef,
   isOpenableEpicNodeKind,
 } from "@/stores/epics/canvas/types";
@@ -690,6 +698,9 @@ function TabIcon(props: {
   }
   if (isBlankTileRef(props.tab)) {
     return <FilePlus className="size-3.5 shrink-0 text-muted-foreground" />;
+  }
+  if (isBrowserTileRef(props.tab) || isBrowserPeekTileRef(props.tab)) {
+    return <Globe className="size-3.5 shrink-0 text-muted-foreground" />;
   }
   return (
     <EpicNodeTabIcon

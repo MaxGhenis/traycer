@@ -7,7 +7,7 @@
  */
 import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
-import { FileDiff, FilePlus } from "lucide-react";
+import { FileDiff, FilePlus, Globe } from "lucide-react";
 import { LEFT_PANEL_DEFINITIONS } from "@/components/epic-canvas/sidebar/left-panel-registry";
 import { EpicNodeTabIcon } from "@/components/epic-canvas/epic-node-tab-icon";
 import { HeaderTabDragOverlay } from "@/components/layout/tabs/tab-strip-drag-overlay";
@@ -21,8 +21,12 @@ import {
 import type { HeaderTabDragData } from "@/components/layout/tabs/header-tab-dnd";
 import {
   isBlankTileRef,
+  isBrowserPeekTileRef,
+  isBrowserTileRef,
   isDiffTileRef,
   type BlankTileRef,
+  type BrowserPeekTileRef,
+  type BrowserTileRef,
   type EpicCanvasTileRef,
   type EpicNodeRef,
   type GitDiffTileRef,
@@ -127,14 +131,52 @@ function EpicCanvasNodeDragOverlay(props: {
   if (isBlankTileRef(props.node)) {
     return <BlankTileDragOverlay node={props.node} />;
   }
+  if (isBrowserTileRef(props.node)) {
+    return <BrowserTileDragOverlay node={props.node} />;
+  }
+  if (isBrowserPeekTileRef(props.node)) {
+    return <BrowserPeekTileDragOverlay node={props.node} />;
+  }
   return <ArtifactNodeDragOverlay node={props.node} epicId={props.epicId} />;
 }
 
 function BlankTileDragOverlay(props: { readonly node: BlankTileRef }) {
   return (
-    <m.div {...CHIP_MOTION} className={cn(CHIP_CLASS)}>
+    <m.div
+      {...CHIP_MOTION}
+      className={cn(CHIP_CLASS)}
+      data-browser-overlay="drag-overlay"
+    >
       <FilePlus className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate font-medium">{props.node.name}</span>
+    </m.div>
+  );
+}
+
+function BrowserTileDragOverlay(props: { readonly node: BrowserTileRef }) {
+  return (
+    <m.div
+      {...CHIP_MOTION}
+      className={cn(CHIP_CLASS)}
+      data-browser-overlay="drag-overlay"
+    >
+      <Globe className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate font-medium">{props.node.name}</span>
+    </m.div>
+  );
+}
+
+function BrowserPeekTileDragOverlay(props: {
+  readonly node: BrowserPeekTileRef;
+}) {
+  return (
+    <m.div
+      {...CHIP_MOTION}
+      className={cn(CHIP_CLASS)}
+      data-browser-overlay="drag-overlay"
+    >
+      <Globe className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate">{props.node.name}</span>
     </m.div>
   );
 }
@@ -144,7 +186,11 @@ function ArtifactNodeDragOverlay(props: {
   readonly epicId: string;
 }) {
   return (
-    <m.div {...CHIP_MOTION} className={cn(CHIP_CLASS)}>
+    <m.div
+      {...CHIP_MOTION}
+      className={cn(CHIP_CLASS)}
+      data-browser-overlay="drag-overlay"
+    >
       <EpicNodeTabIcon
         node={props.node}
         epicId={props.epicId}
@@ -160,7 +206,11 @@ function DiffTileDragOverlay(props: {
   readonly node: GitDiffTileRef | SnapshotDiffTileRef;
 }) {
   return (
-    <m.div {...CHIP_MOTION} className={cn(CHIP_CLASS)}>
+    <m.div
+      {...CHIP_MOTION}
+      className={cn(CHIP_CLASS)}
+      data-browser-overlay="drag-overlay"
+    >
       <FileDiff className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate font-medium">{props.node.name}</span>
     </m.div>
@@ -179,6 +229,7 @@ function LeftPanelRailDragOverlay(props: {
   return (
     <m.div
       {...CHIP_MOTION}
+      data-browser-overlay="drag-overlay"
       className={cn(
         "pointer-events-none flex h-9 cursor-grabbing select-none items-center gap-2 rounded-md border border-canvas-border/80 bg-canvas px-3 text-ui-sm font-medium text-canvas-foreground shadow-lg",
       )}

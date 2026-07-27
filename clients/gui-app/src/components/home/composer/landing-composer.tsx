@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -32,6 +33,7 @@ import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
 import {
   useLandingComposerStore,
   flushPendingLandingDraftContent,
+  readLandingComposerDraftContent,
 } from "@/stores/composer/landing-composer-store";
 import { useResolvedWorkspaceFolders } from "@/hooks/workspace/use-resolved-workspace-folders-query";
 import {
@@ -60,7 +62,7 @@ export function LandingComposer(props: LandingComposerProps) {
   const hostClient = useHostBinding()?.hostClient ?? null;
   const activityEnabled = useSurfaceActivity();
   const [initialContent] = useState<JsonContent>(() =>
-    useLandingComposerStore.getState().openDraft(props.draftId),
+    readLandingComposerDraftContent(props.draftId),
   );
   // Restore the caret to where it was when the draft was last persisted (decision
   // A3). Read once at mount; the composer is keyed by draft id, so each draft
@@ -89,6 +91,10 @@ export function LandingComposer(props: LandingComposerProps) {
   );
   const composerMode = draftComposerMode ?? globalComposerMode;
   const chatComposerActive = activityEnabled && composerMode === "chat";
+
+  useLayoutEffect(() => {
+    useLandingComposerStore.getState().openDraft(draftId);
+  }, [draftId]);
 
   useEffect(() => {
     return () => {
@@ -147,9 +153,16 @@ export function LandingComposer(props: LandingComposerProps) {
   const isSubmitting = createEpic.isPending || terminalAgentCreate.isPending;
 
   const setSnapshot = useLandingComposerStore((s) => s.setSnapshot);
-  const hasSubmittableContent = useLandingComposerStore((s) =>
+  const liveHasSubmittableContent = useLandingComposerStore((s) =>
     contentIsSubmittable(s.currentContent),
   );
+  const draftOpened = useLandingComposerStore(
+    (s) => s.hasOpenedDraft && s.openedDraftId === draftId,
+  );
+  const initialHasSubmittableContent = contentIsSubmittable(initialContent);
+  const hasSubmittableContent = draftOpened
+    ? liveHasSubmittableContent
+    : initialHasSubmittableContent;
   const draftWorkspace = useLandingDraftStore((state) => {
     if (draftId === null) return null;
     return (
@@ -251,7 +264,11 @@ export function LandingComposer(props: LandingComposerProps) {
       workspaceDisabledHint={workspaceAvailability.disabledHint}
       header={<div className="flex justify-end">{switcher}</div>}
       attachmentsStrip={
-        <LandingComposerAttachmentStrip onRemoveImage={handleRemoveImage} />
+        <LandingComposerAttachmentStrip
+          initialContent={initialContent}
+          draftOpened={draftOpened}
+          onRemoveImage={handleRemoveImage}
+        />
       }
       workspaceControls={props.workspaceControls}
       dictationControl={dictationControl}
@@ -265,13 +282,16 @@ export function LandingComposer(props: LandingComposerProps) {
 }
 
 function LandingComposerAttachmentStrip(props: {
+  readonly initialContent: JsonContent;
+  readonly draftOpened: boolean;
   readonly onRemoveImage: (id: string) => void;
 }): ReactNode {
   const currentContent = useLandingComposerStore((s) => s.currentContent);
+  const content = props.draftOpened ? currentContent : props.initialContent;
   const fetcher = useLandingImageFetcher();
   return (
     <AttachmentStrip
-      content={currentContent}
+      content={content}
       onRemoveImage={props.onRemoveImage}
       fetcher={fetcher}
       sessionObjectUrl={sessionObjectUrl}

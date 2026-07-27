@@ -9,7 +9,15 @@ import {
   makeGitBundleDiffTile,
   makeGitFileDiffTile,
 } from "@/lib/git/git-diff-tile";
+import {
+  cloneBrowserTileForNewPageSession,
+  DEFAULT_BROWSER_VIEWPORT_PRESET,
+  makeBrowserPeekTileRef,
+  makeBrowserTileRef,
+} from "@/stores/epics/canvas/tile-schema/browser-tile";
 import type {
+  BrowserPeekTileRef,
+  BrowserTileRef,
   EpicArtifactRef,
   EpicTerminalRef,
   GitDiffTileRef,
@@ -88,6 +96,110 @@ describe("parseTileRef / serializeTileRef", () => {
       cwd: "/repo/wt-a",
     };
     expect(parseTileRef(serializeTileRef(withCwd))).toEqual(withCwd);
+  });
+
+  it("round-trips a browser ref", () => {
+    const ref: BrowserTileRef = {
+      id: "browser-session-1",
+      instanceId: "inst-browser-1",
+      type: "browser",
+      name: "Docs",
+      hostId: HOST,
+      url: "https://example.com/docs",
+      viewportPreset: "desktop",
+    };
+    expect(parseTileRef(serializeTileRef(ref))).toEqual(ref);
+  });
+
+  it("round-trips a browser peek ref", () => {
+    const ref: BrowserPeekTileRef = {
+      id: "browser-peek-session-1",
+      instanceId: "inst-browser-peek-1",
+      type: "browser-peek",
+      name: "Peek",
+      hostId: HOST,
+      chatId: "chat-1",
+      sessionId: "headless-1",
+      initialUrl: "https://example.com/docs",
+    };
+    expect(parseTileRef(serializeTileRef(ref))).toEqual(ref);
+  });
+
+  it("mints browser peek ids from the headless session", () => {
+    const ref = makeBrowserPeekTileRef({
+      name: "Peek",
+      hostId: HOST,
+      chatId: "chat-1",
+      sessionId: "headless-1",
+      initialUrl: "https://example.com/app",
+    });
+    expect(ref.id).toBe("browser-peek-headless-1");
+    expect(ref.instanceId).not.toBe("");
+  });
+
+  it("mints browser page-session ids independently from URL", () => {
+    const url = "https://example.com/app";
+    const first = makeBrowserTileRef({
+      name: "App",
+      hostId: HOST,
+      url,
+      viewportPreset: DEFAULT_BROWSER_VIEWPORT_PRESET,
+    });
+    const second = makeBrowserTileRef({
+      name: "App",
+      hostId: HOST,
+      url,
+      viewportPreset: DEFAULT_BROWSER_VIEWPORT_PRESET,
+    });
+
+    expect(first.id).not.toBe(url);
+    expect(first.id).toMatch(/^browser-/);
+    expect(second.id).toMatch(/^browser-/);
+    expect(second.id).not.toBe(first.id);
+    expect(
+      parseTileRef({
+        instanceId: "inst-browser-missing-id",
+        type: "browser",
+        name: "App",
+        hostId: HOST,
+        url,
+        viewportPreset: DEFAULT_BROWSER_VIEWPORT_PRESET,
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects malformed browser refs", () => {
+    const base = {
+      id: "browser-session-bad",
+      instanceId: "inst-browser-bad",
+      type: "browser",
+      name: "Browser",
+      hostId: HOST,
+      url: "https://example.com",
+      viewportPreset: DEFAULT_BROWSER_VIEWPORT_PRESET,
+    };
+    expect(parseTileRef({ ...base, hostId: 42 })).toBeNull();
+    expect(parseTileRef({ ...base, url: {} })).toBeNull();
+    expect(parseTileRef({ ...base, viewportPreset: null })).toBeNull();
+  });
+
+  it("duplicates a browser ref as a new page session at the same URL", () => {
+    const ref: BrowserTileRef = {
+      id: "browser-session-1",
+      instanceId: "inst-browser-1",
+      type: "browser",
+      name: "Docs",
+      hostId: HOST,
+      url: "https://example.com/docs",
+      viewportPreset: "desktop",
+    };
+    const duplicate = cloneBrowserTileForNewPageSession(ref, "inst-browser-2");
+
+    expect(duplicate.id).not.toBe(ref.id);
+    expect(duplicate.id).toMatch(/^browser-/);
+    expect(duplicate.instanceId).toBe("inst-browser-2");
+    expect(duplicate.url).toBe(ref.url);
+    expect(duplicate.viewportPreset).toBe(ref.viewportPreset);
   });
 
   it("derives terminal title source for legacy refs", () => {
@@ -216,6 +328,15 @@ describe("isTileRefRecordBacked", () => {
       hostId: HOST,
       cwd: "/repo",
     };
+    const browser: BrowserTileRef = {
+      id: "browser-session",
+      instanceId: "inst-browser",
+      type: "browser",
+      name: "Browser",
+      hostId: HOST,
+      url: "about:blank",
+      viewportPreset: DEFAULT_BROWSER_VIEWPORT_PRESET,
+    };
     const gitDiff: GitDiffTileRef = makeGitFileDiffTile({
       hostId: HOST,
       runningDir: "/repo",
@@ -224,6 +345,7 @@ describe("isTileRefRecordBacked", () => {
     });
     expect(isTileRefRecordBacked(chat)).toBe(true);
     expect(isTileRefRecordBacked(terminal)).toBe(false);
+    expect(isTileRefRecordBacked(browser)).toBe(false);
     expect(isTileRefRecordBacked(gitDiff)).toBe(false);
   });
 

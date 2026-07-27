@@ -183,6 +183,36 @@ export const RunnerHostInvoke = {
   zoomStepIn: "runnerHost:zoom:stepIn",
   zoomStepOut: "runnerHost:zoom:stepOut",
   zoomReset: "runnerHost:zoom:reset",
+  browserViewUpsert: "runnerHost:browserView:upsert",
+  browserViewUpdateBounds: "runnerHost:browserView:updateBounds",
+  browserViewSetViewportPreset: "runnerHost:browserView:setViewportPreset",
+  browserViewRelease: "runnerHost:browserView:release",
+  browserViewReload: "runnerHost:browserView:reload",
+  browserViewGoBack: "runnerHost:browserView:goBack",
+  browserViewGoForward: "runnerHost:browserView:goForward",
+  browserViewFindInPage: "runnerHost:browserView:findInPage",
+  browserViewStopFindInPage: "runnerHost:browserView:stopFindInPage",
+  browserViewCancelDownload: "runnerHost:browserView:cancelDownload",
+  browserViewTrustCertificate: "runnerHost:browserView:trustCertificate",
+  browserViewZoomIn: "runnerHost:browserView:zoomIn",
+  browserViewZoomOut: "runnerHost:browserView:zoomOut",
+  browserViewResetZoom: "runnerHost:browserView:resetZoom",
+  browserViewOccludeForOverlay: "runnerHost:browserView:occludeForOverlay",
+  browserViewReleaseOverlay: "runnerHost:browserView:releaseOverlay",
+  browserViewCapturePage: "runnerHost:browserView:capturePage",
+  browserViewGetDebugSnapshot: "runnerHost:browserView:getDebugSnapshot",
+  browserViewClearDebugEvents: "runnerHost:browserView:clearDebugEvents",
+  browserViewStorageStateApply: "runnerHost:browserView:storageState:apply",
+  browserViewStorageStateCapture: "runnerHost:browserView:storageState:capture",
+  browserViewControlGrant: "runnerHost:browserView:control:grant",
+  browserViewControlRevoke: "runnerHost:browserView:control:revoke",
+  browserViewControlAction: "runnerHost:browserView:control:action",
+  browserViewCookieCryptoStateGet:
+    "runnerHost:browserView:cookieCryptoState:get",
+  browserViewLabsStateSet: "runnerHost:browserView:labsState:set",
+  browserViewPickElement: "runnerHost:browserView:pickElement",
+  browserViewCancelElementPick: "runnerHost:browserView:cancelElementPick",
+  browserViewOpenDevTools: "runnerHost:browserView:openDevTools",
 } as const;
 
 export const RunnerHostEvent = {
@@ -232,6 +262,16 @@ export const RunnerHostEvent = {
   // lockstep without racing the CLI's cross-process lock file.
   hostOperationStatusChange: "runnerHost:event:host:operationStatusChange",
   zoomChange: "runnerHost:event:zoom:change",
+  browserViewStatusChange: "runnerHost:event:browserView:statusChange",
+  browserViewFindChange: "runnerHost:event:browserView:findChange",
+  browserViewDownloadChange: "runnerHost:event:browserView:downloadChange",
+  browserViewCertificateError: "runnerHost:event:browserView:certificateError",
+  browserViewOpenTileRequest: "runnerHost:event:browserView:openTileRequest",
+  browserViewSnapshotInvalidated:
+    "runnerHost:event:browserView:snapshotInvalidated",
+  browserViewDebugSnapshotChange:
+    "runnerHost:event:browserView:debugSnapshotChange",
+  browserViewControlRevoked: "runnerHost:event:browserView:controlRevoked",
 } as const;
 
 /**

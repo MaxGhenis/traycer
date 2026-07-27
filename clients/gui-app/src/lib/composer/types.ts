@@ -6,6 +6,7 @@ import type {
 } from "@traycer/protocol/host/index";
 import type { EpicArtifactKind } from "@traycer/protocol/common/registry";
 import type { MentionPathTree } from "@/lib/path";
+import type { BrowserContextAttachmentPayload } from "@/lib/browser-view/browser-context-attachments";
 
 export type PathKind = "file" | "folder";
 export type EntityMentionContextType =
@@ -113,7 +114,12 @@ export type MentionAttachment =
   | WorktreeMentionAttachment
   | GitMentionAttachment
   | EntityMentionAttachment;
-export type Attachment = ImageAttachment | MentionAttachment;
+export type BrowserContextAttachment = {
+  kind: "browser-context";
+  payload: BrowserContextAttachmentPayload;
+};
+export type Attachment =
+  ImageAttachment | MentionAttachment | BrowserContextAttachment;
 
 /**
  * Full, untruncated preview content for a picker row - the side preview panel

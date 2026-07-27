@@ -13,6 +13,9 @@ import { TileFindScope } from "@/components/epic-canvas/tile-find/tile-find-scop
 import type { EpicCanvasTileRef } from "@/stores/epics/canvas/types";
 import type { TileKindId } from "@/stores/epics/canvas/tile-kinds";
 import type { TileKindToRefMap } from "@/stores/epics/canvas/tile-kind-types";
+import { BrowserLinkRoutingProvider } from "@/lib/browser-view/browser-link-routing";
+import { BrowserPeekTile } from "./browser-peek-tile";
+import { BrowserTile } from "./browser-tile";
 import { ChatTile } from "./chat-tile";
 import { ReviewTile } from "./review-tile";
 import { SpecTile } from "./spec-tile";
@@ -43,8 +46,13 @@ type TileRendererRegistry = {
 };
 
 const TILE_RENDERERS: TileRendererRegistry = {
-  chat: ({ node, viewTabId, isActive }) => (
-    <ChatTile node={node} viewTabId={viewTabId} isActive={isActive} />
+  chat: ({ node, viewTabId, tileId, isActive }) => (
+    <ChatTile
+      node={node}
+      viewTabId={viewTabId}
+      tileId={tileId}
+      isActive={isActive}
+    />
   ),
   "terminal-agent": ({ node, viewTabId, tileId, isActive }) => (
     <TuiAgentTile
@@ -94,6 +102,10 @@ const TILE_RENDERERS: TileRendererRegistry = {
       isActive={isActive}
     />
   ),
+  browser: ({ node, viewTabId, tileId }) => (
+    <BrowserTile node={node} viewTabId={viewTabId} paneId={tileId} />
+  ),
+  "browser-peek": ({ node }) => <BrowserPeekTile node={node} />,
   "workspace-file": ({ node, viewTabId, isActive }) => (
     <WorkspaceFileTile node={node} viewTabId={viewTabId} isActive={isActive} />
   ),
@@ -135,15 +147,23 @@ function tileRenderer<K extends TileKindId>(
 export function renderTile(args: TileRenderArgs<EpicCanvasTileRef>): ReactNode {
   return (
     <TabHostProvider hostId={args.node.hostId}>
-      <TileFindScope
-        node={args.node}
-        viewTabId={args.viewTabId}
-        tileId={args.tileId}
-        epicId={args.epicId}
-        isActive={args.isActive}
+      <BrowserLinkRoutingProvider
+        source={{
+          viewTabId: args.viewTabId,
+          paneId: args.tileId,
+          hostId: args.node.hostId,
+        }}
       >
-        {tileRenderer(args.node.type)(args)}
-      </TileFindScope>
+        <TileFindScope
+          node={args.node}
+          viewTabId={args.viewTabId}
+          tileId={args.tileId}
+          epicId={args.epicId}
+          isActive={args.isActive}
+        >
+          {tileRenderer(args.node.type)(args)}
+        </TileFindScope>
+      </BrowserLinkRoutingProvider>
     </TabHostProvider>
   );
 }

@@ -10,6 +10,8 @@ import type {
 } from "./tile-tree";
 import {
   TILE_KIND_BLANK,
+  TILE_KIND_BROWSER,
+  TILE_KIND_BROWSER_PEEK,
   TILE_KIND_GIT_DIFF,
   TILE_KIND_SNAPSHOT_DIFF,
 } from "./tile-kinds";
@@ -61,8 +63,8 @@ export type TerminalTitleSource = "default" | "manual";
 /**
  * Reference to a record-backed epic artifact as it lives inside a tab.
  * Stored as a flat shape (not a full record) so canvas state stays stable
- * when the underlying Y.Doc projection evolves. Terminal tabs use
- * `EpicTerminalRef` instead.
+ * when the underlying Y.Doc projection evolves. Renderer-local terminal and
+ * browser tabs use their own ref shapes instead.
  *
  * `hostId` is the host (== device) the artifact lives on. Per
  * CLAUDE.md, chat/terminal artifacts are bound to a host for life;
@@ -108,6 +110,36 @@ export interface EpicTerminalRef {
   readonly titleSource: TerminalTitleSource;
   readonly hostId: string;
   readonly cwd: string;
+}
+
+/**
+ * Browser tab. `id` is a page-session identity, not a URL-derived content key:
+ * opening or duplicating the same URL creates a new page session with a fresh
+ * id while `url` remains mutable tile state.
+ */
+export interface BrowserTileRef {
+  readonly id: string;
+  readonly instanceId: string;
+  readonly type: typeof TILE_KIND_BROWSER;
+  readonly name: string;
+  readonly hostId: string;
+  readonly url: string;
+  readonly viewportPreset: string;
+}
+
+/**
+ * Read-only mirror of a host-owned headless browser session. `sessionId` is the
+ * authoritative headless session handle; the tile never forwards page input.
+ */
+export interface BrowserPeekTileRef {
+  readonly id: string;
+  readonly instanceId: string;
+  readonly type: typeof TILE_KIND_BROWSER_PEEK;
+  readonly name: string;
+  readonly hostId: string;
+  readonly chatId: string;
+  readonly sessionId: string;
+  readonly initialUrl: string;
 }
 
 export function makeOpenableNodeRef(args: {
@@ -257,7 +289,12 @@ export interface BlankTileRef {
 }
 
 export type EpicCanvasTileRef =
-  EpicNodeRef | GitDiffTileRef | SnapshotDiffTileRef | BlankTileRef;
+  | EpicNodeRef
+  | BrowserTileRef
+  | BrowserPeekTileRef
+  | GitDiffTileRef
+  | SnapshotDiffTileRef
+  | BlankTileRef;
 
 export function isBlankTileRef(
   value: EpicCanvasTileRef,
@@ -269,6 +306,18 @@ export function isGitDiffTileRef(
   value: EpicCanvasTileRef,
 ): value is GitDiffTileRef {
   return value.type === TILE_KIND_GIT_DIFF;
+}
+
+export function isBrowserTileRef(
+  value: EpicCanvasTileRef,
+): value is BrowserTileRef {
+  return value.type === TILE_KIND_BROWSER;
+}
+
+export function isBrowserPeekTileRef(
+  value: EpicCanvasTileRef,
+): value is BrowserPeekTileRef {
+  return value.type === TILE_KIND_BROWSER_PEEK;
 }
 
 export function isWorkspaceFileRef(

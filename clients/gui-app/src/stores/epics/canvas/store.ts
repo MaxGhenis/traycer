@@ -50,6 +50,8 @@ import {
   splitPaneEmpty,
   toggleGitDiffBundleFileCollapsed,
   toggleSnapshotDiffBundleFileCollapsed,
+  updateBrowserTileUrl,
+  updateBrowserTileViewportPreset,
   updateGitDiffTileView,
   updateSnapshotDiffTileView,
 } from "@/stores/epics/canvas/actions";
@@ -259,6 +261,16 @@ export interface EpicCanvasStore {
     tabId: string,
     tileId: string,
     view: GitDiffTileViewState,
+  ) => void;
+  updateBrowserTileUrlInTab: (
+    tabId: string,
+    tileInstanceId: string,
+    url: string,
+  ) => void;
+  updateBrowserTileViewportPresetInTab: (
+    tabId: string,
+    tileInstanceId: string,
+    viewportPreset: string,
   ) => void;
   toggleGitDiffBundleFileCollapsedInTab: (
     tabId: string,
@@ -1087,6 +1099,30 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
         set((state) =>
           updateTabCanvas(state, tabId, (canvas) =>
             updateSnapshotDiffTileView(canvas, tileId, view),
+          ),
+        );
+      },
+
+      updateBrowserTileUrlInTab: (tabId, tileInstanceId, url) => {
+        set((state) =>
+          updateTabCanvas(state, tabId, (canvas) =>
+            updateBrowserTileUrl(canvas, tileInstanceId, url),
+          ),
+        );
+      },
+
+      updateBrowserTileViewportPresetInTab: (
+        tabId,
+        tileInstanceId,
+        viewportPreset,
+      ) => {
+        set((state) =>
+          updateTabCanvas(state, tabId, (canvas) =>
+            updateBrowserTileViewportPreset(
+              canvas,
+              tileInstanceId,
+              viewportPreset,
+            ),
           ),
         );
       },

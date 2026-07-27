@@ -33,6 +33,8 @@ import type {
   StreamConnectionStatus,
 } from "@traycer-clients/shared/host-transport/i-stream-session";
 import type { JsonContent } from "@traycer/protocol/common/registry";
+import { buildAttachmentsFromJSONContent } from "@/lib/composer/tiptap-json-content";
+import type { Attachment } from "@/lib/composer/types";
 import type {
   RuntimeApprovalDecision,
   RuntimeEvent,
@@ -104,6 +106,7 @@ export interface PendingUserMessage {
   readonly clientActionId: string;
   readonly messageId: string;
   readonly content: JsonContent;
+  readonly attachments?: ReadonlyArray<Attachment>;
   readonly sender: UserMessageSender;
   readonly settings: ChatRunSettings;
   readonly timestamp: number;
@@ -361,6 +364,12 @@ export interface ChatSessionState {
     sender: UserMessageSender,
     settings: ChatRunSettings,
   ) => SentChatMessageAction | null;
+  sendMessageWithAttachments: (input: {
+    readonly content: JsonContent;
+    readonly sender: UserMessageSender;
+    readonly settings: ChatRunSettings;
+    readonly attachments: ReadonlyArray<Attachment>;
+  }) => SentChatMessageAction | null;
   /**
    * Sends the initial handoff message reusing its pre-minted ids (shared with
    * the host turn-overlap idempotency gate). The driver's fallback `send`
@@ -1330,7 +1339,14 @@ export function createChatSessionStore(
         }
         set({ missingWorktreePaths: next });
       },
-      sendMessage: (content, sender, settings) => {
+      sendMessage: (content, sender, settings) =>
+        get().sendMessageWithAttachments({
+          content,
+          sender,
+          settings,
+          attachments: buildAttachmentsFromJSONContent(content),
+        }),
+      sendMessageWithAttachments: (input) => {
         const clientActionId = uuidv4();
         const messageId = uuidv4();
         // A worktree staged mid-chat ("Create new worktree") rides on this send;
@@ -1350,9 +1366,9 @@ export function createChatSessionStore(
           chatId: options.chatId,
           clientActionId,
           messageId,
-          content,
-          sender,
-          settings,
+          content: input.content,
+          sender: input.sender,
+          settings: input.settings,
           accountContext: useAccountContextStore.getState().accountContext,
           deliveryPolicy: "auto",
           worktreeIntent,
@@ -1365,9 +1381,9 @@ export function createChatSessionStore(
             clientActionId,
             action: "send",
             messageId,
-            restoreContent: content,
-            sender,
-            settings,
+            restoreContent: input.content,
+            sender: input.sender,
+            settings: input.settings,
             createdAt: Date.now(),
           },
           // Echo the user message optimistically so it paints INSTANTLY on send -
@@ -1384,9 +1400,10 @@ export function createChatSessionStore(
             ? {
                 clientActionId,
                 messageId,
-                content,
-                sender,
-                settings,
+                content: input.content,
+                attachments: input.attachments,
+                sender: input.sender,
+                settings: input.settings,
                 timestamp: Date.now(),
               }
             : null,
@@ -1396,9 +1413,9 @@ export function createChatSessionStore(
           state: get(),
           clientActionId,
           messageId,
-          content,
-          sender,
-          settings,
+          content: input.content,
+          sender: input.sender,
+          settings: input.settings,
         });
         if (optimisticQueuedItem !== null) {
           set((state) => ({
@@ -1472,6 +1489,7 @@ export function createChatSessionStore(
             clientActionId: input.clientActionId,
             messageId: input.messageId,
             content: input.content,
+            attachments: buildAttachmentsFromJSONContent(input.content),
             sender: input.sender,
             settings: input.settings,
             timestamp: Date.now(),

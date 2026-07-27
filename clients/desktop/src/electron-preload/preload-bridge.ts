@@ -22,6 +22,7 @@ import { buildPlatformBridge } from "./platform-bridge";
 import { buildPowerBridge } from "./power-bridge";
 import { buildFileDropsBridge } from "./file-drops-bridge";
 import { buildZoomBridge } from "./zoom-bridge";
+import { buildBrowserViewBridge } from "./browser-view-bridge";
 import { readSyncString } from "./sync-bootstrap";
 
 /**
@@ -67,6 +68,7 @@ contextBridge.exposeInMainWorld("runnerHost", {
   platform: buildPlatformBridge(),
   power: buildPowerBridge(),
   ...buildZoomBridge(),
+  ...buildBrowserViewBridge(),
   hostManagement: buildHostManagementBridge(),
   hostTray: buildHostTrayCommandSubscriber(),
 });

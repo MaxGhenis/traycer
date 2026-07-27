@@ -133,6 +133,12 @@ import {
   terminalSubscribeV12,
   terminalSubscribeV13,
 } from "@traycer/protocol/host/terminal/contracts";
+import {
+  browserScreencastV10,
+  browserSessionsV10,
+  browserSessionsV11,
+  browserSessionsV12,
+} from "@traycer/protocol/host/browser/contracts";
 import { notificationsSubscribeV10 } from "@traycer/protocol/host/notifications/contracts";
 import { resourcesSubscribeV10 } from "@traycer/protocol/host/resources/subscribe";
 import {
@@ -2770,6 +2776,7 @@ export type HostRpcRegistry = typeof hostRpcRegistry;
  * One manifest per `/stream` WS: `epic.subscribe@1.0`,
  * `chat.subscribe@1.2`, `notifications.subscribe@1.0`,
  * `terminal.subscribe@1.0`, `git.subscribeStatus@1.0`,
+ * `browser.sessions@1.0`, `browser.screencast@1.0`,
  * `resources.subscribe@1.0`, `agent.inbox.subscribe@1.0`,
  * `speech.dictate@1.0`, and
  * `migration.run@1.0` are negotiated from this registry. Later minors within
@@ -2843,6 +2850,32 @@ export const hostStreamRpcRegistry = defineVersionedStreamRpcRegistry({
         },
         3: {
           contract: terminalSubscribeV13,
+        },
+      },
+    },
+  },
+  "browser.sessions": {
+    1: {
+      latestMinor: 2,
+      versions: {
+        0: {
+          contract: browserSessionsV10,
+        },
+        1: {
+          contract: browserSessionsV11,
+        },
+        2: {
+          contract: browserSessionsV12,
+        },
+      },
+    },
+  },
+  "browser.screencast": {
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: browserScreencastV10,
         },
       },
     },

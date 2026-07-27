@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import {
   flushPendingLandingDraftContent,
+  readLandingComposerDraftContent,
   useLandingComposerStore,
 } from "@/stores/composer/landing-composer-store";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
@@ -108,6 +109,38 @@ describe("landing-composer-store draft binding", () => {
 
     expect(seeded).toEqual(content("persisted text"));
     expect(useLandingComposerStore.getState().currentContent).toBe(seeded);
+  });
+
+  it("reads draft content without mutating the live composer store", () => {
+    const id = useLandingDraftStore.getState().createDraft(null);
+    useLandingDraftStore
+      .getState()
+      .setDraftContent(id, content("persisted text"), null);
+    const notify = vi.fn();
+    const unsubscribe = useLandingComposerStore.subscribe(notify);
+
+    const first = readLandingComposerDraftContent(id);
+    const second = readLandingComposerDraftContent(id);
+
+    unsubscribe();
+    expect(first).toBe(second);
+    expect(first).toEqual(content("persisted text"));
+    expect(notify).not.toHaveBeenCalled();
+    expect(useLandingComposerStore.getState().currentContent).toEqual(
+      content(""),
+    );
+  });
+
+  it("does not notify subscribers when opening the already-bound draft", () => {
+    useLandingComposerStore.getState().openDraft(null);
+    const notify = vi.fn();
+    const unsubscribe = useLandingComposerStore.subscribe(notify);
+
+    const seeded = useLandingComposerStore.getState().openDraft(null);
+
+    unsubscribe();
+    expect(seeded).toBe(readLandingComposerDraftContent(null));
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("reopens a bound draft from the remembered full editor content", () => {

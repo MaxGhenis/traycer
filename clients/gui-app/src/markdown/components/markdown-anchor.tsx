@@ -1,6 +1,7 @@
 import { use, useCallback, type MouseEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { RunnerHostContext } from "@/providers/runner-host-context";
+import { useBrowserLinkRouter } from "@/lib/browser-view/browser-link-router";
 import { classifyHref } from "@/markdown/links/classify-href";
 import { MarkdownLinkContext } from "@/markdown/links/markdown-link-context";
 
@@ -32,6 +33,7 @@ export function MarkdownAnchor({
 }: MarkdownAnchorProps) {
   const runnerHost = use(RunnerHostContext);
   const linkPolicy = use(MarkdownLinkContext);
+  const routeBrowserLink = useBrowserLinkRouter();
 
   const routeLinkClick = useCallback(
     (event: MouseEvent<HTMLAnchorElement>): void => {
@@ -63,9 +65,11 @@ export function MarkdownAnchor({
         return;
       }
 
-      if (runnerHost !== null) void runnerHost.openExternalLink(classified.url);
+      if (runnerHost !== null) {
+        routeBrowserLink("markdown", classified.url, event);
+      }
     },
-    [href, linkPolicy, runnerHost],
+    [href, linkPolicy, routeBrowserLink, runnerHost],
   );
 
   return (

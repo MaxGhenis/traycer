@@ -94,6 +94,35 @@ import type {
   DesktopAppUpdateSnapshot,
 } from "../ipc-contracts/app-update-types";
 import type {
+  BrowserCookieCryptoState,
+  BrowserLabsStateUpdate,
+  BrowserViewBoundsUpdate,
+  BrowserViewCapturePageResult,
+  BrowserViewCertificateErrorChange,
+  BrowserViewCertificateTrust,
+  BrowserViewDebugSnapshotChange,
+  BrowserViewDownloadCancel,
+  BrowserViewDownloadChange,
+  BrowserViewElementPickResult,
+  BrowserViewFindChange,
+  BrowserViewFindRequest,
+  BrowserViewFindStop,
+  BrowserViewOpenTileRequest,
+  BrowserViewOverlayOcclusion,
+  BrowserViewOverlayOcclusionResult,
+  BrowserViewOverlayRelease,
+  BrowserViewOverlayReleaseResult,
+  BrowserViewSnapshotInvalidatedChange,
+  BrowserViewStatusChange,
+  BrowserViewStorageStateApply,
+  BrowserViewStorageStateApplyResult,
+  BrowserViewStorageStateCapture,
+  BrowserViewStorageStateCaptureResult,
+  BrowserViewTileKey,
+  BrowserViewTileUpsert,
+  BrowserViewViewportPresetChange,
+} from "../ipc-contracts/browser-view-types";
+import type {
   DesktopAuthSessionSnapshot,
   MenuCommandPayload,
   OpenEpicInNewWindowResult,
@@ -181,6 +210,7 @@ export interface DesktopPreloadBridge {
   platform: DesktopPlatformBridge;
   power: DesktopPowerBridge;
   zoom: DesktopZoomBridge;
+  browserView: DesktopBrowserViewBridge;
   hostManagement: DesktopHostManagementBridge;
   hostTray: DesktopHostTrayBridge;
 }
@@ -377,6 +407,72 @@ export interface DesktopZoomBridge {
   };
 }
 
+export interface DesktopBrowserViewBridge {
+  upsertTile(input: BrowserViewTileUpsert): Promise<void>;
+  updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
+  setViewportPreset(input: BrowserViewViewportPresetChange): Promise<void>;
+  releaseTile(input: BrowserViewTileKey): Promise<void>;
+  reloadTile(input: BrowserViewTileKey): Promise<void>;
+  goBack(input: BrowserViewTileKey): Promise<void>;
+  goForward(input: BrowserViewTileKey): Promise<void>;
+  findInPage(input: BrowserViewFindRequest): Promise<void>;
+  stopFindInPage(input: BrowserViewFindStop): Promise<void>;
+  cancelDownload(input: BrowserViewDownloadCancel): Promise<void>;
+  trustCertificate(input: BrowserViewCertificateTrust): Promise<void>;
+  zoomIn(input: BrowserViewTileKey): Promise<void>;
+  zoomOut(input: BrowserViewTileKey): Promise<void>;
+  resetZoom(input: BrowserViewTileKey): Promise<void>;
+  capturePage(input: BrowserViewTileKey): Promise<BrowserViewCapturePageResult>;
+  getDebugSnapshot(
+    input: BrowserViewTileKey,
+  ): Promise<BrowserViewDebugSnapshotChange>;
+  clearDebugEvents(input: BrowserViewTileKey): Promise<void>;
+  pickElement(input: BrowserViewTileKey): Promise<BrowserViewElementPickResult>;
+  cancelElementPick(input: BrowserViewTileKey): Promise<void>;
+  openDevTools(input: BrowserViewTileKey): Promise<void>;
+  occludeForOverlay(
+    input: BrowserViewOverlayOcclusion,
+  ): Promise<BrowserViewOverlayOcclusionResult>;
+  releaseOverlay(
+    input: BrowserViewOverlayRelease,
+  ): Promise<BrowserViewOverlayReleaseResult>;
+  getCookieCryptoState(): Promise<BrowserCookieCryptoState>;
+  setLabsState(input: BrowserLabsStateUpdate): Promise<void>;
+  applyStorageState(
+    input: BrowserViewStorageStateApply,
+  ): Promise<BrowserViewStorageStateApplyResult>;
+  captureStorageState(
+    input: BrowserViewStorageStateCapture,
+  ): Promise<BrowserViewStorageStateCaptureResult>;
+  onStatusChange(handler: (change: BrowserViewStatusChange) => void): {
+    dispose: () => void;
+  };
+  onFindChange(handler: (change: BrowserViewFindChange) => void): {
+    dispose: () => void;
+  };
+  onDownloadChange(handler: (change: BrowserViewDownloadChange) => void): {
+    dispose: () => void;
+  };
+  onCertificateError(
+    handler: (change: BrowserViewCertificateErrorChange) => void,
+  ): {
+    dispose: () => void;
+  };
+  onOpenTileRequest(handler: (change: BrowserViewOpenTileRequest) => void): {
+    dispose: () => void;
+  };
+  onSnapshotInvalidated(
+    handler: (change: BrowserViewSnapshotInvalidatedChange) => void,
+  ): {
+    dispose: () => void;
+  };
+  onDebugSnapshotChange(
+    handler: (change: BrowserViewDebugSnapshotChange) => void,
+  ): {
+    dispose: () => void;
+  };
+}
+
 export interface DesktopTraycerCliBridge {
   hostStatus(): Promise<TraycerHostStatusSnapshot>;
   shellConfigGet(): Promise<TraycerShellConfig>;
@@ -515,6 +611,7 @@ export class DesktopRunnerHost implements IRunnerHost {
   readonly platform: DesktopPlatformBridge;
   readonly power: DesktopPowerBridge;
   readonly zoom: IZoomHost;
+  readonly browserView: DesktopBrowserViewBridge;
   readonly hostManagement: IHostManagement;
   readonly hostTray: IHostTray;
   readonly hostRegistryUpdates: DesktopHostRegistryUpdatesBridge;
@@ -538,6 +635,7 @@ export class DesktopRunnerHost implements IRunnerHost {
     this.support = options.bridge.support;
     this.platform = options.bridge.platform;
     this.power = options.bridge.power;
+    this.browserView = options.bridge.browserView;
     this.zoom = {
       ladder: options.bridge.zoom.ladder,
       get: () => options.bridge.zoom.get(),

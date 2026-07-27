@@ -158,6 +158,12 @@ interface PreloadBridge {
     revealLog(target: unknown): Promise<unknown>;
     tailLog(input: unknown): Promise<unknown>;
   };
+  browserView: {
+    getCookieCryptoState(): Promise<unknown>;
+    setLabsState(input: unknown): Promise<void>;
+    applyStorageState(input: unknown): Promise<unknown>;
+    captureStorageState(input: unknown): Promise<unknown>;
+  };
 }
 
 interface LoadPreloadOptions {
@@ -671,5 +677,90 @@ describe("preload new-capability wiring", () => {
         email: "user@example.com",
       },
     });
+  });
+
+  it("forwards browser cookie crypto, labs-state, and storage replay calls through ipcRenderer.invoke", async () => {
+    const cryptoState = {
+      mode: "degraded",
+      persistence: "ephemeral",
+      reason: "mock-keychain",
+      storageBackend: null,
+      encryptionAvailable: false,
+      mockKeychainEnabled: true,
+    };
+    const replayResult = {
+      status: "applied",
+      cookieCount: 1,
+      localStorageApplied: false,
+      reason: "cookies-only",
+    };
+    const captureResult = {
+      storageState: { cookies: [], origins: [] },
+      cookieCount: 0,
+      cookieDomains: [],
+      localStorageCount: 0,
+      localStorageAvailable: true,
+      localStorageReason: null,
+    };
+    const invokeFn = vi.fn(async (channel: string) => {
+      if (channel === RunnerHostInvoke.browserViewCookieCryptoStateGet) {
+        return cryptoState;
+      }
+      if (channel === RunnerHostInvoke.browserViewStorageStateApply) {
+        return replayResult;
+      }
+      if (channel === RunnerHostInvoke.browserViewStorageStateCapture) {
+        return captureResult;
+      }
+      return undefined;
+    });
+    const bridge = await loadPreload({
+      authnApiUrl: undefined,
+      desktopDev: undefined,
+      initialRouteArg: undefined,
+      invokeFn,
+      sendSyncFn: undefined,
+    });
+
+    await expect(bridge.browserView.getCookieCryptoState()).resolves.toEqual(
+      cryptoState,
+    );
+    await bridge.browserView.setLabsState({ inAppBrowserBetaEnabled: true });
+    await expect(
+      bridge.browserView.applyStorageState({
+        storageState: { cookies: [], origins: [] },
+      }),
+    ).resolves.toEqual(replayResult);
+    await expect(
+      bridge.browserView.captureStorageState({
+        viewTabId: "tab-1",
+        paneId: "pane-1",
+        tileInstanceId: "browser-1",
+        pageSessionId: "page-1",
+        origin: "http://localhost:3000",
+      }),
+    ).resolves.toEqual(captureResult);
+
+    expect(invokeFn).toHaveBeenCalledWith(
+      RunnerHostInvoke.browserViewCookieCryptoStateGet,
+    );
+    expect(invokeFn).toHaveBeenCalledWith(
+      RunnerHostInvoke.browserViewLabsStateSet,
+      { inAppBrowserBetaEnabled: true },
+    );
+    expect(invokeFn).toHaveBeenCalledWith(
+      RunnerHostInvoke.browserViewStorageStateApply,
+      { storageState: { cookies: [], origins: [] } },
+    );
+    expect(invokeFn).toHaveBeenCalledWith(
+      RunnerHostInvoke.browserViewStorageStateCapture,
+      {
+        viewTabId: "tab-1",
+        paneId: "pane-1",
+        tileInstanceId: "browser-1",
+        pageSessionId: "page-1",
+        origin: "http://localhost:3000",
+      },
+    );
   });
 });

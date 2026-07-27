@@ -10,6 +10,7 @@
  * file).
  */
 import { useArtifactsOpenerItems } from "@/lib/commands/sources/open/artifacts-subpage";
+import { useBrowserOpenerItems } from "@/lib/commands/sources/open/browser-subpage";
 import { useChatsOpenerItems } from "@/lib/commands/sources/open/chats-subpage";
 import { useDiffOpenerItems } from "@/lib/commands/sources/open/diff-subpage";
 import { useFilesOpenerItems } from "@/lib/commands/sources/open/files-subpage";
@@ -47,6 +48,12 @@ const OPENER_CATEGORIES: ReadonlyArray<OpenerCategory> = [
     title: "Terminals",
     keywords: ["terminal", "terminals", "shell"],
     useItems: useTerminalsOpenerItems,
+  },
+  {
+    id: "browser",
+    title: "Browser",
+    keywords: ["browser", "web", "page"],
+    useItems: useBrowserOpenerItems,
   },
   {
     id: "artifacts",

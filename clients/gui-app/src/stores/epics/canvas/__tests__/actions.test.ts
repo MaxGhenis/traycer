@@ -23,18 +23,20 @@ import {
   splitPaneEmpty,
   toggleGitDiffBundleFileCollapsed,
   toggleSnapshotDiffBundleFileCollapsed,
+  updateBrowserTileUrl,
   updateGitDiffTileView,
 } from "@/stores/epics/canvas/actions";
 import { createEmptyCanvas } from "@/stores/epics/canvas/canvas-state";
 import { collectPanes, findPaneById } from "@/stores/epics/canvas/tile-tree";
 import type { TilePane } from "@/stores/epics/canvas/tile-tree";
 import type {
+  BrowserTileRef,
   EpicCanvasState,
   EpicCanvasTileRef,
   EpicNodeRef,
   GitDiffTileRef,
 } from "@/stores/epics/canvas/types";
-import { isBlankTileRef } from "@/stores/epics/canvas/types";
+import { isBlankTileRef, isBrowserTileRef } from "@/stores/epics/canvas/types";
 import {
   GIT_BUNDLE_CHANGES,
   GIT_FILE_A,
@@ -925,6 +927,65 @@ describe("cloneEpicCanvasState", () => {
     expect(cloned.activePaneId).not.toBeNull();
     expect(findPaneById(cloned.root, cloned.activePaneId ?? "")).not.toBeNull();
     expectCanvasInvariants(cloned);
+  });
+
+  it("duplicates browser tiles as fresh page sessions at the same URL", () => {
+    const browser: BrowserTileRef = {
+      id: "browser-session-source",
+      instanceId: "inst-browser-source",
+      type: "browser",
+      name: "Browser",
+      hostId: TEST_HOST_ID,
+      url: "https://example.com/app",
+      viewportPreset: "desktop",
+    };
+    const state = openPinned(createEmptyCanvas(), browser);
+
+    const cloned = cloneEpicCanvasState(state);
+    const clonedRef = Object.values(cloned.tilesByInstanceId).find(
+      (ref): ref is BrowserTileRef =>
+        ref !== undefined && isBrowserTileRef(ref),
+    );
+
+    expect(clonedRef).not.toBeUndefined();
+    expect(clonedRef?.id).not.toBe(browser.id);
+    expect(clonedRef?.instanceId).not.toBe(browser.instanceId);
+    expect(clonedRef?.url).toBe(browser.url);
+    expect(clonedRef?.viewportPreset).toBe(browser.viewportPreset);
+    expectCanvasInvariants(cloned);
+  });
+
+  it("updates browser tile URL by instance id without changing page-session identity", () => {
+    const browser: BrowserTileRef = {
+      id: "browser-session-source",
+      instanceId: "inst-browser-source",
+      type: "browser",
+      name: "Browser",
+      hostId: TEST_HOST_ID,
+      url: "https://example.com/app",
+      viewportPreset: "desktop",
+    };
+    const state = openPinned(createEmptyCanvas(), browser);
+    const updated = updateBrowserTileUrl(
+      state,
+      browser.instanceId,
+      "https://example.com/next",
+    );
+    const ref = updated.tilesByInstanceId[browser.instanceId];
+
+    expect(ref).toMatchObject({
+      id: browser.id,
+      instanceId: browser.instanceId,
+      url: "https://example.com/next",
+    });
+    expect(
+      updateBrowserTileUrl(
+        updated,
+        browser.instanceId,
+        "https://example.com/next",
+      ),
+    ).toBe(updated);
+    expectCanvasInvariants(updated);
   });
 });
 
