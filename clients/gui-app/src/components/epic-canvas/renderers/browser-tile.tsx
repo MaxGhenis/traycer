@@ -113,6 +113,18 @@ type BrowserTileSensitiveActionPrompt = {
   readonly expiresAt: number;
 };
 
+/**
+ * Ceiling for how long the human sensitive-action prompt stays open, kept
+ * comfortably under the host's `MAX_VISIBLE_TILE_ACTION_TIMEOUT_MS` (30s,
+ * browser-session-manager.ts). That clock starts the moment the host
+ * broadcasts the action, before this prompt even renders, so a window equal
+ * to 30s would still let a stale approval land after the host gave up
+ * waiting and re-issued the action to the agent as a timeout - which is how
+ * a sensitive value used to get typed twice.
+ */
+/** Exported for tests that assert the local approval window stays under host wait. */
+export const SENSITIVE_ACTION_APPROVAL_WINDOW_MS = 20_000;
+
 const BROWSER_VIEWPORT_PRESETS: ReadonlyArray<{
   readonly id: BrowserViewViewportPresetId;
   readonly label: string;
@@ -391,7 +403,7 @@ export function BrowserTile(props: BrowserTileProps) {
                 request,
                 approvalId: result.approvalId,
                 reason: result.reason,
-                expiresAt: Date.now() + 60_000,
+                expiresAt: Date.now() + SENSITIVE_ACTION_APPROVAL_WINDOW_MS,
               });
               return;
             }
@@ -633,6 +645,22 @@ export function BrowserTile(props: BrowserTileProps) {
   const approveSensitiveAction = (
     prompt: BrowserTileSensitiveActionPrompt,
   ): void => {
+    if (Date.now() >= prompt.expiresAt) {
+      // The host's own wait for this action has almost certainly already
+      // expired and been reported to the agent as a timeout by this point
+      // (see `SENSITIVE_ACTION_APPROVAL_WINDOW_MS`). A click that lands here
+      // is approving a request the host no longer has - execute it and the
+      // agent's retry types the same value again. Treat it as expired
+      // instead of live: this is the same failure the auto-expiry effect
+      // reports, kept as an explicit check because a backgrounded/throttled
+      // tab can delay that effect's timer past this point.
+      sendBrowserTileControlActionFailure(
+        prompt.request,
+        "Sensitive browser action approval window expired.",
+      );
+      setSensitiveActionPrompt(null);
+      return;
+    }
     const active = controlState.active;
     if (browserView === null || active === null) {
       sendBrowserTileControlActionFailure(

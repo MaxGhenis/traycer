@@ -9,7 +9,10 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserSessionsClientFrame } from "@traycer/protocol/host/browser/contracts";
-import { BrowserTile } from "@/components/epic-canvas/renderers/browser-tile";
+import {
+  BrowserTile,
+  SENSITIVE_ACTION_APPROVAL_WINDOW_MS,
+} from "@/components/epic-canvas/renderers/browser-tile";
 import { TileFindContext } from "@/components/epic-canvas/tile-find/tile-find-adapter-context";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -1012,7 +1015,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
       if (
         typeof handler !== "function" ||
         timeout === undefined ||
-        timeout < 59_000
+        timeout < SENSITIVE_ACTION_APPROVAL_WINDOW_MS - 1_000
       ) {
         return;
       }
@@ -1114,7 +1117,12 @@ describe("<BrowserTile /> cookie crypto banner", () => {
         realSetTimeout(resolve, 0);
       });
       const scheduledTimeout = scheduledTimeouts[0];
-      expect(scheduledTimeout.delayMs).toBeGreaterThanOrEqual(59_000);
+      expect(scheduledTimeout.delayMs).toBeGreaterThanOrEqual(
+        SENSITIVE_ACTION_APPROVAL_WINDOW_MS - 1_000,
+      );
+      expect(scheduledTimeout.delayMs).toBeLessThanOrEqual(
+        SENSITIVE_ACTION_APPROVAL_WINDOW_MS,
+      );
       act(() => {
         scheduledTimeout.callback();
       });
@@ -1132,6 +1140,101 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     } finally {
       setTimeoutSpy?.mockRestore();
       windowSetTimeoutSpy?.mockRestore();
+    }
+  });
+
+  it("rejects late Approve clicks after the local approval window without re-typing", async () => {
+    const bridge = new FakeBrowserViewBridge(REAL_STATE);
+    const sendFrame = vi.fn();
+    bridge.controlActionResults.push(
+      {
+        status: "needs-approval",
+        approvalId: "approval-1",
+        reason: "Typing into a password field requires explicit approval.",
+      },
+      { status: "completed", value: null },
+    );
+    bridgeHarness.current = bridge;
+
+    renderBrowserTile(null);
+    const request = {
+      requestId: "control-request-1",
+      grantId: "grant-1",
+      chatId: "chat-1",
+      agentRunId: "agent-1",
+      agentLabel: "Agent One",
+      tileInstanceId: NODE.instanceId,
+      origin: "http://localhost:3000",
+      url: "http://localhost:3000/app",
+      requestedAt: 1,
+      expiresAt: Date.now() + 60_000,
+      sendFrame,
+    };
+    act(() => {
+      publishBrowserTileControlRequest(request);
+      activateBrowserTileControl({
+        request,
+        grant: {
+          grantId: "grant-1",
+          chatId: "chat-1",
+          tileInstanceId: NODE.instanceId,
+          origin: "http://localhost:3000",
+          dataLevel: "control",
+          expiresAt: request.expiresAt,
+        },
+      });
+    });
+    await screen.findByText(/Agent One is controlling this browser/);
+    act(() => {
+      publishBrowserTileControlActionRequest({
+        requestId: "action-password",
+        grantId: "grant-1",
+        tileInstanceId: NODE.instanceId,
+        action: {
+          kind: "type",
+          selector: "input[type=password]",
+          text: "secret",
+        },
+        sendFrame,
+      });
+    });
+    expect(
+      await screen.findByText("Sensitive browser typing requires approval"),
+    ).toBeTruthy();
+    expect(bridge.controlActionCalls).toHaveLength(1);
+    expect(bridge.controlActionCalls[0]?.sensitiveApprovalId).toBeNull();
+
+    // Move wall-clock past the prompt's expiresAt without firing the
+    // auto-expiry setTimeout, so this exercises approveSensitiveAction's
+    // click-time guard (not the useEffect timeout path).
+    const pastApprovalWindow =
+      Date.now() + SENSITIVE_ACTION_APPROVAL_WINDOW_MS + 1_000;
+    const dateNowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(pastApprovalWindow);
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+      expect(bridge.controlActionCalls).toHaveLength(1);
+      expect(
+        bridge.controlActionCalls.some(
+          (call) => call.sensitiveApprovalId === "approval-1",
+        ),
+      ).toBe(false);
+      expect(sendFrame).toHaveBeenCalledWith({
+        kind: "visibleTileControlActionResult",
+        hasBinaryPayload: false,
+        requestId: "action-password",
+        grantId: "grant-1",
+        ok: false,
+        reason: "Sensitive browser action approval window expired.",
+        value: null,
+      });
+      expect(
+        screen.queryByText("Sensitive browser typing requires approval"),
+      ).toBeNull();
+    } finally {
+      dateNowSpy.mockRestore();
     }
   });
 
