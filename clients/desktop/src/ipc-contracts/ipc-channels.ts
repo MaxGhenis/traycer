@@ -238,6 +238,14 @@ export const RunnerHostInvoke = {
   browserViewPickElement: "runnerHost:browserView:pickElement",
   browserViewCancelElementPick: "runnerHost:browserView:cancelElementPick",
   browserViewOpenDevTools: "runnerHost:browserView:openDevTools",
+  // Agent-owned browser tile (ticket 02): a separate WebContentsView pool in
+  // `AGENT_BROWSER_VIEW_PARTITION`, deliberately not sharing the full
+  // `browserView:*` surface above. Driving (control grant/action), storage
+  // lending, find, zoom and devtools are out of scope until a later ticket
+  // wires the agent's own REPL-driven surface.
+  agentBrowserViewUpsert: "runnerHost:agentBrowserView:upsert",
+  agentBrowserViewUpdateBounds: "runnerHost:agentBrowserView:updateBounds",
+  agentBrowserViewRelease: "runnerHost:agentBrowserView:release",
 } as const;
 
 export const RunnerHostEvent = {
@@ -292,6 +300,8 @@ export const RunnerHostEvent = {
   browserViewDebugSnapshotChange:
     "runnerHost:event:browserView:debugSnapshotChange",
   browserViewControlRevoked: "runnerHost:event:browserView:controlRevoked",
+  agentBrowserViewStatusChange:
+    "runnerHost:event:agentBrowserView:statusChange",
   globalShortcutsChange: "runnerHost:event:globalShortcuts:change",
 } as const;
 

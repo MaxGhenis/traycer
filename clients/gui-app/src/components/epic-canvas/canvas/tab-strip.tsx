@@ -10,6 +10,7 @@ import {
 } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import {
+  Bot,
   FileDiff,
   FilePlus,
   Globe,
@@ -54,6 +55,7 @@ import type {
   SplitDirection,
 } from "@/stores/epics/canvas/types";
 import {
+  isAgentBrowserTileRef,
   isBlankTileRef,
   isBrowserPeekTileRef,
   isBrowserTileRef,
@@ -929,6 +931,9 @@ function TabIcon(props: {
   }
   if (isBrowserTileRef(props.tab) || isBrowserPeekTileRef(props.tab)) {
     return <Globe className="size-3.5 shrink-0 text-muted-foreground" />;
+  }
+  if (isAgentBrowserTileRef(props.tab)) {
+    return <Bot className="size-3.5 shrink-0 text-muted-foreground" />;
   }
   // Title generation is the idle default for chat tabs only - threaded into
   // ChatProgressIcon so running / notification / read-only semantics win

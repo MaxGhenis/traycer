@@ -1,4 +1,5 @@
 import type {
+  AgentBrowserTileRef,
   BlankTileRef,
   BrowserPeekTileRef,
   BrowserTileRef,
@@ -30,6 +31,7 @@ export interface TileKindToRefMap {
   readonly terminal: EpicTerminalRef;
   readonly browser: BrowserTileRef;
   readonly "browser-peek": BrowserPeekTileRef;
+  readonly "agent-browser": AgentBrowserTileRef;
   readonly "workspace-file": WorkspaceFileRef;
   readonly "git-diff": GitDiffTileRef;
   readonly "snapshot-diff": SnapshotDiffTileRef;

@@ -9,6 +9,7 @@ import type {
   TileLayoutNode,
 } from "./tile-tree";
 import {
+  TILE_KIND_AGENT_BROWSER,
   TILE_KIND_BLANK,
   TILE_KIND_BROWSER,
   TILE_KIND_BROWSER_PEEK,
@@ -142,6 +143,22 @@ export interface BrowserPeekTileRef {
   readonly chatId: string;
   readonly sessionId: string;
   readonly initialUrl: string;
+}
+
+/**
+ * The agent's own browser tab: a real `WebContentsView` in
+ * `AGENT_BROWSER_VIEW_PARTITION`, never `persist:traycer-browser`. Unlike
+ * `BrowserTileRef`, there is no `viewportPreset` - device-emulation chrome is
+ * a driving concern for a later ticket, and this tile always fills its tile
+ * at "responsive".
+ */
+export interface AgentBrowserTileRef {
+  readonly id: string;
+  readonly instanceId: string;
+  readonly type: typeof TILE_KIND_AGENT_BROWSER;
+  readonly name: string;
+  readonly hostId: string;
+  readonly url: string;
 }
 
 export function makeOpenableNodeRef(args: {
@@ -348,6 +365,7 @@ export type EpicCanvasTileRef =
   | EpicNodeRef
   | BrowserTileRef
   | BrowserPeekTileRef
+  | AgentBrowserTileRef
   | GitDiffTileRef
   | SnapshotDiffTileRef
   | PrDetailTileRef
@@ -376,6 +394,12 @@ export function isBrowserPeekTileRef(
   value: EpicCanvasTileRef,
 ): value is BrowserPeekTileRef {
   return value.type === TILE_KIND_BROWSER_PEEK;
+}
+
+export function isAgentBrowserTileRef(
+  value: EpicCanvasTileRef,
+): value is AgentBrowserTileRef {
+  return value.type === TILE_KIND_AGENT_BROWSER;
 }
 
 export function isWorkspaceFileRef(

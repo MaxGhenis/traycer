@@ -28,6 +28,7 @@ import {
 } from "./file-drops-bridge";
 import { buildZoomBridge } from "./zoom-bridge";
 import { buildBrowserViewBridge } from "./browser-view-bridge";
+import { buildAgentBrowserViewBridge } from "./agent-browser-view-bridge";
 import { readSyncString } from "./sync-bootstrap";
 
 /**
@@ -79,6 +80,7 @@ contextBridge.exposeInMainWorld("runnerHost", {
   power: buildPowerBridge(),
   ...buildZoomBridge(),
   ...buildBrowserViewBridge(),
+  ...buildAgentBrowserViewBridge(),
   hostManagement: buildHostManagementBridge(),
   hostTray: buildHostTrayCommandSubscriber(),
   hostControllerStatus: buildHostControllerStatusSubscriber(),

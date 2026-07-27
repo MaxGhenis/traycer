@@ -18,6 +18,7 @@ import {
   workspaceFileTileSchema,
 } from "./artifact-tile";
 import { browserPeekTileSchema, browserTileSchema } from "./browser-tile";
+import { agentBrowserTileSchema } from "./agent-browser-tile";
 import { gitDiffTileSchema } from "./git-diff-tile";
 import { snapshotDiffTileSchema } from "./snapshot-diff-tile";
 import { prDetailTileSchema } from "./pr-detail-tile";
@@ -44,6 +45,7 @@ const TILE_SCHEMAS: TileSchemaRegistry = {
   terminal: terminalTileSchema,
   browser: browserTileSchema,
   "browser-peek": browserPeekTileSchema,
+  "agent-browser": agentBrowserTileSchema,
   "workspace-file": workspaceFileTileSchema,
   "git-diff": gitDiffTileSchema,
   "snapshot-diff": snapshotDiffTileSchema,

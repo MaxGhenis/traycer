@@ -14,6 +14,7 @@ import type { EpicCanvasTileRef } from "@/stores/epics/canvas/types";
 import type { TileKindId } from "@/stores/epics/canvas/tile-kinds";
 import type { TileKindToRefMap } from "@/stores/epics/canvas/tile-kind-types";
 import { BrowserLinkRoutingProvider } from "@/lib/browser-view/browser-link-routing";
+import { AgentBrowserTile } from "./agent-browser-tile";
 import { BrowserPeekTile } from "./browser-peek-tile";
 import { BrowserTile } from "./browser-tile";
 import { ChatTile } from "./chat-tile";
@@ -108,6 +109,9 @@ const TILE_RENDERERS: TileRendererRegistry = {
     <BrowserTile node={node} viewTabId={viewTabId} paneId={tileId} />
   ),
   "browser-peek": ({ node }) => <BrowserPeekTile node={node} />,
+  "agent-browser": ({ node, viewTabId, tileId }) => (
+    <AgentBrowserTile node={node} viewTabId={viewTabId} paneId={tileId} />
+  ),
   "workspace-file": ({ node, viewTabId, isActive }) => (
     <WorkspaceFileTile node={node} viewTabId={viewTabId} isActive={isActive} />
   ),

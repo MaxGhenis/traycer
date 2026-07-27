@@ -40,6 +40,7 @@ import type {
 } from "@/stores/epics/canvas/types";
 import { WORKSPACE_FILE_TAB_KIND } from "@/stores/epics/canvas/types";
 import {
+  isAgentBrowserTileRef,
   isBlankTileRef,
   isBrowserPeekTileRef,
   isBrowserTileRef,
@@ -456,15 +457,16 @@ function ActiveTabBody(props: ActiveTabBodyProps) {
   const isPendingCreate = useEpicCanvasStore((s) =>
     s.pendingCreateArtifactIds.has(activeTab.id),
   );
-  // Terminals, browser tiles, git-diff tiles, PR detail/diff tiles, workspace
-  // files, and blank tabs are renderer-only - no cloud-backed projection, so a
-  // lookup miss isn't deletion. (A blank tab's content id is a throwaway uuid;
-  // without this guard the artifact lookup would miss and wrongly mark it
-  // deleted.)
+  // Terminals, browser tiles, agent-browser tiles, git-diff tiles, PR
+  // detail/diff tiles, workspace files, and blank tabs are renderer-only - no
+  // cloud-backed projection, so a lookup miss isn't deletion. (A blank tab's
+  // content id is a throwaway uuid; without this guard the artifact lookup
+  // would miss and wrongly mark it deleted.)
   const isRemoteDeleted =
     activeTab.type === "terminal" ||
     isBrowserTileRef(activeTab) ||
     isBrowserPeekTileRef(activeTab) ||
+    isAgentBrowserTileRef(activeTab) ||
     isDiffTileRef(activeTab) ||
     isPrDetailTileRef(activeTab) ||
     isPrDiffTileRef(activeTab) ||

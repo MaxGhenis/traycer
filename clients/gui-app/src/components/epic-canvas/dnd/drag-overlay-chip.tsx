@@ -7,7 +7,7 @@
  */
 import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
-import { FileDiff, FilePlus, GitPullRequest, Globe } from "lucide-react";
+import { Bot, FileDiff, FilePlus, GitPullRequest, Globe } from "lucide-react";
 import { LEFT_PANEL_DEFINITIONS } from "@/components/epic-canvas/sidebar/left-panel-registry";
 import { EpicNodeTabIcon } from "@/components/epic-canvas/epic-node-tab-icon";
 import { HeaderTabDragOverlay } from "@/components/layout/tabs/tab-strip-drag-overlay";
@@ -20,6 +20,7 @@ import {
 } from "@/components/epic-canvas/dnd/dnd";
 import type { HeaderTabDragData } from "@/components/layout/tabs/header-tab-dnd";
 import {
+  isAgentBrowserTileRef,
   isBlankTileRef,
   isBrowserPeekTileRef,
   isBrowserTileRef,
@@ -27,6 +28,7 @@ import {
   isGitDiffTileRef,
   isPrDetailTileRef,
   isPrDiffTileRef,
+  type AgentBrowserTileRef,
   type BlankTileRef,
   type BrowserPeekTileRef,
   type BrowserTileRef,
@@ -154,6 +156,9 @@ function EpicCanvasNodeDragOverlay(props: {
   if (isBrowserPeekTileRef(props.node)) {
     return <BrowserPeekTileDragOverlay node={props.node} />;
   }
+  if (isAgentBrowserTileRef(props.node)) {
+    return <AgentBrowserTileDragOverlay node={props.node} />;
+  }
   return <ArtifactNodeDragOverlay node={props.node} epicId={props.epicId} />;
 }
 
@@ -203,6 +208,21 @@ function BrowserPeekTileDragOverlay(props: {
     >
       <Globe className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate">{props.node.name}</span>
+    </m.div>
+  );
+}
+
+function AgentBrowserTileDragOverlay(props: {
+  readonly node: AgentBrowserTileRef;
+}) {
+  return (
+    <m.div
+      {...CHIP_MOTION}
+      className={cn(CHIP_CLASS)}
+      data-browser-overlay="drag-overlay"
+    >
+      <Bot className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate font-medium">{props.node.name}</span>
     </m.div>
   );
 }
