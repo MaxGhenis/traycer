@@ -87,6 +87,9 @@ export function windowsShellCaptionFamily(
   ) {
     return "git-bash";
   }
+  // Both wsl.exe and the legacy System32 bash.exe launcher open WSL - the
+  // same terminals-cross-the-boundary caption applies to either.
   if (base === "wsl.exe") return "wsl";
+  if (base === "bash.exe" && lower.includes("\\system32\\")) return "wsl";
   return "other";
 }

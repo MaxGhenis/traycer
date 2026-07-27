@@ -22,8 +22,9 @@ describe("windowsShellCaptionFamily", () => {
     ["C:\\msys64\\usr\\bin\\bash.exe", "git-bash"],
     // The Settings path is user-typed and may use forward slashes.
     ["C:/Program Files/Git/bin/bash.exe", "git-bash"],
-    // System32's bash.exe is legacy WSL, never probed as Git Bash.
-    ["C:\\Windows\\System32\\bash.exe", "other"],
+    // System32's bash.exe is the legacy WSL launcher: never probed as Git
+    // Bash, and it earns the same WSL boundary caption as wsl.exe.
+    ["C:\\Windows\\System32\\bash.exe", "wsl"],
     // WSL runs agents as Windows processes.
     ["C:\\Windows\\System32\\wsl.exe", "wsl"],
     // cmd and any custom program get the registry-merged environment only.
