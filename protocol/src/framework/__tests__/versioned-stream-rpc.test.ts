@@ -370,7 +370,7 @@ describe("stream compatibility", () => {
     expect(openAckManifest["browser.screencast"]).toBeUndefined();
     expect(openAckManifest["terminal.subscribe"]).toEqual({
       major: 1,
-      minor: 3,
+      minor: 4,
     });
 
     const terminalAsHost = checkStreamMethodCompatibility(
