@@ -196,7 +196,35 @@ async function installService(
   // recovery cards, so the previous blanket tolerance was masking real
   // bugs (the user saw a clean install + later a host-not-ready
   // failure with no service-install diagnostic to link them).
-  await bootstrapManifest(options.label, manifestPath, run);
+  try {
+    await run("launchctl", ["bootstrap", guiTarget, manifestPath], {
+      env: undefined,
+      cwd: undefined,
+      timeoutMs: 10_000,
+      tolerateNonZeroExit: false,
+    });
+  } catch (cause) {
+    if (!isBenignBootstrapFailure(cause)) {
+      throw cliError({
+        code: CLI_ERROR_CODES.SERVICE_INSTALL_FAILED,
+        message: `launchctl bootstrap failed for ${options.label.id}: ${describeCause(cause)}`,
+        details: { label: options.label.id, cause: describeCause(cause) },
+        exitCode: 1,
+      });
+    }
+    // Already-loaded after our probe/bootout means another process
+    // re-bootstrapped (or bootout did not fully clear) between steps.
+    // Kickstart would only run the *cached* definition and leave the
+    // regenerated SoftResourceLimits / ProgramArguments inactive - so
+    // retry a full reload against the on-disk plist instead.
+    await reloadRegisteredService({
+      labelId: options.label.id,
+      guiTarget,
+      serviceTarget,
+      manifestPath,
+      run,
+    });
+  }
   try {
     await run("launchctl", ["kickstart", `${guiTarget}/${options.label.id}`], {
       env: undefined,
@@ -374,78 +402,6 @@ async function inspectLaunchdOwnership(
     return { kind: "not-loaded" };
   }
   return classifyLaunchdPrintOutput(`${result.stdout}\n${result.stderr}`);
-}
-
-// Load the on-disk manifest into launchd. A concurrent registration is
-// recovered with the same ownership-aware full reload used by install.
-// Shared by install and `ensureBootstrapped` so both paths register safely.
-async function bootstrapManifest(
-  label: ServiceLabel,
-  manifestPath: string,
-  run: ProcessRunner,
-): Promise<void> {
-  const guiTarget = guiDomain();
-  const serviceTarget = `${guiTarget}/${label.id}`;
-  try {
-    await run("launchctl", ["bootstrap", guiTarget, manifestPath], {
-      env: undefined,
-      cwd: undefined,
-      timeoutMs: 10_000,
-      tolerateNonZeroExit: false,
-    });
-  } catch (cause) {
-    if (!isBenignBootstrapFailure(cause)) {
-      throw cliError({
-        code: CLI_ERROR_CODES.SERVICE_INSTALL_FAILED,
-        message: `launchctl bootstrap failed for ${label.id}: ${describeCause(cause)}`,
-        details: { label: label.id, cause: describeCause(cause) },
-        exitCode: 1,
-      });
-    }
-    await reloadRegisteredService({
-      labelId: label.id,
-      guiTarget,
-      serviceTarget,
-      manifestPath,
-      run,
-    });
-  }
-}
-
-/**
- * Reconcile launchd's registration with the on-disk manifest before a
- * kickstart.
- *
- * `kickstart` only *starts* a job launchd already knows about - it will
- * never create the registration, and fails with `Could not find service
- * "<label>" in domain for user gui: <uid>` when the job is absent. Only
- * `bootstrap` registers.
- *
- * A manifest easily outlives its registration: a `bootstrap` that failed
- * after the plist was written, an external `bootout`, or a login session
- * that never loaded the agent all leave the plist on disk with nothing
- * loaded. Reconciling here is what keeps that state recoverable - see the
- * note on `statusService` for why it would otherwise be terminal.
- */
-async function ensureBootstrapped(
-  label: ServiceLabel,
-  run: ProcessRunner,
-): Promise<void> {
-  const ownership = await inspectLaunchdOwnership(
-    `${guiDomain()}/${label.id}`,
-    run,
-  );
-  if (ownership.kind !== "not-loaded") return;
-  const manifestPath = serviceManifestPath(label);
-  if (!(await fileExists(manifestPath))) {
-    throw cliError({
-      code: CLI_ERROR_CODES.SERVICE_CONTROL_FAILED,
-      message: `service ${label.id} is not registered with launchd and no LaunchAgent exists at ${manifestPath} - run 'traycer host service install'`,
-      details: { label: label.id, manifestPath },
-      exitCode: 1,
-    });
-  }
-  await bootstrapManifest(label, manifestPath, run);
 }
 
 // Marker launchd prints for jobs submitted through the ServiceManagement
@@ -652,10 +608,6 @@ function isBenignBootoutFailure(cause: unknown): boolean {
   );
 }
 
-// What makes the service "installed" is the launchd registration, not merely
-// the presence of a plist. An orphaned manifest must report `not-installed`
-// so callers route back through install/bootstrap instead of issuing a
-// kickstart that can never create the missing registration.
 async function statusService(
   label: ServiceLabel,
   run: ProcessRunner,
@@ -699,9 +651,6 @@ async function statusService(
   }
   const manifestExists = await fileExists(serviceManifestPath(label));
   if (!manifestExists) {
-    return statusNotInstalled();
-  }
-  if (ownership.kind === "not-loaded") {
     return statusNotInstalled();
   }
   const pidMetadata = await readHostPidMetadata(label.environment);
@@ -1121,7 +1070,6 @@ async function startService(
   run: ProcessRunner,
 ): Promise<void> {
   await assertNotDesktopAgentManaged(label, "start", run);
-  await ensureBootstrapped(label, run);
   try {
     await run("launchctl", ["kickstart", `${guiDomain()}/${label.id}`], {
       env: undefined,
@@ -1144,7 +1092,6 @@ async function restartService(
   run: ProcessRunner,
 ): Promise<void> {
   await assertNotDesktopAgentManaged(label, "restart", run);
-  await ensureBootstrapped(label, run);
   try {
     await run("launchctl", ["kickstart", "-k", `${guiDomain()}/${label.id}`], {
       env: undefined,

@@ -8,7 +8,7 @@ import {
   vi,
 } from "vitest";
 import { existsSync, mkdtempSync } from "node:fs";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -1809,111 +1809,5 @@ describe("macOS service lifecycle", () => {
       );
       await expect(readRegisteredCliInvocation(label)).resolves.toBeNull();
     });
-  });
-});
-
-// An orphaned manifest - a plist on disk with no matching launchd job - is
-// easy to reach: a `bootstrap` that failed after the plist was written, an
-// external `bootout`, or a login session that never loaded the agent.
-//
-// It used to be a PERMANENT wedge. `kickstart` only starts a job launchd
-// already knows about; it never registers one, and fails with
-// `Could not find service "<label>" in domain for user gui: <uid>`. Because
-// `status` inferred installed-ness from the plist's mere existence, it
-// reported the orphan as `stopped` ("registered, just not running"), so
-// every caller - install-lifecycle's start/restart branch, auto-bootstrap
-// and provision (`serviceRegistered = state !== "not-installed"`), Doctor -
-// reached for `kickstart` and hit the same error forever. Nothing short of
-// deleting the plist by hand recovered it.
-//
-// launchd is now the source of truth for registration, and start/restart
-// reconcile the registration before kickstarting.
-describe("macOS orphaned LaunchAgent manifest (plist on disk, no launchd registration)", () => {
-  const label = serviceLabelFor("production");
-  const manifestPath = join(TEST_LAUNCH_AGENTS_DIR, `${label.id}.plist`);
-
-  afterEach(async () => {
-    await rm(manifestPath, { force: true });
-  });
-
-  async function writeOrphanedManifest(): Promise<void> {
-    await mkdir(TEST_LAUNCH_AGENTS_DIR, { recursive: true });
-    await writeFile(manifestPath, "<plist/>", "utf8");
-  }
-
-  // `launchctl print` exiting non-zero is how launchd says "I have no such
-  // job" - the exact 113 the wedged host reported in the field.
-  function buildUnregisteredRunner(calls: RecordedCall[]): ProcessRunner {
-    return async (command, args) => {
-      calls.push({ command, args });
-      if (args[0] === "print") {
-        return {
-          stdout: "",
-          stderr: `Could not find service "${label.id}" in domain for user gui: 501`,
-          exitCode: 113,
-        };
-      }
-      return buildSuccessResult();
-    };
-  }
-
-  it("reports not-installed, so callers re-register instead of kickstarting a job launchd has never heard of", async () => {
-    await writeOrphanedManifest();
-    const calls: RecordedCall[] = [];
-    const controller = createMacosController(buildUnregisteredRunner(calls));
-    const status = await controller.status(label);
-    // The plist exists; the registration does not. Only a re-`bootstrap`
-    // recovers that, and `not-installed` is what routes install-lifecycle /
-    // auto-bootstrap / provision / Doctor there. Reporting `stopped` here is
-    // what made the host permanently unstartable.
-    expect(status.state).toBe("not-installed");
-    expect(calls.map((c) => c.args[0])).toContain("print");
-  });
-
-  it("start bootstraps the orphaned manifest before kickstart rather than failing with 'Could not find service'", async () => {
-    await writeOrphanedManifest();
-    const calls: RecordedCall[] = [];
-    const controller = createMacosController(buildUnregisteredRunner(calls));
-    await controller.start(label);
-    expect(calls.map((c) => c.args[0])).toEqual([
-      "print",
-      "bootstrap",
-      "kickstart",
-    ]);
-  });
-
-  it("restart bootstraps the orphaned manifest before kickstart -k, so the desktop's Restart Host self-heals", async () => {
-    await writeOrphanedManifest();
-    const calls: RecordedCall[] = [];
-    const controller = createMacosController(buildUnregisteredRunner(calls));
-    await controller.restart(label);
-    expect(calls.map((c) => c.args[0])).toEqual([
-      "print",
-      "bootstrap",
-      "kickstart",
-    ]);
-    expect(calls.find((c) => c.args[0] === "kickstart")?.args).toContain("-k");
-  });
-
-  it("does not re-bootstrap when launchd already holds the registration", async () => {
-    await writeOrphanedManifest();
-    const calls: RecordedCall[] = [];
-    // print exits 0 => the job is loaded; the reconcile must be a no-op.
-    const controller = createMacosController(async (command, args) => {
-      calls.push({ command, args });
-      return buildSuccessResult();
-    });
-    await controller.start(label);
-    expect(calls.map((c) => c.args[0])).toEqual(["print", "kickstart"]);
-  });
-
-  it("start with neither a registration nor a manifest fails with an actionable error instead of a raw launchctl exit", async () => {
-    const calls: RecordedCall[] = [];
-    const controller = createMacosController(buildUnregisteredRunner(calls));
-    await expect(controller.start(label)).rejects.toMatchObject({
-      code: CLI_ERROR_CODES.SERVICE_CONTROL_FAILED,
-    });
-    // There is nothing to kickstart, so we must not have tried.
-    expect(calls.map((c) => c.args[0])).not.toContain("kickstart");
   });
 });
