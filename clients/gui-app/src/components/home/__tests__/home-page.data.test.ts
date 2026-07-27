@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
-import type { TaskLight } from "@traycer/protocol/host/epic/unary-schemas";
+import type { ListTaskLight } from "@traycer/protocol/host/epic/unary-schemas";
+import type { WorktreeHostEntryV12 } from "@traycer/protocol/host/worktree-schemas";
 import {
   buildHistoryItemsFromTasks,
   collectHistoryRepos,
   filterHistoryItems,
   groupHistoryItems,
+  historyPullRequestQueryNumber,
+  historyPullRequestSearchEpicIds,
+  historyWorktreeSearchEpicIds,
+  prioritizePinnedHistoryItems,
+  sortHistoryItems,
+  withHistoryItemWorktreeMetadata,
   type HistoryItem,
 } from "@/components/home/data/home-page.data";
 
@@ -22,8 +29,12 @@ function makeItem(
     updatedBucket: overrides.updatedBucket ?? "today",
     linkedRepos: overrides.linkedRepos ?? [],
     linkedWorkspaces: overrides.linkedWorkspaces ?? [],
+    pullRequestNumbers: overrides.pullRequestNumbers ?? [],
+    worktreeBranches: overrides.worktreeBranches ?? [],
+    worktreePaths: overrides.worktreePaths ?? [],
     ownership: overrides.ownership ?? "mine",
     permissionRole: overrides.permissionRole ?? "owner",
+    isPinned: overrides.isPinned ?? false,
   };
 }
 
@@ -73,8 +84,173 @@ describe("home-page history helpers", () => {
     expect(groups.map((g) => g.bucket)).toEqual(["today", "earlier"]);
   });
 
+  it("keeps pinned items first while preserving the active sort within each block", () => {
+    const items = [
+      makeItem({ id: "a", title: "Alpha", isPinned: false }),
+      makeItem({ id: "z", title: "Zulu", isPinned: true }),
+      makeItem({ id: "b", title: "Bravo", isPinned: true }),
+      makeItem({ id: "c", title: "Charlie", isPinned: false }),
+    ];
+
+    expect(sortHistoryItems(items, "title-asc").map((item) => item.id)).toEqual(
+      ["b", "z", "a", "c"],
+    );
+  });
+
+  it("preserves server last-viewed order while keeping pins first", () => {
+    const items = [
+      makeItem({ id: "unseen-new", title: "Unseen new", updatedAtMs: 40 }),
+      makeItem({ id: "viewed-old", title: "Viewed old", updatedAtMs: 30 }),
+      makeItem({ id: "pinned", title: "Pinned", isPinned: true }),
+      makeItem({ id: "viewed-new", title: "Viewed new", updatedAtMs: 10 }),
+      makeItem({ id: "unseen-old", title: "Unseen old", updatedAtMs: 20 }),
+    ];
+
+    expect(
+      sortHistoryItems(items, "last-viewed").map((item) => item.id),
+    ).toEqual([
+      "pinned",
+      "unseen-new",
+      "viewed-old",
+      "viewed-new",
+      "unseen-old",
+    ]);
+  });
+
+  it("stably promotes pinned items in relevance-ranked results", () => {
+    const items = [
+      makeItem({ id: "best", title: "Best match", isPinned: false }),
+      makeItem({ id: "pinned-1", title: "Pinned one", isPinned: true }),
+      makeItem({ id: "next", title: "Next match", isPinned: false }),
+      makeItem({ id: "pinned-2", title: "Pinned two", isPinned: true }),
+    ];
+
+    expect(prioritizePinnedHistoryItems(items).map((item) => item.id)).toEqual([
+      "pinned-1",
+      "pinned-2",
+      "best",
+      "next",
+    ]);
+  });
+
+  it("projects distinct superproject and submodule PR numbers for a task", () => {
+    const items = [makeItem({ id: "history-1", title: "History task" })];
+    const worktreesByEpicId = new Map([
+      [
+        "history-1",
+        [
+          worktreeWithPullRequests({
+            prNumber: 84,
+            submodulePrNumbers: [85, null],
+          }),
+          worktreeWithPullRequests({
+            prNumber: 84,
+            submodulePrNumbers: [85],
+          }),
+        ],
+      ],
+    ]);
+
+    expect(
+      withHistoryItemWorktreeMetadata(items, worktreesByEpicId)[0]
+        .pullRequestNumbers,
+    ).toEqual(["84", "#84", "PR #84", "85", "#85", "PR #85"]);
+  });
+
+  it("projects distinct branch names and worktree paths for a task", () => {
+    const items = [makeItem({ id: "history-1", title: "History task" })];
+    const worktreesByEpicId = new Map([
+      [
+        "history-1",
+        [
+          worktreeWithPullRequests({
+            prNumber: 84,
+            submodulePrNumbers: [85, null],
+          }),
+          worktreeWithPullRequests({
+            prNumber: 84,
+            submodulePrNumbers: [85],
+          }),
+        ],
+      ],
+    ]);
+
+    const [projected] = withHistoryItemWorktreeMetadata(
+      items,
+      worktreesByEpicId,
+    );
+    expect(projected.worktreeBranches).toEqual([
+      "task-history",
+      "submodule-0",
+      "submodule-1",
+    ]);
+    expect(projected.worktreePaths).toEqual(["/worktrees/84"]);
+  });
+
+  it("collects owner epic ids for branch and worktree-directory queries", () => {
+    const worktrees = [
+      {
+        ...worktreeWithPullRequests({
+          prNumber: null,
+          submodulePrNumbers: [85],
+        }),
+        owners: [worktreeOwner("epic-a"), worktreeOwner("epic-b")],
+      },
+    ];
+
+    // Case-insensitive branch substring.
+    expect(historyWorktreeSearchEpicIds("Task-Hist", worktrees)).toEqual([
+      "epic-a",
+      "epic-b",
+    ]);
+    // Owned-submodule branches are NOT matched on this path: callers feed it
+    // the cheap host index, whose `submodules` is contractually `[]`, so a
+    // fixture that populates them (as this one does) cannot occur in
+    // production. Those branches reach search via `worktreeBranches` instead.
+    expect(historyWorktreeSearchEpicIds("submodule-0", worktrees)).toEqual([]);
+    // Worktree leaf directory name ("/worktrees/none" -> "none").
+    expect(historyWorktreeSearchEpicIds("none", worktrees)).toEqual([
+      "epic-a",
+      "epic-b",
+    ]);
+    // Path-shaped query matches anywhere in the full worktree path.
+    expect(historyWorktreeSearchEpicIds("/worktrees/no", worktrees)).toEqual([
+      "epic-a",
+      "epic-b",
+    ]);
+    // A plain word matching only a path ancestor must NOT union unrelated
+    // tasks into a cloud title search.
+    expect(historyWorktreeSearchEpicIds("worktrees", worktrees)).toEqual([]);
+    expect(historyWorktreeSearchEpicIds("Alpha workbench", worktrees)).toEqual(
+      [],
+    );
+    // Single characters match too broadly to act on.
+    expect(historyWorktreeSearchEpicIds("t", worktrees)).toEqual([]);
+    expect(historyWorktreeSearchEpicIds("task-hist", [])).toEqual([]);
+  });
+
+  it("parses PR-shaped queries and collects owner epic ids by PR number", () => {
+    expect(historyPullRequestQueryNumber("84")).toBe(84);
+    expect(historyPullRequestQueryNumber("#84")).toBe(84);
+    expect(historyPullRequestQueryNumber("PR #84")).toBe(84);
+    expect(historyPullRequestQueryNumber("pr84")).toBe(84);
+    expect(historyPullRequestQueryNumber("84 fix")).toBe(null);
+    expect(historyPullRequestQueryNumber("fix")).toBe(null);
+
+    const worktrees = [
+      {
+        ...worktreeWithPullRequests({ prNumber: 84, submodulePrNumbers: [85] }),
+        owners: [worktreeOwner("epic-a")],
+      },
+    ];
+    expect(historyPullRequestSearchEpicIds(84, worktrees)).toEqual(["epic-a"]);
+    // Submodule PR numbers match too.
+    expect(historyPullRequestSearchEpicIds(85, worktrees)).toEqual(["epic-a"]);
+    expect(historyPullRequestSearchEpicIds(86, worktrees)).toEqual([]);
+  });
+
   it("builds history items from cloud task lights and extracts real repo identifiers", () => {
-    const tasks: ReadonlyArray<TaskLight> = [
+    const tasks: ReadonlyArray<ListTaskLight> = [
       {
         epic: {
           light: {
@@ -110,6 +286,7 @@ describe("home-page history helpers", () => {
           roomInfo: null,
         },
         phase: null,
+        pinned: true,
       },
       {
         epic: null,
@@ -137,6 +314,10 @@ describe("home-page history helpers", () => {
           workspaces: [],
           roomInfo: null,
         },
+        // A phase can never legitimately be pinned - the raw task carries
+        // `pinned: true` here to prove the projection ignores it rather
+        // than merely happening to see `false`.
+        pinned: true,
       },
     ];
 
@@ -158,6 +339,7 @@ describe("home-page history helpers", () => {
       linkedRepos: ["traycerai/gui-app", "traycerai/host"],
       ownership: "mine",
       permissionRole: "owner",
+      isPinned: true,
     });
     expect(items[1]).toMatchObject({
       id: "phase-phase-real",
@@ -168,6 +350,54 @@ describe("home-page history helpers", () => {
       initialUserPrompt: "",
       updatedBucket: "today",
       linkedRepos: ["traycerai/gui-app"],
+      isPinned: false,
     });
   });
 });
+
+function worktreeOwner(epicId: string): WorktreeHostEntryV12["owners"][number] {
+  return { epicId, ownerKind: "chat", ownerId: `chat-${epicId}`, updatedAt: 1 };
+}
+
+function worktreeWithPullRequests(args: {
+  readonly prNumber: number | null;
+  readonly submodulePrNumbers: ReadonlyArray<number | null>;
+}): WorktreeHostEntryV12 {
+  return {
+    worktreePath: `/worktrees/${args.prNumber ?? "none"}`,
+    repoLabel: "traycer/gui-app",
+    repoIdentifier: { owner: "traycer", repo: "gui-app" },
+    branch: "task-history",
+    inUse: false,
+    uncommittedCount: 0,
+    gitRemovable: true,
+    scripts: null,
+    lastActivityAt: null,
+    owners: [],
+    branchStatus: null,
+    createdAt: null,
+    prState: args.prNumber === null ? "none" : "open",
+    prNumber: args.prNumber,
+    prUrl:
+      args.prNumber === null
+        ? null
+        : `https://github.com/traycer/gui-app/pull/${args.prNumber}`,
+    mergedHeadShaMatches: false,
+    submodules: args.submodulePrNumbers.map((prNumber, index) => ({
+      repoIdentifier: { owner: "traycer", repo: `submodule-${index}` },
+      branch: `submodule-${index}`,
+      prState: prNumber === null ? "none" : "open",
+      prNumber,
+      prUrl:
+        prNumber === null
+          ? null
+          : `https://github.com/traycer/submodule-${index}/pull/${prNumber}`,
+      mergedHeadShaMatches: false,
+      mergedIntoDefault: false,
+      atPinnedCommit: false,
+      unmergedCommitCount: null,
+      unmergedCommitSubjects: null,
+    })),
+    atBaseCommit: false,
+  };
+}

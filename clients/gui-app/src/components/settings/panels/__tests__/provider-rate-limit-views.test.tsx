@@ -1,12 +1,22 @@
 import "../../../../../__tests__/test-browser-apis";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import type { ProviderRateLimits } from "@traycer/protocol/host";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { formatResetFullDateTime } from "@/lib/relative-time";
 import {
   ClaudeRateLimitView,
   CodexRateLimitView,
+  GrokRateLimitView,
   KiloCodeRateLimitView,
   OpenRouterRateLimitView,
+  ProviderRateLimitBody,
   ProviderRateLimitDetail,
 } from "../provider-rate-limit-views";
 
@@ -20,8 +30,18 @@ type OpenRouterRateLimits = Extract<
   { provider: "openrouter" }
 >;
 type KiloCodeRateLimits = Extract<ProviderRateLimits, { provider: "kilocode" }>;
+type GrokRateLimits = Extract<ProviderRateLimits, { provider: "grok" }>;
 
 const NOW = Date.now();
+
+/** Same calendar formatting Grok's billing-period range uses (local TZ). */
+function formatGrokPeriodDate(epochMs: number): string {
+  return new Date(epochMs).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
 
 afterEach(() => {
   cleanup();
@@ -58,7 +78,7 @@ describe("CodexRateLimitView (extended fields)", () => {
     ],
     credits: null,
     individualLimit: null,
-    resetCredits: { availableCount: 3 },
+    resetCredits: { availableCount: 3, credits: null },
     rateLimitReachedType: null,
   };
 
@@ -90,6 +110,145 @@ describe("CodexRateLimitView (extended fields)", () => {
     expect(screen.getByText("3 available")).toBeTruthy();
   });
 
+  const soonExpiry = NOW + 2 * 60 * 60 * 1000;
+  const laterExpiry = NOW + 3 * 24 * 60 * 60 * 1000;
+  const detailedCodex: CodexRateLimits = {
+    ...codex,
+    resetCredits: {
+      availableCount: 3,
+      credits: [
+        {
+          id: "later",
+          resetType: "codexRateLimits",
+          status: "available",
+          grantedAt: NOW,
+          expiresAt: laterExpiry,
+          title: "Later reset",
+          description: null,
+        },
+        {
+          id: "soon",
+          resetType: "codexRateLimits",
+          status: "available",
+          grantedAt: NOW,
+          expiresAt: soonExpiry,
+          title: "Soon reset",
+          description: null,
+        },
+      ],
+    },
+  };
+
+  it("lists reset expiries soonest first in Settings, and discloses a capped remainder", () => {
+    render(<CodexRateLimitView data={detailedCodex} variant="settings" />);
+
+    const resetLabels = screen.getAllByText(/reset$/);
+    expect(resetLabels.map((label) => label.textContent)).toEqual([
+      "Soon reset",
+      "Later reset",
+    ]);
+    expect(screen.getByText(/^Expires in /)).toBeTruthy();
+    expect(
+      screen.getByText(`Expires ${formatResetFullDateTime(laterExpiry)}`),
+    ).toBeTruthy();
+    expect(screen.getByText("+1 more not shown")).toBeTruthy();
+    // Nothing to hover in Settings - the list is already on screen.
+    expect(screen.getByText("3 available").className).not.toContain(
+      "cursor-help",
+    );
+  });
+
+  it("tints a reset expiring inside 48h in the Settings list, but not the far one", () => {
+    render(<CodexRateLimitView data={detailedCodex} variant="settings" />);
+    // `soonExpiry` is 2h out (inside the warning window); `laterExpiry` is 3d out.
+    expect(screen.getByText(/^Expires in /).className).toContain(
+      "text-destructive",
+    );
+    expect(
+      screen.getByText(`Expires ${formatResetFullDateTime(laterExpiry)}`)
+        .className,
+    ).not.toContain("text-destructive");
+  });
+
+  it("drops the warning tint in the tooltip, whose inverted surface can't carry it", async () => {
+    render(
+      <TooltipProvider delayDuration={0}>
+        <CodexRateLimitView data={detailedCodex} variant="popover-detail" />
+      </TooltipProvider>,
+    );
+
+    fireEvent.pointerMove(screen.getByText("3 available"));
+
+    const tooltip = await screen.findByRole("tooltip");
+    expect(within(tooltip).getByText(/^Expires in /).className).not.toContain(
+      "text-destructive",
+    );
+  });
+
+  it("collapses the popover to a bare count - no expiries, no per-credit rows", () => {
+    render(
+      <TooltipProvider delayDuration={0}>
+        <CodexRateLimitView data={detailedCodex} variant="popover-detail" />
+      </TooltipProvider>,
+    );
+    expect(screen.getByText("3 available")).toBeTruthy();
+    expect(screen.queryByText("Soon reset")).toBeNull();
+    expect(screen.queryByText(/^Expires/)).toBeNull();
+    expect(screen.queryByText("+1 more not shown")).toBeNull();
+  });
+
+  it("reveals the popover's expiries soonest first, plus the capped remainder, on hovering the count", async () => {
+    render(
+      <TooltipProvider delayDuration={0}>
+        <CodexRateLimitView data={detailedCodex} variant="popover-detail" />
+      </TooltipProvider>,
+    );
+
+    fireEvent.pointerMove(screen.getByText("3 available"));
+
+    const tooltip = await screen.findByRole("tooltip");
+    const resetLabels = within(tooltip).getAllByText(/reset$/);
+    expect(resetLabels.map((label) => label.textContent)).toEqual([
+      "Soon reset",
+      "Later reset",
+    ]);
+    expect(within(tooltip).getByText(/^Expires in /)).toBeTruthy();
+    expect(
+      within(tooltip).getByText(
+        `Expires ${formatResetFullDateTime(laterExpiry)}`,
+      ),
+    ).toBeTruthy();
+    expect(within(tooltip).getByText("+1 more not shown")).toBeTruthy();
+  });
+
+  it("reveals the popover's tooltip on keyboard focus, not just hover", async () => {
+    render(
+      <TooltipProvider delayDuration={0}>
+        <CodexRateLimitView data={detailedCodex} variant="popover-detail" />
+      </TooltipProvider>,
+    );
+
+    // A native `<button>`, not a `span` + `tabIndex`: natively
+    // keyboard-focusable, and valid without an ARIA role.
+    const count = screen.getByRole("button", { name: "3 available" });
+    fireEvent.focus(count);
+
+    expect(await screen.findByRole("tooltip")).toBeTruthy();
+  });
+
+  it("leaves the popover count out of tab order when the host sends no credit detail", () => {
+    render(<CodexRateLimitView data={codex} variant="popover-detail" />);
+    expect(screen.queryByRole("button", { name: "3 available" })).toBeNull();
+    expect(screen.getByText("3 available").tagName).toBe("SPAN");
+  });
+
+  it("leaves the popover count un-hoverable when the host sends no credit detail", () => {
+    render(<CodexRateLimitView data={codex} variant="popover-detail" />);
+    expect(screen.getByText("3 available").className).not.toContain(
+      "cursor-help",
+    );
+  });
+
   it("renders a generic day/hour duration for an off-standard window", () => {
     render(
       <CodexRateLimitView
@@ -117,7 +276,7 @@ describe("CodexRateLimitView (extended fields)", () => {
     expect(screen.getByText("68% used")).toBeTruthy();
   });
 
-  it("renders the popover variant as '% used' with the shared blue/red bar color", () => {
+  it("renders the popover variant as '% used' with the shared semantic bar color", () => {
     const { container } = render(
       <CodexRateLimitView data={codex} variant="popover-detail" />,
     );
@@ -129,7 +288,62 @@ describe("CodexRateLimitView (extended fields)", () => {
     expect(container.querySelectorAll(".bg-blue-500").length).toBeGreaterThan(
       0,
     );
-    expect(container.querySelectorAll(".bg-yellow-500").length).toBe(0);
+    expect(container.querySelectorAll(".bg-amber-500").length).toBe(0);
+  });
+
+  it("uses the same Healthy, Running low, and Limited tones in Settings and Usage Limits", () => {
+    const severityFixture: CodexRateLimits = {
+      ...codex,
+      primary: {
+        usedPercent: 80,
+        resetsAt: NOW + 60 * 60 * 1000,
+        durationMinutes: 300,
+      },
+      secondary: {
+        usedPercent: 95,
+        resetsAt: NOW + 3 * 24 * 60 * 60 * 1000,
+        durationMinutes: 10_080,
+      },
+      extraWindows: [
+        {
+          limitId: "limited",
+          limitName: "Limited",
+          primary: {
+            usedPercent: 100,
+            resetsAt: NOW + 60 * 60 * 1000,
+            durationMinutes: 300,
+          },
+          secondary: {
+            usedPercent: 40,
+            resetsAt: NOW + 3 * 24 * 60 * 60 * 1000,
+            durationMinutes: 10_080,
+          },
+        },
+      ],
+    };
+
+    const settings = render(
+      <CodexRateLimitView data={severityFixture} variant="settings" />,
+    );
+    expect(settings.container.querySelectorAll(".bg-amber-500")).toHaveLength(
+      2,
+    );
+    expect(settings.container.querySelectorAll(".bg-red-500")).toHaveLength(1);
+    expect(settings.container.querySelectorAll(".bg-blue-500")).toHaveLength(1);
+    cleanup();
+
+    const usageLimits = render(
+      <CodexRateLimitView data={severityFixture} variant="popover-detail" />,
+    );
+    expect(
+      usageLimits.container.querySelectorAll(".bg-amber-500"),
+    ).toHaveLength(2);
+    expect(usageLimits.container.querySelectorAll(".bg-red-500")).toHaveLength(
+      1,
+    );
+    expect(usageLimits.container.querySelectorAll(".bg-blue-500")).toHaveLength(
+      1,
+    );
   });
 
   it("draws every popover window track with a foreground-opacity fill so an empty bar stays visible", () => {
@@ -181,9 +395,10 @@ describe("CodexRateLimitView (extended fields)", () => {
     expect(screen.queryByText(/^Resets [A-Za-z]{3} \d{1,2}:\d{2}/)).toBeNull();
   });
 
-  it("shows an absolute weekday-tagged time for a weekly popover window", () => {
+  it("shows an absolute calendar date and time for a weekly popover window", () => {
     // The weekly (10080-min) `secondary` window keeps the absolute reset line
-    // ("Resets Sat 3:35 AM"), since "Resets in 3d" is too coarse.
+    // with its full date, since "Resets in 3d" is too coarse and a weekday
+    // alone is ambiguous.
     render(
       <CodexRateLimitView
         data={{ ...codex, primary: null, extraWindows: [] }}
@@ -191,7 +406,9 @@ describe("CodexRateLimitView (extended fields)", () => {
       />,
     );
     expect(
-      screen.getByText(/^Resets [A-Za-z]{3} \d{1,2}:\d{2}\s?[AP]M$/i),
+      screen.getByText(
+        `Resets ${formatResetFullDateTime(NOW + 3 * 24 * 60 * 60 * 1000)}`,
+      ),
     ).toBeTruthy();
     expect(screen.queryByText(/^Resets in /)).toBeNull();
   });
@@ -224,13 +441,13 @@ describe("CodexRateLimitView (extended fields)", () => {
 });
 
 describe("ClaudeRateLimitView", () => {
-  it("shows an absolute weekday-tagged time for a far per-model reset, even though modelScoped carries no durationMinutes", () => {
+  it("shows an absolute calendar date and time for a far per-model reset, even though modelScoped carries no durationMinutes", () => {
     // Regression: `modelScoped` entries never carry a `durationMinutes` (the
     // SDK's per-model usage has no separate duration field), so a
     // duration-based "is this weekly-scale" check always fell back to the
     // relative countdown for these rows, no matter how far away the real
-    // reset was ("Fable" usage showed "Resets in 3d" instead of "Resets Tue
-    // 5:29 PM"). The reset-format decision is now based on the real
+    // reset was ("Fable" usage showed "Resets in 3d" instead of a precise
+    // date/time). The reset-format decision is now based on the real
     // `resetsAt` delta instead, so a 3-day-out per-model reset gets the same
     // absolute treatment a weekly window does.
     const claude: ClaudeRateLimits = {
@@ -254,7 +471,9 @@ describe("ClaudeRateLimitView", () => {
     render(<ClaudeRateLimitView data={claude} variant="settings" />);
     expect(screen.getByText("Fable")).toBeTruthy();
     expect(
-      screen.getByText(/^Resets [A-Za-z]{3} \d{1,2}:\d{2}\s?[AP]M$/i),
+      screen.getByText(
+        `Resets ${formatResetFullDateTime(NOW + 3 * 24 * 60 * 60 * 1000)}`,
+      ),
     ).toBeTruthy();
     expect(screen.queryByText(/^Resets in /)).toBeNull();
   });
@@ -323,6 +542,29 @@ describe("ClaudeRateLimitView", () => {
     expect(container.querySelectorAll('[class*="bg-border/70"]').length).toBe(
       0,
     );
+  });
+
+  it("formats extra usage cents as dollar amounts", () => {
+    const claude: ClaudeRateLimits = {
+      provider: "claude-code",
+      available: true,
+      subscriptionType: "max",
+      fiveHour: null,
+      sevenDay: null,
+      sevenDayOpus: null,
+      sevenDaySonnet: null,
+      modelScoped: [],
+      extraUsage: {
+        isEnabled: true,
+        monthlyLimit: 10000,
+        usedCredits: 2360,
+        utilization: 24,
+      },
+    };
+    render(<ClaudeRateLimitView data={claude} variant="settings" />);
+    expect(screen.getByText("Extra usage")).toBeTruthy();
+    expect(screen.getByText("$23.60 / $100.00")).toBeTruthy();
+    expect(screen.queryByText("2360.00 / 10000.00")).toBeNull();
   });
 });
 
@@ -405,6 +647,135 @@ describe("KiloCodeRateLimitView", () => {
   });
 });
 
+describe("GrokRateLimitView", () => {
+  // UTC midnights - local toLocaleDateString may shift the calendar day, so
+  // expected range strings are built with the same formatter as production.
+  const periodStart = Date.UTC(2026, 6, 22);
+  const periodEnd = Date.UTC(2026, 6, 29);
+  const expectedBillingPeriod = `${formatGrokPeriodDate(periodStart)} - ${formatGrokPeriodDate(periodEnd)}`;
+
+  const grokWithPeriod: GrokRateLimits = {
+    provider: "grok",
+    available: true,
+    subscriptionTier: "SuperGrok",
+    periodType: "USAGE_PERIOD_TYPE_WEEKLY",
+    periodStart,
+    periodEnd,
+    period: {
+      usedPercent: 12,
+      resetsAt: periodEnd,
+      durationMinutes: 10_080,
+    },
+    monthlyLimit: 100,
+    onDemandCap: 50,
+    onDemandUsed: 5.5,
+    prepaidBalance: 25,
+  };
+
+  const grokPeriodLess: GrokRateLimits = {
+    provider: "grok",
+    available: true,
+    subscriptionTier: "SuperGrok",
+    periodType: "USAGE_PERIOD_TYPE_WEEKLY",
+    periodStart,
+    periodEnd,
+    period: null,
+    monthlyLimit: null,
+    onDemandCap: null,
+    onDemandUsed: null,
+    prepaidBalance: null,
+  };
+
+  it("renders a Weekly usage bar when period is present", () => {
+    const { container } = render(
+      <GrokRateLimitView data={grokWithPeriod} variant="settings" />,
+    );
+    expect(screen.getByText("Weekly")).toBeTruthy();
+    expect(screen.getByText("12% used")).toBeTruthy();
+    // Real bar fill (MeterRow track + severity color), not a plain text row.
+    expect(container.querySelectorAll(".bg-foreground\\/15").length).toBe(1);
+    expect(container.querySelectorAll(".bg-blue-500").length).toBe(1);
+    // Fallback plan/date rows stay off when a real period window exists.
+    expect(screen.queryByText("Plan")).toBeNull();
+    expect(screen.queryByText("Billing period")).toBeNull();
+  });
+
+  it("renders Plan + Billing period fallback when period is null (no bar)", () => {
+    const { container } = render(
+      <GrokRateLimitView data={grokPeriodLess} variant="settings" />,
+    );
+    expect(screen.getByText("Plan")).toBeTruthy();
+    // Branded tier is shown verbatim, not title-cased ("Supergrok").
+    expect(screen.getByText("SuperGrok")).toBeTruthy();
+    expect(screen.getByText("Billing period")).toBeTruthy();
+    expect(screen.getByText(expectedBillingPeriod)).toBeTruthy();
+    expect(screen.queryByText("Weekly")).toBeNull();
+    expect(screen.queryByText("% used", { exact: false })).toBeNull();
+    expect(container.querySelectorAll(".bg-foreground\\/15").length).toBe(0);
+  });
+
+  it("suppresses the fallback Plan row on popover-detail (the header owns the tier chip), keeping the billing period", () => {
+    // In the single-provider popover tab the header already renders the tier as
+    // a chip (resolveProviderPlanLabel), so the body's Plan row would duplicate
+    // it - same reason Codex/Claude keep the tier out of their card bodies. The
+    // billing-period row, which the chip doesn't carry, still shows.
+    render(
+      <GrokRateLimitView data={grokPeriodLess} variant="popover-detail" />,
+    );
+    expect(screen.queryByText("Plan")).toBeNull();
+    expect(screen.queryByText("SuperGrok")).toBeNull();
+    expect(screen.getByText("Billing period")).toBeTruthy();
+    expect(screen.getByText(expectedBillingPeriod)).toBeTruthy();
+  });
+
+  it("keeps the fallback Plan row on the Overview tab, which renders no tier chip", () => {
+    render(
+      <GrokRateLimitView data={grokPeriodLess} variant="popover-overview" />,
+    );
+    expect(screen.getByText("Plan")).toBeTruthy();
+    expect(screen.getByText("SuperGrok")).toBeTruthy();
+    expect(screen.getByText("Billing period")).toBeTruthy();
+  });
+
+  it("renders credit rows only when non-null", () => {
+    render(
+      <GrokRateLimitView
+        data={{
+          ...grokWithPeriod,
+          prepaidBalance: 25,
+          monthlyLimit: 100,
+          onDemandUsed: 5.5,
+          onDemandCap: null,
+        }}
+        variant="settings"
+      />,
+    );
+    expect(screen.getByText("Prepaid balance")).toBeTruthy();
+    expect(screen.getByText("$25.00")).toBeTruthy();
+    expect(screen.getByText("Monthly limit")).toBeTruthy();
+    expect(screen.getByText("$100.00")).toBeTruthy();
+    expect(screen.getByText("On-demand used")).toBeTruthy();
+    expect(screen.getByText("$5.50")).toBeTruthy();
+    // Null onDemandCap drops the On-demand limit row entirely.
+    expect(screen.queryByText("On-demand limit")).toBeNull();
+  });
+
+  it("condenses the Overview to period + Prepaid balance (drops monthly/on-demand)", () => {
+    render(
+      <GrokRateLimitView data={grokWithPeriod} variant="popover-overview" />,
+    );
+    // Kept: period bar + prepaid.
+    expect(screen.getByText("Weekly")).toBeTruthy();
+    expect(screen.getByText("12% used")).toBeTruthy();
+    expect(screen.getByText("Prepaid balance")).toBeTruthy();
+    expect(screen.getByText("$25.00")).toBeTruthy();
+    // Dropped: monthly + on-demand (detail/settings only).
+    expect(screen.queryByText("Monthly limit")).toBeNull();
+    expect(screen.queryByText("On-demand used")).toBeNull();
+    expect(screen.queryByText("On-demand limit")).toBeNull();
+  });
+});
+
 describe("ProviderRateLimitDetail dispatch", () => {
   it("dispatches to the OpenRouter view", () => {
     render(
@@ -422,6 +793,7 @@ describe("ProviderRateLimitDetail dispatch", () => {
           balance: 12,
         }}
         variant="settings"
+        codexResetAction={null}
       />,
     );
     expect(screen.getByText("Balance")).toBeTruthy();
@@ -438,9 +810,99 @@ describe("ProviderRateLimitDetail dispatch", () => {
           passState: null,
         }}
         variant="settings"
+        codexResetAction={null}
       />,
     );
     expect(screen.getByText("Credit balance")).toBeTruthy();
     expect(screen.getByText("$7.00")).toBeTruthy();
+  });
+
+  it("dispatches to the Grok view", () => {
+    render(
+      <ProviderRateLimitDetail
+        data={{
+          provider: "grok",
+          available: true,
+          subscriptionTier: "SuperGrok",
+          periodType: null,
+          periodStart: null,
+          periodEnd: null,
+          period: null,
+          monthlyLimit: null,
+          onDemandCap: null,
+          onDemandUsed: null,
+          prepaidBalance: 8,
+        }}
+        variant="settings"
+        codexResetAction={null}
+      />,
+    );
+    expect(screen.getByText("Plan")).toBeTruthy();
+    expect(screen.getByText("SuperGrok")).toBeTruthy();
+    expect(screen.getByText("Prepaid balance")).toBeTruthy();
+    expect(screen.getByText("$8.00")).toBeTruthy();
+  });
+});
+
+describe("ProviderRateLimitBody (unavailable state)", () => {
+  it("prefixes the reason with 'Usage limits unavailable', not a bare dash", () => {
+    render(
+      <ProviderRateLimitBody
+        isPending={false}
+        isFetching={false}
+        isError={false}
+        envelope={{
+          latest: {
+            provider: "codex",
+            available: false,
+            reason: "rate_limits_not_available",
+          },
+          lastGood: null,
+          lastGoodAt: null,
+          lastFailureAt: NOW,
+        }}
+        codexResetAction={null}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "Usage limits unavailable - not available for this account",
+      ),
+    ).toBeTruthy();
+  });
+});
+
+describe("ProviderRateLimitBody (Codex reset action)", () => {
+  it("places the supplied action beside a positive manual-reset count", () => {
+    render(
+      <ProviderRateLimitBody
+        isPending={false}
+        isFetching={false}
+        isError={false}
+        envelope={{
+          latest: {
+            provider: "codex",
+            available: true,
+            planType: "pro_5x",
+            limitId: "codex",
+            limitName: "Codex",
+            primary: null,
+            secondary: null,
+            extraWindows: [],
+            credits: null,
+            individualLimit: null,
+            resetCredits: { availableCount: 3, credits: null },
+            rateLimitReachedType: null,
+          },
+          lastGood: null,
+          lastGoodAt: null,
+          lastFailureAt: null,
+        }}
+        codexResetAction={() => <button type="button">Use reset</button>}
+      />,
+    );
+
+    expect(screen.getByText("3 available")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use reset" })).toBeTruthy();
   });
 });

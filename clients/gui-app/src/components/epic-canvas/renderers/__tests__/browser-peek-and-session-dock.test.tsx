@@ -56,6 +56,13 @@ vi.mock("@/providers/use-runner-host", () => ({
   useRunnerHost: () => ({ browserView: {} }),
 }));
 
+vi.mock("@/hooks/epic/use-epic-nested-focus-navigation", () => ({
+  useEpicNestedFocusNavigation:
+    () =>
+    (_epicId: string, _tabId: string, prepare: () => unknown): unknown =>
+      prepare(),
+}));
+
 vi.mock("@/lib/browser-view/desktop-browser-view", () => ({
   resolveDesktopBrowserViewBridge: () => ({
     applyStorageState: applyStorageStateMock.fn,
@@ -81,11 +88,15 @@ vi.mock("@/stores/epics/canvas/store", () => ({
   useEpicCanvasStore: (
     selector: (state: {
       readonly splitPaneWithNode: typeof splitPaneWithNodeMock.fn;
+      readonly prepareSplitPaneWithNodeFocusTarget: typeof splitPaneWithNodeMock.fn;
       readonly canvasByTabId: Record<string, unknown>;
+      readonly tabsById: Record<string, { readonly epicId: string }>;
     }) => unknown,
   ) =>
     selector({
       splitPaneWithNode: splitPaneWithNodeMock.fn,
+      prepareSplitPaneWithNodeFocusTarget: splitPaneWithNodeMock.fn,
+      tabsById: { "tab-1": { epicId: "epic-1" } },
       canvasByTabId: {
         "tab-1": {
           activePaneId: "pane-1",

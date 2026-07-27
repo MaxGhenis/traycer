@@ -19,8 +19,8 @@
  * `first-launch-setup.ts:resolveSplashPreloadPath`, and
  * `package.json:main` expect:
  *
- *   dist/main/index.js              - bundled main process (Electron entry)
- *   dist/preload/index.js           - bundled preload bridge (main window)
+ *   dist/main/index.js                          - bundled main process (Electron entry)
+ *   dist/preload/index.js                       - bundled preload bridge (main window)
  *
  * Externals:
  *   - `electron`            (Electron runtime - provided at load time)
@@ -71,13 +71,17 @@ if (!existsSync(mainEntry)) {
 if (!existsSync(preloadEntry)) {
   throw new Error(`Preload entry not found: ${preloadEntry}`);
 }
-
 // Reset the bundle outputs so a stale file from a previous tsc-based build
 // can't shadow the new bundle.
-rmSync(path.dirname(mainOutFile), { recursive: true, force: true });
-rmSync(path.dirname(preloadOutFile), { recursive: true, force: true });
-mkdirSync(path.dirname(mainOutFile), { recursive: true });
-mkdirSync(path.dirname(preloadOutFile), { recursive: true });
+const outDirs = [mainOutFile, preloadOutFile].map((outfile) =>
+  path.dirname(outfile),
+);
+for (const dir of outDirs) {
+  rmSync(dir, { recursive: true, force: true });
+}
+for (const dir of outDirs) {
+  mkdirSync(dir, { recursive: true });
+}
 
 const sharedConfig = {
   bundle: true,

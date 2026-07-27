@@ -5,6 +5,7 @@ import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock
 import { mockLocalHostEntry } from "@traycer-clients/shared/host-client/mock/mock-host-directory";
 import { createRequestContextFixture } from "@traycer-clients/shared/test-fixtures/request-context";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
+import { StaleHostBindingAuthorityError } from "@traycer-clients/shared/host-client/host-binding-authority-registry";
 import {
   hostRpcRegistry,
   type HostRpcRegistry,
@@ -24,7 +25,42 @@ vi.mock("@/lib/host/runtime", () => ({
   },
 }));
 
-import { useHostClientFor } from "@/hooks/host/use-host-client-for";
+import {
+  buildTransientHostClient,
+  useHostClientFor,
+} from "@/hooks/host/use-host-client-for";
+
+class RetryTestWebSocket {
+  static readonly instances: RetryTestWebSocket[] = [];
+
+  readonly url: string;
+  private readonly errorListeners = new Set<() => void>();
+
+  constructor(url: string) {
+    this.url = url;
+    RetryTestWebSocket.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: () => void): void {
+    if (type === "error") {
+      this.errorListeners.add(listener);
+    }
+  }
+
+  send(_data: string): void {}
+
+  close(_code: number, _reason: string): void {}
+
+  emitError(): void {
+    for (const listener of this.errorListeners) {
+      listener();
+    }
+  }
+
+  static reset(): void {
+    RetryTestWebSocket.instances.length = 0;
+  }
+}
 
 function buildGlobalClient(withContext: boolean): HostClient<HostRpcRegistry> {
   const client = new HostClient<HostRpcRegistry>({
@@ -58,6 +94,8 @@ describe("useHostClientFor", () => {
   afterEach(() => {
     cleanup();
     globalClientRef.value = null;
+    RetryTestWebSocket.reset();
+    vi.unstubAllGlobals();
   });
 
   it("returns null when there is no target", () => {
@@ -104,5 +142,33 @@ describe("useHostClientFor", () => {
     rerender({ target: targetC });
     expect(result.current).not.toBe(first);
     expect(result.current?.getActiveHostId()).toBe("host-c");
+  });
+
+  it("routes through the provider client instead of creating a transient messenger", async () => {
+    vi.stubGlobal("WebSocket", RetryTestWebSocket);
+    const hostA: HostDirectoryEntry = {
+      ...mockLocalHostEntry,
+      hostId: "host-a",
+      websocketUrl: "ws://host-a/rpc",
+    };
+    const hostB: HostDirectoryEntry = {
+      ...mockLocalHostEntry,
+      hostId: "host-b",
+      websocketUrl: "ws://host-b/rpc",
+    };
+    const globalClient = buildGlobalClient(true);
+    globalClient.bind(hostA);
+    const client = buildTransientHostClient(globalClient, hostA);
+    expect(client).not.toBeNull();
+    if (client === null) {
+      throw new Error("Expected a host-pinned transient client");
+    }
+
+    globalClient.bind(hostB);
+    const request = client.request("terminal.kill", { sessionId: "session-a" });
+    await expect(request).rejects.toBeInstanceOf(
+      StaleHostBindingAuthorityError,
+    );
+    expect(RetryTestWebSocket.instances).toHaveLength(0);
   });
 });

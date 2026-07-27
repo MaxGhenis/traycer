@@ -1,5 +1,6 @@
 import { useRouterState } from "@tanstack/react-router";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { v4 as uuidv4 } from "uuid";
 import { useActiveLandingDraftShell } from "@/stores/home/landing-draft-store";
 import { HomeHero } from "@/components/home/home-hero";
 import { LandingComposer } from "@/components/home/composer/landing-composer";
@@ -7,6 +8,7 @@ import { SurfaceActivityProvider } from "@/components/home/composer/surface-acti
 import { HostUpdateBanner } from "@/components/home/host-update-banner";
 import { HostWorkspaceSelector } from "@/components/home/host-workspace-selector/host-workspace-selector";
 import { EpicsListPanel } from "@/components/epics/epics-list-panel";
+import { LandingTerminalPanel } from "@/components/home/terminal-panel/landing-terminal-panel";
 import { parseSystemTabOverlayView } from "@/lib/system-tab-overlay-search";
 
 export function HomePage() {
@@ -15,6 +17,26 @@ export function HomePage() {
   // once at mount (keyed by draft id), so excluding it here keeps typing from
   // re-rendering the entire home surface.
   const { draftId, workspaceFolders, settings } = useActiveLandingDraftShell();
+
+  // Pre-mint the mount identity for the null-draft landing so the first
+  // substantive edit (which creates a draft and flips activeDraftId null→id)
+  // does not remount the Tiptap editor. Switching between existing drafts still
+  // remounts via a changing key.
+  //
+  // Bound→null rotation is a render-phase state adjustment (React docs pattern):
+  // a passive useEffect would leave one committed frame still keyed by the
+  // retired draft id (stale interactive editor). Adjusting here re-renders
+  // synchronously before commit so the new pending id is the first key after
+  // the transition — exactly one remount, no stale frame.
+  const [pendingDraftId, setPendingDraftId] = useState(() => uuidv4());
+  const [prevDraftId, setPrevDraftId] = useState<string | null>(draftId);
+  if (draftId !== prevDraftId) {
+    setPrevDraftId(draftId);
+    if (draftId === null) {
+      setPendingDraftId(uuidv4());
+    }
+  }
+  const composerMountId = draftId ?? pendingDraftId;
 
   // The Settings / History modal renders over the home page. While it's open the
   // embedded list is fully occluded, yet it shares the history-search store +
@@ -39,42 +61,46 @@ export function HomePage() {
   );
 
   return (
-    <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)_minmax(0,1fr)] overflow-hidden bg-background text-foreground">
-      <div className="mx-auto w-full max-w-3xl px-6 pt-3">
-        <HostUpdateBanner className={undefined} />
-      </div>
-
-      <section className="mx-auto flex w-full max-w-3xl items-end justify-center px-6 pb-10 pt-3">
-        <HomeHero workspaceFolders={workspaceFolders} />
-      </section>
-
-      {/* Composer + recent epics share one row so the composer is top-anchored:
-          adding a folder grows it downward into the (scrollable) epics list
-          below instead of recentering and shoving the hero up. */}
-      <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-col px-6">
-        <div className="shrink-0">
-          <SurfaceActivityProvider active={!systemModalOpen}>
-            <LandingComposer
-              key={draftId}
-              draftId={draftId}
-              initialSettings={settings}
-              workspaceControls={workspaceControls}
-            />
-          </SurfaceActivityProvider>
+    <div className="relative flex min-h-0 flex-1 overflow-hidden bg-background text-foreground">
+      <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[auto_minmax(0,1fr)_minmax(0,1fr)] overflow-hidden">
+        <div className="mx-auto w-full max-w-3xl px-6 pt-3">
+          <HostUpdateBanner className={undefined} />
         </div>
 
-        <div className="mt-3 flex min-h-0 flex-1 flex-col pb-6">
-          {systemModalOpen ? null : (
-            <EpicsListPanel
-              variant="embedded"
-              onSelectEpic={null}
-              routeSearch={null}
-              historyNowMs={null}
-              autoFocusSearch={false}
-            />
-          )}
+        <section className="mx-auto flex w-full max-w-3xl items-end justify-center px-6 pb-10 pt-3">
+          <HomeHero workspaceFolders={workspaceFolders} />
+        </section>
+
+        {/* Composer + recent epics share one row so the composer is top-anchored:
+            adding a folder grows it downward into the (scrollable) epics list
+            below instead of recentering and shoving the hero up. */}
+        <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-col px-6">
+          <div className="shrink-0">
+            <SurfaceActivityProvider active={!systemModalOpen}>
+              <LandingComposer
+                key={composerMountId}
+                draftId={draftId}
+                pendingCreateId={draftId === null ? pendingDraftId : null}
+                initialSettings={settings}
+                workspaceControls={workspaceControls}
+              />
+            </SurfaceActivityProvider>
+          </div>
+
+          <div className="mt-3 flex min-h-0 flex-1 flex-col pb-6">
+            {systemModalOpen ? null : (
+              <EpicsListPanel
+                variant="embedded"
+                onSelectEpic={null}
+                routeSearch={null}
+                historyNowMs={null}
+                autoFocusSearch={false}
+              />
+            )}
+          </div>
         </div>
       </div>
+      <LandingTerminalPanel draftId={draftId} />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
 import { DEFAULT_ACCOUNT_CONTEXT } from "@traycer/protocol/common/schemas";
 import type { ProviderId } from "@traycer/protocol/host/provider-schemas";
 import type {
@@ -10,10 +11,13 @@ import { queryKeys } from "@/lib/query-keys";
 import { createAppQueryClient } from "@/lib/query-client";
 import type { HostRpcRegistry } from "@/lib/host";
 import { PROVIDER_RATE_LIMITS_STALE_TIME_MS } from "@/lib/rate-limit-providers";
+import { EPHEMERAL_RATE_LIMIT_POLL_INTERVAL_MS } from "@/lib/rate-limits/rate-limit-timing";
 import {
   __resetRateLimitQueueForTests,
   configureRateLimitQueue,
   enqueueRateLimitFetch,
+  enqueueRateLimitFetchBatch,
+  enqueueRateLimitFetchForScope,
   isRateLimitQueueDraining,
   subscribeRateLimitQueueDraining,
   type RateLimitQueueRequestFn,
@@ -39,10 +43,18 @@ function unavailableResponse(reason: RateLimitUnavailableReason) {
 }
 
 function keyFor(providerId: ProviderId) {
+  return keyForHost(HOST_ID, providerId, null);
+}
+
+function keyForHost(
+  hostId: string,
+  providerId: ProviderId,
+  profileId: string | null,
+) {
   return queryKeys.hostMethod<HostRpcRegistry, "host.getRateLimitUsage">(
-    HOST_ID,
+    hostId,
     "host.getRateLimitUsage",
-    { accountContext: DEFAULT_ACCOUNT_CONTEXT, providerId },
+    { accountContext: DEFAULT_ACCOUNT_CONTEXT, providerId, profileId },
   );
 }
 
@@ -81,6 +93,7 @@ describe("ephemeral-fetch-queue", () => {
   });
   afterEach(() => {
     __resetRateLimitQueueForTests();
+    vi.useRealTimers();
   });
 
   it("serializes concurrent enqueues across providers - only one request is ever in flight (guardrail 1)", async () => {
@@ -92,9 +105,11 @@ describe("ephemeral-fetch-queue", () => {
     // across providers would. Force bypasses the freshness floor.
     void enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
 
     await flush();
@@ -102,6 +117,11 @@ describe("ephemeral-fetch-queue", () => {
     // started - the second is queued behind it, not spawned in parallel.
     expect(request).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(["codex"]);
+    expect(
+      queryClient
+        .getQueryCache()
+        .find({ queryKey: keyFor("codex"), exact: true })?.options.meta,
+    ).toMatchObject({ hostRpcMethod: "host.getRateLimitUsage" });
 
     // Release the first; only now may the second run.
     settlers[0].ok();
@@ -113,6 +133,143 @@ describe("ephemeral-fetch-queue", () => {
     await flush();
   });
 
+  it("starts every profile in one refresh batch concurrently, then waits before running the next queue item", async () => {
+    const queryClient = newQueryClient();
+    const profileStarts: Array<string | null> = [];
+    const settlers: Array<() => void> = [];
+    const request = vi.fn<RateLimitQueueRequestFn>(
+      (_hostId, _method, params) => {
+        profileStarts.push(params.profileId);
+        return new Promise((resolve) => {
+          settlers.push(() => resolve(response()));
+        });
+      },
+    );
+    configureRateLimitQueue({ hostId: HOST_ID, queryClient, request });
+
+    void enqueueRateLimitFetchBatch(
+      [
+        {
+          providerId: "codex",
+          accountContext: DEFAULT_ACCOUNT_CONTEXT,
+          profileId: null,
+        },
+        {
+          providerId: "codex",
+          accountContext: DEFAULT_ACCOUNT_CONTEXT,
+          profileId: "work-profile",
+        },
+      ],
+      { force: true },
+    );
+    void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
+      force: true,
+      profileId: null,
+    });
+
+    await flush();
+    expect(profileStarts).toEqual([null, "work-profile"]);
+    expect(request).toHaveBeenCalledTimes(2);
+
+    settlers[0]();
+    await flush();
+    expect(request).toHaveBeenCalledTimes(2);
+
+    settlers[1]();
+    await flush();
+    expect(profileStarts).toEqual([null, "work-profile", null]);
+
+    settlers[2]();
+    await flush();
+    expect(isRateLimitQueueDraining()).toBe(false);
+  });
+
+  it("targets an explicit selected host instead of the configured default host and writes only its cache key", async () => {
+    const queryClient = newQueryClient();
+    const defaultRequest = vi.fn<RateLimitQueueRequestFn>(() =>
+      Promise.resolve(response()),
+    );
+    const selectedRequest = vi.fn<RateLimitQueueRequestFn>(() =>
+      Promise.resolve(response()),
+    );
+    configureRateLimitQueue({
+      hostId: "host-a",
+      queryClient,
+      request: defaultRequest,
+    });
+
+    await enqueueRateLimitFetchForScope(
+      {
+        hostId: "host-b",
+        queryClient,
+        request: selectedRequest,
+      },
+      "codex",
+      DEFAULT_ACCOUNT_CONTEXT,
+      { force: true, profileId: "work-profile" },
+    );
+
+    expect(defaultRequest).not.toHaveBeenCalled();
+    expect(selectedRequest).toHaveBeenCalledWith(
+      "host-b",
+      "host.getRateLimitUsage",
+      {
+        accountContext: DEFAULT_ACCOUNT_CONTEXT,
+        providerId: "codex",
+        profileId: "work-profile",
+      },
+    );
+    expect(
+      queryClient.getQueryData(keyForHost("host-b", "codex", "work-profile")),
+    ).toEqual({
+      latest: null,
+      lastGood: null,
+      lastGoodAt: null,
+      lastFailureAt: null,
+    });
+    expect(
+      queryClient.getQueryData(keyForHost("host-a", "codex", "work-profile")),
+    ).toBeUndefined();
+  });
+
+  it("serializes default-host and selected-host subprocess work on the same lane", async () => {
+    const queryClient = newQueryClient();
+    const defaultHost = makeControllableRequest();
+    const selectedHost = makeControllableRequest();
+    configureRateLimitQueue({
+      hostId: "host-a",
+      queryClient,
+      request: defaultHost.request,
+    });
+
+    void enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
+      force: true,
+      profileId: null,
+    });
+    void enqueueRateLimitFetchForScope(
+      {
+        hostId: "host-b",
+        queryClient,
+        request: selectedHost.request,
+      },
+      "claude-code",
+      DEFAULT_ACCOUNT_CONTEXT,
+      { force: true, profileId: "selected-profile" },
+    );
+
+    await flush();
+    expect(defaultHost.request).toHaveBeenCalledTimes(1);
+    expect(selectedHost.request).not.toHaveBeenCalled();
+
+    defaultHost.settlers[0].ok();
+    await flush();
+    expect(selectedHost.request).toHaveBeenCalledTimes(1);
+
+    selectedHost.settlers[0].ok();
+    await flush();
+    expect(isRateLimitQueueDraining()).toBe(false);
+  });
+
   it("serializes many rapid same-provider force refreshes one at a time", async () => {
     const queryClient = newQueryClient();
     const { request, settlers } = makeControllableRequest();
@@ -121,6 +278,7 @@ describe("ephemeral-fetch-queue", () => {
     for (let i = 0; i < 4; i++) {
       void enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
         force: true,
+        profileId: null,
       });
     }
 
@@ -148,6 +306,7 @@ describe("ephemeral-fetch-queue", () => {
 
     void enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
     await flush();
     settlers[0].ok();
@@ -164,6 +323,31 @@ describe("ephemeral-fetch-queue", () => {
     });
   });
 
+  it("keeps an inactive rate-limit entry after invalidation instead of garbage-collecting it", async () => {
+    vi.useFakeTimers();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { gcTime: 50, retry: false } },
+    });
+    const request = vi.fn<RateLimitQueueRequestFn>(() =>
+      Promise.resolve(response()),
+    );
+    configureRateLimitQueue({ hostId: HOST_ID, queryClient, request });
+
+    await enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
+      force: true,
+      profileId: null,
+    });
+    const queryKey = keyFor("codex");
+    await queryClient.invalidateQueries({ queryKey, refetchType: "none" });
+
+    expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryData(queryKey)).toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(51);
+
+    expect(queryClient.getQueryData(queryKey)).toBeDefined();
+  });
+
   it("force: false no-ops when cached data is still within the freshness floor, force: true bypasses it", async () => {
     const queryClient = newQueryClient();
     const { request } = makeControllableRequest();
@@ -174,6 +358,7 @@ describe("ephemeral-fetch-queue", () => {
 
     void enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flush();
     // Still fresh -> the automatic trigger must not spawn a subprocess.
@@ -181,6 +366,7 @@ describe("ephemeral-fetch-queue", () => {
 
     void enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
     await flush();
     // A user-initiated refresh bypasses the floor.
@@ -194,9 +380,11 @@ describe("ephemeral-fetch-queue", () => {
 
     void enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
 
     await flush();
@@ -211,6 +399,29 @@ describe("ephemeral-fetch-queue", () => {
     expect(isRateLimitQueueDraining()).toBe(false);
   });
 
+  it("stores a normalized HostRpcError in the shared cache slot when the request rejects a foreign error", async () => {
+    const queryClient = newQueryClient();
+    // A raw TypeError - the shape that previously leaked into the provider
+    // rate-limit slot that `HostRpcError`-typed observers read.
+    const request: RateLimitQueueRequestFn = () =>
+      Promise.reject(new TypeError("boom from transport"));
+    configureRateLimitQueue({ hostId: HOST_ID, queryClient, request });
+
+    void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
+      force: true,
+      profileId: null,
+    });
+    await flush();
+
+    const cachedError = queryClient.getQueryState(keyFor("claude-code"))?.error;
+    expect(cachedError).toBeInstanceOf(HostRpcError);
+    expect(cachedError).toMatchObject({
+      code: "RPC_ERROR",
+      method: "host.getRateLimitUsage",
+      message: "boom from transport",
+    });
+  });
+
   it("a failed first read does not make a provider look fresh; an automatic enqueue retries and recovers", async () => {
     const queryClient = newQueryClient();
     const { request, settlers } = makeControllableRequest();
@@ -218,6 +429,7 @@ describe("ephemeral-fetch-queue", () => {
 
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flush();
     settlers[0].fail();
@@ -229,6 +441,7 @@ describe("ephemeral-fetch-queue", () => {
 
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flush();
 
@@ -260,6 +473,7 @@ describe("ephemeral-fetch-queue", () => {
 
     void enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
     // Draining flips true synchronously at enqueue, before any await.
     expect(isRateLimitQueueDraining()).toBe(true);
@@ -297,6 +511,7 @@ describe("ephemeral-fetch-queue", () => {
 
     void enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
     expect(isRateLimitQueueDraining()).toBe(true);
     await flush();
@@ -320,9 +535,11 @@ describe("ephemeral-fetch-queue", () => {
     // No cached data yet: both pass their enqueue-time freshness check.
     void enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
     void enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flush();
     expect(request).toHaveBeenCalledTimes(1);
@@ -340,6 +557,7 @@ describe("ephemeral-fetch-queue", () => {
     // No configureRateLimitQueue call.
     await enqueueRateLimitFetch("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
     await flush();
     expect(request).not.toHaveBeenCalled();
@@ -351,10 +569,10 @@ describe("ephemeral-fetch-queue", () => {
 // 429 on Anthropic's usage endpoint with a multi-minute penalty window - the
 // point of this cool-down is to stop automatic polling from re-tripping it).
 // Uses fake timers (and `vi.setSystemTime`) so the tests can cross both the
-// `PROVIDER_RATE_LIMITS_STALE_TIME_MS` freshness floor (30s) AND the 5-minute
+// `PROVIDER_RATE_LIMITS_STALE_TIME_MS` freshness floor (5m) AND the 15-minute
 // cool-down window deterministically, without a real 5-minute wait - and to
 // prove the cool-down is a DISTINCT gate from the freshness floor (an
-// automatic enqueue past 30s but still inside the cool-down must stay
+// automatic enqueue past 5m but still inside the cool-down must stay
 // suppressed).
 describe("post-usage_fetch_failed cool-down", () => {
   beforeEach(() => {
@@ -373,8 +591,9 @@ describe("post-usage_fetch_failed cool-down", () => {
   // Fake-timer analogue of `flush()`: advances virtual time (default 0, just
   // enough to drain already-pending microtasks/timers) without a real wait.
   async function flushFake(ms: number): Promise<void> {
-    for (let i = 0; i < 5; i++) {
-      await vi.advanceTimersByTimeAsync(ms);
+    await vi.advanceTimersByTimeAsync(ms);
+    for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(0);
     }
   }
 
@@ -387,17 +606,19 @@ describe("post-usage_fetch_failed cool-down", () => {
 
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flushFake(0);
     expect(request).toHaveBeenCalledTimes(1);
 
-    // Past the 30s freshness floor, but still well inside the 5-minute
+    // Past the 5-minute freshness floor, but still well inside the 15-minute
     // cool-down - an automatic trigger (interval tick / turn completion) must
     // still be suppressed here, proving the cool-down is a separate gate from
     // freshness (freshness alone would already allow a re-fetch by now).
     await flushFake(PROVIDER_RATE_LIMITS_STALE_TIME_MS + 1_000);
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flushFake(0);
     expect(request).toHaveBeenCalledTimes(1);
@@ -405,6 +626,7 @@ describe("post-usage_fetch_failed cool-down", () => {
     // A manual, user-initiated refresh is never subject to the cool-down.
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
     await flushFake(0);
     expect(request).toHaveBeenCalledTimes(2);
@@ -419,14 +641,16 @@ describe("post-usage_fetch_failed cool-down", () => {
 
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flushFake(0);
     expect(request).toHaveBeenCalledTimes(1);
 
-    // Advance past the full 5-minute cool-down window.
-    await flushFake(5 * 60 * 1000 + 1_000);
+    // Advance past the full automatic-poll cool-down window.
+    await flushFake(EPHEMERAL_RATE_LIMIT_POLL_INTERVAL_MS + 1_000);
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flushFake(0);
     expect(request).toHaveBeenCalledTimes(2);
@@ -441,6 +665,7 @@ describe("post-usage_fetch_failed cool-down", () => {
 
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flushFake(0);
     expect(request).toHaveBeenCalledTimes(1);
@@ -451,6 +676,7 @@ describe("post-usage_fetch_failed cool-down", () => {
     await flushFake(PROVIDER_RATE_LIMITS_STALE_TIME_MS + 1_000);
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flushFake(0);
     expect(request).toHaveBeenCalledTimes(2);
@@ -469,6 +695,7 @@ describe("post-usage_fetch_failed cool-down", () => {
     // First automatic pull trips the cool-down.
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flushFake(0);
     expect(request).toHaveBeenCalledTimes(1);
@@ -477,6 +704,7 @@ describe("post-usage_fetch_failed cool-down", () => {
     nextReason = null;
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: true,
+      profileId: null,
     });
     await flushFake(0);
     expect(request).toHaveBeenCalledTimes(2);
@@ -487,6 +715,7 @@ describe("post-usage_fetch_failed cool-down", () => {
     await flushFake(PROVIDER_RATE_LIMITS_STALE_TIME_MS + 1_000);
     void enqueueRateLimitFetch("claude-code", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     await flushFake(0);
     expect(request).toHaveBeenCalledTimes(3);

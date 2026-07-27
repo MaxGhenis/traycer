@@ -11,11 +11,25 @@ import {
 } from "../../../ipc-contracts/ipc-channels";
 import type { DesktopLocalHostSnapshot } from "../../../ipc-contracts/host-types";
 import type {
+  IpcHostController,
   IpcHostLifecycle,
   IpcManagedWindow,
   IpcWindowRecord,
   IpcWindowRegistry,
 } from "../runner-ipc-bridge";
+import type {
+  ActivateInstalledOk,
+  ApplyStagedOk,
+  ApplyStagedTrigger,
+  ConvergeReadyOk,
+  HostControllerStatus,
+  InstallVersionOk,
+  MutationOutcome,
+  MutationProgress,
+  RemoveTraycerOk,
+  ServiceRegistrationOk,
+  UninstallOk,
+} from "../../host/host-controller-types";
 import { DesktopAuthSession } from "../../auth/desktop-auth-session";
 import { EpicWindowOwnership } from "../../windows/epic-window-ownership";
 import { PerWindowState } from "../../windows/per-window-state";
@@ -130,7 +144,6 @@ vi.mock("electron-log", () => ({
 
 class FakeHost extends EventEmitter implements IpcHostLifecycle {
   private snapshot: DesktopLocalHostSnapshot | null = null;
-  respawnCalls = 0;
   notifyRespawningCalls = 0;
   reloadSnapshotCalls = 0;
   ensureWatcherCalls = 0;
@@ -146,9 +159,6 @@ class FakeHost extends EventEmitter implements IpcHostLifecycle {
     this.emit("change", next);
   }
 
-  async respawn(): Promise<void> {
-    this.respawnCalls += 1;
-  }
   notifyRespawning(): void {
     this.notifyRespawningCalls += 1;
     this.snapshot = null;
@@ -161,14 +171,6 @@ class FakeHost extends EventEmitter implements IpcHostLifecycle {
   ensureWatcherInstalled(): void {
     this.ensureWatcherCalls += 1;
   }
-  async getServiceStatus(): Promise<{
-    state: "running" | "stopped" | "not-installed";
-    version: string | null;
-    listenUrl: string | null;
-    pid: number | null;
-  }> {
-    return { state: "running", version: null, listenUrl: null, pid: null };
-  }
   async installService(): Promise<void> {}
   async uninstallService(_purge: boolean): Promise<void> {}
   async startService(): Promise<void> {}
@@ -178,6 +180,110 @@ class FakeHost extends EventEmitter implements IpcHostLifecycle {
   async enableLinger(): Promise<void> {}
   async getRecentLogTail(_maxLines: number): Promise<string | null> {
     return null;
+  }
+}
+
+const FAKE_HOST_CONTROLLER_STATUS: HostControllerStatus = {
+  download: null,
+  mutation: null,
+  installedVersion: "1.0.0",
+  latestVersion: "1.0.0",
+  stagedVersion: null,
+  installedRuntimeVersion: "1.0.0",
+  runningRuntimeVersion: "1.0.0",
+  updateReady: false,
+  activation: "activated",
+  reachable: true,
+  removedByUser: false,
+  checkedAt: "2026-01-01T00:00:00.000Z",
+};
+
+/**
+ * Structural double for `IpcHostController` - these tests exercise the
+ * bridge's window/tray/auth/lifecycle IPC surface, not `HostController`
+ * itself (see `host-controller.test.ts` for that), so every method just
+ * resolves a plausible "ok" outcome. `respawnCalls` lets the one test that
+ * cares (`requestHostRespawn`) assert without a real controller instance.
+ */
+class FakeHostController implements IpcHostController {
+  respawnCalls = 0;
+
+  async getStatus(): Promise<HostControllerStatus> {
+    return FAKE_HOST_CONTROLLER_STATUS;
+  }
+  async convergeReady(
+    _force: boolean,
+  ): Promise<MutationOutcome<ConvergeReadyOk>> {
+    return { kind: "ok", value: { running: true, version: "1.0.0" } };
+  }
+  async stageLatest(): Promise<void> {}
+  async applyStaged(
+    _trigger: ApplyStagedTrigger,
+    _force: boolean,
+  ): Promise<MutationOutcome<ApplyStagedOk>> {
+    return {
+      kind: "ok",
+      value: { appliedVersion: "1.0.0", runningActivated: true },
+    };
+  }
+  async activateInstalled(
+    _force: boolean,
+  ): Promise<MutationOutcome<ActivateInstalledOk>> {
+    return { kind: "ok", value: { activated: true } };
+  }
+  async installVersion(
+    pin: string,
+    _force: boolean,
+  ): Promise<MutationOutcome<InstallVersionOk>> {
+    return {
+      kind: "ok",
+      value: { installedVersion: pin, runningActivated: true },
+    };
+  }
+  async registerService(): Promise<MutationOutcome<ServiceRegistrationOk>> {
+    return { kind: "ok", value: { registered: true } };
+  }
+  async deregisterService(): Promise<MutationOutcome<ServiceRegistrationOk>> {
+    return { kind: "ok", value: { registered: false } };
+  }
+  async respawn(): Promise<MutationOutcome<ActivateInstalledOk>> {
+    this.respawnCalls += 1;
+    return { kind: "ok", value: { activated: true } };
+  }
+  async recoverIfDown(): Promise<
+    MutationOutcome<ActivateInstalledOk> | { readonly kind: "suppressed" }
+  > {
+    return { kind: "suppressed" };
+  }
+  async freePortAndRestart(
+    _pid: number | null,
+    _port: number | null,
+  ): Promise<MutationOutcome<ActivateInstalledOk>> {
+    return { kind: "ok", value: { activated: true } };
+  }
+  async uninstallHost(_all: boolean): Promise<MutationOutcome<UninstallOk>> {
+    return {
+      kind: "ok",
+      value: { removedInstallDir: true, deregisteredService: true },
+    };
+  }
+  async removeTraycer(): Promise<MutationOutcome<RemoveTraycerOk>> {
+    return {
+      kind: "ok",
+      value: {
+        removedHost: true,
+        deregisteredService: true,
+        removedLoginItem: false,
+      },
+    };
+  }
+  isPendingRevisionRefreshQuarantined(): boolean {
+    return false;
+  }
+  onMutationProgress(
+    _listener: (progress: MutationProgress) => void,
+  ): () => void {
+    return () => undefined;
   }
 }
 
@@ -458,10 +564,12 @@ describe("RunnerIpcBridge", () => {
     const host = new FakeHost();
     const bridge = new mod.RunnerIpcBridge({
       host,
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -472,12 +580,17 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.hostPickerRequestClose,
         RunnerHostInvoke.hostPickerRequestOpen,
         RunnerHostInvoke.workspaceFoldersPick,
-        RunnerHostInvoke.validateAuthToken,
         RunnerHostInvoke.validateAuthTokenIdentity,
         RunnerHostInvoke.deviceFlowStart,
         RunnerHostInvoke.deviceFlowPollNow,
         RunnerHostInvoke.deviceFlowCancel,
-        RunnerHostInvoke.refreshAuthToken,
+        // §3 FileTokenStore IPC seam (get/signIn/rotate/delete); §6 adds the
+        // one-time legacy→file migration channel.
+        RunnerHostInvoke.authTokenStoreGet,
+        RunnerHostInvoke.authTokenStoreSignIn,
+        RunnerHostInvoke.authTokenStoreRotate,
+        RunnerHostInvoke.authTokenStoreDelete,
+        RunnerHostInvoke.authTokenStoreMigrateLegacy,
         RunnerHostInvoke.notificationShow,
         RunnerHostInvoke.openExternalLink,
         RunnerHostInvoke.getRegisteredUrlSchemes,
@@ -495,6 +608,8 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.appUpdateDownload,
         RunnerHostInvoke.appUpdateGetSnapshot,
         RunnerHostInvoke.appUpdateInstall,
+        RunnerHostInvoke.globalShortcutsGetSnapshot,
+        RunnerHostInvoke.globalShortcutsSet,
         RunnerHostInvoke.windowsList,
         RunnerHostInvoke.windowsRequestNew,
         RunnerHostInvoke.windowsRequestFocus,
@@ -522,19 +637,24 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.traycerConfigShellList,
         RunnerHostInvoke.traycerConfigShellSet,
         RunnerHostInvoke.traycerConfigShellReset,
+        RunnerHostInvoke.traycerConfigShellAdd,
+        RunnerHostInvoke.traycerConfigShellRemove,
+        RunnerHostInvoke.traycerConfigShellProbe,
+        RunnerHostInvoke.traycerConfigShellPickProgramFile,
+        RunnerHostInvoke.traycerConfigShellRevertArgs,
         RunnerHostInvoke.traycerConfigEnvList,
         RunnerHostInvoke.traycerConfigEnvSet,
         RunnerHostInvoke.traycerConfigEnvDelete,
-        RunnerHostInvoke.traycerCliLogin,
-        RunnerHostInvoke.traycerCliLogout,
         RunnerHostInvoke.migrationAnnounceRunning,
         RunnerHostInvoke.migrationGetRunningSnapshot,
         // Native-packaging host-management bridge (Flow 4 / Flow 6).
         // These channels are registered by `registerHostManagementIpc`
         // which the bridge invokes during `install()`.
-        RunnerHostInvoke.traycerHostInstall,
-        RunnerHostInvoke.traycerHostEnsure,
-        RunnerHostInvoke.traycerHostUpdate,
+        RunnerHostInvoke.traycerHostControllerStatusGet,
+        RunnerHostInvoke.traycerHostConvergeReady,
+        RunnerHostInvoke.traycerHostApplyStaged,
+        RunnerHostInvoke.traycerHostActivateInstalled,
+        RunnerHostInvoke.traycerHostInstallVersion,
         RunnerHostInvoke.traycerHostUninstall,
         RunnerHostInvoke.traycerAppUninstall,
         RunnerHostInvoke.traycerHostRemovalGet,
@@ -549,7 +669,6 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.traycerServiceRegister,
         RunnerHostInvoke.traycerServiceDeregister,
         RunnerHostInvoke.traycerRegistryCheck,
-        RunnerHostInvoke.traycerHostOperationStatusGet,
         RunnerHostInvoke.traycerFreePortAndRestart,
         RunnerHostInvoke.traycerCliManifestRead,
         // Platform IPC channels installed by `registerPlatformIpc(bridge)`,
@@ -587,9 +706,13 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.certTrustDismissPending,
         RunnerHostInvoke.certTrustSystemDialog,
         RunnerHostInvoke.windowSetOverlayIcon,
+        RunnerHostInvoke.windowSetTitleBarOverlay,
+        // Windows frameless menu strip → native submenu popup.
+        RunnerHostInvoke.menuOpenTopLevel,
         RunnerHostInvoke.displayList,
         RunnerHostInvoke.fileDropWriteTemporary,
         RunnerHostInvoke.fileDropCopyTemporary,
+        RunnerHostInvoke.fileDropReadNativeClipboardPaths,
         RunnerHostInvoke.fileSave,
         RunnerHostInvoke.gpuAccelerationGet,
         RunnerHostInvoke.gpuAccelerationSet,
@@ -640,10 +763,12 @@ describe("RunnerIpcBridge", () => {
     const electron = await import("electron");
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -684,10 +809,12 @@ describe("RunnerIpcBridge", () => {
     });
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -722,10 +849,12 @@ describe("RunnerIpcBridge", () => {
     });
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -758,10 +887,12 @@ describe("RunnerIpcBridge", () => {
     showSaveDialog.mockResolvedValue({ canceled: true, filePath: "" });
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -791,14 +922,17 @@ describe("RunnerIpcBridge", () => {
     const ownership = new EpicWindowOwnership(null);
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership,
       perWindowState: new PerWindowState(null),
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
     windowA.sentMessages.length = 0;
@@ -848,7 +982,12 @@ describe("RunnerIpcBridge", () => {
     bridge.dispose();
   });
 
-  it("removes closed windows from per-window restore state and ownership", async () => {
+  it("prunes a closed window's per-window restore state + ownership on a deliberate mid-session close (other windows remain)", async () => {
+    // Closing one of several open windows is a deliberate mid-session close, not
+    // a quit gesture: the closed window's restore snapshot must be pruned so a
+    // relaunch does not resurrect it, while the remaining window's snapshot
+    // survives untouched. (Last-window / quit-in-progress closes PRESERVE the
+    // snapshot instead - covered by the two tests below.)
     const mod = await import("../register-runner-ipc");
     const registry = new FakeWindowRegistry();
     const windowA = buildWindow();
@@ -869,14 +1008,17 @@ describe("RunnerIpcBridge", () => {
     });
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership,
       perWindowState,
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
     windowA.sentMessages.length = 0;
@@ -920,6 +1062,117 @@ describe("RunnerIpcBridge", () => {
     bridge.dispose();
   });
 
+  it("preserves the per-window restore snapshot when the LAST window closes (quit/leave gesture)", async () => {
+    // Win/Linux: last-window `closed` fires this listener BEFORE
+    // `window-all-closed` -> `app.quit()`, so `quitState` is not yet set. macOS:
+    // a red-light close of the last window keeps the app alive. Either way the
+    // snapshot must survive so a later quit -> relaunch (or dock `activate`)
+    // restores it.
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowA = buildWindow();
+    registry.add("window-a", 101, windowA);
+    const ownership = new EpicWindowOwnership(null);
+    ownership.claim("tab-a", "epic-a", "window-a");
+    const perWindowState = new PerWindowState(null);
+    perWindowState.update("window-a", {
+      epicTabs: [{ id: "tab-a", epicId: "epic-a", name: "Alpha" }],
+      activeTabId: "tab-a",
+    });
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership,
+      perWindowState,
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+
+    const closeHandler = ipcMainState.handlers.get(
+      RunnerHostInvoke.windowsRequestClose,
+    );
+    if (closeHandler === undefined) {
+      throw new Error("windowsRequestClose handler missing");
+    }
+
+    await closeHandler(sender(101), "window-a");
+
+    expect(registry.closeRequests).toEqual(["window-a"]);
+    expect(registry.records()).toEqual([]);
+    // The snapshot is preserved (NOT cleared) for restore.
+    expect(perWindowState.get("window-a")).toMatchObject({
+      epicTabs: [{ id: "tab-a", epicId: "epic-a", name: "Alpha" }],
+      activeTabId: "tab-a",
+    });
+    bridge.dispose();
+  });
+
+  it("preserves closing windows while the shell is quitting, even when others remain", async () => {
+    // Defense-in-depth for the quit sequence: if a window `closed` event races
+    // the registry-change listener while more windows are still open during a
+    // quit, the snapshot must NOT be pruned - all windows' state is restored on
+    // the next launch.
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowA = buildWindow();
+    const windowB = buildWindow();
+    registry.add("window-a", 101, windowA);
+    registry.add("window-b", 202, windowB);
+    const ownership = new EpicWindowOwnership(null);
+    ownership.claim("tab-b", "epic-b", "window-b");
+    const perWindowState = new PerWindowState(null);
+    perWindowState.update("window-a", {
+      epicTabs: [{ id: "tab-a", epicId: "epic-a", name: "Alpha" }],
+      activeTabId: "tab-a",
+    });
+    perWindowState.update("window-b", {
+      epicTabs: [{ id: "tab-b", epicId: "epic-b", name: "Beta" }],
+      activeTabId: "tab-b",
+    });
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership,
+      perWindowState,
+      authSession: new DesktopAuthSession(),
+      quitState: { isQuitting: () => true },
+    });
+    bridge.install();
+
+    const closeHandler = ipcMainState.handlers.get(
+      RunnerHostInvoke.windowsRequestClose,
+    );
+    if (closeHandler === undefined) {
+      throw new Error("windowsRequestClose handler missing");
+    }
+
+    // window-a is closed while window-b remains open, but the shell is quitting.
+    await closeHandler(sender(101), "window-a");
+
+    expect(perWindowState.get("window-a")).toMatchObject({
+      epicTabs: [{ id: "tab-a", epicId: "epic-a", name: "Alpha" }],
+      activeTabId: "tab-a",
+    });
+    expect(perWindowState.get("window-b")).toMatchObject({
+      epicTabs: [{ id: "tab-b", epicId: "epic-b", name: "Beta" }],
+      activeTabId: "tab-b",
+    });
+    bridge.dispose();
+  });
+
   it("moves an owned Epic into a prepared new window through the canonical open-in-new-window IPC", async () => {
     const mod = await import("../register-runner-ipc");
     const registry = new FakeWindowRegistry();
@@ -938,14 +1191,17 @@ describe("RunnerIpcBridge", () => {
     });
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership,
       perWindowState,
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
 
@@ -999,14 +1255,17 @@ describe("RunnerIpcBridge", () => {
     });
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership,
       perWindowState,
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
 
@@ -1058,14 +1317,17 @@ describe("RunnerIpcBridge", () => {
     ownership.claim("tab-a", "epic-a", "window-b");
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership,
       perWindowState: new PerWindowState(null),
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
 
@@ -1093,10 +1355,12 @@ describe("RunnerIpcBridge", () => {
     const host = new FakeHost();
     const bridge = new mod.RunnerIpcBridge({
       host,
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -1125,14 +1389,17 @@ describe("RunnerIpcBridge", () => {
     registry.add("window-b", 202, windowB);
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership: new EpicWindowOwnership(null),
       perWindowState: new PerWindowState(null),
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
     windowA.sentMessages.length = 0;
@@ -1168,14 +1435,17 @@ describe("RunnerIpcBridge", () => {
     ownership.claim("tab-owned", "epic-owned", "window-a");
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership,
       perWindowState: new PerWindowState(null),
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
     windowA.sentMessages.length = 0;
@@ -1236,14 +1506,17 @@ describe("RunnerIpcBridge", () => {
     registry.add("window-b", 202, windowB);
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership: new EpicWindowOwnership(null),
       perWindowState: new PerWindowState(null),
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
     windowA.sentMessages.length = 0;
@@ -1307,6 +1580,23 @@ describe("RunnerIpcBridge", () => {
         },
       },
     ]);
+    windowB.sentMessages.length = 0;
+    // Tray "Settings…" / "Sign In" fire in the same no-focused-renderer
+    // situation and must reach the MRU renderer instead of no-oping.
+    expect(bridge.dispatchMenuCommand("app.openSettings")).toBe(true);
+    expect(
+      windowB.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.menuCommand,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.menuCommand,
+        payload: {
+          command: "app.openSettings",
+          windowId: "window-b",
+        },
+      },
+    ]);
     bridge.dispose();
   });
 
@@ -1319,14 +1609,17 @@ describe("RunnerIpcBridge", () => {
     registry.add("window-b", 202, windowB);
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership: new EpicWindowOwnership(null),
       perWindowState: new PerWindowState(null),
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
     windowA.sentMessages.length = 0;
@@ -1334,7 +1627,6 @@ describe("RunnerIpcBridge", () => {
 
     expect(bridge.dispatchMenuCommand("epic.closeTab")).toBe(false);
     expect(bridge.dispatchMenuCommand("window.closeWindow")).toBe(false);
-    expect(bridge.dispatchMenuCommand("app.openSettings")).toBe(false);
     expect(windowA.sentMessages).toEqual([]);
     expect(windowB.sentMessages).toEqual([]);
 
@@ -1366,14 +1658,17 @@ describe("RunnerIpcBridge", () => {
     registry.add("window-b", 202, windowB);
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership: new EpicWindowOwnership(null),
       perWindowState: new PerWindowState(null),
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
 
@@ -1434,14 +1729,17 @@ describe("RunnerIpcBridge", () => {
     registry.add("window-b", 202, buildWindow());
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership: new EpicWindowOwnership(null),
       perWindowState: new PerWindowState(null),
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
 
@@ -1470,18 +1768,22 @@ describe("RunnerIpcBridge", () => {
     const windowB = buildWindow();
     const bridgeA = new mod.RunnerIpcBridge({
       host: hostA,
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: windowA,
     });
     const bridgeB = new mod.RunnerIpcBridge({
       host: hostB,
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: windowB,
     });
     bridgeA.install();
@@ -1570,10 +1872,12 @@ describe("RunnerIpcBridge", () => {
 
     const bridge = new mod.RunnerIpcBridge({
       host,
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -1604,14 +1908,17 @@ describe("RunnerIpcBridge", () => {
     registry.add("window-b", 202, windowB);
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership: new EpicWindowOwnership(null),
       perWindowState: new PerWindowState(null),
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
 
@@ -1679,8 +1986,12 @@ describe("RunnerIpcBridge", () => {
     expect(windowA.sentMessages).toEqual([]);
     expect(windowB.sentMessages).toEqual([]);
 
-    // clear by sender: removes window-a's snapshot, emits an empty snapshot to
-    // window-a only, and leaves window-b untouched.
+    // clear by sender: removes window-a's snapshot but does NOT forward the empty
+    // snapshot to any renderer. A `clear` is a window-teardown wipe; pushing its
+    // empty snapshot could clobber a still-alive window that transiently dropped
+    // from the registry (reload / re-registration), and the "Clear local app
+    // state" path reloads the window rather than relying on the echo. Window-b is
+    // likewise untouched.
     windowA.sentMessages.length = 0;
     windowB.sentMessages.length = 0;
     const empty = {
@@ -1692,12 +2003,7 @@ describe("RunnerIpcBridge", () => {
     };
     await clearHandler(sender(101));
     expect(await getHandler(sender(101))).toEqual(empty);
-    expect(windowA.sentMessages).toEqual([
-      {
-        channel: RunnerHostEvent.perWindowStateChange,
-        payload: empty,
-      },
-    ]);
+    expect(windowA.sentMessages).toEqual([]);
     expect(windowB.sentMessages).toEqual([]);
     bridge.dispose();
   });
@@ -1719,14 +2025,17 @@ describe("RunnerIpcBridge", () => {
     const perWindowState = new PerWindowState(null);
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership: new EpicWindowOwnership(null),
       perWindowState,
       authSession: new DesktopAuthSession(),
+      quitState: undefined,
     });
     bridge.install();
 
@@ -1773,14 +2082,17 @@ describe("RunnerIpcBridge", () => {
     const authSession = new DesktopAuthSession();
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership: new EpicWindowOwnership(null),
       perWindowState: new PerWindowState(null),
       authSession,
+      quitState: undefined,
     });
     bridge.install();
 
@@ -1822,10 +2134,12 @@ describe("RunnerIpcBridge", () => {
     const mod = await import("../register-runner-ipc");
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -1878,10 +2192,12 @@ describe("RunnerIpcBridge", () => {
       const mod = await import("../register-runner-ipc");
       const bridge = new mod.RunnerIpcBridge({
         host: new FakeHost(),
+        hostController: new FakeHostController(),
         authnBaseUrl: "http://localhost:5005",
         authRedirectUri: null,
         tray: null,
         zoomController: undefined,
+        authTokenStore: undefined,
         window: buildDestroyedWindow(),
       });
       bridge.install();
@@ -1918,10 +2234,12 @@ describe("RunnerIpcBridge", () => {
       const mod = await import("../register-runner-ipc");
       const bridge = new mod.RunnerIpcBridge({
         host: new FakeHost(),
+        hostController: new FakeHostController(),
         authnBaseUrl: "http://localhost:5005",
         authRedirectUri: null,
         tray: null,
         zoomController: undefined,
+        authTokenStore: undefined,
         window: buildWindow(),
       });
       bridge.install();
@@ -1965,10 +2283,12 @@ describe("RunnerIpcBridge", () => {
       const mod = await import("../register-runner-ipc");
       const bridge = new mod.RunnerIpcBridge({
         host: new FakeHost(),
+        hostController: new FakeHostController(),
         authnBaseUrl: "http://localhost:5005",
         authRedirectUri: null,
         tray: null,
         zoomController: undefined,
+        authTokenStore: undefined,
         window: buildWindow(),
       });
       bridge.install();
@@ -2036,10 +2356,12 @@ describe("RunnerIpcBridge", () => {
     const mod = await import("../register-runner-ipc");
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -2108,10 +2430,12 @@ describe("RunnerIpcBridge", () => {
       const mod = await import("../register-runner-ipc");
       const bridge = new mod.RunnerIpcBridge({
         host: new FakeHost(),
+        hostController: new FakeHostController(),
         authnBaseUrl: "http://localhost:5005",
         authRedirectUri: null,
         tray: null,
         zoomController: undefined,
+        authTokenStore: undefined,
         window: buildWindow(),
       });
       bridge.install();
@@ -2144,10 +2468,12 @@ describe("RunnerIpcBridge", () => {
     const mod = await import("../register-runner-ipc");
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -2186,10 +2512,12 @@ describe("RunnerIpcBridge", () => {
     const host = new FakeHost();
     const bridge = new mod.RunnerIpcBridge({
       host,
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -2221,60 +2549,6 @@ describe("RunnerIpcBridge", () => {
     bridge.dispose();
   });
 
-  it("validates auth tokens through the main-process HTTP helper", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(() =>
-        Promise.resolve(
-          new Response(
-            JSON.stringify({
-              user: {
-                name: "Desktop User",
-                providerHandle: "desktop-user",
-                email: "desktop@example.com",
-              },
-            }),
-            {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            },
-          ),
-        ),
-      ),
-    );
-
-    const mod = await import("../register-runner-ipc");
-    const bridge = new mod.RunnerIpcBridge({
-      host: new FakeHost(),
-      authnBaseUrl: "http://localhost:5005",
-      authRedirectUri: null,
-      tray: null,
-      zoomController: undefined,
-      window: buildWindow(),
-    });
-    bridge.install();
-
-    const validateHandler = ipcMainState.handlers.get(
-      RunnerHostInvoke.validateAuthToken,
-    );
-    if (validateHandler === undefined) {
-      throw new Error("validateAuthToken handler missing");
-    }
-
-    await expect(
-      validateHandler(bareEvent(), "jwt-abc", "jwt-abc-refresh"),
-    ).resolves.toEqual({
-      kind: "valid",
-      profile: {
-        userId: "",
-        userName: "Desktop User",
-        email: "desktop@example.com",
-      },
-    });
-
-    bridge.dispose();
-  });
-
   it("validates full auth identities through the main-process HTTP helper", async () => {
     const user = createAuthenticatedUserFixture(undefined);
     vi.stubGlobal(
@@ -2292,10 +2566,12 @@ describe("RunnerIpcBridge", () => {
     const mod = await import("../register-runner-ipc");
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -2322,15 +2598,17 @@ describe("RunnerIpcBridge", () => {
     bridge.dispose();
   });
 
-  it("routes requestHostRespawn to HostLifecycle.respawn()", async () => {
+  it("routes requestHostRespawn to HostController.respawn()", async () => {
     const mod = await import("../register-runner-ipc");
-    const host = new FakeHost();
+    const hostController = new FakeHostController();
     const bridge = new mod.RunnerIpcBridge({
-      host,
+      host: new FakeHost(),
+      hostController,
       authnBaseUrl: "http://localhost:5005",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -2343,7 +2621,38 @@ describe("RunnerIpcBridge", () => {
     }
     await respawnHandler(bareEvent());
     await respawnHandler(bareEvent());
-    expect(host.respawnCalls).toBe(2);
+    expect(hostController.respawnCalls).toBe(2);
+    bridge.dispose();
+  });
+
+  it("rejects requestHostRespawn when HostController.respawn() resolves a non-ok outcome", async () => {
+    const mod = await import("../register-runner-ipc");
+    const hostController = new FakeHostController();
+    hostController.respawn = async () => ({
+      kind: "failed",
+      message: "Traycer needs approval in System Settings.",
+    });
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController,
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      window: buildWindow(),
+    });
+    bridge.install();
+
+    const respawnHandler = ipcMainState.handlers.get(
+      RunnerHostInvoke.requestHostRespawn,
+    );
+    if (respawnHandler === undefined) {
+      throw new Error("requestHostRespawn handler missing");
+    }
+    await expect(respawnHandler(bareEvent())).rejects.toThrow(
+      "Traycer needs approval in System Settings.",
+    );
     bridge.dispose();
   });
 
@@ -2351,10 +2660,12 @@ describe("RunnerIpcBridge", () => {
     const mod = await import("../register-runner-ipc");
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "https://authn.example.invalid",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       window: buildWindow(),
     });
     bridge.install();
@@ -2389,14 +2700,17 @@ describe("RunnerIpcBridge", () => {
     });
     const bridge = new mod.RunnerIpcBridge({
       host: new FakeHost(),
+      hostController: new FakeHostController(),
       authnBaseUrl: "https://authn.example.invalid",
       authRedirectUri: null,
       tray: null,
       zoomController: undefined,
+      authTokenStore: undefined,
       windowRegistry: registry,
       ownership: new EpicWindowOwnership(null),
       perWindowState,
       authSession,
+      quitState: undefined,
     });
     bridge.install();
     windowA.sentMessages.length = 0;
@@ -2442,6 +2756,7 @@ describe("RunnerIpcBridge", () => {
       {
         channel: RunnerHostEvent.appUpdateChange,
         payload: {
+          allowPrerelease: false,
           sequence: 0,
           status: "idle",
           currentVersion: "1.0.0",
@@ -2449,6 +2764,7 @@ describe("RunnerIpcBridge", () => {
           downloadProgress: null,
           installBlockedReason: null,
           installGuidance: null,
+          installInFlight: false,
           errorMessage: null,
           lastCheckedAt: null,
           lastCheckIntent: null,
@@ -2456,6 +2772,802 @@ describe("RunnerIpcBridge", () => {
       },
       { channel: RunnerHostEvent.zoomChange, payload: 100 },
     ]);
+    bridge.dispose();
+  });
+
+  it("routes a chat notification click to the window that already has the chat open, not MRU", async () => {
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowMru = buildWindow();
+    const windowOpen = buildWindow();
+    // First add open, then MRU so mostRecentlyFocusedId is the empty window.
+    registry.add("window-open", 101, windowOpen);
+    registry.add("window-mru", 202, windowMru);
+    const perWindowState = new PerWindowState(null);
+    perWindowState.update("window-open", {
+      epicTabs: [{ id: "tab-open", epicId: "epic-1", name: "Epic 1" }],
+      activeTabId: "tab-open",
+      canvasByTabId: {
+        "tab-open": {
+          tilesByInstanceId: {
+            "tile-1": {
+              id: "chat-1",
+              type: "chat",
+              hostId: "host-1",
+            },
+          },
+        },
+      },
+    });
+    perWindowState.update("window-mru", {
+      epicTabs: [],
+      activeTabId: null,
+      canvasByTabId: {},
+    });
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership: new EpicWindowOwnership(null),
+      perWindowState,
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+    registry.focusById("window-mru");
+    windowMru.sentMessages.length = 0;
+    windowOpen.sentMessages.length = 0;
+
+    const payload = {
+      kind: "notificationActivation",
+      version: 1,
+      route: { kind: "chat", epicId: "epic-1", chatId: "chat-1" },
+      feed: { source: "host", id: "row-1" },
+      originHostId: "host-1",
+    };
+    bridge.deliverNotificationClick(payload);
+
+    expect(registry.mostRecentlyFocusedId()).toBe("window-open");
+    expect(
+      windowOpen.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload,
+      },
+    ]);
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+    bridge.dispose();
+  });
+
+  it("falls back to owned-or-MRU when no open chat matches the notification", async () => {
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowOwner = buildWindow();
+    const windowMru = buildWindow();
+    registry.add("window-owner", 101, windowOwner);
+    registry.add("window-mru", 202, windowMru);
+    const ownership = new EpicWindowOwnership(null);
+    ownership.claim("tab-owned", "epic-owned", "window-owner");
+    const perWindowState = new PerWindowState(null);
+    // Same epic open, but a different chat - selector must not match.
+    perWindowState.update("window-owner", {
+      epicTabs: [{ id: "tab-owned", epicId: "epic-owned", name: "Owned" }],
+      activeTabId: "tab-owned",
+      canvasByTabId: {
+        "tab-owned": {
+          tilesByInstanceId: {
+            "tile-other": { id: "chat-other", type: "chat", hostId: "host-1" },
+          },
+        },
+      },
+    });
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership,
+      perWindowState,
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+    registry.focusById("window-mru");
+    windowOwner.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+
+    const payload = {
+      kind: "notificationActivation",
+      version: 1,
+      route: { kind: "chat", epicId: "epic-owned", chatId: "chat-missing" },
+      feed: { source: "host", id: "row-1" },
+      originHostId: "host-1",
+    };
+    bridge.deliverNotificationClick(payload);
+
+    expect(registry.mostRecentlyFocusedId()).toBe("window-owner");
+    expect(
+      windowOwner.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload,
+      },
+    ]);
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+
+    // Unowned epic with no open chat → pure MRU fallback.
+    windowOwner.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+    registry.focusById("window-mru");
+    windowOwner.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+    const unownedPayload = {
+      kind: "notificationActivation",
+      version: 1,
+      route: { kind: "chat", epicId: "unowned-epic", chatId: "chat-x" },
+      feed: { source: "host", id: "row-unowned" },
+      originHostId: null,
+    };
+    bridge.deliverNotificationClick(unownedPayload);
+    expect(registry.mostRecentlyFocusedId()).toBe("window-mru");
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload: unownedPayload,
+      },
+    ]);
+    expect(
+      windowOwner.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+    bridge.dispose();
+  });
+
+  it("routes epic-only V1 notification clicks via nested route.epicId owned-or-MRU", async () => {
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowOwner = buildWindow();
+    const windowMru = buildWindow();
+    registry.add("window-owner", 101, windowOwner);
+    registry.add("window-mru", 202, windowMru);
+    const ownership = new EpicWindowOwnership(null);
+    ownership.claim("tab-owned", "epic-owned", "window-owner");
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership,
+      perWindowState: new PerWindowState(null),
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+    registry.focusById("window-mru");
+    windowOwner.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+
+    // Top-level epicId is intentionally absent - the V1 envelope nests it
+    // under route. Pre-fix readEpicId(payload) would have returned null and
+    // always hit MRU; nested-route-aware routing must reach the owner.
+    const payload = {
+      kind: "notificationActivation",
+      version: 1,
+      route: { kind: "epic", epicId: "epic-owned" },
+      feed: { source: "host", id: "row-1" },
+      originHostId: "host-1",
+    };
+    bridge.deliverNotificationClick(payload);
+
+    expect(registry.mostRecentlyFocusedId()).toBe("window-owner");
+    expect(
+      windowOwner.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload,
+      },
+    ]);
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+    bridge.dispose();
+  });
+
+  it("does not reinterpret unsupported envelope versions as legacy (no epic-owner routing)", async () => {
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowOwner = buildWindow();
+    const windowMru = buildWindow();
+    registry.add("window-owner", 101, windowOwner);
+    registry.add("window-mru", 202, windowMru);
+    const ownership = new EpicWindowOwnership(null);
+    ownership.claim("tab-owned", "epic-owned", "window-owner");
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership,
+      perWindowState: new PerWindowState(null),
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+    registry.focusById("window-mru");
+    windowOwner.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+
+    // Envelope-shaped + top-level epicId must not fall through to legacy
+    // parsing and hit the owner window. Fail-closed → MRU with null epicId.
+    const payload = {
+      kind: "notificationActivation",
+      version: 2,
+      epicId: "epic-owned",
+      chatId: "chat-1",
+      route: { kind: "chat", epicId: "epic-owned", chatId: "chat-1" },
+      feed: { source: "host", id: "row-1" },
+      originHostId: "host-1",
+    };
+    bridge.deliverNotificationClick(payload);
+
+    expect(registry.mostRecentlyFocusedId()).toBe("window-mru");
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload,
+      },
+    ]);
+    expect(
+      windowOwner.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+    bridge.dispose();
+  });
+
+  it("does not open-window-route when originHostId is non-string (envelope invalid)", async () => {
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowOpen = buildWindow();
+    const windowMru = buildWindow();
+    registry.add("window-open", 101, windowOpen);
+    registry.add("window-mru", 202, windowMru);
+    const ownership = new EpicWindowOwnership(null);
+    ownership.claim("tab-owned", "epic-1", "window-open");
+    const perWindowState = new PerWindowState(null);
+    perWindowState.update("window-open", {
+      epicTabs: [{ id: "tab-open", epicId: "epic-1", name: "Epic 1" }],
+      activeTabId: "tab-open",
+      canvasByTabId: {
+        "tab-open": {
+          tilesByInstanceId: {
+            "tile-1": { id: "chat-1", type: "chat", hostId: "host-1" },
+          },
+        },
+      },
+    });
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership,
+      perWindowState,
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+    registry.focusById("window-mru");
+    windowOpen.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+
+    // Invalid originHostId invalidates the whole envelope → all-null target.
+    // Must not degrade to null-origin and match the open chat window, and must
+    // not use nested epicId for ownership either.
+    const payload = {
+      kind: "notificationActivation",
+      version: 1,
+      route: { kind: "chat", epicId: "epic-1", chatId: "chat-1" },
+      feed: { source: "host", id: "row-1" },
+      originHostId: 42,
+    };
+    bridge.deliverNotificationClick(payload);
+
+    expect(registry.mostRecentlyFocusedId()).toBe("window-mru");
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload,
+      },
+    ]);
+    expect(
+      windowOpen.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+    bridge.dispose();
+  });
+
+  it("still delivers legacy raw notification payloads end-to-end", async () => {
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowOpen = buildWindow();
+    const windowMru = buildWindow();
+    registry.add("window-open", 101, windowOpen);
+    registry.add("window-mru", 202, windowMru);
+    const perWindowState = new PerWindowState(null);
+    perWindowState.update("window-open", {
+      epicTabs: [{ id: "tab-open", epicId: "epic-legacy", name: "Legacy" }],
+      activeTabId: "tab-open",
+      canvasByTabId: {
+        "tab-open": {
+          tilesByInstanceId: {
+            "tile-1": { id: "chat-legacy", type: "chat" },
+          },
+        },
+      },
+    });
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership: new EpicWindowOwnership(null),
+      perWindowState,
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+    registry.focusById("window-mru");
+    windowOpen.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+
+    const legacyPayload = {
+      kind: "chat",
+      epicId: "epic-legacy",
+      chatId: "chat-legacy",
+    };
+    bridge.deliverNotificationClick(legacyPayload);
+
+    expect(registry.mostRecentlyFocusedId()).toBe("window-open");
+    expect(
+      windowOpen.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload: legacyPayload,
+      },
+    ]);
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+    bridge.dispose();
+  });
+
+  it("routes terminal notification clicks to the window holding the exact tab", async () => {
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowMru = buildWindow();
+    const windowOpen = buildWindow();
+    registry.add("window-open", 101, windowOpen);
+    registry.add("window-mru", 202, windowMru);
+    const perWindowState = new PerWindowState(null);
+    perWindowState.update("window-open", {
+      epicTabs: [{ id: "tab-1", epicId: "epic-1", name: "Terminal" }],
+      activeTabId: "tab-1",
+      canvasByTabId: {},
+    });
+    perWindowState.update("window-mru", {
+      epicTabs: [],
+      activeTabId: null,
+      canvasByTabId: {},
+    });
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership: new EpicWindowOwnership(null),
+      perWindowState,
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+    registry.focusById("window-mru");
+    windowMru.sentMessages.length = 0;
+    windowOpen.sentMessages.length = 0;
+
+    const payload = {
+      kind: "notificationActivation",
+      version: 1,
+      route: {
+        kind: "terminal",
+        epicId: "epic-1",
+        tabId: "tab-1",
+        terminalId: "term-1",
+        paneId: "pane-1",
+        tileInstanceId: "tile-1",
+      },
+      feed: { source: "host", id: "row-1" },
+      originHostId: "host-1",
+    };
+    bridge.deliverNotificationClick(payload);
+
+    expect(registry.mostRecentlyFocusedId()).toBe("window-open");
+    expect(
+      windowOpen.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload,
+      },
+    ]);
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+    bridge.dispose();
+  });
+
+  it("falls back to owned-or-MRU when no open tab matches a terminal notification", async () => {
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowOwner = buildWindow();
+    const windowMru = buildWindow();
+    registry.add("window-owner", 101, windowOwner);
+    registry.add("window-mru", 202, windowMru);
+    const ownership = new EpicWindowOwnership(null);
+    ownership.claim("tab-owned", "epic-owned", "window-owner");
+    const perWindowState = new PerWindowState(null);
+    perWindowState.update("window-owner", {
+      epicTabs: [{ id: "tab-owned", epicId: "epic-owned", name: "Owned" }],
+      activeTabId: "tab-owned",
+      canvasByTabId: {},
+    });
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership,
+      perWindowState,
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+    registry.focusById("window-mru");
+    windowOwner.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+
+    const payload = {
+      kind: "notificationActivation",
+      version: 1,
+      route: {
+        kind: "terminal",
+        epicId: "epic-owned",
+        tabId: "tab-missing",
+        terminalId: "term-1",
+        paneId: "pane-1",
+        tileInstanceId: "tile-1",
+      },
+      feed: { source: "host", id: "row-1" },
+      originHostId: "host-1",
+    };
+    bridge.deliverNotificationClick(payload);
+
+    expect(registry.mostRecentlyFocusedId()).toBe("window-owner");
+    expect(
+      windowOwner.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload,
+      },
+    ]);
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+
+    // Unowned epic with no open tab → pure MRU fallback.
+    windowOwner.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+    registry.focusById("window-mru");
+    windowOwner.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+    const unownedPayload = {
+      kind: "notificationActivation",
+      version: 1,
+      route: {
+        kind: "terminal",
+        epicId: "unowned-epic",
+        tabId: "tab-x",
+        terminalId: "term-1",
+        paneId: "pane-1",
+        tileInstanceId: "tile-1",
+      },
+      feed: { source: "host", id: "row-unowned" },
+      originHostId: null,
+    };
+    bridge.deliverNotificationClick(unownedPayload);
+    expect(registry.mostRecentlyFocusedId()).toBe("window-mru");
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload: unownedPayload,
+      },
+    ]);
+    expect(
+      windowOwner.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+    bridge.dispose();
+  });
+
+  it("routes artifact notification clicks to the window holding the exact artifact tile", async () => {
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowMru = buildWindow();
+    const windowOpen = buildWindow();
+    registry.add("window-open", 101, windowOpen);
+    registry.add("window-mru", 202, windowMru);
+    const perWindowState = new PerWindowState(null);
+    perWindowState.update("window-open", {
+      epicTabs: [{ id: "tab-open", epicId: "epic-1", name: "Epic 1" }],
+      activeTabId: "tab-open",
+      canvasByTabId: {
+        "tab-open": {
+          tilesByInstanceId: {
+            "tile-1": { id: "artifact-1", type: "spec", hostId: "host-1" },
+          },
+        },
+      },
+    });
+    perWindowState.update("window-mru", {
+      epicTabs: [],
+      activeTabId: null,
+      canvasByTabId: {},
+    });
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership: new EpicWindowOwnership(null),
+      perWindowState,
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+    registry.focusById("window-mru");
+    windowMru.sentMessages.length = 0;
+    windowOpen.sentMessages.length = 0;
+
+    const payload = {
+      kind: "notificationActivation",
+      version: 1,
+      route: {
+        kind: "artifact",
+        epicId: "epic-1",
+        artifactId: "artifact-1",
+        threadId: "thread-1",
+      },
+      feed: { source: "host", id: "row-1" },
+      originHostId: "host-1",
+    };
+    bridge.deliverNotificationClick(payload);
+
+    expect(registry.mostRecentlyFocusedId()).toBe("window-open");
+    expect(
+      windowOpen.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload,
+      },
+    ]);
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+    bridge.dispose();
+  });
+
+  it("falls back to owned-or-MRU when no open tile matches an artifact notification", async () => {
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowOwner = buildWindow();
+    const windowMru = buildWindow();
+    registry.add("window-owner", 101, windowOwner);
+    registry.add("window-mru", 202, windowMru);
+    const ownership = new EpicWindowOwnership(null);
+    ownership.claim("tab-owned", "epic-owned", "window-owner");
+    const perWindowState = new PerWindowState(null);
+    perWindowState.update("window-owner", {
+      epicTabs: [{ id: "tab-owned", epicId: "epic-owned", name: "Owned" }],
+      activeTabId: "tab-owned",
+      canvasByTabId: {
+        "tab-owned": {
+          tilesByInstanceId: {
+            "tile-other": {
+              id: "artifact-other",
+              type: "spec",
+              hostId: "host-1",
+            },
+          },
+        },
+      },
+    });
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership,
+      perWindowState,
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+    registry.focusById("window-mru");
+    windowOwner.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+
+    const payload = {
+      kind: "notificationActivation",
+      version: 1,
+      route: {
+        kind: "artifact",
+        epicId: "epic-owned",
+        artifactId: "artifact-missing",
+      },
+      feed: { source: "host", id: "row-1" },
+      originHostId: "host-1",
+    };
+    bridge.deliverNotificationClick(payload);
+
+    expect(registry.mostRecentlyFocusedId()).toBe("window-owner");
+    expect(
+      windowOwner.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload,
+      },
+    ]);
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
+
+    // Unowned epic with no open artifact tile → pure MRU fallback.
+    windowOwner.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+    registry.focusById("window-mru");
+    windowOwner.sentMessages.length = 0;
+    windowMru.sentMessages.length = 0;
+    const unownedPayload = {
+      kind: "notificationActivation",
+      version: 1,
+      route: {
+        kind: "artifact",
+        epicId: "unowned-epic",
+        artifactId: "artifact-x",
+      },
+      feed: { source: "host", id: "row-unowned" },
+      originHostId: null,
+    };
+    bridge.deliverNotificationClick(unownedPayload);
+    expect(registry.mostRecentlyFocusedId()).toBe("window-mru");
+    expect(
+      windowMru.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([
+      {
+        channel: RunnerHostEvent.notificationClick,
+        payload: unownedPayload,
+      },
+    ]);
+    expect(
+      windowOwner.sentMessages.filter(
+        (message) => message.channel === RunnerHostEvent.notificationClick,
+      ),
+    ).toEqual([]);
     bridge.dispose();
   });
 });

@@ -1,7 +1,9 @@
 import { useCallback, type ReactNode } from "react";
 import { TriangleAlert, RotateCcw } from "lucide-react";
+import { ReportIssueAction } from "@/components/report-issue/report-issue-action";
 import { Button } from "@/components/ui/button";
 import { useRefreshSpinner } from "@/hooks/use-refresh-spinner";
+import { createReportIssueContext } from "@/lib/report-issue-context";
 import { cn } from "@/lib/utils";
 
 const GIT_ROOTS_REFRESH_TIMEOUT_MS = 10_000;
@@ -41,29 +43,40 @@ export function GitRootsUnavailable(props: {
             Git workspaces unavailable
           </p>
           <p className="text-ui-xs text-muted-foreground/50">
-            None of the workspaces in this chat could be read. They may have
+            None of the workspaces in this agent could be read. They may have
             been moved or deleted.
           </p>
         </div>
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={refresh.trigger}
-        disabled={refresh.refreshing}
-        className="mt-2"
-        data-testid="git-roots-unavailable-retry"
-      >
-        <RotateCcw
-          className={cn(
-            "mr-1.5 size-3.5",
-            refresh.refreshing && "animate-spin",
-          )}
-          aria-hidden
+      <div className="mt-2 flex flex-wrap justify-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={refresh.trigger}
+          disabled={refresh.refreshing}
+          data-testid="git-roots-unavailable-retry"
+        >
+          <RotateCcw
+            className={cn(
+              "mr-1.5 size-3.5",
+              refresh.refreshing && "animate-spin",
+            )}
+            aria-hidden
+          />
+          Retry
+        </Button>
+        <ReportIssueAction
+          context={createReportIssueContext({
+            title: "Git workspaces unavailable",
+            message: "The Git workspaces in this agent could not be read.",
+            code: null,
+            source: "Git changes",
+          })}
+          presentation="text"
+          className={undefined}
         />
-        Retry
-      </Button>
+      </div>
     </div>
   );
 }

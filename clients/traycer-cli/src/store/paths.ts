@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Environment } from "../runner/environment";
+import { devDesktopSlotForEnvironment } from "./dev-desktop-slot";
 
 // ~/.traycer/ is the single Traycer root. Per the Native Packaging
 // tech plan, prod and dev *components* are siblings inside it rather
@@ -14,34 +15,69 @@ import type { Environment } from "../runner/environment";
 //   ~/.traycer/cli/manifest.json               - prod install manifest
 //   ~/.traycer/cli/.lock                       - prod mutation lock
 //   ~/.traycer/cli/post-finalize.json          - prod pending-upgrade helper marker
-//   ~/.traycer/cli/dev/manifest.json           - dev install manifest
-//   ~/.traycer/cli/dev/.lock                   - dev mutation lock
-//   ~/.traycer/cli/dev/post-finalize.json      - dev pending-upgrade helper marker
+//   ~/.traycer/cli/dev/                        - shared dev CLI home/config scope
+//   ~/.traycer/cli/dev/manifest.json           - legacy/no-slot dev install manifest
+//   ~/.traycer/cli/dev-runs/<slot>/manifest.json      - multi-run dev install manifest
+//   ~/.traycer/cli/dev-runs/<slot>/.lock              - multi-run dev mutation lock
+//   ~/.traycer/cli/dev-runs/<slot>/post-finalize.json - multi-run dev upgrade marker
 //   ~/.traycer/host/                         - prod host runtime root
 //   ~/.traycer/host/host.log               - prod host stdout + bootstrap markers
 //   ~/.traycer/host/pid.json                 - prod host pid metadata
 //   ~/.traycer/host/install/                 - prod host install dir (atomic-swap target)
 //   ~/.traycer/host/install/install.json     - prod host install record
 //   ~/.traycer/host/staging/                 - prod host staging root (verify-before-replace)
-//   ~/.traycer/host/dev/                     - dev host runtime root (parallel layout)
-//   ~/.traycer/host/dev/install/install.json - dev host install record
-//   ~/.traycer/host/dev/staging/             - dev host staging root
+//   ~/.traycer/host/download-cache/          - prod resumable archive partials (cross-invocation)
+//   ~/.traycer/host/dev/                     - legacy/no-slot dev host runtime root
+//   ~/.traycer/host/dev-runs/<slot>/         - multi-run dev host runtime root
+//   ~/.traycer/host/dev-runs/<slot>/install/install.json - multi-run dev install record
+//   ~/.traycer/host/dev-runs/<slot>/install-staging/     - multi-run dev staging root
 const TRAYCER_HOME = join(homedir(), ".traycer");
 const CLI_HOME = join(TRAYCER_HOME, "cli");
 const HOST_HOME = join(TRAYCER_HOME, "host");
 const HOST_INSTALL_SUBDIR = "install";
 // The host install temp/extract area (verify-before-replace), kept distinct
-// from the host root. Named "install-staging" for clarity.
+// from the host root. Named "install-staging" for clarity. Also the root
+// under which `host download`'s owner-tokened download/extract temp dirs
+// live (see `installer/stage-reconcile.ts`'s temp-sweep step) - both are
+// transient, verify-before-replace scratch space for the same install
+// tree, so they share one root.
 const HOST_STAGING_SUBDIR = "install-staging";
 const HOST_INSTALL_RECORD_FILENAME = "install.json";
+// The single-slot staged-download area: a fully extracted, verified host
+// tree ready to promote into `install/` (Host Update Layer Redesign Tech
+// Plan, "CLI: two-phase split with a staged store"). Distinct from
+// `install-staging/`, which is scratch space that never itself becomes the
+// final install dir.
+const HOST_STAGED_SUBDIR = "staged";
+const HOST_STAGED_RECORD_FILENAME = "staged.json";
+// Where a registry archive is streamed to disk while it downloads. Unlike
+// `install-staging/`, this area is deliberately NOT per-invocation: the
+// archive path is derived from the version + sha256 so a re-spawned CLI
+// finds the previous invocation's partial file and resumes it with a Range
+// request instead of starting from zero (traycer#585/#588 - a 700MB host
+// archive over a throttled link never survives a single process). Contents
+// are owner-tokened and swept by `registry/download-cache.ts`, not by the
+// `install-staging/` temp sweep.
+// Exported so `registry/download-cache.ts` can recognize its own private
+// slot directories structurally (`<...>/download-cache/private-*/`) rather
+// than by directory name alone - see `claimedPathFor` there.
+export const HOST_DOWNLOAD_CACHE_SUBDIR = "download-cache";
 const CLI_LOG_FILENAME = "cli.log";
 const HOST_LOG_FILENAME = "host.log";
+// Single retained generation of the host log. One is enough: it exists so the
+// PREVIOUS session's trail survives a restart or a runtime purge, not to build
+// an archive (see `host-log-rotation.ts`).
+const HOST_LOG_BACKUP_FILENAME = "host.log.1";
 const HOST_PID_FILENAME = "pid.json";
 
 function environmentSubdir(base: string, environment: Environment): string {
   // production → base; dev → base/dev (the slot dir name is the environment
   // value itself).
   return environment === "production" ? base : join(base, environment);
+}
+
+function devRunSubdir(base: string, slot: string): string {
+  return join(base, "dev-runs", slot);
 }
 
 export const traycerHomeDir = (): string => TRAYCER_HOME;
@@ -60,23 +96,30 @@ export const cliSharedHomeDir = (): string => CLI_HOME;
 // for the CLI's existing callers.
 export { cliCredentialsPath } from "@traycer/protocol/config/paths";
 
-// Environment-aware CLI paths.
+// Environment-aware shared CLI paths.
 export function cliHomeDir(environment: Environment | undefined): string {
   // Existing non-environment callers (config-store, credentials) treat the
   // CLI home as a shared root. Environment-aware callers (manifest, lock,
-  // post-finalize marker) pass an explicit environment and we resolve to
-  // the per-environment subdir.
+  // log, post-finalize marker) use `cliInstallHomeDir` below so multi-run dev
+  // can isolate install surfaces without moving shared auth/config state.
   if (environment === undefined) return CLI_HOME;
   return environmentSubdir(CLI_HOME, environment);
 }
+
+export function cliInstallHomeDir(environment: Environment): string {
+  const devSlot = devDesktopSlotForEnvironment(environment, process.env);
+  if (devSlot !== null) return devRunSubdir(CLI_HOME, devSlot);
+  return cliHomeDir(environment);
+}
+
 export function cliManifestPath(environment: Environment): string {
-  return join(cliHomeDir(environment), "manifest.json");
+  return join(cliInstallHomeDir(environment), "manifest.json");
 }
 export function cliLockPath(environment: Environment): string {
-  return join(cliHomeDir(environment), ".lock");
+  return join(cliInstallHomeDir(environment), ".lock");
 }
 export function cliLogPath(environment: Environment): string {
-  return join(cliHomeDir(environment), CLI_LOG_FILENAME);
+  return join(cliInstallHomeDir(environment), CLI_LOG_FILENAME);
 }
 // Marker the detached pending-CLI-upgrade finalize helper writes after
 // it attempts the live-binary swap. The next CLI invocation (Doctor,
@@ -84,7 +127,7 @@ export function cliLogPath(environment: Environment): string {
 // manifest and clears `pendingUpgrade` on swap success - see
 // upgrade/finalize-helper.ts.
 export function cliPostFinalizeMarkerPath(environment: Environment): string {
-  return join(cliHomeDir(environment), "post-finalize.json");
+  return join(cliInstallHomeDir(environment), "post-finalize.json");
 }
 
 // Environment-aware host paths. All environments are rooted under
@@ -94,6 +137,8 @@ export function cliPostFinalizeMarkerPath(environment: Environment): string {
 // production-only, so environment is not threaded through that flow.
 export function hostHomeDir(environment: Environment | undefined): string {
   if (environment === undefined) return HOST_HOME;
+  const devSlot = devDesktopSlotForEnvironment(environment, process.env);
+  if (devSlot !== null) return devRunSubdir(HOST_HOME, devSlot);
   return environmentSubdir(HOST_HOME, environment);
 }
 
@@ -110,6 +155,11 @@ export function hostPidMetadataPath(
 }
 export function hostLogPath(environment: Environment | undefined): string {
   return join(hostHomeDir(environment), HOST_LOG_FILENAME);
+}
+export function hostLogBackupPath(
+  environment: Environment | undefined,
+): string {
+  return join(hostHomeDir(environment), HOST_LOG_BACKUP_FILENAME);
 }
 export function bootstrapLogPath(environment: Environment | undefined): string {
   return hostLogPath(environment);
@@ -129,6 +179,17 @@ export function hostStagingRoot(environment: Environment): string {
 }
 export function hostInstallRecordPath(environment: Environment): string {
   return join(hostInstallDir(environment), HOST_INSTALL_RECORD_FILENAME);
+}
+export function hostDownloadCacheDir(environment: Environment): string {
+  return join(hostHomeDir(environment), HOST_DOWNLOAD_CACHE_SUBDIR);
+}
+
+// Single-slot staged store - see the `HOST_STAGED_SUBDIR` comment above.
+export function hostStagedDir(environment: Environment): string {
+  return join(hostHomeDir(environment), HOST_STAGED_SUBDIR);
+}
+export function hostStagedRecordPath(environment: Environment): string {
+  return join(hostStagedDir(environment), HOST_STAGED_RECORD_FILENAME);
 }
 
 export async function ensureTraycerHomeDir(): Promise<void> {
@@ -156,6 +217,33 @@ export async function ensureHostStagingRoot(
   await mkdir(hostStagingRoot(environment), { recursive: true });
 }
 
+export async function ensureHostDownloadCacheDir(
+  environment: Environment,
+): Promise<void> {
+  // 0o700: the cache holds a partially-written archive at a PREDICTABLE
+  // path (that predictability is the whole point - it is what lets the next
+  // invocation resume it). Under ~/.traycer it is already user-owned, and
+  // an explicit private mode keeps it that way even if the parent's mode is
+  // later relaxed, so no other local account can pre-create or swap the
+  // file we are about to append to.
+  await mkdir(hostDownloadCacheDir(environment), {
+    recursive: true,
+    mode: 0o700,
+  });
+}
+
+export async function ensureHostHomeDirForStaged(
+  environment: Environment,
+): Promise<void> {
+  // The staged dir's PARENT (hostHomeDir) must exist before an atomic
+  // rename can place `staged/` there - mirrors `atomicSwap`'s
+  // `mkdir(hostHomeDir(...))` call for `install/`. Deliberately does not
+  // create `staged/` itself: the promote step renames a temp dir into
+  // that exact path, so a pre-created empty dir would collide with the
+  // rename.
+  await ensureHostHomeDir(environment);
+}
+
 // Environment-aware CLI home mkdir. Non-environment callers pass undefined to
 // get the shared root; environment-aware callers pass the runtime environment.
 export async function ensureCliHomeDir(
@@ -165,4 +253,10 @@ export async function ensureCliHomeDir(
   // even if the file's own mode is later relaxed. Environment subdir
   // inherits these permissions.
   await mkdir(cliHomeDir(environment), { recursive: true, mode: 0o700 });
+}
+
+export async function ensureCliInstallHomeDir(
+  environment: Environment,
+): Promise<void> {
+  await mkdir(cliInstallHomeDir(environment), { recursive: true, mode: 0o700 });
 }

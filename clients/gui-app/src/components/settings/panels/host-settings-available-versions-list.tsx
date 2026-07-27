@@ -1,5 +1,8 @@
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
+import { ReportIssueAction } from "@/components/report-issue/report-issue-action";
+import { createReportIssueContext } from "@/lib/report-issue-context";
+import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import {
   formatInstallDate,
   VERSION_LIST_PREVIEW,
@@ -52,7 +55,7 @@ export function AvailableVersionsList(props: AvailableVersionsListProps) {
         <div className="break-words font-mono text-code-xs text-muted-foreground">
           {errorMessage}
         </div>
-        <div>
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="secondary"
             size="sm"
@@ -68,6 +71,16 @@ export function AvailableVersionsList(props: AvailableVersionsListProps) {
             ) : null}
             Retry
           </Button>
+          <ReportIssueAction
+            context={createReportIssueContext({
+              title: "Couldn't load host versions",
+              message: "The host version registry could not be loaded.",
+              code: null,
+              source: "Host versions",
+            })}
+            presentation="text"
+            className={undefined}
+          />
         </div>
       </div>
     );
@@ -143,20 +156,28 @@ function renderVersionRow(props: {
           </span>
         ) : null}
       </div>
-      <Button
-        variant="secondary"
-        size="sm"
-        disabled={
-          anyPending ||
-          isInstalled ||
-          entry.yanked ||
-          unavailableReason !== null
-        }
-        title={unavailableReason === null ? undefined : unavailableReason}
-        onClick={() => onInstallVersion(entry.version)}
+      <TooltipWrapper
+        label={unavailableReason === null ? undefined : unavailableReason}
+        side="top"
+        sideOffset={undefined}
+        align={undefined}
       >
-        Install
-      </Button>
+        <span className="inline-flex">
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={
+              anyPending ||
+              isInstalled ||
+              entry.yanked ||
+              unavailableReason !== null
+            }
+            onClick={() => onInstallVersion(entry.version)}
+          >
+            Install
+          </Button>
+        </span>
+      </TooltipWrapper>
     </li>
   );
 }

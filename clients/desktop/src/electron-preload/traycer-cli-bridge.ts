@@ -1,12 +1,13 @@
 import { ipcRenderer } from "electron";
 import { RunnerHostInvoke } from "../ipc-contracts/ipc-channels";
 import type {
-  TraycerHostStatusSnapshot,
   TraycerDetectedShell,
   TraycerEnvOverride,
+  TraycerHostStatusSnapshot,
   TraycerShellConfig,
   TraycerShellConfigSetInput,
-} from "@traycer-clients/shared/platform/runner-host";
+  TraycerShellProbeResult,
+} from "../ipc-contracts/traycer-cli-types";
 
 /**
  * Surface exposed under `runnerHost.traycerCli` in the preload bridge.
@@ -21,6 +22,13 @@ export interface TraycerCliBridgeSurface {
   shellConfigGet(): Promise<TraycerShellConfig>;
   shellConfigSet(input: TraycerShellConfigSetInput): Promise<void>;
   shellConfigReset(): Promise<void>;
+  shellConfigAdd(input: { readonly path: string }): Promise<void>;
+  shellConfigRemove(input: { readonly path: string }): Promise<void>;
+  shellRevertArgs(input: { readonly path: string }): Promise<void>;
+  shellProbe(input: {
+    readonly path: string;
+  }): Promise<TraycerShellProbeResult>;
+  pickShellProgramFile(): Promise<string | null>;
   shellListDetected(): Promise<readonly TraycerDetectedShell[]>;
   envOverrideList(): Promise<readonly TraycerEnvOverride[]>;
   envOverrideSet(input: {
@@ -28,11 +36,6 @@ export interface TraycerCliBridgeSurface {
     readonly value: string | null;
   }): Promise<void>;
   envOverrideDelete(input: { readonly key: string }): Promise<void>;
-  cliLogin(input: {
-    readonly token: string;
-    readonly refreshToken: string;
-  }): Promise<void>;
-  cliLogout(): Promise<void>;
 }
 
 export function buildTraycerCliBridge(): TraycerCliBridgeSurface {
@@ -54,6 +57,30 @@ export function buildTraycerCliBridge(): TraycerCliBridgeSurface {
       ipcRenderer.invoke(
         RunnerHostInvoke.traycerConfigShellReset,
       ) as Promise<void>,
+    shellConfigAdd: (input) =>
+      ipcRenderer.invoke(
+        RunnerHostInvoke.traycerConfigShellAdd,
+        input,
+      ) as Promise<void>,
+    shellConfigRemove: (input) =>
+      ipcRenderer.invoke(
+        RunnerHostInvoke.traycerConfigShellRemove,
+        input,
+      ) as Promise<void>,
+    shellRevertArgs: (input) =>
+      ipcRenderer.invoke(
+        RunnerHostInvoke.traycerConfigShellRevertArgs,
+        input,
+      ) as Promise<void>,
+    shellProbe: (input) =>
+      ipcRenderer.invoke(
+        RunnerHostInvoke.traycerConfigShellProbe,
+        input,
+      ) as Promise<TraycerShellProbeResult>,
+    pickShellProgramFile: () =>
+      ipcRenderer.invoke(
+        RunnerHostInvoke.traycerConfigShellPickProgramFile,
+      ) as Promise<string | null>,
     shellListDetected: () =>
       ipcRenderer.invoke(RunnerHostInvoke.traycerConfigShellList) as Promise<
         readonly TraycerDetectedShell[]
@@ -72,12 +99,5 @@ export function buildTraycerCliBridge(): TraycerCliBridgeSurface {
         RunnerHostInvoke.traycerConfigEnvDelete,
         input,
       ) as Promise<void>,
-    cliLogin: (input) =>
-      ipcRenderer.invoke(
-        RunnerHostInvoke.traycerCliLogin,
-        input,
-      ) as Promise<void>,
-    cliLogout: () =>
-      ipcRenderer.invoke(RunnerHostInvoke.traycerCliLogout) as Promise<void>,
   };
 }

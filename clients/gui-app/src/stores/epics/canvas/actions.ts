@@ -32,6 +32,7 @@ import {
   isBrowserTileRef,
   isGitDiffTileRef,
   isSnapshotDiffTileRef,
+  isPrDiffTileRef,
 } from "./types";
 import {
   activationHistoryEqual,
@@ -490,6 +491,7 @@ export function openTile(
   state: EpicCanvasState,
   node: EpicCanvasTileRef,
   preview: boolean,
+  preferredPaneId: string | null,
 ): EpicCanvasState {
   if (state.root === null) return seedRootPane(node, preview);
   const existing = findPaneTabByContentId(state, node.id);
@@ -508,7 +510,12 @@ export function openTile(
     }
     return { ...state, root, activePaneId: existing.pane.id };
   }
-  const target = activePaneOrFirst(state);
+  // Prefer `preferredPaneId` (e.g. a history entry's original pane) when it
+  // still exists in the tree; otherwise fall back to the active pane, same
+  // as every other caller.
+  const preferredPane =
+    preferredPaneId === null ? null : findPaneById(state.root, preferredPaneId);
+  const target = preferredPane ?? activePaneOrFirst(state);
   if (target === null) return state;
 
   // Fill-in-place: a permanent open while the active tab is a blank "New tab"
@@ -550,6 +557,35 @@ export function openTile(
     };
   }
 
+  return insertTileInPane(state, target, node, preview);
+}
+
+/**
+ * Restore one exact historical tile instance as a preview. Unlike
+ * {@link openTile}, this deliberately bypasses content-id dedup: opener paths
+ * can create two views of the same content under different instance ids, and
+ * history must recreate the specific instance addressed by the landing URL.
+ */
+export function restoreTilePreview(
+  state: EpicCanvasState,
+  node: EpicCanvasTileRef,
+  preferredPaneId: string | null,
+): EpicCanvasState {
+  if (state.root === null) return seedRootPane(node, true);
+  const preferredPane =
+    preferredPaneId === null ? null : findPaneById(state.root, preferredPaneId);
+  const target = preferredPane ?? activePaneOrFirst(state);
+  if (target === null) return state;
+  return insertTileInPane(state, target, node, true);
+}
+
+function insertTileInPane(
+  state: EpicCanvasState,
+  target: TilePane,
+  node: EpicCanvasTileRef,
+  preview: boolean,
+): EpicCanvasState {
+  if (state.root === null) return seedRootPane(node, preview);
   const inserted = insertTabInstance(
     target,
     node.instanceId,
@@ -1364,6 +1400,32 @@ export function updateBrowserTileViewportPreset(
   };
 }
 
+/**
+ * Refresh the persisted `name` snapshot of every terminal tile bound to
+ * (hostId, sessionId) after a successful host rename. The snapshot is the
+ * restart-recovery fallback only - live rendering reads the host's
+ * `terminal.list` rows - so this runs post-success, never optimistically.
+ * Matched by content id AND host binding: session ids are only unique per
+ * host, so a bare id match could rename another host's tile.
+ */
+export function renameTerminalTiles(
+  state: EpicCanvasState,
+  hostId: string,
+  sessionId: string,
+  name: string,
+): EpicCanvasState {
+  return updateTilesWhere(
+    state,
+    (ref) =>
+      ref.type === "terminal" && ref.id === sessionId && ref.hostId === hostId,
+    (ref) => {
+      if (ref.type !== "terminal") return ref;
+      if (ref.name === name && ref.titleSource === "manual") return ref;
+      return { ...ref, name, titleSource: "manual" };
+    },
+  );
+}
+
 export function updateGitDiffTileView(
   state: EpicCanvasState,
   tileId: string,
@@ -1416,11 +1478,46 @@ export function toggleSnapshotDiffBundleFileCollapsed(
   );
 }
 
+export function updatePrDiffTileView(
+  state: EpicCanvasState,
+  tileId: string,
+  view: GitDiffTileViewState,
+): EpicCanvasState {
+  return updateTilesWhere(
+    state,
+    (ref) => ref.id === tileId && isPrDiffTileRef(ref),
+    (ref) => ({ ...ref, view }),
+  );
+}
+
+/**
+ * No `ref.diff.kind` gate, unlike the git and snapshot pairs: a PR diff tile
+ * is ALWAYS the multi-file view (there is no single-file PR diff tile), so
+ * there is no non-bundle variant to exclude.
+ */
+export function togglePrDiffFileCollapsed(
+  state: EpicCanvasState,
+  tileId: string,
+  filePath: string,
+): EpicCanvasState {
+  return updateTilesWhere(
+    state,
+    (ref) => ref.id === tileId && isPrDiffTileRef(ref),
+    (ref) => toggleCollapsedFilePath(ref, filePath),
+  );
+}
+
 function toggleCollapsedFilePath(
   ref: EpicCanvasTileRef,
   filePath: string,
 ): EpicCanvasTileRef {
-  if (!isGitDiffTileRef(ref) && !isSnapshotDiffTileRef(ref)) return ref;
+  if (
+    !isGitDiffTileRef(ref) &&
+    !isSnapshotDiffTileRef(ref) &&
+    !isPrDiffTileRef(ref)
+  ) {
+    return ref;
+  }
   const collapsed = new Set(ref.view.collapsedFilePaths);
   if (collapsed.has(filePath)) {
     collapsed.delete(filePath);

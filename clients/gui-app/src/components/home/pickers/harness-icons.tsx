@@ -10,6 +10,8 @@ import KiloCodeMono from "@lobehub/icons/es/KiloCode/components/Mono";
 import GithubCopilotMono from "@lobehub/icons/es/GithubCopilot/components/Mono";
 import OpenRouterMono from "@lobehub/icons/es/OpenRouter/components/Mono";
 import KimiMono from "@lobehub/icons/es/Kimi/components/Mono";
+import DevinMono from "@lobehub/icons/es/Devin/components/Mono";
+import HermesAgentMono from "@lobehub/icons/es/HermesAgent/components/Mono";
 
 export type HarnessIcon = (props: SVGProps<SVGSVGElement>) => ReactElement;
 
@@ -41,11 +43,76 @@ export const OpenRouterIcon: HarnessIcon = (props) => (
 );
 export const KimiIcon: HarnessIcon = (props) => <KimiMono {...props} />;
 
-// Amp (Ampcode / Sourcegraph) has no lobehub entry — hand-rolled placeholder
-// bolt mark. Paints with `currentColor`, so it follows the light/dark theme.
+// Amp (Ampcode / Sourcegraph) has no lobehub entry — the official brand mark
+// (three ascending bars) from coder/registry's `sourcegraph-amp.svg`. Painted in
+// Amp's brand red so it keeps its identity in both light and dark themes, like
+// the Claude colored sunburst.
 export const AmpIcon: HarnessIcon = (props) => (
-  <svg {...props} viewBox="0 0 24 24" fill="currentColor">
-    <path d="M11 21h-1l1-7H7.5c-.58 0-.57-.32-.38-.66.19-.34.05-.08.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12.96 17.55 11 21 11 21z" />
+  <svg {...props} viewBox="0 0 19 19" fill="none">
+    <path
+      fill="#F34E3F"
+      d="M3.41508 17.2983L7.88484 12.7653L9.51146 18.9412L11.8745 18.2949L9.52018 9.32758L0.69527 6.93747L0.066864 9.35199L6.13926 11.0015L1.68806 15.5279L3.41508 17.2983Z"
+    />
+    <path
+      fill="#F34E3F"
+      d="M16.3044 12.0436L18.6675 11.3973L16.3132 2.43003L7.48824 0.0399246L6.85984 2.45444L14.312 4.47881L16.3044 12.0436Z"
+    />
+    <path
+      fill="#F34E3F"
+      d="M12.9126 15.4902L15.2756 14.8439L12.9213 5.87659L4.09639 3.48648L3.46799 5.901L10.9201 7.92537L12.9126 15.4902Z"
+    />
+  </svg>
+);
+
+// Devin (Cognition) — lobehub monochrome brand mark (`currentColor` theming).
+export const DevinIcon: HarnessIcon = (props) => <DevinMono {...props} />;
+
+// Hermes Agent (Nous Research) — lobehub monochrome brand mark (`currentColor`
+// theming), same pattern as Devin.
+export const HermesIcon: HarnessIcon = (props) => (
+  <HermesAgentMono {...props} />
+);
+
+// Pi (pi.dev) has no lobehub entry — official badge mark from pi.dev/favicon.svg
+// (press kit). Brand dark plate + white glyph so it keeps identity in both themes
+// (same idea as Amp brand red / Claude colored sunburst).
+export const PiIcon: HarnessIcon = (props) => (
+  <svg {...props} viewBox="0 0 800 800" fill="none">
+    <rect width="800" height="800" rx="120" fill="#09090b" />
+    <path
+      fill="#fff"
+      fillRule="evenodd"
+      d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
+    />
+    <path fill="#fff" d="M517.36 400H634.72V634.72H517.36Z" />
+  </svg>
+);
+
+// omp (Oh My Pi, can1357/oh-my-pi) has no lobehub entry, so this is upstream's
+// own mark from `assets/icon.svg`: a Greek π whose short right leg ends in a
+// plug connector. Geometry and the brand orange are verbatim; the viewBox is
+// upstream's too, so the mark keeps its intended framing and renders wider than
+// tall next to the square sibling icons.
+//
+// One deliberate deviation: upstream fills the π strokes `#fafafa`, which is
+// near-white because its icon sits on a dark plate. Ours has no plate, so the
+// strokes use `currentColor` and follow the theme — `#fafafa` would be
+// invisible in light mode. The `#f97316` connector and dots stay literal: they
+// are the brand accent and read on both themes, and they are also what keeps
+// this distinguishable from `PiIcon` in the adjacent "Pi" / "Oh My Pi" provider
+// rows (the two products are unrelated despite the shared lineage).
+export const OmpIcon: HarnessIcon = (props) => (
+  <svg {...props} viewBox="0 0 120 90" fill="currentColor">
+    {/* π: horizontal bar, long left leg, short right leg */}
+    <rect x="10" y="8" width="100" height="12" rx="2" />
+    <rect x="25" y="20" width="12" height="62" rx="2" />
+    <rect x="75" y="20" width="12" height="45" rx="2" />
+    {/* Plug connector terminating the right leg */}
+    <rect x="71" y="55" width="20" height="16" rx="3" fill="#f97316" />
+    <rect x="76" y="59" width="3" height="8" rx="1" fill="#0d0d0d" />
+    <rect x="82" y="59" width="3" height="8" rx="1" fill="#0d0d0d" />
+    <circle cx="18" cy="14" r="2" fill="#f97316" opacity="0.8" />
+    <circle cx="102" cy="14" r="2" fill="#f97316" opacity="0.8" />
   </svg>
 );
 

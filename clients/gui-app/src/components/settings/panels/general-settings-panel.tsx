@@ -5,7 +5,10 @@ import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { SettingsPanelShell } from "@/components/settings/settings-panel-shell";
 import { SettingsRow } from "@/components/settings/settings-row";
+import { SettingsGroup } from "@/components/settings/settings-group";
 import { VoiceSettingsSection } from "@/components/settings/voice-settings-section";
+import { useSettingsDensity } from "@/providers/settings-density-context";
+import { cn } from "@/lib/utils";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
 import { ConfirmDestructiveDialog } from "@/components/ui/confirm-destructive-dialog";
@@ -52,6 +55,8 @@ import {
 import { useAuthStore } from "@/stores/auth/auth-store";
 import { useLocalSnapshotClearStore } from "@/stores/settings/local-snapshot-clear-store";
 import { useOnboardingStore } from "@/stores/onboarding/onboarding-store";
+import { trackSettingChanged, type AnalyticsSetting } from "@/lib/analytics";
+import { modLabel } from "@/lib/keybindings/platform";
 
 const MIGRATION_PROGRESS_LABEL = "Migrating tasks";
 const SNAPSHOTS_LOCAL_STORAGE_PARAMS = {};
@@ -65,6 +70,7 @@ const BROWSER_LINK_OPEN_MODE_LABELS: Record<BrowserLinkOpenMode, string> = {
   "in-app": "In app",
   external: "External",
 };
+const MOD_ENTER_LABEL = `${modLabel()}+Enter`;
 
 interface ClearLocalSnapshotsMutationContext {
   readonly hostId: string | null;
@@ -88,6 +94,10 @@ function isBrowserLinkDefaultMode(
 
 function isBrowserLinkOpenMode(value: string): value is BrowserLinkOpenMode {
   return value === "in-app" || value === "external";
+}
+
+function trackGeneralSetting(setting: AnalyticsSetting): void {
+  trackSettingChanged("general", setting);
 }
 
 export function GeneralSettingsPanel() {
@@ -116,12 +126,6 @@ export function GeneralSettingsPanel() {
   );
   const setPreventSleepWhileRunning = useSettingsStore(
     (s) => s.setPreventSleepWhileRunning,
-  );
-  const notifyOnChatTurnComplete = useSettingsStore(
-    (s) => s.notifyOnChatTurnComplete,
-  );
-  const setNotifyOnChatTurnComplete = useSettingsStore(
-    (s) => s.setNotifyOnChatTurnComplete,
   );
   const showGlobalResourceMonitor = useSettingsStore(
     (s) => s.showGlobalResourceMonitor,
@@ -171,192 +175,255 @@ export function GeneralSettingsPanel() {
   const removeBrowserDevOrigin = useSettingsStore(
     (s) => s.removeBrowserDevOrigin,
   );
+  const steerOnModEnterEnabled = useSettingsStore(
+    (s) => s.steerOnModEnterEnabled,
+  );
+  const setSteerOnModEnterEnabled = useSettingsStore(
+    (s) => s.setSteerOnModEnterEnabled,
+  );
+  const compact = useSettingsDensity() === "compact";
 
   return (
-    <SettingsPanelShell title="General">
-      <SettingsRow
-        label="Notify on chat turn completion"
-        description="Show a system notification when an agent finishes responding and Traycer isn't focused."
-        control={
-          <Switch
-            checked={notifyOnChatTurnComplete}
-            onCheckedChange={setNotifyOnChatTurnComplete}
-            aria-label="Notify on chat turn completion"
-          />
-        }
-      />
-      <SettingsRow
-        label="Prevent sleep while running"
-        description="Keep the computer awake while a chat or terminal agent is running, so work continues when you step away."
-        control={
-          <Switch
-            checked={preventSleepWhileRunning}
-            onCheckedChange={setPreventSleepWhileRunning}
-            aria-label="Prevent sleep while running"
-          />
-        }
-      />
-      <SettingsRow
-        label="Show global resources button"
-        description="Show the app-wide resource monitor in the header."
-        control={
-          <Switch
-            checked={showGlobalResourceMonitor}
-            onCheckedChange={setShowGlobalResourceMonitor}
-            aria-label="Show global resources button"
-          />
-        }
-      />
-      <SettingsRow
-        label="Show navigator resource stats"
-        description="Show compact live CPU and memory chips in task navigator rows."
-        control={
-          <Switch
-            checked={showNavigatorResourceStats}
-            onCheckedChange={setShowNavigatorResourceStats}
-            aria-label="Show navigator resource stats"
-          />
-        }
-      />
-      <SettingsRow
-        label="Pin context usage breakdown"
-        description="Keep the context window breakdown visible near the chat composer when usage data is available."
-        control={
-          <Switch
-            checked={pinContextUsageBreakdown}
-            onCheckedChange={setPinContextUsageBreakdown}
-            aria-label="Pin context usage breakdown"
-          />
-        }
-      />
-      <SettingsRow
-        label="Quote reply on text selection"
-        description="Selecting assistant text shows a quote button that inserts the selection into the composer."
-        control={
-          <Switch
-            checked={quoteReplyEnabled}
-            onCheckedChange={setQuoteReplyEnabled}
-            aria-label="Quote reply on text selection"
-          />
-        }
-      />
-      <SettingsRow
-        label="In-app browser (beta)"
-        description="Enable browser tiles and route web links into Traycer by default."
-        hint={
-          inAppBrowserBetaEnabled &&
-          browserCookieCryptoState?.reason === "mock-keychain"
-            ? "Restart Traycer to enable persistent logins"
-            : undefined
-        }
-        control={
-          <Switch
-            checked={inAppBrowserBetaEnabled}
-            onCheckedChange={setInAppBrowserBetaEnabled}
-            aria-label="In-app browser (beta)"
-          />
-        }
-      />
-      <SettingsRow
-        label="Web link default"
-        description="Choose where http and https links open while the in-app browser beta is enabled."
-        control={
-          <BrowserLinkDefaultModeSelect
-            value={browserLinkDefaultMode}
-            disabled={!inAppBrowserBetaEnabled}
-            onValueChange={setBrowserLinkDefaultMode}
-          />
-        }
-      />
-      {browserLinkDefaultMode === "per-kind" ? (
-        <>
+    <SettingsPanelShell
+      title="General"
+      description="App behavior, agent activity, and local data controls."
+      bodyClassName="overflow-visible rounded-none border-none bg-transparent"
+    >
+      <div className={cn("flex flex-col", compact ? "gap-3.5" : "gap-5")}>
+        <SettingsGroup
+          title="Chat & composer"
+          tone="default"
+          dataTestId={undefined}
+          fill={false}
+        >
+          <VoiceSettingsSection />
           <SettingsRow
-            label="Terminal links"
-            description="Applies to plain terminal URLs and OSC-8 hyperlinks."
+            label="Quote reply on text selection"
+            description="Selecting assistant text shows a quote button that inserts the selection into the composer."
             control={
-              <BrowserLinkOpenModeSelect
-                value={terminalBrowserLinkOpenMode}
-                disabled={!inAppBrowserBetaEnabled}
-                onValueChange={setTerminalBrowserLinkOpenMode}
+              <Switch
+                checked={quoteReplyEnabled}
+                onCheckedChange={(value) => {
+                  trackGeneralSetting("quoteReplyEnabled");
+                  setQuoteReplyEnabled(value);
+                }}
+                aria-label="Quote reply on text selection"
               />
             }
           />
           <SettingsRow
-            label="Markdown links"
-            description="Applies to rendered markdown http and https anchors."
+            label={`Steer with ${MOD_ENTER_LABEL}`}
+            description={`While a turn is running on a supported harness, ${MOD_ENTER_LABEL} sends the composer text as a same-turn steering message that jumps the queue. Plain Enter keeps queueing.`}
             control={
-              <BrowserLinkOpenModeSelect
-                value={markdownBrowserLinkOpenMode}
-                disabled={!inAppBrowserBetaEnabled}
-                onValueChange={setMarkdownBrowserLinkOpenMode}
+              <Switch
+                checked={steerOnModEnterEnabled}
+                onCheckedChange={(value) => {
+                  trackGeneralSetting("steerOnModEnterEnabled");
+                  setSteerOnModEnterEnabled(value);
+                }}
+                aria-label={`Steer with ${MOD_ENTER_LABEL}`}
               />
             }
           />
-        </>
-      ) : null}
-      {browserDevOrigins.length > 0 ? (
-        <SettingsRow
-          label="Detected dev origins"
-          description="Terminal URLs with local hosts or explicit ports are kept for browser-origin classification."
-          control={
-            <BrowserDevOriginsControl
-              origins={browserDevOrigins}
-              onRemove={removeBrowserDevOrigin}
+          <SettingsRow
+            label="Pin context usage breakdown"
+            description="Keep the context window breakdown visible near the chat composer when usage data is available."
+            control={
+              <Switch
+                checked={pinContextUsageBreakdown}
+                onCheckedChange={(value) => {
+                  trackGeneralSetting("pinContextUsageBreakdown");
+                  setPinContextUsageBreakdown(value);
+                }}
+                aria-label="Pin context usage breakdown"
+              />
+            }
+          />
+        </SettingsGroup>
+
+        <SettingsGroup
+          title="Browser (beta)"
+          tone="default"
+          dataTestId={undefined}
+          fill={false}
+        >
+          <SettingsRow
+            label="In-app browser (beta)"
+            description="Enable browser tiles and route web links into Traycer by default."
+            hint={
+              inAppBrowserBetaEnabled &&
+              browserCookieCryptoState?.reason === "mock-keychain"
+                ? "Restart Traycer to enable persistent logins"
+                : undefined
+            }
+            control={
+              <Switch
+                checked={inAppBrowserBetaEnabled}
+                onCheckedChange={setInAppBrowserBetaEnabled}
+                aria-label="In-app browser (beta)"
+              />
+            }
+          />
+          <SettingsRow
+            label="Web link default"
+            description="Choose where http and https links open while the in-app browser beta is enabled."
+            control={
+              <BrowserLinkDefaultModeSelect
+                value={browserLinkDefaultMode}
+                disabled={!inAppBrowserBetaEnabled}
+                onValueChange={setBrowserLinkDefaultMode}
+              />
+            }
+          />
+          {browserLinkDefaultMode === "per-kind" ? (
+            <>
+              <SettingsRow
+                label="Terminal links"
+                description="Applies to plain terminal URLs and OSC-8 hyperlinks."
+                control={
+                  <BrowserLinkOpenModeSelect
+                    value={terminalBrowserLinkOpenMode}
+                    disabled={!inAppBrowserBetaEnabled}
+                    onValueChange={setTerminalBrowserLinkOpenMode}
+                  />
+                }
+              />
+              <SettingsRow
+                label="Markdown links"
+                description="Applies to rendered markdown http and https anchors."
+                control={
+                  <BrowserLinkOpenModeSelect
+                    value={markdownBrowserLinkOpenMode}
+                    disabled={!inAppBrowserBetaEnabled}
+                    onValueChange={setMarkdownBrowserLinkOpenMode}
+                  />
+                }
+              />
+            </>
+          ) : null}
+          {browserDevOrigins.length > 0 ? (
+            <SettingsRow
+              label="Detected dev origins"
+              description="Terminal URLs with local hosts or explicit ports are kept for browser-origin classification."
+              control={
+                <BrowserDevOriginsControl
+                  origins={browserDevOrigins}
+                  onRemove={removeBrowserDevOrigin}
+                />
+              }
             />
-          }
-        />
-      ) : null}
-      <VoiceSettingsSection />
-      <SettingsRow
-        label="Data migration"
-        description={
-          migrationProgressLabel ??
-          "Retry moving local SQLite tasks and epics to cloud."
-        }
-        control={
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={migrationIsRunning}
-            data-testid="settings-reattempt-migration"
-            onClick={() => {
-              startMigrationRun();
-            }}
-          >
-            {migrationIsRunning ? (
-              <AgentSpinningDots
-                className="text-muted-foreground"
-                testId="settings-reattempt-migration-spinner"
-                variant={undefined}
+          ) : null}
+        </SettingsGroup>
+
+        <SettingsGroup
+          title="Running agents"
+          tone="default"
+          dataTestId={undefined}
+          fill={false}
+        >
+          <SettingsRow
+            label="Prevent sleep while running"
+            description="Keep the computer awake while an agent is running, so work continues when you step away."
+            control={
+              <Switch
+                checked={preventSleepWhileRunning}
+                onCheckedChange={(value) => {
+                  trackGeneralSetting("preventSleepWhileRunning");
+                  setPreventSleepWhileRunning(value);
+                }}
+                aria-label="Prevent sleep while running"
               />
-            ) : null}
-            Re-attempt migration
-          </Button>
-        }
-      />
-      <SettingsRow
-        label="Product tour"
-        description="Replay the first-launch onboarding tour."
-        control={
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            data-testid="settings-replay-onboarding"
-            onClick={() => {
-              restartOnboarding();
-              void navigate({
-                to: "/onboarding",
-                search: { replay: true },
-              });
-            }}
-          >
-            Replay tour
-          </Button>
-        }
-      />
-      <DangerZoneSection />
+            }
+          />
+          <SettingsRow
+            label="Show global resources button"
+            description="Show the app-wide resource monitor in the header."
+            control={
+              <Switch
+                checked={showGlobalResourceMonitor}
+                onCheckedChange={(value) => {
+                  trackGeneralSetting("showGlobalResourceMonitor");
+                  setShowGlobalResourceMonitor(value);
+                }}
+                aria-label="Show global resources button"
+              />
+            }
+          />
+          <SettingsRow
+            label="Show navigator resource stats"
+            description="Show compact live CPU and memory chips in task navigator rows."
+            control={
+              <Switch
+                checked={showNavigatorResourceStats}
+                onCheckedChange={(value) => {
+                  trackGeneralSetting("showNavigatorResourceStats");
+                  setShowNavigatorResourceStats(value);
+                }}
+                aria-label="Show navigator resource stats"
+              />
+            }
+          />
+        </SettingsGroup>
+
+        <SettingsGroup
+          title="Setup & migration"
+          tone="default"
+          dataTestId={undefined}
+          fill={false}
+        >
+          <SettingsRow
+            label="Product tour"
+            description="Replay the first-launch onboarding tour."
+            control={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                data-testid="settings-replay-onboarding"
+                onClick={() => {
+                  restartOnboarding();
+                  void navigate({
+                    to: "/onboarding",
+                    search: { replay: true },
+                  });
+                }}
+              >
+                Replay tour
+              </Button>
+            }
+          />
+          <SettingsRow
+            label="Data migration"
+            description={
+              migrationProgressLabel ??
+              "Retry moving local SQLite tasks and epics to cloud."
+            }
+            control={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={migrationIsRunning}
+                data-testid="settings-reattempt-migration"
+                onClick={() => {
+                  startMigrationRun();
+                }}
+              >
+                {migrationIsRunning ? (
+                  <AgentSpinningDots
+                    className="text-muted-foreground"
+                    testId="settings-reattempt-migration-spinner"
+                    variant={undefined}
+                  />
+                ) : null}
+                Re-attempt migration
+              </Button>
+            }
+          />
+        </SettingsGroup>
+
+        <DangerZoneSection />
+      </div>
     </SettingsPanelShell>
   );
 }
@@ -472,10 +539,12 @@ function DangerZoneSection() {
 
   return (
     <>
-      <section className="bg-destructive/5" data-testid="settings-danger-zone">
-        <div className="border-b border-border/40 px-5 py-4">
-          <h2 className="text-ui font-semibold text-foreground">Danger Zone</h2>
-        </div>
+      <SettingsGroup
+        title="Danger Zone"
+        tone="danger"
+        dataTestId="settings-danger-zone"
+        fill={false}
+      >
         <SettingsFileEditSnapshotsSection />
         <SettingsLocalAppStateSection />
         {hostManagement === null ? null : (
@@ -487,13 +556,13 @@ function DangerZoneSection() {
             }}
           />
         )}
-      </section>
+      </SettingsGroup>
       {hostManagement === null ? null : (
         <ConfirmDestructiveDialog
           open={confirmOpen}
           onOpenChange={setConfirmOpen}
           title="Remove Traycer from this device?"
-          description="This stops and removes Traycer's background host and services and won't reinstall them automatically. Your chats, history, and credentials stay on this device - you can reinstall anytime from Settings."
+          description="This stops and removes Traycer's background host and services and won't reinstall them automatically. Your agents, history, and credentials stay on this device - you can reinstall anytime from Settings."
           cascadeSummary={null}
           actionLabel="Remove Traycer"
           isPending={uninstall.isPending}
@@ -521,7 +590,7 @@ function RemoveTraycerDangerRow(props: {
     return (
       <SettingsRow
         label="Traycer removed"
-        description="Background components were removed. Your chats, history, and credentials are preserved on this device. To finish, quit Traycer and drag it from Applications to the Trash."
+        description="Background components were removed. Your agents, history, and credentials are preserved on this device. To finish, quit Traycer and drag it from Applications to the Trash."
         control={
           <Button
             type="button"
@@ -542,7 +611,7 @@ function RemoveTraycerDangerRow(props: {
   return (
     <SettingsRow
       label="Remove Traycer"
-      description="Stops the background host and services and removes the installed components from this device. Your chats and history are preserved, and the host won't reinstall itself."
+      description="Stops the background host and services and removes the installed components from this device. Your agents and history are preserved, and the host won't reinstall itself."
       control={
         <Button
           type="button"
@@ -664,7 +733,7 @@ function SettingsFileEditSnapshotsSection() {
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
         title="Clear file edit snapshots?"
-        description="Cleared snapshots cannot be restored. Existing chat history and checkpoint records remain visible, but Undo will be disabled for your past turns on this device."
+        description="Cleared snapshots cannot be restored. Existing conversation history and checkpoint records remain visible, but Undo will be disabled for your past turns on this device."
         cascadeSummary={null}
         actionLabel="Clear file edit snapshots"
         isPending={clearSnapshotsMutation.isPending}

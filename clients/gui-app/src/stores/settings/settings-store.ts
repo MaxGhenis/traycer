@@ -28,6 +28,7 @@ import {
   type DiffViewerPreferencesPatch,
 } from "@/lib/diff/diff-viewer-preferences";
 import { type EditorId } from "@traycer/protocol/host";
+import { worktreeBranchPrefixError } from "@/lib/worktree/worktree-branch-prefix-validation";
 
 export type ThemeMode = "system" | "light" | "dark";
 export type EpicNodeIconColorMode = "byType" | "none";
@@ -58,6 +59,11 @@ export function inactiveCursorStyleFor(
 export const DEFAULT_UI_FONT_SIZE = 15;
 export const DEFAULT_CODE_FONT_SIZE = 12;
 
+// Default worktree branch prefix, shared with the General panel so its
+// reset-to-default affordance and the store's initial state stay a single
+// source of truth.
+export const DEFAULT_WORKTREE_BRANCH_PREFIX = "traycer/";
+
 export interface SettingsState {
   theme: ThemeMode;
   themePreset: ThemePreset;
@@ -72,12 +78,6 @@ export interface SettingsState {
    */
   composerMode: ComposerMode;
   preventSleepWhileRunning: boolean;
-  /**
-   * Show a native OS notification when a chat turn finishes while the app
-   * window is not focused. On by default; the macOS notification-permission
-   * prompt surfaces on the first unfocused completion.
-   */
-  notifyOnChatTurnComplete: boolean;
   /** Show the app-global resource monitor button in the header. */
   showGlobalResourceMonitor: boolean;
   /** Show inline resource usage chips in task navigator/sidebar rows. */
@@ -117,6 +117,12 @@ export interface SettingsState {
   /** BCP-47-ish dictation language hint, or "auto". */
   voiceLanguage: string;
   /**
+   * Prefix prepended verbatim to the branch name pre-filled when creating a
+   * new worktree (no separator is auto-appended - the user types it, e.g.
+   * `traycer/`, `anurag/`, `feat-`). Empty string means no prefix.
+   */
+  worktreeBranchPrefix: string;
+  /**
    * Quote-to-composer affordance. Opt-out: enabling it (default) surfaces a
    * quote button when selecting assistant text, inserting the selection into
    * the chat composer as a blockquote.
@@ -133,6 +139,14 @@ export interface SettingsState {
   /** Origins designated from terminal URL output for the host classifier. */
   browserDevOrigins: ReadonlyArray<string>;
   /**
+   * Cmd/Ctrl+Enter mid-turn steering. Opt-out (default ON): when enabled,
+   * pressing Cmd+Enter while a turn is running on a steer-capable harness sends
+   * the composer text as a same-turn steering message that jumps the pending
+   * queue; plain Enter keeps queueing. Disabling it reverts Cmd+Enter to the
+   * plain-Enter submit alias. Idle behavior is identical either way.
+   */
+  steerOnModEnterEnabled: boolean;
+  /**
    * Shared, user-level diff viewer configuration consumed by every git and
    * snapshot diff renderer. Persisted globally so the choice survives restarts
    * and live-updates all mounted viewers. Tile-local state (collapsed files)
@@ -144,7 +158,6 @@ export interface SettingsState {
   setDefaultAgentMode: (mode: AgentMode) => void;
   setComposerMode: (mode: ComposerMode) => void;
   setPreventSleepWhileRunning: (value: boolean) => void;
-  setNotifyOnChatTurnComplete: (value: boolean) => void;
   setShowGlobalResourceMonitor: (value: boolean) => void;
   setShowNavigatorResourceStats: (value: boolean) => void;
   setPinContextUsageBreakdown: (value: boolean) => void;
@@ -163,6 +176,7 @@ export interface SettingsState {
   setDefaultEditor: (id: EditorId | null) => void;
   setVoiceInputEnabled: (value: boolean) => void;
   setVoiceLanguage: (value: string) => void;
+  setWorktreeBranchPrefix: (value: string) => void;
   setQuoteReplyEnabled: (value: boolean) => void;
   setInAppBrowserBetaEnabled: (value: boolean) => void;
   setBrowserLinkDefaultMode: (mode: BrowserLinkDefaultMode) => void;
@@ -170,6 +184,7 @@ export interface SettingsState {
   setMarkdownBrowserLinkOpenMode: (mode: BrowserLinkOpenMode) => void;
   addBrowserDevOrigin: (origin: string) => void;
   removeBrowserDevOrigin: (origin: string) => void;
+  setSteerOnModEnterEnabled: (value: boolean) => void;
   setDiffViewerPreferences: (preferences: DiffViewerPreferences) => void;
   patchDiffViewerPreferences: (patch: DiffViewerPreferencesPatch) => void;
 }
@@ -185,7 +200,6 @@ type PersistedSettingsState = Pick<
   | "defaultAgentMode"
   | "composerMode"
   | "preventSleepWhileRunning"
-  | "notifyOnChatTurnComplete"
   | "showGlobalResourceMonitor"
   | "showNavigatorResourceStats"
   | "pinContextUsageBreakdown"
@@ -203,12 +217,14 @@ type PersistedSettingsState = Pick<
   | "defaultEditor"
   | "voiceInputEnabled"
   | "voiceLanguage"
+  | "worktreeBranchPrefix"
   | "quoteReplyEnabled"
   | "inAppBrowserBetaEnabled"
   | "browserLinkDefaultMode"
   | "terminalBrowserLinkOpenMode"
   | "markdownBrowserLinkOpenMode"
   | "browserDevOrigins"
+  | "steerOnModEnterEnabled"
   | "diffViewerPreferences"
 >;
 
@@ -257,7 +273,6 @@ function partializeSettingsState(state: SettingsState): PersistedSettingsState {
     defaultAgentMode: state.defaultAgentMode,
     composerMode: state.composerMode,
     preventSleepWhileRunning: state.preventSleepWhileRunning,
-    notifyOnChatTurnComplete: state.notifyOnChatTurnComplete,
     showGlobalResourceMonitor: state.showGlobalResourceMonitor,
     showNavigatorResourceStats: state.showNavigatorResourceStats,
     pinContextUsageBreakdown: state.pinContextUsageBreakdown,
@@ -275,12 +290,14 @@ function partializeSettingsState(state: SettingsState): PersistedSettingsState {
     defaultEditor: state.defaultEditor,
     voiceInputEnabled: state.voiceInputEnabled,
     voiceLanguage: state.voiceLanguage,
+    worktreeBranchPrefix: state.worktreeBranchPrefix,
     quoteReplyEnabled: state.quoteReplyEnabled,
     inAppBrowserBetaEnabled: state.inAppBrowserBetaEnabled,
     browserLinkDefaultMode: state.browserLinkDefaultMode,
     terminalBrowserLinkOpenMode: state.terminalBrowserLinkOpenMode,
     markdownBrowserLinkOpenMode: state.markdownBrowserLinkOpenMode,
     browserDevOrigins: state.browserDevOrigins,
+    steerOnModEnterEnabled: state.steerOnModEnterEnabled,
     diffViewerPreferences: state.diffViewerPreferences,
   };
 }
@@ -297,7 +314,6 @@ export const useSettingsStore = create<SettingsState>()(
       defaultAgentMode: DEFAULT_AGENT_MODE,
       composerMode: DEFAULT_COMPOSER_MODE,
       preventSleepWhileRunning: false,
-      notifyOnChatTurnComplete: true,
       showGlobalResourceMonitor: true,
       showNavigatorResourceStats: false,
       pinContextUsageBreakdown: false,
@@ -315,19 +331,20 @@ export const useSettingsStore = create<SettingsState>()(
       defaultEditor: "vscode",
       voiceInputEnabled: true,
       voiceLanguage: "auto",
+      worktreeBranchPrefix: DEFAULT_WORKTREE_BRANCH_PREFIX,
       quoteReplyEnabled: true,
       inAppBrowserBetaEnabled: false,
       browserLinkDefaultMode: "in-app",
       terminalBrowserLinkOpenMode: "in-app",
       markdownBrowserLinkOpenMode: "in-app",
       browserDevOrigins: [],
+      steerOnModEnterEnabled: true,
       diffViewerPreferences: DEFAULT_DIFF_VIEWER_PREFERENCES,
       setTheme: makeSetter(set, "theme"),
       setThemePreset: makeSetter(set, "themePreset"),
       setDefaultAgentMode: makeSetter(set, "defaultAgentMode"),
       setComposerMode: makeSetter(set, "composerMode"),
       setPreventSleepWhileRunning: makeSetter(set, "preventSleepWhileRunning"),
-      setNotifyOnChatTurnComplete: makeSetter(set, "notifyOnChatTurnComplete"),
       setShowGlobalResourceMonitor: makeSetter(
         set,
         "showGlobalResourceMonitor",
@@ -386,6 +403,7 @@ export const useSettingsStore = create<SettingsState>()(
       },
       setVoiceInputEnabled: makeSetter(set, "voiceInputEnabled"),
       setVoiceLanguage: makeSetter(set, "voiceLanguage"),
+      setWorktreeBranchPrefix: makeSetter(set, "worktreeBranchPrefix"),
       setQuoteReplyEnabled: makeSetter(set, "quoteReplyEnabled"),
       setInAppBrowserBetaEnabled: makeSetter(set, "inAppBrowserBetaEnabled"),
       setBrowserLinkDefaultMode: makeSetter(set, "browserLinkDefaultMode"),
@@ -415,6 +433,7 @@ export const useSettingsStore = create<SettingsState>()(
             : { browserDevOrigins };
         });
       },
+      setSteerOnModEnterEnabled: makeSetter(set, "steerOnModEnterEnabled"),
       setDiffViewerPreferences: makeSetter(set, "diffViewerPreferences"),
       patchDiffViewerPreferences: (patch) => {
         set((s) => ({
@@ -428,6 +447,31 @@ export const useSettingsStore = create<SettingsState>()(
     {
       ...basePersistOptions(persistKey(STORE_KEYS.settings)),
       partialize: partializeSettingsState,
+      // Defensive re-derivation of `worktreeBranchPrefix` on every rehydration
+      // (mirrors `workspace-folders-store.ts`'s `merge`): a hand-edited or
+      // otherwise corrupted localStorage value would otherwise rehydrate
+      // verbatim (the default shallow merge takes persisted fields as-is),
+      // flow straight into branch composition, and still mount the editor
+      // showing it as healthy. Every other field keeps the default shallow
+      // merge behavior.
+      merge: (persistedState, currentState) => {
+        const persisted: Record<string, unknown> = isRecord(persistedState)
+          ? persistedState
+          : {};
+        const merged: SettingsState = { ...currentState, ...persisted };
+        return {
+          ...merged,
+          worktreeBranchPrefix:
+            typeof merged.worktreeBranchPrefix === "string" &&
+            worktreeBranchPrefixError(merged.worktreeBranchPrefix) === null
+              ? merged.worktreeBranchPrefix
+              : DEFAULT_WORKTREE_BRANCH_PREFIX,
+        };
+      },
     },
   ),
 );
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}

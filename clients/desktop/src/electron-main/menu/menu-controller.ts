@@ -63,7 +63,13 @@ export interface MenuControllerOptions {
   readonly perWindowState: IpcPerWindowState;
   readonly tray: DesktopTrayController | null;
   readonly zoomController: MenuZoomController;
-  readonly dispatchRendererCommand: (command: MenuCommandId) => boolean;
+  // `hostUpdateVersion` carries the exact version a `host.installUpdate` row
+  // was labelled with, so the renderer can pin the update to what the user
+  // saw. `null` for every other command.
+  readonly dispatchRendererCommand: (
+    command: MenuCommandId,
+    hostUpdateVersion: string | null,
+  ) => boolean;
   readonly checkForUpdates: () => Promise<void>;
 }
 
@@ -77,8 +83,8 @@ export class MenuController {
   }
 
   install(): void {
-    this.options.tray?.setCommandHandler((command) => {
-      this.handleCommand(command, null);
+    this.options.tray?.setCommandHandler((command, hostUpdateVersion) => {
+      this.handleCommand(command, null, hostUpdateVersion);
     });
     const onWindowChange = (): void => {
       this.rebuild();
@@ -120,11 +126,20 @@ export class MenuController {
     Menu.setApplicationMenu(null);
   }
 
+  /**
+   * Entry point for commands that originate outside any window or native
+   * menu - currently the Windows jump-list task flags delivered via
+   * second-instance argv (`--new-epic`, `--open-settings`).
+   */
+  dispatchShellCommand(command: MenuCommandId): void {
+    this.handleCommand(command, null, null);
+  }
+
   rebuild(): void {
     const state = this.buildState();
     const menu = buildApplicationMenu(state, {
       command: (command, senderWindow) =>
-        this.handleCommand(command, senderWindow),
+        this.handleCommand(command, senderWindow, null),
       focusWindow: (windowId) => {
         this.options.windowRegistry.focusById(windowId);
       },
@@ -184,9 +199,10 @@ export class MenuController {
   private handleCommand(
     command: MenuCommandId,
     senderWindow: BaseWindow | null,
+    hostUpdateVersion: string | null,
   ): void {
     try {
-      this.dispatchCommand(command, senderWindow);
+      this.dispatchCommand(command, senderWindow, hostUpdateVersion);
     } catch (err) {
       log.warn("[menu] command threw", { command, err });
     }
@@ -195,6 +211,7 @@ export class MenuController {
   private dispatchCommand(
     command: MenuCommandId,
     senderWindow: BaseWindow | null,
+    hostUpdateVersion: string | null,
   ): void {
     if (command === "app.quit") {
       app.quit();
@@ -210,7 +227,7 @@ export class MenuController {
       // The renderer owns the confirmation modal. Once confirmed, it calls
       // runnerHost.requestHostRespawn(), which routes back through the shared
       // main-process respawn entrypoint.
-      if (this.options.dispatchRendererCommand(command)) return;
+      if (this.options.dispatchRendererCommand(command, null)) return;
 
       void this.options.windowRegistry
         .create({
@@ -218,7 +235,7 @@ export class MenuController {
           beforeLoad: null,
         })
         .then(() => {
-          if (!this.options.dispatchRendererCommand(command)) {
+          if (!this.options.dispatchRendererCommand(command, null)) {
             log.warn(
               "[menu] host.restart had no renderer after opening window",
               {
@@ -233,17 +250,17 @@ export class MenuController {
       return;
     }
     if (command === "host.installUpdate") {
-      // The tray's "Update available: <ver> - Install" row dispatches
-      // here. The renderer owns the actual CLI invocation (via the
-      // host-management bridge), so we forward the command and let
-      // the existing TanStack Query mutation run `traycer host
-      // update`. Tray clicks can occur with no focused renderer (e.g.
-      // another app is foregrounded), so the IPC dispatcher treats
-      // `host.installUpdate` as dialog-hosted and falls back to the
-      // MRU window - focusing it before delivering the command - so
-      // the install does not no-op. Only emits the diagnostic when
-      // there really is no window at all.
-      const dispatched = this.options.dispatchRendererCommand(command);
+      // The tray's "Update to <version>" row dispatches here. The version
+      // must come from the *item callback that was built with the label*,
+      // not from live MenuController state: an already-open native tray
+      // menu can fire its old click after setHostUpdateAvailableVersion
+      // has moved the controller to a different target (cold-review #3).
+      // The renderer echoes this as `expectedVersion` so main refuses a
+      // mismatch rather than installing a target the user never confirmed.
+      const dispatched = this.options.dispatchRendererCommand(
+        command,
+        hostUpdateVersion,
+      );
       if (!dispatched) {
         log.warn(
           "[menu] host.installUpdate ignored - no renderer window available",
@@ -328,7 +345,7 @@ export class MenuController {
       return;
     }
     if (isRendererHostedCommand(command)) {
-      if (!this.options.dispatchRendererCommand(command)) {
+      if (!this.options.dispatchRendererCommand(command, null)) {
         log.warn("[menu] renderer-hosted command had no target", { command });
       }
       return;

@@ -7,6 +7,7 @@ import type { ArtifactOperationAction } from "@traycer/protocol/persistence/epic
 import { StaticEpicNodeIcon } from "@/components/epic-canvas/epic-node-tab-icon";
 import { STATUS_LABELS } from "@/components/epic-canvas/sidebar/epic-sidebar-tree-shared";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { useEpicTileNavigation } from "@/hooks/epic/use-epic-tile-navigation";
 import { EPIC_NODE_LABELS } from "@/lib/artifacts/node-display";
 import {
   useArtifactById,
@@ -17,11 +18,11 @@ import { artifactDiffRenderable } from "@/lib/chat/artifact-diff-renderable";
 import { artifactOperationVerb } from "@/lib/chat/artifact-operation-verb";
 import { cn } from "@/lib/utils";
 import type { ArtifactSegmentChange } from "@/stores/composer/chat-store";
-import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useArtifactDragSource } from "@/components/epic-canvas/dnd/use-artifact-drag-source";
 import { OpenFullDiffControl } from "./open-full-diff-control";
 import { SnapshotHashInlineDiff } from "./snapshot-hash-inline-diff";
 
+import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 interface ArtifactCardSegmentProps {
   readonly operation: ArtifactOperationAction;
   readonly artifactKind: EpicArtifactKind;
@@ -45,25 +46,31 @@ function ArtifactDiffToggle(props: {
 }) {
   const label = props.open ? "Hide diff" : "View diff";
   return (
-    <button
-      type="button"
-      aria-label={label}
-      aria-expanded={props.open}
-      title={label}
-      onClick={(event) => {
-        event.stopPropagation();
-        props.onToggle();
-      }}
-      className={cn(
-        "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md border transition-colors",
-        "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
-        props.open
-          ? "border-border bg-muted/60 text-foreground"
-          : "border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-      )}
+    <TooltipWrapper
+      label={label}
+      side="top"
+      sideOffset={undefined}
+      align={undefined}
     >
-      <FileDiff aria-hidden className="size-3.5" />
-    </button>
+      <button
+        type="button"
+        aria-label={label}
+        aria-expanded={props.open}
+        onClick={(event) => {
+          event.stopPropagation();
+          props.onToggle();
+        }}
+        className={cn(
+          "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md border transition-colors",
+          "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
+          props.open
+            ? "border-border bg-muted/60 text-foreground"
+            : "border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+        )}
+      >
+        <FileDiff aria-hidden className="size-3.5" />
+      </button>
+    </TooltipWrapper>
   );
 }
 
@@ -212,46 +219,64 @@ function ArtifactOperationBadge(props: {
   const label = artifactOperationVerb(props.operation);
   if (props.operation === "create") {
     return (
-      <span
-        className={cn(
-          base,
-          "border-emerald-500 bg-emerald-50 text-emerald-600 dark:border-emerald-400 dark:bg-emerald-950/60 dark:text-emerald-300",
-        )}
-        title={label}
+      <TooltipWrapper
+        label={label}
+        side="top"
+        sideOffset={undefined}
+        align={undefined}
       >
-        <span className="sr-only">{label}</span>
-        <span aria-hidden>+</span>
-      </span>
+        <span
+          className={cn(
+            base,
+            "border-emerald-500 bg-emerald-50 text-emerald-600 dark:border-emerald-400 dark:bg-emerald-950/60 dark:text-emerald-300",
+          )}
+        >
+          <span className="sr-only">{label}</span>
+          <span aria-hidden>+</span>
+        </span>
+      </TooltipWrapper>
     );
   }
   if (props.operation === "update") {
     return (
-      <span
-        className={cn(
-          base,
-          "border-amber-500 bg-amber-50 shadow-amber-950/5 dark:border-amber-400 dark:bg-amber-950/60",
-        )}
-        title={label}
+      <TooltipWrapper
+        label={label}
+        side="top"
+        sideOffset={undefined}
+        align={undefined}
       >
-        <span className="sr-only">{label}</span>
         <span
-          className="size-1.5 rounded-sm bg-amber-500 dark:bg-amber-300"
-          aria-hidden
-        />
-      </span>
+          className={cn(
+            base,
+            "border-amber-500 bg-amber-50 shadow-amber-950/5 dark:border-amber-400 dark:bg-amber-950/60",
+          )}
+        >
+          <span className="sr-only">{label}</span>
+          <span
+            className="size-1.5 rounded-sm bg-amber-500 dark:bg-amber-300"
+            aria-hidden
+          />
+        </span>
+      </TooltipWrapper>
     );
   }
   return (
-    <span
-      className={cn(
-        base,
-        "border-red-500 bg-red-50 text-red-600 dark:border-red-500 dark:bg-red-950/60 dark:text-red-300",
-      )}
-      title={label}
+    <TooltipWrapper
+      label={label}
+      side="top"
+      sideOffset={undefined}
+      align={undefined}
     >
-      <span className="sr-only">{label}</span>
-      <span aria-hidden>−</span>
-    </span>
+      <span
+        className={cn(
+          base,
+          "border-red-500 bg-red-50 text-red-600 dark:border-red-500 dark:bg-red-950/60 dark:text-red-300",
+        )}
+      >
+        <span className="sr-only">{label}</span>
+        <span aria-hidden>−</span>
+      </span>
+    </TooltipWrapper>
   );
 }
 
@@ -390,15 +415,21 @@ function ArtifactTitle(props: {
     );
   }
   return (
-    <span
-      className={cn(
-        "min-w-0 flex-1 truncate text-ui-base font-semibold text-foreground/95",
-        props.isDeleted && "text-muted-foreground line-through",
-      )}
-      title={props.isDeleted ? "This artifact was deleted." : undefined}
+    <TooltipWrapper
+      label={props.isDeleted ? "This artifact was deleted." : undefined}
+      side="top"
+      sideOffset={undefined}
+      align={undefined}
     >
-      {props.title}
-    </span>
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate text-ui-base font-semibold text-foreground/95",
+          props.isDeleted && "text-muted-foreground line-through",
+        )}
+      >
+        {props.title}
+      </span>
+    </TooltipWrapper>
   );
 }
 
@@ -469,6 +500,7 @@ function ArtifactCardSegmentContent(props: ArtifactCardSegmentProps) {
   const tombstone = useEpicDeletedArtifact(artifactId);
   const epicId = useOpenEpicId();
   const activeHostId = useReactiveActiveHostId();
+  const tileNavigation = useEpicTileNavigation();
   const [diffOpen, setDiffOpen] = useState(false);
 
   // Prefer the tombstone for a delete (the live entry is already gone); else the
@@ -535,9 +567,7 @@ function ArtifactCardSegmentContent(props: ArtifactCardSegmentProps) {
   const openArtifact = (): void => {
     // Re-check the raw conditions so the host id narrows to a non-null string.
     if (isDeleted || live === null || activeHostId === null) return;
-    const canvas = useEpicCanvasStore.getState();
-    const tabId = canvas.resolveTargetTabForEpic(epicId, undefined);
-    canvas.openTileInTab(tabId, {
+    tileNavigation.openTileInEpic(epicId, {
       id: artifactId,
       instanceId: uuidv4(),
       type: displayKind,

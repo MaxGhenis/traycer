@@ -9,6 +9,7 @@ import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useGitPanelStore } from "@/stores/epics/git-panel-store";
 import { useInitialChatHandoffStore } from "@/stores/epics/initial-chat-handoff-store";
 import { useLeftPanelStore } from "@/stores/epics/left-panel-store";
+import { usePrSeenFactsStore } from "@/stores/epics/pr-seen-facts-store";
 import { useFileTreeStore } from "@/stores/file-tree/file-tree-store";
 import { useHistorySearchStore } from "@/stores/home/history-search-store";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
@@ -17,8 +18,10 @@ import { useHostUpdateBannerStore } from "@/stores/settings/host-update-banner-s
 import { useKeybindingStore } from "@/stores/settings/keybinding-store";
 import { useLocalSnapshotClearStore } from "@/stores/settings/local-snapshot-clear-store";
 import { useSettingsStore } from "@/stores/settings/settings-store";
+import { useWorktreesSettingsViewStore } from "@/stores/settings/worktrees-settings-view-store";
 import { useSettingsSectionStore } from "@/stores/tabs/settings-section-store";
 import { useTabsStore } from "@/stores/tabs/store";
+import { useAppLocalNotificationsStore } from "@/stores/notifications/app-local-notifications-store";
 import { useWorkspaceFoldersStore } from "@/stores/workspace/workspace-folders-store";
 import { useWorktreeIntentMemoryStore } from "@/stores/worktree/worktree-intent-memory-store";
 import { useWorktreeIntentStagingStore } from "@/stores/worktree/worktree-intent-staging-store";
@@ -30,8 +33,9 @@ import { useWorktreeIntentStagingStore } from "@/stores/worktree/worktree-intent
 // to catch a divergence. A wrong leaf, a typo'd STORE_KEYS access, or a store
 // that stops routing through the catalog must fail HERE.
 //
-// The five scoped singletons (composer-run-settings, composer-harness-memory,
-// worktree-intent-memory, worktree-intent-staging, epic-canvas) are constructed
+// The six scoped singletons (composer-run-settings, composer-harness-memory,
+// worktree-intent-memory, worktree-intent-staging, epic-canvas,
+// app-local-notifications) are constructed
 // at module load in their initial `anon` bucket; the persist lifecycle bridges
 // retarget them at runtime. The construction-time name asserted here is
 // therefore the `anon` one.
@@ -47,7 +51,7 @@ interface StorePersistHandle {
 const STORE_PERSIST_NAME_CASES: ReadonlyArray<
   [label: string, store: StorePersistHandle, expectedName: string]
 > = [
-  // ── 17 static singletons ─────────────────────────────────────────────────
+  // ── Static singletons ────────────────────────────────────────────────────
   [
     "useCommandPaletteStore",
     useCommandPaletteStore,
@@ -58,12 +62,18 @@ const STORE_PERSIST_NAME_CASES: ReadonlyArray<
     useComposerDraftStore,
     "traycer-gui-app:composer-drafts",
   ],
+  // NOTE: useInterviewDraftStore is intentionally absent. It no longer uses the
+  // zustand `persist` middleware (so it has no `.persist.getOptions().name`): it
+  // persists one localStorage key per (chatId, blockId) via `interviewDraftKey`
+  // for cross-window isolation — the same reason the app-local display-receipt
+  // store is not listed here.
   [
     "useArtifactReadStateStore",
     useArtifactReadStateStore,
     "traycer-gui-app:artifact-read-state",
   ],
   ["useGitPanelStore", useGitPanelStore, "traycer-gui-app:git-panel"],
+  ["usePrSeenFactsStore", usePrSeenFactsStore, "traycer-gui-app:pr-seen-facts"],
   [
     "useInitialChatHandoffStore",
     useInitialChatHandoffStore,
@@ -95,6 +105,11 @@ const STORE_PERSIST_NAME_CASES: ReadonlyArray<
     "traycer-gui-app:settings-section",
   ],
   [
+    "useWorktreesSettingsViewStore",
+    useWorktreesSettingsViewStore,
+    "traycer-gui-app:worktrees-settings-view",
+  ],
+  [
     "useRateLimitPopoverStore",
     useRateLimitPopoverStore,
     "traycer-gui-app:rate-limit-popover",
@@ -106,7 +121,7 @@ const STORE_PERSIST_NAME_CASES: ReadonlyArray<
     "traycer-gui-app:workspace-folders",
   ],
 
-  // ── 5 scoped singletons (initial `anon` bucket at construction) ───────────
+  // ── Scoped singletons (initial `anon` bucket at construction) ─────────────
   [
     "useComposerRunSettingsStore",
     useComposerRunSettingsStore,
@@ -131,6 +146,11 @@ const STORE_PERSIST_NAME_CASES: ReadonlyArray<
     "useEpicCanvasStore",
     useEpicCanvasStore,
     "traycer-gui-app:epic-canvas:anon",
+  ],
+  [
+    "useAppLocalNotificationsStore",
+    useAppLocalNotificationsStore,
+    "traycer-gui-app:app-local-notifications:anon",
   ],
 ];
 

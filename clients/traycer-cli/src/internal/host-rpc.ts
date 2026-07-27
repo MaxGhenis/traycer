@@ -5,7 +5,6 @@ import {
   type HostRpcRegistry,
 } from "@traycer/protocol/host/registry";
 import { MutableBearerLease } from "../../../shared/auth/bearer-source";
-import { createBearerRevalidator } from "../../../shared/auth/bearer-revalidator";
 import { createAuthAwareMessenger } from "../../../shared/host-transport/auth-aware-messenger";
 import {
   createRetryingMessenger,
@@ -18,8 +17,9 @@ import {
   HostRpcError,
   type RequestOfMethod,
   type ResponseOfMethod,
+  HostRequestAuthority,
+  HostTransportEndpoint,
 } from "../../../shared/host-transport/host-messenger";
-import type { HostTransportEndpoint } from "../../../shared/host-transport/ws-rpc-client";
 import { WsRpcClient } from "../../../shared/host-transport/ws-rpc-client";
 import { createWhatwgWebSocketFactory } from "../../../shared/host-transport/whatwg-ws-factory";
 import { config } from "../config";
@@ -29,7 +29,11 @@ import {
   readHostPidMetadata,
 } from "../host/pid-metadata";
 import { isProcessAlive } from "../store/cli-lock";
-import { cliBearerStore, resolveHostAuth, type HostAuth } from "./host-auth";
+import {
+  createCliCredentialsStore,
+  createStoreBackedRevalidator,
+} from "../store/credentials-store";
+import { resolveHostAuth, type HostAuth } from "./host-auth";
 import { cliError, CLI_ERROR_CODES, type CliError } from "../runner/errors";
 import {
   compatRecoveryHint,
@@ -45,9 +49,10 @@ const FRAME_TIMEOUT_MS = 15_000;
  * frame parsing, timeouts) is the shared `WsRpcClient` that the Desktop renderer
  * also uses - the CLI no longer hand-rolls it. The bearer comes from the stored
  * credentials (`resolveHostAuth`), seeded by `traycer login`; on a host
- * `UNAUTHORIZED` the shared auth-aware wrapper refreshes the bearer (rotating
- * the lease + persisting via `cliBearerStore`) and retries once before the error
- * surfaces.
+ * `UNAUTHORIZED` the shared auth-aware wrapper refreshes the bearer via the
+ * store-backed revalidator - the refresh spend runs inside the shared credentials
+ * file lock (`store.rotate`, §7) - rotates the lease, and retries once before the
+ * error surfaces.
  */
 export async function callHostRpc<
   Method extends keyof HostRpcRegistry & string,
@@ -188,33 +193,35 @@ async function requestAtEndpoint<Method extends keyof HostRpcRegistry & string>(
 ): Promise<ResponseOfMethod<HostRpcRegistry, Method>> {
   const logger = createCliLogger(config.environment);
   const lease = new MutableBearerLease(auth.token, auth.userId);
-  const revalidator = createBearerRevalidator({
-    authnBaseUrl: auth.authnBaseUrl,
-    lease,
-    store: cliBearerStore,
-    clearOnReject: false,
-    delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  });
+  // On a host UNAUTHORIZED the auth-aware messenger drives the refresh through
+  // the locked `rotate` (§7): a short-lived store for this one call, disposed
+  // once the request settles so a `commit-failed` continuation timer never
+  // outlives the command.
+  const store = createCliCredentialsStore();
+  const revalidator = createStoreBackedRevalidator({ store, lease });
 
   const messenger = createRetryingMessenger<HostRpcRegistry>(
     createAuthAwareMessenger<HostRpcRegistry>(
       new WsRpcClient<HostRpcRegistry>({
         registry: hostRpcRegistry,
-        endpoint: () => endpoint,
-        bearer: () => lease,
         requestId: () => randomUUID(),
         webSocketFactory: createWhatwgWebSocketFactory(),
         dialTimeoutMs: DEFAULT_DIAL_TIMEOUT_MS,
         frameTimeoutMs: FRAME_TIMEOUT_MS,
       }),
       revalidator,
-      { retry: { bearer: () => lease } },
     ),
     retryPolicy,
   );
 
+  const callLifetime = new AbortController();
+  const authority: HostRequestAuthority = {
+    endpoint,
+    bearer: lease,
+    abortSignal: callLifetime.signal,
+  };
   try {
-    const response = await messenger.request(method, params);
+    const response = await messenger.request(method, params, authority);
     logger.debug("Host RPC completed", {
       environment: config.environment,
       method,
@@ -232,6 +239,9 @@ async function requestAtEndpoint<Method extends keyof HostRpcRegistry & string>(
       errorName: error.name,
     });
     throw err;
+  } finally {
+    callLifetime.abort("cli-call-settled");
+    store.dispose();
   }
 }
 
@@ -314,6 +324,35 @@ export async function toAgentCliError<T>(call: Promise<T>): Promise<T> {
   });
 }
 
+// Prefix of the message the shared transport throws when the client is the
+// newer side and its request cannot be projected onto the host's older minor
+// request schema (`prepareRequestPayload` in `ws-rpc-client.ts`). This is a
+// client-side failure raised during request preparation, before anything is
+// sent to the host.
+const REQUEST_PROJECTION_FAILURE_PREFIX =
+  "Failed to project request params onto";
+
+/**
+ * True when `err` is the transport's client-side request-projection failure -
+ * i.e. this CLI negotiated a newer canonical version for the method than the
+ * host speaks, and the request carries a value the host's older minor request
+ * schema cannot represent (e.g. a newer enum value that isn't strippable like an
+ * additive field). The transport raises this as a `RPC_ERROR` locally during
+ * request preparation, so it never reached the host.
+ *
+ * Best-effort hook commands use this to degrade a version-skew miss to a quiet
+ * no-op instead of surfacing it: the call is meaningless against a host too old
+ * to understand it. Matched narrowly (the specific code + preparation message)
+ * so genuine host `RPC_ERROR`s and auth failures still surface.
+ */
+export function isRequestVersionProjectionError(err: unknown): boolean {
+  return (
+    err instanceof HostRpcError &&
+    err.code === "RPC_ERROR" &&
+    err.message.startsWith(REQUEST_PROJECTION_FAILURE_PREFIX)
+  );
+}
+
 /**
  * Validate user-supplied request input against its protocol schema, turning a
  * schema failure into a clean `E_INVALID_ARGUMENT` instead of an uncaught
@@ -394,6 +433,8 @@ function hostRpcToCliError(err: unknown): unknown {
  *     the internal term "task" (epic), neither actionable for a CLI user.
  *   - `UNAUTHORIZED` → `AUTH_REJECTED`: bearer rejected even after the
  *     auth-aware wrapper's refresh-and-retry.
+ *   - `E_HOST_UNSUPPORTED` → `HOST_UNSUPPORTED`: per-feature unsupported on
+ *     this host, actionable by updating the host.
  *   - `INCOMPATIBLE` / `DOWNGRADE_UNSUPPORTED` → `HOST_INCOMPATIBLE`: host/CLI
  *     protocol skew, actionable via `host restart` / updating the CLI.
  *   - everything else, including `RPC_ERROR` → `UNEXPECTED`: `RPC_ERROR` is the
@@ -411,6 +452,49 @@ function mapHostRpcError(err: HostRpcError): CliError {
       message:
         "traycer: access denied for this epic - check --epic-id and that you're signed in to the account that owns it.",
       details: null,
+      exitCode: 1,
+    });
+  }
+  if (err.code === "E_AGENT_NOT_FOUND") {
+    return cliError({
+      code: CLI_ERROR_CODES.AGENT_NOT_FOUND,
+      message: `traycer: ${err.message} Check --agent-id (or $TRAYCER_AGENT_ID).`,
+      details: null,
+      exitCode: 1,
+    });
+  }
+  if (err.code === "E_AGENT_NOT_LOCAL") {
+    return cliError({
+      code: CLI_ERROR_CODES.AGENT_NOT_LOCAL,
+      message: `traycer: ${err.message}`,
+      details: null,
+      exitCode: 1,
+    });
+  }
+  if (err.code === "E_ROLE_FORBIDDEN") {
+    return cliError({
+      code: CLI_ERROR_CODES.ROLE_FORBIDDEN,
+      message: `traycer: ${err.message}`,
+      details: null,
+      exitCode: 1,
+    });
+  }
+  if (err.code === "E_INVALID_ARGUMENT") {
+    return cliError({
+      code: CLI_ERROR_CODES.INVALID_ARGUMENT,
+      message: `traycer: ${err.message}`,
+      details: null,
+      exitCode: 1,
+    });
+  }
+  if (err.code === "E_HOST_UNSUPPORTED") {
+    return cliError({
+      code: CLI_ERROR_CODES.HOST_UNSUPPORTED,
+      message: `traycer: ${err.message}`,
+      details: {
+        hostShouldUpgrade: true,
+        method: err.method,
+      },
       exitCode: 1,
     });
   }

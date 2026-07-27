@@ -35,8 +35,92 @@ import {
   render,
   screen,
 } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from "vitest";
 import "../../../../__tests__/test-browser-apis";
+
+import { anyTooltipHasText } from "@/components/ui/__tests__/tooltip-probe";
+vi.mock("@/hooks/notifications/use-host-notification-indicators-query", () => ({
+  useHostNotificationIndicators: () => ({
+    data: { epics: {}, chats: {} },
+    isPending: false,
+    isFetching: false,
+    error: null,
+    refetch: () => Promise.resolve(),
+  }),
+}));
+
+interface TestSetPinnedVariables {
+  readonly epicId: string;
+  readonly pinned: boolean;
+}
+
+interface TestSetPinnedOptions {
+  readonly onSuccess: () => void;
+}
+
+interface TestToastOptions {
+  readonly action: {
+    readonly label: string;
+    readonly onClick: () => void;
+  };
+}
+
+const pinTestState = vi.hoisted(
+  (): {
+    pinnedByEpicId: Map<string, boolean>;
+    pendingEpicIds: Set<string>;
+    mutate: Mock<
+      (
+        variables: TestSetPinnedVariables,
+        options: TestSetPinnedOptions | undefined,
+      ) => void
+    >;
+  } => ({
+    pinnedByEpicId: new Map(),
+    pendingEpicIds: new Set(),
+    mutate: vi.fn(),
+  }),
+);
+
+const toastTestState = vi.hoisted(
+  (): {
+    messages: string[];
+    actionLabel: string | null;
+    undo: (() => void) | null;
+  } => ({
+    messages: [],
+    actionLabel: null,
+    undo: null,
+  }),
+);
+
+vi.mock("@/hooks/epic/use-epic-task-pinned-states-query", () => ({
+  useEpicTaskPinnedStates: () => pinTestState.pinnedByEpicId,
+}));
+
+vi.mock("@/hooks/epic/use-epic-set-pinned-mutation", () => ({
+  useEpicSetPinned: () => ({ mutate: pinTestState.mutate }),
+  usePendingSetPinnedEpicIds: () => pinTestState.pendingEpicIds,
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: (message: string, options: TestToastOptions) => {
+      toastTestState.messages.push(message);
+      toastTestState.actionLabel = options.action.label;
+      toastTestState.undo = options.action.onClick;
+    },
+    error: vi.fn(),
+  },
+}));
 
 interface EpicTab {
   readonly id: string;
@@ -209,6 +293,7 @@ function registerChatSession(epicId: string, chatId: string): void {
         streamFlushCoordinator: IMMEDIATE_STREAM_FLUSH_COORDINATOR,
         streamClientFactory: () => ({
           sendAction: () => undefined,
+          sameTurnSteeringProtocolSupported: () => true,
           close: () => undefined,
         }),
       }),
@@ -313,6 +398,18 @@ describe("<TabStrip />", () => {
       },
     });
     window.localStorage.clear();
+    pinTestState.pinnedByEpicId.clear();
+    pinTestState.pendingEpicIds.clear();
+    pinTestState.mutate.mockReset();
+    pinTestState.mutate.mockImplementation(
+      (
+        _variables: TestSetPinnedVariables,
+        options: TestSetPinnedOptions | undefined,
+      ) => options?.onSuccess(),
+    );
+    toastTestState.messages.length = 0;
+    toastTestState.actionLabel = null;
+    toastTestState.undo = null;
     resetStores();
   });
 
@@ -441,6 +538,8 @@ describe("<TabStrip />", () => {
           focusArtifactId: undefined,
           focusThreadId: undefined,
           migrationSource: undefined,
+          focusPaneId: undefined,
+          focusTileInstanceId: undefined,
         },
       });
       await flushNav();
@@ -491,6 +590,82 @@ describe("<TabStrip />", () => {
     ).toBeDefined();
   });
 
+  it("shows the chat-level background indicator when only background work remains", async () => {
+    openEpicFixture(EPIC_A);
+    registerActiveEpicHeader(EPIC_A, "owner", ["chat-background"]);
+    registerChatSession(EPIC_A.id, "chat-background");
+    const handle = __getChatSessionRegistryForTests().peek(
+      EPIC_A.id,
+      "chat-background",
+    );
+    if (handle === null) throw new Error("expected chat session handle");
+    handle.store.setState({
+      runStatus: "running",
+      activeTurn: null,
+      turnInProgress: false,
+      backgroundItems: [
+        {
+          taskId: "background-task",
+          kind: "monitor",
+          title: "Monitor",
+          blockId: "background-task",
+          parentTaskId: null,
+          scheduledFor: null,
+        },
+      ],
+    });
+    const router = buildRouter("/epics/e-a/e-a");
+    render(<RouterProvider router={router} />);
+
+    const backgroundIcon = await screen.findByTestId(
+      `header-tab-background-activity-${EPIC_A.id}`,
+    );
+    expect(backgroundIcon.getAttribute("class")).toContain(
+      "lucide-message-square-clock",
+    );
+    expect(screen.queryByTestId(`header-tab-activity-${EPIC_A.id}`)).toBeNull();
+    expect(anyTooltipHasText("Background activity — agent idle")).toBe(true);
+  });
+
+  it("prioritizes turn activity over background work from another chat", async () => {
+    openEpicFixture(EPIC_A);
+    registerActiveEpicHeader(EPIC_A, "owner", ["chat-background", "chat-turn"]);
+    registerChatSession(EPIC_A.id, "chat-background");
+    registerChatSession(EPIC_A.id, "chat-turn");
+    const backgroundHandle = __getChatSessionRegistryForTests().peek(
+      EPIC_A.id,
+      "chat-background",
+    );
+    const turnHandle = __getChatSessionRegistryForTests().peek(
+      EPIC_A.id,
+      "chat-turn",
+    );
+    if (backgroundHandle === null || turnHandle === null) {
+      throw new Error("expected chat session handles");
+    }
+    backgroundHandle.store.setState({
+      runStatus: "running",
+      activeTurn: null,
+      turnInProgress: false,
+      backgroundItems: [],
+    });
+    turnHandle.store.setState({
+      runStatus: "running",
+      activeTurn: null,
+      turnInProgress: true,
+      backgroundItems: [],
+    });
+    const router = buildRouter("/epics/e-a/e-a");
+    render(<RouterProvider router={router} />);
+
+    expect(
+      await screen.findByTestId(`header-tab-activity-${EPIC_A.id}`),
+    ).toBeDefined();
+    expect(
+      screen.queryByTestId(`header-tab-background-activity-${EPIC_A.id}`),
+    ).toBeNull();
+  });
+
   it("ignores stale active awareness for a deleted chat", async () => {
     openEpicFixture(EPIC_A);
     registerStaleActiveEpicHeader(EPIC_A, "owner", ["chat-deleted"]);
@@ -499,10 +674,10 @@ describe("<TabStrip />", () => {
 
     expect(await screen.findByTestId(`tab-epic-${EPIC_A.id}`)).toBeDefined();
     expect(screen.queryByTestId(`header-tab-activity-${EPIC_A.id}`)).toBeNull();
-    expect(screen.queryByTestId(`header-tab-waiting-${EPIC_A.id}`)).toBeNull();
+    expect(screen.queryByTestId(`header-tab-prompt-${EPIC_A.id}`)).toBeNull();
   });
 
-  it("shows a waiting spinner when a chat in the epic needs user input", async () => {
+  it("does not derive a prompt indicator from a chat session's pending interview", () => {
     openEpicFixture(EPIC_A);
     registerLiveEpicHeader(EPIC_A, "owner", ["chat-waiting"]);
     registerChatSession(EPIC_A.id, "chat-waiting");
@@ -517,15 +692,10 @@ describe("<TabStrip />", () => {
     const router = buildRouter("/epics/e-a/e-a");
     render(<RouterProvider router={router} />);
 
-    expect(
-      await screen.findByTestId(`header-tab-waiting-${EPIC_A.id}`),
-    ).toBeDefined();
-    expect(
-      screen.queryByTitle("Task waiting for your approval"),
-    ).not.toBeNull();
+    expect(screen.queryByTestId(`header-tab-prompt-${EPIC_A.id}`)).toBeNull();
   });
 
-  it("shows a waiting spinner when a chat in the epic needs permission approval", async () => {
+  it("does not derive a prompt indicator from a chat session's pending approval", () => {
     openEpicFixture(EPIC_A);
     registerLiveEpicHeader(EPIC_A, "owner", ["chat-permission"]);
     registerChatSession(EPIC_A.id, "chat-permission");
@@ -551,12 +721,7 @@ describe("<TabStrip />", () => {
     const router = buildRouter("/epics/e-a/e-a");
     render(<RouterProvider router={router} />);
 
-    expect(
-      await screen.findByTestId(`header-tab-waiting-${EPIC_A.id}`),
-    ).toBeDefined();
-    expect(
-      screen.queryByTitle("Task waiting for your approval"),
-    ).not.toBeNull();
+    expect(screen.queryByTestId(`header-tab-prompt-${EPIC_A.id}`)).toBeNull();
   });
 
   it("hides the header epic edit-title menu item for viewer role", async () => {
@@ -578,6 +743,58 @@ describe("<TabStrip />", () => {
 
     fireEvent.contextMenu(await screen.findByTestId("tab-epic-e-a"));
     expect(screen.queryByText("Edit Title")).toBeNull();
+    expect(screen.getByText("Pin Task in History")).toBeDefined();
+  });
+
+  it("pins a task from its tab context menu and offers Undo", async () => {
+    pinTestState.pinnedByEpicId.set(EPIC_A.id, false);
+    openEpicFixture(EPIC_A);
+    registerEpicHeader(EPIC_A, "owner");
+    const router = buildRouter("/epics/e-a/e-a");
+    render(<RouterProvider router={router} />);
+
+    fireEvent.contextMenu(await screen.findByTestId("tab-epic-e-a"));
+    fireEvent.click(await screen.findByText("Pin Task in History"));
+
+    expect(pinTestState.mutate).toHaveBeenCalledTimes(1);
+    const firstCall = pinTestState.mutate.mock.calls[0];
+    expect(firstCall[0]).toEqual({ epicId: EPIC_A.id, pinned: true });
+    expect(typeof firstCall[1]?.onSuccess).toBe("function");
+    expect(toastTestState.messages).toEqual([
+      "Pinned “Alpha” to the top of History",
+    ]);
+    expect(toastTestState.actionLabel).toBe("Undo");
+    expect(toastTestState.undo).not.toBeNull();
+
+    toastTestState.undo?.();
+
+    expect(pinTestState.mutate).toHaveBeenNthCalledWith(2, {
+      epicId: EPIC_A.id,
+      pinned: false,
+    });
+  });
+
+  it("shows the inverse task-history action for a pinned task", async () => {
+    pinTestState.pinnedByEpicId.set(EPIC_A.id, true);
+    openEpicFixture(EPIC_A);
+    registerEpicHeader(EPIC_A, "owner");
+    const router = buildRouter("/epics/e-a/e-a");
+    render(<RouterProvider router={router} />);
+
+    fireEvent.contextMenu(await screen.findByTestId("tab-epic-e-a"));
+
+    expect(await screen.findByText("Unpin Task in History")).toBeDefined();
+  });
+
+  it("does not expose the task-history pin action on system tabs", async () => {
+    ensureHistoryTab();
+    const router = buildRouter("/epics");
+    render(<RouterProvider router={router} />);
+
+    fireEvent.contextMenu(await screen.findByTestId("tab-history-history"));
+
+    expect(screen.queryByText("Pin Task in History")).toBeNull();
+    expect(screen.queryByText("Unpin Task in History")).toBeNull();
   });
 
   it("delays leader digit badges on header tabs", async () => {
@@ -778,7 +995,9 @@ describe("<TabStrip />", () => {
       name: "History",
       lastPath: "/epics",
     });
-    const draftId = useLandingDraftStore.getState().createDraft(null);
+    const draftId = useLandingDraftStore
+      .getState()
+      .createDraft(null, undefined);
 
     const router = buildRouter(`/epics/epic-current/${epicTabId}`);
     render(<RouterProvider router={router} />);
@@ -796,6 +1015,8 @@ describe("<TabStrip />", () => {
         focusArtifactId: undefined,
         focusThreadId: undefined,
         migrationSource: undefined,
+        focusPaneId: undefined,
+        focusTileInstanceId: undefined,
       },
     });
     fireEvent.click(screen.getByTestId("tab-history-history"));
@@ -810,6 +1031,8 @@ describe("<TabStrip />", () => {
         focusArtifactId: undefined,
         focusThreadId: undefined,
         migrationSource: undefined,
+        focusPaneId: undefined,
+        focusTileInstanceId: undefined,
       },
     });
     fireEvent.click(screen.getByTestId(`tab-draft-${draftId}`));

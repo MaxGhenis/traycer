@@ -9,6 +9,7 @@ const TEST_SETTINGS = {
   reasoningEffort: null,
   serviceTier: null,
   agentMode: "epic" as const,
+  profileId: null,
 };
 
 const USER_SENDER = { type: "user" as const, userId: "owner-1" };
@@ -18,6 +19,7 @@ const AGENT_SENDER = {
   agentId: "agent-1",
   displayName: null,
   reply: { expectsReply: false as const },
+  inReplyTo: null,
 };
 
 describe("queueItemCanPauseFromQueueHeader", () => {

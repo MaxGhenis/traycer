@@ -5,7 +5,9 @@ import { ArtifactCardSegment } from "@/components/chat/segments/artifact-card-se
 import { readEpicCanvasDragSourceData } from "@/components/epic-canvas/dnd/dnd";
 import { commitResolvedCanvasDrop } from "@/components/epic-canvas/dnd/root-dnd-commits";
 import type { EpicArtifactRef } from "@/stores/epics/canvas/types";
+import type { NavigateNestedFocus } from "@/lib/epic-nested-focus-navigation";
 
+import { tooltipTextNear } from "@/components/ui/__tests__/tooltip-probe";
 type TestArtifactProjection = {
   readonly id: string;
   readonly kind: EpicArtifactKind;
@@ -46,9 +48,25 @@ const projection = vi.hoisted<TestProjectionState>(() => ({
 }));
 
 const canvas = vi.hoisted(() => ({
+  tabsById: {
+    "tab-1": {
+      tabId: "tab-1",
+      epicId: "epic-1",
+      name: "Epic 1",
+    },
+  },
   resolveTargetTabForEpic: vi.fn(() => "tab-1"),
   openTileInTab: vi.fn<(tabId: string, node: EpicArtifactRef) => void>(),
+  prepareOpenTileInTabFocusTarget: vi.fn(
+    (tabId: string, node: EpicArtifactRef) => {
+      canvas.openTileInTab(tabId, node);
+      return null;
+    },
+  ),
 }));
+
+const rawNestedFocus: NavigateNestedFocus = (_epicId, _tabId, prepare) =>
+  prepare();
 
 const dnd = vi.hoisted(() => ({
   draggables: [] as CapturedDraggable[],
@@ -333,7 +351,7 @@ describe("<ArtifactCardSegment />", () => {
     expect(screen.getByText("−")).toBeTruthy();
     const title = screen.getByText("Removed Spec");
     expect(title.className).toContain("line-through");
-    expect(title.getAttribute("title")).toBe("This artifact was deleted.");
+    expect(tooltipTextNear(title)).toBe("This artifact was deleted.");
     expect(screen.queryByText("deleted")).toBeNull();
     // A tombstone has no body - it cannot be opened.
     expect(screen.queryByRole("button", { name: /Open/ })).toBeNull();
@@ -355,7 +373,7 @@ describe("<ArtifactCardSegment />", () => {
     expect(screen.getByText("−")).toBeTruthy();
     const title = screen.getByText("Fallback Deleted Spec");
     expect(title.className).toContain("line-through");
-    expect(title.getAttribute("title")).toBe("This artifact was deleted.");
+    expect(tooltipTextNear(title)).toBe("This artifact was deleted.");
     expect(screen.queryByRole("button", { name: /Open/ })).toBeNull();
   });
 
@@ -376,7 +394,7 @@ describe("<ArtifactCardSegment />", () => {
     expect(screen.queryByText("−")).toBeNull();
     const title = screen.getByText("Deleted Before Tombstone");
     expect(title.className).toContain("line-through");
-    expect(title.getAttribute("title")).toBe("This artifact was deleted.");
+    expect(tooltipTextNear(title)).toBe("This artifact was deleted.");
     expect(screen.queryByText("deleted")).toBeNull();
     expect(screen.queryByRole("button", { name: /Open/ })).toBeNull();
   });
@@ -399,7 +417,7 @@ describe("<ArtifactCardSegment />", () => {
     expect(screen.queryByText("−")).toBeNull();
     const title = screen.getByText("Missing Created Spec");
     expect(title.className).toContain("line-through");
-    expect(title.getAttribute("title")).toBe("This artifact was deleted.");
+    expect(tooltipTextNear(title)).toBe("This artifact was deleted.");
     expect(screen.queryByText("deleted")).toBeNull();
     expect(screen.queryByRole("button", { name: /Open/ })).toBeNull();
   });
@@ -542,11 +560,14 @@ describe("<ArtifactCardSegment />", () => {
     const source = readEpicCanvasDragSourceData(drag.data);
     expect(source).not.toBeNull();
     if (source === null) return;
-    commitResolvedCanvasDrop({
-      source,
-      target: { kind: "empty-shell", epicId: "epic-1", viewTabId: "tab-1" },
-      preview: { kind: "empty-shell" },
-    });
+    commitResolvedCanvasDrop(
+      {
+        source,
+        target: { kind: "empty-shell", epicId: "epic-1", viewTabId: "tab-1" },
+        preview: { kind: "empty-shell" },
+      },
+      rawNestedFocus,
+    );
 
     expect(canvas.openTileInTab).toHaveBeenCalledTimes(1);
     const [tabId, node] = canvas.openTileInTab.mock.calls[0];

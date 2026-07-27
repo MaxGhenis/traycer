@@ -4,7 +4,11 @@ import type {
   ProviderRateLimits,
   ProviderRateLimitWindow,
 } from "@traycer/protocol/host";
-import type { RateLimitProviderId } from "@/lib/rate-limit-providers";
+import type { ProviderProfile } from "@traycer/protocol/host/provider-schemas";
+import type {
+  RateLimitFetchEligibility,
+  RateLimitProviderId,
+} from "@/lib/rate-limit-providers";
 import type {
   AvailableProviderRateLimits,
   ProviderRateLimitEnvelope,
@@ -19,13 +23,22 @@ type MockState = {
   configured: ReadonlyArray<{
     readonly providerId: RateLimitProviderId;
     readonly lane: "httpFetch" | "ephemeralProcess";
+    readonly profiles: ReadonlyArray<ProviderProfile>;
+    readonly fetchEligibility: RateLimitFetchEligibility;
   }>;
   results: Map<RateLimitProviderId, MockQueryResult>;
+  profileIds: Map<RateLimitProviderId, string | null>;
+  requests: ReadonlyArray<{
+    readonly providerId: RateLimitProviderId;
+    readonly profileId: string | null;
+  }>;
 };
 
 const mocks = vi.hoisted<MockState>(() => ({
   configured: [],
   results: new Map(),
+  profileIds: new Map(),
+  requests: [],
 }));
 
 vi.mock("@/lib/host", () => ({
@@ -33,6 +46,13 @@ vi.mock("@/lib/host", () => ({
 }));
 vi.mock("@/hooks/rate-limits/use-configured-rate-limit-providers", () => ({
   useConfiguredRateLimitProviders: () => mocks.configured,
+  useVisibleRateLimitProviders: () => mocks.configured,
+}));
+vi.mock("@/hooks/rate-limits/use-rate-limit-profile-selection", () => ({
+  resolveRateLimitProfileId: (
+    _selection: unknown,
+    providerId: RateLimitProviderId,
+  ) => mocks.profileIds.get(providerId) ?? null,
 }));
 // Production calls `useHostQueriesWithResponseMap` (not the plain
 // `useHostQueries`) - see that hook's own doc comment - so this mock exports
@@ -40,9 +60,16 @@ vi.mock("@/hooks/rate-limits/use-configured-rate-limit-providers", () => ({
 // production passes is irrelevant to this fixture-backed double.
 function mockUseHostQueriesImpl(args: {
   readonly requests: ReadonlyArray<{
-    readonly params: { readonly providerId: RateLimitProviderId };
+    readonly params: {
+      readonly providerId: RateLimitProviderId;
+      readonly profileId: string | null;
+    };
   }>;
 }) {
+  mocks.requests = args.requests.map((request) => ({
+    providerId: request.params.providerId,
+    profileId: request.params.profileId,
+  }));
   return args.requests.map(
     (request) =>
       mocks.results.get(request.params.providerId) ?? {
@@ -58,8 +85,20 @@ vi.mock("@/hooks/host/use-host-queries", () => ({
 
 import { useHeaderRateLimitBars } from "@/hooks/rate-limits/use-header-rate-limit-bars";
 
-function rlWindow(usedPercent: number): ProviderRateLimitWindow {
-  return { usedPercent, resetsAt: null, durationMinutes: null };
+const PROFILE_SELECTION = {
+  activeChatSettings: null,
+  lastProfileByHarness: {},
+};
+
+function renderHeaderRateLimitBars() {
+  return renderHook(() => useHeaderRateLimitBars(PROFILE_SELECTION));
+}
+
+function rlWindow(
+  usedPercent: number,
+  durationMinutes: number | null,
+): ProviderRateLimitWindow {
+  return { usedPercent, resetsAt: null, durationMinutes };
 }
 
 // A fresh, cold-start envelope wrapping a single available reading - matches
@@ -81,8 +120,35 @@ function setProvider(
   lane: "httpFetch" | "ephemeralProcess",
   result: MockQueryResult,
 ): void {
-  mocks.configured = [...mocks.configured, { providerId, lane }];
+  mocks.configured = [
+    ...mocks.configured,
+    {
+      providerId,
+      lane,
+      profiles: [],
+      fetchEligibility: { ambient: true, managedProfiles: true },
+    },
+  ];
   mocks.results.set(providerId, result);
+}
+
+function setProviderWithProfiles(args: {
+  readonly providerId: RateLimitProviderId;
+  readonly lane: "httpFetch" | "ephemeralProcess";
+  readonly profiles: ReadonlyArray<ProviderProfile>;
+  readonly fetchEligibility: RateLimitFetchEligibility;
+  readonly result: MockQueryResult;
+}): void {
+  mocks.configured = [
+    ...mocks.configured,
+    {
+      providerId: args.providerId,
+      lane: args.lane,
+      profiles: args.profiles,
+      fetchEligibility: args.fetchEligibility,
+    },
+  ];
+  mocks.results.set(args.providerId, args.result);
 }
 
 function codexFixture(overrides: {
@@ -167,6 +233,8 @@ function unavailableFixture(): ProviderRateLimits {
 beforeEach(() => {
   mocks.configured = [];
   mocks.results = new Map();
+  mocks.profileIds = new Map();
+  mocks.requests = [];
 });
 
 afterEach(() => {
@@ -176,7 +244,7 @@ afterEach(() => {
 
 describe("useHeaderRateLimitBars", () => {
   it("returns no bars when zero providers are configured", () => {
-    const { result } = renderHook(() => useHeaderRateLimitBars());
+    const { result } = renderHeaderRateLimitBars();
     expect(result.current).toEqual([]);
   });
 
@@ -185,7 +253,7 @@ describe("useHeaderRateLimitBars", () => {
       data: undefined,
       isError: false,
     });
-    const { result } = renderHook(() => useHeaderRateLimitBars());
+    const { result } = renderHeaderRateLimitBars();
     expect(result.current).toEqual([]);
   });
 
@@ -194,82 +262,192 @@ describe("useHeaderRateLimitBars", () => {
     // GLYPH_PROVIDER_IDS / PROVIDER_ID_ORDER), not just insertion order.
     setProvider("claude-code", "ephemeralProcess", {
       data: response(
-        claudeCodeFixture({ fiveHour: rlWindow(70), sevenDay: rlWindow(10) }),
+        claudeCodeFixture({
+          fiveHour: rlWindow(70, 300),
+          sevenDay: rlWindow(10, 10_080),
+        }),
       ),
       isError: false,
     });
     setProvider("codex", "ephemeralProcess", {
       data: response(
-        codexFixture({ primary: rlWindow(40), secondary: rlWindow(20) }),
+        codexFixture({
+          primary: rlWindow(40, 300),
+          secondary: rlWindow(20, 10_080),
+        }),
       ),
       isError: false,
     });
-    const { result } = renderHook(() => useHeaderRateLimitBars());
+    const { result } = renderHeaderRateLimitBars();
     expect(result.current).toEqual([
       {
         providerId: "codex",
         windowLabel: "5h",
         usedPercent: 40,
-        severity: "blue",
+        severity: "healthy",
         degraded: false,
       },
       {
         providerId: "claude-code",
         windowLabel: "5h",
         usedPercent: 70,
-        severity: "blue",
+        severity: "healthy",
         degraded: false,
       },
+    ]);
+  });
+
+  it("queries each glyph provider with its resolved active or remembered profile", () => {
+    mocks.profileIds = new Map([
+      ["codex", "codex-work"],
+      ["claude-code", "claude-personal"],
+    ]);
+    setProvider("codex", "ephemeralProcess", {
+      data: response(
+        codexFixture({
+          primary: rlWindow(40, 300),
+          secondary: rlWindow(20, 10_080),
+        }),
+      ),
+      isError: false,
+    });
+    setProvider("claude-code", "ephemeralProcess", {
+      data: response(
+        claudeCodeFixture({
+          fiveHour: rlWindow(70, 300),
+          sevenDay: rlWindow(10, 10_080),
+        }),
+      ),
+      isError: false,
+    });
+
+    renderHeaderRateLimitBars();
+
+    expect(mocks.requests).toEqual([
+      { providerId: "codex", profileId: "codex-work" },
+      { providerId: "claude-code", profileId: "claude-personal" },
+    ]);
+  });
+
+  it("resolves fetch eligibility from the selected managed target instead of the signed-out ambient target", () => {
+    const ambient: ProviderProfile = {
+      profileId: "ambient",
+      kind: "ambient",
+      authType: "oauth",
+      label: "Terminal",
+      auth: {
+        status: "unauthenticated",
+        badgeText: null,
+        label: null,
+        detail: null,
+      },
+      identity: null,
+      usageUpdatedAt: null,
+      rateLimitStatus: "unknown",
+      rateLimitLimitedScopes: null,
+      duplicateOfProfileId: null,
+      accentColor: null,
+      ambientDriftNotice: null,
+    };
+    const managed: ProviderProfile = {
+      ...ambient,
+      profileId: "codex-work",
+      kind: "managed",
+      label: "Work",
+      auth: { ...ambient.auth, status: "authenticated" },
+    };
+    mocks.profileIds = new Map([["codex", "codex-work"]]);
+    setProviderWithProfiles({
+      providerId: "codex",
+      lane: "ephemeralProcess",
+      profiles: [ambient, managed],
+      fetchEligibility: { ambient: false, managedProfiles: true },
+      result: {
+        data: response(
+          codexFixture({
+            primary: rlWindow(40, 300),
+            secondary: rlWindow(20, 10_080),
+          }),
+        ),
+        isError: false,
+      },
+    });
+
+    renderHeaderRateLimitBars();
+
+    expect(mocks.requests).toEqual([
+      { providerId: "codex", profileId: "codex-work" },
     ]);
   });
 
   it("fills both bars from Codex's 5h + Weekly windows when only Codex is configured", () => {
     setProvider("codex", "ephemeralProcess", {
       data: response(
-        codexFixture({ primary: rlWindow(88), secondary: rlWindow(30) }),
+        codexFixture({
+          primary: rlWindow(88, 300),
+          secondary: rlWindow(30, 10_080),
+        }),
       ),
       isError: false,
     });
-    const { result } = renderHook(() => useHeaderRateLimitBars());
+    const { result } = renderHeaderRateLimitBars();
     expect(result.current).toEqual([
       {
         providerId: "codex",
         windowLabel: "5h",
         usedPercent: 88,
-        severity: "red",
+        severity: "running_low",
         degraded: false,
       },
       {
         providerId: "codex",
         windowLabel: "Weekly",
         usedPercent: 30,
-        severity: "blue",
+        severity: "healthy",
         degraded: false,
       },
     ]);
   });
 
-  it("fills both bars from Claude Code's 5h + Weekly windows when only Claude Code is configured", () => {
-    setProvider("claude-code", "ephemeralProcess", {
+  it("classifies a fully consumed glyph window as Limited", () => {
+    setProvider("codex", "ephemeralProcess", {
       data: response(
-        claudeCodeFixture({ fiveHour: rlWindow(12), sevenDay: rlWindow(64) }),
+        codexFixture({
+          primary: rlWindow(100, 300),
+          secondary: rlWindow(40, 10_080),
+        }),
       ),
       isError: false,
     });
-    const { result } = renderHook(() => useHeaderRateLimitBars());
+    const { result } = renderHeaderRateLimitBars();
+    expect(result.current[0]?.severity).toBe("limited");
+    expect(result.current[1]?.severity).toBe("healthy");
+  });
+
+  it("fills both bars from Claude Code's 5h + Weekly windows when only Claude Code is configured", () => {
+    setProvider("claude-code", "ephemeralProcess", {
+      data: response(
+        claudeCodeFixture({
+          fiveHour: rlWindow(12, 300),
+          sevenDay: rlWindow(64, 10_080),
+        }),
+      ),
+      isError: false,
+    });
+    const { result } = renderHeaderRateLimitBars();
     expect(result.current).toEqual([
       {
         providerId: "claude-code",
         windowLabel: "5h",
         usedPercent: 12,
-        severity: "blue",
+        severity: "healthy",
         degraded: false,
       },
       {
         providerId: "claude-code",
         windowLabel: "Weekly",
         usedPercent: 64,
-        severity: "blue",
+        severity: "healthy",
         degraded: false,
       },
     ]);
@@ -281,11 +459,11 @@ describe("useHeaderRateLimitBars", () => {
     // not a lone real bar.
     setProvider("claude-code", "ephemeralProcess", {
       data: response(
-        claudeCodeFixture({ fiveHour: rlWindow(20), sevenDay: null }),
+        claudeCodeFixture({ fiveHour: rlWindow(20, 300), sevenDay: null }),
       ),
       isError: false,
     });
-    const { result } = renderHook(() => useHeaderRateLimitBars());
+    const { result } = renderHeaderRateLimitBars();
     expect(result.current).toEqual([]);
   });
 
@@ -293,7 +471,10 @@ describe("useHeaderRateLimitBars", () => {
     // Codex loaded, Claude Code still cold -> can't fill both slots -> [].
     setProvider("codex", "ephemeralProcess", {
       data: response(
-        codexFixture({ primary: rlWindow(50), secondary: rlWindow(10) }),
+        codexFixture({
+          primary: rlWindow(50, 300),
+          secondary: rlWindow(10, 10_080),
+        }),
       ),
       isError: false,
     });
@@ -301,7 +482,7 @@ describe("useHeaderRateLimitBars", () => {
       data: undefined,
       isError: false,
     });
-    const { result } = renderHook(() => useHeaderRateLimitBars());
+    const { result } = renderHeaderRateLimitBars();
     expect(result.current).toEqual([]);
   });
 
@@ -314,7 +495,7 @@ describe("useHeaderRateLimitBars", () => {
       data: response(kiloCodeFixture()),
       isError: false,
     });
-    const { result } = renderHook(() => useHeaderRateLimitBars());
+    const { result } = renderHeaderRateLimitBars();
     expect(result.current).toEqual([]);
   });
 
@@ -323,31 +504,34 @@ describe("useHeaderRateLimitBars", () => {
       data: response(unavailableFixture()),
       isError: false,
     });
-    const { result } = renderHook(() => useHeaderRateLimitBars());
+    const { result } = renderHeaderRateLimitBars();
     expect(result.current).toEqual([]);
   });
 
   it("marks both of a single provider's bars degraded when the latest poll errored", () => {
     setProvider("codex", "ephemeralProcess", {
       data: response(
-        codexFixture({ primary: rlWindow(65), secondary: rlWindow(15) }),
+        codexFixture({
+          primary: rlWindow(65, 300),
+          secondary: rlWindow(15, 10_080),
+        }),
       ),
       isError: true,
     });
-    const { result } = renderHook(() => useHeaderRateLimitBars());
+    const { result } = renderHeaderRateLimitBars();
     expect(result.current).toEqual([
       {
         providerId: "codex",
         windowLabel: "5h",
         usedPercent: 65,
-        severity: "blue",
+        severity: "healthy",
         degraded: true,
       },
       {
         providerId: "codex",
         windowLabel: "Weekly",
         usedPercent: 15,
-        severity: "blue",
+        severity: "healthy",
         degraded: true,
       },
     ]);
@@ -366,28 +550,28 @@ describe("useHeaderRateLimitBars", () => {
           reason: "usage_fetch_failed",
         },
         lastGood: codexFixture({
-          primary: rlWindow(65),
-          secondary: rlWindow(15),
+          primary: rlWindow(65, 300),
+          secondary: rlWindow(15, 10_080),
         }),
         lastGoodAt: Date.now() - 90_000,
         lastFailureAt: Date.now() - 1_000,
       },
       isError: false,
     });
-    const { result } = renderHook(() => useHeaderRateLimitBars());
+    const { result } = renderHeaderRateLimitBars();
     expect(result.current).toEqual([
       {
         providerId: "codex",
         windowLabel: "5h",
         usedPercent: 65,
-        severity: "blue",
+        severity: "healthy",
         degraded: true,
       },
       {
         providerId: "codex",
         windowLabel: "Weekly",
         usedPercent: 15,
-        severity: "blue",
+        severity: "healthy",
         degraded: true,
       },
     ]);

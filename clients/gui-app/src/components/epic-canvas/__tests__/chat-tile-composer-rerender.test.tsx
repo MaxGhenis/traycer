@@ -119,7 +119,7 @@ function queryCompactContextTrigger() {
 
 function UsageLeafProbe() {
   const usage = useUsageProbeStore((s) => s.usage);
-  return <ContextUsageChip usage={usage} />;
+  return <ContextUsageChip usage={usage} onCompact={null} />;
 }
 
 // ── Stable composer-relevant props (built once, never re-identified) ──────────
@@ -131,16 +131,24 @@ const TURN_IDLE: ChatLowerTurnState = {
   activeTurnStatus: null,
   stopDisabled: true,
   onStopTurn: () => null,
+  steerCapable: false,
+  steerProtocolSupported: true,
+  getActiveTurnForSteer: () => null,
 };
 const TURN_RUNNING: ChatLowerTurnState = {
   activeTurnStatus: "running",
   stopDisabled: false,
   onStopTurn: () => null,
+  steerCapable: false,
+  steerProtocolSupported: true,
+  getActiveTurnForSteer: () => null,
 };
 const INTERVIEW: ChatLowerInterviewState = {
   pending: null,
+  isBusy: false,
   onAnswer: () => null,
   onError: () => null,
+  onFork: null,
 };
 const APPROVALS: ChatLowerApprovalsState = {
   pendingFileEditApprovals: [],

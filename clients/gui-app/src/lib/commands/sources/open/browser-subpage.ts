@@ -31,6 +31,7 @@ export function useBrowserOpenerItems(
           openTileIntoTargetGroup({
             tabId: ctx.activeTabId,
             groupId: ctx.targetGroupId,
+            navigateNestedFocus: ctx.router.navigateNestedFocus,
             ref: makeBrowserTileRef({
               name: DEFAULT_BROWSER_TILE_NAME,
               hostId,
@@ -40,6 +41,11 @@ export function useBrowserOpenerItems(
           }),
       }),
     ],
-    [ctx.activeTabId, ctx.targetGroupId, hostId],
+    [
+      ctx.activeTabId,
+      ctx.router.navigateNestedFocus,
+      ctx.targetGroupId,
+      hostId,
+    ],
   );
 }

@@ -4,13 +4,17 @@ import type {
   RequestOfMethod,
   ResponseOfMethod,
 } from "@traycer-clients/shared/host-transport/host-messenger";
+import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import { useQueryClient } from "@tanstack/react-query";
+import { PROVIDERS_AWAIT_LOGIN_RESPONSE_BUDGET_MS } from "@traycer/protocol/host/provider-schemas";
 import { type HostRpcRegistry } from "@/lib/host";
-import { useHostMutation } from "@/hooks/host/use-host-query";
+import { useHostClient } from "@/lib/host";
+import { useHostMutationWithResponseTimeout } from "@/hooks/host/use-host-query";
 import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
-import { hostQueryKeys, providersMutationKeys } from "@/lib/query-keys";
+import { providersMutationKeys } from "@/lib/query-keys";
 import { toastFromHostError } from "@/lib/host-error-toast";
+import { commitAuthoritativeProvidersList } from "@/hooks/providers/commit-authoritative-providers-list";
 
 type AwaitLoginRequest = RequestOfMethod<
   HostRpcRegistry,
@@ -20,10 +24,7 @@ type AwaitLoginResponse = ResponseOfMethod<
   HostRpcRegistry,
   "providers.awaitLogin"
 >;
-type ProvidersListResponse = ResponseOfMethod<
-  HostRpcRegistry,
-  "providers.list"
->;
+type AwaitLoginContext = { readonly hostId: string | null };
 
 /**
  * Awaits the honest login-completion edge for a provider on the CURRENT tab's
@@ -39,27 +40,74 @@ type ProvidersListResponse = ResponseOfMethod<
 export function useProvidersAwaitLogin(): UseMutationResult<
   AwaitLoginResponse,
   HostRpcError,
-  AwaitLoginRequest
+  AwaitLoginRequest,
+  AwaitLoginContext
 > {
   const client = useTabHostClient();
   const tabHostId = useTabHostId();
-  const queryClient = useQueryClient();
-  return useHostMutation<HostRpcRegistry, "providers.awaitLogin">({
+  return useProvidersAwaitLoginForClient({
     client,
+    getCacheHostId: () => tabHostId,
+  });
+}
+
+/**
+ * Settings-panel variant. It follows the selected host via
+ * `HostRuntimeContext`, not a tab-bound host.
+ */
+export function useHostScopedProvidersAwaitLogin(): UseMutationResult<
+  AwaitLoginResponse,
+  HostRpcError,
+  AwaitLoginRequest,
+  AwaitLoginContext
+> {
+  const client = useHostClient();
+  return useProvidersAwaitLoginForClient({
+    client,
+    getCacheHostId: () => client.getActiveHostId(),
+  });
+}
+
+/** Client-scoped variant, keyed by a caller-supplied cache host id - lets a
+ *  caller outside `HostRuntimeContext` (e.g. the picker's tab-scoped
+ *  "Create new profile" flow) target an explicit host instead of the
+ *  app-wide default. `getCacheHostId` is a separate parameter (not derived
+ *  from `client.getActiveHostId()`) so the cache write lands under the
+ *  caller's KNOWN host id even while `client` itself is still resolving
+ *  (mirrors `useProvidersAwaitLogin`'s tab-scoped `getCacheHostId`). */
+export function useProvidersAwaitLoginForClient(args: {
+  readonly client: HostClient<HostRpcRegistry> | null;
+  readonly getCacheHostId: () => string | null;
+}): UseMutationResult<
+  AwaitLoginResponse,
+  HostRpcError,
+  AwaitLoginRequest,
+  AwaitLoginContext
+> {
+  const queryClient = useQueryClient();
+  return useHostMutationWithResponseTimeout<
+    HostRpcRegistry,
+    "providers.awaitLogin",
+    AwaitLoginContext
+  >({
+    client: args.client,
     method: "providers.awaitLogin",
     mapVariables: (variables: AwaitLoginRequest) => variables,
+    // Long-poll: the host holds the response until the OAuth child
+    // terminates (bounded by its own 3-minute login timeout). The default
+    // ~30 s frame timeout would abandon a healthy sign-in as soon as the
+    // user takes longer than that in the browser.
+    responseTimeoutMs: PROVIDERS_AWAIT_LOGIN_RESPONSE_BUDGET_MS,
     options: {
       mutationKey: providersMutationKeys.awaitLogin(),
-      onSuccess: (data: AwaitLoginResponse) => {
+      onMutate: () => ({ hostId: args.getCacheHostId() }),
+      onSuccess: async (data: AwaitLoginResponse, _variables, context) => {
         const next = data.state;
-        if (next === null) return;
-        queryClient.setQueryData<ProvidersListResponse>(
-          hostQueryKeys.method<HostRpcRegistry, "providers.list">(
-            tabHostId,
-            "providers.list",
-            {},
-          ),
-          (prev) => {
+        if (next === null || context.hostId === null) return;
+        await commitAuthoritativeProvidersList({
+          queryClient,
+          hostId: context.hostId,
+          update: (prev) => {
             if (prev === undefined) return prev;
             return {
               providers: prev.providers.map((p) =>
@@ -67,7 +115,7 @@ export function useProvidersAwaitLogin(): UseMutationResult<
               ),
             };
           },
-        );
+        });
       },
       onError: (error) =>
         toastFromHostError(error, "Couldn't confirm sign-in."),

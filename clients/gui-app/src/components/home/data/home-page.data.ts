@@ -1,9 +1,10 @@
 import type {
   PermissionRole,
-  TaskLight,
+  ListTaskLight,
   TaskOwnershipScope,
   TaskWorkspaceIdentifier,
 } from "@traycer/protocol/host/epic/unary-schemas";
+import type { WorktreeHostEntryV12 } from "@traycer/protocol/host/worktree-schemas";
 import { formatDistanceToNow } from "date-fns";
 import { displayTitle } from "@/lib/display-title";
 import { isEditableRole } from "@/lib/epic-permissions";
@@ -14,7 +15,12 @@ export type HistoryMatchMode = "any" | "all";
 export type HistoryOwnershipScope = TaskOwnershipScope;
 export type HistoryWorkspaceRef = TaskWorkspaceIdentifier;
 export type HistorySortOption =
-  "recent" | "oldest" | "title-asc" | "title-desc" | "relevance";
+  | "recent"
+  | "last-viewed"
+  | "oldest"
+  | "title-asc"
+  | "title-desc"
+  | "relevance";
 
 export const DEFAULT_SORT: HistorySortOption = "recent";
 
@@ -37,8 +43,12 @@ export interface HistoryItem {
   updatedBucket: HistoryRecencyBucket;
   linkedRepos: ReadonlyArray<string>;
   linkedWorkspaces: ReadonlyArray<HistoryWorkspaceRef>;
+  pullRequestNumbers: ReadonlyArray<string>;
+  worktreeBranches: ReadonlyArray<string>;
+  worktreePaths: ReadonlyArray<string>;
   ownership: HistoryOwnershipScope;
   permissionRole: PermissionRole | null;
+  isPinned: boolean;
 }
 
 export interface HistoryFilters {
@@ -62,7 +72,7 @@ const HISTORY_GROUP_LABELS: Record<HistoryRecencyBucket, string> = {
 };
 
 export function buildHistoryItemsFromTasks(
-  tasks: ReadonlyArray<TaskLight>,
+  tasks: ReadonlyArray<ListTaskLight>,
   nowMs: number,
   userId: string | null,
 ): ReadonlyArray<HistoryItem> {
@@ -79,6 +89,7 @@ export function buildHistoryItemsFromTasks(
           userId,
           nowMs,
           role: task.epic?.permission?.role ?? null,
+          isPinned: task.pinned ?? false,
         }),
       ];
     }
@@ -99,6 +110,7 @@ export function buildHistoryItemsFromTasks(
         userId,
         nowMs,
         role: task.phase?.permission?.role ?? null,
+        isPinned: false,
       }),
     ];
   });
@@ -108,11 +120,12 @@ function buildHistoryItem(args: {
   light: { id: string; title: string; updatedAt: number; createdBy: string };
   taskType: "epic" | "phase";
   initialUserPrompt: string;
-  task: TaskLight;
+  task: ListTaskLight;
   index: number;
   userId: string | null;
   nowMs: number;
   role: PermissionRole | null;
+  isPinned: boolean;
 }): HistoryItem {
   const {
     light,
@@ -123,6 +136,7 @@ function buildHistoryItem(args: {
     userId,
     nowMs,
     role,
+    isPinned,
   } = args;
   const ownership = light.createdBy === userId ? "mine" : "shared";
   return {
@@ -142,9 +156,158 @@ function buildHistoryItem(args: {
     updatedBucket: toHistoryRecencyBucket(light.updatedAt, nowMs),
     linkedRepos: readTaskRepos(task),
     linkedWorkspaces: readTaskWorkspaces(task),
+    pullRequestNumbers: [],
+    worktreeBranches: [],
+    worktreePaths: [],
     ownership,
     permissionRole: historyPermissionRole(ownership, role),
+    isPinned,
   };
+}
+
+/**
+ * Adds the PR numbers, branch names, and worktree paths discovered from the
+ * task's local worktrees to history items. Worktree activity is deliberately
+ * fetched separately from cloud task history, so this stays a pure projection
+ * that can update as probes finish.
+ */
+export function withHistoryItemWorktreeMetadata(
+  items: ReadonlyArray<HistoryItem>,
+  worktreesByEpicId: ReadonlyMap<string, readonly WorktreeHostEntryV12[]>,
+): ReadonlyArray<HistoryItem> {
+  return items.map((item) => {
+    const worktrees = worktreesByEpicId.get(item.epicId) ?? [];
+    return {
+      ...item,
+      pullRequestNumbers: historyPullRequestNumbers(worktrees),
+      worktreeBranches: historyWorktreeBranches(worktrees),
+      worktreePaths: Array.from(
+        new Set(worktrees.map((worktree) => worktree.worktreePath)),
+      ),
+    };
+  });
+}
+
+function historyWorktreeBranches(
+  worktrees: readonly WorktreeHostEntryV12[],
+): ReadonlyArray<string> {
+  return Array.from(
+    new Set(
+      worktrees
+        .flatMap((worktree) => [
+          worktree.branch,
+          ...worktree.submodules.map((submodule) => submodule.branch),
+        ])
+        .filter((branch): branch is string => branch !== null),
+    ),
+  );
+}
+
+/**
+ * Epic ids of tasks whose local worktrees match the query as a superproject
+ * branch name or worktree-directory string. Those strings live only in local
+ * worktree metadata, never in the cloud task index, so matching tasks are
+ * fetched by id (`epic.getTaskContexts`) and unioned into the search results -
+ * a cloud text search for them would return nothing. Matching is deliberately
+ * narrow (the branch name, the worktree's leaf directory name, and - for
+ * path-shaped queries - the full path): matching anywhere in the full path
+ * would trip on common ancestors like the user's home directory and union
+ * unrelated tasks into ordinary title searches.
+ *
+ * Expects entries from the cheap (non-activity) host index; see the filter
+ * body for why owned-submodule branches are deliberately not matched here.
+ */
+export function historyWorktreeSearchEpicIds(
+  query: string,
+  worktrees: readonly WorktreeHostEntryV12[],
+): ReadonlyArray<string> {
+  const normalized = query.trim().toLowerCase();
+  if (normalized.length < 2) return [];
+  return ownerEpicIds(
+    worktrees.filter((worktree) => {
+      // Superproject branch only. Callers feed this the CHEAP host index,
+      // whose `submodules` is contractually `[]` (populated only under
+      // `includeActivity`), so reading submodule branches here would match
+      // nothing in production however the fixtures are written. Enriching
+      // this path instead would fire host-wide `gh` probes on every
+      // keystroke; owned-submodule branches still reach search through
+      // `worktreeBranches` on rows whose enriched metadata is loaded.
+      if (
+        worktree.branch !== null &&
+        worktree.branch.toLowerCase().includes(normalized)
+      ) {
+        return true;
+      }
+      const path = worktree.worktreePath.toLowerCase();
+      if (normalized.includes("/")) return path.includes(normalized);
+      return worktreePathBasename(path).includes(normalized);
+    }),
+  );
+}
+
+/** The PR number of a PR-shaped query (`84`, `#84`, `PR #84`), else null. */
+export function historyPullRequestQueryNumber(query: string): number | null {
+  const match = /^(?:pr\s*)?#?(\d+)$/i.exec(query.trim());
+  if (match === null) return null;
+  const prNumber = Number.parseInt(match[1], 10);
+  return Number.isNaN(prNumber) ? null : prNumber;
+}
+
+/**
+ * Epic ids of tasks whose local worktrees (superproject or an owned
+ * submodule) carry the PR number. Requires activity-enriched worktree entries
+ * - `prNumber`/`submodules` are null/empty on the cheap base index.
+ */
+export function historyPullRequestSearchEpicIds(
+  prNumber: number,
+  worktrees: readonly WorktreeHostEntryV12[],
+): ReadonlyArray<string> {
+  return ownerEpicIds(
+    worktrees.filter(
+      (worktree) =>
+        worktree.prNumber === prNumber ||
+        worktree.submodules.some(
+          (submodule) => submodule.prNumber === prNumber,
+        ),
+    ),
+  );
+}
+
+function ownerEpicIds(
+  worktrees: readonly WorktreeHostEntryV12[],
+): ReadonlyArray<string> {
+  return Array.from(
+    new Set(
+      worktrees.flatMap((worktree) =>
+        worktree.owners.map((owner) => owner.epicId),
+      ),
+    ),
+  );
+}
+
+function worktreePathBasename(path: string): string {
+  const segments = path.split(/[\\/]/).filter((segment) => segment.length > 0);
+  return segments[segments.length - 1] ?? "";
+}
+
+function historyPullRequestNumbers(
+  worktrees: readonly WorktreeHostEntryV12[],
+): ReadonlyArray<string> {
+  return Array.from(
+    new Set(
+      worktrees
+        .flatMap((worktree) => [
+          worktree.prNumber,
+          ...worktree.submodules.map((submodule) => submodule.prNumber),
+        ])
+        .filter((prNumber): prNumber is number => prNumber !== null)
+        .flatMap((prNumber) => [
+          String(prNumber),
+          `#${prNumber}`,
+          `PR #${prNumber}`,
+        ]),
+    ),
+  );
 }
 
 export function canEditHistoryItemTitle(item: HistoryItem): boolean {
@@ -240,15 +403,22 @@ export function sortHistoryItems(
         .slice()
         .sort(
           (left, right) =>
+            comparePinnedHistoryItems(left, right) ||
             right.updatedAtMs - left.updatedAtMs ||
             BUCKET_ORDER[left.updatedBucket] -
               BUCKET_ORDER[right.updatedBucket],
         );
+    case "last-viewed":
+      // The central list endpoint already returns the complete eligible set in
+      // last-viewed order. Preserve that order while still projecting an
+      // optimistic pin bit into its pinned-first partition.
+      return prioritizePinnedHistoryItems(items);
     case "oldest":
       return items
         .slice()
         .sort(
           (left, right) =>
+            comparePinnedHistoryItems(left, right) ||
             left.updatedAtMs - right.updatedAtMs ||
             BUCKET_ORDER[right.updatedBucket] -
               BUCKET_ORDER[left.updatedBucket],
@@ -256,14 +426,39 @@ export function sortHistoryItems(
     case "title-asc":
       return items
         .slice()
-        .sort((left, right) => left.title.localeCompare(right.title));
+        .sort(
+          (left, right) =>
+            comparePinnedHistoryItems(left, right) ||
+            left.title.localeCompare(right.title),
+        );
     case "title-desc":
       return items
         .slice()
-        .sort((left, right) => right.title.localeCompare(left.title));
+        .sort(
+          (left, right) =>
+            comparePinnedHistoryItems(left, right) ||
+            right.title.localeCompare(left.title),
+        );
     case "relevance":
       return sortHistoryItems(items, "recent");
   }
+}
+
+/** Stable pinned-first partition for relevance-ranked search results. */
+export function prioritizePinnedHistoryItems(
+  items: ReadonlyArray<HistoryItem>,
+): ReadonlyArray<HistoryItem> {
+  return items
+    .slice()
+    .sort((left, right) => comparePinnedHistoryItems(left, right));
+}
+
+function comparePinnedHistoryItems(
+  left: HistoryItem,
+  right: HistoryItem,
+): number {
+  if (left.isPinned === right.isPinned) return 0;
+  return left.isPinned ? -1 : 1;
 }
 
 export function groupHistoryItems(
@@ -308,7 +503,7 @@ function toStartOfDay(timestamp: number): number {
   return date.getTime();
 }
 
-function readTaskRepos(task: TaskLight): ReadonlyArray<string> {
+function readTaskRepos(task: ListTaskLight): ReadonlyArray<string> {
   const repos = task.epic?.repos ?? task.phase?.repos ?? [];
   return Array.from(
     new Set(
@@ -327,7 +522,7 @@ function readTaskRepos(task: TaskLight): ReadonlyArray<string> {
 }
 
 function readTaskWorkspaces(
-  task: TaskLight,
+  task: ListTaskLight,
 ): ReadonlyArray<HistoryWorkspaceRef> {
   const workspaces = task.epic?.workspaces ?? task.phase?.workspaces ?? [];
   const unique = new Map<string, HistoryWorkspaceRef>();

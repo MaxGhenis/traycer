@@ -157,7 +157,9 @@ describe("<LandingComposer /> render stability", () => {
   });
 
   it("mounts the bound attachment strip without render-phase store warnings", () => {
-    const draftId = useLandingDraftStore.getState().createDraft(null);
+    const draftId = useLandingDraftStore
+      .getState()
+      .createDraft(null, undefined);
     useLandingDraftStore
       .getState()
       .setDraftContent(draftId, imageContent("image-1"), null);
@@ -168,6 +170,7 @@ describe("<LandingComposer /> render stability", () => {
     render(
       <LandingComposer
         draftId={draftId}
+        pendingCreateId={null}
         initialSettings={null}
         workspaceControls={null}
       />,

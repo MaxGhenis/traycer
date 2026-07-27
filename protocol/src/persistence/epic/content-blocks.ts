@@ -1,5 +1,6 @@
 import { commonRecordRegistry } from "@traycer/protocol/common/registry";
 import { getRecordSchema } from "@traycer/protocol/framework/index";
+import { userMessageSenderSchema } from "@traycer/protocol/persistence/epic/senders";
 import { z } from "zod";
 
 /**
@@ -58,10 +59,94 @@ const artifactKindSchema = getRecordSchema(
   "latest",
 );
 
+// Durable provider-generated notice (Codex model reroute / safety
+// verification / buffering, and future equivalents from other harnesses),
+// carried as an ADDITIVE enrichment on `textBlockSchema` rather than a new
+// `ContentBlock.type` - see `providerNotice` below for why. `harnessId` uses
+// the persistence-layer's broad `harnessIdSchema`, not the host layer's
+// narrower `GuiHarnessId` (persistence cannot import that layer - the
+// dependency runs host -> persistence); mirrors `planSourceSchema.harnessId`.
+export const providerNoticeKindSchema = z.enum([
+  "model_rerouted",
+  "model_verification",
+  "safety_buffering",
+]);
+export type ProviderNoticeKind = z.infer<typeof providerNoticeKindSchema>;
+
+export const providerNoticeToneSchema = z.enum(["info", "warning"]);
+export type ProviderNoticeTone = z.infer<typeof providerNoticeToneSchema>;
+
+export const providerNoticeDetailSchema = z.object({
+  label: z.string(),
+  value: z.string(),
+});
+export type ProviderNoticeDetail = z.infer<typeof providerNoticeDetailSchema>;
+
+// Narrow, JSON-serializable per-notice-kind facts - normalized from the raw
+// provider payload at conversion time. Never carries the raw payload or user
+// code; only the specific fields each notice kind needs to render/search.
+export const providerNoticeNormalizedMetadataSchema = z.discriminatedUnion(
+  "type",
+  [
+    z.object({
+      type: z.literal("model_rerouted"),
+      fromModel: z.string(),
+      toModel: z.string(),
+      reason: z.string(),
+    }),
+    z.object({
+      type: z.literal("model_verification"),
+      verifications: z.array(z.string()),
+    }),
+    z.object({
+      type: z.literal("safety_buffering"),
+      model: z.string(),
+      fasterModel: z.string().nullable(),
+      useCases: z.array(z.string()),
+      reasons: z.array(z.string()),
+      terminalReason: z.string().nullable(),
+    }),
+  ],
+);
+export type ProviderNoticeNormalizedMetadata = z.infer<
+  typeof providerNoticeNormalizedMetadataSchema
+>;
+
+export const providerNoticeMetadataSchema = z
+  .object({
+    harnessId: harnessIdSchema,
+    noticeKind: providerNoticeKindSchema,
+    tone: providerNoticeToneSchema,
+    title: z.string(),
+    message: z.string().nullable(),
+    details: z.array(providerNoticeDetailSchema),
+    metadata: providerNoticeNormalizedMetadataSchema.nullable(),
+  })
+  .superRefine((notice, ctx) => {
+    if (notice.metadata !== null && notice.noticeKind !== notice.metadata.type) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "noticeKind must match metadata.type",
+        path: ["metadata", "type"],
+      });
+    }
+  });
+export type ProviderNoticeMetadata = z.infer<typeof providerNoticeMetadataSchema>;
+
 export const textBlockSchema = z.object({
   ...baseBlockFields,
   type: z.literal("text"),
   text: z.string(),
+  // Additive enrichment: when set, this text block is a durable provider
+  // notice (Codex model reroute / safety verification / buffering) and a
+  // `chat.subscribe@1.3`+ reader projects it to a compact provider-notice
+  // segment. `text` always carries a concise fallback rendering, so a reader
+  // that strips or predates this key still renders plain assistant text -
+  // this is NOT a new persisted `ContentBlock.type`. Nullable + defaulted so
+  // blocks persisted before this field parse cleanly, and so pre-1.3 stream
+  // subscribers can be projected down to the fallback text (see
+  // `chat-frame-projection.ts`).
+  providerNotice: providerNoticeMetadataSchema.nullable().default(null),
 });
 export type TextBlock = z.infer<typeof textBlockSchema>;
 
@@ -269,6 +354,34 @@ export const commandBlockSchema = z.object({
 });
 export type CommandBlock = z.infer<typeof commandBlockSchema>;
 
+// One milestone in a workflow run's activity timeline: a phase transition
+// (`"Find"`, `"Verify"`, ...) or a fleet-agent label sighting (`"find:host-core"`),
+// parsed from the workflow task's rotating `task_progress` line. Order in
+// `WorkflowMeta.activity` is chronological; consecutive duplicate labels are
+// not re-appended (see the accumulator).
+export const workflowActivityEntrySchema = z.object({
+  kind: z.enum(["phase", "label"]),
+  text: z.string(),
+});
+export type WorkflowActivityEntry = z.infer<typeof workflowActivityEntrySchema>;
+
+// Rich workflow data riding a `subagent` block (see `subAgentBlockSchema.
+// workflowMeta` below) - deliberately NOT a new persisted block `type`, so any
+// released host/GUI can still read a chat containing a workflow run (the base
+// `subagent` fields are the faithful degradation; this is the enrichment an
+// old reader silently strips).
+export const workflowMetaSchema = z.object({
+  name: z.string(),
+  // The workflow script's `meta.description`, extracted best-effort at spawn
+  // time. `null` on extraction failure - never the raw script source.
+  intent: z.string().nullable(),
+  activity: z.array(workflowActivityEntrySchema),
+  agentsStarted: z.number().int().nullable(),
+  agentsFinished: z.number().int().nullable(),
+  totalTokens: z.number().int().nullable(),
+});
+export type WorkflowMeta = z.infer<typeof workflowMetaSchema>;
+
 export const subAgentBlockSchema = z.object({
   ...baseBlockFields,
   status: actionBlockStatus,
@@ -298,6 +411,12 @@ export const subAgentBlockSchema = z.object({
   // `toolCallBlockSchema.stopped`. Defaulted so pre-existing blocks parse
   // cleanly.
   stopped: z.boolean().default(false),
+  // Present iff this card is a workflow run's dual-written card (see
+  // `workflow.*` runtime events) - the rich data an old reader can't render.
+  // `null` ⇒ an ordinary subagent block. Additive + defaulted so blocks
+  // persisted before workflow support existed - and a workflow block read by
+  // an old host/GUI that strips this key - both parse cleanly.
+  workflowMeta: workflowMetaSchema.nullable().default(null),
 });
 export type SubAgentBlock = z.infer<typeof subAgentBlockSchema>;
 
@@ -446,6 +565,17 @@ export const autonomousResumeTriggerSchema = z.object({
   summary: z.string(),
   blockId: z.string().default(""),
   outputFile: autonomousResumeOutputFileSchema.nullable().default(null),
+  // Structured identity of an auto-backgrounded MCP tool call (CLI 2.1.212+).
+  // Deliberately NOT a new `kind` enum value: `kind` stays `"command"` for
+  // these triggers because an unknown enum value fails the WHOLE chat's
+  // `safeParse` on an older host, while an unknown defaulted key is silently
+  // stripped (the same constraint that forced `wakeTriggers` out of `triggers`
+  // above). Renderers prefer this identity when present and fall back to the
+  // command presentation when absent/stripped.
+  mcp: z
+    .object({ serverName: z.string(), toolName: z.string() })
+    .nullable()
+    .default(null),
 });
 export type AutonomousResumeTrigger = z.infer<
   typeof autonomousResumeTriggerSchema
@@ -534,7 +664,11 @@ export function decodeAutonomousResumeBlock(
     triggers: [
       ...rest.triggers,
       ...wakeTriggers.map(
-        (wake): AutonomousResumeTrigger => ({ ...wake, kind: "wakeup" }),
+        (wake): AutonomousResumeTrigger => ({
+          ...wake,
+          kind: "wakeup",
+          mcp: null,
+        }),
       ),
     ],
   };
@@ -557,7 +691,10 @@ export function encodeAutonomousResumeBlock(
   const triggers = domain.triggers.filter((trigger) => !isWakeupTrigger(trigger));
   const wakeTriggers = domain.triggers
     .filter(isWakeupTrigger)
-    .map(({ kind: _kind, ...wake }): AutonomousResumeWakeTrigger => wake);
+    .map(
+      ({ kind: _kind, mcp: _mcp, ...wake }): AutonomousResumeWakeTrigger =>
+        wake,
+    );
   return { ...domain, triggers, wakeTriggers };
 }
 
@@ -584,6 +721,17 @@ export const steerBlockSchema = z.object({
   messageId: z.string(),
   content: jsonContentSchema,
   mode: z.enum(["safe_point", "interrupt_restart"]).default("safe_point"),
+  // Who authored the steered message. Duplicated from the steered USER row
+  // (`messageId`) on purpose: the two records have asymmetric durability - this
+  // block is execution-owned and rewritten on every persistence checkpoint,
+  // while the user row is written once into `chat.messages`. When a renderer
+  // sees the block but not the row, it falls back to rendering the block's own
+  // content, and without this field an agent-to-agent message would render as a
+  // plain user-authored bubble - an agent impersonating the user. Carrying the
+  // sender here means the fallback can never lose provenance.
+  // Additive + nullable: blocks persisted before this field parse to `null`,
+  // which the renderer treats exactly as it did before (a "you" row).
+  sender: userMessageSenderSchema.nullable().default(null),
 });
 export type SteerBlock = z.infer<typeof steerBlockSchema>;
 

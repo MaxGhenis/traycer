@@ -4,22 +4,33 @@ import * as Sentry from "@sentry/node";
 import {
   Command,
   CommanderError,
+  Option,
   type Command as CommanderCommand,
 } from "commander";
 import { AGENT_FACING_HARNESS_ID_LIST } from "@traycer/protocol/host/agent/shared";
 import { config } from "./config";
+import { cliFinalizeUpgradeCommand } from "./commands/cli-finalize-upgrade";
 import { buildCliMarkSourceCommand } from "./commands/cli-mark-source";
 import { buildCliReAnchorCommand } from "./commands/cli-re-anchor";
 import { buildCliUpgradeCommand } from "./commands/cli-upgrade";
+import { buildAgentConfigureCommand } from "./commands/agent-configure";
 import { buildAgentCreateCommand } from "./commands/agent-create";
+import { buildAgentListProfilesCommand } from "./commands/agent-list-profiles";
+import { buildAgentProfileRateLimitsCommand } from "./commands/agent-profile-rate-limits";
 import { buildAgentActivityFromHookCommand } from "./commands/agent-activity-from-hook";
 import { buildAgentListHarnessesCommand } from "./commands/agent-list-harnesses";
 import { buildAgentListHarnessModelsCommand } from "./commands/agent-list-harness-models";
 import { buildAgentListCommand } from "./commands/agent-list";
+import {
+  buildAgentRoleClaimCommand,
+  buildAgentRoleListCommand,
+  buildAgentRoleRelinquishCommand,
+} from "./commands/agent-role";
 import { buildAgentSelectionGuideCommand } from "./commands/agent-selection-guide";
 import { buildAgentSendCommand } from "./commands/agent-send";
 import { buildAgentTitleFromHookCommand } from "./commands/agent-title-from-hook";
 import { buildAgentTurnEndedFromHookCommand } from "./commands/agent-turn-ended-from-hook";
+import { buildAgentSessionObservedFromHookCommand } from "./commands/agent-session-observed-from-hook";
 import { buildAgentTranscriptCommand } from "./commands/agent-transcript";
 import { buildAgentInboxCommand } from "./commands/agent-inbox";
 import { buildWorkspaceListCommand } from "./commands/workspace-list";
@@ -36,18 +47,26 @@ import { buildConfigEnvGetCommand } from "./commands/config-env-get";
 import { buildConfigEnvListCommand } from "./commands/config-env-list";
 import { buildConfigEnvSetCommand } from "./commands/config-env-set";
 import { buildConfigEnvUnsetCommand } from "./commands/config-env-unset";
+import { buildConfigShellAddCommand } from "./commands/config-shell-add";
 import { configShellGetCommand } from "./commands/config-shell-get";
 import { configShellListCommand } from "./commands/config-shell-list";
+import { buildConfigShellRemoveCommand } from "./commands/config-shell-remove";
 import { configShellResetCommand } from "./commands/config-shell-reset";
+import { buildConfigShellRevertArgsCommand } from "./commands/config-shell-revert-args";
 import { buildConfigShellSetCommand } from "./commands/config-shell-set";
+import { buildHostApplyCommand } from "./commands/host-apply";
+import { buildHostPurgeStageCommand } from "./commands/host-purge-stage";
 import { buildHostAvailableCommand } from "./commands/host-available";
+import { buildHostDownloadCommand } from "./commands/host-download";
 import { hostDoctorCommand } from "./commands/host-doctor";
 import { buildHostEnsureCommand } from "./commands/host-ensure";
+import { buildHostFreePortCommand } from "./commands/host-free-port";
 import { buildHostFreePortAndRestartCommand } from "./commands/host-free-port-and-restart";
 import { buildHostInstallCommand } from "./commands/host-install";
 import { buildHostLogsCommand } from "./commands/host-logs";
-import { hostRestartCommand } from "./commands/host-restart";
+import { buildHostRestartCommand } from "./commands/host-restart";
 import { runHostStart } from "./commands/host-start";
+import { buildHostStampRuntimeCommand } from "./commands/host-stamp-runtime";
 import { hostStatusCommand } from "./commands/host-status";
 import { hostStopCommand } from "./commands/host-stop";
 import { buildHostUninstallCommand } from "./commands/host-uninstall";
@@ -61,6 +80,7 @@ import { whoamiCommand } from "./commands/whoami";
 import { CLI_ERROR_CODES, cliError } from "./runner/errors";
 import { createCliLogger, errorFromUnknown, type ILogger } from "./logger";
 import { addRunnerFlags, extractRunnerFlags } from "./runner/commander-flags";
+import { parsePositiveIntegerArg } from "./runner/parse-positive-integer-arg";
 import { runCommand, type CommandFn } from "./runner/runner";
 import { readonlyEnv } from "./runner/runtime";
 
@@ -104,6 +124,11 @@ function expectRequiredPositional(
     details: null,
     exitCode: 1,
   });
+}
+
+function parsePortArg(value: string): number | null {
+  const parsed = parsePositiveIntegerArg(value);
+  return parsed !== null && parsed <= 65_535 ? parsed : null;
 }
 
 function withRunner(
@@ -366,8 +391,22 @@ function registerHostCommands(program: Command): void {
   );
 
   withRunner(
-    host.command("restart").description("Restart the host service"),
-    () => hostRestartCommand,
+    host
+      .command("restart")
+      .description("Restart the host service")
+      // Hidden: the CLI-owned activation mode (desktop controller's
+      // idle-gated restart cycle), not a user-facing switch - see
+      // commands/host-restart.ts.
+      .addOption(
+        new Option(
+          "--if-idle",
+          "Internal: refuse with E_HOST_BUSY if the host has work in progress, probed immediately before stop",
+        ).hideHelp(),
+      ),
+    (opts) =>
+      buildHostRestartCommand({
+        ifIdle: opts.ifIdle === true,
+      }),
   );
 
   withRunner(
@@ -405,6 +444,18 @@ function registerHostCommands(program: Command): void {
       .option(
         "--allow-self-invocation",
         "Dev only: register the current (non-packaged) CLI as the service command.",
+      )
+      .option(
+        "--no-service-register",
+        "Install the host without registering it as an OS service (the caller registers the service).",
+      )
+      // Hidden: the CLI-owned pin gate (Doctor's controller-driven install
+      // path), not a user-facing switch - see commands/host-install.ts.
+      .addOption(
+        new Option(
+          "--if-idle",
+          "Internal: refuse with E_HOST_BUSY if the host has work in progress, probed immediately before the service stop",
+        ).hideHelp(),
       ),
     (opts) => {
       const explicitVersion =
@@ -437,6 +488,10 @@ function registerHostCommands(program: Command): void {
           // commander's `--no-linger` materialises as `linger: false`.
           enableLinger: opts.linger !== false,
           allowSelfInvocation: opts.allowSelfInvocation === true,
+          // commander's `--no-service-register` materialises as
+          // `serviceRegister: false`.
+          noServiceRegister: opts.serviceRegister === false,
+          ifIdle: opts.ifIdle === true,
         })(ctx);
       };
     },
@@ -510,6 +565,113 @@ function registerHostCommands(program: Command): void {
 
   withRunner(
     host
+      .command("apply")
+      .description("Apply the staged host update over the current install")
+      .option(
+        "--force",
+        "Apply even if the host has work in progress (skips the busy check).",
+      )
+      .addOption(
+        new Option(
+          "--expected-stage-fingerprint <fingerprint>",
+          "Internal: expected staged archive handoff identity",
+        ).hideHelp(),
+      )
+      // Hidden: the desktop-owned packaged-macOS path, which drives its own
+      // locked SMAppService activation cycle after this non-disruptive
+      // bytes-only apply - see commands/host-apply.ts.
+      .addOption(
+        new Option(
+          "--no-service",
+          "Internal: skip the busy check and service stop/start; rejected on Windows",
+        ).hideHelp(),
+      ),
+    (opts) =>
+      buildHostApplyCommand({
+        force: opts.force === true,
+        // commander materialises `--no-service` as `service: false`.
+        noService: opts.service === false,
+        expectedStageFingerprint:
+          typeof opts.expectedStageFingerprint === "string"
+            ? opts.expectedStageFingerprint
+            : null,
+      }),
+  );
+
+  withRunner(
+    host
+      .command("purge-stage", { hidden: true })
+      .requiredOption(
+        "--expected-stage-fingerprint <fingerprint>",
+        "Internal: expected staged archive handoff identity",
+      ),
+    (opts) =>
+      buildHostPurgeStageCommand({
+        expectedStageFingerprint:
+          typeof opts.expectedStageFingerprint === "string"
+            ? opts.expectedStageFingerprint
+            : null,
+      }),
+  );
+
+  withRunner(
+    host
+      .command("stamp-runtime", { hidden: true })
+      .description(
+        "Internal: guarded compare-and-set that backfills a null-runtime install record's runtimeVersion after a controller-driven activation cycle observes readiness.",
+      )
+      .requiredOption(
+        "--expected-install-generation <fingerprint>",
+        "Attested install-generation fingerprint from the command that produced/started this generation",
+      )
+      .requiredOption(
+        "--observed-pid <pid>",
+        "PID of the fresh process observed ready",
+      )
+      .requiredOption(
+        "--observed-started-at <iso>",
+        "pid.json's startedAt for the observed fresh process",
+      )
+      .requiredOption(
+        "--observed-runtime-version <version>",
+        "pid.json's version (runtime stamp) for the observed fresh process",
+      ),
+    (opts) => {
+      return async (ctx) => {
+        const observedPid =
+          typeof opts.observedPid === "string"
+            ? parsePositiveIntegerArg(opts.observedPid)
+            : null;
+        if (observedPid === null) {
+          throw cliError({
+            code: CLI_ERROR_CODES.INVALID_ARGUMENT,
+            message:
+              "host stamp-runtime: --observed-pid must be a positive whole number",
+            details: { observedPid: opts.observedPid },
+            exitCode: 1,
+          });
+        }
+        return buildHostStampRuntimeCommand({
+          expectedInstallGeneration:
+            typeof opts.expectedInstallGeneration === "string"
+              ? opts.expectedInstallGeneration
+              : "",
+          observedPid,
+          observedStartedAt:
+            typeof opts.observedStartedAt === "string"
+              ? opts.observedStartedAt
+              : "",
+          observedRuntimeVersion:
+            typeof opts.observedRuntimeVersion === "string"
+              ? opts.observedRuntimeVersion
+              : "",
+        })(ctx);
+      };
+    },
+  );
+
+  withRunner(
+    host
       .command("update")
       .description("Update the installed host to the latest registry version")
       .option(
@@ -520,6 +682,36 @@ function registerHostCommands(program: Command): void {
       buildHostUpdateCommand({
         force: opts.force === true,
       }),
+  );
+
+  withRunner(
+    host
+      .command("download")
+      .description(
+        "Stage a host version without touching the running host (defaults to latest); promotes only when strictly newer, or replaces any stage for an explicit version",
+      )
+      .argument("[version]", "Registry version to stage (defaults to 'latest')")
+      // Hidden: this is the controller's contract (desktop main's
+      // `stageLatest`), not a user-facing switch - see
+      // `commands/host-download.ts`.
+      .addOption(
+        new Option(
+          "--automatic",
+          "Internal: the controller's contract",
+        ).hideHelp(),
+      ),
+    (opts, args) => {
+      const versionArg = typeof args[0] === "string" ? args[0] : null;
+      // "latest" is not a registry version - it's the same request as
+      // omitting the positional entirely. Normalizing it here (rather
+      // than downstream) keeps `versionRequest === null` the CLI-wide
+      // contract for "resolve the manifest's latest pointer".
+      const requestedLatest = versionArg === "latest";
+      return buildHostDownloadCommand({
+        versionRequest: requestedLatest ? null : versionArg,
+        automatic: opts.automatic === true,
+      });
+    },
   );
 
   withRunner(
@@ -559,9 +751,18 @@ function registerHostCommands(program: Command): void {
         "Stream new log lines as they are written (ignored with --json)",
       ),
     (opts) => {
-      const tailRaw =
-        typeof opts.tail === "string" ? Number.parseInt(opts.tail, 10) : 200;
-      const tailLines = Number.isFinite(tailRaw) && tailRaw > 0 ? tailRaw : 200;
+      const tailLines =
+        typeof opts.tail === "string"
+          ? parsePositiveIntegerArg(opts.tail)
+          : null;
+      if (tailLines === null) {
+        throw cliError({
+          code: CLI_ERROR_CODES.INVALID_ARGUMENT,
+          message: "host logs: --tail must be a positive whole number",
+          details: { tail: opts.tail },
+          exitCode: 1,
+        });
+      }
       return buildHostLogsCommand({
         follow: opts.follow === true,
         tailLines,
@@ -578,14 +779,65 @@ function registerHostCommands(program: Command): void {
       .option("--pid <pid>", "PID of the conflicting process to terminate")
       .option("--port <port>", "Port the foreign process is bound to"),
     (opts) => {
-      const pidRaw =
-        typeof opts.pid === "string" ? Number.parseInt(opts.pid, 10) : null;
-      const portRaw =
-        typeof opts.port === "string" ? Number.parseInt(opts.port, 10) : null;
+      const pid =
+        typeof opts.pid === "string" ? parsePositiveIntegerArg(opts.pid) : null;
+      if (typeof opts.pid === "string" && pid === null) {
+        throw cliError({
+          code: CLI_ERROR_CODES.INVALID_ARGUMENT,
+          message:
+            "host free-port-and-restart: --pid must be a positive whole number",
+          details: { pid: opts.pid },
+          exitCode: 1,
+        });
+      }
+      const port =
+        typeof opts.port === "string" ? parsePortArg(opts.port) : null;
+      if (typeof opts.port === "string" && port === null) {
+        throw cliError({
+          code: CLI_ERROR_CODES.INVALID_ARGUMENT,
+          message:
+            "host free-port-and-restart: --port must be a whole number from 1 to 65535",
+          details: { port: opts.port },
+          exitCode: 1,
+        });
+      }
       return buildHostFreePortAndRestartCommand({
-        pid: pidRaw !== null && Number.isFinite(pidRaw) ? pidRaw : null,
-        port: portRaw !== null && Number.isFinite(portRaw) ? portRaw : null,
+        pid,
+        port,
       });
+    },
+  );
+
+  withRunner(
+    host
+      .command("free-port", { hidden: true })
+      .description(
+        "Terminate a foreign PID holding the host port, without restarting the service (internal - invoked by Doctor)",
+      )
+      .requiredOption(
+        "--pid <pid>",
+        "PID of the conflicting process to terminate",
+      )
+      .requiredOption("--port <port>", "Port the foreign process is bound to"),
+    (opts) => {
+      return async (ctx) => {
+        const pid =
+          typeof opts.pid === "string"
+            ? parsePositiveIntegerArg(opts.pid)
+            : null;
+        const port =
+          typeof opts.port === "string" ? parsePortArg(opts.port) : null;
+        if (pid === null || port === null) {
+          throw cliError({
+            code: CLI_ERROR_CODES.INVALID_ARGUMENT,
+            message:
+              "host free-port: --pid must be a positive whole number and --port must be a whole number from 1 to 65535",
+            details: { pid: opts.pid, port: opts.port },
+            exitCode: 1,
+          });
+        }
+        return buildHostFreePortCommand({ pid, port })(ctx);
+      };
     },
   );
 }
@@ -693,6 +945,15 @@ function registerCliCommands(program: Command): void {
 
   withRunner(
     cli
+      .command("finalize-upgrade", { hidden: true })
+      .description(
+        "Internal: complete a pending self-upgrade (binary swap + service start) under cli-lock. Invoked by the detached Windows/POSIX finalize-helper script via the staged CLI binary, never by a human.",
+      ),
+    () => cliFinalizeUpgradeCommand,
+  );
+
+  withRunner(
+    cli
       .command("re-anchor")
       .description(
         "Point Traycer's upgrade tracking at a CLI binary you installed or moved by hand, so future 'cli upgrade' runs update the right file. Use after manually relocating or replacing the binary.",
@@ -752,10 +1013,10 @@ function registerConfigCommands(program: Command): void {
     shell
       .command("set")
       .description(
-        "Set the shell path and/or args. Pass each arg as a separate token after `--`, e.g. `traycer config shell set --path /bin/zsh -- -i -l`. Use --clear-args to store an explicit empty list.",
+        "Select a shell and/or set its flags. Flags attach to a program, not the panel: `--path` alone picks a shell and materialises its default flags, while flags after `--` (e.g. `traycer config shell set --path /bin/zsh -- -i -l`) are remembered for that shell. Passing flags with no --path configures the currently-selected shell, or the login shell while still following the system default. Use --clear-args to store an explicit empty list.",
       )
       .option("--path <path>", "Absolute path to the shell binary")
-      .option("--clear-args", "Store an explicit empty args list")
+      .option("--clear-args", "Store an explicit empty args list for the shell")
       .argument(
         "[shellArgs...]",
         "Shell flags (recommended: pass after `--` so leading dashes aren't parsed as options)",
@@ -794,9 +1055,54 @@ function registerConfigCommands(program: Command): void {
 
   withRunner(
     shell
+      .command("add")
+      .description(
+        "Remember a shell (any executable) and select it. Unlike `set`, the path must exist and be executable.",
+      )
+      .requiredOption("--path <path>", "Absolute path to the program to add"),
+    (opts) =>
+      buildConfigShellAddCommand({
+        path: typeof opts.path === "string" ? opts.path : "",
+      }),
+  );
+
+  withRunner(
+    shell
+      .command("remove")
+      .description(
+        "Forget a previously-added shell; if it was selected, fall back to the OS default",
+      )
+      .requiredOption(
+        "--path <path>",
+        "Absolute path to the program to remove",
+      ),
+    (opts) =>
+      buildConfigShellRemoveCommand({
+        path: typeof opts.path === "string" ? opts.path : "",
+      }),
+  );
+
+  withRunner(
+    shell
+      .command("revert-args")
+      .description(
+        "Restore a remembered shell's flags to its family default; the shell stays remembered",
+      )
+      .requiredOption(
+        "--path <path>",
+        "Absolute path to the shell whose flags to restore",
+      ),
+    (opts) =>
+      buildConfigShellRevertArgsCommand({
+        path: typeof opts.path === "string" ? opts.path : "",
+      }),
+  );
+
+  withRunner(
+    shell
       .command("reset")
       .description(
-        "Clear the stored shell overrides; defaults are synthesised on next read",
+        "Clear the shell selection (return to the system default); remembered shells and their flags are kept",
       ),
     () => configShellResetCommand,
   );
@@ -890,7 +1196,9 @@ function registerCommentsCommands(program: Command): void {
   withRunner(
     comments
       .command("list")
-      .description("List artifact comment threads")
+      .description(
+        "List artifact comment threads. Read them after reading an artifact, so human-authored feedback is visible before editing or responding. A thread may quote the artifact text it refers to: anchor=present means that quote is still located in the current artifact, while anchor=missing or anchor=unavailable means the quote is context only - verify it against the artifact before acting on it.",
+      )
       .argument("[artifactPaths...]", "Absolute artifact paths")
       .option("--epic-id <id>", "Epic (defaults to $TRAYCER_EPIC_ID)")
       .option("--status <status>", "Thread status: all, open, or resolved"),
@@ -907,7 +1215,9 @@ function registerCommentsCommands(program: Command): void {
   withRunner(
     comments
       .command("set-status")
-      .description("Set artifact comment threads to open or resolved")
+      .description(
+        "Set artifact comment threads to open or resolved after addressing or reopening feedback. Prefer telling the user which threads look addressed and letting them decide, unless they have already asked you to resolve threads yourself.",
+      )
       .requiredOption("--artifact <path>", "Absolute artifact path")
       .requiredOption("--status <status>", "Thread status: open or resolved")
       .option("--epic-id <id>", "Epic (defaults to $TRAYCER_EPIC_ID)")
@@ -945,10 +1255,20 @@ function registerWorktreeCommands(program: Command): void {
       .option(
         "--include-activity",
         "Probe each worktree for last-active time and branch ahead/behind/merged status (slower)",
+      )
+      .option(
+        "--cursor <worktreePath>",
+        "Start listing strictly after this worktree path",
+      )
+      .option(
+        "--limit <n>",
+        "Fetch a single page with at most this many worktrees",
       ),
     (opts) =>
       buildWorktreeListCommand({
         includeActivity: opts.includeActivity === true,
+        cursor: typeof opts.cursor === "string" ? opts.cursor : null,
+        limit: typeof opts.limit === "string" ? opts.limit : null,
       }),
   );
 
@@ -1004,6 +1324,14 @@ function registerAgentCommands(program: Command): void {
   const cliSurface = resolveAgentCliSurface(readonlyEnv());
   const readonlyHidden = { hidden: cliSurface === "readonly" };
   const harnessHelp = `Harness id: ${AGENT_FACING_HARNESS_ID_LIST}`;
+  // Deliberately spells out what OMITTING the option does: omission is its own
+  // selection (the remembered last-used profile), not a synonym for 'ambient'.
+  const profileHelp =
+    "Provider profile: 'ambient' for the provider's CLI login, or a managed profile id from 'traycer agent list-profiles <harness>'. Omit to use the last-used profile.";
+  // Rate-limit reads and configuration resolve no last-used fallback - they
+  // act on the one profile the caller names - so `--profile` is required there.
+  const profileRequiredHelp =
+    "Provider profile: 'ambient' for the provider's CLI login, or a managed profile id from 'traycer agent list-profiles <harness>'.";
   const agent = program
     .command("agent")
     .description("Agent inspection and communication for the calling agent");
@@ -1052,8 +1380,9 @@ function registerAgentCommands(program: Command): void {
       )
       .option(
         "--fast",
-        "Request fast mode for supported models. Only available for gui surface.",
+        "Request fast mode for supported models. Only available for gui surface. May consume additional credits - set it only when the user asks for it or the agent selection guide recommends it.",
       )
+      .option("--profile <ambient|id>", profileHelp)
       .option(
         "--cwd <path>",
         "Primary working directory for the child agent. Use this with a path returned by 'traycer worktree create'.",
@@ -1069,10 +1398,16 @@ function registerAgentCommands(program: Command): void {
         "Exact workspace binding. Repeatable. Use /path alone for existing/local, or /source=/run for a worktree.",
         collectRepeatedOption,
         [],
+      )
+      .option(
+        "--permission-mode <mode>",
+        "GUI permission mode: supervised, auto_accept_edits, or full_access. Defaults to full_access.",
       ),
     (opts) =>
       buildAgentCreateCommand({
         epicId: typeof opts.epicId === "string" ? opts.epicId : null,
+        permissionMode:
+          typeof opts.permissionMode === "string" ? opts.permissionMode : null,
         senderAgentId:
           typeof opts.senderAgentId === "string" ? opts.senderAgentId : null,
         name: typeof opts.name === "string" ? opts.name : null,
@@ -1085,6 +1420,7 @@ function registerAgentCommands(program: Command): void {
             ? opts.reasoningEffort
             : null,
         fast: opts.fast === true,
+        profile: typeof opts.profile === "string" ? opts.profile : null,
         cwd: typeof opts.cwd === "string" ? opts.cwd : null,
         workspacePaths: Array.isArray(opts.workspacePath)
           ? opts.workspacePath.filter(
@@ -1149,6 +1485,96 @@ function registerAgentCommands(program: Command): void {
 
   withRunner(
     agent
+      .command("list-profiles", readonlyHidden)
+      .description(
+        "List the provider profiles available for one harness, with their cached rate-limit status.",
+      )
+      .argument("<harness>", harnessHelp)
+      .option("--epic-id <id>", "Epic (defaults to $TRAYCER_EPIC_ID)")
+      .option(
+        "--sender-agent-id <id>",
+        "Calling agent (defaults to $TRAYCER_AGENT_ID)",
+      ),
+    (opts, args) =>
+      buildAgentListProfilesCommand({
+        epicId: typeof opts.epicId === "string" ? opts.epicId : null,
+        senderAgentId:
+          typeof opts.senderAgentId === "string" ? opts.senderAgentId : null,
+        harnessId: expectRequiredPositional(args[0], "harness"),
+      }),
+  );
+
+  withRunner(
+    agent
+      .command("profile-rate-limits", readonlyHidden)
+      .description(
+        "Read fresh, detailed rate limits for one provider profile of a harness.",
+      )
+      .argument("<harness>", harnessHelp)
+      .requiredOption("--profile <ambient|id>", profileRequiredHelp)
+      .option("--epic-id <id>", "Epic (defaults to $TRAYCER_EPIC_ID)")
+      .option(
+        "--sender-agent-id <id>",
+        "Calling agent (defaults to $TRAYCER_AGENT_ID)",
+      ),
+    (opts, args) =>
+      buildAgentProfileRateLimitsCommand({
+        epicId: typeof opts.epicId === "string" ? opts.epicId : null,
+        senderAgentId:
+          typeof opts.senderAgentId === "string" ? opts.senderAgentId : null,
+        harnessId: expectRequiredPositional(args[0], "harness"),
+        profile: typeof opts.profile === "string" ? opts.profile : "",
+      }),
+  );
+
+  withRunner(
+    agent
+      .command("configure", readonlyHidden)
+      .description(
+        "Switch the harness, model, and provider profile an existing GUI agent uses for future turns.",
+      )
+      .requiredOption("--agent-id <id>", "GUI agent to configure")
+      .requiredOption("--harness <id>", harnessHelp)
+      .requiredOption("--model <id>", "Model id for future turns")
+      .requiredOption("--profile <ambient|id>", profileRequiredHelp)
+      .option("--epic-id <id>", "Epic (defaults to $TRAYCER_EPIC_ID)")
+      .option(
+        "--sender-agent-id <id>",
+        "Calling agent (defaults to $TRAYCER_AGENT_ID)",
+      )
+      .option(
+        "--reasoning-effort <effort>",
+        "Reasoning effort for supported models. Omitting it sets no reasoning effort.",
+      )
+      .option(
+        "--fast",
+        "Enable fast mode for supported models. Omitting it disables fast mode. May consume additional credits - turn it on only when the user asks for it or the agent selection guide recommends it.",
+      )
+      .option(
+        "--permission-mode <mode>",
+        "Permission mode for future turns: supervised, auto_accept_edits, or full_access. Defaults to full_access.",
+      ),
+    (opts) =>
+      buildAgentConfigureCommand({
+        epicId: typeof opts.epicId === "string" ? opts.epicId : null,
+        permissionMode:
+          typeof opts.permissionMode === "string" ? opts.permissionMode : null,
+        senderAgentId:
+          typeof opts.senderAgentId === "string" ? opts.senderAgentId : null,
+        agentId: typeof opts.agentId === "string" ? opts.agentId : "",
+        harness: typeof opts.harness === "string" ? opts.harness : "",
+        model: typeof opts.model === "string" ? opts.model : "",
+        profile: typeof opts.profile === "string" ? opts.profile : "",
+        reasoningEffort:
+          typeof opts.reasoningEffort === "string"
+            ? opts.reasoningEffort
+            : null,
+        fast: opts.fast === true,
+      }),
+  );
+
+  withRunner(
+    agent
       .command("send", readonlyHidden)
       .description("Send a prompt to another agent")
       .requiredOption("--to <agentId>", "Receiver agent id")
@@ -1160,11 +1586,11 @@ function registerAgentCommands(program: Command): void {
       )
       .option(
         "--expect-reply",
-        "Open or reuse a reply thread; the host returns a responseId",
+        "Open or reuse a reply thread; the host returns a responseId. Without it the peer processes your message and never reports back.",
       )
       .option(
         "--response-id <id>",
-        "Close an open thread - this send is the final reply",
+        "Close an open thread - one reply answers every message received on it",
       ),
     (opts) =>
       buildAgentSendCommand({
@@ -1189,6 +1615,74 @@ function registerAgentCommands(program: Command): void {
       buildAgentTranscriptCommand({
         epicId: typeof opts.epicId === "string" ? opts.epicId : null,
         agentId: typeof opts.agentId === "string" ? opts.agentId : "",
+      }),
+  );
+
+  const role = agent
+    .command("role")
+    .description(
+      "Claim, list, and relinquish durable Task-local roles for the calling agent",
+    );
+
+  withRunner(
+    role
+      .command("claim", readonlyHidden)
+      .description(
+        "Claim a durable role for the calling agent in this Task's role registry",
+      )
+      .requiredOption(
+        "--role <name>",
+        "Role name to claim. Short and memorable; disambiguate against existing roles.",
+      )
+      .requiredOption(
+        "--scope <scope>",
+        "Task-local scope of responsibility this role covers",
+      )
+      .option("--epic-id <id>", "Epic (defaults to $TRAYCER_EPIC_ID)")
+      .option(
+        "--agent-id <id>",
+        "Claiming agent (defaults to $TRAYCER_AGENT_ID)",
+      ),
+    (opts) =>
+      buildAgentRoleClaimCommand({
+        epicId: typeof opts.epicId === "string" ? opts.epicId : null,
+        agentId: typeof opts.agentId === "string" ? opts.agentId : null,
+        role: typeof opts.role === "string" ? opts.role : null,
+        scope: typeof opts.scope === "string" ? opts.scope : null,
+      }),
+  );
+
+  withRunner(
+    role
+      .command("list")
+      .description(
+        "List the roles currently claimed in this Task (your account's live agents only)",
+      )
+      .option("--epic-id <id>", "Epic (defaults to $TRAYCER_EPIC_ID)"),
+    (opts) =>
+      buildAgentRoleListCommand({
+        epicId: typeof opts.epicId === "string" ? opts.epicId : null,
+      }),
+  );
+
+  withRunner(
+    role
+      .command("relinquish", readonlyHidden)
+      .description("Relinquish a role claim held by the calling agent")
+      .requiredOption(
+        "--claim-id <id>",
+        "Claim id to relinquish (see 'traycer agent role list')",
+      )
+      .option("--epic-id <id>", "Epic (defaults to $TRAYCER_EPIC_ID)")
+      .option(
+        "--agent-id <id>",
+        "Relinquishing agent (defaults to $TRAYCER_AGENT_ID)",
+      ),
+    (opts) =>
+      buildAgentRoleRelinquishCommand({
+        epicId: typeof opts.epicId === "string" ? opts.epicId : null,
+        agentId: typeof opts.agentId === "string" ? opts.agentId : null,
+        claimId: typeof opts.claimId === "string" ? opts.claimId : null,
       }),
   );
 
@@ -1305,6 +1799,32 @@ function registerAgentCommands(program: Command): void {
       ),
     (opts) =>
       buildAgentTurnEndedFromHookCommand({
+        provider: typeof opts.provider === "string" ? opts.provider : "",
+        epicId: typeof opts.epicId === "string" ? opts.epicId : null,
+        agentId: typeof opts.agentId === "string" ? opts.agentId : null,
+      }),
+  );
+
+  withRunner(
+    agent
+      .command("session-observed-from-hook", { hidden: true })
+      .description(
+        "Report the live provider session id (read as hook JSON on stdin) so the host resyncs the stored harness session id (Claude SessionStart hook).",
+      )
+      .requiredOption(
+        "--provider <provider>",
+        "Provider hook firing this call: 'claude', 'codex', or 'opencode'",
+      )
+      .option(
+        "--epic-id <id>",
+        "Epic the agent lives in (defaults to $TRAYCER_EPIC_ID)",
+      )
+      .option(
+        "--agent-id <id>",
+        "TUI agent id whose session id to resync (defaults to $TRAYCER_AGENT_ID)",
+      ),
+    (opts) =>
+      buildAgentSessionObservedFromHookCommand({
         provider: typeof opts.provider === "string" ? opts.provider : "",
         epicId: typeof opts.epicId === "string" ? opts.epicId : null,
         agentId: typeof opts.agentId === "string" ? opts.agentId : null,

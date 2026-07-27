@@ -6,12 +6,13 @@ import {
   type SettingsSection,
   type SettingsSectionId,
 } from "@/lib/settings-sections";
-import { useSettingsLeaderModifierForIndex } from "@/providers/keybinding-context";
-import { LeaderDigitBadge } from "@/components/ui/leader-digit-badge";
 import {
-  leaderDigitFor,
-  leaderHint,
-} from "@/components/ui/leader-digit-shortcuts";
+  singleDigitLeaderDigitFor,
+  useSettingsLeaderModifierForIndex,
+} from "@/providers/keybinding-context";
+import { LeaderDigitBadge } from "@/components/ui/leader-digit-badge";
+import { leaderHint } from "@/components/ui/leader-digit-shortcuts";
+import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 
 export type SettingsSidebarMode =
   | { readonly kind: "route" }
@@ -52,7 +53,7 @@ function SettingsSidebarItem(props: SettingsSidebarItemProps) {
   const { section, index, mode } = props;
   const badgeModifier = useSettingsLeaderModifierForIndex(index);
   const Icon = section.icon;
-  const digit = leaderDigitFor(index);
+  const digit = singleDigitLeaderDigitFor(index);
   const baseClass =
     "inline-flex items-center gap-3 rounded-md px-3 py-2 text-ui-sm transition-colors";
   const badge = (
@@ -61,9 +62,9 @@ function SettingsSidebarItem(props: SettingsSidebarItemProps) {
         {badgeModifier === null ? null : (
           <LeaderDigitBadge
             key={`${badgeModifier}:${section.id}`}
-            index={index}
+            digit={digit}
             modifier={badgeModifier}
-            ariaLabel={leaderHint(index, "to open", section.label)}
+            ariaLabel={leaderHint(digit, "to open", section.label)}
             testId={`settings-section-digit-${digit}`}
             className="text-muted-foreground"
           />
@@ -77,7 +78,13 @@ function SettingsSidebarItem(props: SettingsSidebarItemProps) {
       <button
         type="button"
         data-testid={`settings-sidebar-item-${section.id}`}
-        onClick={() => mode.onSelect(section.id)}
+        onClick={() => {
+          Analytics.getInstance().track(AnalyticsEvent.SettingsOpened, {
+            source: "direct_ui",
+            section: section.id,
+          });
+          mode.onSelect(section.id);
+        }}
         className={cn(
           baseClass,
           "text-left",
@@ -107,6 +114,12 @@ function SettingsSidebarRouteItem(props: {
     <Link
       to={`/settings/${section.id}`}
       replace
+      onClick={() => {
+        Analytics.getInstance().track(AnalyticsEvent.SettingsOpened, {
+          source: "direct_ui",
+          section: section.id,
+        });
+      }}
       className={cn(
         "inline-flex items-center gap-3 rounded-md px-3 py-2 text-ui-sm transition-colors",
         active

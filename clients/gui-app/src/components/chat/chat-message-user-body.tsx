@@ -3,13 +3,13 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  ImagePlus,
   Inbox,
   Pencil,
   SendHorizontal,
   Trash2,
   X,
 } from "lucide-react";
-import { toast } from "sonner";
 import { v4 as uuidv4 } from "uuid";
 import {
   useCallback,
@@ -17,13 +17,10 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type ReactNode,
 } from "react";
-import type {
-  ClipboardEventHandler,
-  DragEventHandler,
-  KeyboardEvent,
-} from "react";
+import type { KeyboardEvent } from "react";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import {
   ComposerPromptEditor,
@@ -37,12 +34,16 @@ import { Button } from "@/components/ui/button";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
 import { useClipboardCopy } from "@/hooks/ui/use-clipboard-copy";
+import { useEpicTileNavigation } from "@/hooks/epic/use-epic-tile-navigation";
 import {
   composerClipboardPlainText,
   copyComposerContentToClipboard,
 } from "@/lib/composer/composer-clipboard";
+import { bytesToBase64 } from "@/lib/composer/image-base64";
+import { containsImageAtoms } from "@/lib/composer/image-atoms";
+import { stringValue } from "@/lib/composer/tiptap-json-content";
+import { useMaybeOpenEpicHandle } from "@/providers/use-open-epic-handle";
 import { useEpicArtifact, useOpenEpicId } from "@/lib/epic-selectors";
-import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { cn, formatSingleLine } from "@/lib/utils";
 import { deriveA2AReceivedCollapsibleKey } from "@/components/chat/chat-collapsible-key";
 import {
@@ -70,13 +71,25 @@ import { ChatUserMessageContent } from "./chat-user-message-content";
 import { UserMessageAttachmentGallery } from "./user-message-attachment-gallery";
 import { ComposerArea } from "@/components/home/composer/composer-shell";
 import { LivePulse } from "@/components/ui/live-pulse";
-import { AgentReferenceMarkdown } from "./segments/agent-reference-markdown";
+import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
+import { AgentHeaderLink } from "./segments/agent-header-link";
+import { AgentMessageBody } from "./segments/agent-message-body";
+import { ReplyExpectedBadge } from "./segments/reply-expected-badge";
 import { SegmentCard } from "./segments/segment-card";
-import { SegmentPanel } from "./segments/segment-panel";
+import { useTombstonedProfileLabel } from "./use-tombstoned-profile-label";
+import { AccentDot } from "@/components/providers/accent-dot";
+import { HarnessIcon } from "@/components/home/pickers/harness-icon";
+import type { ProviderId } from "@/components/home/data/landing-options";
+import { reportableErrorToast } from "@/lib/reportable-error-toast";
+import {
+  isAttachmentIngestPending,
+  useComposerPaste,
+} from "@/hooks/composer/use-composer-paste";
+import { useWorkspaceMentionRoots } from "@/hooks/composer/use-workspace-mention-roots";
+import { useEpicAttachmentBytesPresence } from "@/lib/attachments/use-attachment-blob-src";
+import { useRunnerHost } from "@/providers/use-runner-host";
 
 const NOOP: () => void = () => undefined;
-const NOOP_CLIPBOARD: ClipboardEventHandler<HTMLElement> = () => undefined;
-const NOOP_DRAG: DragEventHandler<HTMLElement> = () => undefined;
 
 // Keep long prompts compact: ~3-4 lines (leading-7 ≈ 28px/line) stay visible
 // before the bubble clamps and fades, with "Show more" revealing the rest.
@@ -85,7 +98,12 @@ const DISPLAY_MAX_HEIGHT_PX = 120;
 const COPIED_RESET_MS = 1600;
 
 const handleCopyError = (): void => {
-  toast.error("Couldn't copy to clipboard.");
+  reportableErrorToast("Couldn't copy to clipboard.", undefined, {
+    title: "Could not copy to clipboard",
+    message: null,
+    code: null,
+    source: "Clipboard",
+  });
 };
 
 interface UserBodyProps {
@@ -176,6 +194,7 @@ function AgentMessageDisplayView({
   );
 
   const epicId = useOpenEpicId();
+  const tileNavigation = useEpicTileNavigation();
   const senderNode = useEpicArtifact(agentSenderInfo.agentId);
   // Resolve the live sender from the epic projection. A chat or
   // terminal-agent is openable as a tab; an absent node (e.g. a
@@ -207,16 +226,14 @@ function AgentMessageDisplayView({
 
   const openSenderTab = useCallback(() => {
     if (openTarget === null) return;
-    const canvas = useEpicCanvasStore.getState();
-    const tabId = canvas.resolveTargetTabForEpic(epicId, undefined);
-    canvas.openTileInTab(tabId, {
+    tileNavigation.openTileInEpic(epicId, {
       id: agentSenderInfo.agentId,
       instanceId: uuidv4(),
       type: openTarget.type,
       name: senderName,
       hostId: openTarget.hostId,
     });
-  }, [openTarget, epicId, agentSenderInfo.agentId, senderName]);
+  }, [agentSenderInfo.agentId, epicId, openTarget, senderName, tileNavigation]);
 
   const header = (
     <>
@@ -227,9 +244,15 @@ function AgentMessageDisplayView({
       <span aria-hidden className="shrink-0 text-muted-foreground/40">
         ·
       </span>
-      <span className="min-w-0 flex-1 truncate text-ui-sm">
-        <span className="text-muted-foreground">from agent </span>
-        <span className="font-medium text-foreground/85">{senderName}</span>
+      <span className="flex min-w-0 flex-1 items-center gap-1.5 text-ui-sm">
+        <span className="min-w-0 truncate">
+          <span className="text-muted-foreground">from agent </span>
+          <AgentHeaderLink
+            name={senderName}
+            onOpen={openTarget !== null ? openSenderTab : null}
+          />
+        </span>
+        {expectReply ? <ReplyExpectedBadge /> : null}
       </span>
     </>
   );
@@ -242,45 +265,11 @@ function AgentMessageDisplayView({
 
   const body = open ? (
     <div className="flex flex-col gap-2">
-      {openTarget !== null ? (
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={openSenderTab}
-            className="w-fit rounded px-1.5 py-0.5 text-ui-sm font-medium text-primary underline-offset-2 transition-colors hover:bg-primary/10 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            Open sending agent
-          </button>
-          {expectReply ? (
-            <>
-              <span aria-hidden className="text-muted-foreground/40">
-                ·
-              </span>
-              <span className="shrink-0 rounded border border-primary/30 bg-primary/10 px-1.5 text-overline font-medium uppercase text-primary">
-                reply expected
-              </span>
-            </>
-          ) : null}
-        </div>
-      ) : null}
-      <SegmentPanel
-        label="Message"
-        copyValue={messageText}
-        tone="default"
-        bodyChrome="framed"
-        className={undefined}
-      >
-        <div className="max-h-[min(40vh,24rem)] overflow-auto px-3 py-2">
-          <div data-chat-find-unit={bodyFindUnitId}>
-            <AgentReferenceMarkdown
-              isStreaming={false}
-              markdown={messageText}
-              proseSize="compact"
-              quotable={false}
-            />
-          </div>
-        </div>
-      </SegmentPanel>
+      <AgentMessageBody
+        value={messageText}
+        bodyFindUnitId={bodyFindUnitId}
+        isStreaming={false}
+      />
     </div>
   ) : null;
 
@@ -348,6 +337,13 @@ function UserMessageDisplayView({
       />
     );
 
+  const tombstonedProfileLabel = useTombstonedProfileLabel(
+    message.sessionAnchor,
+  );
+  // Present whenever `tombstonedProfileLabel` is (the resolver only returns a
+  // label for an anchor with a non-null `profileId`) - re-derived separately
+  // since the hook's return doesn't narrow `sessionAnchor` for TypeScript.
+  const tombstoneIdentity = tombstoneFooterIdentity(message.sessionAnchor);
   const confirmingDelete = actions?.confirmingDelete ?? false;
   const visibleSteerBadge =
     message.steerBadge !== null && message.steerBadge.status !== "steered"
@@ -406,24 +402,100 @@ function UserMessageDisplayView({
             button is rendered independently of `actions` so it stays available
             on hover even while a turn is streaming (when edit/delete are gated
             off and `actions` is null). */}
-        <div
-          className={cn(
-            "absolute right-3 top-full z-10 flex -translate-y-1/2 items-center gap-0.5 rounded-md border border-border/60 bg-background p-0.5 shadow-sm transition-opacity",
-            confirmingDelete
-              ? "pointer-events-auto opacity-100"
-              : "pointer-events-none opacity-0 group-hover/user-message:pointer-events-auto group-hover/user-message:opacity-100 group-focus-within/user-message:pointer-events-auto group-focus-within/user-message:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100",
-          )}
-        >
-          {actions !== null ? <MessageActionBar actions={actions} /> : null}
-          {!confirmingDelete && copyText.trim().length > 0 ? (
-            <MessageCopyButton
-              text={copyText}
-              structuredContent={message.structuredContent}
-            />
-          ) : null}
-        </div>
+        <UserMessageActionOverlay
+          confirmingDelete={confirmingDelete}
+          actions={actions}
+          copyText={copyText}
+          structuredContent={message.structuredContent}
+        />
       </div>
+      {tombstonedProfileLabel !== null && tombstoneIdentity !== null ? (
+        <UserMessageTombstonedProfileFooter
+          profileId={tombstoneIdentity.profileId}
+          harnessId={tombstoneIdentity.harnessId}
+          accentColor={tombstoneIdentity.accentColor}
+          label={tombstonedProfileLabel}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function UserMessageActionOverlay({
+  confirmingDelete,
+  actions,
+  copyText,
+  structuredContent,
+}: {
+  readonly confirmingDelete: boolean;
+  readonly actions: ChatMessageUserActions | null;
+  readonly copyText: string;
+  readonly structuredContent: JsonContent | null;
+}): ReactNode {
+  return (
+    <div
+      className={cn(
+        "absolute right-3 top-full z-10 flex -translate-y-1/2 items-center gap-0.5 rounded-md border border-border/60 bg-background p-0.5 shadow-sm transition-opacity",
+        confirmingDelete
+          ? "pointer-events-auto opacity-100"
+          : "pointer-events-none opacity-0 group-hover/user-message:pointer-events-auto group-hover/user-message:opacity-100 group-focus-within/user-message:pointer-events-auto group-focus-within/user-message:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100",
+      )}
+    >
+      {actions !== null ? <MessageActionBar actions={actions} /> : null}
+      {!confirmingDelete && copyText.trim().length > 0 ? (
+        <MessageCopyButton
+          text={copyText}
+          structuredContent={structuredContent}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// `message.sessionAnchor?.profileId ?? null` doesn't narrow the anchor's
+// discriminated-union type for TypeScript, so the footer's other identity
+// fields (harnessId, accentColor) need their own re-derivation - pulled into
+// one helper instead of three inline optional chains in the render body.
+function tombstoneFooterIdentity(
+  sessionAnchor: ChatMessageModel["sessionAnchor"],
+): {
+  readonly profileId: string;
+  readonly harnessId: ProviderId;
+  readonly accentColor: string | null;
+} | null {
+  if (sessionAnchor === null) return null;
+  if (sessionAnchor.profileId === null) return null;
+  return {
+    profileId: sessionAnchor.profileId,
+    harnessId: sessionAnchor.harnessId,
+    accentColor: sessionAnchor.accentColor,
+  };
+}
+
+function UserMessageTombstonedProfileFooter({
+  profileId,
+  harnessId,
+  accentColor,
+  label,
+}: {
+  readonly profileId: string;
+  readonly harnessId: ProviderId;
+  readonly accentColor: string | null;
+  readonly label: string;
+}): ReactNode {
+  return (
+    <span className="mt-1 flex items-center gap-1.5 text-ui-xs text-muted-foreground">
+      <HarnessIcon harnessId={harnessId} />
+      <AccentDot
+        profileId={profileId}
+        accentColor={accentColor}
+        label={null}
+        variant="inline"
+        size="default"
+        className={undefined}
+      />
+      Ran on {label} (removed)
+    </span>
   );
 }
 
@@ -500,26 +572,47 @@ function InlineUserMessageEditor({
 }): ReactNode {
   const [pickerStore] = useState(() => createComposerPickerStore());
   const hostClient = useTabHostClient();
+  const resolvedMentionRoots = useWorkspaceMentionRoots(
+    editing.mentionRoots,
+    editing.fallbackToGlobalMentionRoots,
+  );
   const editorRef = useRef<ComposerPromptEditorHandle | null>(null);
+  const hasPastedImageBytes = useEpicAttachmentBytesPresence();
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const focusFrameRef = useRef<number | null>(null);
   const visibilityFrameRef = useRef<number | null>(null);
+  const runnerHost = useRunnerHost();
+  const {
+    onPaste,
+    onDrop,
+    onDragOver,
+    attachImageFiles,
+    isIngestingImages,
+    isResolvingFilePaths,
+  } = useComposerPaste(editorRef, runnerHost.fileDrops, resolvedMentionRoots);
+  const attachmentPending = isAttachmentIngestPending({
+    isIngestingImages,
+    isResolvingFilePaths,
+  });
 
   // Without this, the picker opens empty - nothing writes items into the store.
   useComposerPickerItems({
     pickerStore,
     hostClient,
     harnessId: editing.slashProviderId,
-    mentionRoots: editing.mentionRoots,
+    mentionRoots: resolvedMentionRoots,
     currentEpicId: editing.currentEpicId,
     // The inline editor mounts only while a message is being edited - active.
     isActive: true,
   });
 
   const submit = useCallback(() => {
-    if (!editing.canSubmit || editing.pending) return;
+    if (!editing.canSubmit || editing.pending || attachmentPending) {
+      return;
+    }
     editing.onSubmit();
-  }, [editing]);
+  }, [attachmentPending, editing]);
 
   const cancel = useCallback(() => {
     if (editing.pending) return;
@@ -529,6 +622,22 @@ function InlineUserMessageEditor({
   const removeImageAttachment = useCallback((id: string) => {
     editorRef.current?.removeImageAttachmentById(id);
   }, []);
+
+  const openImagePicker = useCallback(() => {
+    const input = imageInputRef.current;
+    if (input === null) return;
+    input.value = "";
+    input.click();
+  }, []);
+
+  const handleImageChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.currentTarget.files ?? []);
+      event.currentTarget.value = "";
+      attachImageFiles(files);
+    },
+    [attachImageFiles],
+  );
 
   const onSnapshot = useCallback(
     (content: JsonContent, selection: { from: number; to: number }) => {
@@ -588,6 +697,8 @@ function InlineUserMessageEditor({
         initialContent={editing.initialContent}
         initialSelection={null}
         slashProviderId={editing.slashProviderId}
+        hasPastedImageBytes={hasPastedImageBytes}
+        ingestPastedComposerImages={null}
         isActive
         disabled={editing.pending}
         placeholder="Edit message"
@@ -595,16 +706,26 @@ function InlineUserMessageEditor({
         stabilizeImageAttachmentCaret={false}
         onSnapshot={onSnapshot}
         onSubmit={submit}
-        onPaste={NOOP_CLIPBOARD}
-        onDragOver={NOOP_DRAG}
-        onDrop={NOOP_DRAG}
+        onPaste={onPaste}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
         onKeyDown={handleEditorKeyDown}
         onFocus={NOOP}
         onBlur={NOOP}
         onEditorReady={null}
       />
     ),
-    [editing, handleEditorKeyDown, onSnapshot, pickerStore, submit],
+    [
+      editing,
+      handleEditorKeyDown,
+      onDragOver,
+      onDrop,
+      onPaste,
+      onSnapshot,
+      pickerStore,
+      hasPastedImageBytes,
+      submit,
+    ],
   );
   const editorSlot = useMemo(
     () => (
@@ -622,7 +743,28 @@ function InlineUserMessageEditor({
   );
   const toolbar = useMemo(
     () => (
-      <div className="flex justify-end gap-1 px-4 pb-3 pt-2">
+      <div className="flex items-center gap-1 px-4 pb-3 pt-2">
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          tabIndex={-1}
+          aria-hidden="true"
+          className="hidden"
+          onChange={handleImageChange}
+        />
+        <MessageActionButton
+          label="Attach image"
+          variant="ghost"
+          size="icon-sm"
+          tooltip
+          disabled={editing.pending}
+          className="mr-auto text-muted-foreground hover:text-foreground"
+          onClick={openImagePicker}
+        >
+          <ImagePlus className="size-4" aria-hidden />
+        </MessageActionButton>
         <MessageActionButton
           label="Cancel edit"
           variant="secondary"
@@ -639,15 +781,30 @@ function InlineUserMessageEditor({
           variant="default"
           size="default"
           tooltip
-          disabled={!editing.canSubmit || editing.pending}
+          disabled={!editing.canSubmit || editing.pending || attachmentPending}
           className={undefined}
           onClick={submit}
         >
+          {attachmentPending ? (
+            <AgentSpinningDots
+              className="text-current"
+              testId="edit-attachment-pending"
+              variant={undefined}
+            />
+          ) : null}
           Send
         </MessageActionButton>
       </div>
     ),
-    [cancel, editing.canSubmit, editing.pending, submit],
+    [
+      cancel,
+      editing.canSubmit,
+      editing.pending,
+      handleImageChange,
+      openImagePicker,
+      attachmentPending,
+      submit,
+    ],
   );
 
   return (
@@ -768,6 +925,68 @@ function MessageActionButton(props: {
 }
 
 /**
+ * Rewrite each hash-only `imageAttachment` node to carry inline `b64content`
+ * (resolved from the epic's attachments store) so the copied clipboard payload
+ * is self-contained. A hash whose bytes are unresolvable (a dangling ref) is
+ * left hash-only — the destination composer's paste validation strips it.
+ */
+async function inlineCopiedImageBytes(
+  content: JsonContent,
+  resolveBytes: (hash: string) => Promise<Uint8Array | null>,
+): Promise<JsonContent> {
+  const hashes = hashOnlyImageHashesInContent(content);
+  if (hashes.length === 0) return content;
+  const bytesByHash = new Map<string, Uint8Array>();
+  await Promise.all(
+    hashes.map(async (hash) => {
+      const bytes = await resolveBytes(hash);
+      if (bytes !== null) bytesByHash.set(hash, bytes);
+    }),
+  );
+  if (bytesByHash.size === 0) return content;
+  return inlineHashOnlyImageNodes(content, bytesByHash);
+}
+
+function hashOnlyImageHashesInContent(content: JsonContent): string[] {
+  const hashes = new Set<string>();
+  const visit = (node: JsonContent): void => {
+    if (node.type === "imageAttachment") {
+      const hash = stringValue(node.attrs?.hash);
+      const b64content = stringValue(node.attrs?.b64content);
+      if (hash !== null && b64content === null) hashes.add(hash);
+      return;
+    }
+    node.content?.forEach(visit);
+  };
+  visit(content);
+  return Array.from(hashes);
+}
+
+function inlineHashOnlyImageNodes(
+  node: JsonContent,
+  bytesByHash: ReadonlyMap<string, Uint8Array>,
+): JsonContent {
+  if (node.type === "imageAttachment") {
+    const hash = stringValue(node.attrs?.hash);
+    const b64content = stringValue(node.attrs?.b64content);
+    if (hash === null || b64content !== null) return node;
+    const bytes = bytesByHash.get(hash);
+    if (bytes === undefined) return node;
+    // An image node carries exactly one payload; swap the hash for base64.
+    const { hash: _hash, ...rest } = node.attrs ?? {};
+    return { ...node, attrs: { ...rest, b64content: bytesToBase64(bytes) } };
+  }
+  const children = node.content;
+  if (children === undefined) return node;
+  return {
+    ...node,
+    content: children.map((child) =>
+      inlineHashOnlyImageNodes(child, bytesByHash),
+    ),
+  };
+}
+
+/**
  * Copy-to-clipboard button for the user message action chip. Sits alongside
  * edit/delete but stays available even while a turn is streaming (when those
  * two are gated off), so a user can always grab their own prompt text.
@@ -784,18 +1003,61 @@ function MessageCopyButton({
     onSuccess: null,
     onError: handleCopyError,
   });
+  const handle = useMaybeOpenEpicHandle();
+  const resolveAttachmentBytes = useCallback(
+    async (hash: string): Promise<Uint8Array | null> => {
+      if (handle === null) return null;
+      const state = handle.store.getState();
+      // Only read hashes whose bytes are already local — `readAttachmentBytes`
+      // otherwise waits indefinitely for a cross-device sync, which would hang
+      // the clipboard write. An absent hash (a dangling ref from the old
+      // edit-flow bug) stays hash-only; downstream paste validation drops it.
+      if (!state.hasAttachmentBytes(hash)) return null;
+      const bytes = await state.readAttachmentBytes(
+        hash,
+        new AbortController().signal,
+      );
+      return bytes === null ? null : new Uint8Array(bytes);
+    },
+    [handle],
+  );
   const onClick = useCallback(() => {
     if (structuredContent === null) {
       copy(text);
       return;
     }
-    copyWith(() =>
-      copyComposerContentToClipboard({
-        content: structuredContent,
+    // Re-inline each hash-only image node's bytes as `b64content` before writing
+    // to the clipboard, so a paste onto the start page (or into another epic's
+    // chat) carries real bytes instead of a bare hash that resolves nowhere.
+    copyWith(async () => {
+      const content = await inlineCopiedImageBytes(
+        structuredContent,
+        resolveAttachmentBytes,
+      );
+      const result = await copyComposerContentToClipboard({
+        content,
         plainText: text,
-      }),
-    );
-  }, [copy, copyWith, structuredContent, text]);
+      });
+      // Image atoms serialize to no plain text, so a rich-write failure that
+      // silently degrades to plain text would drop every image while still
+      // resolving "copied". Surface that instead of a clean-looking success.
+      if (!result.richContentWritten && containsImageAtoms(content)) {
+        reportableErrorToast(
+          "Images weren't copied",
+          {
+            description:
+              "The text was copied, but this device couldn't place the images on the clipboard.",
+          },
+          {
+            title: "Images were not copied",
+            message: null,
+            code: null,
+            source: "Chat message",
+          },
+        );
+      }
+    });
+  }, [copy, copyWith, resolveAttachmentBytes, structuredContent, text]);
 
   return (
     <MessageActionButton

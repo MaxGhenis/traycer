@@ -4,8 +4,10 @@ import {
   Bot,
   ChevronDown,
   Monitor,
+  Plug,
   Square,
   TerminalSquare,
+  Workflow,
 } from "lucide-react";
 import type { BackgroundItem } from "@traycer/protocol/host/agent/gui/subscribe";
 import {
@@ -15,6 +17,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
 import { LivePulse } from "@/components/ui/live-pulse";
+import { LiveElapsed } from "@/components/chat/segments/segment-elapsed";
 import { cn } from "@/lib/utils";
 import {
   BASE_PAD_LEFT,
@@ -24,6 +27,7 @@ import { TreeGroupGuide } from "@/components/epic-canvas/sidebar/epic-sidebar-tr
 import { buildTreeFromFlatRecords } from "@/lib/tree-utils";
 import type { TreeNodeNested } from "@/lib/tree-types";
 
+import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 interface RememberedBackgroundNode {
   readonly kind: BackgroundItem["kind"];
   readonly title: string;
@@ -49,14 +53,20 @@ interface BackgroundTreeNode {
 
 function backgroundKindLabel(kind: BackgroundItem["kind"]): string {
   switch (kind) {
+    // A nested execution inside this turn, NOT a durable Agent in the Task.
+    // Bare "Agent" collided with that; "Sub-agent" keeps the two apart.
     case "subagent":
-      return "Agent";
+      return "Sub-agent";
     case "command":
       return "Command";
     case "monitor":
       return "Monitor";
     case "wakeup":
       return "Wake";
+    case "workflow":
+      return "Workflow";
+    case "mcp":
+      return "MCP tool";
   }
   const unreachableKind: never = kind;
   return unreachableKind;
@@ -86,6 +96,12 @@ function BackgroundKindIcon(props: { readonly kind: BackgroundItem["kind"] }) {
       return (
         <AlarmClock aria-hidden className="size-3.5 shrink-0 text-primary/80" />
       );
+    case "workflow":
+      return (
+        <Workflow aria-hidden className="size-3.5 shrink-0 text-primary/80" />
+      );
+    case "mcp":
+      return <Plug aria-hidden className="size-3.5 shrink-0 text-primary/80" />;
   }
   const unreachableKind: never = props.kind;
   return unreachableKind;
@@ -96,7 +112,24 @@ function itemParentTaskId(item: BackgroundItem): string | null {
 }
 
 function itemScheduledFor(item: BackgroundItem): number | null {
-  return item.scheduledFor ?? null;
+  return item.kind === "wakeup" ? item.scheduledFor : null;
+}
+
+// The workflow row's aggregate story - current phase, the most recently
+// active fleet-agent label, and finished/started counts - matching what the
+// transcript's workflow card shows in its own live line (Flow 2). Any piece
+// the host hasn't populated yet is omitted rather than shown as a placeholder.
+function workflowRowSummary(
+  item: Extract<BackgroundItem, { kind: "workflow" }>,
+): string | null {
+  const counts =
+    item.agentsFinished !== null && item.agentsStarted !== null
+      ? `${item.agentsFinished}/${item.agentsStarted} done`
+      : null;
+  const parts = [item.phase, item.activeLabel, counts].filter(
+    (part): part is string => part !== null,
+  );
+  return parts.length === 0 ? null : parts.join(" · ");
 }
 
 function rememberBackgroundItem(
@@ -125,11 +158,22 @@ function formatWakeupTime(scheduledFor: number): string {
 }
 
 function backgroundItemDisplayTitle(item: BackgroundItem): string {
-  if (item.kind !== "wakeup") return item.title;
-  const scheduledFor = itemScheduledFor(item);
-  const time =
-    scheduledFor === null ? "scheduled time" : formatWakeupTime(scheduledFor);
-  return `Waiting until ${time} · ${item.title}`;
+  if (item.kind === "wakeup") {
+    const scheduledFor = itemScheduledFor(item);
+    const time =
+      scheduledFor === null ? "scheduled time" : formatWakeupTime(scheduledFor);
+    return `Waiting until ${time} · ${item.title}`;
+  }
+  if (item.kind === "workflow") {
+    const summary = workflowRowSummary(item);
+    return summary === null ? item.title : `${item.title} — ${summary}`;
+  }
+  if (item.kind === "mcp") {
+    // The structured MCP identity beats the freeform title (which mirrors the
+    // CLI's "server/tool" description and degrades with old hosts).
+    return `${item.serverName} · ${item.toolName}`;
+  }
+  return item.title;
 }
 
 function BackgroundStopButton(props: {
@@ -140,23 +184,31 @@ function BackgroundStopButton(props: {
   readonly onClick: () => void;
 }) {
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="xs"
-      className="shrink-0"
-      disabled={props.disabled}
-      aria-label={props.iconOnly ? props.label : undefined}
-      title={props.iconOnly ? props.label : undefined}
-      data-testid={props.testId}
-      onClick={(event) => {
-        event.stopPropagation();
-        props.onClick();
-      }}
+    <TooltipWrapper
+      label={props.iconOnly ? props.label : undefined}
+      side="top"
+      sideOffset={undefined}
+      align={undefined}
     >
-      <Square aria-hidden className="size-3" />
-      {props.iconOnly ? null : props.label}
-    </Button>
+      <span className="inline-flex">
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          className="shrink-0"
+          disabled={props.disabled}
+          aria-label={props.iconOnly ? props.label : undefined}
+          data-testid={props.testId}
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onClick();
+          }}
+        >
+          <Square aria-hidden className="size-3" />
+          {props.iconOnly ? null : props.label}
+        </Button>
+      </span>
+    </TooltipWrapper>
   );
 }
 
@@ -360,34 +412,47 @@ function BackgroundTreeRow(props: {
         }}
       >
         {item === null ? (
-          <div
-            className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left"
-            title={displayTitle}
+          <TooltipWrapper
+            label={displayTitle}
+            side="top"
+            sideOffset={undefined}
+            align={undefined}
           >
-            <BackgroundKindIcon kind={node.kind} />
-            <span className="block min-w-0 flex-1 truncate text-ui-xs text-muted-foreground">
-              {displayTitle}
-            </span>
-            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-ui-xs uppercase text-muted-foreground">
-              {backgroundKindLabel(node.kind)}
-            </span>
-          </div>
-        ) : (
-          <>
-            <button
-              type="button"
-              title={displayTitle}
-              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md py-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              onClick={() => props.onItemClick(item)}
-            >
-              <BackgroundKindIcon kind={item.kind} />
-              <span className="block min-w-0 flex-1 truncate text-ui-xs text-foreground/85">
+            <div className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left">
+              <BackgroundKindIcon kind={node.kind} />
+              <span className="block min-w-0 flex-1 truncate text-ui-xs text-muted-foreground">
                 {displayTitle}
               </span>
               <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-ui-xs uppercase text-muted-foreground">
-                {backgroundKindLabel(item.kind)}
+                {backgroundKindLabel(node.kind)}
               </span>
-            </button>
+            </div>
+          </TooltipWrapper>
+        ) : (
+          <>
+            <TooltipWrapper
+              label={displayTitle}
+              side="top"
+              sideOffset={undefined}
+              align={undefined}
+            >
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md py-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                onClick={() => props.onItemClick(item)}
+              >
+                <BackgroundKindIcon kind={item.kind} />
+                <span className="block min-w-0 flex-1 truncate text-ui-xs text-foreground/85">
+                  {displayTitle}
+                </span>
+                {item.kind === "mcp" && item.startedAt !== null ? (
+                  <LiveElapsed startedAt={item.startedAt} />
+                ) : null}
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-ui-xs uppercase text-muted-foreground">
+                  {backgroundKindLabel(item.kind)}
+                </span>
+              </button>
+            </TooltipWrapper>
             <span className="inline-flex opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
               <BackgroundStopButton
                 label={backgroundStopLabel(item.kind)}

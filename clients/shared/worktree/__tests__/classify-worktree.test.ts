@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type {
   WorktreeBranchStatus,
-  WorktreeHostEntryV11,
-  WorktreeSubmoduleMergeFact,
+  WorktreeHostEntryV12,
+  WorktreeSubmoduleMergeFactV12,
 } from "@traycer/protocol/host/index";
 import {
   WORKTREE_TIER_ORDER,
   classifyWorktree,
   classifyWorktreeTier,
+  describeReviewReasons,
   provenRemovable,
   worktreeTierRank,
   type WorktreeTier,
@@ -27,8 +28,8 @@ function owner(epicId: string) {
 }
 
 function subFact(
-  over: Partial<WorktreeSubmoduleMergeFact>,
-): WorktreeSubmoduleMergeFact {
+  over: Partial<WorktreeSubmoduleMergeFactV12>,
+): WorktreeSubmoduleMergeFactV12 {
   return {
     repoIdentifier: { owner: "acme", repo: "lib" },
     branch: "feat/x",
@@ -37,11 +38,14 @@ function subFact(
     prUrl: null,
     mergedHeadShaMatches: false,
     mergedIntoDefault: false,
+    atPinnedCommit: false,
+    unmergedCommitCount: null,
+    unmergedCommitSubjects: null,
     ...over,
   };
 }
 
-function entry(over: Partial<WorktreeHostEntryV11>): WorktreeHostEntryV11 {
+function entry(over: Partial<WorktreeHostEntryV12>): WorktreeHostEntryV12 {
   return {
     worktreePath: "/wt/x",
     repoLabel: "acme/app",
@@ -71,7 +75,7 @@ function entry(over: Partial<WorktreeHostEntryV11>): WorktreeHostEntryV11 {
 describe("classifyWorktreeTier - precedence truth table (first match wins)", () => {
   const cases: ReadonlyArray<{
     readonly name: string;
-    readonly entry: WorktreeHostEntryV11;
+    readonly entry: WorktreeHostEntryV12;
     readonly tier: WorktreeTier;
   }> = [
     {
@@ -123,7 +127,7 @@ describe("classifyWorktreeTier - precedence truth table (first match wins)", () 
       entry: entry({ uncommittedCount: 3, atBaseCommit: true }),
       tier: "review",
     },
-    // --- Merged (PR provenance) ---
+    // --- Landed (PR provenance) ---
     {
       name: "prState merged AND mergedHeadShaMatches → merged (PR)",
       entry: entry({ prState: "merged", mergedHeadShaMatches: true }),
@@ -176,7 +180,7 @@ describe("classifyWorktreeTier - precedence truth table (first match wins)", () 
       }),
       tier: "review",
     },
-    // --- Merged (local ancestry) --- (worked-then-merged: NOT at base)
+    // --- Landed (local ancestry) --- (worked-then-merged: NOT at base)
     {
       name: "clean + mergedIntoDefault, no owners, NOT at base → merged (local)",
       entry: entry({
@@ -239,8 +243,8 @@ describe("classifyWorktreeTier - precedence truth table (first match wins)", () 
     {
       // PRECEDENCE PIN: the common never-touched worktree. Its base is in the
       // default branch, so `mergedIntoDefault` is ALSO true - at-base MUST win so
-      // it reads the honest "At base commit", never the "Merged" misnomer.
-      name: "at-base beats merged(local) when both set → at-base-commit (never Merged)",
+      // it reads the honest "At base commit", never the stronger "Landed" label.
+      name: "at-base beats merged(local) when both set → at-base-commit (never Landed)",
       entry: entry({
         atBaseCommit: true,
         branchStatus: status({ mergedIntoDefault: true }),
@@ -324,12 +328,88 @@ describe("classifyWorktreeTier - precedence truth table (first match wins)", () 
       tier: "merged",
     },
     {
-      name: "submodule proven via local ancestry does not block → at-base-commit",
+      name: "at-base + authored submodule proven via merged PR → merged",
+      entry: entry({
+        atBaseCommit: true,
+        submodules: [
+          subFact({ prState: "merged", mergedHeadShaMatches: true }),
+        ],
+      }),
+      tier: "merged",
+    },
+    {
+      name: "at-base + authored submodule proven via local ancestry → merged",
       entry: entry({
         atBaseCommit: true,
         submodules: [subFact({ mergedIntoDefault: true })],
       }),
+      tier: "merged",
+    },
+    {
+      name: "at-base + any authored landed submodule → merged when siblings are at-pin",
+      entry: entry({
+        atBaseCommit: true,
+        submodules: [
+          subFact({ mergedIntoDefault: true }),
+          subFact({
+            repoIdentifier: { owner: "acme", repo: "unchanged" },
+            atPinnedCommit: true,
+          }),
+        ],
+      }),
+      tier: "merged",
+    },
+    {
+      name: "submodule proven at its pinned gitlink does not block → at-base-commit",
+      entry: entry({
+        atBaseCommit: true,
+        submodules: [subFact({ atPinnedCommit: true })],
+      }),
       tier: "at-base-commit",
+    },
+    {
+      name: "at-pin overrides merged proof for authored-work promotion → at-base-commit",
+      entry: entry({
+        atBaseCommit: true,
+        submodules: [
+          subFact({
+            prState: "merged",
+            mergedHeadShaMatches: true,
+            atPinnedCommit: true,
+          }),
+        ],
+      }),
+      tier: "at-base-commit",
+    },
+    {
+      name: "dirty gate blocks authored-submodule promotion → review",
+      entry: entry({
+        uncommittedCount: 1,
+        atBaseCommit: true,
+        submodules: [
+          subFact({ prState: "merged", mergedHeadShaMatches: true }),
+        ],
+      }),
+      tier: "review",
+    },
+    {
+      name: "one unproven sibling blocks authored-submodule promotion → review",
+      entry: entry({
+        atBaseCommit: true,
+        submodules: [
+          subFact({ prState: "merged", mergedHeadShaMatches: true }),
+          subFact({ repoIdentifier: { owner: "acme", repo: "unmerged" } }),
+        ],
+      }),
+      tier: "review",
+    },
+    {
+      name: "submodule atPinnedCommit false proves nothing by itself → review",
+      entry: entry({
+        atBaseCommit: true,
+        submodules: [subFact({ atPinnedCommit: false })],
+      }),
+      tier: "review",
     },
     {
       name: "one proven + one unproven submodule → review (true AND across the owned set)",
@@ -409,29 +489,49 @@ describe("classifyWorktreeTier - precedence truth table (first match wins)", () 
       entry({ branchStatus: status({ mergedIntoDefault: true }) }),
     );
     expect(localMerged.tier).toBe("merged");
-    expect(localMerged.label).toBe("Merged");
+    expect(localMerged.label).toBe("Landed");
     // Local-ancestry provenance hint, and no stray "merged" duplicate.
     expect(localMerged.facts).toContain("in default");
+    expect(localMerged.prFacts).toContain("in default");
+    expect(localMerged.nonPrFacts).not.toContain("in default");
     expect(localMerged.facts).toContain("clean");
+    expect(localMerged.nonPrFacts).toContain("clean");
 
     const prMerged = classifyWorktree(
       entry({ prState: "merged", mergedHeadShaMatches: true, prNumber: 123 }),
     );
     expect(prMerged.tier).toBe("merged");
-    expect(prMerged.label).toBe("Merged");
+    expect(prMerged.label).toBe("Landed");
     // PR provenance hint carries the number and never "in default".
     expect(prMerged.facts).toContain("PR #123");
+    expect(prMerged.prFacts).toContain("PR #123");
+    expect(prMerged.nonPrFacts).not.toContain("PR #123");
     expect(prMerged.facts).not.toContain("in default");
 
     const prMergedNoNumber = classifyWorktree(
       entry({ prState: "merged", mergedHeadShaMatches: true, prNumber: null }),
     );
     expect(prMergedNoNumber.facts).toContain("merged PR");
+    expect(prMergedNoNumber.prFacts).toContain("merged PR");
+    expect(prMergedNoNumber.nonPrFacts).not.toContain("merged PR");
 
     const atBase = classifyWorktree(entry({ atBaseCommit: true }));
     expect(atBase.tier).toBe("at-base-commit");
     expect(atBase.label).toBe("At base commit");
     expect(atBase.facts).toContain("clean");
+
+    const submoduleLanded = classifyWorktree(
+      entry({
+        atBaseCommit: true,
+        submodules: [
+          subFact({ prState: "merged", mergedHeadShaMatches: true }),
+        ],
+      }),
+    );
+    expect(submoduleLanded.tier).toBe("merged");
+    expect(submoduleLanded.label).toBe("Landed");
+    expect(submoduleLanded.prFacts).toContain("submodule acme/lib landed");
+    expect(submoduleLanded.nonPrFacts).toContain("clean");
 
     const dirty = classifyWorktree(entry({ uncommittedCount: 3 }));
     expect(dirty.tier).toBe("review");
@@ -464,7 +564,17 @@ describe("classifyWorktreeTier - precedence truth table (first match wins)", () 
     );
     expect(submoduleBlocked.tier).toBe("review");
     expect(submoduleBlocked.facts).toContain("submodule acme/lib unmerged");
+    expect(submoduleBlocked.prFacts).toContain("submodule acme/lib unmerged");
+    expect(submoduleBlocked.nonPrFacts).not.toContain(
+      "submodule acme/lib unmerged",
+    );
     expect(submoduleBlocked.facts).toContain(
+      "submodule acme/widgets PR #42 open",
+    );
+    expect(submoduleBlocked.prFacts).toContain(
+      "submodule acme/widgets PR #42 open",
+    );
+    expect(submoduleBlocked.nonPrFacts).not.toContain(
       "submodule acme/widgets PR #42 open",
     );
     expect(
@@ -474,7 +584,7 @@ describe("classifyWorktreeTier - precedence truth table (first match wins)", () 
 
   it("degrades to today's behavior against a v1.0 / no-PR host (all new fields null/false)", () => {
     // With the merge-provenance bundle at its null/false defaults, only the T9
-    // local-ancestry and upstream-tip signals can green - no Merged (PR), no
+    // local-ancestry and upstream-tip signals can green - no Landed (PR), no
     // At base commit.
     expect(
       classifyWorktreeTier(
@@ -525,11 +635,11 @@ describe("worktree tier ordering", () => {
 
 describe("provenRemovable - single green / bulk-eligible predicate", () => {
   it("true for exactly the three green tiers", () => {
-    // Merged (PR)
+    // Landed (PR)
     expect(
       provenRemovable(entry({ prState: "merged", mergedHeadShaMatches: true })),
     ).toBe(true);
-    // Merged (local ancestry)
+    // Landed (local ancestry)
     expect(
       provenRemovable(
         entry({ branchStatus: status({ mergedIntoDefault: true }) }),
@@ -621,5 +731,89 @@ describe("provenRemovable - single green / bulk-eligible predicate", () => {
         greens.has(classifyWorktreeTier(sample)),
       );
     }
+  });
+});
+
+describe("describeReviewReasons", () => {
+  it("names a closed superproject PR instead of the generic fallback", () => {
+    expect(
+      describeReviewReasons(
+        entry({
+          prState: "closed",
+          branchStatus: status({ ahead: 2, mergedIntoDefault: false }),
+        }),
+      ),
+    ).toEqual(["Superproject PR was closed without merging"]);
+  });
+
+  it("names the never-pushed shape: no PR, no upstream, not contained", () => {
+    // The gui-agent-cli-env fleet shape: clean tree, local-only commits, no PR
+    // ever, branch never pushed (`ahead: null`). Falling back to the generic
+    // tier help here hid the highest-stakes warning - these commits exist
+    // nowhere else.
+    expect(
+      describeReviewReasons(
+        entry({
+          prState: "none",
+          branchStatus: status({ ahead: null, mergedIntoDefault: false }),
+        }),
+      ),
+    ).toEqual([
+      "Commits with no PR that were never pushed - they exist only in this worktree",
+    ]);
+  });
+
+  it("returns every applicable dirty, submodule, and superproject reason", () => {
+    expect(
+      describeReviewReasons(
+        entry({
+          uncommittedCount: 2,
+          prState: "open",
+          branchStatus: status({ ahead: 3 }),
+          submodules: [
+            subFact({
+              branch: "traycer/lib",
+              prState: "none",
+              unmergedCommitCount: 4,
+              unmergedCommitSubjects: ["Newest"],
+            }),
+          ],
+        }),
+      ),
+    ).toEqual([
+      "2 uncommitted changes",
+      "acme/lib (traycer/lib): 4 unmerged commits",
+      "Superproject PR is open",
+    ]);
+  });
+
+  it("describes each submodule state and the remaining superproject blockers", () => {
+    expect(
+      describeReviewReasons(
+        entry({
+          prState: "merged",
+          mergedHeadShaMatches: false,
+          owners: [owner("epic-1")],
+          branchStatus: status({ ahead: 0 }),
+          submodules: [
+            subFact({ branch: "open", prState: "open" }),
+            subFact({ branch: "cold", prState: null }),
+          ],
+        }),
+      ),
+    ).toEqual([
+      "acme/lib (open): PR is open",
+      "acme/lib (cold): still checking merge status",
+      "Merged PR does not cover the current HEAD",
+      "Referenced by a Task at the upstream tip",
+    ]);
+  });
+
+  it("is empty for every non-review tier", () => {
+    expect(
+      describeReviewReasons(
+        entry({ prState: "merged", mergedHeadShaMatches: true }),
+      ),
+    ).toEqual([]);
   });
 });

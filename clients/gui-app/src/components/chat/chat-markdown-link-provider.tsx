@@ -1,7 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { useEpicTileNavigation } from "@/hooks/epic/use-epic-tile-navigation";
+import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
 import { useHostClient } from "@/lib/host";
 import { useOpenEpicId } from "@/lib/epic-selectors";
 import {
@@ -9,8 +11,9 @@ import {
   type MarkdownLinkPolicy,
 } from "@/markdown/links/markdown-link-context";
 import { useOpenEpicHandle } from "@/providers/use-open-epic-handle";
-import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { buildChatLinkPolicy } from "@/components/chat/build-chat-link-policy";
+import type { EpicCanvasTileRef } from "@/stores/epics/canvas/types";
+import { toast } from "sonner";
 
 interface ChatMarkdownLinkProviderProps {
   /** The chat tab whose group a file link opens its new tab into. */
@@ -37,11 +40,19 @@ export function ChatMarkdownLinkProvider({
   workspaceRoots,
   children,
 }: ChatMarkdownLinkProviderProps) {
-  const openTilePreviewInTab = useEpicCanvasStore(
-    (s) => s.openTilePreviewInTab,
+  const tileNavigation = useEpicTileNavigation();
+  const previewTileInTab = useCallback(
+    (targetTabId: string, node: EpicCanvasTileRef): void => {
+      tileNavigation.openTilePreviewInTab(targetTabId, node);
+    },
+    [tileNavigation],
   );
   const queryClient = useQueryClient();
   const client = useHostClient();
+  // Bound to `hostId` (this chat tab's OWN host), NOT the app-wide default -
+  // relative-link existence probes must hit the tab's own filesystem even
+  // when the tab is pinned to a different host than the active one.
+  const workspaceClient = useHostClientForHostId(hostId);
   const navigate = useNavigate();
   const activeHostId = useReactiveActiveHostId();
   const openEpicId = useOpenEpicId();
@@ -68,6 +79,13 @@ export function ChatMarkdownLinkProvider({
     };
   }, []);
 
+  const supersedePendingFileLink = useCallback((): number => {
+    clickTokenRef.current += 1;
+    pendingProjectedOpenCancelRef.current?.();
+    pendingProjectedOpenCancelRef.current = null;
+    return clickTokenRef.current;
+  }, []);
+
   const runChatLink = useMemo(
     () =>
       buildChatLinkPolicy({
@@ -79,8 +97,9 @@ export function ChatMarkdownLinkProvider({
         epicHandle,
         queryClient,
         client,
+        workspaceClient,
         navigate,
-        openTilePreviewInTab,
+        previewTileInTab,
       }),
     [
       activeHostId,
@@ -89,15 +108,17 @@ export function ChatMarkdownLinkProvider({
       hostId,
       navigate,
       openEpicId,
-      openTilePreviewInTab,
+      previewTileInTab,
       queryClient,
       tabId,
+      workspaceClient,
       workspaceRoots,
     ],
   );
 
   const linkPolicy = useMemo<MarkdownLinkPolicy>(
     () => ({
+      supersedePendingFileLink,
       // The lifecycle accessors are built HERE, inside the click handler, so
       // reading the refs' `.current` happens at click / wait-settle time (an
       // event context) — never during render. That keeps `buildChatLinkPolicy`
@@ -111,14 +132,12 @@ export function ChatMarkdownLinkProvider({
           setPendingProjectedOpenCancel: (cancel) => {
             pendingProjectedOpenCancelRef.current = cancel;
           },
-          beginClick: () => {
-            clickTokenRef.current += 1;
-            return clickTokenRef.current;
-          },
+          beginClick: supersedePendingFileLink,
           isCurrent: (token) => token === clickTokenRef.current,
+          onAsyncFailure: () => toast("Couldn't open link"),
         }),
     }),
-    [runChatLink],
+    [runChatLink, supersedePendingFileLink],
   );
 
   return (

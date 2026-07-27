@@ -1,11 +1,10 @@
 import { ArrowRight, Check, Copy } from "lucide-react";
 import { useCallback } from "react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useClipboardCopy } from "@/hooks/ui/use-clipboard-copy";
-import { cn } from "@/lib/utils";
 import type { TraycerNextStepOption } from "@/markdown/traycer-next-steps";
+import { reportableErrorToast } from "@/lib/reportable-error-toast";
 
 export interface NextStepActionHandler {
   readonly canSend: boolean;
@@ -16,46 +15,48 @@ interface NextStepsActionGroupProps {
   readonly blockId: string;
   readonly options: ReadonlyArray<TraycerNextStepOption>;
   readonly complete: boolean;
-  readonly locked: boolean;
+  readonly lockedOptionIds: ReadonlySet<string>;
   readonly actionHandler: NextStepActionHandler | null;
-  readonly onLock: (blockId: string) => void;
+  readonly onLockOption: (blockId: string, optionId: string) => void;
 }
 
 const COPIED_RESET_MS = 1600;
 
 const handleCopyError = (): void => {
-  toast.error("Couldn't copy to clipboard.");
+  reportableErrorToast("Couldn't copy to clipboard.", undefined, {
+    title: "Could not copy to clipboard",
+    message: null,
+    code: null,
+    source: "Clipboard",
+  });
 };
 
 export function NextStepsActionGroup(props: NextStepsActionGroupProps) {
   const actionHandler = props.actionHandler;
-  const disabled =
-    !props.complete ||
-    props.locked ||
-    actionHandler === null ||
-    !actionHandler.canSend;
+  const actionsDisabled =
+    !props.complete || actionHandler === null || !actionHandler.canSend;
 
   return (
     <div
-      className={cn(
-        "not-prose mt-2 flex flex-wrap items-center gap-2",
-        props.locked && "opacity-70",
-      )}
+      className="not-prose mt-2 flex flex-col items-stretch gap-2"
       data-testid="traycer-next-steps"
       data-next-steps-complete={props.complete ? "true" : "false"}
       data-quote-exclude=""
     >
-      {props.options.map((option) => (
-        <NextStepAction
-          key={option.id}
-          option={option}
-          complete={props.complete}
-          disabled={disabled}
-          actionHandler={actionHandler}
-          blockId={props.blockId}
-          onLock={props.onLock}
-        />
-      ))}
+      {props.options.map((option) => {
+        const locked = props.lockedOptionIds.has(option.id);
+        return (
+          <NextStepAction
+            key={option.id}
+            option={option}
+            complete={props.complete}
+            disabled={actionsDisabled || locked}
+            actionHandler={actionHandler}
+            blockId={props.blockId}
+            onLockOption={props.onLockOption}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -66,7 +67,7 @@ interface NextStepActionProps {
   readonly disabled: boolean;
   readonly actionHandler: NextStepActionHandler | null;
   readonly blockId: string;
-  readonly onLock: (blockId: string) => void;
+  readonly onLockOption: (blockId: string, optionId: string) => void;
 }
 
 function NextStepAction(props: NextStepActionProps) {
@@ -83,17 +84,17 @@ function NextStepAction(props: NextStepActionProps) {
   const copyLabel = copied ? "Copied" : `Copy next step: ${option.prompt}`;
 
   return (
-    <div className="group/next-step relative inline-flex max-w-full">
+    <div className="group/next-step relative flex w-full">
       <Button
         type="button"
         variant="outline"
         size="sm"
-        className="h-auto min-h-7 min-w-0 max-w-full shrink items-start justify-start whitespace-normal py-2 pr-10 pl-1 text-left"
+        className="h-auto min-h-7 w-full min-w-0 items-start justify-start whitespace-normal py-2 pr-10 pl-1 text-left"
         disabled={props.disabled}
         onClick={() => {
           if (props.actionHandler === null || props.disabled) return;
           if (props.actionHandler.onSend(option)) {
-            props.onLock(props.blockId);
+            props.onLockOption(props.blockId, option.id);
           }
         }}
       >

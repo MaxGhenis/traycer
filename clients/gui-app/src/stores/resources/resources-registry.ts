@@ -1,16 +1,15 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { create, useStore } from "zustand";
-import { useShallow } from "zustand/react/shallow";
 import type { ResourceOwnerKindWire } from "@traycer/protocol/host/resources/subscribe";
 import {
-  deriveTaskResourceSummary,
   resourceOwnerKey,
   type AppResourceUsage,
   type EpicResourceUsage,
+  type HostTreeResourceUsage,
+  type OtherResourceUsage,
   type OwnerResourceUsage,
   type ResourcesState,
   type ResourcesStoreHandle,
-  type TaskResourceSummary,
 } from "@/stores/resources/resources-store";
 
 /**
@@ -37,21 +36,24 @@ export interface GlobalResourceEpicEntry {
   readonly epicId: string;
   readonly sampledAt: number | null;
   readonly app: AppResourceUsage | null;
+  readonly hostTree: HostTreeResourceUsage | null;
+  readonly other: OtherResourceUsage | null;
   readonly owners: readonly OwnerResourceUsage[];
   readonly epic: EpicResourceUsage | null;
-  readonly taskSummary: TaskResourceSummary | null;
 }
 
 export interface GlobalResourceProjection {
   readonly sampledAt: number | null;
   readonly app: AppResourceUsage | null;
+  readonly hostTree: HostTreeResourceUsage | null;
+  readonly other: OtherResourceUsage | null;
   readonly owners: readonly OwnerResourceUsage[];
   readonly entries: readonly GlobalResourceEpicEntry[];
-  readonly summary: TaskResourceSummary | null;
 }
 
 class ResourcesRegistry {
   private readonly entries = new Map<string, RegistryEntry>();
+  private globalEntry: RegistryEntry | null = null;
   private readonly listeners = new Set<() => void>();
   private readonly globalListeners = new Set<() => void>();
   private globalVersion = 0;
@@ -92,19 +94,34 @@ class ResourcesRegistry {
     if (this.globalProjectionCache?.version === this.globalVersion) {
       return this.globalProjectionCache.projection;
     }
+    if (this.globalEntry !== null) {
+      const projection = this.getGlobalProjectionFromGlobalEntry(
+        this.globalEntry,
+      );
+      this.globalProjectionCache = {
+        version: this.globalVersion,
+        projection,
+      };
+      return projection;
+    }
     const entries = [...this.entries.values()].map((entry) => {
       const state = entry.handle.store.getState();
+      const epicId =
+        entry.handle.scope.kind === "epic" ? entry.handle.scope.epicId : "";
       return {
-        epicId: entry.handle.epicId,
+        epicId,
         sampledAt: state.sampledAt,
         app: state.app,
+        hostTree: state.hostTree,
+        other: state.other,
         owners: [...state.owners.values()],
         epic: state.epic,
-        taskSummary: state.taskSummary,
       };
     });
     const owners = entries.flatMap((entry) => entry.owners);
     const app = latestAppSnapshot(entries);
+    const hostTree = latestHostTreeSnapshot(entries);
+    const other = latestOtherSnapshot(entries);
     const sampledAt = Math.max(
       app?.sampledAt ?? 0,
       ...entries.map((entry) => entry.sampledAt ?? 0),
@@ -112,15 +129,57 @@ class ResourcesRegistry {
     const projection = {
       sampledAt: sampledAt > 0 ? sampledAt : null,
       app,
+      hostTree,
+      other,
       owners,
       entries,
-      summary: deriveTaskResourceSummary(app, owners),
     };
     this.globalProjectionCache = {
       version: this.globalVersion,
       projection,
     };
     return projection;
+  }
+
+  private getGlobalProjectionFromGlobalEntry(
+    entry: RegistryEntry,
+  ): GlobalResourceProjection {
+    const state = entry.handle.store.getState();
+    const owners = [...state.owners.values()];
+    const epics = [...state.epics.values()];
+    const epicIds = [
+      ...new Set([
+        ...owners.map((owner) => owner.owner.epicId),
+        ...epics.map((epic) => epic.epicId),
+      ]),
+    ];
+    const entries = epicIds.map((epicId) => {
+      const scopedOwners = owners.filter(
+        (owner) => owner.owner.epicId === epicId,
+      );
+      const epic = state.epics.get(epicId) ?? null;
+      const sampledAt = Math.max(
+        epic?.sampledAt ?? 0,
+        scopedOwners.reduce((max, owner) => Math.max(max, owner.sampledAt), 0),
+      );
+      return {
+        epicId,
+        sampledAt: sampledAt > 0 ? sampledAt : null,
+        app: state.app,
+        hostTree: state.hostTree,
+        other: state.other,
+        owners: scopedOwners,
+        epic,
+      };
+    });
+    return {
+      sampledAt: state.sampledAt,
+      app: state.app,
+      hostTree: state.hostTree,
+      other: state.other,
+      owners,
+      entries,
+    };
   }
 
   private subscribeEntry(handle: ResourcesStoreHandle): () => void {
@@ -132,6 +191,10 @@ class ResourcesRegistry {
   get(epicId: string): ResourcesStoreHandle | null {
     const entry = this.entries.get(epicId);
     return entry === undefined ? null : entry.handle;
+  }
+
+  getGlobal(): ResourcesStoreHandle | null {
+    return this.globalEntry?.handle ?? null;
   }
 
   acquire(
@@ -171,6 +234,37 @@ class ResourcesRegistry {
     return handle;
   }
 
+  acquireGlobal(
+    clientToken: unknown,
+    factory: () => ResourcesStoreHandle,
+  ): ResourcesStoreHandle {
+    if (this.globalEntry !== null) {
+      if (this.globalEntry.clientToken === clientToken) {
+        this.globalEntry.leases += 1;
+        return this.globalEntry.handle;
+      }
+      this.globalEntry.unsubscribeStore();
+      this.globalEntry.handle.dispose();
+      const handle = factory();
+      const unsubscribeStore = this.subscribeEntry(handle);
+      this.globalEntry.handle = handle;
+      this.globalEntry.clientToken = clientToken;
+      this.globalEntry.unsubscribeStore = unsubscribeStore;
+      this.globalEntry.leases += 1;
+      this.notifyGlobal();
+      return handle;
+    }
+    const handle = factory();
+    this.globalEntry = {
+      handle,
+      clientToken,
+      leases: 1,
+      unsubscribeStore: this.subscribeEntry(handle),
+    };
+    this.notifyGlobal();
+    return handle;
+  }
+
   release(epicId: string): void {
     const entry = this.entries.get(epicId);
     if (entry === undefined) return;
@@ -183,13 +277,29 @@ class ResourcesRegistry {
     this.notifyGlobal();
   }
 
+  releaseGlobal(): void {
+    if (this.globalEntry === null) return;
+    this.globalEntry.leases -= 1;
+    if (this.globalEntry.leases > 0) return;
+    const entry = this.globalEntry;
+    this.globalEntry = null;
+    entry.unsubscribeStore();
+    entry.handle.dispose();
+    this.notifyGlobal();
+  }
+
   disposeAll(): void {
-    if (this.entries.size === 0) return;
+    if (this.entries.size === 0 && this.globalEntry === null) return;
     for (const entry of this.entries.values()) {
       entry.unsubscribeStore();
       entry.handle.dispose();
     }
     this.entries.clear();
+    if (this.globalEntry !== null) {
+      this.globalEntry.unsubscribeStore();
+      this.globalEntry.handle.dispose();
+      this.globalEntry = null;
+    }
     this.notify();
     this.notifyGlobal();
   }
@@ -208,18 +318,54 @@ function latestAppSnapshot(
   return latest;
 }
 
+// Both selectors compare the ENTRY-level `sampledAt`, not the nested
+// snapshot's: identity-stable merges intentionally keep the previous nested
+// object (with its old timestamp) when display values are unchanged, so the
+// nested `sampledAt` can lag the frame that actually delivered it.
+function latestHostTreeSnapshot(
+  entries: readonly GlobalResourceEpicEntry[],
+): HostTreeResourceUsage | null {
+  const latest = entries
+    .filter((entry) => entry.hostTree !== null)
+    .reduce(
+      (best: GlobalResourceEpicEntry | null, entry) =>
+        best === null || (entry.sampledAt ?? 0) > (best.sampledAt ?? 0)
+          ? entry
+          : best,
+      null,
+    );
+  return latest?.hostTree ?? null;
+}
+
+function latestOtherSnapshot(
+  entries: readonly GlobalResourceEpicEntry[],
+): OtherResourceUsage | null {
+  const latest = entries
+    .filter((entry) => entry.other !== null)
+    .reduce(
+      (best: GlobalResourceEpicEntry | null, entry) =>
+        best === null || (entry.sampledAt ?? 0) > (best.sampledAt ?? 0)
+          ? entry
+          : best,
+      null,
+    );
+  return latest?.other ?? null;
+}
+
 export const resourcesRegistry = new ResourcesRegistry();
 
 // Stable fallback for `useStore` when no entry exists for an epic yet: every
 // selector resolves to "not tracked" (empty owners / null aggregate).
 const emptyResourcesStore = create<ResourcesState>()(() => ({
-  epicId: "",
+  key: "",
   connectionStatus: "closed",
   sampledAt: null,
   owners: new Map(),
   app: null,
+  hostTree: null,
+  other: null,
   epic: null,
-  taskSummary: null,
+  epics: new Map(),
   dispose: () => undefined,
 }));
 
@@ -227,9 +373,7 @@ const emptyResourcesStore = create<ResourcesState>()(() => ({
  * Reactively resolves the live store handle for `epicId`, re-rendering when the
  * registry entry is created, rebuilt (host swap), or removed.
  */
-export function useResourcesHandle(
-  epicId: string,
-): ResourcesStoreHandle | null {
+function useResourcesHandle(epicId: string): ResourcesStoreHandle | null {
   const getSnapshot = useCallback(
     () => resourcesRegistry.get(epicId),
     [epicId],
@@ -266,25 +410,6 @@ export function useEpicResourceUsage(epicId: string): EpicResourceUsage | null {
   return useStore(store, (state) => state.epic);
 }
 
-/** Host-app usage sampled with the task projection, or `null` before sampling. */
-export function useAppResourceUsage(epicId: string): AppResourceUsage | null {
-  const handle = useResourcesHandle(epicId);
-  const store = handle === null ? emptyResourcesStore : handle.store;
-  return useStore(store, (state) => state.app);
-}
-
-/** Live owner snapshots for this task, preserving the store's stable owner refs. */
-export function useOwnerResourceUsages(
-  epicId: string,
-): readonly OwnerResourceUsage[] {
-  const handle = useResourcesHandle(epicId);
-  const store = handle === null ? emptyResourcesStore : handle.store;
-  return useStore(
-    store,
-    useShallow((state) => [...state.owners.values()]),
-  );
-}
-
 export function useGlobalResourceProjection(): GlobalResourceProjection {
   const subscribe = useCallback(
     (onChange: () => void) => resourcesRegistry.subscribeGlobal(onChange),
@@ -295,16 +420,4 @@ export function useGlobalResourceProjection(): GlobalResourceProjection {
     () => resourcesRegistry.getGlobalProjection(),
     () => resourcesRegistry.getGlobalProjection(),
   );
-}
-
-/**
- * Live task-level resource summary derived in the renderer from the current
- * owner projection. `null` means no tracked owners are present.
- */
-export function useTaskResourceSummary(
-  epicId: string,
-): TaskResourceSummary | null {
-  const handle = useResourcesHandle(epicId);
-  const store = handle === null ? emptyResourcesStore : handle.store;
-  return useStore(store, (state) => state.taskSummary);
 }

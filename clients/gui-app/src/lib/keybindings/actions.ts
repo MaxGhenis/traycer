@@ -45,6 +45,9 @@ export const ACTION_IDS = [
   "app.settings.open",
   "app.settings.section.byDigit",
   "app.palette.open",
+  "app.terminal.toggle",
+  "app.terminal.new",
+  "app.terminal.maximize",
   "app.zoom.in",
   "app.zoom.out",
   "app.zoom.reset",
@@ -52,6 +55,7 @@ export const ACTION_IDS = [
   "composer.model-picker.toggle",
   "model.provider.byDigit",
   "model.reasoning.byDigit",
+  "model.profile.byDigit",
 ] as const;
 
 export type ActionId = (typeof ACTION_IDS)[number];
@@ -103,7 +107,7 @@ export const ACTION_META: Readonly<Record<ActionId, ActionMeta>> = {
     id: "tab.switch.byDigit",
     label: "Switch tab by number",
     description:
-      "Hold the primary leader modifier and press 1-9 to jump to that tab in the active Epic group.",
+      "Hold the primary leader modifier and press 1-9 to jump to that tab in the active Epic group, or in the start page's terminal panel.",
     category: "tabs",
     kind: "digit",
     defaultChord: "mod",
@@ -153,7 +157,7 @@ export const ACTION_META: Readonly<Record<ActionId, ActionMeta>> = {
     id: "tab.new",
     label: "New tab",
     description:
-      "Open a new blank tab in the active group; the inline opener is focused so you can pick what to open.",
+      "Open a new blank tab in the active group; the inline opener is focused so you can pick what to open. On the start page, opens a new terminal tab instead.",
     category: "tabs",
     kind: "chord",
     defaultChord: "mod+t",
@@ -162,7 +166,7 @@ export const ACTION_META: Readonly<Record<ActionId, ActionMeta>> = {
     id: "tab.close",
     label: "Close tab",
     description:
-      "Close the active tab. On the last tab in a non-root group, the group collapses and the sibling absorbs.",
+      "Close the active tab. On the last tab in a non-root group, the group collapses and the sibling absorbs. On the start page, closes the active terminal tab.",
     category: "tabs",
     kind: "chord",
     defaultChord: "mod+w",
@@ -190,7 +194,7 @@ export const ACTION_META: Readonly<Record<ActionId, ActionMeta>> = {
     id: "tab.close-all",
     label: "Close all tabs in group",
     description:
-      "Close every tab in the focused group. Non-root groups collapse afterwards.",
+      "Close every tab in the focused group. Non-root groups collapse afterwards. On the start page, closes every terminal tab.",
     category: "tabs",
     kind: "chord",
     // ⌘⇧⌥W - the "close" W family; all three modifiers signal the widest scope.
@@ -199,7 +203,8 @@ export const ACTION_META: Readonly<Record<ActionId, ActionMeta>> = {
   "tab.next": {
     id: "tab.next",
     label: "Next tab",
-    description: "Activate the next tab in the focused group.",
+    description:
+      "Activate the next tab in the focused group, or in the start page's terminal panel.",
     category: "tabs",
     kind: "chord",
     defaultChord: "mod+]",
@@ -207,7 +212,8 @@ export const ACTION_META: Readonly<Record<ActionId, ActionMeta>> = {
   "tab.prev": {
     id: "tab.prev",
     label: "Previous tab",
-    description: "Activate the previous tab in the focused group.",
+    description:
+      "Activate the previous tab in the focused group, or in the start page's terminal panel.",
     category: "tabs",
     kind: "chord",
     defaultChord: "mod+[",
@@ -331,6 +337,35 @@ export const ACTION_META: Readonly<Record<ActionId, ActionMeta>> = {
     kind: "chord",
     defaultChord: "mod+k",
   },
+  "app.terminal.toggle": {
+    id: "app.terminal.toggle",
+    label: "Toggle terminal panel",
+    description:
+      "Show or hide the terminal panel on the start page. Opening it with no terminals starts one in the pinned workspace folder.",
+    category: "app",
+    kind: "chord",
+    defaultChord: "mod+j",
+  },
+  "app.terminal.new": {
+    id: "app.terminal.new",
+    label: "New terminal",
+    description:
+      "Open a new terminal tab in the start page's terminal panel, revealing the panel if it is collapsed.",
+    category: "app",
+    kind: "chord",
+    defaultChord: "mod+shift+j",
+  },
+  "app.terminal.maximize": {
+    id: "app.terminal.maximize",
+    label: "Maximize terminal panel",
+    description:
+      "Toggle the start page's terminal panel between maximized and its docked width, revealing the panel if it is collapsed.",
+    category: "app",
+    kind: "chord",
+    // ⌘⌥J extends the ⌘J terminal family; ⌥ marks the layout variant, the
+    // same convention as ⌘⌥W (close others) and ⌘⌥F (find and replace).
+    defaultChord: "mod+alt+j",
+  },
   "app.zoom.in": {
     id: "app.zoom.in",
     label: "Zoom in",
@@ -363,8 +398,9 @@ export const ACTION_META: Readonly<Record<ActionId, ActionMeta>> = {
     category: "app",
     kind: "chord",
     // Control+Shift+M - uses the Control key specifically (the separate ⌃ key on
-    // macOS), avoiding the Command-based conflicts: ⌘Space (Spotlight),
-    // ⌘⇧Space (window summon), ⌘⇧V (split group vertically).
+    // macOS), avoiding the Command-based conflicts: ⌘Space (Spotlight), ⌘⇧V
+    // (split group vertically). The desktop global summon shortcut is checked
+    // live by conflict detection rather than hand-avoided here.
     defaultChord: "ctrl+shift+m",
   },
   "composer.model-picker.toggle": {
@@ -396,6 +432,15 @@ export const ACTION_META: Readonly<Record<ActionId, ActionMeta>> = {
     category: "app",
     kind: "digit",
     defaultChord: "alt",
+  },
+  "model.profile.byDigit": {
+    id: "model.profile.byDigit",
+    label: "Switch profile by number",
+    description:
+      "While the model picker is open and the active provider has 2+ profiles, hold the leader modifier + Shift and press a digit to switch to that profile chip.",
+    category: "app",
+    kind: "digit",
+    defaultChord: "mod+shift",
   },
   // In-app back/forward (`nav.back` / `nav.forward`) intentionally has NO
   // keyboard chord: `mod`/`alt`+Arrow both collide with native text-editing

@@ -23,7 +23,8 @@ export const tuiHarnessOptionSchema = z.object({
   error: z.string().nullable(),
   // True while the host's availability probe for this harness is still running
   // in the background (mirrors `guiHarnessOptionSchema`). A pending row carries
-  // `available: false`; a TUI consumer should re-fetch until it flips false
+  // the last settled verdict for `available` - `false` only when the host has
+  // never settled one; a TUI consumer should re-fetch until it flips false
   // rather than treat the harness as unavailable. `.catch(false)` tolerates old
   // host builds that omit the field.
   availabilityPending: z.boolean().catch(false),
@@ -92,6 +93,14 @@ export const prepareTuiLaunchRequestSchema = z.object({
   // return/open the newly forked session. This is distinct from
   // `harnessSessionId`: the source id must not be persisted on the new agent.
   forkSourceHarnessSessionId: z.string().nullable().default(null),
+  // Which of the harness's logged-in profiles (subscriptions) to spawn this
+  // launch's adapter with. `null` = the ambient/host login, so older clients
+  // that predate profiles keep today's exact behavior. Carried here (rather
+  // than only read from the persisted `tuiAgents` record) because a brand-new
+  // agent's *first* prepareLaunch fires before `epic.createTuiAgent` persists
+  // that record - the resolver has nothing to look up yet. See the
+  // multi-profile decision log.
+  profileId: z.string().nullable().default(null),
 });
 export type PrepareTuiLaunchRequest = z.infer<
   typeof prepareTuiLaunchRequestSchema
@@ -213,4 +222,41 @@ export const recordTuiAgentActivityResponseSchema = z.object({
 });
 export type RecordTuiAgentActivityResponse = z.infer<
   typeof recordTuiAgentActivityResponseSchema
+>;
+
+// ─── `agent.tui.recordActivity@1.1` - + observed session-id resync ────────
+//
+// Additive minor bump over v1.0. Two changes, both driven by the Claude TUI
+// session-id resync (Claude implicitly re-ids its session on Esc-Esc rewind,
+// `/clear`, fork-after-`/btw`, etc.; the stored `harnessSessionId` must follow
+// what the user currently sees in the PTY):
+//
+//   • `observedHarnessSessionId` - the live `session_id` Claude stamps on every
+//     hook's stdin payload. The resolver writes it back onto the record's
+//     `harnessSessionId` when it drifts (claude-gated). This is DISTINCT from
+//     the existing `harnessSessionId` request field, which stays an OpenCode
+//     match-or-reject identity guard - never overloaded here. `null` (the
+//     v1.0-upgraded default) means "no observed id / nothing to resync".
+//
+//   • `event: "resync"` - a pure resync edge that is NOT an activity edge: the
+//     resolver performs the session write-back but does NOT touch the activity
+//     oracle. Fired by the Claude `SessionStart` hook (a dedicated CLI command),
+//     which reports the fresh id at the drift moment even when the user rewinds
+//     then immediately closes/forks the tab without another prompt. The existing
+//     `start`/`stop` edges (UserPromptSubmit/Stop) also carry
+//     `observedHarnessSessionId`, so drift on a normal turn resyncs too.
+//
+// A new capability MUST ride a new `{ major, minor }` of an existing method,
+// never a new method name (a new name fatally fails the equal-set `/rpc`
+// handshake against a shipped v1.0.0 host). Adding the `"resync"` enum value is
+// additive-advisory growth: a v1.0 host only ever meets it via the new
+// SessionStart flow it does not have.
+
+export const recordTuiAgentActivityRequestSchemaV11 =
+  recordTuiAgentActivityRequestSchema.extend({
+    event: z.enum(["start", "stop", "resync"]),
+    observedHarnessSessionId: z.string().nullable().default(null),
+  });
+export type RecordTuiAgentActivityRequestV11 = z.infer<
+  typeof recordTuiAgentActivityRequestSchemaV11
 >;

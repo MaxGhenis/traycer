@@ -4,6 +4,7 @@ import { TabStrip } from "@/components/layout/tabs/tab-strip";
 import { AppUpdateHeaderButton } from "@/components/layout/header/app-update-button";
 import { HistoryButton } from "@/components/layout/header/history-button";
 import { HistoryNavButtons } from "@/components/layout/header/history-nav-buttons";
+import { WindowsMenuBar } from "@/components/layout/header/windows-menu-bar";
 import { RateLimitIconButton } from "@/components/layout/header/rate-limit-icon";
 import { ResourceMonitorPopover } from "@/components/resources/resource-monitor-popover";
 import { SignInButton } from "@/components/layout/header/sign-in-button";
@@ -11,6 +12,7 @@ import { NotificationsBell } from "@/components/notifications/notifications-bell
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth/auth-store";
 import { useSettingsStore } from "@/stores/settings/settings-store";
+import { useTitleBarDraggingSuppressed } from "@/stores/layout/title-bar-drag-store";
 
 // Frameless-desktop detection: Electron's preload bridge exposes
 // `window.runnerHost` via `contextBridge.exposeInMainWorld`. Browser
@@ -26,6 +28,17 @@ function isFramelessDesktop(): boolean {
 // `-webkit-app-region` isn't in the standard CSSProperties typings.
 const DRAG_STYLE = { WebkitAppRegion: "drag" } as CSSProperties;
 const NO_DRAG_STYLE = { WebkitAppRegion: "no-drag" } as CSSProperties;
+
+// Drag style for the header's title-bar spacers: only frameless desktop shells
+// use them as an OS drag region, and only while no header overlay needs the
+// title bar to receive clicks (see `useTitleBarDraggingSuppressed`).
+function titleBarSpacerStyle(
+  framelessDesktop: boolean,
+  dragSuppressed: boolean,
+): CSSProperties | undefined {
+  if (!framelessDesktop) return undefined;
+  return dragSuppressed ? NO_DRAG_STYLE : DRAG_STYLE;
+}
 
 export type AppHeaderVariant = "app" | "host-loading";
 
@@ -50,6 +63,12 @@ export function AppHeader(props: AppHeaderProps): ReactNode {
   const showGlobalResourceMonitor = useSettingsStore(
     (state) => state.showGlobalResourceMonitor,
   );
+  // A header-anchored overlay (e.g. the resource monitor) needs the title bar to
+  // stop swallowing clicks so a click there dismisses it. Drop drag while any
+  // such overlay is open; restore it once they all close.
+  const dragSuppressed = useTitleBarDraggingSuppressed();
+  const draggable = framelessDesktop && !dragSuppressed;
+  const spacerDragStyle = titleBarSpacerStyle(framelessDesktop, dragSuppressed);
 
   return (
     <header
@@ -66,6 +85,7 @@ export function AppHeader(props: AppHeaderProps): ReactNode {
           : "px-3",
       )}
     >
+      <WindowsMenuBar />
       {showTabStrip ? <HistoryNavButtons /> : null}
       {/* Left drag handle: breathing room beside the traffic lights +
           back/forward arrows so the window can be grabbed from the left end
@@ -83,13 +103,13 @@ export function AppHeader(props: AppHeaderProps): ReactNode {
         <div
           aria-hidden
           className="relative z-10 hidden h-full shrink-0 basis-[clamp(2rem,6vw,6rem)] md:block"
-          style={DRAG_STYLE}
+          style={spacerDragStyle}
         />
       ) : null}
       <div
         className={cn(
           "relative z-10 flex min-w-0 flex-1 items-center",
-          framelessDesktop && "[-webkit-app-region:drag]",
+          draggable && "[-webkit-app-region:drag]",
         )}
       >
         {showTabStrip ? <TabStrip /> : null}
@@ -102,7 +122,7 @@ export function AppHeader(props: AppHeaderProps): ReactNode {
             ? "hidden shrink-0 basis-[clamp(2rem,6vw,6rem)] md:block"
             : "min-w-0 flex-1",
         )}
-        style={framelessDesktop ? DRAG_STYLE : undefined}
+        style={spacerDragStyle}
       />
       <div
         className="relative z-10 flex shrink-0 items-center gap-2"

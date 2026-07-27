@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import type {
   AppResourceSnapshotWire,
   EpicResourceSnapshotWire,
-  OwnerResourceSnapshotWire,
+  HostTreeResourceSnapshotWire,
+  OtherResourceSnapshotWire,
+  OwnerResourceSnapshotWireV13,
   ResourceProcessSnapshotWire,
   ResourceOwnerKindWire,
 } from "@traycer/protocol/host/resources/subscribe";
@@ -35,12 +37,13 @@ function makeProcess(
 function makeOwner(
   kind: ResourceOwnerKindWire,
   ownerId: string,
-  over: Partial<OwnerResourceSnapshotWire>,
-): OwnerResourceSnapshotWire {
+  over: Partial<OwnerResourceSnapshotWireV13>,
+): OwnerResourceSnapshotWireV13 {
   return {
     owner: { kind, hostId: "host-1", epicId: "epic-1", ownerId },
     sampledAt: 1_000,
     rootPids: [1],
+    harnessId: null,
     activeProcessName: "bash",
     processCount: 2,
     cpuPercent: 10,
@@ -86,6 +89,32 @@ function makeApp(
   };
 }
 
+function makeHostTree(
+  over: Partial<HostTreeResourceSnapshotWire>,
+): HostTreeResourceSnapshotWire {
+  return {
+    sampledAt: 1_000,
+    processCount: 4,
+    cpuPercent: 25,
+    rssBytes: 2_500,
+    ...over,
+  };
+}
+
+function makeOther(
+  over: Partial<OtherResourceSnapshotWire>,
+): OtherResourceSnapshotWire {
+  return {
+    sampledAt: 1_000,
+    rootPids: [20],
+    processCount: 1,
+    cpuPercent: 5,
+    rssBytes: 400,
+    processes: [makeProcess({ pid: 20, rootPid: 20 })],
+    ...over,
+  };
+}
+
 function projection(
   over: Partial<ResourcesProjectionPayload>,
 ): ResourcesProjectionPayload {
@@ -95,6 +124,9 @@ function projection(
     app: null,
     owners: [],
     epic: null,
+    epics: [],
+    hostTree: undefined,
+    other: undefined,
     ...over,
   };
 }
@@ -109,7 +141,7 @@ function makeFakeClient(): FakeClient {
   let captured: ResourcesStreamCallbacks | null = null;
   let closed = false;
   return {
-    factory: (_epicId, callbacks) => {
+    factory: (_scope, callbacks) => {
       captured = callbacks;
       return {
         close: () => {
@@ -129,7 +161,7 @@ describe("createResourcesStore", () => {
   it("populates owners + epic + sampledAt from the initial snapshot", () => {
     const fake = makeFakeClient();
     const handle = createResourcesStore({
-      epicId: "epic-1",
+      scope: { kind: "epic", epicId: "epic-1" },
       streamClientFactory: fake.factory,
     });
 
@@ -150,14 +182,13 @@ describe("createResourcesStore", () => {
       state.owners.get(resourceOwnerKey("terminal", "s1"))?.processes[0].name,
     ).toBe("bash");
     expect(state.epic?.cpuPercent).toBe(12);
-    expect(state.taskSummary?.cpuPercent).toBe(12);
     handle.dispose();
   });
 
   it("treats a missing owner as absent (undefined), not zero", () => {
     const fake = makeFakeClient();
     const handle = createResourcesStore({
-      epicId: "epic-1",
+      scope: { kind: "epic", epicId: "epic-1" },
       streamClientFactory: fake.factory,
     });
 
@@ -172,63 +203,13 @@ describe("createResourcesStore", () => {
       state.owners.get(resourceOwnerKey("terminal", "s1")),
     ).toBeUndefined();
     expect(state.owners.size).toBe(0);
-    expect(state.taskSummary).toBeNull();
     handle.dispose();
   });
 
-  it("derives a task summary from the live owner projection", () => {
+  it("includes host app usage in the epic aggregate totals", () => {
     const fake = makeFakeClient();
     const handle = createResourcesStore({
-      epicId: "epic-1",
-      streamClientFactory: fake.factory,
-    });
-
-    fake.callbacks().onSnapshot(
-      projection({
-        owners: [
-          makeOwner("terminal", "term-1", {
-            rootPids: [101],
-            processCount: 3,
-            cpuPercent: 10,
-            rssBytes: 100,
-          }),
-          makeOwner("terminal", "term-2", {
-            rootPids: [201],
-            processCount: 1,
-            cpuPercent: 5,
-            rssBytes: 200,
-          }),
-          makeOwner("terminal-agent", "agent-1", {
-            rootPids: [301, 302],
-            processCount: 4,
-            cpuPercent: 7,
-            rssBytes: 300,
-          }),
-          makeOwner("chat", "chat-1", {
-            rootPids: [401],
-            processCount: 2,
-            cpuPercent: 3,
-            rssBytes: 400,
-          }),
-        ],
-      }),
-    );
-
-    expect(handle.store.getState().taskSummary).toEqual({
-      cpuPercent: 25,
-      rssBytes: 1_000,
-      trackedProcessCount: 10,
-      openTerminalCount: 2,
-      tuiAgentCount: 1,
-      guiAgentCount: 1,
-    });
-    handle.dispose();
-  });
-
-  it("includes host app usage in the task summary totals", () => {
-    const fake = makeFakeClient();
-    const handle = createResourcesStore({
-      epicId: "epic-1",
+      scope: { kind: "epic", epicId: "epic-1" },
       streamClientFactory: fake.factory,
     });
 
@@ -247,19 +228,13 @@ describe("createResourcesStore", () => {
     );
 
     expect(handle.store.getState().app?.process?.name).toBe("traycer-host");
-    expect(handle.store.getState().taskSummary).toMatchObject({
-      cpuPercent: 12,
-      rssBytes: 600,
-      trackedProcessCount: 3,
-      openTerminalCount: 1,
-    });
     handle.dispose();
   });
 
   it("replaces the epic aggregate on update", () => {
     const fake = makeFakeClient();
     const handle = createResourcesStore({
-      epicId: "epic-1",
+      scope: { kind: "epic", epicId: "epic-1" },
       streamClientFactory: fake.factory,
     });
 
@@ -276,10 +251,45 @@ describe("createResourcesStore", () => {
     handle.dispose();
   });
 
+  it("merges 1.2 host-tree and Other snapshots without churning unchanged identities", () => {
+    const fake = makeFakeClient();
+    const handle = createResourcesStore({
+      scope: { kind: "global" },
+      streamClientFactory: fake.factory,
+    });
+    const hostTree = makeHostTree({});
+    const other = makeOther({});
+
+    fake.callbacks().onSnapshot(projection({ hostTree, other }));
+    expect(handle.store.getState().hostTree).toBe(hostTree);
+    expect(handle.store.getState().other).toBe(other);
+
+    fake.callbacks().onUpdate(
+      projection({
+        sampledAt: 2_000,
+        hostTree: makeHostTree({ sampledAt: 2_000 }),
+        other: makeOther({ sampledAt: 2_000 }),
+      }),
+    );
+    expect(handle.store.getState().hostTree).toBe(hostTree);
+    expect(handle.store.getState().other).toBe(other);
+
+    fake.callbacks().onUpdate(
+      projection({
+        sampledAt: 3_000,
+        hostTree: makeHostTree({ sampledAt: 3_000, cpuPercent: 30 }),
+        other: makeOther({ sampledAt: 3_000, rssBytes: 500 }),
+      }),
+    );
+    expect(handle.store.getState().hostTree?.cpuPercent).toBe(30);
+    expect(handle.store.getState().other?.rssBytes).toBe(500);
+    handle.dispose();
+  });
+
   it("preserves owner object identity when only sampledAt moves, and swaps it when metrics change", () => {
     const fake = makeFakeClient();
     const handle = createResourcesStore({
-      epicId: "epic-1",
+      scope: { kind: "epic", epicId: "epic-1" },
       streamClientFactory: fake.factory,
     });
     const key = resourceOwnerKey("terminal", "s1");
@@ -320,7 +330,7 @@ describe("createResourcesStore", () => {
   it("tracks connection status and closes the client on dispose", () => {
     const fake = makeFakeClient();
     const handle = createResourcesStore({
-      epicId: "epic-1",
+      scope: { kind: "epic", epicId: "epic-1" },
       streamClientFactory: fake.factory,
     });
 
@@ -344,7 +354,7 @@ describe("resourcesRegistry", () => {
     const acquire = () =>
       resourcesRegistry.acquire(token.id, token, () =>
         createResourcesStore({
-          epicId: token.id,
+          scope: { kind: "epic", epicId: token.id },
           streamClientFactory: fake.factory,
         }),
       );
@@ -368,13 +378,13 @@ describe("resourcesRegistry", () => {
 
     const handleA = resourcesRegistry.acquire("epic-1", "token-a", () =>
       createResourcesStore({
-        epicId: "epic-1",
+        scope: { kind: "epic", epicId: "epic-1" },
         streamClientFactory: first.factory,
       }),
     );
     const handleB = resourcesRegistry.acquire("epic-1", "token-b", () =>
       createResourcesStore({
-        epicId: "epic-1",
+        scope: { kind: "epic", epicId: "epic-1" },
         streamClientFactory: second.factory,
       }),
     );
@@ -389,13 +399,13 @@ describe("resourcesRegistry", () => {
     const second = makeFakeClient();
     resourcesRegistry.acquire("epic-1", "token-a", () =>
       createResourcesStore({
-        epicId: "epic-1",
+        scope: { kind: "epic", epicId: "epic-1" },
         streamClientFactory: first.factory,
       }),
     );
     resourcesRegistry.acquire("epic-2", "token-b", () =>
       createResourcesStore({
-        epicId: "epic-2",
+        scope: { kind: "epic", epicId: "epic-2" },
         streamClientFactory: second.factory,
       }),
     );
@@ -426,14 +436,8 @@ describe("resourcesRegistry", () => {
 
     const global = resourcesRegistry.getGlobalProjection();
     expect(global.entries).toHaveLength(2);
+    // Only the latest app snapshot is exposed (charged once, not summed per epic).
     expect(global.app?.sampledAt).toBe(2_000);
-    expect(global.summary).toMatchObject({
-      cpuPercent: 20,
-      rssBytes: 1_100,
-      trackedProcessCount: 5,
-      openTerminalCount: 1,
-      tuiAgentCount: 0,
-      guiAgentCount: 1,
-    });
+    expect(global.owners).toHaveLength(2);
   });
 });

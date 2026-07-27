@@ -9,8 +9,12 @@ import {
 } from "react";
 import { useChatMessageActions } from "./use-chat-message-actions";
 import { useChatQueueActions } from "./use-chat-queue-actions";
+import type { ChatForkMode } from "@/components/chat/chat-message";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import { toast } from "sonner";
+import { useTabProvidersList } from "@/hooks/providers/use-tab-providers-list-query";
+import { TombstonedProfileProvider } from "@/components/chat/tombstoned-profile-provider";
 import type {
   InterviewAnswer,
   Message,
@@ -22,6 +26,7 @@ import type {
   ChatRunSettings,
 } from "@traycer/protocol/host/agent/gui/subscribe";
 import type { WorktreeBinding } from "@traycer/protocol/host/worktree-schemas";
+import type { GuiHarnessId } from "@traycer/protocol/host/index";
 import {
   ChatMessages,
   type ChatMessageScrollRequest,
@@ -69,6 +74,7 @@ import {
 import type { EpicNodeRef } from "@/stores/epics/canvas/types";
 import {
   mentionRootsFromWorktreeBinding,
+  mentionRootsFromWorktreeBindingAndIntent,
   useWorkspaceMentionRoots,
   worktreeBindingIsFolderless,
 } from "@/hooks/composer/use-workspace-mention-roots";
@@ -92,9 +98,19 @@ import { useAuthStore } from "@/stores/auth/auth-store";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useHostClient, useHostBinding } from "@/lib/host";
 import { useHostReachability } from "@/hooks/agent/use-host-reachability";
-import { useEpicCreateChat } from "@/hooks/epic/use-epic-chat-mutations";
+import {
+  useEpicCreateChat,
+  useEpicUpdateChatRunSettings,
+} from "@/hooks/epic/use-epic-chat-mutations";
+import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { cloneChatOnHostSwitch } from "@/lib/commands/actions/clone-chat-on-host-switch";
-import { ChatDeadTileBanner } from "./dead-tile-banner";
+import { enqueuePersistChatRunSettings } from "@/lib/chats/chat-run-settings-write-queue";
+import {
+  findManualCompactCommand,
+  promoteQueuedMessageToFront,
+} from "@/lib/chats/compact-conversation";
+import { useSlashCommands } from "@/hooks/composer/use-slash-commands";
+import { ChatDeadTileBanner, ChatHostStartingBanner } from "./dead-tile-banner";
 import { useHostQuery } from "@/hooks/host/use-host-query";
 import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
 import { flattenCollaborators } from "@/hooks/epics/use-epic-collaborators-query";
@@ -107,6 +123,7 @@ import { useChatActions } from "@/hooks/chats/use-chat-actions";
 import { useChatSetupFailureRestoreDriver } from "@/hooks/chats/use-chat-setup-failure-restore-driver";
 import { useSetupTerminalListRefreshDriver } from "@/hooks/chats/use-setup-terminal-list-refresh-driver";
 import { useSetupTerminalTabRegisterDriver } from "@/hooks/chats/use-setup-terminal-tab-register-driver";
+import { emitChatStreamErrorNotification } from "@/stores/notifications/app-local-notifications-store";
 import { type InitialChatHandoffScope } from "@/stores/epics/initial-chat-handoff-store";
 import { contentBlocksText } from "@/lib/chat/content-block-text";
 import { buildSubmittedChatJSONContent } from "@/lib/composer/tiptap-json-content";
@@ -121,6 +138,7 @@ import {
   useWorktreeIntentStagingStore,
   worktreeStagingKeyString,
 } from "@/stores/worktree/worktree-intent-staging-store";
+import { useEpicTileNavigation } from "@/hooks/epic/use-epic-tile-navigation";
 import {
   agentModelKey,
   resolveAgentReasoningLabel,
@@ -154,13 +172,11 @@ import { ChatTileErrorNoticeToasts } from "./chat-tile-error-notice-toasts";
 import { HostWorkspaceSelector } from "@/components/home/host-workspace-selector/host-workspace-selector";
 import type { FatalErrorDetails } from "@traycer/protocol/framework/ws-protocol";
 import type { TraycerNextStepOption } from "@/markdown/traycer-next-steps";
-import {
-  ChatLowerInteractionSurfaces,
-  InertChatComposer,
-} from "./chat-tile-lower-surfaces";
+import { ChatLowerInteractionSurfaces } from "./chat-tile-lower-surfaces";
 import { BrowserSessionDock } from "./browser-session-dock";
 import { BrowserComposerContextChip } from "./browser-composer-context-chip";
 import { useBrowserContextAttachmentHandler } from "./browser-context-attachment-handler";
+import { composerHasBlockingApprovals } from "./chat-approval-visibility";
 import {
   chatTileUiReducer,
   createInitialChatTileUiState,
@@ -178,9 +194,19 @@ import {
 import { ChatTileLoading, ChatTileError } from "./chat-tile-runtime-gate";
 import { SurfaceActivityProvider } from "@/components/home/composer/surface-activity-context";
 
-const EMPTY_MENTION_ROOTS: ReadonlyArray<string> = [];
 const EMPTY_WORKSPACE_PATH_SET: ReadonlySet<string> = new Set();
 const EMPTY_BACKGROUND_STOP_TASK_IDS: ReadonlySet<string> = new Set();
+// How long a compact-conversation click stays locked out against a repeat
+// click. Not tied to the send settling - just long enough that a double-click
+// or double-tap can't fire the compaction twice.
+const COMPACT_ACTION_LOCK_MS = 1500;
+
+/** Per-chat compact-conversation state, keyed by `handle.chatId` - see the comment on `compactConversation`. */
+interface CompactChatState {
+  locked: boolean;
+  lockTimeoutId: number | null;
+  cancelPromotion: (() => void) | null;
+}
 
 interface ChatTileProps {
   node: EpicNodeRef;
@@ -250,20 +276,44 @@ export function ChatTile(props: ChatTileProps) {
   const tabHostId = useTabHostId();
   const handle = useChatSessionHandle(node.id, tabHostId, chatRecord !== null);
   const reachability = useHostReachability(tabHostId);
+  // Feeds `TombstonedProfileProvider` below - "ran on <label> (removed)" for
+  // a message anchored to a since-tombstoned profile. Shares the same
+  // tab-scoped query the reauth gate/rate-limit prompt already read, so this
+  // costs no extra host RPC.
+  const providersList = useTabProvidersList({
+    enabled: true,
+    subscribed: false,
+  });
   // The clone-offer hook runs `useEpicCreateChat`, which subscribes to
   // the host runtime. Mount it only when the banner is actually
   // shown so the live render path does not pay the subscription cost
   // (and tests that omit the host runtime provider stay green).
-  const deadTileBanner =
-    reachability.status === "unreachable" ? (
-      <ChatDeadTileBannerContainer
-        epicId={epicId}
-        tabId={viewTabId}
-        sourceHostId={tabHostId}
-        hostLabel={reachability.hostLabel}
-        testId={`chat-dead-tile-${node.id}`}
-      />
-    ) : null;
+  const deadTileBanner = (() => {
+    if (reachability.status === "unreachable") {
+      return (
+        <ChatDeadTileBannerContainer
+          epicId={epicId}
+          tabId={viewTabId}
+          chatId={node.id}
+          sourceHostId={tabHostId}
+          hostLabel={reachability.hostLabel}
+          testId={`chat-dead-tile-${node.id}`}
+        />
+      );
+    }
+    if (reachability.status === "host-starting") {
+      // The local host hasn't published yet (boot/ensure/wake). Never offer
+      // Clone here - the bound host is most likely this machine, seconds
+      // from converging; cloning would fork a healthy thread.
+      return (
+        <ChatHostStartingBanner
+          className={undefined}
+          testId={`chat-host-starting-${node.id}`}
+        />
+      );
+    }
+    return null;
+  })();
 
   if (handle === null) {
     return (
@@ -274,12 +324,6 @@ export function ChatTile(props: ChatTileProps) {
       >
         {deadTileBanner}
         <ChatTileLoading />
-        <ChatTileFallbackComposer
-          node={node}
-          viewTabId={viewTabId}
-          isActive={isActive}
-          currentEpicId={epicId}
-        />
       </div>
     );
   }
@@ -287,63 +331,26 @@ export function ChatTile(props: ChatTileProps) {
   return (
     <div className="flex h-full min-h-0 flex-col" data-node-id={node.id}>
       {deadTileBanner}
-      <ChatTileSessionView
-        handle={handle}
-        node={node}
-        viewTabId={viewTabId}
-        tileId={props.tileId}
-        isActive={isActive}
-        currentEpicId={epicId}
-      />
+      <TombstonedProfileProvider
+        providers={providersList.data?.providers ?? []}
+      >
+        <ChatTileSessionView
+          handle={handle}
+          node={node}
+          viewTabId={viewTabId}
+          tileId={props.tileId}
+          isActive={isActive}
+          currentEpicId={epicId}
+        />
+      </TombstonedProfileProvider>
     </div>
-  );
-}
-
-function ChatTileFallbackComposer(props: {
-  readonly node: EpicNodeRef;
-  readonly viewTabId: string;
-  readonly isActive: boolean;
-  readonly currentEpicId: string;
-}): ReactNode {
-  const hostId = useTabHostId();
-  const workspaceControls = useMemo(
-    () => (
-      <HostWorkspaceSelector
-        surface={{
-          kind: "chat",
-          hostId,
-          epicId: props.currentEpicId,
-          tabId: props.viewTabId,
-          ownerId: props.node.id,
-          binding: null,
-          isOwnerActive: false,
-          hasActiveTurn: false,
-          // Pre-subscribe setup state: no binding resolved yet, so the chip shows
-          // its loading affordance (never a "no folders" terminal state).
-          missingWorktreePaths: [],
-          bindingResolved: false,
-          onBindingCommitted: null,
-        }}
-      />
-    ),
-    [hostId, props.currentEpicId, props.node.id, props.viewTabId],
-  );
-  return (
-    <InertChatComposer
-      taskId={props.node.id}
-      isActive={props.isActive}
-      mentionRoots={EMPTY_MENTION_ROOTS}
-      fallbackToGlobalMentionRoots
-      currentEpicId={props.currentEpicId}
-      workspaceControls={workspaceControls}
-      topSpacing="normal"
-    />
   );
 }
 
 interface ChatDeadTileBannerContainerProps {
   readonly epicId: string;
   readonly tabId: string;
+  readonly chatId: string;
   readonly sourceHostId: string;
   readonly hostLabel: string;
   readonly testId: string;
@@ -352,10 +359,12 @@ interface ChatDeadTileBannerContainerProps {
 function ChatDeadTileBannerContainer(
   props: ChatDeadTileBannerContainerProps,
 ): ReactNode {
+  const chatRecord = useChatById(props.chatId);
   const offer = useChatCloneOnHostSwitch({
     epicId: props.epicId,
     tabId: props.tabId,
     sourceHostId: props.sourceHostId,
+    sourceSettings: chatRecord?.settings ?? null,
   });
   return (
     <ChatDeadTileBanner
@@ -372,6 +381,7 @@ interface UseChatCloneOnHostSwitchArgs {
   readonly epicId: string;
   readonly tabId: string;
   readonly sourceHostId: string;
+  readonly sourceSettings: ChatRunSettings | null;
 }
 
 /**
@@ -387,6 +397,7 @@ function useChatCloneOnHostSwitch(args: UseChatCloneOnHostSwitchArgs): {
 } {
   const binding = useHostBinding();
   const createChat = useEpicCreateChat();
+  const navigateNestedFocus = useEpicNestedFocusNavigation();
   const cancelRef = useRef<(() => void) | null>(null);
   const [cloning, setCloning] = useState(false);
 
@@ -410,13 +421,30 @@ function useChatCloneOnHostSwitch(args: UseChatCloneOnHostSwitchArgs): {
     cancelRef.current = cloneChatOnHostSwitch({
       epicId: args.epicId,
       tabId: args.tabId,
+      sourceHostId: args.sourceHostId,
       targetHostId: target.hostId,
       directory: binding.directory,
+      sourceSettings: args.sourceSettings,
+      globalClient: binding.hostClient,
+      onProfileFallbackToAmbient: () => {
+        toast(
+          "Continuing on the Terminal account - your profile isn't available on this host.",
+        );
+      },
+      navigateNestedFocus,
       createChat: (request, callbacks) => {
         createChat.mutate(request, { onSuccess: callbacks.onSuccess });
       },
     });
-  }, [binding, createChat, args.epicId, args.tabId, args.sourceHostId]);
+  }, [
+    binding,
+    createChat,
+    navigateNestedFocus,
+    args.epicId,
+    args.tabId,
+    args.sourceHostId,
+    args.sourceSettings,
+  ]);
 
   return { clone, cloning };
 }
@@ -489,12 +517,57 @@ function messageIdForBlock(
   return owner?.id ?? null;
 }
 
+interface BackgroundClickTarget {
+  readonly blockId: string;
+  readonly card: ChatScrollCardKind;
+}
+
+// Both a plain agent and a workflow run render as a `subagent`-block card (a
+// workflow is a dedicated rendering of that same block, never a distinct
+// persisted type), so either kind opens via the same subagent open-store.
+function backgroundItemCardKind(
+  kind: BackgroundItem["kind"],
+): ChatScrollCardKind {
+  return kind === "subagent" || kind === "workflow" ? "subagent" : "tool";
+}
+
+/**
+ * A nested agent - and anything it owns (commands/monitors, or a workflow's
+ * fleet-attributed background work) - has no card of its own in the
+ * transcript; it only renders inside its top-level ancestor's "Sub-agents"
+ * section. Clicking its panel row must therefore scroll to and expand the
+ * ANCESTOR card, walking up `parentTaskId` until a top-level item (null
+ * parent) is reached. If the chain runs into an ancestor that already
+ * settled (no longer in the live `allItems` list, so its blockId is
+ * unknown) or a cycle, the walk stops at the deepest item it could still
+ * resolve - an honest best-effort target rather than a wrong guess.
+ */
+function resolveBackgroundClickTarget(
+  item: BackgroundItem,
+  allItems: ReadonlyArray<BackgroundItem>,
+): BackgroundClickTarget {
+  const itemsByTaskId = new Map(
+    allItems.map((entry) => [entry.taskId, entry] as const),
+  );
+  const visited = new Set<string>([item.taskId]);
+  let current = item;
+  while (current.parentTaskId !== null && !visited.has(current.parentTaskId)) {
+    const parent = itemsByTaskId.get(current.parentTaskId);
+    if (parent === undefined) break;
+    visited.add(parent.taskId);
+    current = parent;
+  }
+  return {
+    blockId: current.blockId,
+    card: backgroundItemCardKind(current.kind),
+  };
+}
+
 function ChatTileSessionView(props: ChatTileSessionViewProps) {
   const view = useChatTileSessionViewModel(props);
   const hostId = useTabHostId();
   const systemOverlayActive = useAnySystemOverlayActive();
-  const openPreview = useEpicCanvasStore((s) => s.openTilePreviewInTab);
-  const openPinned = useEpicCanvasStore((s) => s.openTileInTab);
+  const tileNavigation = useEpicTileNavigation();
   const [backgroundScrollRequest, setBackgroundScrollRequest] =
     useState<ChatMessageScrollRequest | null>(null);
   const backgroundScrollRequestIdRef = useRef(0);
@@ -526,12 +599,13 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
   );
   const scrollToBackgroundItem = useCallback(
     (item: BackgroundItem): void => {
-      scrollToBlock(
-        item.blockId,
-        item.kind === "subagent" ? "subagent" : "tool",
+      const target = resolveBackgroundClickTarget(
+        item,
+        view.lower.backgroundItems ?? [],
       );
+      scrollToBlock(target.blockId, target.card);
     },
-    [scrollToBlock],
+    [scrollToBlock, view.lower.backgroundItems],
   );
   // Canvas-owned implementation of the chat file-change click contract. The
   // chat components receive only inert row handlers; they do not know about
@@ -546,8 +620,10 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
           filePath: request.filePath,
         });
         return {
-          onClick: () => openPreview(view.viewTabId, tile),
-          onDoubleClick: () => openPinned(view.viewTabId, tile),
+          onClick: () =>
+            tileNavigation.openTilePreviewInTab(view.viewTabId, tile),
+          onDoubleClick: () =>
+            tileNavigation.openTileInTab(view.viewTabId, tile),
         };
       },
       cumulative: (filePath) => {
@@ -557,8 +633,10 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
           filePath,
         });
         return {
-          onClick: () => openPreview(view.viewTabId, tile),
-          onDoubleClick: () => openPinned(view.viewTabId, tile),
+          onClick: () =>
+            tileNavigation.openTilePreviewInTab(view.viewTabId, tile),
+          onDoubleClick: () =>
+            tileNavigation.openTileInTab(view.viewTabId, tile),
         };
       },
       cumulativeBundle: (filePaths) => {
@@ -567,7 +645,7 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
           chatId: view.node.id,
           filePaths,
         });
-        return () => openPinned(view.viewTabId, tile);
+        return () => tileNavigation.openTileInTab(view.viewTabId, tile);
       },
       hash: (request) => {
         const tile = makeSnapshotHashDiffTile({
@@ -579,12 +657,14 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
           title: request.title,
         });
         return {
-          onClick: () => openPreview(view.viewTabId, tile),
-          onDoubleClick: () => openPinned(view.viewTabId, tile),
+          onClick: () =>
+            tileNavigation.openTilePreviewInTab(view.viewTabId, tile),
+          onDoubleClick: () =>
+            tileNavigation.openTileInTab(view.viewTabId, tile),
         };
       },
     }),
-    [hostId, openPinned, openPreview, view.node.id, view.viewTabId],
+    [hostId, tileNavigation, view.node.id, view.viewTabId],
   );
 
   return (
@@ -593,6 +673,8 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
         <div
           data-testid="chat-tile"
           data-node-id={view.node.id}
+          data-chat-keyboard-scroll-scope=""
+          data-active={props.isActive ? "true" : "false"}
           className="flex h-full min-h-0 flex-col"
         >
           <ChatSessionMessagesSurface
@@ -601,6 +683,7 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
             onRetry={view.onChatRetry}
             restoreContext={view.restoreContext}
             node={view.node}
+            epicId={view.currentEpicId}
             viewTabId={view.viewTabId}
             tabHostId={view.tabHostId}
             workspaceRoots={view.linkResolutionRoots}
@@ -630,27 +713,29 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
            * return. Providers compose by narrowing only — the context can never
            * widen past the parent.
            */}
-          <SurfaceActivityProvider active={view.surfaceVisible}>
-            <ChatLowerInteractionSurfaces
-              epicId={view.currentEpicId}
-              chatId={view.node.id}
-              runtime={view.lower.runtime}
-              access={view.lower.access}
-              turn={view.lower.turn}
-              interview={view.lower.interview}
-              approvals={view.lower.approvals}
-              queue={view.lower.queue}
-              composer={view.lower.composer}
-              todo={view.todo}
-              restoreContext={view.restoreContext}
-              backgroundItems={view.lower.backgroundItems}
-              backgroundStopPendingTaskIds={
-                view.lower.backgroundStopPendingTaskIds
-              }
-              backgroundStopAllPending={view.lower.backgroundStopAllPending}
-              onBackgroundItemClick={scrollToBackgroundItem}
-            />
-          </SurfaceActivityProvider>
+          {view.snapshotLoaded ? (
+            <SurfaceActivityProvider active={view.surfaceVisible}>
+              <ChatLowerInteractionSurfaces
+                epicId={view.currentEpicId}
+                chatId={view.node.id}
+                runtime={view.lower.runtime}
+                access={view.lower.access}
+                turn={view.lower.turn}
+                interview={view.lower.interview}
+                approvals={view.lower.approvals}
+                queue={view.lower.queue}
+                composer={view.lower.composer}
+                todo={view.todo}
+                restoreContext={view.restoreContext}
+                backgroundItems={view.lower.backgroundItems}
+                backgroundStopPendingTaskIds={
+                  view.lower.backgroundStopPendingTaskIds
+                }
+                backgroundStopAllPending={view.lower.backgroundStopAllPending}
+                onBackgroundItemClick={scrollToBackgroundItem}
+              />
+            </SurfaceActivityProvider>
+          ) : null}
           <RevertOnEditDialog
             open={view.revertOnEdit.open}
             onOpenChange={view.revertOnEdit.onOpenChange}
@@ -796,6 +881,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       queue: s.queue,
       runStatus: s.runStatus,
       activeTurn: s.activeTurn,
+      steerProtocolSupported: s.steerProtocolSupported,
       turnInProgress: s.turnInProgress,
       pendingApprovals: s.pendingApprovals,
       pendingFileEditApprovals: s.pendingFileEditApprovals,
@@ -860,6 +946,22 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     () => mentionRootsFromWorktreeBinding(state.worktreeBinding),
     [state.worktreeBinding],
   );
+  // Composer-scoped roots: the staged worktree intent layers over the binding
+  // (`stagedEntry ?? bindingEntry`), matching what the send path will
+  // materialize. Next-message surfaces - the composer's mention search and
+  // slash-command discovery, and the inline-edit composer whose resend also
+  // carries the staged intent - read these, so a staged replacement stops
+  // discovery from probing the superseded (possibly deleted) worktree path.
+  // History-scoped link resolution below intentionally stays on the committed
+  // binding: existing messages ran in the old workspace.
+  const composerMentionRoots = useMemo(
+    () =>
+      mentionRootsFromWorktreeBindingAndIntent(
+        state.worktreeBinding,
+        stagedChatWorktreeIntent ?? null,
+      ),
+    [state.worktreeBinding, stagedChatWorktreeIntent],
+  );
   const isFolderlessWorkspace = worktreeBindingIsFolderless(
     state.worktreeBinding,
   );
@@ -870,6 +972,18 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
   // global roots.
   const linkResolutionRoots = useWorkspaceMentionRoots(
     mentionRoots,
+    !isFolderlessWorkspace,
+  );
+  // The exact roots the active composer resolves to for slash-command
+  // discovery (`ChatComposerImpl` derives the same value internally from
+  // `composerMentionRoots` + this same fallback flag). The context-usage
+  // chip's own catalog lookup shares this rather than the raw
+  // `composerMentionRoots`, so it lands on the SAME `agent.gui.listCommands`
+  // cache entry the composer already warmed instead of opening a second one
+  // with a different (and, on a folder-fallback chat, narrower) working
+  // directory set.
+  const resolvedComposerMentionRoots = useWorkspaceMentionRoots(
+    composerMentionRoots,
     !isFolderlessWorkspace,
   );
   // The composer is runnable when the chat carries its own folder binding OR
@@ -1025,8 +1139,8 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
   const approvalDecisionPending = Object.values(state.pendingActions).some(
     (action) => action.action === "approvalDecision",
   );
-  const stopDisabled =
-    !canAct || stopPending || composerActiveTurnStatus === "stopping";
+  const turnStopBusy = stopPending || composerActiveTurnStatus === "stopping";
+  const stopDisabled = !canAct || turnStopBusy;
   const chatActions = useChatActions(handle);
   const restoreActionPending = useMemo(
     () =>
@@ -1157,6 +1271,25 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       ),
     [hostPendingInterviewIds, renderedMessages],
   );
+  // Block IDs whose answer/skip action is still in flight or accepted-but-
+  // unresolved. Recomputes only when actions change (not per streaming token),
+  // and yields a stable `false` whenever no interview is pending, so the
+  // composer memo below never churns during normal streaming.
+  const interviewActionBlockIds = useMemo(
+    () =>
+      new Set(
+        [
+          ...Object.values(state.pendingActions),
+          ...Object.values(state.acceptedActions),
+        ]
+          .map((action) => action.interviewBlockId)
+          .filter((blockId): blockId is string => blockId !== null),
+      ),
+    [state.pendingActions, state.acceptedActions],
+  );
+  const interviewBusy =
+    pendingInterview !== null &&
+    interviewActionBlockIds.has(pendingInterview.blockId);
   const showCompletedRestoreToast = useCallback(() => {
     if (state.restore === null || state.restore.kind !== "completed") return;
     showRestoreResultToast(state.restore.results);
@@ -1190,27 +1323,29 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     [chatActions],
   );
 
-  const { messageActionsFor, revertOnEdit } = useChatMessageActions({
-    dispatchUi,
-    activeInlineEdit,
-    canModifyMessages,
-    canAct,
-    currentComposerSettings,
-    editSettings,
-    mentionRoots,
-    currentEpicId,
-    node,
-    chatTitle: projectedChatTitle ?? state.chat?.title ?? null,
-    chatParentId: state.chat?.parentId ?? null,
-    messages: state.messages,
-    events: state.events,
-    profile,
-    chatActions,
-    confirmingDeleteMessageId: uiState.confirmingDeleteMessageId,
-    setForkTarget,
-    worktreeBinding: state.worktreeBinding,
-    revertOnEditOpen: uiState.revertOnEditOpen,
-  });
+  const { messageActionsFor, forkAtAssistantMessage, revertOnEdit } =
+    useChatMessageActions({
+      dispatchUi,
+      activeInlineEdit,
+      canModifyMessages,
+      canAct,
+      currentComposerSettings,
+      editSettings,
+      mentionRoots: composerMentionRoots,
+      fallbackToGlobalMentionRoots: !isFolderlessWorkspace,
+      currentEpicId,
+      node,
+      chatTitle: projectedChatTitle ?? state.chat?.title ?? null,
+      chatParentId: state.chat?.parentId ?? null,
+      messages: state.messages,
+      events: state.events,
+      profile,
+      chatActions,
+      confirmingDeleteMessageId: uiState.confirmingDeleteMessageId,
+      setForkTarget,
+      worktreeBinding: state.worktreeBinding,
+      revertOnEditOpen: uiState.revertOnEditOpen,
+    });
 
   const submitMessage = useCallback(
     (input: ChatComposerSubmitInput): boolean => {
@@ -1226,7 +1361,20 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
           input.content,
         );
         if (actionId === null) return false;
-        if (
+        // Cmd+Enter in edit mode = save-and-steer (decision 14): the steer
+        // carries the settings and the host picks safe-point vs interrupt-restart
+        // (any drift was already confirmed by the composer's steer dialog).
+        // Plain Enter just saves the edit with its restamped settings.
+        if (input.deliveryPolicy === "after_safe_point") {
+          if (
+            chatActions.queueSteerNow(
+              activeEditingQueueItemId,
+              input.settings,
+            ) === null
+          ) {
+            return false;
+          }
+        } else if (
           chatActions.queueSettingsUpdate(
             activeEditingQueueItemId,
             input.settings,
@@ -1246,12 +1394,13 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
           content: input.content,
         },
       );
-      const sent = chatActions.sendMessage(
-        input.content,
+      const sent = chatActions.sendMessage({
+        content: input.content,
         sender,
-        input.settings,
-        input.attachments,
-      );
+        settings: input.settings,
+        attachments: input.attachments,
+        deliveryPolicy: input.deliveryPolicy,
+      });
       if (sent === null) return false;
       if (shouldMarkTitlePending) {
         useEpicCanvasStore
@@ -1272,26 +1421,119 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       state.pendingUserMessages,
     ],
   );
+  const canSendNextStep =
+    canAct &&
+    !turnStopBusy &&
+    !composerHasBlockingApprovals(
+      state.pendingApprovals,
+      state.pendingFileEditApprovals.length,
+    );
   const sendNextStep = useCallback(
     (option: TraycerNextStepOption): boolean => {
-      if (!canAct) return false;
+      if (!canSendNextStep) return false;
       const sender = userMessageSenderForProfile(profile);
       if (sender === null) return false;
       const content = buildSubmittedChatJSONContent(
         plainTextPromptContent(option.prompt),
       );
       return (
-        chatActions.sendMessage(content, sender, nextStepSettings, []) !== null
+        chatActions.sendMessage({
+          content,
+          sender,
+          settings: nextStepSettings,
+          attachments: [],
+          deliveryPolicy: "auto",
+        }) !== null
       );
     },
-    [canAct, chatActions, nextStepSettings, profile],
+    [canSendNextStep, chatActions, nextStepSettings, profile],
+  );
+  // Runs the harness's own compaction from the context-usage chip. Never
+  // interrupts: with a turn running (or work already queued) the compact
+  // command is queued and then promoted to the front so it runs next, and
+  // only an otherwise-idle chat compacts outright - queueing there would just
+  // park a one-item queue the user has to release by hand. `runNow` has no
+  // effect on the host - `deliveryPolicy` only ever branches on
+  // `after_safe_point` - it purely decides, client-side, whether the
+  // promotion watcher below needs to be armed at all.
+  //
+  // `ChatTile` is rendered without a `key` on `node.id` (`tile-render.tsx`,
+  // `tab-group-view.tsx`), so switching this slot to a different chat
+  // repoints `handle` in place rather than remounting. State is keyed by
+  // `handle.chatId` rather than held in one shared ref, so compacting chat B
+  // can never clear chat A's click-lock early or cancel A's pending
+  // promotion - each chat's send against `handle.store` (a durable,
+  // registry-owned store that outlives this tile's display of it,
+  // `useChatSessionHandle`) settles on its own regardless of what this slot
+  // repoints to afterward.
+  const compactStateByChatIdRef = useRef(new Map<string, CompactChatState>());
+  useEffect(
+    () => () => {
+      for (const state of compactStateByChatIdRef.current.values()) {
+        if (state.lockTimeoutId !== null) {
+          window.clearTimeout(state.lockTimeoutId);
+        }
+        state.cancelPromotion?.();
+      }
+    },
+    [],
+  );
+  const compactConversation = useCallback(
+    (commandName: string): void => {
+      if (!canSendNextStep) return;
+      const states = compactStateByChatIdRef.current;
+      const existing = states.get(handle.chatId);
+      if (existing?.locked === true) return;
+      const sender = userMessageSenderForProfile(profile);
+      if (sender === null) return;
+      const content = buildSubmittedChatJSONContent(
+        plainTextPromptContent(`/${commandName}`),
+      );
+      // A cheap re-entrancy guard against a double-click firing two real
+      // compactions: the optimistic-queue dedupe only suppresses the second
+      // row's on-screen echo, not the frame that already went to the host.
+      const lockTimeoutId = window.setTimeout(() => {
+        const current = states.get(handle.chatId);
+        if (current !== undefined) current.locked = false;
+      }, COMPACT_ACTION_LOCK_MS);
+      const state: CompactChatState = {
+        locked: true,
+        lockTimeoutId,
+        cancelPromotion: existing?.cancelPromotion ?? null,
+      };
+      states.set(handle.chatId, state);
+      const { activeTurn, queue } = handle.store.getState();
+      const runNow = activeTurn === null && queue.items.length === 0;
+      const sent = chatActions.sendMessage({
+        content,
+        sender,
+        settings: nextStepSettings,
+        attachments: [],
+        deliveryPolicy: runNow ? "auto" : "after_turn",
+      });
+      if (sent === null || runNow) return;
+      state.cancelPromotion?.();
+      state.cancelPromotion = promoteQueuedMessageToFront({
+        store: handle.store,
+        messageId: sent.messageId,
+        reorder: chatActions.queueReorder,
+      });
+    },
+    [
+      canSendNextStep,
+      chatActions,
+      handle.chatId,
+      handle.store,
+      nextStepSettings,
+      profile,
+    ],
   );
   const nextStepActions = useMemo(
     () => ({
-      canSend: canAct,
+      canSend: canSendNextStep,
       onSend: sendNextStep,
     }),
-    [canAct, sendNextStep],
+    [canSendNextStep, sendNextStep],
   );
   const sendImplementPlanMessage = useCallback((): boolean => {
     if (!canAct) return false;
@@ -1301,7 +1543,13 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       plainTextPromptContent("Implement the plan above."),
     );
     return (
-      chatActions.sendMessage(content, sender, nextStepSettings, []) !== null
+      chatActions.sendMessage({
+        content,
+        sender,
+        settings: nextStepSettings,
+        attachments: [],
+        deliveryPolicy: "auto",
+      }) !== null
     );
   }, [canAct, chatActions, nextStepSettings, profile]);
   const planActions = useMemo<ChatPlanActionsContextValue>(
@@ -1319,6 +1567,26 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       node.id,
       sendImplementPlanMessage,
     ],
+  );
+  // Durable settings sync: mirror composer selection changes onto the host's
+  // per-chat record so headless turns (incoming A2A messages) run on the
+  // freshly picked profile. Best-effort - an old host rejects the optional
+  // method with E_HOST_UNSUPPORTED and behavior degrades to persist-on-send.
+  // Routed through the module-scoped `enqueuePersistChatRunSettings` (not a
+  // local chain) so a task-wide switch's sibling writes
+  // (`useTaskProfileRateLimitSwitch`) serialize against THIS chat's own
+  // composer writes too, not just against each other.
+  const updateChatRunSettings = useEpicUpdateChatRunSettings();
+  const updateChatRunSettingsMutateAsync = updateChatRunSettings.mutateAsync;
+  const persistChatRunSettings = useCallback(
+    (settings: ChatRunSettings): void => {
+      enqueuePersistChatRunSettings(updateChatRunSettingsMutateAsync, {
+        epicId: currentEpicId,
+        chatId: node.id,
+        settings,
+      });
+    },
+    [currentEpicId, node.id, updateChatRunSettingsMutateAsync],
   );
   const {
     editQueuedItem,
@@ -1341,6 +1609,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     activeEditingQueueItemId,
     dispatchUi,
     setEpicRunSettings,
+    persistChatRunSettings,
   });
   const handleForkOpenChange = useCallback((open: boolean): void => {
     if (!open) setForkTarget(null);
@@ -1390,8 +1659,23 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     ],
   );
   const usageChip = useMemo(
-    () => <ContextUsageChipForChat handle={handle} />,
-    [handle],
+    () => (
+      <ContextUsageChipForChat
+        handle={handle}
+        harnessId={currentComposerSettings.harnessId}
+        workingDirectories={resolvedComposerMentionRoots}
+        isActive={isActive}
+        onCompact={canSendNextStep ? compactConversation : null}
+      />
+    ),
+    [
+      canSendNextStep,
+      compactConversation,
+      resolvedComposerMentionRoots,
+      currentComposerSettings.harnessId,
+      handle,
+      isActive,
+    ],
   );
   const browserContextChip = useMemo(
     () => (
@@ -1433,22 +1717,68 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     [accessFlags.isViewer, canAct],
   );
 
+  // Steer capability is a stable boolean (flips only when the running turn's
+  // harness changes), so it never churns the memoized composer per streamed
+  // token. `getActiveTurnForSteer` reads the live turn at submit time for the
+  // settings-drift comparison, avoiding a reactive activeTurn prop.
+  const steerCapable = state.activeTurn?.sameTurnSteeringSupported ?? false;
+  const steerProtocolSupported = state.steerProtocolSupported;
+  const getActiveTurnForSteer = useCallback(
+    () => handle.store.getState().activeTurn,
+    [handle.store],
+  );
   const lowerTurn = useMemo(
     () => ({
       activeTurnStatus: composerActiveTurnStatus,
+      steerCapable,
+      steerProtocolSupported,
+      getActiveTurnForSteer,
       stopDisabled,
       onStopTurn: chatActions.stopTurn,
     }),
-    [composerActiveTurnStatus, stopDisabled, chatActions.stopTurn],
+    [
+      composerActiveTurnStatus,
+      steerCapable,
+      steerProtocolSupported,
+      getActiveTurnForSteer,
+      stopDisabled,
+      chatActions.stopTurn,
+    ],
   );
 
+  const forkPendingInterviewAssistantMessageId =
+    pendingInterview?.assistantMessageId ?? null;
+  const forkFromPendingInterview = useMemo(
+    () =>
+      forkPendingInterviewAssistantMessageId === null
+        ? null
+        : (mode: ChatForkMode) =>
+            forkAtAssistantMessage(
+              forkPendingInterviewAssistantMessageId,
+              mode,
+              pendingInterview?.blockId ?? null,
+            ),
+    [
+      forkPendingInterviewAssistantMessageId,
+      forkAtAssistantMessage,
+      pendingInterview?.blockId,
+    ],
+  );
   const lowerInterview = useMemo(
     () => ({
       pending: pendingInterview,
+      isBusy: interviewBusy,
       onAnswer: handleInterviewAnswer,
       onError: handleInterviewError,
+      onFork: forkFromPendingInterview,
     }),
-    [pendingInterview, handleInterviewAnswer, handleInterviewError],
+    [
+      pendingInterview,
+      interviewBusy,
+      handleInterviewAnswer,
+      handleInterviewError,
+      forkFromPendingInterview,
+    ],
   );
 
   const lowerApprovals = useMemo(
@@ -1505,7 +1835,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       fallbackSettingsSeed: composerFallbackSettingsSeed,
       nodeId: node.id,
       isActive,
-      mentionRoots,
+      mentionRoots: composerMentionRoots,
       fallbackToGlobalMentionRoots: !isFolderlessWorkspace,
       currentEpicId,
       onSubmitMessage: submitMessage,
@@ -1519,7 +1849,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       composerFallbackSettingsSeed,
       node.id,
       isActive,
-      mentionRoots,
+      composerMentionRoots,
       isFolderlessWorkspace,
       currentEpicId,
       submitMessage,
@@ -1546,7 +1876,6 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     viewTabId,
     tileId,
     tabHostId: activeHostId,
-    mentionRoots,
     linkResolutionRoots,
     currentEpicId,
     snapshotLoaded: state.snapshotLoaded,
@@ -1591,6 +1920,7 @@ interface ChatSessionMessagesSurfaceProps {
   readonly onRetry: () => void;
   readonly restoreContext: ChatRestoreContextValue;
   readonly node: EpicNodeRef;
+  readonly epicId: string;
   readonly viewTabId: string;
   readonly tabHostId: string | null;
   readonly workspaceRoots: ReadonlyArray<string>;
@@ -1635,14 +1965,50 @@ function findLastAssistantUsage(
 
 function ContextUsageChipForChat(props: {
   readonly handle: ChatSessionStoreHandle;
+  readonly harnessId: GuiHarnessId;
+  readonly workingDirectories: ReadonlyArray<string>;
+  readonly isActive: boolean;
+  readonly onCompact: ((commandName: string) => void) | null;
 }): ReactNode {
   const usage = useStore(props.handle.store, selectContextUsage);
-  return <ContextUsageChip usage={usage} />;
+  const client = useTabHostClient();
+  // `workingDirectories` is the composer's own resolved mention roots
+  // (`resolvedComposerMentionRoots` in the parent), not the raw chat binding -
+  // that's what makes this the SAME `agent.gui.listCommands` cache entry
+  // `useKnownSlashCommandNames` already warms, not just a query sharing its
+  // `enabled: isActive` gate. An active tile therefore pays no extra RPC, and
+  // an inactive one still fetches nothing and shows no compact affordance - it
+  // also has no focusable composer to compact from.
+  const { data: commands } = useSlashCommands("", {
+    hostClient: client,
+    harnessId: props.harnessId,
+    workingDirectories: props.workingDirectories,
+    enabled: props.isActive,
+  });
+  const compactCommand = findManualCompactCommand(commands);
+  const requestCompact = props.onCompact;
+  // The catalog is matched on `providerKind`, not on name (a differently
+  // named compaction command is what this is for), so the literal text this
+  // sends has to come from the matched command rather than a hardcoded guess.
+  const onCompact =
+    compactCommand === null || requestCompact === null
+      ? null
+      : () => requestCompact(compactCommand.name);
+  return <ContextUsageChip usage={usage} onCompact={onCompact} />;
 }
 
 function ChatSessionMessagesSurface(
   props: ChatSessionMessagesSurfaceProps,
 ): ReactNode {
+  useEffect(() => {
+    if (props.fatalClose === null) return;
+    emitChatStreamErrorNotification({
+      epicId: props.epicId,
+      chatId: props.node.id,
+      details: props.fatalClose,
+    });
+  }, [props.fatalClose, props.epicId, props.node.id]);
+
   // A fatal close before any snapshot (CHAT_INVALID, CHAT_NOT_VISIBLE, …) means
   // the host will never send one. Surface the reason + a retry instead of an
   // indefinite spinner.
@@ -1764,6 +2130,7 @@ function useChatMissingWorktreeFocusRefresh(args: {
     params: { epicId: args.epicId, ownerId: args.chatId, ownerKind: "chat" },
     options: {
       enabled: args.hasBinding && args.surfaceVisible,
+      poll: false,
       staleTime: 0,
       refetchOnWindowFocus: true,
     },
@@ -1869,7 +2236,7 @@ function useCachedCollaborators(
     client,
     method: "epic.listCollaborators",
     params: { epicId },
-    options: { enabled: false },
+    options: { enabled: false, poll: false },
   });
   return useMemo(() => flattenCollaborators(data?.collaborators ?? []), [data]);
 }

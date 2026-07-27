@@ -1,3 +1,5 @@
+import type { GlobalShortcutId } from "@traycer-clients/shared/keybindings/global-shortcuts";
+
 export const runnerMutationKeys = {
   requestHostRespawn: () => ["runner.requestHostRespawn"] as const,
   serviceInstall: () => ["runner.serviceInstall"] as const,
@@ -9,14 +11,17 @@ export const runnerMutationKeys = {
   serviceEnableLinger: () => ["runner.serviceEnableLinger"] as const,
   traycerShellConfigSet: () => ["runner.traycer.shellConfigSet"] as const,
   traycerShellConfigReset: () => ["runner.traycer.shellConfigReset"] as const,
+  traycerShellConfigAdd: () => ["runner.traycer.shellConfigAdd"] as const,
+  traycerShellConfigRemove: () => ["runner.traycer.shellConfigRemove"] as const,
+  traycerShellRevertArgs: () => ["runner.traycer.shellRevertArgs"] as const,
   traycerEnvOverrideSet: () => ["runner.traycer.envOverrideSet"] as const,
   traycerEnvOverrideDelete: () => ["runner.traycer.envOverrideDelete"] as const,
-  traycerCliLogin: () => ["runner.traycer.cliLogin"] as const,
-  // Host-management mutations consumed by Settings → Host and the
-  // Doctor failure card.
-  hostInstall: () => ["runner.host.install"] as const,
-  hostEnsure: () => ["runner.host.ensure"] as const,
-  hostUpdate: () => ["runner.host.update"] as const,
+  // Host-management mutations consumed by the host gate, update banner,
+  // Settings → Host, and the Doctor failure card.
+  hostInstallVersion: () => ["runner.host.installVersion"] as const,
+  hostConvergeReady: () => ["runner.host.convergeReady"] as const,
+  hostApplyStaged: () => ["runner.host.applyStaged"] as const,
+  hostActivateInstalled: () => ["runner.host.activateInstalled"] as const,
   hostRestart: () => ["runner.host.restart"] as const,
   hostRegisterService: () => ["runner.host.registerService"] as const,
   hostDeregisterService: () => ["runner.host.deregisterService"] as const,
@@ -40,6 +45,9 @@ export const runnerMutationKeys = {
   // reloads. Keyed so the destructive action dedups and shows in devtools.
   clearAllLocalData: () => ["runner.clearAllLocalData"] as const,
   mermaidPngDownload: () => ["runner.mermaidPngDownload"] as const,
+  openExternalLink: () => ["runner.openExternalLink"] as const,
+  // Windows frameless title-bar menu strip: pop up a top-level native submenu.
+  openTopLevelMenu: () => ["runner.menu.openTopLevel"] as const,
   zoomSet: (scope: string | null) => ["runner.zoom.set", scope] as const,
   zoomStepIn: (scope: string | null) => ["runner.zoom.stepIn", scope] as const,
   zoomStepOut: (scope: string | null) =>
@@ -48,11 +56,13 @@ export const runnerMutationKeys = {
   // Settings → log level (desktop/cli/host). Machine-local config, not
   // host-scoped, so a single static key suffices.
   logLevelsSet: () => ["runner.logLevels.set"] as const,
+  setAllowPrereleaseUpdates: () =>
+    ["runner.appUpdates.setAllowPrerelease"] as const,
+  globalShortcutsSet: (id: GlobalShortcutId) =>
+    ["runner.globalShortcuts.set", id] as const,
 };
 
 export const runnerQueryKeys = {
-  serviceStatus: (service: object) =>
-    ["runner.serviceStatus", service] as const,
   serviceLogTail: (service: object, maxLines: number) =>
     ["runner.serviceLogTail", service, maxLines] as const,
   // `traycerCli: object` keys these queries to a specific runner-host
@@ -65,6 +75,11 @@ export const runnerQueryKeys = {
     ["runner.traycer.shellConfig", traycerCli] as const,
   traycerShellList: (traycerCli: object) =>
     ["runner.traycer.shellList", traycerCli] as const,
+  // Live "Add a shell" validation probe, keyed by the candidate path so each
+  // debounced value caches independently. Scoped to the runner-host instance
+  // like the other traycer queries.
+  traycerShellProbe: (traycerCli: object, path: string) =>
+    ["runner.traycer.shellProbe", traycerCli, path] as const,
   traycerEnvOverrideList: (traycerCli: object) =>
     ["runner.traycer.envOverrideList", traycerCli] as const,
   // Host-management queries are scoped by the `IHostManagement`
@@ -78,12 +93,12 @@ export const runnerQueryKeys = {
     ] as const,
   hostRegistryUpdate: (management: object) =>
     ["runner.host.registryUpdate", management] as const,
-  // Canonical cross-surface "is a host mutation running" status (Ticket:
-  // host-update-race-conditions). Primed once via `getOperationStatus()` on
-  // mount, then pushed by `HostOperationStatusListener` - never refetched by
-  // TanStack's normal mechanisms, since it is entirely event-sourced.
-  hostOperationStatus: (management: object) =>
-    ["runner.host.operationStatus", management] as const,
+  // Canonical two-lane `HostController` status (Host Update Layer Redesign
+  // Tech Plan). Primed once via `getHostControllerStatus()` on mount, then
+  // pushed by `HostControllerStatusListener` - never refetched by TanStack's
+  // normal mechanisms, since it is entirely event-sourced.
+  hostControllerStatus: (management: object) =>
+    ["runner.host.controllerStatus", management] as const,
   hostInstalledRecord: (management: object) =>
     ["runner.host.installedRecord", management] as const,
   hostLogs: (management: object, tailLines: number) =>

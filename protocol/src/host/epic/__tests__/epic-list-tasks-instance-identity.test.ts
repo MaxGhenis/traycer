@@ -1,14 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { hostRpcRegistry } from "@traycer/protocol/host/registry";
+import { epicListTasksUpgradeV10ToV11 } from "@traycer/protocol/host/epic/contracts";
 import {
   listTasksRequestSchema,
+  listTasksRequestSchemaV11,
   listTasksResponseSchema,
 } from "@traycer/protocol/host/epic/unary-schemas";
 
 /**
  * Hard invariant for the partial CloudData → protocol migration:
  *
- *   hostRpcRegistry["epic.listTasks"]
+ *   latest hostRpcRegistry["epic.listTasks"] contract
  *
  * must wire the canonical `listTasks*` schema instances exported from
  * `unary-schemas` - not merely equal shapes. Referential equality
@@ -24,7 +26,7 @@ import {
  */
 describe("epic.listTasks instance identity", () => {
   const hostContract =
-    hostRpcRegistry["epic.listTasks"][1].versions[0].contract;
+    hostRpcRegistry["epic.listTasks"][1].versions[2].contract;
 
   it("host request schema is the canonical listTasksRequestSchema instance", () => {
     expect(hostContract.requestSchema).toBe(listTasksRequestSchema);
@@ -32,6 +34,19 @@ describe("epic.listTasks instance identity", () => {
 
   it("host response schema is the canonical listTasksResponseSchema instance", () => {
     expect(hostContract.responseSchema).toBe(listTasksResponseSchema);
+  });
+
+  it("keeps released requests frozen while the latest schema accepts last-viewed", () => {
+    const request = {
+      limit: 20,
+      filters: null,
+      sort: "last-viewed",
+      extensionPhaseVersion: "1.0.0",
+      extensionEpicVersion: "2.0.0",
+    } as const;
+
+    expect(listTasksRequestSchemaV11.safeParse(request).success).toBe(false);
+    expect(listTasksRequestSchema.parse(request).sort).toBe("last-viewed");
   });
 
   it("parses server-driven history filters, sort, and facets", () => {
@@ -96,6 +111,32 @@ describe("epic.listTasks instance identity", () => {
         ],
         ownershipScopes: [{ value: "mine", count: 1 }],
       },
+    });
+  });
+
+  it("carries personal pin state on canonical list rows", () => {
+    const parsed = listTasksResponseSchema.parse({
+      tasks: [
+        {
+          epic: null,
+          phase: null,
+          pinned: true,
+        },
+      ],
+      hasMore: false,
+    });
+    expect(parsed.tasks[0]?.pinned).toBe(true);
+  });
+
+  it("defaults rows from a v1.0 host to unpinned", () => {
+    expect(
+      epicListTasksUpgradeV10ToV11.upgradeResponse({
+        tasks: [{ epic: null, phase: null }],
+        hasMore: false,
+      }),
+    ).toEqual({
+      tasks: [{ epic: null, phase: null, pinned: false }],
+      hasMore: false,
     });
   });
 });

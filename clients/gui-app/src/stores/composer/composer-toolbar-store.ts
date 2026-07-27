@@ -75,12 +75,11 @@ export interface ComposerToolbarCatalog {
   readonly modelsLoaded: boolean;
   /**
    * True when the consuming surface is the terminal launcher. A selection
-   * carried over from a chat surface that isn't TUI-capable - GUI-only
-   * `traycer`, or a schema-TUI harness like `cursor` whose adapter currently
-   * advertises only `gui` - is then rerouted to the first available TUI-capable
-   * harness, the same single clamp site that reroutes off an unavailable
-   * harness. Chat surfaces push `false` and the selection is never narrowed by
-   * surface, so flipping back to chat re-presents the raw sticky harness.
+   * carried over from a chat surface that isn't TUI-capable is rerouted to the
+   * first available TUI-capable harness, the same single clamp site that
+   * reroutes off an unavailable harness. Chat surfaces push `false` and the
+   * selection is never narrowed by surface, so flipping back to chat
+   * re-presents the raw sticky harness.
    */
   readonly tuiOnly: boolean;
 }
@@ -344,7 +343,11 @@ function deriveToolbarState(
   const selection: HarnessModelSelection =
     resolvedSlug === availabilitySelection.modelSlug
       ? availabilitySelection
-      : { harnessId: availabilitySelection.harnessId, modelSlug: resolvedSlug };
+      : {
+          harnessId: availabilitySelection.harnessId,
+          modelSlug: resolvedSlug,
+          profileId: availabilitySelection.profileId,
+        };
   // True ONLY when the resolved slug is a real, loaded model of this harness.
   // The surface emit is NOT gated on this (live-settings propagate immediately);
   // it is the signal the `recordingOnSettingsChange` wrapper reads at write time
@@ -389,11 +392,15 @@ function deriveToolbarState(
     selectionCatalogConfirmed,
   };
   // Preserve the previous `selection` reference when nothing changed so slice
-  // subscribers (picker, send gate) don't wake on every catalog push.
+  // subscribers (picker, send gate) don't wake on every catalog push. Must
+  // compare `profileId` too - a same-harness/same-model profile switch (the
+  // common turn-boundary case) would otherwise be silently discarded back to
+  // the previous profile.
   if (
     previous !== null &&
     previous.selection.harnessId === derived.selection.harnessId &&
-    previous.selection.modelSlug === derived.selection.modelSlug
+    previous.selection.modelSlug === derived.selection.modelSlug &&
+    previous.selection.profileId === derived.selection.profileId
   ) {
     return { ...derived, selection: previous.selection };
   }
@@ -532,12 +539,14 @@ function effectiveSelectionFromHarnesses(
     // GUI-only selection carried over from chat is rerouted off it - mirroring
     // the availability reroute. Capability is the runtime `modes` advertised by
     // `listGuiHarnesses` (the same signal the terminal picker filters its rail
-    // by), NOT the schema id, so a schema-TUI harness whose adapter currently
-    // exposes only `gui` (cursor) is rerouted too.
+    // by), not the schema id.
     if (tuiOnly && !harness.modes.includes("tui")) continue;
     firstEligible ??= harness;
     if (harness.id === selection.harnessId) return selection;
   }
   if (firstEligible === null) return selection;
-  return { harnessId: firstEligible.id, modelSlug: "" };
+  // A forced surface reroute switches provider entirely - the old selection's
+  // profile belongs to the harness being rerouted OFF of, so it never carries
+  // over onto the new one.
+  return { harnessId: firstEligible.id, modelSlug: "", profileId: null };
 }

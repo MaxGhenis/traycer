@@ -13,6 +13,8 @@ import {
   TILE_KIND_BROWSER,
   TILE_KIND_BROWSER_PEEK,
   TILE_KIND_GIT_DIFF,
+  TILE_KIND_PR_DETAIL,
+  TILE_KIND_PR_DIFF,
   TILE_KIND_SNAPSHOT_DIFF,
 } from "./tile-kinds";
 
@@ -198,6 +200,11 @@ export interface GitDiffBundleTilePayload {
   readonly bundleGroup: GitDiffBundleGroup;
 }
 
+export interface GitDiffRepositoryContext {
+  readonly workspaceLabel: string;
+  readonly repositoryLabel: string;
+}
+
 /**
  * Snapshot diff payloads address a chat file-edit by reference (not by copying
  * content): the renderer re-reads the agent's `beforeContent`/`afterContent`
@@ -260,6 +267,7 @@ export interface GitDiffTileRef {
   readonly type: typeof TILE_KIND_GIT_DIFF;
   readonly name: string;
   readonly hostId: string;
+  readonly repositoryContext: GitDiffRepositoryContext | null;
   readonly diff: GitDiffTilePayload;
   readonly view: GitDiffTileViewState;
 }
@@ -288,12 +296,62 @@ export interface BlankTileRef {
   readonly hostId: string;
 }
 
+/**
+ * GitHub-style PR full-view tile. Pure ref, `isRecordBacked: false` (same
+ * family as `GitDiffTileRef`/`SnapshotDiffTileRef`) - the heavy PR fact is
+ * fetched live over `pr.subscribeDetail`, never stored in the tile itself.
+ * `githubHost`/`owner`/`repo`/`prNumber` are the PR's base coordinates (only
+ * fully-identified rows are tile-able, per the panel's unknown-base rule).
+ * `epicId` is deliberately NOT part of the ref: it is resolved from canvas
+ * context (`TileRenderArgs.epicId`) at subscribe time, since the ref is a
+ * pure GitHub-coordinate identity that must dedupe/reopen the same tile
+ * regardless of which epic's panel opened it.
+ */
+export interface PrDetailTileRef {
+  readonly id: string;
+  readonly instanceId: string;
+  readonly type: typeof TILE_KIND_PR_DETAIL;
+  readonly name: string;
+  readonly hostId: string;
+  readonly githubHost: string;
+  readonly owner: string;
+  readonly repo: string;
+  readonly prNumber: number;
+}
+
+/**
+ * The PR's own diff, as a full canvas tile - the same shape as
+ * {@link PrDetailTileRef} plus the diff view state, because it is the same
+ * identity viewed a different way.
+ *
+ * Deliberately a PURE PR-coordinate ref: no `runningDir`, no base/head OIDs,
+ * no ref names. All of those are re-derived from `pr.subscribeDetail` at
+ * render time, so a tile reopened a week later diffs the PR as it is NOW
+ * rather than replaying a range that has since been rebased away. It also
+ * means the host - not the client - stays the only thing that ever turns a
+ * `linkGroupKey` into a directory.
+ */
+export interface PrDiffTileRef {
+  readonly id: string;
+  readonly instanceId: string;
+  readonly type: typeof TILE_KIND_PR_DIFF;
+  readonly name: string;
+  readonly hostId: string;
+  readonly githubHost: string;
+  readonly owner: string;
+  readonly repo: string;
+  readonly prNumber: number;
+  readonly view: GitDiffTileViewState;
+}
+
 export type EpicCanvasTileRef =
   | EpicNodeRef
   | BrowserTileRef
   | BrowserPeekTileRef
   | GitDiffTileRef
   | SnapshotDiffTileRef
+  | PrDetailTileRef
+  | PrDiffTileRef
   | BlankTileRef;
 
 export function isBlankTileRef(
@@ -330,6 +388,18 @@ export function isSnapshotDiffTileRef(
   value: EpicCanvasTileRef,
 ): value is SnapshotDiffTileRef {
   return value.type === TILE_KIND_SNAPSHOT_DIFF;
+}
+
+export function isPrDetailTileRef(
+  value: EpicCanvasTileRef,
+): value is PrDetailTileRef {
+  return value.type === TILE_KIND_PR_DETAIL;
+}
+
+export function isPrDiffTileRef(
+  value: EpicCanvasTileRef,
+): value is PrDiffTileRef {
+  return value.type === TILE_KIND_PR_DIFF;
 }
 
 export function isDiffTileRef(

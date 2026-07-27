@@ -20,6 +20,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // pins the contract by stubbing every other doctor data source so
 // the SERVICE_STOPPED branch is the only signal in the result.
 
+// `store/paths` binds its home root from `os.homedir()` at module load.
+// Keep the environment mutation below, but redirect `homedir()` too.
+const osHome = vi.hoisted(() => ({ current: "" }));
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return { ...actual, homedir: () => osHome.current || actual.tmpdir() };
+});
+
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_USERPROFILE = process.env.USERPROFILE;
 
@@ -27,6 +35,7 @@ let workHome: string;
 
 beforeEach(() => {
   workHome = mkdtempSync(join(tmpdir(), "traycer-doctor-stopped-test-"));
+  osHome.current = workHome;
   process.env.HOME = workHome;
   process.env.USERPROFILE = workHome;
   vi.resetModules();
@@ -49,11 +58,12 @@ afterEach(() => {
   vi.doUnmock("../../host/bootstrap-log");
   vi.doUnmock("../../host/pid-metadata");
   vi.doUnmock("../../service");
+  vi.doUnmock("../../store/cli-lock");
 });
 
 interface StageServiceMocksInput {
   readonly hostExecutablePath: string;
-  readonly serviceState: "stopped" | "not-installed";
+  readonly serviceState: "stopped" | "not-installed" | "externally-managed";
   readonly pidMetadata: {
     readonly pid: number;
     readonly hostId: string;
@@ -193,6 +203,41 @@ describe("runDoctor SERVICE_STOPPED recovery routing", () => {
     ).toBeDefined();
   });
 
+  it("emits an info-only SERVICE_EXTERNALLY_MANAGED card (no fix) for a Desktop/SMAppService-owned label instead of the not-registered error", async () => {
+    // The old behavior surfaced SERVICE_NOT_REGISTERED (error) whose
+    // suggested fix - `traycer host service install` - refuses
+    // SMAppService-owned labels by design: a permanent error card with no
+    // working fix on every Desktop-managed machine.
+    const hostExecutablePath = join(workHome, "bin", "host");
+    mkdirSync(join(workHome, "bin"), { recursive: true });
+    writeFileSync(hostExecutablePath, "host-bin");
+    stageServiceMocks({
+      hostExecutablePath,
+      serviceState: "externally-managed",
+      pidMetadata: null,
+    });
+
+    const { runDoctor } = await import("../engine");
+    const result = await runDoctor({
+      environment: "production",
+      portConflictDeps: null,
+    });
+
+    expect(
+      result.issues.find((i) => i.code === "SERVICE_NOT_REGISTERED"),
+    ).toBeUndefined();
+    expect(
+      result.issues.find((i) => i.code === "SERVICE_STOPPED"),
+    ).toBeUndefined();
+    const issue = result.issues.find(
+      (i) => i.code === "SERVICE_EXTERNALLY_MANAGED",
+    );
+    expect(issue).toBeDefined();
+    expect(issue?.severity).toBe("info");
+    expect(issue?.fixAction).toBeNull();
+    expect(issue?.terminalCommand).toBeNull();
+  });
+
   it("still emits SERVICE_NOT_REGISTERED when pid metadata proves a host process is running", async () => {
     const hostExecutablePath = join(workHome, "bin", "host");
     mkdirSync(join(workHome, "bin"), { recursive: true });
@@ -220,5 +265,41 @@ describe("runDoctor SERVICE_STOPPED recovery routing", () => {
     );
     expect(issue).toBeDefined();
     expect(issue?.terminalCommand).toBe("traycer host service install");
+  });
+
+  it("suppresses the PID_METADATA_STALE fix action for a Desktop/SMAppService-owned label", async () => {
+    // Desktop's SMAppService owns registration+recovery for an
+    // externally-managed label. A stale pid.json here must still surface
+    // the diagnostic, but `traycer host restart` is the CLI's own service
+    // control command and must not be offered - it's the wrong recovery
+    // path for a job the CLI doesn't manage.
+    const hostExecutablePath = join(workHome, "bin", "host");
+    mkdirSync(join(workHome, "bin"), { recursive: true });
+    writeFileSync(hostExecutablePath, "host-bin");
+    stageServiceMocks({
+      hostExecutablePath,
+      serviceState: "externally-managed",
+      pidMetadata: {
+        pid: 999_999,
+        hostId: "host-stale",
+        version: "1.4.0",
+        websocketUrl: "ws://127.0.0.1/rpc",
+        startedAt: "2026-04-01T00:00:00Z",
+      },
+    });
+    vi.doMock("../../store/cli-lock", () => ({
+      isProcessAlive: () => false,
+    }));
+
+    const { runDoctor } = await import("../engine");
+    const result = await runDoctor({
+      environment: "production",
+      portConflictDeps: null,
+    });
+
+    const issue = result.issues.find((i) => i.code === "PID_METADATA_STALE");
+    expect(issue).toBeDefined();
+    expect(issue?.fixAction).toBeNull();
+    expect(issue?.terminalCommand).toBeNull();
   });
 });

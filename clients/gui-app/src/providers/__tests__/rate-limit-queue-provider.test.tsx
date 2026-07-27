@@ -83,7 +83,7 @@ describe("<RateLimitQueueProvider />", () => {
   });
 
   it("polls the ephemeralProcess lane every 5 minutes, matching the httpFetch lane's own refetchInterval", () => {
-    expect(EPHEMERAL_RATE_LIMIT_POLL_INTERVAL_MS).toBe(5 * 60 * 1000);
+    expect(EPHEMERAL_RATE_LIMIT_POLL_INTERVAL_MS).toBe(15 * 60 * 1000);
   });
 
   it("binds the serial queue to the default host on mount", () => {
@@ -114,6 +114,7 @@ describe("<RateLimitQueueProvider />", () => {
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
     expect(enqueueSpy).toHaveBeenCalledWith("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
   });
 
@@ -134,6 +135,7 @@ describe("<RateLimitQueueProvider />", () => {
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
     expect(enqueueSpy).toHaveBeenCalledWith("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
   });
 
@@ -200,6 +202,7 @@ describe("<RateLimitQueueProvider />", () => {
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
     expect(enqueueSpy).toHaveBeenCalledWith("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
     enqueueSpy.mockClear();
 
@@ -209,6 +212,7 @@ describe("<RateLimitQueueProvider />", () => {
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
     expect(enqueueSpy).toHaveBeenCalledWith("codex", DEFAULT_ACCOUNT_CONTEXT, {
       force: false,
+      profileId: null,
     });
   });
 

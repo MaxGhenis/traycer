@@ -5,6 +5,13 @@ import {
   modLabel,
   shiftLabel,
 } from "@/lib/keybindings/platform";
+import {
+  formatChord,
+  parseChordString,
+  type ChordKey,
+  type ChordParts,
+  type ChordString,
+} from "@traycer-clients/shared/keybindings/chord-core";
 
 /**
  * Canonical chord string: `mod+ctrl+shift+alt+key` where modifiers appear in
@@ -15,21 +22,19 @@ import {
  *
  * Examples: `mod+1`, `mod+shift+h`, `mod+alt+arrowleft`, `mod+,`, `ctrl+shift+m`.
  *
- * Note: `chordFromEvent` never emits `ctrl` (events still collapse Meta/Control
- * into `mod` for the shared lenient matching). `ctrl` chords are matched by
- * consumers that need a Control-specific binding (e.g. the dictation hotkey).
+ * Note: `chordFromEvent` never emits `ctrl`. It treats `mod` as the
+ * platform-primary modifier: Command on macOS, Command/Control elsewhere.
+ * `ctrl` chords are matched by consumers that need a Control-specific binding
+ * (e.g. the dictation hotkey).
+ *
+ * The parse/format core (`formatChord`/`parseChordString` and their types)
+ * lives in `@traycer-clients/shared/keybindings/chord-core` - it has no
+ * `navigator`/DOM dependency, so it's also importable from the Electron main
+ * process (global-shortcut registration). Everything below that touches
+ * `KeyboardEvent` or platform display labels stays here.
  */
-export type ChordString = string;
-
-export type ChordKey = string;
-
-export interface ChordParts {
-  readonly mod: boolean;
-  readonly ctrl: boolean;
-  readonly shift: boolean;
-  readonly alt: boolean;
-  readonly key: ChordKey;
-}
+export type { ChordKey, ChordParts, ChordString };
+export { formatChord, parseChordString };
 
 /** Physical keys we never want to treat as a primary chord key. */
 const BARE_MODIFIER_CODES = new Set<string>([
@@ -96,51 +101,39 @@ export function isBareModifierEvent(event: KeyboardEvent): boolean {
   return BARE_MODIFIER_CODES.has(event.code);
 }
 
+/** Cmd+Home/End on macOS, Ctrl+Home/End on Windows/Linux. */
+export function isPlatformModifiedBoundaryKey(event: KeyboardEvent): boolean {
+  return (
+    (event.key === "Home" || event.key === "End") &&
+    (isMac()
+      ? event.metaKey && !event.ctrlKey
+      : event.ctrlKey && !event.metaKey) &&
+    !event.altKey &&
+    !event.shiftKey
+  );
+}
+
+/** Unmodified Home/End. */
+export function isPlainBoundaryKey(event: KeyboardEvent): boolean {
+  return (
+    (event.key === "Home" || event.key === "End") &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.shiftKey
+  );
+}
+
 export function parseChordFromEvent(event: KeyboardEvent): ChordParts | null {
   if (isBareModifierEvent(event)) return null;
   const key = normalizeCode(event.code);
   if (key === null) return null;
-  // Events collapse Meta/Control into `mod` for the shared lenient matching;
-  // `ctrl` is never emitted from an event (only authored in stored chords).
-  const mod = event.metaKey || event.ctrlKey;
+  // `mod` follows the platform-primary modifier. On macOS that is Command only;
+  // Control-specific chords use the ctrl-aware path below.
+  const mod = hasPlatformModKey(event);
   const shift = event.shiftKey;
   const alt = event.altKey;
   return { mod, ctrl: false, shift, alt, key };
-}
-
-export function formatChord(parts: ChordParts): ChordString {
-  const pieces: Array<string> = [];
-  if (parts.mod) pieces.push("mod");
-  if (parts.ctrl) pieces.push("ctrl");
-  if (parts.shift) pieces.push("shift");
-  if (parts.alt) pieces.push("alt");
-  pieces.push(parts.key);
-  return pieces.join("+");
-}
-
-export function parseChordString(chord: ChordString): ChordParts | null {
-  if (chord.length === 0) return null;
-  const tokens = chord.split("+");
-  if (tokens.length === 0) return null;
-  let mod = false;
-  let ctrl = false;
-  let shift = false;
-  let alt = false;
-  let key: ChordKey | null = null;
-  for (let i = 0; i < tokens.length; i += 1) {
-    const t = tokens[i];
-    if (i < tokens.length - 1) {
-      if (t === "mod") mod = true;
-      else if (t === "ctrl") ctrl = true;
-      else if (t === "shift") shift = true;
-      else if (t === "alt") alt = true;
-      else return null;
-    } else {
-      key = t;
-    }
-  }
-  if (key === null || key.length === 0) return null;
-  return { mod, ctrl, shift, alt, key };
 }
 
 /**
@@ -168,7 +161,7 @@ export function parseChordFromEventCtrlAware(
   const key = normalizeCode(event.code);
   if (key === null) return null;
   const mac = isMac();
-  const mod = mac ? event.metaKey : event.metaKey || event.ctrlKey;
+  const mod = hasPlatformModKey(event);
   const ctrl = mac && event.ctrlKey;
   const shift = event.shiftKey;
   const alt = event.altKey;
@@ -183,13 +176,30 @@ export function chordFromEventCtrlAware(
   return formatChord(parts);
 }
 
+/**
+ * The single chord an event should be matched against, applying the
+ * ctrl-aware-vs-platform-primary precedence: when the Control-specific chord
+ * (macOS ⌃, distinct from ⌘) differs from the platform-primary chord, the
+ * event matches ONLY that ctrl chord - so a bare macOS Control chord can't fall
+ * through to a plain key binding. Otherwise the platform-primary chord is used.
+ * Centralizes this security-relevant contract for every consumer (event→action
+ * matching in the provider, and `chordMatchesEvent`).
+ */
+export function resolveMatchingChord(event: KeyboardEvent): ChordString | null {
+  const eventChord = chordFromEvent(event);
+  const ctrlAwareChord = chordFromEventCtrlAware(event);
+  if (ctrlAwareChord !== null && ctrlAwareChord !== eventChord) {
+    return ctrlAwareChord;
+  }
+  return eventChord;
+}
+
 /** Does the event match the stored chord string exactly? */
 export function chordMatchesEvent(
   chord: ChordString,
   event: KeyboardEvent,
 ): boolean {
-  const eventChord = chordFromEvent(event);
-  return eventChord === chord;
+  return resolveMatchingChord(event) === chord;
 }
 
 /** Human-friendly display label e.g. `⌘⇧H` / `Ctrl+Shift+H`. */
@@ -226,10 +236,14 @@ export interface ModifierMask {
 
 export function modifierMaskFromEvent(event: KeyboardEvent): ModifierMask {
   return {
-    mod: event.metaKey || event.ctrlKey,
+    mod: hasPlatformModKey(event),
     shift: event.shiftKey,
     alt: event.altKey,
   };
+}
+
+export function hasPlatformModKey(event: KeyboardEvent): boolean {
+  return isMac() ? event.metaKey : event.metaKey || event.ctrlKey;
 }
 
 export function parseModifierChord(chord: ChordString): ModifierMask | null {

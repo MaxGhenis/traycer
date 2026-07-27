@@ -1,11 +1,20 @@
+import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { ChatProgressIcon } from "@/components/chat/chat-progress-icon";
+import {
+  NotificationIndicatorIcon,
+  type IndicatorRunningKind,
+} from "@/components/notifications/notification-indicator-icon";
+import { useSurfaceNotificationIndicatorState } from "@/components/notifications/notification-indicator-context";
 import { HarnessIcon } from "@/components/home/pickers/harness-icon";
 import {
   EPIC_NODE_ICONS,
   type EpicNodeKind,
 } from "@/lib/artifacts/node-display";
-import { useMaybeEpicTuiAgentHarnessId } from "@/lib/epic-selectors";
+import {
+  useMaybeEpicTuiAgentHarnessId,
+  useRegisteredEpicActiveAgentIds,
+} from "@/lib/epic-selectors";
 import { useSettingsStore } from "@/stores/settings/settings-store";
 import {
   WORKSPACE_FILE_TAB_KIND,
@@ -30,6 +39,11 @@ export function EpicNodeTabIcon(props: {
   readonly epicId: string;
   readonly variant: "live" | "static";
   readonly className: string;
+  /**
+   * Idle-slot override for live chat icons (e.g. title-generation spinner).
+   * Ignored for non-chat / static paths. Semantic chat status still wins.
+   */
+  readonly defaultIcon: ReactNode | undefined;
 }) {
   if (props.node.type === "chat" && props.variant === "live") {
     return (
@@ -39,6 +53,7 @@ export function EpicNodeTabIcon(props: {
         className={props.className}
         mutedClassName="text-muted-foreground"
         testId="chat-tab-spinner"
+        defaultIcon={props.defaultIcon}
       />
     );
   }
@@ -46,6 +61,29 @@ export function EpicNodeTabIcon(props: {
     return (
       <WorkspaceFileIcon
         fileName={props.node.name}
+        className={props.className}
+      />
+    );
+  }
+  if (props.variant === "live" && props.node.type === "terminal") {
+    return (
+      <TerminalNodeTabIcon
+        nodeId={props.node.id}
+        epicId={props.epicId}
+        running={false}
+        runningTitle=""
+        defaultIcon={
+          <StaticEpicNodeIcon type="terminal" className={props.className} />
+        }
+      />
+    );
+  }
+  if (props.variant === "live" && props.node.type === "terminal-agent") {
+    return (
+      <TuiAgentLiveTabIcon
+        nodeId={props.node.id}
+        epicId={props.epicId}
+        pendingTuiHarnessId={props.node.pendingTuiHarnessId}
         className={props.className}
       />
     );
@@ -61,6 +99,72 @@ export function EpicNodeTabIcon(props: {
   }
   return (
     <StaticEpicNodeIcon type={props.node.type} className={props.className} />
+  );
+}
+
+function TerminalNodeTabIcon(props: {
+  readonly nodeId: string;
+  readonly epicId: string;
+  readonly running: IndicatorRunningKind;
+  readonly runningTitle: string;
+  readonly defaultIcon: ReactNode;
+}) {
+  const indicatorState = useSurfaceNotificationIndicatorState({
+    epicId: props.epicId,
+    chatId: props.nodeId,
+  });
+  return (
+    <NotificationIndicatorIcon
+      state={indicatorState}
+      running={props.running}
+      subjectId={props.nodeId}
+      testIdPrefix="terminal-tab"
+      className={undefined}
+      style={undefined}
+      runningTitle={props.runningTitle}
+      defaultIcon={props.defaultIcon}
+      statusPresentation="spinner"
+    />
+  );
+}
+
+/**
+ * Live TUI-agent tab icon: swaps the harness brand mark for the running
+ * spinner while the agent is working, mirroring the sidebar's terminal-agent
+ * row so both surfaces read the same. Epic-wide active-agent awareness is the
+ * sole authority - a TUI agent's PTY runs host-side, so there is no renderer
+ * run-status to smooth against and no background tier to distinguish.
+ * Notification tones still outrank the spinner (see NotificationIndicatorIcon).
+ *
+ * Reads awareness through the registry rather than `useOpenEpicHandle`, so this
+ * icon stays renderable outside an `<EpicSessionProvider>` (drag previews,
+ * mount-lifecycle tests) - an unregistered Epic degrades to "not working"
+ * instead of throwing. The plain-terminal path stays hook-free entirely: a
+ * shell tab has no agent to be active.
+ */
+function TuiAgentLiveTabIcon(props: {
+  readonly nodeId: string;
+  readonly epicId: string;
+  readonly pendingTuiHarnessId: EpicArtifactRef["pendingTuiHarnessId"];
+  readonly className: string;
+}) {
+  const isActive = useRegisteredEpicActiveAgentIds(props.epicId).has(
+    props.nodeId,
+  );
+  return (
+    <TerminalNodeTabIcon
+      nodeId={props.nodeId}
+      epicId={props.epicId}
+      running={isActive ? "turn" : false}
+      runningTitle="Agent in progress"
+      defaultIcon={
+        <TuiAgentTabIcon
+          nodeId={props.nodeId}
+          pendingTuiHarnessId={props.pendingTuiHarnessId}
+          className={props.className}
+        />
+      }
+    />
   );
 }
 

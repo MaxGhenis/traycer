@@ -9,10 +9,7 @@ import {
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock-host-messenger";
-import {
-  MockRunnerHost,
-  MockTraycerCli,
-} from "@traycer-clients/shared/host-client/mock/mock-runner-host";
+import { MockRunnerHost } from "@traycer-clients/shared/host-client/mock/mock-runner-host";
 import type { IHostMessenger } from "@traycer-clients/shared/host-transport/host-messenger";
 import { useEffect } from "react";
 
@@ -35,6 +32,7 @@ import type { AuthService } from "@/lib/auth/auth-service";
 import { AuthSessionExpiredToastBridge } from "@/providers/auth-session-expired-toast-bridge";
 import { RunnerHostProvider } from "@/providers/runner-host-provider";
 import { useAuthStore } from "@/stores/auth/auth-store";
+import { useDesktopDialogStore } from "@/stores/dialogs/desktop-dialog-store";
 
 function buildHost(): MockRunnerHost {
   return new MockRunnerHost({
@@ -45,18 +43,6 @@ function buildHost(): MockRunnerHost {
     workspaceFolderPickerPaths: undefined,
     hasLocalHost: undefined,
     traycerCli: undefined,
-  });
-}
-
-function buildHostWithCli(cli: MockTraycerCli): MockRunnerHost {
-  return new MockRunnerHost({
-    signInUrl: "https://auth.traycer.invalid/sign-in",
-    authnBaseUrl: "http://localhost:5005",
-    localHost: null,
-    hosts: [],
-    workspaceFolderPickerPaths: undefined,
-    hasLocalHost: undefined,
-    traycerCli: cli,
   });
 }
 
@@ -259,6 +245,12 @@ describe("<SignInButton />", () => {
 
   beforeEach(() => {
     useAuthStore.getState().setSignedOut();
+    useDesktopDialogStore.setState({
+      activeDialog: null,
+      reportIssueAvailable: false,
+      reportIssueContext: null,
+      reportIssueDraftId: 0,
+    });
     vi.clearAllMocks();
     // Default profile fetch is unused by these tests; install a benign 401
     // so any stray call does not accidentally sign the user in.
@@ -270,6 +262,12 @@ describe("<SignInButton />", () => {
   afterEach(() => {
     cleanup();
     useAuthStore.getState().setSignedOut();
+    useDesktopDialogStore.setState({
+      activeDialog: null,
+      reportIssueAvailable: false,
+      reportIssueContext: null,
+      reportIssueDraftId: 0,
+    });
     restoreFetch();
   });
 
@@ -300,6 +298,21 @@ describe("<SignInButton />", () => {
     });
     const detail = screen.getByTestId("signin-error-detail");
     expect(detail.textContent).toBe("sign-in-failed");
+
+    expect(screen.queryByRole("button", { name: "Report issue" })).toBeNull();
+    act(() => {
+      useDesktopDialogStore.setState({ reportIssueAvailable: true });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
+    expect(useDesktopDialogStore.getState()).toMatchObject({
+      activeDialog: "report-issue",
+      reportIssueContext: {
+        title: "Sign in failed",
+        message: null,
+        code: null,
+        source: "Sign in",
+      },
+    });
     result.cleanupClient();
   });
 
@@ -318,10 +331,12 @@ describe("<SignInButton />", () => {
     });
 
     expect(screen.queryByRole("button", { name: "Signing in" })).toBeNull();
-    expect(
-      screen.getByRole<HTMLButtonElement>("button", { name: "Sign in" })
-        .disabled,
-    ).toBe(true);
+    await waitFor(() => {
+      expect(
+        screen.getByRole<HTMLButtonElement>("button", { name: "Sign in" })
+          .disabled,
+      ).toBe(true);
+    });
     const retry = await screen.findByTestId("signin-retry-link");
     // `signIn()` restarts the device flow and re-opens the verification page, so
     // a stalled attempt has an immediate escape hatch. Capturing the count
@@ -344,10 +359,13 @@ describe("<SignInButton />", () => {
 
   it("toasts and clears session-expired instead of rendering persistent inline copy", async () => {
     const host = buildHost();
-    await host.tokenStore.set({
-      token: "revoked-stored-token",
-      refreshToken: "revoked-stored-token-refresh",
-    });
+    await host.tokenStore.signIn(
+      {
+        token: "revoked-stored-token",
+        refreshToken: "revoked-stored-token-refresh",
+      },
+      { id: "user-1", email: "test@example.com", name: "Test User" },
+    );
     const result = mountSignInButton(host);
 
     // The HostRuntimeProvider auto-starts the AuthService, which calls
@@ -357,32 +375,43 @@ describe("<SignInButton />", () => {
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith(
         "Session expired - sign in again.",
-        { id: "auth-session:expired" },
+        { id: "auth-session:expired", cancel: null },
       );
     });
     expect(screen.queryByTestId("signin-error")).toBeNull();
     result.cleanupClient();
   });
 
-  it("clears local CLI credentials when a stored session is rejected", async () => {
-    const cli = new MockTraycerCli();
-    await cli.cliLogin("stale-cli-token", "stale-cli-refresh");
-    const host = buildHostWithCli(cli);
-    await host.tokenStore.set({
-      token: "revoked-stored-token",
-      refreshToken: "revoked-stored-token-refresh",
-    });
+  it("keeps credentials file when a stored session is rejected (UI-only sign-out)", async () => {
+    // Automatic failure paths never destroy the shared credentials file —
+    // only explicit sign-out does (tech plan §5). CLI seeding is gone; the
+    // file is the single store.
+    const host = buildHost();
+    await host.tokenStore.signIn(
+      {
+        token: "revoked-stored-token",
+        refreshToken: "revoked-stored-token-refresh",
+      },
+      { id: "user-1", email: "test@example.com", name: "Test User" },
+    );
     const result = mountSignInButton(host);
 
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith(
         "Session expired - sign in again.",
-        { id: "auth-session:expired" },
+        { id: "auth-session:expired", cancel: null },
       );
     });
-    expect(await host.tokenStore.get()).toBeNull();
-    expect(cli.lastLoginToken).toBeNull();
-    expect(cli.lastLoginRefreshToken).toBeNull();
+    // UI is signed out but the file is kept so a sibling rotation can recover.
+    expect(await host.tokenStore.get()).toEqual({
+      token: "revoked-stored-token",
+      refreshToken: "revoked-stored-token-refresh",
+      authnBaseUrl: host.authnBaseUrl,
+      // `expect.any(String)` is an `any`-typed matcher; type it as the string
+      // field it stands in for so the object literal stays free of unsafe `any`.
+      savedAt: expect.any(String) as string,
+      user: { id: "user-1", email: "test@example.com", name: "Test User" },
+    });
     result.cleanupClient();
   });
 
@@ -418,7 +447,7 @@ describe("<SignInButton />", () => {
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith(
         "Session expired - sign in again.",
-        { id: "auth-session:expired" },
+        { id: "auth-session:expired", cancel: null },
       );
     });
     expect(useAuthStore.getState().status).toBe("signed-out");
@@ -446,7 +475,11 @@ describe("<SignInButton />", () => {
     });
     await screen.findByRole("heading", { name: "Approve in your browser" });
     expect(screen.queryByRole("button", { name: "Signing in" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Use code instead" }));
+    expect(
+      screen
+        .getByRole("button", { name: "Use code instead" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
     const code = await screen.findByText("ABCDE-FGHIJ");
     expect(code.textContent).toBe("ABCDE-FGHIJ");
     expect(screen.getByText("https://app.traycer.ai/device").textContent).toBe(

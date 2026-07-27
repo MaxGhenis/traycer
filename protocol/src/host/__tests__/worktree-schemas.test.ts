@@ -1,6 +1,7 @@
 /**
- * Schema + version-negotiation tests for the `worktree.listAllForHost` staleness
- * signals added at v1.1. The critical invariant is that a v1.0 caller (the
+ * Schema + version-negotiation tests for the `worktree.listAllForHost`
+ * pagination and staleness signals added at v1.1. The critical invariant is
+ * that a v1.0 caller (the
  * current Settings tab, an older host) keeps negotiating against a v1.1 peer:
  * v1.1 rode a new minor of the EXISTING method, never a new method name, so the
  * frozen host-v1.0.0 method-name set (see released-surface-compat.test.ts) is
@@ -13,20 +14,61 @@ import {
 } from "@traycer/protocol/framework/index";
 import { hostRpcRegistry } from "@traycer/protocol/host/index";
 import {
+  LEGACY_HOST_RESOLVED_AT,
   worktreeBindingEntrySchema,
   worktreeBranchStatusSchema,
   worktreeHostEntrySchema,
   worktreeHostEntrySchemaV11,
   worktreeListAllForHostRequestSchema,
+  worktreeListAllForHostResponseSchema,
   worktreeListAllForHostRequestSchemaV11,
   worktreeListAllForHostResponseSchemaV11,
+  worktreeListAllForHostRequestSchemaV12,
+  worktreeListAllForHostResponseSchemaV12,
+  worktreeListAllForHostRequestSchemaV13,
+  worktreeListAllForHostResponseSchemaV13,
+  worktreeListAllForHostRequestSchemaV14,
+  worktreeListAllForHostResponseSchemaV14,
+  worktreeListBindingsForEpicResponseSchemaV11,
+  worktreeListBindingsForEpicResponseSchemaV12,
+  worktreeListByWorkspacePathsRequestSchemaV11,
+  worktreeListByWorkspacePathsRequestSchemaV12,
+  worktreeListByWorkspacePathsResponseSchemaV12,
+  worktreeListByWorkspacePathsRequestSchemaV13,
+  worktreeListByWorkspacePathsResponseSchemaV13,
   worktreeSubmoduleMergeFactSchema,
+  worktreeSubmoduleMergeFactSchemaV12,
 } from "@traycer/protocol/host/worktree-schemas";
 
 const V10 = { major: 1, minor: 0 } as const;
 const V11 = { major: 1, minor: 1 } as const;
+const V12 = { major: 1, minor: 2 } as const;
+const V13 = { major: 1, minor: 3 } as const;
+const V14 = { major: 1, minor: 4 } as const;
 
 const listAllForHostRegistry = hostRpcRegistry["worktree.listAllForHost"];
+const listByWorkspacePathsRegistry =
+  hostRpcRegistry["worktree.listByWorkspacePaths"];
+const listBindingsForEpicRegistry =
+  hostRpcRegistry["worktree.listBindingsForEpic"];
+
+// A v1.1 selector row - every field the shipped binding listing carries,
+// without the v1.2 `isGitResolvePending` marker.
+const v11SelectorRow = {
+  hostId: "host-1",
+  runningDir: "/Users/dev/acme/web",
+  workspacePath: "/Users/dev/acme/web",
+  worktreePath: null,
+  mode: "local" as const,
+  isGitRepo: false,
+  repoIdentifier: null,
+  branch: null,
+  isPrimary: true,
+  isImported: false,
+  setupState: "not_required" as const,
+  disabledReason: null,
+  sources: [],
+};
 
 // A v1.0 entry - every field the shipped listing already carries, none of the
 // v1.1 staleness signals.
@@ -198,46 +240,360 @@ describe("worktreeBranchStatusSchema (upstream-independent reshape)", () => {
 });
 
 describe("worktreeListAllForHostRequestSchemaV11", () => {
-  it("requires both the includeActivity flag and activityPaths", () => {
+  it("requires includeActivity, activityPaths, cursor, and limit", () => {
     expect(
       worktreeListAllForHostRequestSchemaV11.parse({
         includeActivity: true,
         activityPaths: null,
+        cursor: null,
+        limit: 50,
       }),
-    ).toEqual({ includeActivity: true, activityPaths: null });
-    // activityPaths is nullable, never optional - a request missing it is
-    // rejected at the boundary (every caller states the mode explicitly).
+    ).toEqual({
+      includeActivity: true,
+      activityPaths: null,
+      cursor: null,
+      limit: 50,
+    });
+    // Nullable fields are never optional - every caller states the paging and
+    // enrichment posture explicitly.
     expect(() =>
       worktreeListAllForHostRequestSchemaV11.parse({ includeActivity: true }),
     ).toThrow();
     expect(worktreeListAllForHostRequestSchema.parse({})).toEqual({});
   });
 
-  it("accepts a per-viewport activityPaths selection (lazy-enrichment mode)", () => {
-    const parsed = worktreeListAllForHostRequestSchemaV11.parse({
+  it("rejects includeActivity=true with an unbounded paged listing", () => {
+    expect(() =>
+      worktreeListAllForHostRequestSchemaV11.parse({
+        includeActivity: true,
+        activityPaths: null,
+        cursor: null,
+        limit: null,
+      }),
+    ).toThrow();
+  });
+
+  it("allows the v1.0 bridge's unpaginated listing only without probes", () => {
+    expect(
+      worktreeListAllForHostRequestSchemaV11.parse({
+        includeActivity: false,
+        activityPaths: null,
+        cursor: null,
+        limit: null,
+      }),
+    ).toEqual({
       includeActivity: false,
+      activityPaths: null,
+      cursor: null,
+      limit: null,
+    });
+  });
+
+  it("accepts selection mode with includeActivity=true and null paging fields", () => {
+    const parsed = worktreeListAllForHostRequestSchemaV11.parse({
+      includeActivity: true,
       activityPaths: ["/Users/dev/.traycer/worktrees/acme__web/feature-x"],
+      cursor: null,
+      limit: null,
     });
     expect(parsed).toEqual({
-      includeActivity: false,
+      includeActivity: true,
       activityPaths: ["/Users/dev/.traycer/worktrees/acme__web/feature-x"],
+      cursor: null,
+      limit: null,
+    });
+  });
+
+  it("rejects selection mode with cursor or limit set", () => {
+    expect(() =>
+      worktreeListAllForHostRequestSchemaV11.parse({
+        includeActivity: true,
+        activityPaths: ["/Users/dev/.traycer/worktrees/acme__web/feature-x"],
+        cursor: "/Users/dev/.traycer/worktrees/acme__api/feature-y",
+        limit: null,
+      }),
+    ).toThrow();
+
+    expect(() =>
+      worktreeListAllForHostRequestSchemaV11.parse({
+        includeActivity: true,
+        activityPaths: ["/Users/dev/.traycer/worktrees/acme__web/feature-x"],
+        cursor: null,
+        limit: 25,
+      }),
+    ).toThrow();
+  });
+});
+
+describe("worktreeListAllForHostResponseSchemaV11", () => {
+  it("requires nextCursor and round-trips a paged response", () => {
+    const response = {
+      worktrees: [
+        {
+          ...v10Entry,
+          lastActivityAt: null,
+          owners: [],
+          branchStatus: null,
+          createdAt: null,
+          ...mergeProvenanceAbsent,
+        },
+      ],
+      nextCursor: "/Users/dev/.traycer/worktrees/acme__web/feature-x",
+    };
+
+    const parsed1 = worktreeListAllForHostResponseSchemaV11.parse(response);
+    const parsed2 = worktreeListAllForHostResponseSchemaV11.parse(parsed1);
+    expect(parsed2).toEqual(parsed1);
+    expect(() =>
+      worktreeListAllForHostResponseSchemaV11.parse({
+        worktrees: response.worktrees,
+      }),
+    ).toThrow();
+  });
+
+  it("strips v1.1 pagination and enrichment fields when parsed as v1.0", () => {
+    expect(
+      worktreeListAllForHostResponseSchema.parse({
+        worktrees: [
+          {
+            ...v10Entry,
+            lastActivityAt: null,
+            owners: [],
+            branchStatus: null,
+            createdAt: null,
+            ...mergeProvenanceAbsent,
+          },
+        ],
+        nextCursor: "/Users/dev/.traycer/worktrees/acme__web/feature-x",
+      }),
+    ).toEqual({ worktrees: [v10Entry] });
+  });
+});
+
+describe("worktreeListAllForHostResponseSchemaV12", () => {
+  it("requires atPinnedCommit on submodule facts", () => {
+    const response = {
+      worktrees: [
+        {
+          ...v10Entry,
+          lastActivityAt: null,
+          owners: [],
+          branchStatus: null,
+          createdAt: null,
+          ...mergeProvenanceAbsent,
+          submodules: [
+            {
+              repoIdentifier: { owner: "acme", repo: "protocol" },
+              branch: "feature-x",
+              prState: "none" as const,
+              prNumber: null,
+              prUrl: null,
+              mergedHeadShaMatches: false,
+              mergedIntoDefault: false,
+              atPinnedCommit: true,
+              unmergedCommitCount: null,
+              unmergedCommitSubjects: null,
+            },
+          ],
+        },
+      ],
+      nextCursor: null,
+    };
+
+    expect(worktreeListAllForHostResponseSchemaV12.parse(response)).toEqual(
+      response,
+    );
+    expect(() =>
+      worktreeListAllForHostResponseSchemaV12.parse({
+        ...response,
+        worktrees: [
+          {
+            ...response.worktrees[0],
+            submodules: [
+              {
+                repoIdentifier: { owner: "acme", repo: "protocol" },
+                branch: "feature-x",
+                prState: "none" as const,
+                prNumber: null,
+                prUrl: null,
+                mergedHeadShaMatches: false,
+                mergedIntoDefault: false,
+                unmergedCommitCount: null,
+                unmergedCommitSubjects: null,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("strips v1.2 submodule proof fields when parsed as v1.1", () => {
+    expect(
+      worktreeListAllForHostResponseSchemaV11.parse({
+        worktrees: [
+          {
+            ...v10Entry,
+            lastActivityAt: null,
+            owners: [],
+            branchStatus: null,
+            createdAt: null,
+            ...mergeProvenanceAbsent,
+            submodules: [
+              {
+                repoIdentifier: { owner: "acme", repo: "protocol" },
+                branch: "feature-x",
+                prState: "none" as const,
+                prNumber: null,
+                prUrl: null,
+                mergedHeadShaMatches: false,
+                mergedIntoDefault: false,
+                atPinnedCommit: true,
+                unmergedCommitCount: 7,
+                unmergedCommitSubjects: ["Newest", "Older"],
+              },
+            ],
+          },
+        ],
+        nextCursor: null,
+      }),
+    ).toEqual({
+      worktrees: [
+        {
+          ...v10Entry,
+          lastActivityAt: null,
+          owners: [],
+          branchStatus: null,
+          createdAt: null,
+          ...mergeProvenanceAbsent,
+          submodules: [
+            {
+              repoIdentifier: { owner: "acme", repo: "protocol" },
+              branch: "feature-x",
+              prState: "none",
+              prNumber: null,
+              prUrl: null,
+              mergedHeadShaMatches: false,
+              mergedIntoDefault: false,
+            },
+          ],
+        },
+      ],
+      nextCursor: null,
     });
   });
 });
 
-describe("worktree.listAllForHost v1.0 <-> v1.1 negotiation", () => {
-  it("upgrades a v1.0 request to v1.1 with includeActivity=false and activityPaths=null", () => {
+describe("worktreeListAllForHostResponseSchemaV12 unmerged commit details", () => {
+  it("requires nullable unmerged-commit display fields on submodule facts", () => {
+    const response = {
+      worktrees: [
+        {
+          ...v10Entry,
+          lastActivityAt: null,
+          owners: [],
+          branchStatus: null,
+          createdAt: null,
+          ...mergeProvenanceAbsent,
+          submodules: [
+            {
+              repoIdentifier: { owner: "acme", repo: "protocol" },
+              branch: "feature-x",
+              prState: "none" as const,
+              prNumber: null,
+              prUrl: null,
+              mergedHeadShaMatches: false,
+              mergedIntoDefault: false,
+              atPinnedCommit: false,
+              unmergedCommitCount: null,
+              unmergedCommitSubjects: null,
+            },
+          ],
+        },
+      ],
+      nextCursor: null,
+    };
+    expect(worktreeListAllForHostResponseSchemaV12.parse(response)).toEqual(
+      response,
+    );
+    expect(() =>
+      worktreeListAllForHostResponseSchemaV12.parse({
+        ...response,
+        worktrees: [
+          {
+            ...response.worktrees[0],
+            submodules: [
+              {
+                ...response.worktrees[0].submodules[0],
+                unmergedCommitCount: undefined,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("strips unmerged-commit display fields when parsed as a v1.1 peer", () => {
+    const parsed = worktreeListAllForHostResponseSchemaV11.parse({
+      worktrees: [
+        {
+          ...v10Entry,
+          lastActivityAt: null,
+          owners: [],
+          branchStatus: null,
+          createdAt: null,
+          ...mergeProvenanceAbsent,
+          submodules: [
+            {
+              repoIdentifier: { owner: "acme", repo: "protocol" },
+              branch: "feature-x",
+              prState: "none" as const,
+              prNumber: null,
+              prUrl: null,
+              mergedHeadShaMatches: false,
+              mergedIntoDefault: false,
+              atPinnedCommit: false,
+              unmergedCommitCount: 7,
+              unmergedCommitSubjects: ["Newest", "Older"],
+            },
+          ],
+        },
+      ],
+      nextCursor: null,
+    });
+    expect(parsed.worktrees[0]?.submodules[0]).toEqual({
+      repoIdentifier: { owner: "acme", repo: "protocol" },
+      branch: "feature-x",
+      prState: "none",
+      prNumber: null,
+      prUrl: null,
+      mergedHeadShaMatches: false,
+      mergedIntoDefault: false,
+    });
+  });
+});
+
+describe("worktree.listAllForHost v1.0 <-> v1.2 negotiation", () => {
+  it("upgrades a v1.0 request to v1.1 with explicit unpaginated no-probe defaults", () => {
     const upgraded = upgradeRequestToVersion(
       listAllForHostRegistry,
       V10,
       V11,
       {},
     );
-    expect(upgraded).toEqual({ includeActivity: false, activityPaths: null });
+    expect(upgraded).toEqual({
+      includeActivity: false,
+      activityPaths: null,
+      cursor: null,
+      limit: null,
+    });
     // And it validates against the v1.1 request schema.
     expect(worktreeListAllForHostRequestSchemaV11.parse(upgraded)).toEqual({
       includeActivity: false,
       activityPaths: null,
+      cursor: null,
+      limit: null,
     });
   });
 
@@ -259,6 +615,7 @@ describe("worktree.listAllForHost v1.0 <-> v1.1 negotiation", () => {
           ...mergeProvenanceAbsent,
         },
       ],
+      nextCursor: null,
     });
     // The upgraded payload is a valid v1.1 response.
     expect(worktreeListAllForHostResponseSchemaV11.parse(upgraded)).toEqual(
@@ -266,12 +623,271 @@ describe("worktree.listAllForHost v1.0 <-> v1.1 negotiation", () => {
     );
   });
 
-  it("exposes v1.1 as the latest installed minor of major 1", () => {
-    expect(listAllForHostRegistry[1].latestMinor).toBe(1);
+  it("upgrades a v1.1 request to v1.2 unchanged", () => {
+    const request = {
+      includeActivity: true,
+      activityPaths: ["/Users/dev/.traycer/worktrees/acme__web/feature-x"],
+      cursor: null,
+      limit: null,
+    };
+    const upgraded = upgradeRequestToVersion(
+      listAllForHostRegistry,
+      V11,
+      V12,
+      request,
+    );
+    expect(upgraded).toEqual(request);
+    expect(worktreeListAllForHostRequestSchemaV12.parse(upgraded)).toEqual(
+      request,
+    );
+  });
+
+  it("upgrades a v1.1 response by defaulting submodule atPinnedCommit to false", () => {
+    const response = {
+      worktrees: [
+        {
+          ...v10Entry,
+          lastActivityAt: null,
+          owners: [],
+          branchStatus: null,
+          createdAt: null,
+          ...mergeProvenanceAbsent,
+          submodules: [
+            {
+              repoIdentifier: { owner: "acme", repo: "protocol" },
+              branch: "feature-x",
+              prState: "none" as const,
+              prNumber: null,
+              prUrl: null,
+              mergedHeadShaMatches: false,
+              mergedIntoDefault: false,
+            },
+          ],
+        },
+      ],
+      nextCursor: null,
+    };
+    const upgraded = upgradeResponseToVersion(
+      listAllForHostRegistry,
+      V11,
+      V12,
+      response,
+    );
+    expect(upgraded.worktrees[0].submodules[0]).toMatchObject({
+      atPinnedCommit: false,
+      unmergedCommitCount: null,
+      unmergedCommitSubjects: null,
+    });
+    expect(worktreeListAllForHostResponseSchemaV12.parse(upgraded)).toEqual(
+      upgraded,
+    );
+  });
+
+  it("upgrades a v1.2 request to v1.3 by defaulting forceRefresh to false", () => {
+    const request = {
+      includeActivity: false,
+      activityPaths: null,
+      cursor: null,
+      limit: null,
+    };
+    const upgraded = upgradeRequestToVersion(
+      listAllForHostRegistry,
+      V12,
+      V13,
+      request,
+    );
+    expect(upgraded).toEqual({ ...request, forceRefresh: false });
+    expect(worktreeListAllForHostRequestSchemaV13.parse(upgraded)).toEqual(
+      upgraded,
+    );
+  });
+
+  it("upgrades a v1.2 response to v1.3 unchanged", () => {
+    const response = {
+      worktrees: [
+        {
+          ...v10Entry,
+          lastActivityAt: null,
+          owners: [],
+          branchStatus: null,
+          createdAt: null,
+          ...mergeProvenanceAbsent,
+          submodules: [],
+        },
+      ],
+      nextCursor: null,
+    };
+    const upgraded = upgradeResponseToVersion(
+      listAllForHostRegistry,
+      V12,
+      V13,
+      response,
+    );
+    expect(upgraded).toEqual(response);
+    expect(worktreeListAllForHostResponseSchemaV13.parse(upgraded)).toEqual(
+      upgraded,
+    );
+  });
+
+  it("upgrades v1.3 to v1.4 stamping the legacy-host resolved sentinel (not null)", () => {
+    const request = {
+      includeActivity: false,
+      activityPaths: null,
+      cursor: null,
+      limit: null,
+      forceRefresh: false,
+    };
+    expect(
+      upgradeRequestToVersion(listAllForHostRegistry, V13, V14, request),
+    ).toEqual(request);
+    expect(worktreeListAllForHostRequestSchemaV14.parse(request)).toEqual(
+      request,
+    );
+
+    const response = {
+      worktrees: [
+        {
+          ...v10Entry,
+          lastActivityAt: null,
+          owners: [],
+          branchStatus: null,
+          createdAt: null,
+          ...mergeProvenanceAbsent,
+          submodules: [],
+        },
+      ],
+      nextCursor: null,
+    };
+    const upgraded = upgradeResponseToVersion(
+      listAllForHostRegistry,
+      V13,
+      V14,
+      response,
+    );
+    // NEW CLIENT + OLD HOST: a v1.3 host has no `resolvedAt` and never sends
+    // one, so bridging to `null` would strand its rows perpetually "checking".
+    // The resolved sentinel keeps them authoritative.
+    expect(upgraded.worktrees[0].resolvedAt).toBe(LEGACY_HOST_RESOLVED_AT);
+    expect(worktreeListAllForHostResponseSchemaV14.parse(upgraded)).toEqual(
+      upgraded,
+    );
+    // OLD CLIENT + NEW HOST: a v1.3 caller strips the field it never knew.
+    expect(
+      worktreeListAllForHostResponseSchemaV13.parse(upgraded).worktrees[0],
+    ).not.toHaveProperty("resolvedAt");
+  });
+
+  it("exposes v1.4 as the latest installed minor of major 1", () => {
+    expect(listAllForHostRegistry[1].latestMinor).toBe(4);
     expect(Object.keys(listAllForHostRegistry[1].versions).sort()).toEqual([
       "0",
       "1",
+      "2",
+      "3",
+      "4",
     ]);
+  });
+});
+
+describe("worktree.listByWorkspacePaths v1.1 <-> v1.2 negotiation", () => {
+  it("upgrades a v1.1 request to v1.2 by defaulting forceRefresh to false", () => {
+    const request = {
+      workspacePaths: ["/Users/dev/acme/web"],
+      scriptRefs: [],
+    };
+    const upgraded = upgradeRequestToVersion(
+      listByWorkspacePathsRegistry,
+      V11,
+      V12,
+      request,
+    );
+    expect(upgraded).toEqual({ ...request, forceRefresh: false });
+    expect(
+      worktreeListByWorkspacePathsRequestSchemaV12.parse(upgraded),
+    ).toEqual(upgraded);
+  });
+
+  it("upgrades a v1.1 response to v1.2 unchanged", () => {
+    const response = {
+      workspaces: [],
+      scriptsAtRefs: [],
+    };
+    const upgraded = upgradeResponseToVersion(
+      listByWorkspacePathsRegistry,
+      V11,
+      V12,
+      response,
+    );
+    expect(upgraded).toEqual(response);
+    expect(
+      worktreeListByWorkspacePathsResponseSchemaV12.parse(upgraded),
+    ).toEqual(upgraded);
+  });
+
+  it("rejects a v1.1 request against the v1.2 schema (forceRefresh is required)", () => {
+    const request = {
+      workspacePaths: ["/Users/dev/acme/web"],
+      scriptRefs: [],
+    };
+    expect(worktreeListByWorkspacePathsRequestSchemaV11.parse(request)).toEqual(
+      request,
+    );
+    expect(() =>
+      worktreeListByWorkspacePathsRequestSchemaV12.parse(request),
+    ).toThrow();
+  });
+
+  it("upgrades v1.2 to v1.3 stamping the legacy-host resolved sentinel and strips it for v1.2", () => {
+    const request = {
+      workspacePaths: ["/Users/dev/acme/web"],
+      scriptRefs: [],
+      forceRefresh: false,
+    };
+    expect(
+      upgradeRequestToVersion(listByWorkspacePathsRegistry, V12, V13, request),
+    ).toEqual(request);
+    expect(worktreeListByWorkspacePathsRequestSchemaV13.parse(request)).toEqual(
+      request,
+    );
+
+    const response = {
+      workspaces: [
+        {
+          workspacePath: "/Users/dev/acme/web",
+          isGitRepo: true,
+          repoIdentifier: { owner: "acme", repo: "web" },
+          mainBranch: "main",
+          worktrees: [],
+          scripts: null,
+        },
+      ],
+      scriptsAtRefs: [],
+    };
+    const upgraded = upgradeResponseToVersion(
+      listByWorkspacePathsRegistry,
+      V12,
+      V13,
+      response,
+    );
+    // NEW CLIENT + OLD HOST: a v1.2 host never sends `resolvedAt`; the resolved
+    // sentinel (not `null`) keeps its summaries authoritative so the home
+    // workspace selector does not strand every folder as perpetually pending.
+    expect(upgraded.workspaces[0].resolvedAt).toBe(LEGACY_HOST_RESOLVED_AT);
+    expect(
+      worktreeListByWorkspacePathsResponseSchemaV13.parse(upgraded),
+    ).toEqual(upgraded);
+    // OLD CLIENT + NEW HOST: a v1.2 caller strips the field it never knew.
+    expect(
+      worktreeListByWorkspacePathsResponseSchemaV12.parse(upgraded)
+        .workspaces[0],
+    ).not.toHaveProperty("resolvedAt");
+  });
+
+  it("exposes v1.3 as the latest installed minor of major 1", () => {
+    expect(listByWorkspacePathsRegistry[1].latestMinor).toBe(3);
+    expect(
+      Object.keys(listByWorkspacePathsRegistry[1].versions).sort(),
+    ).toEqual(["0", "1", "2", "3"]);
   });
 });
 
@@ -330,10 +946,115 @@ describe("worktreeBindingEntrySchema (ownedSubmodules addition)", () => {
     expect("baseSha" in parsed).toBe(false);
   });
 
-  it("rejects an entry missing ownedSubmodules", () => {
-    // The field is required (not optional) - a pre-migration row must be
-    // backfilled by the host before it validates.
-    expect(() => worktreeBindingEntrySchema.parse(bindingEntryBase)).toThrow();
+  it("accepts an entry missing ownedSubmodules (wire compat with pre-existing released hosts)", () => {
+    // This entry shape rides several already-released response/stream
+    // payloads unversioned; a released host from before this field existed
+    // omits the key entirely, and that must still parse.
+    const parsed = worktreeBindingEntrySchema.parse(bindingEntryBase);
+    expect(parsed.ownedSubmodules).toBeUndefined();
+  });
+});
+
+describe("worktreeListBindingsForEpicResponseSchemaV11 (folderlessCwd)", () => {
+  it("accepts a non-empty folderlessCwd", () => {
+    const parsed = worktreeListBindingsForEpicResponseSchemaV11.parse({
+      rows: [],
+      folderlessCwd: "/Users/dev/.traycer/epics/epic-1",
+    });
+    expect(parsed.folderlessCwd).toBe("/Users/dev/.traycer/epics/epic-1");
+  });
+
+  it("accepts a null folderlessCwd (bridged up from a v1.0 host)", () => {
+    const parsed = worktreeListBindingsForEpicResponseSchemaV11.parse({
+      rows: [],
+      folderlessCwd: null,
+    });
+    expect(parsed.folderlessCwd).toBeNull();
+  });
+
+  it("rejects a missing folderlessCwd - the v1.1 shape is not optional", () => {
+    expect(() =>
+      worktreeListBindingsForEpicResponseSchemaV11.parse({ rows: [] }),
+    ).toThrow();
+  });
+
+  it("rejects an empty-string folderlessCwd", () => {
+    expect(() =>
+      worktreeListBindingsForEpicResponseSchemaV11.parse({
+        rows: [],
+        folderlessCwd: "",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects an undefined folderlessCwd", () => {
+    expect(() =>
+      worktreeListBindingsForEpicResponseSchemaV11.parse({
+        rows: [],
+        folderlessCwd: undefined,
+      }),
+    ).toThrow();
+  });
+});
+
+describe("worktree.listBindingsForEpic v1.1 <-> v1.2 negotiation", () => {
+  // NEW CLIENT + OLD HOST: a v1.2 client bridges an inbound v1.1 response up to
+  // canonical. Every bridged row must be stamped isGitResolvePending:false - a
+  // pre-v1.2 host has no pending concept and never sends a signal to clear it,
+  // so its answer is authoritative and must NOT read as perpetually "checking".
+  it("upgrades a v1.1 response to v1.2 by stamping isGitResolvePending:false on every row", () => {
+    const response = {
+      rows: [
+        v11SelectorRow,
+        { ...v11SelectorRow, runningDir: "/other", workspacePath: "/other" },
+      ],
+      folderlessCwd: null,
+    };
+    const upgraded = upgradeResponseToVersion(
+      listBindingsForEpicRegistry,
+      V11,
+      V12,
+      response,
+    );
+    expect(upgraded.rows.map((row) => row.isGitResolvePending)).toEqual([
+      false,
+      false,
+    ]);
+    expect(
+      worktreeListBindingsForEpicResponseSchemaV12.parse(upgraded),
+    ).toEqual(upgraded);
+  });
+
+  // OLD CLIENT + NEW HOST: a v1.2 host serves a v1.1 caller by downgrading its
+  // canonical response - the within-major Zod strip drops isGitResolvePending,
+  // so a pre-v1.2 client (which never knew the field) sees the v1.1 shape.
+  it("strips isGitResolvePending when a v1.2 response is served to a v1.1 caller", () => {
+    const v12Response = {
+      rows: [{ ...v11SelectorRow, isGitResolvePending: true }],
+      folderlessCwd: null,
+    };
+    expect(
+      worktreeListBindingsForEpicResponseSchemaV12.parse(v12Response),
+    ).toEqual(v12Response);
+    const downgraded =
+      worktreeListBindingsForEpicResponseSchemaV11.parse(v12Response);
+    expect(downgraded.rows[0]).not.toHaveProperty("isGitResolvePending");
+  });
+
+  it("rejects a v1.1 row against the v1.2 schema (isGitResolvePending is required)", () => {
+    expect(() =>
+      worktreeListBindingsForEpicResponseSchemaV12.parse({
+        rows: [v11SelectorRow],
+        folderlessCwd: null,
+      }),
+    ).toThrow();
+  });
+
+  it("exposes v1.2 as the latest installed minor of major 1", () => {
+    expect(listBindingsForEpicRegistry[1].latestMinor).toBe(2);
+    expect(Object.keys(listBindingsForEpicRegistry[1].versions).sort()).toEqual(
+      ["0", "1", "2"],
+    );
   });
 });
 
@@ -363,5 +1084,36 @@ describe("worktreeSubmoduleMergeFactSchema", () => {
     });
     expect(parsed.prState).toBeNull();
     expect(parsed.mergedHeadShaMatches).toBe(false);
+  });
+});
+
+describe("worktreeSubmoduleMergeFactSchemaV12", () => {
+  it("requires atPinnedCommit", () => {
+    const fact = {
+      repoIdentifier: { owner: "acme", repo: "lib" },
+      branch: "traycer/sub",
+      prState: "none" as const,
+      prNumber: null,
+      prUrl: null,
+      mergedHeadShaMatches: false,
+      mergedIntoDefault: false,
+      atPinnedCommit: true,
+      unmergedCommitCount: 2,
+      unmergedCommitSubjects: ["Newest", "Older"],
+    };
+    expect(worktreeSubmoduleMergeFactSchemaV12.parse(fact)).toEqual(fact);
+    expect(() =>
+      worktreeSubmoduleMergeFactSchemaV12.parse({
+        repoIdentifier: { owner: "acme", repo: "lib" },
+        branch: "traycer/sub",
+        prState: "none" as const,
+        prNumber: null,
+        prUrl: null,
+        mergedHeadShaMatches: false,
+        mergedIntoDefault: false,
+        unmergedCommitCount: null,
+        unmergedCommitSubjects: null,
+      }),
+    ).toThrow();
   });
 });

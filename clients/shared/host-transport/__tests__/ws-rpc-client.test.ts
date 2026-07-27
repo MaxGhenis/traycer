@@ -1,13 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  defineFallbackMethodDegrade,
+  defineFloorAwareVersionedRpcRegistry,
   defineDowngradePath,
   defineRpcContract,
   defineUpgradePath,
   defineVersionedRpcRegistry,
   type VersionedRpcRegistry,
 } from "@traycer/protocol/framework/index";
-import { HostRpcError, RetryableTransportError } from "../host-messenger";
+import {
+  HostRequestAbortedError,
+  HostRpcError,
+  HostTransportFailureError,
+  RetryableTransportError,
+  type HostRequestAuthority,
+  type RequestOfMethod,
+  type ResponseOfMethod,
+} from "../host-messenger";
+import { MutableBearerLease } from "@traycer-clients/shared/auth/bearer-source";
 import {
   createRequestContext,
   identityFromAuthenticatedUser,
@@ -137,24 +148,65 @@ function makeFactory(): {
   return { factory, sockets };
 }
 
+function authorityForToken(token: string | null): HostRequestAuthority {
+  return authorityForBearer(new MutableBearerLease(token ?? "", "test-user"));
+}
+
+function authorityForBearer(
+  bearer: HostRequestAuthority["bearer"],
+): HostRequestAuthority {
+  return {
+    endpoint: {
+      hostId: mockLocalHostEntry.hostId,
+      websocketUrl: mockLocalHostEntry.websocketUrl,
+    },
+    bearer,
+    abortSignal: new AbortController().signal,
+  };
+}
+
+class BoundWsRpcClient<Registry extends VersionedRpcRegistry> {
+  constructor(
+    private readonly inner: WsRpcClient<Registry>,
+    private readonly authority: HostRequestAuthority,
+  ) {}
+
+  request<Method extends keyof Registry & string>(
+    method: Method,
+    params: RequestOfMethod<Registry, Method>,
+  ): Promise<ResponseOfMethod<Registry, Method>> {
+    return this.inner.request(method, params, this.authority);
+  }
+
+  requestWithResponseTimeout<Method extends keyof Registry & string>(
+    method: Method,
+    params: RequestOfMethod<Registry, Method>,
+    responseTimeoutMs: number,
+  ): Promise<ResponseOfMethod<Registry, Method>> {
+    return this.inner.requestWithResponseTimeout(
+      method,
+      params,
+      responseTimeoutMs,
+      this.authority,
+    );
+  }
+}
+
 function makeClient(options: {
   readonly factory: IWebSocketFactory;
   readonly authToken: string | null;
   readonly requestId: string;
   readonly dialTimeoutMs: number;
   readonly frameTimeoutMs: number;
-}): WsRpcClient<typeof testRegistry> {
-  const ctx =
-    options.authToken === null ? null : makeRequestContext(options.authToken);
-  return new WsRpcClient<typeof testRegistry>({
+}): BoundWsRpcClient<typeof testRegistry> {
+  const inner = new WsRpcClient<typeof testRegistry>({
     registry: testRegistry,
-    endpoint: () => mockLocalHostEntry,
-    bearer: () => ctx?.credentials ?? null,
     requestId: () => options.requestId,
     webSocketFactory: options.factory,
     dialTimeoutMs: options.dialTimeoutMs,
     frameTimeoutMs: options.frameTimeoutMs,
   });
+  return new BoundWsRpcClient(inner, authorityForToken(options.authToken));
 }
 
 function makeRequestContext(bearer: string): RequestContext {
@@ -194,6 +246,34 @@ function expectTerminalFrame(frame: ClientFrame): ClientFatalErrorFrame {
   return frame;
 }
 
+function openAckWithOptionalHostEcho(version: {
+  readonly major: number;
+  readonly minor: number;
+}): HostFrame {
+  return {
+    kind: "openAck",
+    manifest: {
+      "host.status": { major: 1, minor: 0 },
+    },
+    optionalManifest: {
+      "host.echo": version,
+    },
+  };
+}
+
+function openAckWithOnlyOptionalHostEcho(version: {
+  readonly major: number;
+  readonly minor: number;
+}): HostFrame {
+  return {
+    kind: "openAck",
+    manifest: {},
+    optionalManifest: {
+      "host.echo": version,
+    },
+  };
+}
+
 describe("WsRpcClient", () => {
   it("walks dial → open → openAck → request → response → close on the happy path", async () => {
     const { factory, sockets } = makeFactory();
@@ -219,17 +299,13 @@ describe("WsRpcClient", () => {
     const openFrame = expectOpenFrame(sockets[0].sent[0]);
     expect(openFrame.token).toBe("token-abc");
     expect(openFrame.manifest).toEqual({
-      "host.echo": { major: 1, minor: 0 },
       "host.status": { major: 1, minor: 0 },
     });
-
-    stub.fireMessage({
-      kind: "openAck",
-      manifest: {
-        "host.echo": { major: 1, minor: 0 },
-        "host.status": { major: 1, minor: 0 },
-      },
+    expect(openFrame.optionalManifest).toEqual({
+      "host.echo": { major: 1, minor: 0 },
     });
+
+    stub.fireMessage(openAckWithOptionalHostEcho({ major: 1, minor: 0 }));
     await flush();
 
     expect(sockets[0].sent).toHaveLength(2);
@@ -241,6 +317,7 @@ describe("WsRpcClient", () => {
       schemaVersion: { major: 1, minor: 0 },
       params: { message: "hi" },
     });
+    expect(stub.closed).toBeNull();
 
     stub.fireMessage({
       kind: "response",
@@ -253,6 +330,40 @@ describe("WsRpcClient", () => {
 
     await expect(pending).resolves.toEqual({ echoed: "HI" });
     expect(stub.closed).toEqual({ code: 1000, reason: "ok" });
+  });
+
+  it("aborting the captured authority closes and settles the in-flight socket", async () => {
+    const { factory, sockets } = makeFactory();
+    const client = new WsRpcClient<typeof testRegistry>({
+      registry: testRegistry,
+      requestId: () => "req-abort",
+      webSocketFactory: factory,
+      dialTimeoutMs: 1000,
+      frameTimeoutMs: 1000,
+    });
+    const lifetime = new AbortController();
+    const pending = client.request(
+      "host.echo",
+      { message: "hi" },
+      {
+        endpoint: {
+          hostId: mockLocalHostEntry.hostId,
+          websocketUrl: mockLocalHostEntry.websocketUrl,
+        },
+        bearer: new MutableBearerLease("token-abc", "test-user"),
+        abortSignal: lifetime.signal,
+      },
+    );
+    await flush();
+    expect(sockets).toHaveLength(1);
+
+    lifetime.abort("host-replaced");
+
+    await expect(pending).rejects.toBeInstanceOf(HostRequestAbortedError);
+    expect(sockets[0].socket.closed).toEqual({
+      code: 1000,
+      reason: "authority-aborted",
+    });
   });
 
   it("rejects before dialing when no authenticated request context is available", async () => {
@@ -272,7 +383,7 @@ describe("WsRpcClient", () => {
         error instanceof HostRpcError &&
         error.code === "RPC_ERROR" &&
         error.requestId === "req-no-auth" &&
-        error.message.includes("without an authenticated bearer source"),
+        error.message.includes("No bearer available for user 'test-user'"),
     );
     expect(sockets).toHaveLength(0);
   });
@@ -281,15 +392,16 @@ describe("WsRpcClient", () => {
     const { factory, sockets } = makeFactory();
     const ctx = makeRequestContext("token-abc");
     ctx.release();
-    const client = new WsRpcClient<typeof testRegistry>({
-      registry: testRegistry,
-      endpoint: () => mockLocalHostEntry,
-      bearer: () => ctx?.credentials ?? null,
-      requestId: () => "req-released",
-      webSocketFactory: factory,
-      dialTimeoutMs: 1000,
-      frameTimeoutMs: 1000,
-    });
+    const client = new BoundWsRpcClient(
+      new WsRpcClient<typeof testRegistry>({
+        registry: testRegistry,
+        requestId: () => "req-released",
+        webSocketFactory: factory,
+        dialTimeoutMs: 1000,
+        frameTimeoutMs: 1000,
+      }),
+      authorityForBearer(ctx.credentials),
+    );
 
     await expect(
       client.request("host.echo", { message: "hi" }),
@@ -407,7 +519,8 @@ describe("WsRpcClient", () => {
 
     sockets[0].socket.fireMessage({
       kind: "openAck",
-      manifest: {
+      manifest: {},
+      optionalManifest: {
         "host.echo": { major: 1, minor: 0 },
       },
     });
@@ -440,13 +553,9 @@ describe("WsRpcClient", () => {
     await flush();
     sockets[0].socket.fireOpen();
     await flush();
-    sockets[0].socket.fireMessage({
-      kind: "openAck",
-      manifest: {
-        "host.echo": { major: 1, minor: 0 },
-        "host.status": { major: 1, minor: 0 },
-      },
-    });
+    sockets[0].socket.fireMessage(
+      openAckWithOptionalHostEcho({ major: 1, minor: 0 }),
+    );
     await flush();
 
     sockets[0].socket.fireMessage({
@@ -652,22 +761,117 @@ describe("WsRpcClient", () => {
     await flush();
     sockets[0].socket.fireOpen();
     await flush();
-    sockets[0].socket.fireMessage({
-      kind: "openAck",
-      manifest: {
-        "host.echo": { major: 1, minor: 0 },
-        "host.status": { major: 1, minor: 0 },
-      },
-    });
+    sockets[0].socket.fireMessage(
+      openAckWithOptionalHostEcho({ major: 1, minor: 0 }),
+    );
     await flush();
     // The request frame is now on the wire; the response never arrives.
     expect(expectRequestFrame(sockets[0].sent[1])).toBeDefined();
 
     await expect(pending).rejects.toSatisfy(
       (error: unknown) =>
-        error instanceof HostRpcError &&
+        error instanceof HostTransportFailureError &&
         !(error instanceof RetryableTransportError) &&
         error.message.includes("frame timed out"),
+    );
+  });
+
+  it("requestWithResponseTimeout waits past the default frame timeout for a long-poll response", async () => {
+    const { factory, sockets } = makeFactory();
+    const client = makeClient({
+      factory,
+      authToken: "t",
+      requestId: "req-longpoll",
+      dialTimeoutMs: 1000,
+      frameTimeoutMs: 25,
+    });
+
+    const pending = client.requestWithResponseTimeout(
+      "host.echo",
+      { message: "slow" },
+      5_000,
+    );
+    await flush();
+    sockets[0].socket.fireOpen();
+    await flush();
+    sockets[0].socket.fireMessage(
+      openAckWithOptionalHostEcho({ major: 1, minor: 0 }),
+    );
+    await flush();
+    expect(expectRequestFrame(sockets[0].sent[1])).toBeDefined();
+
+    // Stay silent well past the 25ms transport default - a long-poll
+    // response legitimately arrives later than the frame timeout.
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+    sockets[0].socket.fireMessage({
+      kind: "response",
+      requestId: "req-longpoll",
+      method: "host.echo",
+      schemaVersion: { major: 1, minor: 0 },
+      result: { echoed: "SLOW" },
+      error: null,
+    });
+
+    await expect(pending).resolves.toEqual({ echoed: "SLOW" });
+  });
+
+  it("requestWithResponseTimeout keeps the default frame timeout for the handshake", async () => {
+    const { factory, sockets } = makeFactory();
+    const client = makeClient({
+      factory,
+      authToken: "t",
+      requestId: "req-longpoll-handshake",
+      dialTimeoutMs: 1000,
+      frameTimeoutMs: 25,
+    });
+
+    // The extended budget covers ONLY the response wait - a host that never
+    // answers `openAck` is unreachable and must still fail at the default.
+    const pending = client.requestWithResponseTimeout(
+      "host.echo",
+      { message: "x" },
+      60_000,
+    );
+    await flush();
+    sockets[0].socket.fireOpen();
+    await flush();
+
+    await expect(pending).rejects.toSatisfy(
+      (error: unknown) =>
+        error instanceof HostRpcError &&
+        error.message.includes("frame timed out after 25ms"),
+    );
+  });
+
+  it("requestWithResponseTimeout still times out once the extended budget elapses", async () => {
+    const { factory, sockets } = makeFactory();
+    const client = makeClient({
+      factory,
+      authToken: "t",
+      requestId: "req-longpoll-elapsed",
+      dialTimeoutMs: 1000,
+      frameTimeoutMs: 25,
+    });
+
+    const pending = client.requestWithResponseTimeout(
+      "host.echo",
+      { message: "x" },
+      50,
+    );
+    await flush();
+    sockets[0].socket.fireOpen();
+    await flush();
+    sockets[0].socket.fireMessage(
+      openAckWithOptionalHostEcho({ major: 1, minor: 0 }),
+    );
+    await flush();
+
+    await expect(pending).rejects.toSatisfy(
+      (error: unknown) =>
+        error instanceof HostRpcError &&
+        !(error instanceof RetryableTransportError) &&
+        error.message.includes("frame timed out after 50ms"),
     );
   });
 
@@ -690,7 +894,7 @@ describe("WsRpcClient", () => {
     await expect(pending).rejects.toSatisfy(
       (error: unknown) =>
         error instanceof HostRpcError &&
-        !(error instanceof RetryableTransportError) &&
+        !(error instanceof HostTransportFailureError) &&
         error.message.includes("Malformed host frame:"),
     );
   });
@@ -709,13 +913,9 @@ describe("WsRpcClient", () => {
     await flush();
     sockets[0].socket.fireOpen();
     await flush();
-    sockets[0].socket.fireMessage({
-      kind: "openAck",
-      manifest: {
-        "host.echo": { major: 1, minor: 0 },
-        "host.status": { major: 1, minor: 0 },
-      },
-    });
+    sockets[0].socket.fireMessage(
+      openAckWithOptionalHostEcho({ major: 1, minor: 0 }),
+    );
     await flush();
 
     sockets[0].socket.fireMessage({
@@ -733,6 +933,366 @@ describe("WsRpcClient", () => {
         error.code === "DOWNGRADE_UNSUPPORTED" &&
         error.message === "no bridge"
       );
+    });
+  });
+
+  it("falls back to a floor method when an optional method is absent", async () => {
+    const fallbackV10 = defineRpcContract({
+      method: "host.syntheticFallback",
+      schemaVersion: { major: 1, minor: 0 } as const,
+      requestSchema: z.object({ label: z.string() }),
+      responseSchema: z.object({ summary: z.string() }),
+    });
+    const fallbackRegistry = defineFloorAwareVersionedRpcRegistry(
+      ["host.status"] as const,
+      {
+        "host.status": {
+          1: {
+            latestMinor: 0,
+            versions: {
+              0: { contract: statusV10, upgradeFromPreviousVersion: null },
+            },
+            downgradePathsFromLatest: {},
+          },
+        },
+        "host.syntheticFallback": {
+          degrade: defineFallbackMethodDegrade<
+            typeof fallbackV10,
+            typeof statusV10,
+            "host.status"
+          >({
+            kind: "fallback",
+            to: { method: "host.status", major: 1, minor: 0 },
+            adaptRequest: () => ({}),
+            adaptResponse: (response) => ({
+              summary: response.ready ? "ready" : "not-ready",
+            }),
+          }),
+          1: {
+            latestMinor: 0,
+            versions: {
+              0: { contract: fallbackV10, upgradeFromPreviousVersion: null },
+            },
+            downgradePathsFromLatest: {},
+          },
+        },
+      },
+    );
+    const { factory, sockets } = makeFactory();
+    const ctx = makeRequestContext("t");
+    const client = new BoundWsRpcClient(
+      new WsRpcClient<typeof fallbackRegistry>({
+        registry: fallbackRegistry,
+        requestId: () => "req-fallback",
+        webSocketFactory: factory,
+        dialTimeoutMs: 1000,
+        frameTimeoutMs: 1000,
+      }),
+      authorityForBearer(ctx.credentials),
+    );
+
+    const pending = client.request("host.syntheticFallback", { label: "x" });
+    await flush();
+    sockets[0].socket.fireOpen();
+    await flush();
+
+    const openFrame = expectOpenFrame(sockets[0].sent[0]);
+    expect(openFrame.manifest).toEqual({
+      "host.status": { major: 1, minor: 0 },
+    });
+    expect(openFrame.optionalManifest).toEqual({
+      "host.syntheticFallback": { major: 1, minor: 0 },
+    });
+
+    sockets[0].socket.fireMessage({
+      kind: "openAck",
+      manifest: {
+        "host.status": { major: 1, minor: 0 },
+      },
+    });
+    await flush();
+
+    const requestFrame = expectRequestFrame(sockets[0].sent[1]);
+    expect(requestFrame).toEqual({
+      kind: "request",
+      requestId: "req-fallback",
+      method: "host.status",
+      schemaVersion: { major: 1, minor: 0 },
+      params: {},
+    });
+    expect(sockets[0].socket.closed).toBeNull();
+
+    sockets[0].socket.fireMessage({
+      kind: "response",
+      requestId: "req-fallback",
+      method: "host.status",
+      schemaVersion: { major: 1, minor: 0 },
+      result: { ready: true },
+      error: null,
+    });
+
+    await expect(pending).resolves.toEqual({ summary: "ready" });
+    expect(sockets[0].socket.closed).toEqual({ code: 1000, reason: "ok" });
+  });
+
+  it("throws E_HOST_UNSUPPORTED when an absent optional method declares unsupported", async () => {
+    const unsupportedV10 = defineRpcContract({
+      method: "host.syntheticUnsupported",
+      schemaVersion: { major: 1, minor: 0 } as const,
+      requestSchema: z.object({}),
+      responseSchema: z.object({ ok: z.boolean() }),
+    });
+    const unsupportedRegistry = defineFloorAwareVersionedRpcRegistry(
+      ["host.status"] as const,
+      {
+        "host.status": {
+          1: {
+            latestMinor: 0,
+            versions: {
+              0: { contract: statusV10, upgradeFromPreviousVersion: null },
+            },
+            downgradePathsFromLatest: {},
+          },
+        },
+        "host.syntheticUnsupported": {
+          degrade: { kind: "unsupported" },
+          1: {
+            latestMinor: 0,
+            versions: {
+              0: { contract: unsupportedV10, upgradeFromPreviousVersion: null },
+            },
+            downgradePathsFromLatest: {},
+          },
+        },
+      },
+    );
+    const { factory, sockets } = makeFactory();
+    const ctx = makeRequestContext("t");
+    const client = new BoundWsRpcClient(
+      new WsRpcClient<typeof unsupportedRegistry>({
+        registry: unsupportedRegistry,
+        requestId: () => "req-unsupported",
+        webSocketFactory: factory,
+        dialTimeoutMs: 1000,
+        frameTimeoutMs: 1000,
+      }),
+      authorityForBearer(ctx.credentials),
+    );
+
+    const pending = client.request("host.syntheticUnsupported", {});
+    await flush();
+    sockets[0].socket.fireOpen();
+    await flush();
+    sockets[0].socket.fireMessage({
+      kind: "openAck",
+      manifest: {
+        "host.status": { major: 1, minor: 0 },
+      },
+    });
+
+    await expect(pending).rejects.toSatisfy((error: unknown) => {
+      return (
+        error instanceof HostRpcError &&
+        error.code === "E_HOST_UNSUPPORTED" &&
+        error.fatalDetails?.upgradeGuidance?.hostShouldUpgrade === true
+      );
+    });
+    expect(sockets[0].sent.map((frame) => frame.kind)).not.toContain("request");
+  });
+
+  describe("fallback degrade version anchoring", () => {
+    const statusSkewV11 = defineRpcContract({
+      method: "host.status",
+      schemaVersion: { major: 1, minor: 1 } as const,
+      requestSchema: z.object({ verbose: z.boolean() }),
+      responseSchema: z.object({ ready: z.boolean(), detail: z.string() }),
+    });
+
+    const fallbackSkewV10 = defineRpcContract({
+      method: "host.syntheticSkewFallback",
+      schemaVersion: { major: 1, minor: 0 } as const,
+      requestSchema: z.object({ label: z.string() }),
+      responseSchema: z.object({
+        summary: z.string(),
+        detailSeen: z.boolean(),
+      }),
+    });
+
+    const upgradeStatusV10ToV11 = defineUpgradePath<
+      typeof statusV10,
+      typeof statusSkewV11
+    >({
+      from: statusV10.schemaVersion,
+      to: statusSkewV11.schemaVersion,
+      upgradeRequest: () => ({ verbose: false }),
+      upgradeResponse: (response) => ({
+        ready: response.ready,
+        detail: "upgraded",
+      }),
+    });
+
+    const fallbackSkewRegistry = defineFloorAwareVersionedRpcRegistry(
+      ["host.status"] as const,
+      {
+        "host.status": {
+          1: {
+            latestMinor: 1,
+            versions: {
+              0: { contract: statusV10, upgradeFromPreviousVersion: null },
+              1: {
+                contract: statusSkewV11,
+                upgradeFromPreviousVersion: upgradeStatusV10ToV11,
+              },
+            },
+            downgradePathsFromLatest: {},
+          },
+        },
+        "host.syntheticSkewFallback": {
+          degrade: defineFallbackMethodDegrade<
+            typeof fallbackSkewV10,
+            typeof statusV10,
+            "host.status"
+          >({
+            kind: "fallback",
+            to: { method: "host.status", major: 1, minor: 0 },
+            adaptRequest: () => ({}),
+            adaptResponse: (response) => ({
+              summary: response.ready ? "ready" : "not-ready",
+              detailSeen: Object.prototype.hasOwnProperty.call(
+                response,
+                "detail",
+              ),
+            }),
+          }),
+          1: {
+            latestMinor: 0,
+            versions: {
+              0: {
+                contract: fallbackSkewV10,
+                upgradeFromPreviousVersion: null,
+              },
+            },
+            downgradePathsFromLatest: {},
+          },
+        },
+      },
+    );
+
+    function makeFallbackSkewClient(options: {
+      readonly factory: IWebSocketFactory;
+      readonly requestId: string;
+    }): BoundWsRpcClient<typeof fallbackSkewRegistry> {
+      const ctx = makeRequestContext("t");
+      return new BoundWsRpcClient(
+        new WsRpcClient<typeof fallbackSkewRegistry>({
+          registry: fallbackSkewRegistry,
+          requestId: () => options.requestId,
+          webSocketFactory: options.factory,
+          dialTimeoutMs: 1000,
+          frameTimeoutMs: 1000,
+        }),
+        authorityForBearer(ctx.credentials),
+      );
+    }
+
+    it("anchors fallback at degrade.to when the host has the older target minor", async () => {
+      const { factory, sockets } = makeFactory();
+      const client = makeFallbackSkewClient({
+        factory,
+        requestId: "req-fallback-skew-old-host",
+      });
+
+      const pending = client.request("host.syntheticSkewFallback", {
+        label: "x",
+      });
+      await flush();
+      sockets[0].socket.fireOpen();
+      await flush();
+
+      const openFrame = expectOpenFrame(sockets[0].sent[0]);
+      expect(openFrame.manifest).toEqual({
+        "host.status": { major: 1, minor: 1 },
+      });
+      expect(openFrame.optionalManifest).toEqual({
+        "host.syntheticSkewFallback": { major: 1, minor: 0 },
+      });
+
+      sockets[0].socket.fireMessage({
+        kind: "openAck",
+        manifest: {
+          "host.status": { major: 1, minor: 0 },
+        },
+      });
+      await flush();
+
+      const requestFrame = expectRequestFrame(sockets[0].sent[1]);
+      expect(requestFrame).toEqual({
+        kind: "request",
+        requestId: "req-fallback-skew-old-host",
+        method: "host.status",
+        schemaVersion: { major: 1, minor: 0 },
+        params: {},
+      });
+
+      sockets[0].socket.fireMessage({
+        kind: "response",
+        requestId: "req-fallback-skew-old-host",
+        method: "host.status",
+        schemaVersion: { major: 1, minor: 0 },
+        result: { ready: true },
+        error: null,
+      });
+
+      await expect(pending).resolves.toEqual({
+        summary: "ready",
+        detailSeen: false,
+      });
+    });
+
+    it("anchors fallback at degrade.to when the host has the newer floor minor", async () => {
+      const { factory, sockets } = makeFactory();
+      const client = makeFallbackSkewClient({
+        factory,
+        requestId: "req-fallback-skew-new-host",
+      });
+
+      const pending = client.request("host.syntheticSkewFallback", {
+        label: "x",
+      });
+      await flush();
+      sockets[0].socket.fireOpen();
+      await flush();
+
+      sockets[0].socket.fireMessage({
+        kind: "openAck",
+        manifest: {
+          "host.status": { major: 1, minor: 1 },
+        },
+      });
+      await flush();
+
+      const requestFrame = expectRequestFrame(sockets[0].sent[1]);
+      expect(requestFrame).toEqual({
+        kind: "request",
+        requestId: "req-fallback-skew-new-host",
+        method: "host.status",
+        schemaVersion: { major: 1, minor: 0 },
+        params: {},
+      });
+
+      sockets[0].socket.fireMessage({
+        kind: "response",
+        requestId: "req-fallback-skew-new-host",
+        method: "host.status",
+        schemaVersion: { major: 1, minor: 0 },
+        result: { ready: true },
+        error: null,
+      });
+
+      await expect(pending).resolves.toEqual({
+        summary: "ready",
+        detailSeen: false,
+      });
     });
   });
 
@@ -874,17 +1434,18 @@ describe("WsRpcClient", () => {
         readonly factory: IWebSocketFactory;
         readonly requestId: string;
       },
-    ): WsRpcClient<Registry> {
+    ): BoundWsRpcClient<Registry> {
       const ctx = makeRequestContext("t");
-      return new WsRpcClient<Registry>({
-        registry,
-        endpoint: () => mockLocalHostEntry,
-        bearer: () => ctx?.credentials ?? null,
-        requestId: () => options.requestId,
-        webSocketFactory: options.factory,
-        dialTimeoutMs: 1000,
-        frameTimeoutMs: 1000,
-      });
+      return new BoundWsRpcClient(
+        new WsRpcClient<Registry>({
+          registry,
+          requestId: () => options.requestId,
+          webSocketFactory: options.factory,
+          dialTimeoutMs: 1000,
+          frameTimeoutMs: 1000,
+        }),
+        authorityForBearer(ctx.credentials),
+      );
     }
 
     it("same major, client newer minor: strips request to older minor and upgrades response", async () => {
@@ -903,10 +1464,9 @@ describe("WsRpcClient", () => {
       sockets[0].socket.fireOpen();
       await flush();
 
-      sockets[0].socket.fireMessage({
-        kind: "openAck",
-        manifest: { "host.echo": { major: 1, minor: 0 } },
-      });
+      sockets[0].socket.fireMessage(
+        openAckWithOnlyOptionalHostEcho({ major: 1, minor: 0 }),
+      );
       await flush();
 
       expect(sockets[0].sent).toHaveLength(2);
@@ -939,10 +1499,9 @@ describe("WsRpcClient", () => {
       sockets[0].socket.fireOpen();
       await flush();
 
-      sockets[0].socket.fireMessage({
-        kind: "openAck",
-        manifest: { "host.echo": { major: 1, minor: 1 } },
-      });
+      sockets[0].socket.fireMessage(
+        openAckWithOnlyOptionalHostEcho({ major: 1, minor: 1 }),
+      );
       await flush();
 
       expect(sockets[0].sent).toHaveLength(2);
@@ -978,10 +1537,9 @@ describe("WsRpcClient", () => {
       sockets[0].socket.fireOpen();
       await flush();
 
-      sockets[0].socket.fireMessage({
-        kind: "openAck",
-        manifest: { "host.echo": { major: 1, minor: 1 } },
-      });
+      sockets[0].socket.fireMessage(
+        openAckWithOnlyOptionalHostEcho({ major: 1, minor: 1 }),
+      );
       await flush();
 
       expect(sockets[0].sent).toHaveLength(2);
@@ -1017,10 +1575,9 @@ describe("WsRpcClient", () => {
       sockets[0].socket.fireOpen();
       await flush();
 
-      sockets[0].socket.fireMessage({
-        kind: "openAck",
-        manifest: { "host.echo": { major: 1, minor: 1 } },
-      });
+      sockets[0].socket.fireMessage(
+        openAckWithOnlyOptionalHostEcho({ major: 1, minor: 1 }),
+      );
 
       await expect(pending).rejects.toSatisfy((error: unknown) => {
         return (
@@ -1053,10 +1610,9 @@ describe("WsRpcClient", () => {
       sockets[0].socket.fireOpen();
       await flush();
 
-      sockets[0].socket.fireMessage({
-        kind: "openAck",
-        manifest: { "host.echo": { major: 2, minor: 0 } },
-      });
+      sockets[0].socket.fireMessage(
+        openAckWithOnlyOptionalHostEcho({ major: 2, minor: 0 }),
+      );
       await flush();
 
       expect(sockets[0].sent).toHaveLength(2);
@@ -1074,6 +1630,150 @@ describe("WsRpcClient", () => {
       });
 
       await expect(pending).resolves.toEqual({ echoed: "HI", volume: 4 });
+    });
+
+    // Regression coverage for the pre-profiles `providers.list@3.0` crash:
+    // fields added mid-line to an old major carry `.catch(...)` tolerances in
+    // that line's frozen contract, but they only take effect if the client
+    // actually parses the old host's wire payload before upgrading it.
+    describe("old-host response parsing on the upgrade path", () => {
+      const echoWithTagsV10 = defineRpcContract({
+        method: "host.echo",
+        schemaVersion: { major: 1, minor: 0 } as const,
+        requestSchema: z.object({ message: z.string() }),
+        // `tags` was added mid-line: old 1.0 host builds omit it entirely and
+        // the frozen contract tolerates that with `.catch([])`.
+        responseSchema: z.object({
+          echoed: z.string(),
+          tags: z.array(z.string()).catch([]),
+        }),
+      });
+
+      const echoWithTagsV20 = defineRpcContract({
+        method: "host.echo",
+        schemaVersion: { major: 2, minor: 0 } as const,
+        requestSchema: z.object({ message: z.string() }),
+        responseSchema: z.object({
+          echoed: z.string(),
+          tags: z.array(z.string()),
+        }),
+      });
+
+      const upgradeEchoWithTagsV10ToV20 = defineUpgradePath<
+        typeof echoWithTagsV10,
+        typeof echoWithTagsV20
+      >({
+        from: echoWithTagsV10.schemaVersion,
+        to: echoWithTagsV20.schemaVersion,
+        upgradeRequest: (request) => request,
+        upgradeResponse: (response) => response,
+      });
+
+      const downgradeEchoWithTagsV20ToV10 = defineDowngradePath<
+        typeof echoWithTagsV20,
+        typeof echoWithTagsV10
+      >({
+        from: echoWithTagsV20.schemaVersion,
+        to: echoWithTagsV10.schemaVersion,
+        downgradeRequest: (request) => ({ ok: true, value: request }),
+        downgradeResponse: (response) => ({ ok: true, value: response }),
+      });
+
+      const registryWithTags = defineVersionedRpcRegistry({
+        "host.echo": {
+          1: {
+            latestMinor: 0,
+            versions: {
+              0: {
+                contract: echoWithTagsV10,
+                upgradeFromPreviousVersion: null,
+              },
+            },
+            downgradePathsFromLatest: {},
+          },
+          2: {
+            latestMinor: 0,
+            versions: {
+              0: {
+                contract: echoWithTagsV20,
+                upgradeFromPreviousVersion: upgradeEchoWithTagsV10ToV20,
+              },
+            },
+            downgradePathsFromLatest: { 1: downgradeEchoWithTagsV20ToV10 },
+          },
+        },
+      });
+
+      it("applies the older contract's catch-tolerances to an old host's response before upgrading", async () => {
+        const { factory, sockets } = makeFactory();
+        const client = buildClient(registryWithTags, {
+          factory,
+          requestId: "req-old-host-catch",
+        });
+
+        const pending = client.request("host.echo", { message: "hi" });
+        await flush();
+
+        sockets[0].socket.fireOpen();
+        await flush();
+
+        sockets[0].socket.fireMessage(
+          openAckWithOnlyOptionalHostEcho({ major: 1, minor: 0 }),
+        );
+        await flush();
+
+        sockets[0].socket.fireMessage({
+          kind: "response",
+          requestId: "req-old-host-catch",
+          method: "host.echo",
+          schemaVersion: { major: 1, minor: 0 },
+          // Old 1.0 host build from before `tags` existed - no `tags` key on
+          // the wire. The identity 1.0→2.0 upgrade must still hand the caller
+          // a response matching the 2.0 contract (`tags: []`).
+          result: { echoed: "HI" },
+          error: null,
+        });
+
+        await expect(pending).resolves.toEqual({ echoed: "HI", tags: [] });
+      });
+
+      it("rejects with RPC_ERROR when an old host's response fails its own contract", async () => {
+        const { factory, sockets } = makeFactory();
+        const client = buildClient(registryWithTags, {
+          factory,
+          requestId: "req-old-host-invalid",
+        });
+
+        const pending = client.request("host.echo", { message: "hi" });
+        await flush();
+
+        sockets[0].socket.fireOpen();
+        await flush();
+
+        sockets[0].socket.fireMessage(
+          openAckWithOnlyOptionalHostEcho({ major: 1, minor: 0 }),
+        );
+        await flush();
+
+        sockets[0].socket.fireMessage({
+          kind: "response",
+          requestId: "req-old-host-invalid",
+          method: "host.echo",
+          schemaVersion: { major: 1, minor: 0 },
+          result: { echoed: 42 },
+          error: null,
+        });
+
+        await expect(pending).rejects.toSatisfy((error: unknown) => {
+          return (
+            error instanceof HostRpcError &&
+            error.code === "RPC_ERROR" &&
+            error.method === "host.echo" &&
+            error.message ===
+              "Failed to upgrade response from 1.0 to 2.0: response does not match the 1.0 response schema"
+          );
+        });
+      });
     });
   });
 });

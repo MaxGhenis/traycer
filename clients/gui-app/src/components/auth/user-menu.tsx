@@ -12,9 +12,11 @@ import { computeInitials } from "@/lib/auth/compute-initials";
 import { resolveManageSubscriptionUrl } from "@/lib/auth/manage-subscription-url";
 import { useAuthService } from "@/lib/host";
 import { useRunnerHost } from "@/providers/use-runner-host";
+import { useTitleBarDragSuppression } from "@/stores/layout/title-bar-drag-store";
 import { getSystemTabModalApi } from "@/stores/tabs/system-tab-modal-bridge";
 import { ExternalLink, LogOut, Settings } from "lucide-react";
 import { useState } from "react";
+import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 
 export interface UserMenuProps {
   readonly userName: string;
@@ -33,6 +35,7 @@ export function UserMenu(props: UserMenuProps) {
   const auth = useAuthService();
   const runnerHost = useRunnerHost();
   const [open, setOpen] = useState<boolean>(false);
+  useTitleBarDragSuppression("user-menu", open);
   const initials = computeInitials(props.userName, props.email);
   const manageSubscriptionUrl = resolveManageSubscriptionUrl(
     runnerHost.authnBaseUrl,
@@ -88,6 +91,10 @@ export function UserMenu(props: UserMenuProps) {
             data-testid="user-menu-app-settings"
             onSelect={() => {
               setOpen(false);
+              Analytics.getInstance().track(AnalyticsEvent.SettingsOpened, {
+                source: "direct_ui",
+                section: "general",
+              });
               getSystemTabModalApi()?.openSettings({
                 section: null,
                 resetToGeneral: true,
@@ -102,7 +109,12 @@ export function UserMenu(props: UserMenuProps) {
           data-testid="user-menu-manage-subscription"
           onSelect={() => {
             setOpen(false);
-            void runnerHost.openExternalLink(manageSubscriptionUrl);
+            void runnerHost.openExternalLink(manageSubscriptionUrl).then(() => {
+              Analytics.getInstance().track(
+                AnalyticsEvent.SubscriptionManagementOpened,
+                { source: "direct_ui" },
+              );
+            });
           }}
         >
           <ExternalLink className="size-3.5" />
@@ -114,6 +126,9 @@ export function UserMenu(props: UserMenuProps) {
           variant="destructive"
           onSelect={() => {
             setOpen(false);
+            Analytics.getInstance().track(AnalyticsEvent.SignOutRequested, {
+              source: "direct_ui",
+            });
             void auth.signOut();
           }}
         >

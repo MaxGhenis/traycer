@@ -12,7 +12,9 @@ import {
   type RunHostStartDeps,
 } from "../host-start";
 import type { HostInstallRecord } from "../../manifest/host-install";
+import { noopLogger } from "../../logger";
 import { hostHomeDir } from "../../store/paths";
+import { withDevDesktopSlotAsync as withDevDesktopSlot } from "@traycer-clients/shared/test-fixtures/dev-desktop-slot";
 
 // `traycer host start --environment <ch>` is the single supervisor entry
 // point. There is one launch path: read the environment's
@@ -25,7 +27,9 @@ import { hostHomeDir } from "../../store/paths";
 
 function sampleRecord(executablePath: string): HostInstallRecord {
   return {
+    installId: null,
     version: "1.0.0",
+    runtimeVersion: null,
     platform: "darwin",
     arch: "arm64",
     installedAt: "2026-05-15T00:00:00.000Z",
@@ -151,12 +155,19 @@ interface Recorded {
   readonly errors: string[];
   exited: number | null;
   readonly exitWaiters: Array<() => void>;
+  // Log rotations attempted, in order. Stubbed (not left to the real helper) so
+  // a test run can never rotate the developer's actual ~/.traycer host log.
+  readonly rotations: string[];
+  // Ordered trace of the start lifecycle: rotate -> marker -> open fd -> spawn.
+  // The ORDER is the invariant (see the ordering test), not just the calls.
+  readonly sequence: string[];
   readonly spawnCalls: Array<{
     command: string;
     args: readonly string[];
     cwd: string | undefined;
     env: Record<string, string | undefined>;
     stdio: unknown;
+    windowsHide: boolean | undefined;
   }>;
 }
 
@@ -165,6 +176,14 @@ interface RunStubs {
   readonly recorded: Recorded;
   readonly deps: Partial<RunHostStartDeps>;
 }
+
+const TERMINAL_WRITER_EXIT_CASES: ReadonlyArray<
+  readonly [string, number | null, NodeJS.Signals | null, number]
+> = [
+  ["clean exit", 0, null, 0],
+  ["crash exit", 7, null, 7],
+  ["signal exit", null, "SIGTERM", 143],
+];
 
 function makeRunStubs(
   installRecord: HostInstallRecord | null,
@@ -177,6 +196,8 @@ function makeRunStubs(
     exited: null,
     exitWaiters: [],
     spawnCalls: [],
+    rotations: [],
+    sequence: [],
   };
   // The stub implements only the surface `runHostStart` touches; route it
   // to `ChildProcess` through an explicit `unknown` intermediate rather than a
@@ -184,27 +205,57 @@ function makeRunStubs(
   const childAsUnknown: unknown = child;
   const childAsProcess: ChildProcess = childAsUnknown as ChildProcess;
   const deps: Partial<RunHostStartDeps> = {
+    // `runHostStart` falls back to the REAL `createCliLogger` (writing to
+    // the actual production `~/.traycer/cli/cli.log`) via `deps.logger ??
+    // createCliLogger(...)` whenever this is left unset - `??` treats
+    // `undefined` as nullish just like a missing key, so it must be
+    // supplied explicitly here, not left to the `Partial` default.
+    logger: noopLogger,
+    // Same hazard as `logger` above: left unset, the `Partial` default falls
+    // through to the REAL `findLiveIncumbentHost`, which reads the developer's
+    // actual `~/.traycer/host/pid.json` and probes whatever host is live on
+    // this machine. Every test below would then decline instead of spawning.
+    findIncumbentHost: async () => null,
     readInstallRecord: async () => installRecord,
     pathExists: async (p: string) =>
       (existsOverride ?? ((q: string) => q === installRecord?.executablePath))(
         p,
       ),
     spawn: (command, args, options) => {
+      recorded.sequence.push("spawn");
       recorded.spawnCalls.push({
         command,
         args,
         cwd: typeof options.cwd === "string" ? options.cwd : undefined,
         env: (options.env ?? {}) as Record<string, string | undefined>,
         stdio: options.stdio,
+        windowsHide: options.windowsHide,
       });
       return childAsProcess;
     },
-    openLogFd: async () => 42,
+    openLogFd: async () => {
+      recorded.sequence.push("open-fd");
+      return 42;
+    },
+    rotateLog: async (environment) => {
+      recorded.rotations.push(environment);
+      recorded.sequence.push("rotate");
+      return "skipped";
+    },
     readEnvOverrides: async () => ({
       EXTRA_FROM_OVERRIDE: "1",
       TRAYCER_TEST_UNSET: null,
     }),
     writeMarker: async (environment, phase, fields) => {
+      recorded.sequence.push(`marker:${phase}`);
+      recorded.markers.push({
+        environment,
+        phase,
+        fields: { ...fields } as Record<string, unknown>,
+      });
+    },
+    writeTerminalMarker: (environment, phase, fields) => {
+      recorded.sequence.push(`terminal-marker:${phase}`);
       recorded.markers.push({
         environment,
         phase,
@@ -244,6 +295,91 @@ async function runUntilExit(
   expect(recorded.exited).not.toBeNull();
 }
 
+/**
+ * One host per data dir.
+ *
+ * launchd runs at most one instance of a LABEL, but the CLI label
+ * (`ai.traycer.host`) and Desktop's SMAppService agent label
+ * (`ai.traycer.host.agent`) are distinct labels that both invoke this
+ * supervisor against the same data dir, both with `RunAtLoad`. A machine
+ * carrying both registrations spawned two hosts at every login, racing the
+ * same pid.json and stores.
+ */
+describe("runHostStart - incumbent host guard", () => {
+  it("declines with exit 0 and never spawns when a live host owns the data dir", async () => {
+    const exec = "/opt/traycer/host/install/traycer-host";
+    const { recorded, deps } = makeRunStubs(sampleRecord(exec), null);
+    const guarded: Partial<RunHostStartDeps> = {
+      ...deps,
+      findIncumbentHost: async () => ({
+        pid: 40769,
+        version: "1.1.8",
+        websocketUrl: "ws://127.0.0.1:58036/rpc",
+      }),
+    };
+
+    await runHostStart({ environment: "production", cwd: null }, guarded);
+
+    expect(recorded.spawnCalls).toHaveLength(0);
+    // Exit 0 is load-bearing: the macOS plists set
+    // `KeepAlive.SuccessfulExit = false`, so a clean exit leaves the job
+    // down. Any non-zero code would have launchd relaunch this supervisor
+    // immediately and flap against the incumbent forever.
+    expect(recorded.exited).toBe(0);
+    // Declining is not a spawn attempt - it must not look like one in the
+    // bootstrap markers doctor/host-status read.
+    expect(recorded.markers).toHaveLength(0);
+  });
+
+  it("spawns normally when no live host owns the data dir", async () => {
+    const exec = "/opt/traycer/host/install/traycer-host";
+    const { child, recorded, deps } = makeRunStubs(sampleRecord(exec), null);
+
+    const invoke = () =>
+      runHostStart({ environment: "production", cwd: null }, deps);
+    setTimeout(() => child.emit("exit", 0, null));
+    await runUntilExit(invoke, recorded);
+
+    expect(recorded.spawnCalls).toHaveLength(1);
+  });
+
+  // A live incumbent settles what this invocation should do regardless of
+  // whether THIS label can resolve its own install target. Resolving first
+  // exited 69, which `KeepAlive.SuccessfulExit = false` treats as
+  // restartable, so launchd relaunched the job into a throttled crash loop
+  // while a healthy host was serving. Reachable whenever the record breaks
+  // after the incumbent came up: uninstall, failed install, or the window
+  // where `host install` has swapped `install/` aside.
+  it("declines with exit 0 when a host owns the data dir even if the install record is broken", async () => {
+    const { recorded, deps } = makeRunStubs(null, null);
+    const guarded: Partial<RunHostStartDeps> = {
+      ...deps,
+      findIncumbentHost: async () => ({
+        pid: 40769,
+        version: "1.1.8",
+        websocketUrl: "ws://127.0.0.1:58036/rpc",
+      }),
+    };
+
+    await runHostStart({ environment: "production", cwd: null }, guarded);
+
+    expect(recorded.exited).toBe(0);
+    expect(recorded.spawnCalls).toHaveLength(0);
+    // Not a spawn attempt, so no failed-to-spawn marker either.
+    expect(recorded.markers).toHaveLength(0);
+  });
+
+  it("still surfaces the install-record error when no host owns the data dir", async () => {
+    const { recorded, deps } = makeRunStubs(null, null);
+
+    await runHostStart({ environment: "production", cwd: null }, deps);
+
+    expect(recorded.exited).toBe(69);
+    expect(recorded.spawnCalls).toHaveLength(0);
+    expect(recorded.markers.map((m) => m.phase)).toContain("failed-to-spawn");
+  });
+});
+
 describe("runHostStart - installed-record launch path", () => {
   it("spawns record.executablePath directly with no shell wrapping and the environment env exported", async () => {
     const exec = "/opt/traycer/host/install/traycer-host";
@@ -278,6 +414,7 @@ describe("runHostStart - installed-record launch path", () => {
     expect(call?.env.EXTRA_FROM_OVERRIDE).toBe("1");
     expect(call?.env.TRAYCER_TEST_UNSET).toBeUndefined();
     expect(call?.env.TERM_PROGRAM).toBe("traycer");
+    expect(call?.windowsHide).toBe(process.platform === "win32");
     // Production launch must NOT route through a shell - the spawn
     // command must be the executable itself.
     expect(call?.command.endsWith("/sh")).toBe(false);
@@ -304,6 +441,48 @@ describe("runHostStart - installed-record launch path", () => {
       hostHomeDir("dev"),
     ]);
     expect(recorded.spawnCalls[0]?.env.TRAYCER_CHANNEL).toBeUndefined();
+  });
+
+  it("rotates the log for this environment before anything appends to the run", async () => {
+    const exec = "/opt/traycer/host/dev/install/traycer-host";
+    const { child, recorded, deps } = makeRunStubs(sampleRecord(exec), null);
+    const invoke = () => runHostStart({ environment: "dev", cwd: null }, deps);
+    setTimeout(() => child.emit("exit", 0, null));
+    await runUntilExit(invoke, recorded);
+
+    expect(recorded.rotations).toEqual(["dev"]);
+    // Ordering is load-bearing, not incidental, so assert the actual SEQUENCE
+    // rather than just that each step ran. The `starting` marker must land in
+    // the POST-rotation file, and the stdio fd opened after it lives for the
+    // child's whole lifetime - an fd follows the inode across a rename, so
+    // rotating any later would divert the host's own stdout into the
+    // rotated-away file and split one session across two inodes.
+    // Prefix, not the whole trace: the child's own exit appends `marker:exited`
+    // afterwards, which is not part of the start sequence under test.
+    expect(recorded.sequence.slice(0, 4)).toEqual([
+      "rotate",
+      "marker:starting",
+      "open-fd",
+      "spawn",
+    ]);
+  });
+
+  it("passes the dev-desktop run host root to the host when a slot is set", async () => {
+    await withDevDesktopSlot("Worktree Slot", async () => {
+      const exec = "/opt/traycer/host/dev/install/traycer-host";
+      const { child, recorded, deps } = makeRunStubs(sampleRecord(exec), null);
+      const invoke = () =>
+        runHostStart({ environment: "dev", cwd: null }, deps);
+      setTimeout(() => child.emit("exit", 0, null));
+      await runUntilExit(invoke, recorded);
+      expect(recorded.spawnCalls[0]?.args).toEqual([
+        "--host-data-dir",
+        hostHomeDir("dev"),
+      ]);
+      expect(hostHomeDir("dev")).toMatch(
+        /[\\/]\.traycer[\\/]host[\\/]dev-runs[\\/]worktree-slot$/,
+      );
+    });
   });
 
   it("dev wrapper-script executablePath spawns through the same code path", async () => {
@@ -369,6 +548,52 @@ describe("runHostStart - error surfaces", () => {
 });
 
 describe("runHostStart - signal/exit propagation", () => {
+  it("persists a terminal marker before synchronous exit when an async append would be abandoned", async () => {
+    const exec = "/opt/traycer/host/install/traycer-host";
+    const { child, recorded, deps } = makeRunStubs(sampleRecord(exec), null);
+    let exited = false;
+    const terminalMarkers: string[] = [];
+    const durabilityDeps: Partial<RunHostStartDeps> = {
+      ...deps,
+      writeMarker: async (environment, phase, fields) => {
+        if (phase === "starting") {
+          recorded.markers.push({
+            environment,
+            phase,
+            fields: { ...fields } as Record<string, unknown>,
+          });
+          return;
+        }
+        // Models an async append that cannot commit after process.exit().
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 0);
+        });
+        if (!exited) terminalMarkers.push(phase);
+      },
+      writeTerminalMarker: (_environment, phase) => {
+        expect(exited).toBe(false);
+        terminalMarkers.push(phase);
+      },
+      exit: (code) => {
+        exited = true;
+        recorded.exited = code;
+        while (recorded.exitWaiters.length > 0) {
+          const waiter = recorded.exitWaiters.shift();
+          if (waiter !== undefined) waiter();
+        }
+      },
+    };
+
+    setTimeout(() => child.emit("exit", 7, null));
+    await runUntilExit(
+      () =>
+        runHostStart({ environment: "production", cwd: null }, durabilityDeps),
+      recorded,
+    );
+
+    expect(terminalMarkers).toEqual(["crashed"]);
+  });
+
   it("translates a SIGTERM-killed child into exit code 128+15", async () => {
     const exec = "/opt/traycer/host/install/traycer-host";
     const { child, recorded, deps } = makeRunStubs(sampleRecord(exec), null);
@@ -380,6 +605,37 @@ describe("runHostStart - signal/exit propagation", () => {
     const killed = recorded.markers.find((m) => m.phase === "killed");
     expect(killed?.fields.signal).toBe("SIGTERM");
   });
+
+  it.each(TERMINAL_WRITER_EXIT_CASES)(
+    "preserves the original %s code when the synchronous terminal writer throws",
+    async (
+      _name,
+      code: number | null,
+      signal: NodeJS.Signals | null,
+      expected,
+    ) => {
+      const exec = "/opt/traycer/host/install/traycer-host";
+      const { child, recorded, deps } = makeRunStubs(sampleRecord(exec), null);
+      const throwingWriter: Partial<RunHostStartDeps> = {
+        ...deps,
+        writeTerminalMarker: () => {
+          throw new Error("disk full");
+        },
+      };
+
+      setTimeout(() => child.emit("exit", code, signal));
+      await runUntilExit(
+        () =>
+          runHostStart(
+            { environment: "production", cwd: null },
+            throwingWriter,
+          ),
+        recorded,
+      );
+
+      expect(recorded.exited).toBe(expected);
+    },
+  );
 
   it("propagates a non-zero exit code as a `crashed` marker", async () => {
     const exec = "/opt/traycer/host/install/traycer-host";
@@ -475,8 +731,8 @@ describe("service manifests invoke `host start` (slot from config.environment) w
     expect(unit).not.toContain("--node-bin");
   });
 
-  it("Windows scheduled task XML invokes `host start` without --environment/--bundle", async () => {
-    const { buildScheduledTaskXml } =
+  it("Windows scheduled task XML invokes the hidden launcher, which runs `host start` without --environment/--bundle", async () => {
+    const { buildScheduledTaskXml, buildWindowsHiddenHostLauncher } =
       await import("../../service/platforms/windows");
     const prevUsername = process.env.USERNAME;
     process.env.USERNAME = "testuser";
@@ -485,22 +741,37 @@ describe("service manifests invoke `host start` (slot from config.environment) w
       else process.env.USERNAME = prevUsername;
     };
     try {
+      const cli = {
+        command: "C:\\Users\\test\\.traycer\\cli\\bin\\traycer.exe",
+        args: [],
+      };
       const xml = buildScheduledTaskXml({
         label: {
           id: "ai.traycer.host.prod",
           displayName: "Traycer Host",
           environment: "production",
-        } as never,
-        cli: {
-          command: "C:\\Users\\test\\.traycer\\cli\\bin\\traycer.exe",
-          args: [],
+          devSlot: null,
         },
+        cli,
       });
-      expect(xml).toContain("host");
-      expect(xml).toContain("start");
-      expect(xml).not.toContain("--environment");
-      expect(xml).not.toContain("--bundle");
-      expect(xml).not.toContain("--node-bin");
+      const launcher = buildWindowsHiddenHostLauncher(cli);
+      expect(xml).toContain("<Hidden>true</Hidden>");
+      expect(xml).toContain("wscript.exe");
+      expect(xml).toContain("host-start-hidden.vbs");
+      expect(xml).not.toContain(
+        "<Command>C:\\Users\\test\\.traycer\\cli\\bin\\traycer.exe</Command>",
+      );
+      expect(launcher).toContain('Set shell = CreateObject("WScript.Shell")');
+      expect(launcher).toContain("shell.Run");
+      expect(launcher).toContain(", 0, True)");
+      expect(launcher).toContain(
+        "C:\\Users\\test\\.traycer\\cli\\bin\\traycer.exe",
+      );
+      expect(launcher).toContain("host");
+      expect(launcher).toContain("start");
+      expect(`${xml}\n${launcher}`).not.toContain("--environment");
+      expect(`${xml}\n${launcher}`).not.toContain("--bundle");
+      expect(`${xml}\n${launcher}`).not.toContain("--node-bin");
     } finally {
       restoreUsername();
     }

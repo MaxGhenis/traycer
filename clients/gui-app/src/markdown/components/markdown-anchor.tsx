@@ -1,9 +1,18 @@
 import { use, useCallback, type MouseEvent, type ReactNode } from "react";
 import { toast } from "sonner";
+import { createReportIssueContext } from "@/lib/report-issue-context";
 import { RunnerHostContext } from "@/providers/runner-host-context";
 import { useBrowserLinkRouter } from "@/lib/browser-view/browser-link-router";
 import { classifyHref } from "@/markdown/links/classify-href";
 import { MarkdownLinkContext } from "@/markdown/links/markdown-link-context";
+import { useDesktopDialogStore } from "@/stores/dialogs/desktop-dialog-store";
+
+const MARKDOWN_LINK_REPORT_CONTEXT = createReportIssueContext({
+  title: "Markdown link could not be opened",
+  message: "The requested markdown link could not be opened.",
+  code: null,
+  source: "Markdown link",
+});
 
 interface MarkdownAnchorProps {
   href?: string;
@@ -35,6 +44,9 @@ export function MarkdownAnchor({
   const linkPolicy = use(MarkdownLinkContext);
   const routeBrowserLink = useBrowserLinkRouter();
 
+  const reportIssueAvailable = useDesktopDialogStore(
+    (state) => state.reportIssueAvailable,
+  );
   const routeLinkClick = useCallback(
     (event: MouseEvent<HTMLAnchorElement>): void => {
       // Same-document anchors should keep native browser hash scrolling.
@@ -61,19 +73,43 @@ export function MarkdownAnchor({
           col: classified.col,
           isDirectory: false,
         });
-        if (opened === false) toast("Couldn't open link");
+        if (opened === false) {
+          toast(
+            "Couldn't open link",
+            reportIssueAvailable
+              ? {
+                  cancel: {
+                    label: "Report issue",
+                    onClick: () => {
+                      const current = useDesktopDialogStore.getState();
+                      if (!current.reportIssueAvailable) return;
+                      current.openReportIssueWithContext(
+                        MARKDOWN_LINK_REPORT_CONTEXT,
+                      );
+                    },
+                  },
+                }
+              : undefined,
+          );
+        }
         return;
       }
 
+      linkPolicy?.supersedePendingFileLink();
       if (runnerHost !== null) {
         routeBrowserLink("markdown", classified.url, event);
       }
     },
-    [href, linkPolicy, routeBrowserLink, runnerHost],
+    [href, linkPolicy, reportIssueAvailable, routeBrowserLink, runnerHost],
   );
 
+  // Native `title` ON PURPOSE - see the eslint exemption for this file. This
+  // is not app chrome: it is the link title the DOCUMENT AUTHOR wrote, and
+  // `title` is where a Markdown link title belongs. Routing it through the
+  // app's tooltip surface would restyle author content as UI and strip the
+  // attribute off the rendered anchor.
   return (
-    <a href={href} title={title} className={className} onClick={routeLinkClick}>
+    <a href={href} className={className} title={title} onClick={routeLinkClick}>
       {children}
     </a>
   );

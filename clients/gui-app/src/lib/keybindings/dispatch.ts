@@ -11,6 +11,10 @@ import { toggleActiveModelPicker } from "@/lib/commands/active-model-picker-regi
 import { focusActiveComposer } from "@/lib/composer/composer-focus-registry";
 import { tabMatchesPath, tabResolveIntent } from "@/stores/tabs/registry";
 import type { TabNavigationIntent } from "@/lib/tab-navigation/intents";
+import type {
+  NavigateNestedFocus,
+  PrepareNestedFocusTarget,
+} from "@/lib/epic-nested-focus-navigation";
 import type { EpicViewTab } from "@/stores/epics/canvas/types";
 import {
   ACTION_IDS,
@@ -21,8 +25,8 @@ import {
   digitFromCode,
   modifierMaskFromEvent,
   modifierMaskMatches,
-  parseModifierChord,
   type ChordString,
+  type ModifierMask,
 } from "@/lib/keybindings/chord";
 import {
   LEADER_SCOPE_CANVAS_TABS,
@@ -42,8 +46,11 @@ import {
   type SettingsSectionId,
 } from "@/lib/settings-sections";
 
-const GROUP_EDITOR_FOCUS_TARGET_SELECTOR =
-  "[data-composer-editor], [data-artifact-editor]";
+const SELECTED_GROUP_TAB_SELECTOR =
+  '[data-tab-instance-id][data-selected="true"]';
+const PRIMARY_CHAT_COMPOSER_SELECTOR =
+  "[data-chat-composer] [data-composer-editor]";
+const ARTIFACT_EDITOR_SELECTOR = "[data-artifact-editor]";
 
 // ---------------------------------------------------------------------------
 // Narrow router adapter - decouples dispatch from `@tanstack/react-router`'s
@@ -68,6 +75,8 @@ export interface KeybindingRouter {
    * click - see `lib/tab-navigation.ts`.
    */
   readonly navigateToTabIntent: (intent: TabNavigationIntent) => void;
+  readonly navigateNestedFocus?: NavigateNestedFocus;
+  readonly navigateNestedFocusToPrimaryEditor?: NavigateNestedFocus;
   /**
    * In-app history back/forward. Delegate to the shared
    * `goBack`/`goForward` actions on the CURRENT router (the live
@@ -175,23 +184,35 @@ export function matchDigitAction(
   return null;
 }
 
+// The exact mask each hint dimension matches - `"mod"` is mod-only (no shift,
+// no alt), `"alt"` is alt-only, `"modShift"` is mod+shift-only (no alt) - so a
+// scope binding one dimension (e.g. the model picker's `⌘⇧` profile digit)
+// never bleeds into another's hint pass (`⌘` rail, `⌥` reasoning).
+const EXACT_LEADER_MASKS: Readonly<
+  Record<"mod" | "alt" | "modShift", ModifierMask>
+> = {
+  mod: { mod: true, shift: false, alt: false },
+  alt: { mod: false, shift: false, alt: true },
+  modShift: { mod: true, shift: true, alt: false },
+};
+
 /**
  * The scope id that currently OWNS `modifier` for visual hints, or null when no
  * active scope binds it. Mirrors `matchDigitAction`'s top-down walk but keys off
  * the modifier-only chord, so consumer badges can scope themselves to their own
  * scope (e.g. header-tab badges only light up when the header scope owns `alt`).
  */
-export function resolveLeaderOwner(modifier: "mod" | "alt"): string | null {
+export function resolveLeaderOwner(
+  modifier: "mod" | "alt" | "modShift",
+): string | null {
+  const targetMask = EXACT_LEADER_MASKS[modifier];
   const bindings = useKeybindingStore.getState().bindings;
   for (const scope of getLeaderScopesTopDown()) {
     for (const action of scope.actions) {
       if (!action.isActive()) continue;
       const chord = bindings[action.actionId];
       if (chord === null) continue;
-      const parts = parseModifierChord(chord);
-      if (parts === null || parts.shift) continue;
-      if (modifier === "mod" && parts.mod && !parts.alt) return scope.id;
-      if (modifier === "alt" && parts.alt && !parts.mod) return scope.id;
+      if (modifierMaskMatches(chord, targetMask)) return scope.id;
     }
   }
   return null;
@@ -372,11 +393,19 @@ export function isExternallyHandled(id: ActionId): boolean {
 }
 
 // Actions whose chord must fire once per physical press, never on OS key-repeat.
-// A toggle (e.g. the model picker) would otherwise flip open/closed rapidly
-// while the chord is held. The provider still reserves the chord on repeat
-// (preventDefault) but skips re-dispatch.
+// A toggle (the model picker, the terminal panel's open and maximize states)
+// would otherwise flip rapidly while the chord is held and settle in a
+// timing-dependent state; a spawner (new terminal) would open one shell per
+// repeat event. The provider still reserves the chord on repeat
+// (preventDefault) but skips re-dispatch. `tab.new` is repeat-safe on the epic
+// canvas (the store reuses an active blank tab), but on the landing page it
+// shares the new-terminal handler, so it needs the same protection.
 const REPEAT_SENSITIVE_ACTIONS: ReadonlySet<ActionId> = new Set([
   "composer.model-picker.toggle",
+  "app.terminal.toggle",
+  "app.terminal.new",
+  "app.terminal.maximize",
+  "tab.new",
 ]);
 
 export function isRepeatSensitiveAction(id: ActionId): boolean {
@@ -439,6 +468,15 @@ function getActiveTab(router: KeybindingRouter): EpicViewTab | null {
   return useEpicCanvasStore.getState().tabsById[tabId] ?? null;
 }
 
+function runNestedFocus(
+  router: KeybindingRouter,
+  tab: { readonly epicId: string; readonly tabId: string },
+  prepare: PrepareNestedFocusTarget,
+) {
+  if (router.navigateNestedFocus === undefined) return prepare();
+  return router.navigateNestedFocus(tab.epicId, tab.tabId, prepare);
+}
+
 function duplicateActiveEpicTab(router: KeybindingRouter): boolean {
   const tabId = getActiveEpicTabId(router);
   if (tabId === null) return false;
@@ -493,12 +531,19 @@ function closeActiveTab(router: KeybindingRouter): boolean {
   if (target.activeTabId === null) {
     if (target.tabInstanceIds.length > 0) return false;
     if (root.kind !== "group") return false;
-    useEpicCanvasStore.getState().closeCanvasPane(tab.tabId, target.id);
+    runNestedFocus(router, tab, () =>
+      useEpicCanvasStore
+        .getState()
+        .prepareCloseCanvasPaneFocusTarget(tab.tabId, target.id),
+    );
     return true;
   }
-  useEpicCanvasStore
-    .getState()
-    .closeCanvasTab(tab.tabId, target.id, target.activeTabId);
+  const activeTabId = target.activeTabId;
+  runNestedFocus(router, tab, () =>
+    useEpicCanvasStore
+      .getState()
+      .prepareCloseCanvasTabFocusTarget(tab.tabId, target.id, activeTabId),
+  );
   return true;
 }
 
@@ -507,9 +552,16 @@ function closeOtherTabsInActive(router: KeybindingRouter): boolean {
   if (tab === null) return false;
   const target = getActiveGroupAndTab(tab.tabId);
   if (target === null || target.tabId === null) return false;
-  useEpicCanvasStore
-    .getState()
-    .closeOtherCanvasTabs(tab.tabId, target.groupId, target.tabId);
+  const targetTabId = target.tabId;
+  runNestedFocus(router, tab, () =>
+    useEpicCanvasStore
+      .getState()
+      .prepareCloseOtherCanvasTabsFocusTarget(
+        tab.tabId,
+        target.groupId,
+        targetTabId,
+      ),
+  );
   return true;
 }
 
@@ -518,9 +570,16 @@ function closeRightTabsInActive(router: KeybindingRouter): boolean {
   if (tab === null) return false;
   const target = getActiveGroupAndTab(tab.tabId);
   if (target === null || target.tabId === null) return false;
-  useEpicCanvasStore
-    .getState()
-    .closeRightCanvasTabs(tab.tabId, target.groupId, target.tabId);
+  const targetTabId = target.tabId;
+  runNestedFocus(router, tab, () =>
+    useEpicCanvasStore
+      .getState()
+      .prepareCloseRightCanvasTabsFocusTarget(
+        tab.tabId,
+        target.groupId,
+        targetTabId,
+      ),
+  );
   return true;
 }
 
@@ -529,7 +588,11 @@ function closeAllTabsInActive(router: KeybindingRouter): boolean {
   if (tab === null) return false;
   const groupId = getActiveGroupId(tab.tabId);
   if (groupId === null) return false;
-  useEpicCanvasStore.getState().closeAllCanvasTabs(tab.tabId, groupId);
+  runNestedFocus(router, tab, () =>
+    useEpicCanvasStore
+      .getState()
+      .prepareCloseAllCanvasTabsFocusTarget(tab.tabId, groupId),
+  );
   return true;
 }
 
@@ -547,9 +610,11 @@ function moveTabFocus(router: KeybindingRouter, delta: number): boolean {
   if (idx === -1) return false;
   const count = pane.tabInstanceIds.length;
   const nextInstanceId = pane.tabInstanceIds[(idx + delta + count) % count];
-  useEpicCanvasStore
-    .getState()
-    .setActiveTileTab(tab.tabId, pane.id, nextInstanceId);
+  runNestedFocus(router, tab, () =>
+    useEpicCanvasStore
+      .getState()
+      .prepareSetActiveTileTabFocusTarget(tab.tabId, pane.id, nextInstanceId),
+  );
   return true;
 }
 
@@ -565,9 +630,11 @@ function switchActivePaneTabByIndex(
   if (pane === null) return false;
   if (index < 0 || index >= pane.tabInstanceIds.length) return false;
   const nextInstanceId = pane.tabInstanceIds[index];
-  useEpicCanvasStore
-    .getState()
-    .setActiveTileTab(tab.tabId, pane.id, nextInstanceId);
+  runNestedFocus(router, tab, () =>
+    useEpicCanvasStore
+      .getState()
+      .prepareSetActiveTileTabFocusTarget(tab.tabId, pane.id, nextInstanceId),
+  );
   return true;
 }
 
@@ -578,7 +645,11 @@ function openBlankTabInActiveGroup(router: KeybindingRouter): boolean {
   if (groupId === null) return false;
   // Reuse-if-active-is-blank is handled in the store action, so repeated
   // presses just re-focus the existing blank tab.
-  useEpicCanvasStore.getState().openBlankTabInPane(tab.tabId, groupId);
+  runNestedFocus(router, tab, () =>
+    useEpicCanvasStore
+      .getState()
+      .prepareOpenBlankTabInPaneFocusTarget(tab.tabId, groupId),
+  );
   return true;
 }
 
@@ -591,7 +662,11 @@ function splitActiveGroup(
   const groupId = getActiveGroupId(tab.tabId);
   if (groupId === null) return false;
   // The new empty pane self-renders the inline opener (PaneOpener); no trigger.
-  useEpicCanvasStore.getState().splitPaneEmptyInTab(tab.tabId, groupId, axis);
+  runNestedFocus(router, tab, () =>
+    useEpicCanvasStore
+      .getState()
+      .prepareSplitPaneEmptyFocusTarget(tab.tabId, groupId, axis),
+  );
   return true;
 }
 
@@ -600,7 +675,11 @@ function splitActiveGroupRight(router: KeybindingRouter): boolean {
   if (tab === null) return false;
   const groupId = getActiveGroupId(tab.tabId);
   if (groupId === null) return false;
-  useEpicCanvasStore.getState().splitPaneEmptyRightInTab(tab.tabId, groupId);
+  runNestedFocus(router, tab, () =>
+    useEpicCanvasStore
+      .getState()
+      .prepareSplitPaneEmptyFocusTarget(tab.tabId, groupId, "horizontal"),
+  );
   return true;
 }
 
@@ -618,7 +697,15 @@ function focusGroupInDirection(
   if (active === undefined) return false;
   const nextId = findNeighbor(active, rects, dir);
   if (nextId === null) return false;
-  useEpicCanvasStore.getState().setActiveTilePane(tab.tabId, nextId);
+  const prepare = () =>
+    useEpicCanvasStore
+      .getState()
+      .prepareSetActiveTilePaneFocusTarget(tab.tabId, nextId);
+  if (router.navigateNestedFocusToPrimaryEditor === undefined) {
+    runNestedFocus(router, tab, prepare);
+  } else {
+    router.navigateNestedFocusToPrimaryEditor(tab.epicId, tab.tabId, prepare);
+  }
   focusGroupEditor(nextId);
   return true;
 }
@@ -626,9 +713,12 @@ function focusGroupInDirection(
 function focusGroupEditor(groupId: string): boolean {
   if (typeof document === "undefined") return false;
   const group = document.querySelector<HTMLElement>(groupIdSelector(groupId));
-  const editor = group?.querySelector<HTMLElement>(
-    GROUP_EDITOR_FOCUS_TARGET_SELECTOR,
+  const selectedTab = group?.querySelector<HTMLElement>(
+    SELECTED_GROUP_TAB_SELECTOR,
   );
+  const editor =
+    selectedTab?.querySelector<HTMLElement>(PRIMARY_CHAT_COMPOSER_SELECTOR) ??
+    selectedTab?.querySelector<HTMLElement>(ARTIFACT_EDITOR_SELECTOR);
   if (editor === undefined || editor === null) return false;
   editor.focus({ preventScroll: true });
   return true;

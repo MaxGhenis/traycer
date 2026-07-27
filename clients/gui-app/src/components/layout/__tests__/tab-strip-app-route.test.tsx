@@ -27,6 +27,11 @@ import { useTabsStore } from "@/stores/tabs/store";
 // production. Test mounts skip the provider, so install once here.
 installTabSyncCoordinator({ readyPromise: Promise.resolve() });
 
+const pinTestState = vi.hoisted(() => ({
+  mutate: vi.fn(),
+}));
+const recordViewed = vi.hoisted(() => vi.fn());
+
 vi.mock("@/components/layout/dialogs/desktop-dialog-host", () => ({
   DesktopDialogHost: () => null,
 }));
@@ -45,6 +50,33 @@ vi.mock("@/components/layout/bridges/host-tray-command-listener", () => ({
 
 vi.mock("@/components/layout/bridges/notification-focus-bridge", () => ({
   NotificationFocusBridge: () => null,
+}));
+
+vi.mock("@/components/layout/bridges/notification-emission-controller", () => ({
+  NotificationEmissionController: () => null,
+}));
+
+vi.mock("@/hooks/notifications/use-host-notification-indicators-query", () => ({
+  useHostNotificationIndicators: () => ({
+    data: { epics: {}, chats: {} },
+    isPending: false,
+    isFetching: false,
+    error: null,
+    refetch: () => Promise.resolve(),
+  }),
+}));
+
+vi.mock("@/hooks/epic/use-epic-task-pinned-states-query", () => ({
+  useEpicTaskPinnedStates: () => new Map(),
+}));
+
+vi.mock("@/hooks/epic/use-epic-set-pinned-mutation", () => ({
+  useEpicSetPinned: () => ({ mutate: pinTestState.mutate }),
+  usePendingSetPinnedEpicIds: () => new Set(),
+}));
+
+vi.mock("@/hooks/epic/use-epic-record-viewed-mutation", () => ({
+  useEpicRecordViewed: () => ({ mutate: recordViewed }),
 }));
 
 vi.mock("@/components/layout/bridges/tray-open-epic-bridge", () => ({
@@ -168,6 +200,8 @@ async function flushNav(): Promise<void> {
 describe("app route tab-strip navigation", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    pinTestState.mutate.mockClear();
+    recordViewed.mockClear();
     resetStores();
   });
 
@@ -191,7 +225,9 @@ describe("app route tab-strip navigation", () => {
       name: "History",
       lastPath: "/epics",
     });
-    const draftId = useLandingDraftStore.getState().createDraft(null);
+    const draftId = useLandingDraftStore
+      .getState()
+      .createDraft(null, undefined);
     const router = renderAppAt(`/epics/epic-current/${epicTabId}`);
     await screen.findByTestId("epic-route-session-body");
 
@@ -208,6 +244,8 @@ describe("app route tab-strip navigation", () => {
         focusArtifactId: undefined,
         focusThreadId: undefined,
         migrationSource: undefined,
+        focusPaneId: undefined,
+        focusTileInstanceId: undefined,
       },
     });
     await flushNav();
@@ -224,6 +262,8 @@ describe("app route tab-strip navigation", () => {
         focusArtifactId: undefined,
         focusThreadId: undefined,
         migrationSource: undefined,
+        focusPaneId: undefined,
+        focusTileInstanceId: undefined,
       },
     });
     await flushNav();
@@ -231,5 +271,37 @@ describe("app route tab-strip navigation", () => {
     await waitFor(() => {
       expect(router.state.location.pathname).toBe(`/draft/${draftId}`);
     });
+  });
+
+  it("covers the header baseline beneath the active tab caps", async () => {
+    const epicTabId = useEpicCanvasStore
+      .getState()
+      .openEpicTab("epic-current", "Current Epic");
+    renderAppAt(`/epics/epic-current/${epicTabId}`);
+    await screen.findByTestId("epic-route-session-body");
+
+    expect(screen.getByTestId("app-header").className).toContain(
+      "after:bg-border/90",
+    );
+    const baselineCoverClassName =
+      screen.getByTestId("tab-baseline-cover").className;
+    expect(baselineCoverClassName).toContain("bottom-0");
+    expect(baselineCoverClassName).toContain("h-px");
+    expect(baselineCoverClassName).toContain("z-0");
+    expect(screen.getByTestId("tab-cap-left").getAttribute("class")).toContain(
+      "z-10",
+    );
+    expect(screen.getByTestId("tab-cap-right").getAttribute("class")).toContain(
+      "z-10",
+    );
+    expect(screen.getByTestId("tab-chrome-center").className).not.toContain(
+      "z-10",
+    );
+    expect(
+      screen.getByTestId("tab-cap-outline-left").getAttribute("d"),
+    ).toContain("M -2 39.5 L 0 39.5");
+    expect(
+      screen.getByTestId("tab-cap-outline-right").getAttribute("d"),
+    ).toContain("L 22 39.5");
   });
 });

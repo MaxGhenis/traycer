@@ -6,7 +6,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 import type { TerminalStreamCallbacks } from "@traycer-clients/shared/host-transport/terminal-stream-client";
 import type {
-  ListTerminalsResponse,
+  CanonicalTerminalSessionInfo,
+  ListTerminalsResponseV21,
   TerminalSessionInfo,
 } from "@traycer/protocol/host/terminal/unary-schemas";
 import { hostQueryKeys } from "@/lib/query-keys";
@@ -18,6 +19,9 @@ import { hostQueryKeys } from "@/lib/query-keys";
 // fetch gate released the session handle, the re-subscribe's snapshot
 // re-set the metadata, and the cycle repeated forever - bouncing the PTY
 // stream ~3x/second and leaving reattached terminals permanently blank.
+//
+// Also covers `homeCwd` preservation on those session-row patches: top-level
+// response metadata must survive title / activeProcessName updates.
 
 vi.mock("@/lib/host", () => ({
   useHostClient: () => null,
@@ -58,13 +62,36 @@ import {
 const HOST_ID = "host-1";
 const EPIC_ID = "epic-1";
 const SESSION_ID = "term-1";
+const HOME_CWD = "/Users/dev";
 
 const listKey = [
   ...hostQueryKeys.methodScope(HOST_ID, "terminal.list"),
-  { epicId: EPIC_ID },
+  { scope: { kind: "epic", epicId: EPIC_ID } },
 ] as const;
 
 function sessionInfo(
+  overrides: Partial<CanonicalTerminalSessionInfo>,
+): CanonicalTerminalSessionInfo {
+  return {
+    sessionId: SESSION_ID,
+    scope: { kind: "epic", epicId: EPIC_ID },
+    sessionKind: "terminal",
+    cwd: "/work/repo",
+    shellCommand: "/bin/zsh",
+    shellArgs: [],
+    cols: 80,
+    rows: 24,
+    status: "running",
+    exitCode: null,
+    exitReason: null,
+    createdAt: 1,
+    title: "Setup: repo",
+    activeProcessName: null,
+    ...overrides,
+  };
+}
+
+function streamSessionInfo(
   overrides: Partial<TerminalSessionInfo>,
 ): TerminalSessionInfo {
   return {
@@ -94,8 +121,9 @@ function setup() {
     sessionId: "term-other",
     title: "other",
   });
-  queryClient.setQueryData<ListTerminalsResponse>(listKey, {
+  queryClient.setQueryData<ListTerminalsResponseV21>(listKey, {
     sessions: [sessionInfo({}), otherSession],
+    homeCwd: HOME_CWD,
   });
 
   let capturedCallbacks: TerminalStreamCallbacks | null = null;
@@ -118,7 +146,7 @@ function setup() {
     () =>
       useTerminalSessionHandle({
         hostId: HOST_ID,
-        epicId: EPIC_ID,
+        scope: { kind: "epic", epicId: EPIC_ID },
         sessionId: SESSION_ID,
         instanceId: "inst-1",
         cols: 80,
@@ -163,7 +191,7 @@ describe("useTerminalSessionHandle metadata -> terminal.list cache", () => {
           kind: "snapshot",
           hasBinaryPayload: false,
           sessionId: SESSION_ID,
-          session: sessionInfo({ activeProcessName: "bun" }),
+          session: streamSessionInfo({ activeProcessName: "bun" }),
           scrollback: "",
           ackCreditSupported: true,
         },
@@ -172,11 +200,13 @@ describe("useTerminalSessionHandle metadata -> terminal.list cache", () => {
     });
 
     const data =
-      harness.queryClient.getQueryData<ListTerminalsResponse>(listKey);
+      harness.queryClient.getQueryData<ListTerminalsResponseV21>(listKey);
     expect(data).toBeDefined();
     const patched = data?.sessions.find((s) => s.sessionId === SESSION_ID);
     expect(patched?.activeProcessName).toBe("bun");
     expect(patched?.title).toBe("Setup: repo");
+    // Top-level response metadata must survive a sessions-only patch.
+    expect(data?.homeCwd).toBe(HOME_CWD);
     // The untouched sibling row must be reference-equal (no spurious churn).
     const sibling = data?.sessions.find((s) => s.sessionId === "term-other");
     expect(sibling).toBe(harness.otherSession);
@@ -201,15 +231,19 @@ describe("useTerminalSessionHandle metadata -> terminal.list cache", () => {
         kind: "sessionUpdated",
         hasBinaryPayload: false,
         sessionId: SESSION_ID,
-        session: sessionInfo({ title: "renamed", activeProcessName: "vim" }),
+        session: streamSessionInfo({
+          title: "renamed",
+          activeProcessName: "vim",
+        }),
       });
     });
 
     const data =
-      harness.queryClient.getQueryData<ListTerminalsResponse>(listKey);
+      harness.queryClient.getQueryData<ListTerminalsResponseV21>(listKey);
     const patched = data?.sessions.find((s) => s.sessionId === SESSION_ID);
     expect(patched?.title).toBe("renamed");
     expect(patched?.activeProcessName).toBe("vim");
+    expect(data?.homeCwd).toBe(HOME_CWD);
     expect(harness.queryClient.getQueryState(listKey)?.isInvalidated).toBe(
       false,
     );

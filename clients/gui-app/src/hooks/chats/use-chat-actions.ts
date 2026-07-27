@@ -2,7 +2,9 @@ import { useMemo } from "react";
 import type {
   ChatRunSettings,
   ChatActiveTurn,
+  ChatQueueDeliveryPolicy,
 } from "@traycer/protocol/host/agent/gui/subscribe";
+import type { GuiHarnessId } from "@traycer/protocol/host/index";
 import type { PermissionMode } from "@traycer/protocol/persistence/epic/foundation";
 import type {
   InterviewAnswer,
@@ -17,6 +19,14 @@ import type {
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 import type { Attachment } from "@/lib/composer/types";
+
+interface SendChatMessageInput {
+  readonly content: JsonContent;
+  readonly sender: UserMessageSender;
+  readonly settings: ChatRunSettings;
+  readonly attachments: ReadonlyArray<Attachment>;
+  readonly deliveryPolicy: ChatQueueDeliveryPolicy;
+}
 
 /**
  * Memoised stable callbacks bound to a `ChatSessionStoreHandle`.
@@ -33,10 +43,7 @@ import type { Attachment } from "@/lib/composer/types";
  */
 export interface ChatActions {
   readonly sendMessage: (
-    content: JsonContent,
-    sender: UserMessageSender,
-    settings: ChatRunSettings,
-    attachments: ReadonlyArray<Attachment>,
+    input: SendChatMessageInput,
   ) => SentChatMessageAction | null;
   readonly deleteMessageSuffix: (fromMessageId: string) => string | null;
   readonly editUserMessage: (
@@ -66,6 +73,10 @@ export interface ChatActions {
   ) => void;
   readonly updateActivePermissionMode: (
     permissionMode: PermissionMode,
+  ) => string | null;
+  readonly updateActiveProfile: (
+    harnessId: GuiHarnessId,
+    profileId: string | null,
   ) => string | null;
   readonly queueCancel: (queueItemId: string) => string | null;
   readonly queueReorder: (
@@ -101,39 +112,94 @@ export interface ChatActions {
   ) => JsonContent | null;
 }
 
+/**
+ * Emits the semantic event only when the store accepted the dispatch (a
+ * `null` result means the action was rejected locally and never left the
+ * renderer). Analytics is best-effort by design: a dispatch the host later
+ * rejects still counts as the user taking the action.
+ */
+function tracked<Result>(
+  result: Result | null,
+  emit: () => void,
+): Result | null {
+  if (result !== null) emit();
+  return result;
+}
+
 export function useChatActions(handle: ChatSessionStoreHandle): ChatActions {
   return useMemo<ChatActions>(
     () => ({
-      sendMessage: (content, sender, settings, attachments) => {
-        Analytics.getInstance().track(AnalyticsEvent.ChatMessageSent, {
-          harness: settings.harnessId,
-          model: settings.model,
-          mode: settings.agentMode,
-        });
-        return handle.store.getState().sendMessageWithAttachments({
-          content,
-          sender,
-          settings,
-          attachments,
-        });
-      },
+      sendMessage: (input) =>
+        tracked(
+          handle.store.getState().sendMessageWithAttachments(input),
+          () => {
+            Analytics.getInstance().track(AnalyticsEvent.ChatMessageSent, {
+              harness: input.settings.harnessId,
+              mode: input.settings.agentMode,
+            });
+          },
+        ),
       deleteMessageSuffix: (fromMessageId) =>
-        handle.store.getState().deleteMessageSuffix(fromMessageId),
+        tracked(
+          handle.store.getState().deleteMessageSuffix(fromMessageId),
+          () => {
+            Analytics.getInstance().track(
+              AnalyticsEvent.ChatMessageSuffixDeleted,
+              null,
+            );
+          },
+        ),
       editUserMessage: (input) =>
-        handle.store.getState().editUserMessage(input),
+        tracked(handle.store.getState().editUserMessage(input), () => {
+          Analytics.getInstance().track(AnalyticsEvent.ChatMessageEdited, null);
+        }),
       revertFileChanges: (fromMessageId, filePaths, revertArtifacts) =>
-        handle.store
-          .getState()
-          .revertFileChanges(fromMessageId, filePaths, revertArtifacts),
-      stopTurn: () => handle.store.getState().stopTurn(),
+        tracked(
+          handle.store
+            .getState()
+            .revertFileChanges(fromMessageId, filePaths, revertArtifacts),
+          () => {
+            Analytics.getInstance().track(AnalyticsEvent.FileChangesReverted, {
+              file_count: filePaths === null ? 0 : filePaths.length,
+              revert_artifacts: revertArtifacts,
+            });
+          },
+        ),
+      stopTurn: () =>
+        tracked(handle.store.getState().stopTurn(), () => {
+          Analytics.getInstance().track(AnalyticsEvent.ChatStopped, {
+            scope: "current",
+          });
+        }),
       stopBackgroundItem: (taskId) =>
-        handle.store.getState().stopBackgroundItem(taskId),
+        tracked(handle.store.getState().stopBackgroundItem(taskId), () => {
+          Analytics.getInstance().track(
+            AnalyticsEvent.ChatBackgroundItemStopped,
+            { scope: "one" },
+          );
+        }),
       stopAllBackgroundItems: () =>
-        handle.store.getState().stopAllBackgroundItems(),
-      pauseQueue: () => handle.store.getState().pauseQueue(),
-      resumeQueue: () => handle.store.getState().resumeQueue(),
+        tracked(handle.store.getState().stopAllBackgroundItems(), () => {
+          Analytics.getInstance().track(
+            AnalyticsEvent.ChatBackgroundItemStopped,
+            { scope: "all" },
+          );
+        }),
+      pauseQueue: () =>
+        tracked(handle.store.getState().pauseQueue(), () => {
+          Analytics.getInstance().track(AnalyticsEvent.ChatQueuePaused, null);
+        }),
+      resumeQueue: () =>
+        tracked(handle.store.getState().resumeQueue(), () => {
+          Analytics.getInstance().track(AnalyticsEvent.ChatQueueResumed, null);
+        }),
       queueEdit: (queueItemId, content) =>
-        handle.store.getState().queueEdit(queueItemId, content),
+        tracked(handle.store.getState().queueEdit(queueItemId, content), () => {
+          Analytics.getInstance().track(
+            AnalyticsEvent.ChatQueueItemEdited,
+            null,
+          );
+        }),
       queueSettingsUpdate: (queueItemId, settings) =>
         handle.store.getState().queueSettingsUpdate(queueItemId, settings),
       restampQueuedItemSettings: (settings, excludeQueueItemId) =>
@@ -142,24 +208,77 @@ export function useChatActions(handle: ChatSessionStoreHandle): ChatActions {
           .restampQueuedItemSettings(settings, excludeQueueItemId),
       updateActivePermissionMode: (permissionMode) =>
         handle.store.getState().updateActivePermissionMode(permissionMode),
+      updateActiveProfile: (harnessId, profileId) =>
+        handle.store.getState().updateActiveProfile(harnessId, profileId),
       queueCancel: (queueItemId) =>
-        handle.store.getState().queueCancel(queueItemId),
+        tracked(handle.store.getState().queueCancel(queueItemId), () => {
+          Analytics.getInstance().track(
+            AnalyticsEvent.ChatQueueItemCancelled,
+            null,
+          );
+        }),
       queueReorder: (queueItemId, beforeQueueItemId) =>
-        handle.store.getState().queueReorder(queueItemId, beforeQueueItemId),
+        tracked(
+          handle.store.getState().queueReorder(queueItemId, beforeQueueItemId),
+          () => {
+            Analytics.getInstance().track(
+              AnalyticsEvent.ChatQueueItemReordered,
+              null,
+            );
+          },
+        ),
       queueSteerNow: (queueItemId, newSettings) =>
-        handle.store.getState().queueSteerNow(queueItemId, newSettings),
+        tracked(
+          handle.store.getState().queueSteerNow(queueItemId, newSettings),
+          () => {
+            Analytics.getInstance().track(AnalyticsEvent.ChatQueueItemSteered, {
+              settings_changed: newSettings !== null,
+            });
+          },
+        ),
       queueAbortSteer: (queueItemId) =>
         handle.store.getState().queueAbortSteer(queueItemId),
       approvalDecision: (approvalId, decision) =>
-        handle.store.getState().approvalDecision(approvalId, decision),
+        tracked(
+          handle.store.getState().approvalDecision(approvalId, decision),
+          () => {
+            Analytics.getInstance().track(AnalyticsEvent.ApprovalDecided, {
+              decision: decision.approved ? "approved" : "denied",
+            });
+          },
+        ),
       fileEditApprovalDecision: (approvalId, decision) =>
-        handle.store.getState().fileEditApprovalDecision(approvalId, decision),
+        tracked(
+          handle.store
+            .getState()
+            .fileEditApprovalDecision(approvalId, decision),
+          () => {
+            Analytics.getInstance().track(
+              AnalyticsEvent.FileEditApprovalDecided,
+              { decision: decision.approved ? "approved" : "denied" },
+            );
+          },
+        ),
       restoreCheckpoint: (checkpointId, revertArtifacts) =>
-        handle.store
-          .getState()
-          .restoreCheckpoint(checkpointId, revertArtifacts),
+        tracked(
+          handle.store
+            .getState()
+            .restoreCheckpoint(checkpointId, revertArtifacts),
+          () => {
+            Analytics.getInstance().track(AnalyticsEvent.CheckpointRestored, {
+              revert_artifacts: revertArtifacts,
+            });
+          },
+        ),
       interviewAnswer: (blockId, answers) =>
-        handle.store.getState().interviewAnswer(blockId, answers),
+        tracked(
+          handle.store.getState().interviewAnswer(blockId, answers),
+          () => {
+            Analytics.getInstance().track(AnalyticsEvent.InterviewAnswered, {
+              answer_count: answers.length,
+            });
+          },
+        ),
       interviewError: (blockId, reason) =>
         handle.store.getState().interviewError(blockId, reason),
       ackFailedSendRestoration: (clientActionId) =>

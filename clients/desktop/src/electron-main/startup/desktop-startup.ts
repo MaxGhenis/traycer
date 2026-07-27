@@ -1,8 +1,12 @@
-import { app, nativeImage, type BrowserWindow } from "electron";
+import { app, nativeImage } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { initLogger, log } from "../app/logger";
 import { configureNativeAboutPanel } from "../app/about";
+import {
+  findJumplistCommandInArgv,
+  registerJumplistCommandHandling,
+} from "../app/jumplist-commands";
 import { registerDeepLinkHandling } from "../auth/deep-link";
 import { createMainWindow, loadMainWindow } from "../windows/window-factory";
 import {
@@ -12,22 +16,37 @@ import {
   loadTrayIconImage,
   type TrayManagedWindow,
 } from "../tray/tray";
-import { HostLifecycle, type HostStartupError } from "../host/host-lifecycle";
-import type { HostRegistryUpdateState } from "../../ipc-contracts/host-management-types";
-import { getHostFsLayout, labelForEnvironment } from "../host/host-paths";
 import {
-  onHostRegistryUpdateStateChange,
+  canReachHostWebsocketUrl,
+  HostLifecycle,
+  type HostStartupError,
+} from "../host/host-lifecycle";
+import {
+  DESKTOP_LOCK_POLL_INTERVAL_MS,
+  DESKTOP_LOCK_WAIT_MS,
+  HostController,
+} from "../host/host-controller";
+import { getHostFsLayout, labelForEnvironment } from "../host/host-paths";
+import { readPublishedHostProcessLiveness } from "../host/host-process-liveness";
+import { createHostRecoveryGovernor } from "../host/host-recovery-governor";
+import {
   refreshRegistryUpdateState,
   setActiveEnvironment,
 } from "../ipc/host-management-ipc";
+import { onHostControllerStatusBroadcast } from "../ipc/host-controller-status-broadcast";
 import {
-  defaultHostAutoUpdateDeps,
-  reconcileHostAutoUpdate,
-  LAUNCH_HOST_UPDATE_TIMEOUT_MS,
-  QUIT_HOST_UPDATE_TIMEOUT_MS,
-} from "../host/host-auto-update";
-import { isHostRemovedByUser } from "../host/host-removal-state";
+  QUIT_HOST_MUTATION_DRAIN_TIMEOUT_MS,
+  runUpdateInstallQuitSequence,
+} from "./update-install-quit";
 import { RunnerIpcBridge } from "../ipc/register-runner-ipc";
+import {
+  applyHostUpdateMenuState,
+  refreshHostRegistryIfNotRemoved,
+  runLaunchHostConvergeReconcile,
+  type HostUpdateMenuSurface,
+} from "./host-launch-converge";
+import type { IpcHostController } from "../ipc/runner-ipc-bridge";
+import { respawnIfDown } from "./host-health-respawn";
 import {
   checkForUpdatesAfterResume,
   checkForUpdatesNow,
@@ -39,7 +58,10 @@ import {
   maybePromptRelocateToApplications,
   UPDATE_BLOCKED_LOCATION_REASON,
 } from "../app/relocate-to-applications";
-import { WindowRegistry } from "../windows/window-registry";
+import {
+  WindowRegistry,
+  type RegistryManagedWindow,
+} from "../windows/window-registry";
 import {
   DesktopStateStore,
   resolveDesktopStateFilePath,
@@ -62,9 +84,13 @@ import {
 import { EpicWindowOwnership } from "../windows/epic-window-ownership";
 import { PerWindowState } from "../windows/per-window-state";
 import { DesktopAuthSession } from "../auth/desktop-auth-session";
+import { FileTokenStore } from "../auth/file-token-store";
 import { DesktopSupportService } from "../app/support";
 import { MenuController } from "../menu/menu-controller";
 import { initialRouteForWindowSnapshot } from "./window-initial-route";
+import { ShellQuitState } from "./shell-quit-state";
+import { planActivateWithoutLiveWindow } from "./activate-window-plan";
+import type { RestorableWindowEntry } from "../windows/desktop-state-store";
 import { readResolutionTestDisplay } from "../windows/resolution-test-env";
 import { installNotificationActivationHandler } from "../notifications";
 import {
@@ -73,6 +99,8 @@ import {
   installProcessGoneListeners,
   logGpuInfo,
 } from "../app/crash-reporter";
+import { suppressWslKernelCoreDumps } from "../app/core-dump-guard";
+import { pruneStaleCrashDumps } from "../app/crash-dump-prune";
 import { startRendererMemorySampler } from "../app/diagnostics";
 import {
   configureAppUserModelId,
@@ -99,7 +127,14 @@ import {
   readDisplayTopology,
 } from "../app/screen-monitor";
 import { hardenDefaultSession } from "../app/security";
-import { registerGlobalShortcuts } from "../app/shortcuts";
+import {
+  getRegisteredAccelerator,
+  initGlobalShortcutsRegistry,
+  onGlobalShortcutsChange,
+  reconcileGlobalShortcuts,
+  type ShortcutTargetWindow,
+} from "../app/shortcuts";
+import { hydrateGlobalShortcutIntents } from "../app/global-shortcuts-preferences";
 import { enableSpellCheck } from "../app/spell-check";
 import { installWindowsJumplistTasks } from "../app/recent-documents";
 import {
@@ -116,9 +151,27 @@ import {
   type DesktopConfig,
 } from "../config/desktop-config";
 import { installHostWakeRecovery } from "./host-wake-recovery";
+import { startHostHealthMonitor } from "../host/host-health-monitor";
+import { startPendingLoginItemRevisionMonitor } from "../host/pending-login-item-revision-monitor";
+import {
+  hostManagesHostLoginItem,
+  retireCompetingCliRegistrationAtLaunch,
+} from "../app/host-login-item";
 import { DESKTOP_APP_NAME } from "../../config";
 
-const APP_DISPLAY_NAME = DESKTOP_APP_NAME;
+// Per-window fresh-snapshot query budget during `before-quit`. Each renderer,
+// on receiving `getFreshUnsyncedSnapshot`, first AWAITS its debounced per-window
+// projection flush (open epic tabs / pane layout / drafts -> main's
+// `PerWindowState`) and only then replies. So by the time this query resolves,
+// main's per-window state - and thus the subsequent `desktopStateStore.flush()`
+// - already reflects the latest layout. 200ms comfortably covers the two local
+// IPC round-trips (projection `update`, then the fresh-snapshot reply) a
+// responsive renderer needs - they are same-machine calls over a small JSON
+// payload, typically well under ~20ms combined. It is deliberately NOT larger:
+// the ceiling exists to bound how long quit hangs when a renderer is frozen
+// (where no timeout would help), and the cached ambient snapshot is the
+// fail-safe fallback on timeout.
+const QUIT_FRESH_UNSYNCED_SNAPSHOT_TIMEOUT_MS = 200;
 
 /**
  * Phased desktop boot.
@@ -134,28 +187,19 @@ const APP_DISPLAY_NAME = DESKTOP_APP_NAME;
  * the logs.
  */
 export async function runDesktopStartup(): Promise<void> {
-  initLogger();
-  const config = resolveDesktopConfig();
+  const testHooks = desktopStartupTestHooks;
+  const deferredPlan =
+    testHooks === null
+      ? await runProductionStartupPhases()
+      : await runTestStartupPhases(testHooks);
 
-  const state: BootState = {
-    config,
-    pendingAuthReturnSignal: false,
-    bridge: null,
-  };
-
-  runPreReady(state);
-
-  await app.whenReady();
-
-  await runOnReady(state);
-  log.info("[desktop] app ready", {
-    platform: process.platform,
-    environment: config.environment,
-  });
-
-  const services = await runWindowPhase(state);
-
-  runDeferred(state, services);
+  // There is deliberately one startup → deferred handoff. Tests may replace
+  // expensive Electron phases, but they never get a separate convergence
+  // branch: removing this production call therefore leaves the composition
+  // test red rather than silently exercising a test-only equivalent.
+  runDeferred(deferredPlan.state, deferredPlan.services, () =>
+    deferredPlan.runBackground(),
+  );
 }
 
 interface BootState {
@@ -165,6 +209,28 @@ interface BootState {
   // a payload-free nudge, so repeated cold-start arrivals collapse.
   pendingAuthReturnSignal: boolean;
   bridge: RunnerIpcBridge | null;
+}
+
+export interface DesktopStartupTestHooks {
+  readonly config: DesktopConfig;
+  runPreReady(): void;
+  whenReady(): Promise<void>;
+  runOnReady(): Promise<void>;
+  runWindowPhase(): Promise<{
+    readonly hostController: IpcHostController;
+    readonly menu: HostUpdateMenuSurface;
+  }>;
+  runDeferredBackground(): void;
+}
+
+let desktopStartupTestHooks: DesktopStartupTestHooks | null = null;
+
+/** Test-only phase replacement used to exercise `runDesktopStartup`'s real
+ * handoff into `runDeferred` without constructing an Electron window. */
+export function __setDesktopStartupTestHooks(
+  hooks: DesktopStartupTestHooks | null,
+): void {
+  desktopStartupTestHooks = hooks;
 }
 
 // Single delivery path for the browser-return signal: focus + nudge the
@@ -180,9 +246,63 @@ function deliverAuthReturnSignal(state: BootState): void {
 
 interface AppServices {
   readonly host: HostLifecycle;
+  readonly hostController: HostController;
   readonly menu: MenuController;
   readonly windowRegistry: WindowRegistry;
   readonly zoomController: WindowZoomController;
+}
+
+interface DeferredStartupPlan {
+  readonly state: BootState;
+  readonly services: {
+    readonly hostController: IpcHostController;
+    readonly menu: HostUpdateMenuSurface;
+  };
+  runBackground(): void;
+}
+
+async function runTestStartupPhases(
+  testHooks: DesktopStartupTestHooks,
+): Promise<DeferredStartupPlan> {
+  initLogger();
+  const state: BootState = {
+    config: testHooks.config,
+    pendingAuthReturnSignal: false,
+    bridge: null,
+  };
+  testHooks.runPreReady();
+  await testHooks.whenReady();
+  await testHooks.runOnReady();
+  const services = await testHooks.runWindowPhase();
+  return {
+    state,
+    services,
+    runBackground: testHooks.runDeferredBackground,
+  };
+}
+
+async function runProductionStartupPhases(): Promise<DeferredStartupPlan> {
+  initLogger();
+  const config = resolveDesktopConfig();
+  const state: BootState = {
+    config,
+    pendingAuthReturnSignal: false,
+    bridge: null,
+  };
+
+  runPreReady(state);
+  await app.whenReady();
+  await runOnReady(state);
+  log.info("[desktop] app ready", {
+    platform: process.platform,
+    environment: config.environment,
+  });
+  const services = await runWindowPhase(state);
+  return {
+    state,
+    services,
+    runBackground: () => runDeferredBackground(state, services),
+  };
 }
 
 // Wrap a step in timing + a best-effort boundary. A non-fatal step throwing
@@ -209,15 +329,27 @@ async function timed(
 // Pre-ready: command-line switches, scheme registration, hardware
 // acceleration toggle, V8 heap, and crash collection all run before
 // Chromium initializes. These are synchronous in-process Electron calls
-// (the one sync filesystem read - the GPU preference - is documented as the
-// required pre-`whenReady` exception in app/gpu-acceleration.ts).
-function runPreReady(state: BootState): void {
+// (two documented sync-filesystem exceptions: the GPU preference read in
+// app/gpu-acceleration.ts and the memory-backed /proc write in
+// app/core-dump-guard.ts, which must land before Chromium spawns children).
+export function runPreReady(state: BootState): void {
   trimUnusedChromiumFeatures();
   configureV8HeapSize();
   applyHardwareAccelerationPreference();
-  registerAppScheme();
+  suppressWslKernelCoreDumps();
+  // `initCrashReporter()` must run before `registerAppScheme()`. When a
+  // Sentry DSN is configured, `SentryElectron.init()` makes its own raw
+  // `protocol.registerSchemesAsPrivileged([sentry-ipc])` call and only
+  // afterwards replaces that method with a Proxy that merges every later
+  // registration into its own. Electron keeps only the last RAW call, so
+  // registering `app` first (before Sentry) gets silently discarded -
+  // `app://renderer` loses its secure/cors/fetch privileges and becomes a
+  // non-secure context, disabling `navigator.clipboard`/`crypto.subtle` in
+  // the renderer. Registering `app` after Sentry lets its Proxy fold it in
+  // alongside `sentry-ipc`. Do not reorder these two calls.
   initCrashReporter();
   installGlobalErrorHandlers();
+  registerAppScheme();
   installProcessGoneListeners();
 
   registerDeepLinkHandling(() => deliverAuthReturnSignal(state));
@@ -254,6 +386,10 @@ async function runOnReady(state: BootState): Promise<void> {
     timed("on-ready", "download-observer", () => installDownloadObserver()),
     timed("on-ready", "preconnect", () => preconnectTraycerHosts()),
     timed("on-ready", "gpu-info", () => logGpuInfo()),
+    timed("on-ready", "crash-dump-prune", () => pruneStaleCrashDumps()),
+    timed("on-ready", "global-shortcuts-preferences", () =>
+      hydrateGlobalShortcutIntents().then(() => undefined),
+    ),
   ]);
 }
 
@@ -263,6 +399,9 @@ async function runOnReady(state: BootState): Promise<void> {
 // provisioned post-auth via the ensure IPC.
 async function runWindowPhase(state: BootState): Promise<AppServices> {
   const { config } = state;
+  const appDisplayName = app.getName();
+  const devWindowTitle =
+    appDisplayName === DESKTOP_APP_NAME ? null : appDisplayName;
 
   const desktopStateStore = new DesktopStateStore({
     filePath: resolveDesktopStateFilePath(),
@@ -299,6 +438,7 @@ async function runWindowPhase(state: BootState): Promise<AppServices> {
               topology: readDisplayTopology(),
             });
       const createdWindow = createMainWindow({
+        devWindowTitle,
         preloadPath: config.preloadPath,
         windowId: request.windowId,
         initialRoute: request.initialRoute,
@@ -354,6 +494,12 @@ async function runWindowPhase(state: BootState): Promise<AppServices> {
   const ownership = new EpicWindowOwnership(desktopStateStore);
   const perWindowState = new PerWindowState(desktopStateStore);
   const authSession = new DesktopAuthSession();
+  // Owner of the single machine-local credentials file (tech plan §3). ENV-scoped
+  // (shared across dev slots + the CLI), never slot-scoped. The bridge disposes it.
+  const authTokenStore = new FileTokenStore({
+    environment: config.environment,
+    authnBaseUrl: config.authnBaseUrl,
+  });
 
   const hostLabel = labelForEnvironment(config.environment);
   const hostLayout = getHostFsLayout(config.environment);
@@ -367,8 +513,20 @@ async function runWindowPhase(state: BootState): Promise<AppServices> {
     readyTimeoutMs: undefined,
     reachabilityProbe: undefined,
   });
+  // Single main-process owner of every host-lifecycle mutation (Host Update
+  // Layer Redesign Tech Plan, "Desktop main: HostController"). `host`
+  // (`HostLifecycle`) stays the read side - metadata-first discovery,
+  // reachability, the renderer-facing snapshot - `hostController` owns every
+  // write.
+  const hostController = new HostController({
+    environment: config.environment,
+    hostLifecycle: host,
+    reachabilityProbe: canReachHostWebsocketUrl,
+    desktopLockWaitMs: DESKTOP_LOCK_WAIT_MS,
+    desktopLockPollIntervalMs: DESKTOP_LOCK_POLL_INTERVAL_MS,
+  });
   const support = new DesktopSupportService({
-    appName: APP_DISPLAY_NAME,
+    appName: appDisplayName,
     host,
     authSession,
     hostLayout,
@@ -376,10 +534,17 @@ async function runWindowPhase(state: BootState): Promise<AppServices> {
 
   const tray = await createTraySafe(createMruWindowProxy(windowRegistry));
 
+  // Flipped once `before-quit` fires (any quit path). The windows registry-change
+  // listener reads it so a `closed` event that is part of a quit never prunes the
+  // per-window restore snapshot.
+  const shellQuitState = new ShellQuitState();
+
   log.debug("[desktop] authn base URL", { authnBaseUrl: config.authnBaseUrl });
   const bridge = new RunnerIpcBridge({
     host,
+    hostController,
     authnBaseUrl: config.authnBaseUrl,
+    authTokenStore,
     // Device flow is the only login - there is no loopback redirect_uri to
     // snapshot - so the renderer always falls back to the custom-scheme
     // sign-in URL composition.
@@ -391,6 +556,7 @@ async function runWindowPhase(state: BootState): Promise<AppServices> {
     authSession,
     support,
     zoomController: createdZoomController,
+    quitState: shellQuitState,
   });
   bridge.install();
   state.bridge = bridge;
@@ -406,7 +572,7 @@ async function runWindowPhase(state: BootState): Promise<AppServices> {
   });
 
   const menu = new MenuController({
-    appName: APP_DISPLAY_NAME,
+    appName: appDisplayName,
     platform: process.platform,
     windowRegistry,
     host,
@@ -420,6 +586,25 @@ async function runWindowPhase(state: BootState): Promise<AppServices> {
       checkForUpdatesNow(config.isDev, "manual").then(() => undefined),
   });
   menu.install();
+
+  registerJumplistCommandHandling({
+    dispatch: (command) => menu.dispatchShellCommand(command),
+    focusMainWindow: () => {
+      const record = windowRegistry.getMruRecord();
+      if (record !== null) {
+        windowRegistry.focusById(record.windowId);
+      }
+    },
+  });
+  // Cold-start jump-list launch: `--new-epic` is satisfied by the window
+  // startup opens anyway; `--open-settings` must wait for the first renderer
+  // to load before it can host the settings surface.
+  if (findJumplistCommandInArgv(process.argv) === "app.openSettings") {
+    const settingsTarget = windowRegistry.records()[0];
+    settingsTarget?.window.webContents.once("did-finish-load", () => {
+      menu.dispatchShellCommand("app.openSettings");
+    });
+  }
 
   // Drain a browser-return signal captured before the bridge was ready, once
   // the first startup renderer has installed its listeners.
@@ -442,29 +627,23 @@ async function runWindowPhase(state: BootState): Promise<AppServices> {
 
   wireAppLifecycle(state, {
     host,
+    hostController,
     menu,
     windowRegistry,
     bridge,
     tray,
     desktopStateStore,
     windowGeometryPersistence,
+    quitState: shellQuitState,
   });
 
-  return { host, menu, windowRegistry, zoomController: createdZoomController };
-}
-
-// Reflects the host update availability into the app menu's "Update host"
-// affordance. Shared by the launch probe and the post-auto-update refresh so
-// both keep the menu in lockstep with the cached registry state.
-function applyHostUpdateMenuState(
-  menu: MenuController,
-  state: HostRegistryUpdateState,
-): void {
-  if (state.updateAvailable && state.latestVersion !== null) {
-    menu.setHostUpdateAvailableVersion(state.latestVersion);
-  } else {
-    menu.setHostUpdateAvailableVersion(null);
-  }
+  return {
+    host,
+    hostController,
+    menu,
+    windowRegistry,
+    zoomController: createdZoomController,
+  };
 }
 
 // Auto-check-for-updates gap (Ticket: host-update-race-conditions): the
@@ -492,27 +671,22 @@ const HOST_REGISTRY_PERIODIC_MAX_AGE_MS =
 const HOST_REGISTRY_RESUME_DEBOUNCE_MS = 30_000;
 let lastHostRegistryResumeCheckMs = 0;
 
-// Shared by the launch probe, the periodic timer, and the resume trigger.
-// `refreshRegistryUpdateState` never throws and is internally serialized
-// (`registryRefreshQueue`), so overlapping calls are safe.
-async function refreshHostRegistryIfNotRemoved(
-  services: AppServices,
-  opts: { readonly force: boolean; readonly maxAgeMs: number | null },
-): Promise<void> {
-  if (await isHostRemovedByUser()) return;
-  const result = await refreshRegistryUpdateState(opts);
-  applyHostUpdateMenuState(services.menu, result);
-}
-
-// Deferred, fire-and-forget work - runs after the window is loading and
-// never blocks first paint.
-function runDeferred(state: BootState, services: AppServices): void {
+// The non-converge deferred work is separate so `runDeferred` below remains
+// the narrow production entry point for the launch host-convergence policy.
+// It schedules this background work first (preserving the boot ordering),
+// then always schedules the real launch reconciliation through that entry
+// point. The generic boundary keeps the production types intact while letting
+// the startup composition test drive the entry point with a focused fake.
+function runDeferredBackground(state: BootState, services: AppServices): void {
   startRendererMemorySampler();
-  state.bridge?.disposeFns.push(
-    onHostRegistryUpdateStateChange((result) => {
-      applyHostUpdateMenuState(services.menu, result);
-    }),
-  );
+  if (state.bridge !== null) {
+    const bridge = state.bridge;
+    bridge.disposeFns.push(
+      onHostControllerStatusBroadcast(bridge, (status) => {
+        applyHostUpdateMenuState(services.menu, status);
+      }),
+    );
+  }
 
   // Captured (not just fire-and-forget) so the host auto-update idle gate can
   // wait for discovery to settle before trusting the host snapshot - `timed`
@@ -525,52 +699,98 @@ function runDeferred(state: BootState, services: AppServices): void {
     return services.host.bootstrap();
   });
 
+  // All-platform watchdog for a host that dies without rewriting pid.json
+  // (external kill/crash): the pid-file watcher never fires for those, so the
+  // cached snapshot stays "reachable" against a dead endpoint forever. On
+  // Windows it also owns auto-respawn (the Scheduled Task cannot
+  // restart-on-failure - its hidden-launcher action detaches the host and
+  // exits, so the task completes long before the host can die). On
+  // macOS/Linux the service manager (launchd KeepAlive / systemd Restart)
+  // respawns crashes itself, but the SUPERVISOR cannot fix the desktop's
+  // stale snapshot when the respawned host binds a new port and the watcher
+  // edge is missed - the monitor's reload-first convergence covers exactly
+  // that, and only falls back to `HostController.recoverIfDown()` when the
+  // disk still names an unreachable host. Started after bootstrap so the
+  // initial 60s readiness wait can't register as an outage.
+  void hostReady.then(() => {
+    // One authority for automatic restarts, holding both the liveness gate and
+    // the attempt budget. It re-reads pid.json itself inside `requestRespawn`
+    // so the "never kill a live host" rule can't be bypassed by adding another
+    // caller later.
+    const recoveryGovernor = createHostRecoveryGovernor({
+      now: undefined,
+      readLiveness: () =>
+        readPublishedHostProcessLiveness(services.host.pidMetadataFile),
+    });
+    const healthMonitor = startHostHealthMonitor({
+      host: services.host,
+      intervalMs: undefined,
+      probe: undefined,
+      readMetadata: undefined,
+      respawn: () => respawnIfDown(services.hostController),
+      governor: recoveryGovernor,
+      readLiveness: undefined,
+    });
+    state.bridge?.disposeFns.push(() => healthMonitor.dispose());
+  });
+
+  // macOS-only: guarantees a busy-preserved install's pending LaunchAgent
+  // revision (see `desktop-install-cloud.js`'s marker +
+  // `HostController.applyPendingLoginItemRevisionIfIdle`) gets applied
+  // within this running session once the host goes idle, not only at the
+  // next relaunch - a renderer-triggered `convergeReady` only gets one shot
+  // at it per app launch. Gated on `hostManagesHostLoginItem()` since a
+  // non-macOS build, a dev build, or a build without the in-bundle plist
+  // never has SMAppService registration (or a marker) to refresh in the
+  // first place.
+  if (process.platform === "darwin") {
+    void hostReady.then(async () => {
+      if (state.bridge === null) return;
+      if (!(await hostManagesHostLoginItem())) return;
+      const revisionMonitor = startPendingLoginItemRevisionMonitor({
+        hostController: services.hostController,
+        intervalMs: undefined,
+      });
+      state.bridge?.disposeFns.push(() => revisionMonitor.dispose());
+    });
+  }
+
+  // macOS-only dual-registration repair, on EVERY launch. A machine that
+  // acquired a competing `~/Library/LaunchAgents/<cli-label>.plist` during
+  // the v1.1.7 window starts two hosts against one data dir at every login,
+  // and nothing else clears it: the register cycle that would
+  // (`retireLegacyLabelRegistrations`) only runs when registration is
+  // actually re-done, which the routine healthy-host launch never does.
+  // Deliberately not gated on `hostReady` - the repair is about what starts
+  // at the NEXT login and must still run on a launch whose host never
+  // becomes ready. All of its own gates live inside; see its doc comment.
+  if (process.platform === "darwin") {
+    void timed("deferred", "competing-registration-repair", async () => {
+      const outcome = await retireCompetingCliRegistrationAtLaunch();
+      log.debug("[host-login-item] launch repair outcome", { outcome });
+    });
+  }
+
   void timed("deferred", "registry-probe", async () => {
     // `force: true` - matches the app's own `checkForUpdatesNow` on launch
     // (app/updater.ts): always a real probe, never a cache read, so a
     // relaunch shortly after a release still sees it immediately.
-    const result = await refreshRegistryUpdateState({
+    const result = await refreshRegistryUpdateState(services.hostController, {
       force: true,
       maxAgeMs: null,
     });
-    applyHostUpdateMenuState(services.menu, result);
+    // The registry probe's own result only carries version-comparison state
+    // (no activation domain) - the menu label is derived from a fresh
+    // `getStatus()` read taken right after, since the probe's background
+    // `stageLatest()` may have just changed `stagedVersion`.
+    const status = await services.hostController.getStatus();
+    applyHostUpdateMenuState(services.menu, status);
     log.debug("[host-registry] launch probe complete", {
       reachable: result.reachable,
       latestVersion: result.latestVersion,
       installedVersion: result.installedVersion,
       updateAvailable: result.updateAvailable,
     });
-    // Coordinated host auto-update: the relaunch after a desktop self-update
-    // lands here, so an idle host tracks the app instead of drifting behind.
-    // Idle-gated and fail-open - a busy/failed attempt just retries next time.
-    // Skipped entirely once the user removed the host on this device, so a
-    // stray update probe never reinstalls what they uninstalled. Also
-    // skipped if the bridge somehow isn't installed yet (it always is by
-    // this deferred phase in practice) since the reconciler needs it to
-    // broadcast operation status.
-    const bridge = state.bridge;
-    if (
-      result.updateAvailable &&
-      bridge !== null &&
-      !(await isHostRemovedByUser())
-    ) {
-      const outcome = await reconcileHostAutoUpdate(
-        "launch",
-        defaultHostAutoUpdateDeps(
-          services.host,
-          LAUNCH_HOST_UPDATE_TIMEOUT_MS,
-          () => hostReady,
-          bridge,
-        ),
-      );
-      log.info("[host-auto-update] launch reconcile complete", { outcome });
-      if (outcome === "updated") {
-        applyHostUpdateMenuState(
-          services.menu,
-          await refreshRegistryUpdateState({ force: false, maxAgeMs: null }),
-        );
-      }
-    }
   });
 
   void timed("deferred", "cli-reconcile", async () => {
@@ -606,13 +826,28 @@ function runDeferred(state: BootState, services: AppServices): void {
     maybePromptRelocateToApplications(),
   );
 
-  void timed("deferred", "global-shortcuts", () =>
-    registerGlobalShortcuts(() => {
-      const records = services.windowRegistry.records();
-      if (records.length === 0) return null;
-      return records[0].window;
-    }),
-  );
+  void timed("deferred", "global-shortcuts", async () => {
+    const shortcutTargetWindow = createMruWindowProxy(services.windowRegistry);
+    initGlobalShortcutsRegistry(() => shortcutTargetWindow);
+    const applyTrayAccelerator = (): void => {
+      state.bridge?.options.tray?.setSummonAccelerator(
+        getRegisteredAccelerator("summon"),
+      );
+    };
+    // The tray's accelerator display and the IPC fan-out (`global-shortcuts-ipc.ts`)
+    // are independent subscribers to the same reconcile() output - decoupled the
+    // same way host-registry updates reach both the menu/tray and the renderer.
+    state.bridge?.disposeFns.push(
+      onGlobalShortcutsChange(applyTrayAccelerator),
+    );
+    const snapshot = await reconcileGlobalShortcuts({});
+    applyTrayAccelerator();
+    if (snapshot.statuses.summon.status === "rejected") {
+      log.warn("[global-shortcuts] summon shortcut refused at launch", {
+        effectiveChord: snapshot.statuses.summon.effectiveChord,
+      });
+    }
+  });
 
   void timed("deferred", "power-monitor", () =>
     // Bridge the OS wake pulse to every renderer so it force-reconnects its
@@ -635,10 +870,11 @@ function runDeferred(state: BootState, services: AppServices): void {
         HOST_REGISTRY_RESUME_DEBOUNCE_MS
       ) {
         lastHostRegistryResumeCheckMs = nowMs;
-        void refreshHostRegistryIfNotRemoved(services, {
-          force: true,
-          maxAgeMs: null,
-        });
+        void refreshHostRegistryIfNotRemoved(
+          services.hostController,
+          services.menu,
+          { force: true, maxAgeMs: null },
+        );
       }
     }),
   );
@@ -651,21 +887,48 @@ function runDeferred(state: BootState, services: AppServices): void {
   // poll interval, so it only skips a network hit when a launch/resume probe
   // already refreshed the cache more recently than this tick's own cadence.
   setInterval(() => {
-    void refreshHostRegistryIfNotRemoved(services, {
-      force: false,
-      maxAgeMs: HOST_REGISTRY_PERIODIC_MAX_AGE_MS,
-    });
+    void refreshHostRegistryIfNotRemoved(
+      services.hostController,
+      services.menu,
+      {
+        force: false,
+        maxAgeMs: HOST_REGISTRY_PERIODIC_MAX_AGE_MS,
+      },
+    );
   }, HOST_REGISTRY_PERIODIC_CHECK_INTERVAL_MS);
+}
+
+// Deferred, fire-and-forget launch convergence. This is deliberately a
+// production entry point rather than a controller-level policy test: its
+// caller is `runDesktopStartup`, and it invokes the real reconciliation that
+// determines whether a launch is allowed to apply, activate, or do nothing.
+export function runDeferred<
+  TState,
+  TServices extends {
+    readonly hostController: IpcHostController;
+    readonly menu: HostUpdateMenuSurface;
+  },
+>(
+  state: TState,
+  services: TServices,
+  runBackground: (state: TState, services: TServices) => void,
+): void {
+  runBackground(state, services);
+  void timed("deferred", "host-launch-converge", () =>
+    runLaunchHostConvergeReconcile(services.hostController, services.menu),
+  );
 }
 
 interface LifecycleServices {
   readonly host: HostLifecycle;
+  readonly hostController: HostController;
   readonly menu: MenuController;
   readonly windowRegistry: WindowRegistry;
   readonly bridge: RunnerIpcBridge;
   readonly tray: DesktopTrayController | null;
   readonly desktopStateStore: DesktopStateStore;
   readonly windowGeometryPersistence: WindowGeometryPersistence;
+  readonly quitState: ShellQuitState;
 }
 
 function wireAppLifecycle(state: BootState, services: LifecycleServices): void {
@@ -678,6 +941,20 @@ function wireAppLifecycle(state: BootState, services: LifecycleServices): void {
 
   app.on("activate", () => {
     if (services.windowRegistry.focusMru()) {
+      return;
+    }
+    // No live window to focus (e.g. macOS red-light close of the last window
+    // left the app running). Restore the preserved window snapshot(s) rather
+    // than minting a blank window, so a close-then-reopen keeps the user's tabs,
+    // canvas, and drafts. Falls back to a blank window when nothing restorable
+    // survives.
+    const plan = planActivateWithoutLiveWindow(
+      services.desktopStateStore.getRestorableWindowEntries(),
+    );
+    if (plan.kind === "restore") {
+      for (const entry of plan.entries) {
+        restorePreservedWindowOnActivate(services, entry);
+      }
       return;
     }
     void services.windowRegistry.create({
@@ -695,9 +972,9 @@ function wireAppLifecycle(state: BootState, services: LifecycleServices): void {
 
   const flushShellState = async (): Promise<void> => {
     await Promise.all([
-      services.desktopStateStore.flush().catch((err) => {
-        log.warn("[desktop] desktop-state flush failed", err);
-      }),
+      // No .catch: the store's write chain never rejects (persist failures
+      // are retried once, then surrendered with an error log inside it).
+      services.desktopStateStore.flush(),
       services.windowGeometryPersistence.flushLatest().catch((err) => {
         log.warn("[desktop] window-geometry flush failed", err);
       }),
@@ -719,6 +996,11 @@ function wireAppLifecycle(state: BootState, services: LifecycleServices): void {
   };
 
   app.on("before-quit", (event) => {
+    // Mark the shell as quitting on the FIRST pass, before any preventDefault or
+    // async work, so the windows registry-change listener preserves every
+    // closing window's restore snapshot for the remainder of the quit - even the
+    // non-last windows a Cmd+Q closes. Idempotent across the multi-pass quit.
+    services.quitState.markQuitting();
     if (quitAuthorized) {
       teardownShellObservers();
       return;
@@ -745,52 +1027,45 @@ function wireAppLifecycle(state: BootState, services: LifecycleServices): void {
         teardownShellObservers();
         return;
       }
-      // First pass: attempt a coordinated, idle-gated host update before the
-      // desktop swaps its own bytes, then re-quit. Fail-open - a busy host,
-      // failure, or the bounded CLI timeout all fall through to the quit, with
-      // the next-launch reconcile as the guaranteed fallback. The host update
-      // runs as a subprocess that would die with us, so we must hold the quit
-      // until it settles rather than racing it.
+      // First pass: never START a new host mutation this late - only drain
+      // whatever `HostController` mutation is already in flight (bounded),
+      // so the desktop doesn't swap its own bytes out from under a
+      // subprocess mid-swap. Drain the renderer's freshest per-window
+      // projection into the state store, then re-quit. Fail-open at every
+      // step - a wedged mutation, failure, or the bounded drain timeout all
+      // fall through to the quit; the launch-time `applyStaged` reconcile is
+      // the guaranteed fallback either way.
       quitTimeHostUpdateStarted = true;
       event.preventDefault();
       log.info(
-        "[desktop] before-quit - install pending; attempting idle host update first",
+        "[desktop] before-quit - install pending; draining any in-flight host mutation first",
       );
-      void reconcileHostAutoUpdate(
-        "quit-install",
-        defaultHostAutoUpdateDeps(
-          services.host,
-          QUIT_HOST_UPDATE_TIMEOUT_MS,
-          // The host was discovered long ago - no need to wait at quit time.
-          () => Promise.resolve(),
-          services.bridge,
-        ),
-      )
-        .then((outcome) =>
-          log.info("[host-auto-update] quit reconcile complete", { outcome }),
-        )
-        .catch((err) =>
-          log.warn("[host-auto-update] quit reconcile threw", err),
-        )
-        .finally(() => {
-          // If `quitAndInstall` failed in the meantime (e.g. read-only volume),
-          // `isInstallingUpdate()` is now false and the failure was surfaced as
-          // an error - don't quit out from under the user; let them read it and
-          // retry. Only the still-pending install proceeds to quit.
-          if (!isInstallingUpdate()) {
-            log.info(
-              "[desktop] before-quit - install failed during reconcile, staying open",
-            );
-            return;
-          }
-          authorizeQuitAfterFlush();
-        });
+      void runUpdateInstallQuitSequence({
+        drainHostMutation: () =>
+          services.hostController.awaitMutationLaneIdle(
+            QUIT_HOST_MUTATION_DRAIN_TIMEOUT_MS,
+          ),
+        isInstallPending: isInstallingUpdate,
+        drainRendererProjection: () =>
+          activeBridge.requestFreshUnsyncedSnapshot(
+            QUIT_FRESH_UNSYNCED_SNAPSHOT_TIMEOUT_MS,
+          ),
+        authorizeQuitAfterFlush,
+        stayOpen: () => {
+          // Re-arm the first-pass sequence: leaving the flag set would make
+          // the NEXT Restart-to-install take the second-pass shortcut above,
+          // skipping the host reconcile, the renderer drain, AND the shell
+          // flush for that quit.
+          quitTimeHostUpdateStarted = false;
+          services.quitState.resetQuitting();
+        },
+      });
       return;
     }
 
     event.preventDefault();
     void activeBridge
-      .requestFreshUnsyncedSnapshot(200)
+      .requestFreshUnsyncedSnapshot(QUIT_FRESH_UNSYNCED_SNAPSHOT_TIMEOUT_MS)
       .then((snapshot) => {
         if (!activeBridge.hasUnsyncedEdits()) {
           log.info(
@@ -812,11 +1087,33 @@ function wireAppLifecycle(state: BootState, services: LifecycleServices): void {
           })
           .catch((err) => {
             log.warn("[desktop] quit decision failed - staying alive", err);
+            services.quitState.resetQuitting();
           });
       })
       .catch((err) => {
         log.warn("[desktop] fresh-snapshot query failed - staying alive", err);
+        services.quitState.resetQuitting();
       });
+  });
+}
+
+// Recreate a preserved window on macOS `activate`, reusing its original id so
+// the in-memory + on-disk per-window snapshot rebinds to it (the renderer reads
+// its snapshot by window id). Mirrors the startup restore path.
+function restorePreservedWindowOnActivate(
+  services: LifecycleServices,
+  entry: RestorableWindowEntry,
+): void {
+  services.windowRegistry.createWithId({
+    windowId: entry.windowId,
+    initialRoute: initialRouteForWindowSnapshot(entry.snapshot),
+    beforeLoad: null,
+  });
+  void services.windowRegistry.loadById(entry.windowId).catch((err) => {
+    log.warn("[desktop] activate restore window load failed", {
+      windowId: entry.windowId,
+      err,
+    });
   });
 }
 
@@ -836,21 +1133,42 @@ async function createTraySafe(
   }
 }
 
-function createMruWindowProxy(registry: WindowRegistry): TrayManagedWindow {
-  const current = (): BrowserWindow | null =>
-    registry.getMruRecord()?.window ?? null;
+// Shared by the tray (`TrayManagedWindow`) and the global-shortcuts registry
+// (`ShortcutTargetWindow`, decision 10 in the tech plan: the summon action
+// resolves via `focusMru()` rather than the registry's first-inserted
+// record) - both just need "the window the user last used", so one proxy
+// backs both call sites. Exported so tests can exercise this exact proxy
+// against a real `WindowRegistry` instead of a hand-rolled copy. Generic over
+// `TWindow` (rather than hardcoding the default `BrowserWindow`) so a test's
+// `WindowRegistry<FakeRegistryWindow>` can be passed directly - the bound is
+// exactly the surface this function actually calls, nothing Electron-specific.
+export function createMruWindowProxy<
+  TWindow extends RegistryManagedWindow & {
+    isMinimized(): boolean;
+    restore(): void;
+  },
+>(registry: WindowRegistry<TWindow>): TrayManagedWindow & ShortcutTargetWindow {
+  const current = (): TWindow | null => registry.getMruRecord()?.window ?? null;
   return {
     isDestroyed: () => {
       const window = current();
       return window === null || window.isDestroyed();
     },
     isVisible: () => current()?.isVisible() ?? false,
+    isMinimized: () => current()?.isMinimized() ?? false,
     show: () => {
       const window = current();
       if (window === null || window.isDestroyed()) {
         return;
       }
       window.show();
+    },
+    restore: () => {
+      const window = current();
+      if (window === null || window.isDestroyed()) {
+        return;
+      }
+      window.restore();
     },
     focus: () => {
       registry.focusMru();
@@ -859,7 +1177,7 @@ function createMruWindowProxy(registry: WindowRegistry): TrayManagedWindow {
 }
 
 async function configureAppIdentity(iconPath: string): Promise<void> {
-  configureNativeAboutPanel(APP_DISPLAY_NAME, iconPath);
+  configureNativeAboutPanel(app.getName(), iconPath);
   if (process.platform !== "darwin") {
     return;
   }

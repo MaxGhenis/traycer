@@ -6,6 +6,7 @@ import {
   RouterProvider,
   createMemoryHistory,
   createRouter,
+  type RouterHistory,
 } from "@tanstack/react-router";
 import { QueryClient } from "@tanstack/react-query";
 import { routeTree } from "@/routeTree.gen";
@@ -23,6 +24,9 @@ import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { createEmptyCanvas } from "@/stores/epics/canvas/canvas-state";
 import { useLeftPanelStore } from "@/stores/epics/left-panel-store";
 import type { EpicCanvasState } from "@/stores/epics/canvas/types";
+import { createPersistentMemoryHistory } from "@/lib/persistent-history";
+
+const recordViewed = vi.hoisted(() => vi.fn());
 
 // Keep the app shell + cross-cutting bridges out of the way; we only care
 // about the keep-alive pane host under the `/epics` layout.
@@ -47,6 +51,9 @@ vi.mock("@/components/layout/bridges/host-tray-command-listener", () => ({
 vi.mock("@/components/layout/bridges/notification-focus-bridge", () => ({
   NotificationFocusBridge: () => null,
 }));
+vi.mock("@/components/layout/bridges/notification-emission-controller", () => ({
+  NotificationEmissionController: () => null,
+}));
 vi.mock("@/components/layout/dialogs/system-tab-modal-host", () => ({
   SystemTabModalHost: () => null,
 }));
@@ -58,6 +65,9 @@ vi.mock("@/stores/tabs/use-deep-link-tab-sync", () => ({
 }));
 vi.mock("@/hooks/epics/use-cloud-epic-tasks-query", () => ({
   useCloudEpicTasksQuery: () => ({ tasks: [] }),
+}));
+vi.mock("@/hooks/epic/use-epic-record-viewed-mutation", () => ({
+  useEpicRecordViewed: () => ({ mutate: recordViewed }),
 }));
 // The epic-list body has its own data deps we don't exercise here; stub it so
 // navigating to `/epics` only verifies the host's keep-alive behavior.
@@ -110,6 +120,8 @@ vi.mock("@/components/epic-canvas/epic-route-session-body", async () => {
       readonly active: boolean;
       readonly epicId: string;
       readonly tabId: string;
+      readonly focusPaneId: string | undefined;
+      readonly focusTileInstanceId: string | undefined;
     }) => (
       <>
         <SidebarKeybindingBridge tabId={props.tabId} />
@@ -117,6 +129,8 @@ vi.mock("@/components/epic-canvas/epic-route-session-body", async () => {
         <div
           data-active-prop={props.active ? "true" : "false"}
           data-epic-id={props.epicId}
+          data-focus-pane-id={props.focusPaneId ?? ""}
+          data-focus-tile-instance-id={props.focusTileInstanceId ?? ""}
           data-tab-id={props.tabId}
           data-testid="epic-route-session-body"
         />
@@ -175,9 +189,13 @@ function seedTabs(tabIds: ReadonlyArray<readonly [string, string]>): void {
 }
 
 function renderAt(pathname: string) {
+  return renderWithHistory(createMemoryHistory({ initialEntries: [pathname] }));
+}
+
+function renderWithHistory(history: RouterHistory) {
   const router = createRouter({
     routeTree,
-    history: createMemoryHistory({ initialEntries: [pathname] }),
+    history,
     context: {
       queryClient: new QueryClient(),
       getAuthSnapshot: () => useAuthStore.getState(),
@@ -187,6 +205,10 @@ function renderAt(pathname: string) {
   });
   render(<RouterProvider router={router} />);
   return router;
+}
+
+function activeSessionBody(): HTMLElement {
+  return screen.getByTestId("epic-route-session-body");
 }
 
 function paneFor(tabId: string): HTMLElement | null {
@@ -203,6 +225,8 @@ function normalizedEpicSearch() {
     focusArtifactId: undefined,
     focusThreadId: undefined,
     migrationSource: undefined,
+    focusPaneId: undefined,
+    focusTileInstanceId: undefined,
   };
 }
 
@@ -211,6 +235,7 @@ describe("EpicTabHost keep-alive", () => {
     window.localStorage.clear();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     useLeftPanelStore.setState({ mainCollapsedByTabId: {} });
+    recordViewed.mockReset();
     seedSignedInAuth();
     // Past the one-time tour, so RootComponent's onboarding render gate is inert.
     useOnboardingStore.setState({ completedAt: 1_700_000_000_000 });
@@ -244,6 +269,8 @@ describe("EpicTabHost keep-alive", () => {
           focusArtifactId: undefined,
           focusThreadId: undefined,
           migrationSource: undefined,
+          focusPaneId: undefined,
+          focusTileInstanceId: undefined,
         },
       });
     });
@@ -268,6 +295,8 @@ describe("EpicTabHost keep-alive", () => {
           focusArtifactId: undefined,
           focusThreadId: undefined,
           migrationSource: undefined,
+          focusPaneId: undefined,
+          focusTileInstanceId: undefined,
         },
       });
     });
@@ -275,6 +304,58 @@ describe("EpicTabHost keep-alive", () => {
       expect(paneFor("tab-a")?.getAttribute("data-active")).toBe("true");
     });
     expect(paneFor("tab-b")?.getAttribute("data-active")).toBe("false");
+  });
+
+  it("walks nested focus history inside one retained epic tab", async () => {
+    seedTabs([["tab-a", "epic-a"]]);
+
+    const router = renderWithHistory(
+      createPersistentMemoryHistory(
+        "/epics/epic-a/tab-a?focusPaneId=pane-a&focusTileInstanceId=tile-a",
+        "epic-tab-host-nested-focus-history",
+      ),
+    );
+
+    await waitFor(() => {
+      expect(activeSessionBody().dataset.focusPaneId).toBe("pane-a");
+      expect(activeSessionBody().dataset.focusTileInstanceId).toBe("tile-a");
+    });
+
+    await act(async () => {
+      await router.navigate({
+        to: "/epics/$epicId/$tabId",
+        params: { epicId: "epic-a", tabId: "tab-a" },
+        search: {
+          ...normalizedEpicSearch(),
+          focusPaneId: "pane-b",
+          focusTileInstanceId: "tile-b",
+        },
+      });
+    });
+    await waitFor(() => {
+      expect(activeSessionBody().dataset.focusPaneId).toBe("pane-b");
+      expect(activeSessionBody().dataset.focusTileInstanceId).toBe("tile-b");
+    });
+
+    act(() => {
+      router.history.back();
+    });
+    await waitFor(() => {
+      expect(activeSessionBody().dataset.focusPaneId).toBe("pane-a");
+      expect(activeSessionBody().dataset.focusTileInstanceId).toBe("tile-a");
+    });
+
+    act(() => {
+      router.history.forward();
+    });
+    await waitFor(() => {
+      expect(activeSessionBody().dataset.focusPaneId).toBe("pane-b");
+      expect(activeSessionBody().dataset.focusTileInstanceId).toBe("tile-b");
+    });
+
+    expect(screen.getAllByTestId("epic-route-session-body")).toHaveLength(1);
+    expect(paneFor("tab-a")?.getAttribute("data-active")).toBe("true");
+    expect(useEpicCanvasStore.getState().openTabOrder).toEqual(["tab-a"]);
   });
 
   it("caps mounted panes at MAX_RETAINED_EPIC_TAB_PANES, evicting the least-recently-visited", async () => {
@@ -300,6 +381,8 @@ describe("EpicTabHost keep-alive", () => {
             focusArtifactId: undefined,
             focusThreadId: undefined,
             migrationSource: undefined,
+            focusPaneId: undefined,
+            focusTileInstanceId: undefined,
           },
         });
       });

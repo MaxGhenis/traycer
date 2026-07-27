@@ -16,6 +16,17 @@ export const CLI_ERROR_CODES = {
   // exist") and AUTH_REJECTED ("not signed in / bad token").
   FORBIDDEN: "E_FORBIDDEN",
 
+  // --- Agent roles (mirror the host's typed role-surface wire codes 1:1) ---
+  // Absent and foreign-account agents share ONE code and template - no
+  // existence oracle across the account boundary.
+  AGENT_NOT_FOUND: "E_AGENT_NOT_FOUND",
+  // The caller's own agent lives on another host; the message names it.
+  AGENT_NOT_LOCAL: "E_AGENT_NOT_LOCAL",
+  // A claim held by another of the caller's own agents - role-specific copy,
+  // NOT the generic epic-access denial (whose "check Task access" guidance
+  // would mislead here).
+  ROLE_FORBIDDEN: "E_ROLE_FORBIDDEN",
+
   // --- Auth ---
   AUTH_NO_CREDENTIALS: "E_AUTH_NO_CREDENTIALS",
   AUTH_REJECTED: "E_AUTH_REJECTED",
@@ -40,6 +51,9 @@ export const CLI_ERROR_CODES = {
   // parse. Distinct from HOST_NOT_RUNNING - the host *answered*.
   // Actionable via `traycer host restart` or updating the CLI.
   HOST_INCOMPATIBLE: "E_HOST_INCOMPATIBLE",
+  // The host is reachable and compatible on the floor protocol, but it does
+  // not support the specific feature/method this CLI tried to use.
+  HOST_UNSUPPORTED: "E_HOST_UNSUPPORTED",
   HOST_BUNDLE_MISSING: "E_HOST_BUNDLE_MISSING",
   HOST_SHELL_MISSING: "E_HOST_SHELL_MISSING",
   HOST_SPAWN_FAILED: "E_HOST_SPAWN_FAILED",
@@ -51,6 +65,7 @@ export const CLI_ERROR_CODES = {
   HOST_VERIFY_FAILED: "E_HOST_VERIFY_FAILED",
   HOST_SOURCE_MISSING: "E_HOST_SOURCE_MISSING",
   HOST_ALREADY_RUNNING: "E_HOST_ALREADY_RUNNING",
+  HOST_UPDATE_NOT_NEWER: "E_HOST_UPDATE_NOT_NEWER",
   REGISTRY_UNAVAILABLE: "E_REGISTRY_UNAVAILABLE",
   REGISTRY_VERSION_NOT_FOUND: "E_REGISTRY_VERSION_NOT_FOUND",
   REGISTRY_NOT_IMPLEMENTED: "E_REGISTRY_NOT_IMPLEMENTED",

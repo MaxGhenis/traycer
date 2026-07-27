@@ -7,6 +7,7 @@ import { useInitialChatHandoffStore } from "@/stores/epics/initial-chat-handoff-
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
 import { useSettingsStore } from "@/stores/settings/settings-store";
 import { useWorkspaceFoldersStore } from "@/stores/workspace/workspace-folders-store";
+import { useWorktreeIntentStagingStore } from "@/stores/worktree/worktree-intent-staging-store";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { JsonContent } from "@traycer/protocol/common/registry";
@@ -106,7 +107,12 @@ describe("useLandingComposerActions", () => {
     imageStoreMocks.getImageBytes.mockResolvedValue(undefined);
     useInitialChatHandoffStore.getState().resetForTests();
     useComposerRunSettingsStore.getState().resetForTests();
-    useWorkspaceFoldersStore.setState({ folders: [], folderInfoByPath: {} });
+    useWorkspaceFoldersStore.setState({
+      folders: [],
+      folderInfoByPath: {},
+      primaryPath: null,
+    });
+    useWorktreeIntentStagingStore.getState().resetForTests();
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
     useEpicCanvasStore.setState({
       tabsById: {},
@@ -115,7 +121,7 @@ describe("useLandingComposerActions", () => {
       mostRecentTabIdByEpicId: {},
     });
     useSettingsStore.setState({
-      defaultSelection: { harnessId: "codex", modelSlug: "" },
+      defaultSelection: { harnessId: "codex", modelSlug: "", profileId: null },
       defaultPermission: "supervised",
       defaultReasoning: "high",
     });
@@ -125,7 +131,12 @@ describe("useLandingComposerActions", () => {
     cleanup();
     useInitialChatHandoffStore.getState().resetForTests();
     useComposerRunSettingsStore.getState().resetForTests();
-    useWorkspaceFoldersStore.setState({ folders: [], folderInfoByPath: {} });
+    useWorkspaceFoldersStore.setState({
+      folders: [],
+      folderInfoByPath: {},
+      primaryPath: null,
+    });
+    useWorktreeIntentStagingStore.getState().resetForTests();
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
     useEpicCanvasStore.setState({
       tabsById: {},
@@ -173,6 +184,87 @@ describe("useLandingComposerActions", () => {
     queryClient.clear();
   });
 
+  it("refuses launch while a staged worktree path has unresolved metadata", () => {
+    setSingleWorkspace();
+    const key = { surface: "landing" as const, draftId: null };
+    useWorktreeIntentStagingStore.getState().stageIntent(key, {
+      entries: [
+        {
+          kind: "worktree",
+          scripts: null,
+          workspacePath: WORKSPACE_PATH,
+          repoIdentifier: null,
+          isPrimary: true,
+          branch: {
+            type: "new",
+            name: "feat-unresolved",
+            source: "main",
+            carryUncommittedChanges: false,
+          },
+        },
+      ],
+    });
+    useWorktreeIntentStagingStore
+      .getState()
+      .setSuspendedWorkspacePaths(key, [WORKSPACE_PATH]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    const { result } = renderHook(() => useLandingComposerActions(), {
+      wrapper: queryClientWrapper(queryClient),
+    });
+
+    act(() => {
+      result.current.submit({
+        editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        toolbar: defaultToolbar(),
+      });
+    });
+
+    expect(landingMocks.request).not.toHaveBeenCalled();
+    expect(
+      useWorktreeIntentStagingStore.getState().intentByKey["landing:"],
+    ).toBeDefined();
+    queryClient.clear();
+  });
+
+  it("threads a non-ambient profileId into the initial chat message's run settings", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    const { result } = renderHook(() => useLandingComposerActions(), {
+      wrapper: queryClientWrapper(queryClient),
+    });
+
+    act(() => {
+      result.current.submit({
+        editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        toolbar: {
+          ...defaultToolbar(),
+          selection: {
+            ...defaultToolbar().selection,
+            profileId: "work-profile",
+          },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        landingMocks.request.mock.calls.some((c) => c[0] === "epic.create"),
+      ).toBe(true);
+    });
+
+    // `finalizeSubmission` writes the emitted settings to the sticky
+    // run-settings store unconditionally (independent of the initial-message
+    // path, which needs a signed-in profile this suite doesn't mock).
+    expect(
+      useComposerRunSettingsStore.getState().globalLastRunSettings?.profileId,
+    ).toBe("work-profile");
+
+    queryClient.clear();
+  });
+
   it("creates a folderless terminal-agent epic without a selected workspace folder", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -188,6 +280,7 @@ describe("useLandingComposerActions", () => {
         model: null,
         reasoningEffort: null,
         terminalAgentArgs: "",
+        profileId: null,
       });
     });
 
@@ -220,6 +313,35 @@ describe("useLandingComposerActions", () => {
     queryClient.clear();
   });
 
+  it("threads a non-ambient profileId into the terminal-agent create call", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    const { result } = renderHook(() => useLandingComposerActions(), {
+      wrapper: queryClientWrapper(queryClient),
+    });
+
+    act(() => {
+      result.current.selectTerminalAgent({
+        harnessId: "claude",
+        agentMode: "regular",
+        model: null,
+        reasoningEffort: null,
+        terminalAgentArgs: "",
+        profileId: "work-profile",
+      });
+    });
+
+    await waitFor(() => {
+      expect(landingMocks.createTerminalAgent).toHaveBeenCalledTimes(1);
+    });
+    expect(landingMocks.createTerminalAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ profileId: "work-profile" }),
+    );
+
+    queryClient.clear();
+  });
+
   it("blocks epic creation while the model slug is unresolved", () => {
     useWorkspaceFoldersStore.setState({
       folders: [WORKSPACE_PATH],
@@ -243,7 +365,7 @@ describe("useLandingComposerActions", () => {
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
         toolbar: {
           ...defaultToolbar(),
-          selection: { harnessId: "codex", modelSlug: "" },
+          selection: { harnessId: "codex", modelSlug: "", profileId: null },
         },
       });
     });
@@ -325,6 +447,7 @@ describe("useLandingComposerActions", () => {
       reasoningEffort: "high",
       serviceTier: null,
       agentMode: "regular",
+      profileId: null,
     };
     expect(
       useComposerRunSettingsStore.getState().globalLastRunSettings,
@@ -571,6 +694,294 @@ describe("useLandingComposerActions", () => {
     queryClient.clear();
   });
 
+  it("emits associations primary-first and restamps the outgoing intent when the explicit primary isn't the first folder", async () => {
+    const SECOND_PATH = "/tmp/second-workspace";
+    useWorkspaceFoldersStore.setState({
+      folders: [WORKSPACE_PATH, SECOND_PATH],
+      folderInfoByPath: {
+        [WORKSPACE_PATH]: {
+          path: WORKSPACE_PATH,
+          name: "traycer",
+          repoIdentifier: { owner: "traycerai", repo: "traycer" },
+        },
+        [SECOND_PATH]: {
+          path: SECOND_PATH,
+          name: "second",
+          repoIdentifier: null,
+        },
+      },
+      // The user explicitly switched primary to the SECOND folder.
+      primaryPath: SECOND_PATH,
+    });
+    // The staged intent still carries a STALE primary bit on the first
+    // folder (staged before the switch) - launch must restamp it by path.
+    useWorktreeIntentStagingStore.getState().setIntent(
+      { surface: "landing", draftId: null },
+      {
+        entries: [
+          {
+            kind: "local",
+            workspacePath: WORKSPACE_PATH,
+            repoIdentifier: { owner: "traycerai", repo: "traycer" },
+            isPrimary: true,
+          },
+          {
+            kind: "local",
+            workspacePath: SECOND_PATH,
+            repoIdentifier: null,
+            isPrimary: false,
+          },
+        ],
+      },
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    const { result } = renderHook(() => useLandingComposerActions(), {
+      wrapper: queryClientWrapper(queryClient),
+    });
+
+    act(() => {
+      result.current.submit({
+        editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        toolbar: defaultToolbar(),
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        landingMocks.request.mock.calls.some((c) => c[0] === "epic.create"),
+      ).toBe(true);
+    });
+
+    const createEpicCall = landingMocks.request.mock.calls.find(
+      (c) => c[0] === "epic.create",
+    );
+    // Associations are emitted primary-first for the legacy order-sensitive
+    // host creation; picker display order is untouched (store still holds
+    // [first, second]).
+    expect(createEpicCall?.[1]).toMatchObject({
+      workspaces: [
+        { workspacePath: SECOND_PATH },
+        { workspacePath: WORKSPACE_PATH },
+      ],
+      chat: {
+        worktreeIntent: {
+          entries: [
+            expect.objectContaining({
+              workspacePath: WORKSPACE_PATH,
+              isPrimary: false,
+            }),
+            expect.objectContaining({
+              workspacePath: SECOND_PATH,
+              isPrimary: true,
+            }),
+          ],
+        },
+      },
+    });
+    expect(useWorkspaceFoldersStore.getState().folders).toEqual([
+      WORKSPACE_PATH,
+      SECOND_PATH,
+    ]);
+
+    queryClient.clear();
+  });
+
+  it("never lets a ghost folder from corrupt persisted state reach the launch payload or intent restamp", async () => {
+    // The reviewer's corrupt-persistence scenario, end to end: a persisted
+    // payload whose folder array carries a ghost path with no metadata, a
+    // staged intent still naming that ghost as primary - after rehydration
+    // + submit, neither the associations nor the intent may carry the ghost,
+    // and the real folder must be the (single) primary.
+    window.localStorage.setItem(
+      "traycer-gui-app:workspace-folders",
+      JSON.stringify({
+        version: 1,
+        state: {
+          folders: ["/tmp/ghost", WORKSPACE_PATH],
+          folderInfoByPath: {
+            [WORKSPACE_PATH]: {
+              path: WORKSPACE_PATH,
+              name: "traycer",
+              repoIdentifier: { owner: "traycerai", repo: "traycer" },
+            },
+          },
+          primaryPath: "/tmp/ghost",
+        },
+      }),
+    );
+    await useWorkspaceFoldersStore.persist.rehydrate();
+    useWorktreeIntentStagingStore.getState().setIntent(
+      { surface: "landing", draftId: null },
+      {
+        entries: [
+          {
+            kind: "local",
+            workspacePath: "/tmp/ghost",
+            repoIdentifier: null,
+            isPrimary: true,
+          },
+          {
+            kind: "local",
+            workspacePath: WORKSPACE_PATH,
+            repoIdentifier: { owner: "traycerai", repo: "traycer" },
+            isPrimary: false,
+          },
+        ],
+      },
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    const { result } = renderHook(() => useLandingComposerActions(), {
+      wrapper: queryClientWrapper(queryClient),
+    });
+
+    act(() => {
+      result.current.submit({
+        editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        toolbar: defaultToolbar(),
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        landingMocks.request.mock.calls.some((c) => c[0] === "epic.create"),
+      ).toBe(true);
+    });
+
+    const createEpicCall = landingMocks.request.mock.calls.find(
+      (c) => c[0] === "epic.create",
+    );
+    expect(createEpicCall?.[1]).toMatchObject({
+      workspaces: [{ workspacePath: WORKSPACE_PATH }],
+      chat: {
+        worktreeIntent: {
+          entries: [
+            expect.objectContaining({
+              workspacePath: WORKSPACE_PATH,
+              isPrimary: true,
+            }),
+          ],
+        },
+      },
+    });
+
+    queryClient.clear();
+  });
+
+  it("synthesizes a local entry for a NON-GIT primary that was never staged, instead of launching with zero primaries", async () => {
+    // The mixed git/non-git regression. Only git folders are ever auto-staged
+    // (the seeding effect iterates git summaries), so a non-git folder has NO
+    // staged entry. Promoting it to primary restamps the only staged (git)
+    // entry to `isPrimary: false` and has nothing to promote in its place -
+    // so the launch boundary MUST synthesize a `local` entry for it, or the
+    // outgoing intent carries zero primaries.
+    const NON_GIT_PATH = "/tmp/non-git-workspace";
+    useWorkspaceFoldersStore.setState({
+      folders: [WORKSPACE_PATH, NON_GIT_PATH],
+      folderInfoByPath: {
+        [WORKSPACE_PATH]: {
+          path: WORKSPACE_PATH,
+          name: "traycer",
+          repoIdentifier: { owner: "traycerai", repo: "traycer" },
+        },
+        [NON_GIT_PATH]: {
+          path: NON_GIT_PATH,
+          name: "non-git",
+          repoIdentifier: null,
+        },
+      },
+      // The user clicked the pin on the NON-GIT folder.
+      primaryPath: NON_GIT_PATH,
+    });
+    // What `setPrimaryFolder`'s restamp actually leaves behind: the git
+    // folder's worktree entry, demoted, and no entry at all for the non-git
+    // folder it was demoted in favour of.
+    useWorktreeIntentStagingStore.getState().setIntent(
+      { surface: "landing", draftId: null },
+      {
+        entries: [
+          {
+            kind: "worktree",
+            scripts: null,
+            workspacePath: WORKSPACE_PATH,
+            repoIdentifier: { owner: "traycerai", repo: "traycer" },
+            isPrimary: false,
+            branch: {
+              type: "new",
+              name: "traycer/feature",
+              source: "main",
+              carryUncommittedChanges: false,
+            },
+          },
+        ],
+      },
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    const { result } = renderHook(() => useLandingComposerActions(), {
+      wrapper: queryClientWrapper(queryClient),
+    });
+
+    act(() => {
+      result.current.submit({
+        editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        toolbar: defaultToolbar(),
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        landingMocks.request.mock.calls.some((c) => c[0] === "epic.create"),
+      ).toBe(true);
+    });
+
+    const createEpicCall = landingMocks.request.mock.calls.find(
+      (c) => c[0] === "epic.create",
+    );
+    expect(createEpicCall?.[1]).toMatchObject({
+      workspaces: [
+        { workspacePath: NON_GIT_PATH },
+        { workspacePath: WORKSPACE_PATH },
+      ],
+      chat: {
+        worktreeIntent: {
+          // Entries follow workspace order. The git folder survives its
+          // demotion with its branch selection intact, and the non-git folder
+          // gains a synthesized `local` entry carrying the primary flag - so
+          // the set holds EXACTLY ONE primary (`toMatchObject` pins the array
+          // length, so a third entry or a second primary fails here).
+          entries: [
+            expect.objectContaining({
+              kind: "worktree",
+              workspacePath: WORKSPACE_PATH,
+              isPrimary: false,
+              // The demoted git folder keeps its branch selection intact -
+              // demotion restamps `isPrimary`, it never rebuilds the entry.
+              branch: {
+                type: "new",
+                name: "traycer/feature",
+                source: "main",
+                carryUncommittedChanges: false,
+              },
+            }),
+            expect.objectContaining({
+              kind: "local",
+              workspacePath: NON_GIT_PATH,
+              repoIdentifier: null,
+              isPrimary: true,
+            }),
+          ],
+        },
+      },
+    });
+
+    queryClient.clear();
+  });
+
   it("clears pre-seeded epic settings when epic creation fails", async () => {
     landingMocks.request.mockRejectedValue(new Error("create failed"));
     useWorkspaceFoldersStore.setState({
@@ -620,6 +1031,7 @@ describe("useLandingComposerActions", () => {
       reasoningEffort: "high",
       serviceTier: null,
       agentMode: "regular",
+      profileId: null,
     });
 
     queryClient.clear();
@@ -636,7 +1048,7 @@ describe("useLandingComposerActions", () => {
         },
       },
     });
-    useLandingDraftStore.getState().createDraft(null);
+    useLandingDraftStore.getState().createDraft(null, undefined);
     useWorkspaceFoldersStore.setState({
       folders: [GLOBAL_WORKSPACE_PATH],
       folderInfoByPath: {
@@ -696,7 +1108,11 @@ function queryClientWrapper(
 
 function defaultToolbar() {
   return {
-    selection: { harnessId: "codex" as const, modelSlug: "gpt-5-codex" },
+    selection: {
+      harnessId: "codex" as const,
+      modelSlug: "gpt-5-codex",
+      profileId: null,
+    },
     reasoning: "high" as const,
     serviceTier: "" as const,
     permission: "supervised" as const,
@@ -715,6 +1131,8 @@ function editorHandleForPrompt(prompt: string): ComposerPromptEditorHandle {
     clear: () => undefined,
     setContent: () => undefined,
     insertImageAttachments: () => undefined,
+    beginPathInsertion: () => null,
+    rewriteImageAttachmentHashById: () => false,
     removeImageAttachmentById: () => undefined,
     insertDictatedText: () => undefined,
     dismissActiveSuggestion: () => false,

@@ -4,6 +4,7 @@ import type {
   FreePortAndRestartInput,
   IHostManagement,
 } from "@traycer-clients/shared/platform/runner-host";
+import { reportableErrorToast } from "@/lib/reportable-error-toast";
 
 export function copyTerminalCommand(command: string): void {
   void navigator.clipboard.writeText(command).then(
@@ -11,7 +12,12 @@ export function copyTerminalCommand(command: string): void {
       toast.success("Command copied to clipboard");
     },
     () => {
-      toast.error("Could not copy command");
+      reportableErrorToast("Could not copy command", undefined, {
+        title: "Could not copy command",
+        message: null,
+        code: null,
+        source: "Host Doctor",
+      });
     },
   );
 }
@@ -51,12 +57,24 @@ export async function runFixAction(
   issue: HostDoctorIssue,
 ): Promise<void> {
   switch (issue.fixAction) {
-    case "host-install-latest":
-      await management.installHost({ version: null, onProgress: null });
+    case "host-install-latest": {
+      // No "install latest" intent survives the two-lane cutover - the
+      // idempotent-converge intent (`convergeReady`) subsumes it: it
+      // installs/registers/starts the host when reachable, which is exactly
+      // what this Doctor issue means.
+      const outcome = await management.convergeReady(false);
+      if (outcome.kind !== "ok") {
+        throw new Error(outcome.message);
+      }
       return;
-    case "service-install":
-      await management.registerService({ onProgress: null });
+    }
+    case "service-install": {
+      const outcome = await management.registerService();
+      if (outcome.kind !== "ok") {
+        throw new Error(outcome.message);
+      }
       return;
+    }
     case "host-start":
     case "host-restart":
       await management.restartHost();

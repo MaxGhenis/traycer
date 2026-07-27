@@ -45,13 +45,9 @@ import { getOpenEpicRegistry } from "@/lib/registries/epic-session-registry";
 import { getHostBindingSnapshot } from "@/lib/host/runtime";
 import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
 import { toastFromHostError } from "@/lib/host-error-toast";
-import { toast } from "sonner";
 import { useInlineRename } from "@/hooks/ui/use-inline-rename";
 import { updateEpicTitleInCloudTaskCaches } from "@/lib/cloud-epic-tasks-query/cache";
-import {
-  useTabLeaderModifierForIndex,
-  type LeaderModifier,
-} from "@/providers/keybinding-context";
+import { useTabLeaderModifierForIndex } from "@/providers/keybinding-context";
 import { LeaderDigitBadge } from "@/components/ui/leader-digit-badge";
 import {
   leaderDigitFor,
@@ -63,11 +59,13 @@ import { tabResolveIntent } from "@/stores/tabs/registry";
 import type { HeaderTabKind } from "@/stores/tabs/registry";
 import type { HeaderTab, TabIcon } from "@/stores/tabs/types";
 import { navigateToTabIntent } from "@/lib/tab-navigation";
-import { EpicActivityStatusIcon } from "@/components/epics/epic-activity-status-icon";
+import { NotificationIndicatorIcon } from "@/components/notifications/notification-indicator-icon";
+import { useSurfaceNotificationIndicatorState } from "@/components/notifications/notification-indicator-context";
 import {
   useEpicActivityStatus,
   type EpicActivityStatus,
 } from "@/hooks/epic/use-epic-activity-status";
+import { reportableErrorToast } from "@/lib/reportable-error-toast";
 
 const TAB_CLASS_BASE =
   "group/tab relative flex h-10 w-full min-w-0 items-center gap-1.5 px-[clamp(0.75rem,10%,1.5rem)] text-ui-sm transition-[color,transform] duration-300 ease-spring";
@@ -93,6 +91,13 @@ interface TabItemProps {
   readonly canCloseOtherTabs: boolean;
   readonly onOpenInNewWindow: (tab: HeaderTab) => void;
   readonly canOpenInNewWindow: boolean;
+  readonly taskPinned: boolean | null;
+  readonly isTaskPinPending: boolean;
+  readonly onSetTaskPinned: (
+    epicId: string,
+    pinned: boolean,
+    displayName: string,
+  ) => void;
 }
 
 export const TabItem = memo(function TabItem(props: TabItemProps) {
@@ -109,6 +114,9 @@ export const TabItem = memo(function TabItem(props: TabItemProps) {
     canCloseOtherTabs,
     onOpenInNewWindow,
     canOpenInNewWindow,
+    taskPinned,
+    isTaskPinPending,
+    onSetTaskPinned,
   } = props;
   const {
     ref: dndRef,
@@ -145,7 +153,7 @@ export const TabItem = memo(function TabItem(props: TabItemProps) {
   );
   const canEditTitle = tab.kind === "epic" && isEditableRole(permissionRole);
   // Epic tabs can carry an empty name; render through `displayTitle` so it falls
-  // back to "Untitled epic". Other kinds render their name verbatim.
+  // back to "Untitled task". Other kinds render their name verbatim.
   const resolvedTabName = liveEpicTitle ?? tab.name;
   const displayName =
     tab.kind === "epic"
@@ -180,7 +188,16 @@ export const TabItem = memo(function TabItem(props: TabItemProps) {
       const binding = getHostBindingSnapshot();
       if (binding === null) {
         rollback();
-        toast.error("Couldn't reach the host to rename the epic.");
+        reportableErrorToast(
+          "Couldn't reach the host to rename the epic.",
+          undefined,
+          {
+            title: "Could not rename Epic",
+            message: "The host was unavailable.",
+            code: null,
+            source: "Epic tabs",
+          },
+        );
         return;
       }
       const hostId = binding.hostClient.getActiveHostId();
@@ -204,7 +221,12 @@ export const TabItem = memo(function TabItem(props: TabItemProps) {
             if (error instanceof HostRpcError) {
               toastFromHostError(error, "Couldn't rename epic.");
             } else {
-              toast.error("Couldn't rename epic.");
+              reportableErrorToast("Couldn't rename epic.", undefined, {
+                title: "Could not rename Epic",
+                message: null,
+                code: null,
+                source: "Epic tabs",
+              });
             }
           },
         );
@@ -213,7 +235,7 @@ export const TabItem = memo(function TabItem(props: TabItemProps) {
   );
   const rename = useInlineRename({
     // Bind to the RAW title, not `displayName` - editing must never seed the
-    // "Untitled epic" fallback into the input and persist it as a real title.
+    // "Untitled task" fallback into the input and persist it as a real title.
     value: resolvedTabName,
     canEdit: canEditTitle,
     onCommit: commitEpicTitle,
@@ -256,6 +278,13 @@ export const TabItem = memo(function TabItem(props: TabItemProps) {
     },
     [cancelLongPress],
   );
+  const handleSetTaskPinned = useCallback(
+    (pinned: boolean) => {
+      if (tab.kind !== "epic") return;
+      onSetTaskPinned(tab.epicId, pinned, displayName);
+    },
+    [displayName, onSetTaskPinned, tab],
+  );
 
   const leaderBadge: LeaderBadge | null =
     modifier === null
@@ -263,7 +292,7 @@ export const TabItem = memo(function TabItem(props: TabItemProps) {
       : {
           modifier,
           index,
-          hint: leaderHint(index, "to switch to", displayName),
+          hint: leaderHint(leaderDigitFor(index), "to switch to", displayName),
         };
   return (
     <ContextMenu>
@@ -296,12 +325,13 @@ export const TabItem = memo(function TabItem(props: TabItemProps) {
               side="left"
             />
             <TabChrome isActive={isActive} />
-            <span className="relative flex min-w-0 flex-1 items-center justify-center gap-1.5 outline-none">
+            <span className="relative z-20 flex min-w-0 flex-1 items-center justify-center gap-1.5 outline-none">
               <TabLeadingIcon
                 icon={tab.icon}
                 titleGenerationPending={titleGenerationPending}
                 activityStatus={activityStatus}
                 tabId={tab.id}
+                epicId={tab.kind === "epic" ? tab.epicId : null}
               />
               {rename.isEditing ? (
                 <input
@@ -348,10 +378,13 @@ export const TabItem = memo(function TabItem(props: TabItemProps) {
         canCloseOtherTabs={canCloseOtherTabs}
         canOpenInNewWindow={canOpenInNewWindow}
         canEditTitle={canEditTitle}
+        taskPinned={taskPinned}
+        isTaskPinPending={isTaskPinPending}
         onCloseOtherTabs={onCloseOtherTabs}
         onDuplicateTab={onDuplicateTab}
         onOpenInNewWindow={onOpenInNewWindow}
         onEditTitle={rename.startEditing}
+        onSetTaskPinned={handleSetTaskPinned}
       />
     </ContextMenu>
   );
@@ -434,29 +467,37 @@ function TabLeadingIcon(props: {
   readonly titleGenerationPending: boolean;
   readonly activityStatus: EpicActivityStatus;
   readonly tabId: string;
+  readonly epicId: string | null;
 }) {
+  const indicatorState = useSurfaceNotificationIndicatorState({
+    epicId: props.epicId ?? props.tabId,
+  });
+  let defaultIcon: React.ReactNode = null;
   if (props.titleGenerationPending) {
-    return (
+    defaultIcon = (
       <AgentSpinningDots
         className="size-3.5 text-muted-foreground"
         testId={`header-tab-title-generating-${props.tabId}`}
         variant="dots2"
       />
     );
+  } else if (props.icon !== null) {
+    const Icon = props.icon;
+    defaultIcon = <Icon className="size-3.5 shrink-0" />;
   }
-  if (props.activityStatus !== "idle") {
-    return (
-      <EpicActivityStatusIcon
-        status={props.activityStatus}
-        subjectId={props.tabId}
-        testIdPrefix="header-tab"
-        className="text-muted-foreground"
-      />
-    );
-  }
-  if (props.icon === null) return null;
-  const Icon = props.icon;
-  return <Icon className="size-3.5 shrink-0" />;
+  return (
+    <NotificationIndicatorIcon
+      state={indicatorState}
+      running={props.activityStatus === "idle" ? false : props.activityStatus}
+      subjectId={props.tabId}
+      testIdPrefix="header-tab"
+      className="text-muted-foreground"
+      style={undefined}
+      runningTitle="Task activity in progress"
+      defaultIcon={defaultIcon}
+      statusPresentation="message"
+    />
+  );
 }
 
 function HeaderTabMotionFrame(props: {
@@ -488,7 +529,7 @@ function tabStateClass(isActive: boolean): string {
 }
 
 interface LeaderBadge {
-  modifier: LeaderModifier;
+  modifier: "alt";
   index: number;
   hint: string;
 }
@@ -527,7 +568,7 @@ function TabTrailingSlot(props: TabTrailingSlotProps) {
         {leaderBadge ? (
           <LeaderDigitBadge
             key={`${leaderBadge.modifier}:${leaderBadge.index}`}
-            index={leaderBadge.index}
+            digit={leaderDigitFor(leaderBadge.index)}
             modifier={leaderBadge.modifier}
             ariaLabel={leaderBadge.hint}
             testId={`tab-digit-${leaderDigitFor(leaderBadge.index)}`}
@@ -610,6 +651,7 @@ function TabChromeBackground({
     >
       <TabCap side="left" fill={fill} borderColor={borderColor} />
       <span
+        data-testid="tab-chrome-center"
         className={cn("-mx-px h-full flex-1", borderColor && "border-t")}
         style={{ backgroundColor: fill, borderTopColor: borderColor }}
       />
@@ -617,7 +659,8 @@ function TabChromeBackground({
       {coversBaseline ? (
         <span
           aria-hidden
-          className="absolute inset-x-0 -bottom-px h-px"
+          data-testid="tab-baseline-cover"
+          className="absolute inset-x-0 bottom-0 z-0 h-px"
           style={{ backgroundColor: fill }}
         />
       ) : null}
@@ -640,21 +683,24 @@ function TabCap({
       : "M 0 0 L 5 0 C 9.4 0 12 2.8 12 7 L 12 32 C 12 36.8 15.2 40 20 40 L 0 40 Z";
   const outline =
     side === "left"
-      ? "M 0 40 C 4.8 40 8 36.8 8 32 L 8 7 C 8 2.8 10.6 0 15 0 L 20 0"
-      : "M 0 0 L 5 0 C 9.4 0 12 2.8 12 7 L 12 32 C 12 36.8 15.2 40 20 40";
+      ? "M -2 39.5 L 0 39.5 C 4.8 39.5 8 36.8 8 32 L 8 7 C 8 2.8 10.6 0 15 0 L 20 0"
+      : "M 0 0 L 5 0 C 9.4 0 12 2.8 12 7 L 12 32 C 12 36.8 15.2 39.5 20 39.5 L 22 39.5";
   return (
     <svg
+      data-testid={`tab-cap-${side}`}
       viewBox="0 0 20 40"
       preserveAspectRatio="none"
-      className="h-full w-5 shrink-0"
+      className="relative z-10 h-full w-5 shrink-0 overflow-visible"
     >
       <path d={d} fill={fill} />
       {borderColor ? (
         <path
+          data-testid={`tab-cap-outline-${side}`}
           d={outline}
           fill="none"
           stroke={borderColor}
           strokeWidth="1"
+          strokeLinecap="square"
           vectorEffect="non-scaling-stroke"
         />
       ) : null}

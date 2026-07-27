@@ -27,6 +27,7 @@ import {
 } from "@/lib/host";
 import { RunnerHostProvider } from "@/providers/runner-host-provider";
 import { useAuthStore } from "@/stores/auth/auth-store";
+import { useTitleBarDragStore } from "@/stores/layout/title-bar-drag-store";
 
 function buildHost(): MockRunnerHost {
   return new MockRunnerHost({
@@ -131,11 +132,13 @@ describe("<UserMenu />", () => {
       [],
     );
     restoreFetch = installFetch();
+    useTitleBarDragStore.setState({ suppressors: new Set() });
   });
 
   afterEach(() => {
     cleanup();
     useAuthStore.getState().setSignedOut();
+    useTitleBarDragStore.setState({ suppressors: new Set() });
     restoreFetch();
   });
 
@@ -160,12 +163,42 @@ describe("<UserMenu />", () => {
     result.cleanupClient();
   });
 
+  it("suppresses title-bar dragging only while the menu is open", async () => {
+    const host = buildHost();
+    const result = mountMenu(
+      host,
+      <UserMenu
+        userName="Ada Lovelace"
+        email="ada@example.com"
+        avatarUrl={null}
+        showAppSettings={false}
+      />,
+    );
+
+    const isSuppressed = () =>
+      useTitleBarDragStore.getState().suppressors.has("user-menu");
+    const trigger = await screen.findByTestId("user-menu-trigger");
+
+    expect(isSuppressed()).toBe(false);
+
+    fireEvent.click(trigger);
+    expect(await screen.findByTestId("user-menu-content")).toBeTruthy();
+    expect(isSuppressed()).toBe(true);
+
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => {
+      expect(isSuppressed()).toBe(false);
+    });
+
+    result.cleanupClient();
+  });
+
   it("calls AuthService.signOut() when the Sign out item is selected", async () => {
     const host = buildHost();
-    await host.tokenStore.set({
-      token: "token",
-      refreshToken: "token-refresh",
-    });
+    await host.tokenStore.signIn(
+      { token: "token", refreshToken: "token-refresh" },
+      { id: "user-1", email: "test@example.com", name: "Test User" },
+    );
     const result = mountMenu(
       host,
       <UserMenu

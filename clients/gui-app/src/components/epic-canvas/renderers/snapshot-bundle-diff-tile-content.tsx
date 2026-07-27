@@ -25,15 +25,18 @@ import {
   type BundleDiffFindFileNavigationInput,
 } from "@/components/diff/bundle-diff-find-registration-hooks";
 import { useBundleDiffScrollRestoration } from "@/hooks/scroll/use-bundle-diff-scroll-restoration";
+import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import {
   DiffBundleCollapseChevron,
   DiffBundleFileSectionFrame,
 } from "@/components/epic-canvas/git-diff/diff-bundle-file-section";
 import { FileChangeHeader } from "@/components/chat/segments/file-change-segment";
+import { useOpenEpicId } from "@/lib/epic-selectors";
 import { cn } from "@/lib/utils";
 import { getBasename, getDirname } from "@/lib/path/cross-platform-path";
 import type { BundleDiffFindFileInput } from "@/stores/tile-find";
 
+import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 export type SnapshotCumulativeBundleDiffTileRef = Omit<
   SnapshotDiffTileRef,
   "diff"
@@ -172,7 +175,11 @@ function SnapshotBundleFileSection(props: {
   const diffViewerPreferences = useSettingsStore(
     (s) => s.diffViewerPreferences,
   );
-  const openTileInTab = useEpicCanvasStore((s) => s.openTileInTab);
+  const epicId = useOpenEpicId();
+  const navigateNested = useEpicNestedFocusNavigation();
+  const prepareOpenTileInTabFocusTarget = useEpicCanvasStore(
+    (s) => s.prepareOpenTileInTabFocusTarget,
+  );
   const toggleCollapsed = useEpicCanvasStore(
     (s) => s.toggleSnapshotDiffBundleFileCollapsedInTab,
   );
@@ -199,16 +206,18 @@ function SnapshotBundleFileSection(props: {
   );
 
   const handleOpenFileTile = useCallback(() => {
-    openTileInTab(
-      props.viewTabId,
-      makeSnapshotCumulativeDiffTile({
-        hostId: props.node.hostId,
-        chatId: props.node.diff.chatId,
-        filePath: props.entry.filePath,
-      }),
+    const tile = makeSnapshotCumulativeDiffTile({
+      hostId: props.node.hostId,
+      chatId: props.node.diff.chatId,
+      filePath: props.entry.filePath,
+    });
+    navigateNested(epicId, props.viewTabId, () =>
+      prepareOpenTileInTabFocusTarget(props.viewTabId, tile),
     );
   }, [
-    openTileInTab,
+    epicId,
+    navigateNested,
+    prepareOpenTileInTabFocusTarget,
     props.entry.filePath,
     props.node.hostId,
     props.node.diff.chatId,
@@ -273,30 +282,36 @@ function SnapshotBundleFileRow(props: {
   readonly onToggleCollapsed: () => void;
 }): ReactNode {
   return (
-    <button
-      type="button"
-      onClick={props.onToggleCollapsed}
-      className={cn(
-        "flex min-h-7 w-full items-center gap-2 px-2 py-1 text-left text-ui-sm",
-        "transition-colors hover:bg-accent/50",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-      )}
-      title={props.entry.filePath}
-      aria-label={`${snapshotOperationLabel(props.entry.operation)} ${props.entry.filePath}`}
-      aria-expanded={!props.collapsed}
+    <TooltipWrapper
+      label={props.entry.filePath}
+      side="top"
+      sideOffset={undefined}
+      align={undefined}
     >
-      {props.leading}
-      <FileChangeHeader
-        filePath={props.entry.filePath}
-        operation={props.entry.operation}
-        additions={props.additions}
-        deletions={props.deletions}
-        isStreaming={false}
-        endState={null}
-        reason={props.entry.reason}
-        clickHandlers={null}
-      />
-    </button>
+      <button
+        type="button"
+        onClick={props.onToggleCollapsed}
+        className={cn(
+          "flex min-h-7 w-full items-center gap-2 px-2 py-1 text-left text-ui-sm",
+          "transition-colors hover:bg-accent/50",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+        )}
+        aria-label={`${snapshotOperationLabel(props.entry.operation)} ${props.entry.filePath}`}
+        aria-expanded={!props.collapsed}
+      >
+        {props.leading}
+        <FileChangeHeader
+          filePath={props.entry.filePath}
+          operation={props.entry.operation}
+          additions={props.additions}
+          deletions={props.deletions}
+          isStreaming={false}
+          endState={null}
+          reason={props.entry.reason}
+          clickHandlers={null}
+        />
+      </button>
+    </TooltipWrapper>
   );
 }
 

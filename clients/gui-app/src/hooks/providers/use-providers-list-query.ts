@@ -1,4 +1,5 @@
 import type { UseQueryResult } from "@tanstack/react-query";
+import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type {
   HostRpcError,
   ResponseOfMethod,
@@ -7,16 +8,27 @@ import { useHostClient, type HostRpcRegistry } from "@/lib/host";
 import { useHostQuery } from "@/hooks/host/use-host-query";
 import type { QueryActivityOptions } from "@/hooks/harnesses/use-gui-harness-catalog";
 
-const PROVIDERS_LIST_REFRESH_MS = 15 * 60 * 1000;
-const PROVIDERS_LIST_PENDING_REFRESH_MS = 800;
+const PROVIDERS_LIST_REFRESH_MS = 15 * 60 * 1_000;
+
+type ProvidersListQueryResult = UseQueryResult<
+  ResponseOfMethod<HostRpcRegistry, "providers.list">,
+  HostRpcError
+>;
 
 export function useProvidersList(
   activity: QueryActivityOptions,
-): UseQueryResult<
-  ResponseOfMethod<HostRpcRegistry, "providers.list">,
-  HostRpcError
-> {
-  const client = useHostClient();
+): ProvidersListQueryResult {
+  return useProvidersListForClient(useHostClient(), activity);
+}
+
+/** Client-scoped variant - lets a caller outside `HostRuntimeContext` (e.g.
+ *  the picker's globally-mounted "Create new profile" flow host, resolving a
+ *  transient client for a captured tab host id) target an explicit host
+ *  instead of the app-wide default. */
+export function useProvidersListForClient(
+  client: HostClient<HostRpcRegistry> | null,
+  activity: QueryActivityOptions,
+): ProvidersListQueryResult {
   return useHostQuery<HostRpcRegistry, "providers.list">({
     cacheKeyIdentity: undefined,
     client,
@@ -26,22 +38,6 @@ export function useProvidersList(
       enabled: activity.enabled,
       subscribed: activity.subscribed,
       staleTime: PROVIDERS_LIST_REFRESH_MS,
-      // The host returns the list immediately with pending version/auth
-      // probes. Poll quickly while probes are pending; once settled, refresh
-      // only on the steady catalog cadence while this query stays mounted.
-      refetchInterval: (query) => {
-        const data = query.state.data;
-        const pending =
-          data?.providers.some(
-            (p) =>
-              p.authPending ||
-              p.availabilityPending ||
-              p.candidates.some((c) => c.versionPending),
-          ) ?? false;
-        return pending
-          ? PROVIDERS_LIST_PENDING_REFRESH_MS
-          : PROVIDERS_LIST_REFRESH_MS;
-      },
     },
   });
 }

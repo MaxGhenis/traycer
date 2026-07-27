@@ -26,8 +26,8 @@ describe("validateVersionedStreamRpcRegistry", () => {
     expect(() => {
       validateVersionedStreamRpcRegistry(hostStreamRpcRegistry);
     }).not.toThrow();
-    expect(hostStreamRpcRegistry["epic.subscribe"][1].latestMinor).toBe(0);
-    expect(hostStreamRpcRegistry["chat.subscribe"][1].latestMinor).toBe(3);
+    expect(hostStreamRpcRegistry["epic.subscribe"][1].latestMinor).toBe(1);
+    expect(hostStreamRpcRegistry["chat.subscribe"][1].latestMinor).toBe(5);
     expect(
       hostStreamRpcRegistry["notifications.subscribe"][1].latestMinor,
     ).toBe(0);
@@ -303,7 +303,7 @@ describe("stream compatibility", () => {
   // every host still running host-v1.0.0. Fixed by keeping chat.subscribe on
   // major 1 and shipping the background-items controls as additive minors, so a
   // current app must still bridge to a host that only advertises 1.0.
-  it("bridges chat.subscribe@1.2 to a host still on chat.subscribe@1.0 (host-v1.0.0)", () => {
+  it("bridges chat.subscribe@1.3 to a host still on chat.subscribe@1.0 (host-v1.0.0)", () => {
     const currentManifest = buildStreamManifest(hostStreamRpcRegistry);
     const hostV100Manifest = {
       ...currentManifest,

@@ -17,6 +17,7 @@ interface ComposerToolbarProps {
   showNextTurnPermissionNote: boolean;
   showAgentModeTooltip: boolean;
   canSubmit: boolean;
+  attachmentPending: boolean;
   onSubmit: () => void;
   activeTurnStatus: ChatActiveTurn["status"] | null;
   stopDisabled: boolean;
@@ -36,6 +37,10 @@ interface ComposerToolbarProps {
    */
   dictationPreparing: DictationPreparingStatus | null;
   settingsLocked: boolean;
+  /** The host "Create new profile" creates on - see `HarnessModelPicker`'s
+   *  prop of the same name. */
+  createProfileHostId: string | null;
+  readonly runTargetHostId: string | null;
 }
 
 function ComposerToolbarImpl(props: ComposerToolbarProps) {
@@ -45,6 +50,7 @@ function ComposerToolbarImpl(props: ComposerToolbarProps) {
     showNextTurnPermissionNote,
     showAgentModeTooltip,
     canSubmit,
+    attachmentPending,
     onSubmit,
     activeTurnStatus,
     stopDisabled,
@@ -53,6 +59,8 @@ function ComposerToolbarImpl(props: ComposerToolbarProps) {
     dictation,
     dictationPreparing,
     settingsLocked,
+    createProfileHostId,
+    runTargetHostId,
   } = props;
 
   // Left-group slices. The store is the single source for harness-level
@@ -105,6 +113,7 @@ function ComposerToolbarImpl(props: ComposerToolbarProps) {
           <ComposerToolbarRight
             store={store}
             canSubmit={canSubmit}
+            attachmentPending={attachmentPending}
             onSubmit={onSubmit}
             activeTurnStatus={activeTurnStatus}
             stopDisabled={stopDisabled}
@@ -113,6 +122,8 @@ function ComposerToolbarImpl(props: ComposerToolbarProps) {
             settingsLocked={settingsLocked}
             dictation={dictation}
             dictationPreparing={dictationPreparing}
+            createProfileHostId={createProfileHostId}
+            runTargetHostId={runTargetHostId}
           />
         </>
       )}

@@ -20,6 +20,7 @@ import { safelyOpenExternal, installNavigationGuard } from "../app/security";
 import { installContextMenu } from "../app/spell-check";
 import { installResponsivenessListeners } from "../app/responsiveness";
 import { buildAppUrl } from "../app/app-protocol";
+import { devRendererUrlFromEnv } from "../../ipc-contracts/dev-renderer-origin";
 import { minimumWindowSize } from "./window-layout";
 import {
   placementToBrowserWindowBounds,
@@ -29,12 +30,12 @@ import {
   readResolutionTestWindowConfig,
   shouldUseBuiltRendererForResolutionTest,
 } from "./resolution-test-env";
+import { windowsTitleBarOverlayHeight } from "./windows-title-bar-overlay";
 
-// Vite dev server served by the `make dev-desktop` orchestrator.
-const DEV_RENDERER_URL = "http://localhost:5173";
 const STRUCTURED_RENDERER_LOG_PREFIX = "[traycer-gui]";
 
 export interface MainWindowOptions {
+  readonly devWindowTitle: string | null;
   readonly preloadPath: string;
   readonly windowId: string;
   readonly initialRoute: string | null;
@@ -46,8 +47,8 @@ export interface MainWindowOptions {
  * Creates the single top-level `BrowserWindow`.
  *
  * Loading strategy is configuration-driven (derived from `config.isDevBuild`):
- *   - On the dev slot, load the Vite dev server at `DEV_RENDERER_URL`
- *     (`http://localhost:5173`) so HMR-enabled renderer assets are served.
+ *   - On the dev slot, load the Vite dev server at the loopback
+ *     `TRAYCER_DESKTOP_DEV_URL` so HMR-enabled renderer assets are served.
  *   - Otherwise, load the renderer through the privileged `app://` scheme
  *     registered in `app-protocol.ts`. The protocol handler serves files
  *     from `<process.resourcesPath>/renderer` (packaged builds).
@@ -67,6 +68,9 @@ export function createMainWindow(options: MainWindowOptions): BrowserWindow {
           y: undefined,
         };
   const window = new BrowserWindow({
+    ...(options.devWindowTitle === null
+      ? {}
+      : { title: options.devWindowTitle }),
     width: placementBounds.width,
     height: placementBounds.height,
     x: placementBounds.x,
@@ -89,7 +93,11 @@ export function createMainWindow(options: MainWindowOptions): BrowserWindow {
     // env vars. Mac ignores the color/height options but the truthy value
     // is what flips WCO emission on.
     titleBarOverlay: isWindows
-      ? { color: "#0b0b0d", symbolColor: "#e5e5e5", height: 36 }
+      ? {
+          color: "#0b0b0d",
+          symbolColor: "#e5e5e5",
+          height: windowsTitleBarOverlayHeight(options.zoomFactor),
+        }
       : isMac
         ? true
         : undefined,
@@ -128,6 +136,17 @@ export function createMainWindow(options: MainWindowOptions): BrowserWindow {
   installNavigationGuard(window.webContents);
   installContextMenu(window.webContents);
   installResponsivenessListeners(window.webContents);
+
+  const devWindowTitle = options.devWindowTitle;
+  if (devWindowTitle !== null) {
+    // The renderer's document title is the generic product name. Keep the
+    // native title bound to the runtime app identity so concurrent dev stacks
+    // stay distinguishable in the window switcher and Dock.
+    window.on("page-title-updated", (event) => {
+      event.preventDefault();
+      window.setTitle(devWindowTitle);
+    });
+  }
 
   window.once("ready-to-show", () => {
     // Open filling the screen's work area (full width/height minus OS
@@ -221,9 +240,10 @@ export async function loadMainWindow(
   // "Toggle Developer Tools" when policy exposes it. Shipped builds fall
   // through to the privileged `app://` scheme below.
   if (isDevBuild && !shouldUseBuiltRendererForResolutionTest(process.env)) {
-    log.info("[window] loading dev renderer", { devUrl: DEV_RENDERER_URL });
+    const devRendererUrl = devRendererUrlFromEnv(process.env);
+    log.info("[window] loading dev renderer", { devUrl: devRendererUrl });
     try {
-      await window.loadURL(DEV_RENDERER_URL);
+      await window.loadURL(devRendererUrl);
       return;
     } catch (err) {
       log.error("[window] dev renderer load failed", err);

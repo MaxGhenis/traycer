@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { nestedFocusBoundaryMock } from "@/__tests__/nested-focus-boundary-mock";
 import { BundleOpenButton } from "../bundle-open-button";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 
@@ -21,6 +22,7 @@ describe("<BundleOpenButton />", () => {
   beforeEach(() => {
     cleanup();
     resetCanvas();
+    nestedFocusBoundaryMock.navigateNested.mockClear();
   });
 
   it("opens a pinned bundle diff tile in the current Epic canvas", () => {
@@ -33,12 +35,21 @@ describe("<BundleOpenButton />", () => {
         hostId="host-1"
         runningDir="/repo"
         group="changes"
+        repositoryContext={{
+          workspaceLabel: "traycer-internal",
+          repositoryLabel: "traycer",
+        }}
         disabled={false}
       />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Open Changes" }));
 
+    expect(nestedFocusBoundaryMock.navigateNested).toHaveBeenCalledWith(
+      "epic-1",
+      tabId,
+      expect.any(Function),
+    );
     const canvas = useEpicCanvasStore.getState().canvasByTabId[tabId];
     if (canvas?.root?.kind !== "pane") throw new Error("expected pane");
     expect(canvas.root.tabInstanceIds).toHaveLength(1);
@@ -52,6 +63,11 @@ describe("<BundleOpenButton />", () => {
       bundleGroup: "changes",
     });
     expect(tile.hostId).toBe("host-1");
+    expect(tile.name).toBe("traycer-internal › traycer · Changes");
+    expect(tile.repositoryContext).toEqual({
+      workspaceLabel: "traycer-internal",
+      repositoryLabel: "traycer",
+    });
   });
 
   it("opens a pinned merge bundle diff tile", () => {
@@ -64,6 +80,7 @@ describe("<BundleOpenButton />", () => {
         hostId="host-1"
         runningDir="/repo"
         group="merge"
+        repositoryContext={null}
         disabled={false}
       />,
     );
@@ -93,6 +110,7 @@ describe("<BundleOpenButton />", () => {
         hostId="host-1"
         runningDir="/repo"
         group="staged"
+        repositoryContext={null}
         disabled
       />,
     );

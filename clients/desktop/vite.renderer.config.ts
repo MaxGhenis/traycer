@@ -10,6 +10,8 @@ import { CONTENT_SECURITY_POLICY } from "./src/shared/content-security-policy";
 const rendererEnvPrefix = [
   "VITE_APP_",
   "VITE_DESKTOP_",
+  "VITE_DEV_CLOUD_UI_BASE_URL",
+  "VITE_DEV_DESKTOP_SLOT",
   "VITE_POSTHOG_KEY",
   "VITE_TRAYCER_OSS_REPO",
   "VITE_TRAYCER_SIGN_IN_URL",
@@ -29,6 +31,7 @@ const rendererEnvPrefix = [
  */
 export default defineConfig((): UserConfig => {
   const noWatch = process.env.TRAYCER_DESKTOP_NO_WATCH === "1";
+  const port = Number(process.env.PORT) || 5173;
   const guiAppRoot = resolve(__dirname, "..", "gui-app");
   const sharedRoot = resolve(__dirname, "..", "shared");
   const protocolRoot = resolve(__dirname, "..", "..", "protocol");
@@ -100,7 +103,7 @@ export default defineConfig((): UserConfig => {
     },
     server: {
       host: "127.0.0.1",
-      port: 5173,
+      port,
       strictPort: true,
       // `make dev-desktop ARGS=--no-watch` sets this so the renderer
       // freezes alongside the host watcher: no HMR socket and no file

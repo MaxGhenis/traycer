@@ -1,6 +1,7 @@
 {
   "name": "@traycer-clients/desktop",
   "productName": "Traycer",
+  "desktopName": "traycer-desktop.desktop",
   "version": "0.0.0",
   "description": "Traycer standalone desktop shell (Electron) hosting the gui-app renderer; host lifecycle is delegated to the Traycer CLI.",
   "homepage": "https://traycer.ai",
@@ -11,20 +12,22 @@
     "clean:main": "rimraf dist/main dist/packages dist/protocol dist/clients",
     "compile": "tsc --noEmit -p tsconfig.json",
     "build:main": "bun run clean:main && bun scripts/build-main-bundle.cjs",
-    "build:renderer": "vite build --config vite.renderer.config.ts",
+    "build:renderer": "vite build --config vite.renderer.config.ts && bun scripts/assert-single-instance-deps.cjs",
     "build:app": "bun run clean && bun run build:main && bun run build:renderer",
     "prepack:check-cli": "bun scripts/prepack/check-cli-resource.cjs",
+    "prepack:check-icons": "bun scripts/prepack/check-bundle-icons.cjs",
     "prepack:check-tray": "bun scripts/prepack/check-tray-assets.cjs",
     "build": "bun run build:app",
-    "package": "bun run build:app && bun run prepack:check-cli && bun run prepack:check-tray && bun x electron-builder --publish never",
-    "package:dir": "bun run build:app && bun run prepack:check-cli && bun run prepack:check-tray && bun x electron-builder --dir --publish never",
+    "package": "bun run build:app && bun run prepack:check-cli && bun run prepack:check-icons && bun run prepack:check-tray && bun x electron-builder --publish never",
+    "package:dir": "bun run build:app && bun run prepack:check-cli && bun run prepack:check-icons && bun run prepack:check-tray && bun x electron-builder --dir --publish never",
     "dev:renderer": "vite --config vite.renderer.config.ts",
     "dev:main": "bun run build:main && bun scripts/dev/dev-main.cjs",
-    "dev": "bun x concurrently -k -n renderer,main -c blue,magenta \"bun run dev:renderer\" \"bun x wait-on tcp:5173 && TRAYCER_DESKTOP_DEV=1 TRAYCER_DESKTOP_DEV_URL=http://localhost:5173 bun run dev:main\"",
+    "dev": "bun scripts/dev/dev-stack.cjs",
     "lint": "eslint . --cache --fix --max-warnings 0",
     "format": "bun x prettier --write .",
     "test": "vitest run",
-    "test:resolution": "VITE_DESKTOP_LOCAL_STORAGE_KEY=traycer-resolution-test-local-storage-key bun run build:app && bun scripts/resolution/run-resolution-matrix.cjs"
+    "test:resolution": "VITE_DESKTOP_LOCAL_STORAGE_KEY=traycer-resolution-test-local-storage-key bun run build:app && bun scripts/resolution/run-resolution-matrix.cjs",
+    "test:packaging": "vitest run --config vitest.config.packaging.ts"
   },
   "dependencies": {
     "@sentry/browser": "catalog:",
@@ -76,6 +79,7 @@
       "buildResources": "resources/bundle",
       "output": "release"
     },
+    "afterPack": "scripts/prepack/inject-host-launch-agent.cjs",
     "files": [
       "dist/**/*",
       "package.json",
@@ -170,6 +174,12 @@
     },
     "win": {
       "artifactName": "traycer-desktop-windows-${arch}.${ext}",
+      "icon": "icon.ico",
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ]
+      },
       "target": [
         {
           "target": "nsis",
@@ -188,6 +198,8 @@
     "linux": {
       "artifactName": "traycer-desktop-linux-${arch}.${ext}",
       "executableName": "traycer-desktop",
+      "icon": "icons",
+      "syncDesktopName": true,
       "maintainer": "Traycer AI <support@traycer.ai>",
       "target": [
         {
@@ -221,5 +233,5 @@
     "name": "Traycer AI",
     "email": "support@traycer.ai"
   },
-  "license": "Apache-2.0"
+  "license": "MIT"
 }

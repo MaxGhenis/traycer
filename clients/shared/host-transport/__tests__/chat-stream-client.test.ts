@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hostStreamRpcRegistry } from "@traycer/protocol/host/registry";
+import { buildStreamManifest } from "@traycer/protocol/framework/stream-compat";
 import type { ChatSubscribeClientFrame } from "@traycer/protocol/host/agent/gui/subscribe";
 import {
   createRequestContext,
@@ -103,7 +104,10 @@ function completeHandshake(socket: StubStreamWebSocket): void {
   const openParsed = JSON.parse(socket.textSent[0]) as {
     readonly manifest: Record<string, { major: number; minor: number }>;
   };
-  socket.fireText({ kind: "openAck", manifest: openParsed.manifest });
+  socket.fireText({
+    kind: "openAck",
+    manifest: openParsed.manifest,
+  });
 }
 
 function parseText(raw: string): Record<string, unknown> {
@@ -185,10 +189,14 @@ describe("ChatStreamClient", () => {
     });
     completeHandshake(sockets[0]);
 
+    // The advertised version tracks the registry's canonical chat.subscribe
+    // line - a literal here rots every time a minor lands.
     expect(parseText(sockets[0].textSent[1])).toEqual({
       kind: "subscribe",
       method: "chat.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: buildStreamManifest(hostStreamRpcRegistry)[
+        "chat.subscribe"
+      ],
       params: { epicId: "epic-1", chatId: "chat-1" },
     });
 

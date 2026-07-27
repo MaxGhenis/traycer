@@ -88,9 +88,15 @@ export const worktreeBindingEntrySchema = z.object({
   createdAt: z.number(),
   // Submodule branches this worktree owns (see `worktreeOwnedSubmoduleSchema`).
   // `[]` when the repo has no submodules, or none were checked out on a branch.
-  // Not optional - the host persistence migration (binding v1 -> v2) backfills
-  // `[]` on older rows so every read carries a concrete array.
-  ownedSubmodules: z.array(worktreeOwnedSubmoduleSchema),
+  // Optional on the wire: this entry shape is embedded, unversioned, in many
+  // already-released response/stream payloads (worktree.create,
+  // worktree.getBinding, worktree.import, worktree.retrySetup,
+  // worktree.setEntryMode, workspaceBinding.removeEntry, chat.subscribe), so a
+  // released host that predates this field simply omits the key - it must not
+  // become a required-field wire break. The host's own binding-v1->v2
+  // persistence migration still backfills `[]` on every locally-read row, so a
+  // current host always produces a concrete array in practice.
+  ownedSubmodules: z.array(worktreeOwnedSubmoduleSchema).optional(),
 });
 export type WorktreeBindingEntry = z.infer<typeof worktreeBindingEntrySchema>;
 
@@ -325,6 +331,87 @@ export const worktreeListByWorkspacePathsResponseSchemaV11 =
   });
 export type WorktreeListByWorkspacePathsResponseV11 = z.infer<
   typeof worktreeListByWorkspacePathsResponseSchemaV11
+>;
+
+/**
+ * `worktree.listByWorkspacePaths` v1.2 request. Adds `forceRefresh`: the host
+ * now serves `listForWorkspace` summaries from a minutes-scale TTL cache
+ * (see the freshness-doctrine comment in `worktree-service.ts`), and this
+ * flag is the manual-refresh escape hatch that bypasses the cache, recomputes
+ * from disk, and repopulates it. An older peer that never sends the field
+ * upgrades to `forceRefresh: false` (cached-read behavior unchanged).
+ */
+export const worktreeListByWorkspacePathsRequestSchemaV12 =
+  worktreeListByWorkspacePathsRequestSchemaV11.extend({
+    forceRefresh: z.boolean(),
+  });
+export type WorktreeListByWorkspacePathsRequestV12 = z.infer<
+  typeof worktreeListByWorkspacePathsRequestSchemaV12
+>;
+
+/**
+ * `worktree.listByWorkspacePaths` v1.2 response. Unchanged from v1.1; the
+ * minor bump is solely for the additive `forceRefresh` request field.
+ */
+export const worktreeListByWorkspacePathsResponseSchemaV12 =
+  worktreeListByWorkspacePathsResponseSchemaV11;
+export type WorktreeListByWorkspacePathsResponseV12 =
+  WorktreeListByWorkspacePathsResponseV11;
+
+/**
+ * `worktree.listByWorkspacePaths` v1.3 request. Unchanged from v1.2; the
+ * minor bump adds the response freshness marker only.
+ */
+export const worktreeListByWorkspacePathsRequestSchemaV13 =
+  worktreeListByWorkspacePathsRequestSchemaV12;
+export type WorktreeListByWorkspacePathsRequestV13 =
+  WorktreeListByWorkspacePathsRequestV12;
+
+/**
+ * The `resolvedAt` a version-bridge stamps for a row coming from a host that
+ * predates `resolvedAt` entirely (a v1.2 `listByWorkspacePaths` / v1.3
+ * `listAllForHost` peer). Such a host has already returned its authoritative
+ * answer and will NEVER emit a real timestamp to clear a `null`, so bridging
+ * these rows to `null` (the "not yet derived" sentinel) strands them as
+ * perpetually pending - non-selectable folders, no git eligibility, endless
+ * "checking". Stamping this resolved sentinel instead lets clients treat the
+ * legacy host's facts as authoritative.
+ *
+ * The value is a small POSITIVE number, deliberately, for two reasons:
+ *  - The only timestamp math over `resolvedAt` compares two rows FROM THE SAME
+ *    METHOD AND HOST (the settings staleness merge,
+ *    `enriched.resolvedAt >= base.resolvedAt`); a legacy host bridges every one
+ *    of its rows to this same constant, so the comparison degrades to a no-op
+ *    accept - exactly the pre-`resolvedAt` behavior. A real host's timestamps
+ *    (`Date.now()`, ~1e12) never collide with it, and no consumer computes an
+ *    age from `resolvedAt`.
+ *  - It is truthy, so it reads as "resolved" under a `!resolvedAt` check too,
+ *    not just the `=== null` checks consumers use today - `0` would regress the
+ *    moment any consumer switched to a falsy check.
+ */
+export const LEGACY_HOST_RESOLVED_AT = 1;
+
+/**
+ * `worktree.listByWorkspacePaths` v1.3 summary. `null` means the host has not
+ * derived this row yet; clients must not treat schema-safe fallback facts as
+ * authoritative until a non-null timestamp arrives. A row bridged up from a
+ * pre-`resolvedAt` host instead carries {@link LEGACY_HOST_RESOLVED_AT} - that
+ * host's answer is authoritative, not pending.
+ */
+export const worktreeWorkspaceSummarySchemaV13 =
+  worktreeWorkspaceSummarySchema.extend({
+    resolvedAt: z.number().nonnegative().nullable(),
+  });
+export type WorktreeWorkspaceSummaryV13 = z.infer<
+  typeof worktreeWorkspaceSummarySchemaV13
+>;
+
+export const worktreeListByWorkspacePathsResponseSchemaV13 = z.object({
+  workspaces: z.array(worktreeWorkspaceSummarySchemaV13),
+  scriptsAtRefs: z.array(worktreeScriptsAtRefSchema),
+});
+export type WorktreeListByWorkspacePathsResponseV13 = z.infer<
+  typeof worktreeListByWorkspacePathsResponseSchemaV13
 >;
 
 export const worktreeBranchSchema = z.object({
@@ -677,6 +764,24 @@ export type WorktreeSubmoduleMergeFact = z.infer<
 >;
 
 /**
+ * v1.2 adds the submodule equivalent of `atBaseCommit`: the owned branch's live
+ * checkout or resolved tip is exactly the superproject's pinned gitlink, so it
+ * carries no committed work beyond what the superproject already references.
+ * It also carries a bounded, newest-first display summary of commits on an
+ * unproven branch that are absent from its default branch; `null` means the
+ * host did not compute that display detail.
+ */
+export const worktreeSubmoduleMergeFactSchemaV12 =
+  worktreeSubmoduleMergeFactSchema.extend({
+    atPinnedCommit: z.boolean(),
+    unmergedCommitCount: z.number().int().nonnegative().nullable(),
+    unmergedCommitSubjects: z.array(z.string()).max(5).nullable(),
+  });
+export type WorktreeSubmoduleMergeFactV12 = z.infer<
+  typeof worktreeSubmoduleMergeFactSchemaV12
+>;
+
+/**
  * `worktree.listAllForHost` v1.1 entry. Adds the staleness signals the
  * housekeeping skill and the Settings ▸ Worktrees tab use, on top of every
  * v1.0 field.
@@ -733,13 +838,34 @@ export const worktreeHostEntrySchemaV11 = worktreeHostEntrySchema.extend({
   // `mergedIntoDefault` is the REQUIRED safety floor (HEAD contained in default
   // ⇒ deleting loses nothing); the reflog-no-`commit` guard only splits the
   // LABEL (an untouched worktree reads "At base commit" instead of "Merged").
-  // The pure client classifier greens "At base commit" on this boolean alone.
+  // The pure client normally labels this "At base commit"; it promotes the row
+  // to "Landed" when an owned submodule differs from its pinned gitlink and is
+  // proven merged. An unproven owned submodule still forces Review.
   // FAILS CLOSED: an unknown reflog (`null`) is NOT at-base. `false` whenever
   // unproven: dirty, HEAD not contained in default, an authored-commit reflog
   // entry, or `includeActivity` false (the probes are gated).
   atBaseCommit: z.boolean(),
 });
 export type WorktreeHostEntryV11 = z.infer<typeof worktreeHostEntrySchemaV11>;
+
+/**
+ * `worktree.listAllForHost` v1.2 entry. The only wire-shape change from v1.1 is
+ * the additive `atPinnedCommit` proof on each owned-submodule fact.
+ */
+export const worktreeHostEntrySchemaV12 = worktreeHostEntrySchemaV11.extend({
+  submodules: z.array(worktreeSubmoduleMergeFactSchemaV12),
+});
+export type WorktreeHostEntryV12 = z.infer<typeof worktreeHostEntrySchemaV12>;
+
+/**
+ * `worktree.listAllForHost` v1.4 entry. `null` means the host has not derived
+ * this row yet; clients must not treat schema-safe fallback facts as
+ * authoritative until a non-null timestamp arrives.
+ */
+export const worktreeHostEntrySchemaV14 = worktreeHostEntrySchemaV12.extend({
+  resolvedAt: z.number().nonnegative().nullable(),
+});
+export type WorktreeHostEntryV14 = z.infer<typeof worktreeHostEntrySchemaV14>;
 
 /**
  * `worktree.listAllForHost` v1.1 request. Adds `includeActivity`: the git
@@ -749,6 +875,16 @@ export type WorktreeHostEntryV11 = z.infer<typeof worktreeHostEntrySchemaV11>;
  * failed probe yields `null`, never fails the listing. The flag gates ONLY
  * these git probes (`lastActivityAt`, `branchStatus`); `owners` and `createdAt`
  * are cheap and returned either way.
+ *
+ * The request has two mutually-exclusive modes:
+ *  - Paged listing mode (`activityPaths: null`): `cursor` and `limit` apply.
+ *    The cursor is a `worktreePath`; the host returns entries strictly after it
+ *    in stable path-lexicographic order. `limit: null` preserves the v1.0
+ *    bridge's full-list posture, but only without activity probes: no request
+ *    can buy an unbounded probe pass.
+ *  - Selection mode (`activityPaths: [<worktreePath>, ...]`): probes are
+ *    bounded by the array itself, so `cursor` and `limit` must both be `null`
+ *    and the response's `nextCursor` is `null`.
  *
  * `activityPaths` selects between two response modes, so the GUI can render the
  * base list instantly and then lazily enrich only the rows scrolled into view
@@ -762,25 +898,120 @@ export type WorktreeHostEntryV11 = z.infer<typeof worktreeHostEntrySchemaV11>;
  *    `[]` to enrich nothing (returns no worktrees).
  */
 export const worktreeListAllForHostRequestSchemaV11 =
-  worktreeListAllForHostRequestSchema.extend({
-    includeActivity: z.boolean(),
-    activityPaths: z.array(z.string()).nullable(),
-  });
+  worktreeListAllForHostRequestSchema
+    .extend({
+      includeActivity: z.boolean(),
+      activityPaths: z.array(z.string()).nullable(),
+      cursor: z.string().nullable(),
+      // A page size is a count: reject 0, negatives, and fractions. `null` still
+      // means "no limit" (the v1.0 full-list posture, allowed only without probes).
+      limit: z.number().int().positive().nullable(),
+    })
+    .superRefine((request, context) => {
+      if (request.activityPaths === null) {
+        if (request.includeActivity && request.limit === null) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              "includeActivity requires a finite limit in paged listing mode",
+            path: ["limit"],
+          });
+        }
+        return;
+      }
+
+      if (request.cursor !== null) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "selection mode requires cursor to be null",
+          path: ["cursor"],
+        });
+      }
+
+      if (request.limit !== null) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "selection mode requires limit to be null",
+          path: ["limit"],
+        });
+      }
+    });
 export type WorktreeListAllForHostRequestV11 = z.infer<
   typeof worktreeListAllForHostRequestSchemaV11
 >;
 
 /**
+ * `worktree.listAllForHost` v1.2 request. Unchanged from v1.1; the minor bump is
+ * solely for the additive response fact field.
+ */
+export const worktreeListAllForHostRequestSchemaV12 =
+  worktreeListAllForHostRequestSchemaV11;
+export type WorktreeListAllForHostRequestV12 = WorktreeListAllForHostRequestV11;
+
+/**
  * `worktree.listAllForHost` v1.1 response. Same `worktrees` field, enriched
- * entry shape ({@link worktreeHostEntrySchemaV11}). Bridging down to a v1.0
- * host yields the v1.0 entries with the new fields defaulted (empty `owners`,
- * `null` timestamps / `branchStatus`).
+ * entry shape ({@link worktreeHostEntrySchemaV11}), plus `nextCursor` for the
+ * caller to continue when more entries remain.
  */
 export const worktreeListAllForHostResponseSchemaV11 = z.object({
   worktrees: z.array(worktreeHostEntrySchemaV11),
+  nextCursor: z.string().nullable(),
 });
 export type WorktreeListAllForHostResponseV11 = z.infer<
   typeof worktreeListAllForHostResponseSchemaV11
+>;
+
+/**
+ * `worktree.listAllForHost` v1.2 response. Same pagination envelope as v1.1,
+ * with v1.2 entries carrying `submodules[].atPinnedCommit`.
+ */
+export const worktreeListAllForHostResponseSchemaV12 = z.object({
+  worktrees: z.array(worktreeHostEntrySchemaV12),
+  nextCursor: z.string().nullable(),
+});
+export type WorktreeListAllForHostResponseV12 = z.infer<
+  typeof worktreeListAllForHostResponseSchemaV12
+>;
+
+/**
+ * `worktree.listAllForHost` v1.3 request. Adds `forceRefresh`: the disk-truth
+ * walk this method backs is now served from a minutes-scale TTL cache (see
+ * the freshness-doctrine comment in `worktree-service.ts`), and this flag is
+ * the manual-refresh escape hatch that bypasses the cache, recomputes, and
+ * repopulates it. An older peer that never sends the field upgrades to
+ * `forceRefresh: false` (cached-read behavior unchanged).
+ */
+export const worktreeListAllForHostRequestSchemaV13 =
+  worktreeListAllForHostRequestSchemaV12.extend({
+    forceRefresh: z.boolean(),
+  });
+export type WorktreeListAllForHostRequestV13 = z.infer<
+  typeof worktreeListAllForHostRequestSchemaV13
+>;
+
+/**
+ * `worktree.listAllForHost` v1.3 response. Unchanged from v1.2; the minor
+ * bump is solely for the additive `forceRefresh` request field.
+ */
+export const worktreeListAllForHostResponseSchemaV13 =
+  worktreeListAllForHostResponseSchemaV12;
+export type WorktreeListAllForHostResponseV13 =
+  WorktreeListAllForHostResponseV12;
+
+/**
+ * `worktree.listAllForHost` v1.4 request. Unchanged from v1.3; the minor bump
+ * adds the response freshness marker only.
+ */
+export const worktreeListAllForHostRequestSchemaV14 =
+  worktreeListAllForHostRequestSchemaV13;
+export type WorktreeListAllForHostRequestV14 = WorktreeListAllForHostRequestV13;
+
+export const worktreeListAllForHostResponseSchemaV14 = z.object({
+  worktrees: z.array(worktreeHostEntrySchemaV14),
+  nextCursor: z.string().nullable(),
+});
+export type WorktreeListAllForHostResponseV14 = z.infer<
+  typeof worktreeListAllForHostResponseSchemaV14
 >;
 
 /**
@@ -869,6 +1100,55 @@ export const worktreeListBindingsForEpicResponseSchema = z.object({
 });
 export type WorktreeListBindingsForEpicResponse = z.infer<
   typeof worktreeListBindingsForEpicResponseSchema
+>;
+
+/**
+ * `worktree.listBindingsForEpic` v1.1 response. Adds `folderlessCwd` - the
+ * host-owned fallback cwd (the epic's root directory) for terminal launches on
+ * an epic with no bound workspace rows - so folderless epics need no dedicated
+ * RPC (the wire method-set must stay identical to v1.0.0; see the RPC
+ * backward-compat decision log). `null` only after bridging up from a v1.0
+ * host, which predates folderless workspaces; the picker then keeps its
+ * launch action disabled.
+ */
+export const worktreeListBindingsForEpicResponseSchemaV11 =
+  worktreeListBindingsForEpicResponseSchema.extend({
+    folderlessCwd: z.string().min(1).nullable(),
+  });
+export type WorktreeListBindingsForEpicResponseV11 = z.infer<
+  typeof worktreeListBindingsForEpicResponseSchemaV11
+>;
+
+/**
+ * `worktree.listBindingsForEpic` v1.2 row. `isGitResolvePending` is the host's
+ * single authoritative signal that this row's git facts (`isGitRepo`, and the
+ * `missing_worktree_path` reason derived from it) are an unverified placeholder
+ * the host is still resolving - pickers render such rows as pending ("checking")
+ * instead of dead. The host computes it where it derives the reason, so the
+ * client reads one boolean instead of re-deriving which reasons are
+ * git-derived. `false` for every genuine (setup-state, resolved) row. Bridged
+ * up from a v1.1 host as `false` for every row: a pre-v1.2 host has no pending
+ * concept, so its answer is authoritative and must not read as perpetually
+ * pending (there is no non-null timestamp coming to clear it).
+ */
+export const worktreeBindingSelectorRowSchemaV12 =
+  worktreeBindingSelectorRowSchema.extend({
+    isGitResolvePending: z.boolean(),
+  });
+export type WorktreeBindingSelectorRowV12 = z.infer<
+  typeof worktreeBindingSelectorRowSchemaV12
+>;
+
+/**
+ * `worktree.listBindingsForEpic` v1.2 response. Unchanged from v1.1 except
+ * for the per-row `isGitResolvePending` marker.
+ */
+export const worktreeListBindingsForEpicResponseSchemaV12 =
+  worktreeListBindingsForEpicResponseSchemaV11.extend({
+    rows: z.array(worktreeBindingSelectorRowSchemaV12),
+  });
+export type WorktreeListBindingsForEpicResponseV12 = z.infer<
+  typeof worktreeListBindingsForEpicResponseSchemaV12
 >;
 
 export const worktreeSetRepoScriptsRequestSchema = z.object({

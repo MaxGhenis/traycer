@@ -1,10 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import type {
   WorktreeBindingSelectorDisabledReason,
-  WorktreeBindingSelectorRow,
+  WorktreeBindingSelectorRowV12,
 } from "@traycer/protocol/host";
 import { NewTerminalPicker } from "../new-terminal-picker";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { useDesktopDialogStore } from "@/stores/dialogs/desktop-dialog-store";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { paneTabRefs } from "@/stores/epics/canvas/actions";
 import { collectPanes } from "@/stores/epics/canvas/tile-tree";
@@ -13,13 +21,12 @@ import type { EpicCanvasTileRef } from "@/stores/epics/canvas/types";
 const selectById = vi.fn();
 
 interface BindingsQueryStub {
-  readonly data: { readonly rows: WorktreeBindingSelectorRow[] } | undefined;
-  readonly isPending: boolean;
-  readonly isError: boolean;
-}
-
-interface DefaultCwdQueryStub {
-  readonly data: { readonly cwd: string } | undefined;
+  readonly data:
+    | {
+        readonly rows: WorktreeBindingSelectorRowV12[];
+        readonly folderlessCwd: string | null;
+      }
+    | undefined;
   readonly isPending: boolean;
   readonly isError: boolean;
 }
@@ -28,20 +35,8 @@ const bindingsQuery = vi.hoisted(() => ({
   current: null as BindingsQueryStub | null,
 }));
 
-const defaultCwdQuery: { current: DefaultCwdQueryStub } = vi.hoisted(() => ({
-  current: {
-    data: { cwd: "/Users/tgill" },
-    isPending: false,
-    isError: false,
-  },
-}));
-
 vi.mock("@/hooks/worktree/use-worktree-list-bindings-for-epic-query", () => ({
   useWorktreeListBindingsForEpic: () => bindingsQuery.current,
-}));
-
-vi.mock("@/hooks/terminal/use-terminal-default-cwd-query", () => ({
-  useTerminalDefaultCwd: () => defaultCwdQuery.current,
 }));
 
 function stubLoadedBindings(): void {
@@ -51,6 +46,7 @@ function stubLoadedBindings(): void {
         makeRow("host-1", "/work/traycer", "main", null),
         makeRow("host-2", "/work/traycer-wt/feature-x", "feature-x", null),
       ],
+      folderlessCwd: "/Users/tgill",
     },
     isPending: false,
     isError: false,
@@ -85,7 +81,7 @@ function makeRow(
   runningDir: string,
   branch: string,
   disabledReason: WorktreeBindingSelectorDisabledReason | null,
-): WorktreeBindingSelectorRow {
+): WorktreeBindingSelectorRowV12 {
   return {
     hostId,
     runningDir,
@@ -100,6 +96,7 @@ function makeRow(
     setupState: "not_required",
     disabledReason,
     sources: [],
+    isGitResolvePending: false,
   };
 }
 
@@ -109,7 +106,11 @@ function resetCanvas(): void {
 
 function openPicker(): string {
   const tabId = useEpicCanvasStore.getState().openEpicTab("epic-1", "Epic");
-  render(<NewTerminalPicker epicId="epic-1" tabId={tabId} />);
+  render(
+    <TooltipProvider>
+      <NewTerminalPicker epicId="epic-1" tabId={tabId} />
+    </TooltipProvider>,
+  );
   fireEvent.click(screen.getByTestId("epic-terminals-panel-add"));
   return tabId;
 }
@@ -126,11 +127,14 @@ describe("<NewTerminalPicker />", () => {
     resetCanvas();
     selectById.mockClear();
     stubLoadedBindings();
-    defaultCwdQuery.current = {
-      data: { cwd: "/Users/tgill" },
-      isPending: false,
-      isError: false,
-    };
+  });
+
+  afterEach(() => {
+    useDesktopDialogStore.setState({
+      activeDialog: null,
+      reportIssueAvailable: false,
+      reportIssueContext: null,
+    });
   });
 
   it("opens a popover with the host section and workspace rows", () => {
@@ -171,6 +175,7 @@ describe("<NewTerminalPicker />", () => {
           makeRow("host-2", "/work/traycer-wt/feature-x", "feature-x", null),
           makeRow("host-1", "/work/traycer", "main", null),
         ],
+        folderlessCwd: "/Users/tgill",
       },
       isPending: false,
       isError: false,
@@ -195,6 +200,7 @@ describe("<NewTerminalPicker />", () => {
           makeRow("host-1", "/work/traycer", "main", "missing_worktree_path"),
           makeRow("host-2", "/work/traycer-wt/feature-x", "feature-x", null),
         ],
+        folderlessCwd: "/Users/tgill",
       },
       isPending: false,
       isError: false,
@@ -218,6 +224,7 @@ describe("<NewTerminalPicker />", () => {
           makeRow("host-1", "/work/traycer", "main", "missing_worktree_path"),
           makeRow("host-2", "/work/traycer-wt/feature-x", "feature-x", null),
         ],
+        folderlessCwd: "/Users/tgill",
       },
       isPending: false,
       isError: false,
@@ -246,6 +253,7 @@ describe("<NewTerminalPicker />", () => {
             "setup_failed",
           ),
         ],
+        folderlessCwd: "/Users/tgill",
       },
       isPending: false,
       isError: false,
@@ -264,7 +272,7 @@ describe("<NewTerminalPicker />", () => {
 
   it("launches a terminal in the host default cwd when no workspaces are bound", () => {
     bindingsQuery.current = {
-      data: { rows: [] },
+      data: { rows: [], folderlessCwd: "/Users/tgill" },
       isPending: false,
       isError: false,
     };
@@ -285,22 +293,14 @@ describe("<NewTerminalPicker />", () => {
     expect(terminals[0].cwd).toBe("/Users/tgill");
   });
 
-  it("keeps Launch disabled while folderless default cwd is loading", () => {
+  it("keeps Launch disabled while workspace bindings are loading", () => {
     bindingsQuery.current = {
-      data: { rows: [] },
-      isPending: false,
-      isError: false,
-    };
-    defaultCwdQuery.current = {
       data: undefined,
       isPending: true,
       isError: false,
     };
     const tabId = openPicker();
 
-    expect(
-      screen.getByTestId("new-terminal-folderless-cwd-pending"),
-    ).toBeDefined();
     expect(
       screen.getByRole("button", { name: "Launch" }).hasAttribute("disabled"),
     ).toBe(true);
@@ -312,16 +312,13 @@ describe("<NewTerminalPicker />", () => {
     expect(terminals).toHaveLength(0);
   });
 
-  it("keeps Launch disabled when folderless default cwd fails", () => {
+  it("keeps Launch disabled when the host cannot resolve a folderless cwd", () => {
+    // A v1.0 host predates folderless workspaces; the bridged response
+    // carries `folderlessCwd: null`.
     bindingsQuery.current = {
-      data: { rows: [] },
+      data: { rows: [], folderlessCwd: null },
       isPending: false,
       isError: false,
-    };
-    defaultCwdQuery.current = {
-      data: undefined,
-      isPending: false,
-      isError: true,
     };
     const tabId = openPicker();
 
@@ -337,6 +334,24 @@ describe("<NewTerminalPicker />", () => {
       (tile) => tile.type === "terminal",
     );
     expect(terminals).toHaveLength(0);
+
+    // Capability-gated off by default.
+    expect(screen.queryByRole("button", { name: "Report issue" })).toBeNull();
+
+    act(() => {
+      useDesktopDialogStore.setState({ reportIssueAvailable: true });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
+
+    expect(useDesktopDialogStore.getState()).toMatchObject({
+      activeDialog: "report-issue",
+      reportIssueContext: {
+        title: "Couldn't resolve terminal directory",
+        message: "The terminal working directory could not be resolved.",
+        code: null,
+        source: "New terminal",
+      },
+    });
   });
 
   it("selects a workspace without creating a terminal on a single click", () => {

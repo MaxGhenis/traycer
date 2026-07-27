@@ -43,6 +43,7 @@ import {
 } from "@/lib/browser-view/desktop-browser-view";
 import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
+import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { makeBrowserPeekTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
 import { collectPanes } from "@/stores/epics/canvas/tile-tree";
@@ -106,7 +107,13 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
     [runnerHost],
   );
   const sessions = useBrowserSessions(props.chatId);
-  const splitPaneWithNode = useEpicCanvasStore((s) => s.splitPaneWithNode);
+  const navigateNested = useEpicNestedFocusNavigation();
+  const prepareSplitPaneWithNodeFocusTarget = useEpicCanvasStore(
+    (state) => state.prepareSplitPaneWithNodeFocusTarget,
+  );
+  const epicId = useEpicCanvasStore(
+    (state) => state.tabsById[props.viewTabId]?.epicId ?? null,
+  );
   const [handoffPendingId, setHandoffPendingId] = useState<string | null>(null);
   const [handoffMessage, setHandoffMessage] = useState<string | null>(null);
   const [lendPendingId, setLendPendingId] = useState<string | null>(null);
@@ -138,9 +145,28 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
         sessionId: session.sessionId,
         initialUrl: session.url,
       });
-      splitPaneWithNode(props.viewTabId, props.paneId, "right", tile);
+      const prepare = () =>
+        prepareSplitPaneWithNodeFocusTarget(
+          props.viewTabId,
+          props.paneId,
+          "right",
+          tile,
+        );
+      if (epicId === null) {
+        prepare();
+        return;
+      }
+      navigateNested(epicId, props.viewTabId, prepare);
     },
-    [hostId, props.chatId, props.paneId, props.viewTabId, splitPaneWithNode],
+    [
+      epicId,
+      hostId,
+      navigateNested,
+      prepareSplitPaneWithNodeFocusTarget,
+      props.chatId,
+      props.paneId,
+      props.viewTabId,
+    ],
   );
 
   const continueAtUrl = useCallback(

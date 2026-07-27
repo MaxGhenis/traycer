@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { composeDesktopSignInUrl, DESKTOP_REDIRECT_URI } from "../sign-in-url";
 import { DESKTOP_SIGN_IN_BASE_URL } from "../../config";
 
@@ -18,5 +18,63 @@ describe("composeDesktopSignInUrl", () => {
 
   it("uses the production Cloud UI base URL in source", () => {
     expect(DESKTOP_SIGN_IN_BASE_URL).toBe("https://platform.traycer.ai");
+  });
+
+  it("uses the Vite-injected loopback Cloud UI URL for a dev desktop run", async () => {
+    vi.stubEnv("VITE_DEV_CLOUD_UI_BASE_URL", "http://localhost:21003");
+    vi.resetModules();
+
+    const slotted = await import("../sign-in-url");
+
+    expect(
+      slotted.composeDesktopSignInUrl("http://127.0.0.1:41000/callback"),
+    ).toBe(
+      "http://localhost:21003?redirect_uri=http%3A%2F%2F127.0.0.1%3A41000%2Fcallback",
+    );
+  });
+
+  it("rejects a non-loopback Cloud UI override", async () => {
+    vi.stubEnv("VITE_DEV_CLOUD_UI_BASE_URL", "https://platform.traycer.ai");
+    vi.resetModules();
+
+    const slotted = await import("../sign-in-url");
+
+    expect(() =>
+      slotted.composeDesktopSignInUrl("http://127.0.0.1:41000/callback"),
+    ).toThrow(/must use http/);
+  });
+});
+
+/**
+ * Multi-run dev: the redirect URI's scheme must be the slot-suffixed one the
+ * main process registers (`electron-main/auth/deep-link.ts`), or the cloud's
+ * redirect targets a scheme no running app owns. The slot reaches the
+ * renderer as `VITE_DEV_DESKTOP_SLOT` (see `scripts/dev/dev-stack.cjs`), so
+ * the module is re-imported with the env stubbed.
+ */
+describe("DESKTOP_REDIRECT_URI under a dev-desktop slot", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("uses the bare dev scheme when no slot is active", () => {
+    expect(DESKTOP_REDIRECT_URI).toBe("traycer-dev://auth/callback");
+  });
+
+  it("suffixes the scheme with the sanitized slot", async () => {
+    vi.stubEnv("VITE_DEV_DESKTOP_SLOT", "My Worktree!!");
+    vi.resetModules();
+    const slotted = await import("../sign-in-url");
+    expect(slotted.DESKTOP_REDIRECT_URI).toBe(
+      "traycer-dev-my-worktree://auth/callback",
+    );
+  });
+
+  it("falls back to the bare scheme when the slot sanitizes to nothing", async () => {
+    vi.stubEnv("VITE_DEV_DESKTOP_SLOT", "  !!  ");
+    vi.resetModules();
+    const slotted = await import("../sign-in-url");
+    expect(slotted.DESKTOP_REDIRECT_URI).toBe("traycer-dev://auth/callback");
   });
 });

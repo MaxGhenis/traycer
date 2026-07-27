@@ -22,9 +22,11 @@ import type {
   ChatProjection,
   TuiAgentProjection,
 } from "@/stores/epics/open-epic/types";
-import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import { useEpicTileNavigation } from "@/hooks/epic/use-epic-tile-navigation";
 import { cn, formatSingleLine } from "@/lib/utils";
-import { AgentReferenceMarkdown } from "./agent-reference-markdown";
+import { AgentHeaderLink } from "./agent-header-link";
+import { AgentMessageBody } from "./agent-message-body";
+import { ReplyExpectedBadge } from "./reply-expected-badge";
 import { SegmentCard } from "./segment-card";
 import { SegmentPanel } from "./segment-panel";
 import { SegmentRow } from "./segment-row";
@@ -96,6 +98,7 @@ interface ToolSegmentBodyProps {
   readonly error: string | null;
   readonly hasError: boolean;
   readonly backgroundOutput: BackgroundTaskOutput | null;
+  readonly toolName: string;
 }
 
 type ReceiverNode = ArtifactProjection | ChatProjection | TuiAgentProjection;
@@ -327,6 +330,7 @@ function GenericToolSegment(props: ToolSegmentProps) {
       error={isStopped ? null : error}
       hasError={hasError}
       backgroundOutput={backgroundOutput}
+      toolName={toolName}
     />
   ) : null;
 
@@ -467,6 +471,7 @@ function runningToolLine(
 }
 
 function ToolSegmentBody(props: ToolSegmentBodyProps) {
+  const isMcpTool = props.toolName.startsWith("mcp__");
   const backgroundStdout = props.backgroundOutput?.stdout ?? "";
   const backgroundStderr = props.backgroundOutput?.stderr ?? "";
   return (
@@ -475,7 +480,12 @@ function ToolSegmentBody(props: ToolSegmentBodyProps) {
         <ToolInputPanel detail={props.expandDetail} />
       ) : null}
       <BackgroundOutputPanels
-        stdout={backgroundStdout}
+        stdout={
+          isMcpTool
+            ? mcpResultDisplayContent(backgroundStdout)
+            : backgroundStdout
+        }
+        stdoutLabel={isMcpTool ? "Result" : "Output"}
         stderr={backgroundStderr}
         truncated={props.backgroundOutput?.truncated === true}
       />
@@ -496,8 +506,25 @@ function ToolSegmentBody(props: ToolSegmentBodyProps) {
   );
 }
 
+// A backgrounded MCP call's captured output is the tool's result payload, not
+// shell output. When the tail parses as a JSON object/array, re-indent it so
+// the panel shows structure instead of a single wrapped line; anything else
+// (plain text, or a tail truncated mid-document) renders verbatim.
+function mcpResultDisplayContent(stdout: string): string {
+  const trimmed = stdout.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return stdout;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed !== "object" || parsed === null) return stdout;
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return stdout;
+  }
+}
+
 function BackgroundOutputPanels(props: {
   readonly stdout: string;
+  readonly stdoutLabel: string;
   readonly stderr: string;
   readonly truncated: boolean;
 }) {
@@ -505,7 +532,7 @@ function BackgroundOutputPanels(props: {
     <>
       {props.stdout.length > 0 ? (
         <SegmentPanel
-          label="Output"
+          label={props.stdoutLabel}
           copyValue={props.stdout}
           tone="default"
           bodyChrome="framed"
@@ -570,13 +597,12 @@ function A2ASendToolSegment(
   const receiverNode = useEpicArtifact(send.receiverAgentId);
   const activeHostId = useReactiveActiveHostId();
   const epicId = useOpenEpicId();
+  const tileNavigation = useEpicTileNavigation();
   const receiverName = receiverDisplayName(receiverNode, send.receiverAgentId);
   const openTarget = receiverOpenTarget(receiverNode, activeHostId);
   const openReceiverTab = () => {
     if (openTarget === null) return;
-    const canvas = useEpicCanvasStore.getState();
-    const tabId = canvas.resolveTargetTabForEpic(epicId, undefined);
-    canvas.openTileInTab(tabId, {
+    tileNavigation.openTileInEpic(epicId, {
       id: send.receiverAgentId,
       instanceId: uuidv4(),
       type: openTarget.type,
@@ -586,9 +612,15 @@ function A2ASendToolSegment(
   };
 
   const receiver = (
-    <span className="min-w-0 flex-1 truncate text-ui-sm">
-      <span className="text-muted-foreground">to agent </span>
-      <span className="font-medium text-foreground/85">{receiverName}</span>
+    <span className="flex min-w-0 flex-1 items-center gap-1.5 text-ui-sm">
+      <span className="min-w-0 truncate">
+        <span className="text-muted-foreground">to agent </span>
+        <AgentHeaderLink
+          name={receiverName}
+          onOpen={openTarget !== null ? openReceiverTab : null}
+        />
+      </span>
+      {send.expectReply ? <ReplyExpectedBadge /> : null}
     </span>
   );
 
@@ -615,45 +647,11 @@ function A2ASendToolSegment(
   const preview = <AgentMessagePreview message={send.message} tone="primary" />;
   const body = open ? (
     <div className="flex flex-col gap-2">
-      {openTarget !== null ? (
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={openReceiverTab}
-            className="w-fit rounded px-1.5 py-0.5 text-ui-sm font-medium text-primary underline-offset-2 transition-colors hover:bg-primary/10 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            Open receiving agent
-          </button>
-          {send.expectReply ? (
-            <>
-              <span aria-hidden className="text-muted-foreground/40">
-                ·
-              </span>
-              <span className="shrink-0 rounded border border-primary/30 bg-primary/10 px-1.5 text-overline font-medium uppercase text-primary">
-                reply expected
-              </span>
-            </>
-          ) : null}
-        </div>
-      ) : null}
-      <SegmentPanel
-        label="Message"
-        copyValue={send.message}
-        tone="default"
-        bodyChrome="framed"
-        className={undefined}
-      >
-        <div className="max-h-[min(40vh,24rem)] overflow-auto px-3 py-2">
-          <div data-chat-find-unit={bodyFindUnitId}>
-            <AgentReferenceMarkdown
-              isStreaming={false}
-              markdown={send.message}
-              proseSize="compact"
-              quotable={false}
-            />
-          </div>
-        </div>
-      </SegmentPanel>
+      <AgentMessageBody
+        value={send.message}
+        bodyFindUnitId={bodyFindUnitId}
+        isStreaming={isStreaming}
+      />
       {hasError ? (
         <SegmentPanel
           label="Error"

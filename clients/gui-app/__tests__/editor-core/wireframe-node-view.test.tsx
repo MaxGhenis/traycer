@@ -32,6 +32,7 @@ function mountWireframeEditor(opts: {
       user,
       onCommentShortcut: null,
       placeholderText: "Start writing…",
+      titlePlaceholderText: "Untitled",
     }),
   });
   editor.commands.insertContent({
@@ -54,7 +55,7 @@ beforeEach(() => {
 });
 
 describe("WireframeNodeView", () => {
-  it('renders an iframe with sandbox="" and srcdoc matching the htmlContent', async () => {
+  it("renders an interactive, opaque-origin iframe with the height reporter appended", async () => {
     const editor = mountWireframeEditor({
       htmlContent: HTML,
       title: "Demo",
@@ -70,8 +71,10 @@ describe("WireframeNodeView", () => {
       if (found === null) throw new Error("iframe not mounted yet");
       return found;
     });
-    expect(el.getAttribute("sandbox")).toBe("");
-    expect(el.getAttribute("srcdoc")).toBe(HTML);
+    expect(el.getAttribute("sandbox")).toBe("allow-scripts");
+    expect(el.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    expect(el.getAttribute("srcdoc")?.endsWith(HTML)).toBe(true);
+    expect(el.getAttribute("srcdoc")).toContain("traycer:wireframe:height:v1");
     expect(el.getAttribute("title")).toBe("Demo");
     editor.destroy();
   });

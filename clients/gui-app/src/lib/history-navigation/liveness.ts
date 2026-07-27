@@ -1,5 +1,6 @@
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
+import { parseNestedFocusTargetFromHref } from "@/lib/epic-nested-focus-route";
 import { hrefPathname } from "@/lib/routes";
 
 /**
@@ -15,11 +16,14 @@ import { hrefPathname } from "@/lib/routes";
  * Two route shapes are prunable, read from the SAME stores the route
  * `beforeLoad` / committed-effect guards consult:
  *
- * - `/epics/$epicId/$tabId` — alive while the exact tab maps to `epicId`; once
- *   that tab is gone, dead ONLY when `resolveTabIdForEpic(epicId)` is null (no
- *   sibling tab). This mirrors the epic route's `beforeLoad`, which redirects a
- *   stale tab to a sibling of the same epic when one exists, so a back step to
- *   it still lands somewhere valid (`src/routes/epics.$epicId.$tabId.tsx`).
+ * - `/epics/$epicId/$tabId` — alive as long as the tab maps to `epicId`,
+ *   regardless of whether it's open or closed and regardless of whether a
+ *   nested pane/tile target resolves: a closed Task is handled by
+ *   back/forward skip-eligibility (not pruning) so it becomes reachable again
+ *   on reopen, and an unresolvable nested target under an open Task is the
+ *   preview-reopen case, not dead. Once the tab is gone entirely, dead ONLY
+ *   when `resolveTabIdForEpic(epicId)` finds no sibling tab (top-level
+ *   entries) - a nested target never salvages onto a sibling.
  * - `/draft/$draftId` — dead when `draftId` is absent from the landing-draft
  *   store (`src/routes/draft-route-components.tsx` redirects to `/` on the same
  *   condition). `/draft/new` is a distinct route and is always kept.
@@ -28,21 +32,28 @@ import { hrefPathname } from "@/lib/routes";
  * against the live stores at execution, not at install time.
  */
 export function isHistoryEntryDead(href: string): boolean {
-  const segments = parsePathSegments(href);
+  const epicTab = parseEpicTabHref(href);
 
-  // /epics/$epicId/$tabId — alive while the exact tab maps to epicId. Once that
-  // tab is gone, dead ONLY when the epic has no resolvable tab: the route's
-  // `beforeLoad` redirects a stale tab to a sibling of the same epic via
-  // `resolveTabIdForEpic`, so a back step there still lands somewhere valid.
-  if (segments.length === 3 && segments[0] === "epics") {
-    const epicId = segments[1];
-    const tabId = segments[2];
+  // /epics/$epicId/$tabId — a known tab (open or closed) is always alive
+  // here, nested target or not. Only a tab that's gone from `tabsById`
+  // entirely (deleted, or reassigned to a different epic) is a pruning
+  // candidate, handled below.
+  if (epicTab !== null) {
+    const { epicId, tabId } = epicTab;
     const state = useEpicCanvasStore.getState();
-    if (state.tabsById[tabId]?.epicId === epicId) return false;
-    return state.resolveTabIdForEpic(epicId) === null;
+    if (state.tabsById[tabId]?.epicId === epicId) {
+      return false;
+    }
+    const nestedTarget = parseNestedFocusTargetFromHref(href);
+    if (nestedTarget !== null) {
+      return true;
+    }
+    const sibling = state.resolveTabIdForEpic(epicId);
+    return sibling === null;
   }
 
   // /draft/$draftId — dead when the draft id is gone. `/draft/new` is kept.
+  const segments = parsePathSegments(href);
   if (
     segments.length === 2 &&
     segments[0] === "draft" &&
@@ -64,4 +75,23 @@ function parsePathSegments(href: string): ReadonlyArray<string> {
   return hrefPathname(href)
     .split("/")
     .filter((segment) => segment.length > 0);
+}
+
+export interface ParsedEpicTabHref {
+  readonly epicId: string;
+  readonly tabId: string;
+}
+
+/**
+ * Parses an `/epics/$epicId/$tabId` href into its route params, or `null` for
+ * any other route shape. Shared by liveness pruning and the back/forward
+ * skip-eligibility scan (`history-navigation/eligibility.ts`) so both read the
+ * same route shape off the same parser.
+ */
+export function parseEpicTabHref(href: string): ParsedEpicTabHref | null {
+  const segments = parsePathSegments(href);
+  if (segments.length !== 3 || segments[0] !== "epics") {
+    return null;
+  }
+  return { epicId: segments[1], tabId: segments[2] };
 }

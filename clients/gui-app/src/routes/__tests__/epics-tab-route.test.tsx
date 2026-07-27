@@ -14,10 +14,20 @@ import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { createEmptyCanvas } from "@/stores/epics/canvas/canvas-state";
 import type { EpicCanvasState } from "@/stores/epics/canvas/types";
 
+const recordViewed = vi.hoisted(() => vi.fn());
+
 vi.mock("@/components/layout/app-shell", () => ({
   AppShell: (props: { readonly children: ReactNode }) => (
     <div data-testid="app-shell">{props.children}</div>
   ),
+}));
+
+// The standalone sign-in / onboarding surfaces render the Windows menu strip
+// in a title-bar band, and the strip routes its popup through a TanStack
+// mutation. This routing test wraps RootComponent in only a router queryClient
+// (no QueryClientProvider), so stub the module like AppShell above.
+vi.mock("@/components/layout/header/windows-menu-bar", () => ({
+  WindowsMenuBar: () => null,
 }));
 
 vi.mock("@/components/layout/dialogs/desktop-dialog-host", () => ({
@@ -39,6 +49,9 @@ vi.mock("@/components/layout/bridges/host-tray-command-listener", () => ({
 vi.mock("@/components/layout/bridges/notification-focus-bridge", () => ({
   NotificationFocusBridge: () => null,
 }));
+vi.mock("@/components/layout/bridges/notification-emission-controller", () => ({
+  NotificationEmissionController: () => null,
+}));
 
 vi.mock("@/components/layout/dialogs/system-tab-modal-host", () => ({
   SystemTabModalHost: () => null,
@@ -54,6 +67,20 @@ vi.mock("@/stores/tabs/use-deep-link-tab-sync", () => ({
 
 vi.mock("@/hooks/epics/use-cloud-epic-tasks-query", () => ({
   useCloudEpicTasksQuery: () => ({ tasks: [] }),
+}));
+
+vi.mock("@/hooks/epic/use-epic-record-viewed-mutation", () => ({
+  useEpicRecordViewed: () => ({ mutate: recordViewed }),
+}));
+
+vi.mock("@/hooks/migration/use-phase-migrate-to-epic-mutation", () => ({
+  usePhaseMigrateToEpic: () => ({
+    data: undefined,
+    error: null,
+    isError: false,
+    isPending: true,
+    mutate: () => undefined,
+  }),
 }));
 
 vi.mock("@/components/onboarding/onboarding-page", () => ({
@@ -87,6 +114,7 @@ vi.mock("@/components/epic-canvas/epic-route-session-body", () => ({
 
 const EPIC_ID = "epic-route-loop";
 const TAB_ID = "tab-route-existing";
+const STALE_TAB_ID = "tab-route-stale";
 
 function seedSignedInAuth(): void {
   useAuthStore.getState().setSignedIn(
@@ -137,6 +165,7 @@ describe("/epics/$epicId/$tabId route", () => {
   beforeEach(() => {
     window.localStorage.clear();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
+    recordViewed.mockReset();
     seedSignedInAuth();
     // Past the one-time tour, so RootComponent's global onboarding gate is inert.
     useOnboardingStore.setState({ completedAt: 1_700_000_000_000 });
@@ -163,6 +192,29 @@ describe("/epics/$epicId/$tabId route", () => {
     const state = useEpicCanvasStore.getState();
     expect(state.openTabOrder).toEqual([TAB_ID]);
     expect(Object.keys(state.tabsById)).toEqual([TAB_ID]);
+    expect(recordViewed).toHaveBeenCalledWith({ epicId: EPIC_ID });
+  });
+
+  it("repairs a stale tab route to a sibling tab without carrying nested focus params", async () => {
+    seedOpenEpicTab();
+
+    const router = renderAt(
+      `/epics/${EPIC_ID}/${STALE_TAB_ID}?focusPaneId=pane-stale&focusTileInstanceId=tile-stale&focusArtifactId=artifact-1&focusThreadId=thread-1&focusedAt=123&migrationSource=phase`,
+    );
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe(
+        `/epics/${EPIC_ID}/${TAB_ID}`,
+      );
+    });
+    expect(router.state.location.search).toEqual({
+      focusedAt: 123,
+      focusArtifactId: "artifact-1",
+      focusThreadId: "thread-1",
+      migrationSource: "phase",
+      focusPaneId: undefined,
+      focusTileInstanceId: undefined,
+    });
   });
 
   it("shows the onboarding tour (not the epic) for an un-onboarded user on a deep route", async () => {

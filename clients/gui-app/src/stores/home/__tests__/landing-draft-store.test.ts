@@ -1,14 +1,18 @@
 import "../../../../__tests__/test-browser-apis";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyLandingDraftDesktopProjection,
   emptyLandingDraftWorkspaceSnapshot,
   EMPTY_LANDING_DRAFT_CONTENT,
   LANDING_DRAFT_PERSIST_KEY,
+  mergeLandingDraftWorkspaceFolders,
+  removeLandingDraftWorkspaceFolder,
   setLandingDraftDesktopProjectionBridge,
+  setLandingDraftWorkspacePrimary,
   useLandingDraftStore,
   type LandingDraftTab,
 } from "@/stores/home/landing-draft-store";
+import * as landingImageGc from "@/lib/composer/landing-image-gc";
 import type { ChatRunSettings } from "@traycer/protocol/host/agent/gui/subscribe";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 
@@ -56,7 +60,10 @@ import {
   useEpicCanvasStore,
 } from "@/stores/epics/canvas/store";
 import { createEmptyCanvas } from "@/stores/epics/canvas/canvas-state";
-import { useWorkspaceFoldersStore } from "@/stores/workspace/workspace-folders-store";
+import {
+  useWorkspaceFoldersStore,
+  type WorkspaceFolderInfo,
+} from "@/stores/workspace/workspace-folders-store";
 import { useSettingsStore } from "@/stores/settings/settings-store";
 import type {
   DesktopJsonValue,
@@ -73,6 +80,7 @@ const HAIKU_SETTINGS: ChatRunSettings = {
   reasoningEffort: null,
   serviceTier: null,
   agentMode: "regular",
+  profileId: null,
 };
 
 const SONNET_SETTINGS: ChatRunSettings = {
@@ -82,6 +90,7 @@ const SONNET_SETTINGS: ChatRunSettings = {
   reasoningEffort: null,
   serviceTier: null,
   agentMode: "epic",
+  profileId: null,
 };
 const WORKSPACE_A = {
   path: "/tmp/workspace-a",
@@ -99,6 +108,7 @@ const WORKSPACE_C = {
   repoIdentifier: { owner: "traycerai", repo: "workspace-c" },
 };
 function resetStore(): void {
+  setLandingDraftDesktopProjectionBridge(null);
   useLandingDraftStore.setState({
     drafts: [],
     activeDraftId: null,
@@ -106,6 +116,7 @@ function resetStore(): void {
   useWorkspaceFoldersStore.setState({
     folders: [],
     folderInfoByPath: {},
+    primaryPath: null,
   });
   useSettingsStore.setState({
     composerMode: "chat",
@@ -159,6 +170,79 @@ function numberedWorkspace(index: number) {
   };
 }
 
+describe("removeLandingDraftWorkspaceFolder / setLandingDraftWorkspacePrimary (pure helpers)", () => {
+  function workspaceOf(folders: ReadonlyArray<WorkspaceFolderInfo>) {
+    return mergeLandingDraftWorkspaceFolders(
+      emptyLandingDraftWorkspaceSnapshot(),
+      folders,
+    );
+  }
+
+  it("setLandingDraftWorkspacePrimary switches primary; a non-member path is a no-op (same reference)", () => {
+    const workspace = workspaceOf([WORKSPACE_A, WORKSPACE_B]);
+    const switched = setLandingDraftWorkspacePrimary(
+      workspace,
+      WORKSPACE_B.path,
+    );
+    expect(switched.primaryPath).toBe(WORKSPACE_B.path);
+
+    const noop = setLandingDraftWorkspacePrimary(switched, "/not-a-member");
+    expect(noop).toBe(switched);
+  });
+
+  it("removing the primary folder deterministically falls back to the first remaining folder", () => {
+    const workspace = setLandingDraftWorkspacePrimary(
+      workspaceOf([WORKSPACE_A, WORKSPACE_B, WORKSPACE_C]),
+      WORKSPACE_B.path,
+    );
+
+    const afterRemove = removeLandingDraftWorkspaceFolder(
+      workspace,
+      WORKSPACE_B.path,
+    );
+
+    expect(afterRemove.primaryPath).toBe(WORKSPACE_A.path);
+  });
+
+  it("removing a secondary folder leaves primary unchanged", () => {
+    const workspace = setLandingDraftWorkspacePrimary(
+      workspaceOf([WORKSPACE_A, WORKSPACE_B, WORKSPACE_C]),
+      WORKSPACE_B.path,
+    );
+
+    const afterRemove = removeLandingDraftWorkspaceFolder(
+      workspace,
+      WORKSPACE_C.path,
+    );
+
+    expect(afterRemove.primaryPath).toBe(WORKSPACE_B.path);
+  });
+
+  it("removing the last folder empties the workspace and its primary (empty state)", () => {
+    const workspace = workspaceOf([WORKSPACE_A]);
+    const afterRemove = removeLandingDraftWorkspaceFolder(
+      workspace,
+      WORKSPACE_A.path,
+    );
+    expect(afterRemove.folders).toEqual([]);
+    expect(afterRemove.primaryPath).toBeNull();
+  });
+
+  it("promotes a non-git (local-only) folder to primary just like any other folder", () => {
+    const nonGitFolder = {
+      path: "/tmp/non-git",
+      name: "non-git",
+      repoIdentifier: null,
+    };
+    const workspace = workspaceOf([WORKSPACE_A, nonGitFolder]);
+    const switched = setLandingDraftWorkspacePrimary(
+      workspace,
+      nonGitFolder.path,
+    );
+    expect(switched.primaryPath).toBe(nonGitFolder.path);
+  });
+});
+
 describe("useLandingDraftStore", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -204,6 +288,117 @@ describe("useLandingDraftStore", () => {
       );
     });
 
+    it("rehydrates a v1 draft with a POPULATED workspace and no primaryPath to first-folder primary", async () => {
+      setLandingDraftDesktopProjectionBridge(null);
+      window.localStorage.setItem(
+        LANDING_DRAFT_PERSIST_KEY,
+        JSON.stringify({
+          state: {
+            drafts: [
+              {
+                id: "v1-populated",
+                content: { type: "doc", content: [{ type: "paragraph" }] },
+                selection: null,
+                lastTouchedAt: 123,
+                settings: null,
+                composerMode: "chat",
+                // v1 workspace shape: folders + metadata, no `primaryPath`.
+                workspace: {
+                  folders: [WORKSPACE_A.path, WORKSPACE_B.path],
+                  folderInfoByPath: {
+                    [WORKSPACE_A.path]: WORKSPACE_A,
+                    [WORKSPACE_B.path]: WORKSPACE_B,
+                  },
+                },
+              },
+            ],
+            activeDraftId: "v1-populated",
+          },
+          version: 1,
+        }),
+      );
+      await useLandingDraftStore.persist.rehydrate();
+
+      const workspace = useLandingDraftStore.getState().drafts[0].workspace;
+      expect(workspace.folders).toEqual([WORKSPACE_A.path, WORKSPACE_B.path]);
+      expect(workspace.primaryPath).toBe(WORKSPACE_A.path);
+    });
+
+    it("rehydrates a switched (non-first) primaryPath verbatim after a reload", async () => {
+      setLandingDraftDesktopProjectionBridge(null);
+      window.localStorage.setItem(
+        LANDING_DRAFT_PERSIST_KEY,
+        JSON.stringify({
+          state: {
+            drafts: [
+              {
+                id: "switched-primary",
+                content: { type: "doc", content: [{ type: "paragraph" }] },
+                selection: null,
+                lastTouchedAt: 123,
+                settings: null,
+                composerMode: "chat",
+                workspace: {
+                  folders: [WORKSPACE_A.path, WORKSPACE_B.path],
+                  folderInfoByPath: {
+                    [WORKSPACE_A.path]: WORKSPACE_A,
+                    [WORKSPACE_B.path]: WORKSPACE_B,
+                  },
+                  // The user switched primary to the SECOND folder before
+                  // the reload; rehydration must not fall back to first.
+                  primaryPath: WORKSPACE_B.path,
+                },
+              },
+            ],
+            activeDraftId: "switched-primary",
+          },
+          version: 1,
+        }),
+      );
+      await useLandingDraftStore.persist.rehydrate();
+
+      expect(
+        useLandingDraftStore.getState().drafts[0].workspace.primaryPath,
+      ).toBe(WORKSPACE_B.path);
+    });
+
+    it("drops a ghost folder (no metadata) from a persisted draft workspace and never resolves it as primary", async () => {
+      setLandingDraftDesktopProjectionBridge(null);
+      window.localStorage.setItem(
+        LANDING_DRAFT_PERSIST_KEY,
+        JSON.stringify({
+          state: {
+            drafts: [
+              {
+                id: "ghost-folder",
+                content: { type: "doc", content: [{ type: "paragraph" }] },
+                selection: null,
+                lastTouchedAt: 123,
+                settings: null,
+                composerMode: "chat",
+                workspace: {
+                  // "/tmp/ghost" is in the folder array but has NO metadata
+                  // entry - corrupt persisted state.
+                  folders: ["/tmp/ghost", WORKSPACE_A.path],
+                  folderInfoByPath: {
+                    [WORKSPACE_A.path]: WORKSPACE_A,
+                  },
+                  primaryPath: "/tmp/ghost",
+                },
+              },
+            ],
+            activeDraftId: "ghost-folder",
+          },
+          version: 1,
+        }),
+      );
+      await useLandingDraftStore.persist.rehydrate();
+
+      const workspace = useLandingDraftStore.getState().drafts[0].workspace;
+      expect(workspace.folders).toEqual([WORKSPACE_A.path]);
+      expect(workspace.primaryPath).toBe(WORKSPACE_A.path);
+    });
+
     it("drops a legacy prompt-only draft with no valid content", async () => {
       setLandingDraftDesktopProjectionBridge(null);
       window.localStorage.setItem(
@@ -225,21 +420,33 @@ describe("useLandingDraftStore", () => {
 
   it("createDraft always creates a new draft and sets it active", () => {
     const { createDraft } = useLandingDraftStore.getState();
-    const first = createDraft(null);
+    const first = createDraft(null, undefined);
     expect(first.length).toBeGreaterThan(0);
     expect(useLandingDraftStore.getState().activeDraftId).toBe(first);
 
-    const second = createDraft(null);
+    const second = createDraft(null, undefined);
     expect(second).not.toBe(first);
     expect(useLandingDraftStore.getState().drafts).toHaveLength(2);
     expect(useLandingDraftStore.getState().activeDraftId).toBe(second);
     expect(useEpicCanvasStore.getState().openTabOrder).toEqual([]);
   });
 
+  it("createDraft uses a pre-minted id verbatim when provided", () => {
+    const { createDraft } = useLandingDraftStore.getState();
+    const preMintedId = "pre-minted-id-123";
+
+    const id = createDraft(null, preMintedId);
+
+    expect(id).toBe(preMintedId);
+    expect(useLandingDraftStore.getState().activeDraftId).toBe(preMintedId);
+    expect(useLandingDraftStore.getState().drafts).toHaveLength(1);
+    expect(useLandingDraftStore.getState().drafts[0].id).toBe(preMintedId);
+  });
+
   it("setDraftContent stores content on the target draft and bails on no-op writes", () => {
     const { createDraft, setDraftContent } = useLandingDraftStore.getState();
 
-    const id = createDraft(null);
+    const id = createDraft(null, undefined);
     setDraftContent(id, textContent("hello world"), null);
     expect(useLandingDraftStore.getState().drafts[0].content).toEqual(
       textContent("hello world"),
@@ -257,8 +464,8 @@ describe("useLandingDraftStore", () => {
     const { createDraft, setDraftSettings } = useLandingDraftStore.getState();
     const mutableHaikuSettings = { ...HAIKU_SETTINGS };
     const mutableSonnetSettings = { ...SONNET_SETTINGS };
-    const haikuDraftId = createDraft(mutableHaikuSettings);
-    const sonnetDraftId = createDraft(mutableSonnetSettings);
+    const haikuDraftId = createDraft(mutableHaikuSettings, undefined);
+    const sonnetDraftId = createDraft(mutableSonnetSettings, undefined);
 
     setDraftSettings(sonnetDraftId, mutableSonnetSettings);
     mutableHaikuSettings.model = "mutated-haiku";
@@ -276,8 +483,8 @@ describe("useLandingDraftStore", () => {
   it("keeps composer mode independent per draft", () => {
     const { createDraft, setDraftComposerMode } =
       useLandingDraftStore.getState();
-    const a = createDraft(null);
-    const b = createDraft(null);
+    const a = createDraft(null, undefined);
+    const b = createDraft(null, undefined);
 
     setDraftComposerMode(a, "terminal");
 
@@ -293,7 +500,7 @@ describe("useLandingDraftStore", () => {
   it("seeds new drafts with the global last-used composer mode", () => {
     useSettingsStore.setState({ composerMode: "terminal" });
 
-    const id = useLandingDraftStore.getState().createDraft(null);
+    const id = useLandingDraftStore.getState().createDraft(null, undefined);
 
     expect(
       useLandingDraftStore.getState().drafts.find((draft) => draft.id === id)
@@ -306,13 +513,13 @@ describe("useLandingDraftStore", () => {
       folders: [WORKSPACE_A.path],
       folderInfoByPath: { [WORKSPACE_A.path]: WORKSPACE_A },
     });
-    const draftA = useLandingDraftStore.getState().createDraft(null);
+    const draftA = useLandingDraftStore.getState().createDraft(null, undefined);
 
     useWorkspaceFoldersStore.setState({
       folders: [WORKSPACE_B.path],
       folderInfoByPath: { [WORKSPACE_B.path]: WORKSPACE_B },
     });
-    const draftB = useLandingDraftStore.getState().createDraft(null);
+    const draftB = useLandingDraftStore.getState().createDraft(null, undefined);
     useLandingDraftStore
       .getState()
       .addDraftResolvedFolders(draftB, [WORKSPACE_C]);
@@ -367,11 +574,14 @@ describe("useLandingDraftStore", () => {
     expect(useLandingDraftStore.getState().drafts[0].workspace).toEqual({
       folders: [WORKSPACE_A.path],
       folderInfoByPath: { [WORKSPACE_A.path]: WORKSPACE_A },
+      primaryPath: WORKSPACE_A.path,
     });
   });
 
-  it("caps draft-added workspace folders to the newest 50 entries", () => {
-    const draftId = useLandingDraftStore.getState().createDraft(null);
+  it("caps draft-added workspace folders to the newest 50 entries, never evicting primary", () => {
+    const draftId = useLandingDraftStore
+      .getState()
+      .createDraft(null, undefined);
     const folders = Array.from({ length: 55 }, (_, index) =>
       numberedWorkspace(index),
     );
@@ -380,20 +590,90 @@ describe("useLandingDraftStore", () => {
 
     const workspace = useLandingDraftStore.getState().drafts[0].workspace;
     expect(workspace.folders).toHaveLength(50);
-    expect(workspace.folders[0]).toBe("/tmp/workspace-5");
+    // Primary resolves to the first folder (nothing was explicitly marked
+    // primary yet) and the cap trim must preserve it even though it is the
+    // OLDEST entry - the eviction trims the oldest SECONDARIES instead.
+    expect(workspace.primaryPath).toBe("/tmp/workspace-0");
+    expect(workspace.folders[0]).toBe("/tmp/workspace-0");
     expect(workspace.folders.at(-1)).toBe("/tmp/workspace-54");
-    expect(workspace.folderInfoByPath["/tmp/workspace-0"]).toBeUndefined();
+    expect(workspace.folderInfoByPath["/tmp/workspace-0"]).toEqual(
+      numberedWorkspace(0),
+    );
+    expect(workspace.folderInfoByPath["/tmp/workspace-5"]).toBeUndefined();
     expect(workspace.folderInfoByPath["/tmp/workspace-54"]).toEqual(
       numberedWorkspace(54),
     );
   });
 
+  it("50->51 cap transition never silently moves an EXPLICIT primary that isn't the oldest folder", () => {
+    const draftId = useLandingDraftStore
+      .getState()
+      .createDraft(null, undefined);
+    const folders = Array.from({ length: 50 }, (_, index) =>
+      numberedWorkspace(index),
+    );
+    useLandingDraftStore.getState().addDraftResolvedFolders(draftId, folders);
+    // Mark a folder that is NOT the oldest (and would otherwise be the first
+    // trimmed) as primary.
+    useLandingDraftStore
+      .getState()
+      .setDraftWorkspacePrimary(draftId, "/tmp/workspace-2");
+
+    useLandingDraftStore
+      .getState()
+      .addDraftResolvedFolders(draftId, [numberedWorkspace(50)]);
+
+    const workspace = useLandingDraftStore.getState().drafts[0].workspace;
+    expect(workspace.folders).toHaveLength(50);
+    expect(workspace.primaryPath).toBe("/tmp/workspace-2");
+    expect(workspace.folders).toContain("/tmp/workspace-2");
+    expect(workspace.folders).toContain("/tmp/workspace-50");
+    // The oldest secondary (not the explicit primary) is evicted instead.
+    expect(workspace.folders).not.toContain("/tmp/workspace-0");
+  });
+
+  it("setDraftWorkspacePrimary scopes primary to the draft, leaving the global workspace store untouched", () => {
+    const draftId = useLandingDraftStore
+      .getState()
+      .createDraft(null, undefined);
+    useLandingDraftStore
+      .getState()
+      .addDraftResolvedFolders(draftId, [WORKSPACE_A, WORKSPACE_B]);
+
+    useLandingDraftStore
+      .getState()
+      .setDraftWorkspacePrimary(draftId, WORKSPACE_B.path);
+
+    const draftWorkspace = useLandingDraftStore.getState().drafts[0].workspace;
+    expect(draftWorkspace.primaryPath).toBe(WORKSPACE_B.path);
+    // The global store was never touched by a draft-scoped mutation - it
+    // has no folders at all in this test, so its primary stays null.
+    expect(useWorkspaceFoldersStore.getState().primaryPath).toBeNull();
+  });
+
+  it("a folder outside the draft's workspace is not settable as primary (no-op)", () => {
+    const draftId = useLandingDraftStore
+      .getState()
+      .createDraft(null, undefined);
+    useLandingDraftStore
+      .getState()
+      .addDraftResolvedFolders(draftId, [WORKSPACE_A]);
+
+    useLandingDraftStore
+      .getState()
+      .setDraftWorkspacePrimary(draftId, "/not-in-this-draft");
+
+    expect(
+      useLandingDraftStore.getState().drafts[0].workspace.primaryPath,
+    ).toBe(WORKSPACE_A.path);
+  });
+
   it("closeDraft removes the draft and picks another as active", () => {
     const { createDraft, setDraftContent, closeDraft } =
       useLandingDraftStore.getState();
-    const a = createDraft(null);
+    const a = createDraft(null, undefined);
     setDraftContent(a, textContent("wip"), null);
-    const b = createDraft(null);
+    const b = createDraft(null, undefined);
 
     closeDraft(a);
     expect(useLandingDraftStore.getState().drafts).toHaveLength(1);
@@ -404,7 +684,7 @@ describe("useLandingDraftStore", () => {
 
   it("closeDraft sets activeDraftId to null when last draft is removed", () => {
     const { createDraft, closeDraft } = useLandingDraftStore.getState();
-    const id = createDraft(null);
+    const id = createDraft(null, undefined);
     closeDraft(id);
     expect(useLandingDraftStore.getState().drafts).toHaveLength(0);
     expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
@@ -419,8 +699,8 @@ describe("useLandingDraftStore", () => {
 
   it("setActiveDraft switches the active draft", () => {
     const { createDraft, setActiveDraft } = useLandingDraftStore.getState();
-    const a = createDraft(null);
-    const b = createDraft(null);
+    const a = createDraft(null, undefined);
+    const b = createDraft(null, undefined);
     expect(useLandingDraftStore.getState().activeDraftId).toBe(b);
     setActiveDraft(a);
     expect(useLandingDraftStore.getState().activeDraftId).toBe(a);
@@ -428,7 +708,7 @@ describe("useLandingDraftStore", () => {
 
   it("clearActiveDraft clears the active marker without removing drafts", () => {
     const { createDraft, clearActiveDraft } = useLandingDraftStore.getState();
-    const draftId = createDraft(null);
+    const draftId = createDraft(null, undefined);
 
     clearActiveDraft();
 
@@ -443,8 +723,8 @@ describe("useLandingDraftStore", () => {
     const epicTabId = useEpicCanvasStore
       .getState()
       .openEpicTab("epic-a", "Epic A");
-    const a = createDraft(null);
-    const b = createDraft(null);
+    const a = createDraft(null, undefined);
+    const b = createDraft(null, undefined);
 
     expect(useEpicCanvasStore.getState().openTabOrder).toEqual([epicTabId]);
     expect(useLandingDraftStore.getState().drafts.map((tab) => tab.id)).toEqual(
@@ -478,7 +758,7 @@ describe("useLandingDraftStore", () => {
       activeDraftId: "draft-old",
     });
 
-    const next = useLandingDraftStore.getState().createDraft(null);
+    const next = useLandingDraftStore.getState().createDraft(null, undefined);
 
     expect(
       useLandingDraftStore.getState().drafts.map((draft) => draft.id),
@@ -631,7 +911,7 @@ describe("useLandingDraftStore", () => {
 
   it("keeps the initial landing-draft projection clean for a new window", () => {
     const { createDraft, setDraftContent } = useLandingDraftStore.getState();
-    const id = createDraft(null);
+    const id = createDraft(null, undefined);
     setDraftContent(id, textContent("do not inherit me"), null);
 
     const initial = useLandingDraftStore.getInitialState();
@@ -728,7 +1008,7 @@ describe("useLandingDraftStore", () => {
     });
 
     try {
-      const id = useLandingDraftStore.getState().createDraft(null);
+      const id = useLandingDraftStore.getState().createDraft(null, undefined);
       useLandingDraftStore
         .getState()
         .setDraftContent(id, imageContent, { from: 2, to: 5 });
@@ -825,7 +1105,7 @@ describe("useLandingDraftStore", () => {
 
   it("persists drafts to localStorage under the versioned key", async () => {
     const { createDraft, setDraftContent } = useLandingDraftStore.getState();
-    const id = createDraft(null);
+    const id = createDraft(null, undefined);
     setDraftContent(id, textContent("survives reload"), null);
 
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -845,5 +1125,299 @@ describe("useLandingDraftStore", () => {
       textContent("survives reload"),
     );
     expect(parsed.state?.drafts?.[0]?.settings).toBeNull();
+  });
+
+  // Mechanism A (round 5): the strip lives at the two SERIALIZATION seams — the
+  // localStorage `partialize` and the desktop projection — NOT in
+  // `setDraftContent`. The in-memory draft is canonical and keeps a paste's
+  // still-pending b64 node so a keyed remount / in-session navigate-back can
+  // re-ingest it; only the serialized forms are guaranteed base64-free.
+  describe("base64 image nodes strip only at the serialization seams", () => {
+    const mixedPendingContent: JsonContent = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "A" },
+            {
+              type: "imageAttachment",
+              attrs: {
+                id: "pending-b64",
+                fileName: "pending.png",
+                b64content: "YWJj",
+                mimeType: "image/png",
+                size: 3,
+              },
+            },
+            { type: "text", text: "B" },
+            {
+              type: "imageAttachment",
+              attrs: {
+                id: "stored-hash",
+                fileName: "stored.png",
+                hash: "a".repeat(64),
+                mimeType: "image/png",
+                size: 10,
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const strippedContent: JsonContent = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "A" },
+            { type: "text", text: "B" },
+            {
+              type: "imageAttachment",
+              attrs: {
+                id: "stored-hash",
+                fileName: "stored.png",
+                hash: "a".repeat(64),
+                mimeType: "image/png",
+                size: 10,
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    it("setDraftContent keeps the pending b64 node in the canonical in-memory draft", () => {
+      const id = useLandingDraftStore.getState().createDraft(null, undefined);
+      useLandingDraftStore
+        .getState()
+        .setDraftContent(id, mixedPendingContent, null);
+      // Verbatim — this is the content the keyed remount reads back and the
+      // mount-time re-entry re-ingests.
+      expect(
+        useLandingDraftStore.getState().drafts.find((d) => d.id === id)
+          ?.content,
+      ).toEqual(mixedPendingContent);
+    });
+
+    it("the desktop projection strips the pending b64 node (keeping text + hash)", () => {
+      const patches: DesktopPerWindowStatePatch[] = [];
+      setLandingDraftDesktopProjectionBridge({
+        update: (patch) => {
+          patches.push(patch);
+          return Promise.resolve();
+        },
+        flush: () => Promise.resolve(),
+        dispose: () => undefined,
+      });
+      try {
+        const id = useLandingDraftStore.getState().createDraft(null, undefined);
+        useLandingDraftStore
+          .getState()
+          .setDraftContent(id, mixedPendingContent, null);
+        const outbound = patches.at(-1)?.landingDrafts;
+        expect(outbound).toHaveLength(1);
+        expect(outbound?.[0].content).toEqual(strippedContent);
+      } finally {
+        setLandingDraftDesktopProjectionBridge(null);
+      }
+    });
+
+    it("the localStorage partialize strips the pending b64 node (keeping text + hash)", async () => {
+      const id = useLandingDraftStore.getState().createDraft(null, undefined);
+      useLandingDraftStore
+        .getState()
+        .setDraftContent(id, mixedPendingContent, null);
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      const raw = window.localStorage.getItem(LANDING_DRAFT_PERSIST_KEY);
+      expect(raw).not.toBeNull();
+      const parsed = JSON.parse(raw ?? "{}") as {
+        state?: { drafts?: Array<{ id: string; content: JsonContent }> };
+      };
+      expect(parsed.state?.drafts?.[0]?.content).toEqual(strippedContent);
+    });
+
+    it("drops an attachmentGroup left empty after stripping its only b64 child from the serialized form", () => {
+      const onlyPending: JsonContent = {
+        type: "doc",
+        content: [
+          {
+            type: "attachmentGroup",
+            content: [
+              {
+                type: "imageAttachment",
+                attrs: {
+                  id: "only-pending",
+                  fileName: "x.png",
+                  b64content: "eA==",
+                  mimeType: "image/png",
+                  size: 1,
+                },
+              },
+            ],
+          },
+        ],
+      };
+      const patches: DesktopPerWindowStatePatch[] = [];
+      setLandingDraftDesktopProjectionBridge({
+        update: (patch) => {
+          patches.push(patch);
+          return Promise.resolve();
+        },
+        flush: () => Promise.resolve(),
+        dispose: () => undefined,
+      });
+      try {
+        const id = useLandingDraftStore.getState().createDraft(null, undefined);
+        useLandingDraftStore.getState().setDraftContent(id, onlyPending, null);
+        // In-memory keeps the pending group verbatim...
+        expect(
+          useLandingDraftStore.getState().drafts.find((d) => d.id === id)
+            ?.content,
+        ).toEqual(onlyPending);
+        // ...but the projected form drops the now-empty attachmentGroup (strip
+        // returns the doc node, not null, once its children are gone).
+        expect(patches.at(-1)?.landingDrafts?.[0].content).toEqual({
+          type: "doc",
+          content: [],
+        });
+      } finally {
+        setLandingDraftDesktopProjectionBridge(null);
+      }
+    });
+  });
+
+  describe("[B1] empty-inbound clobber guard", () => {
+    it("preserves non-empty in-memory drafts on empty inbound and re-projects outbound", () => {
+      // Stub the GC gates (no call-through): this suite has no idb-keyval mock,
+      // and the assertion is about whether the guard fires them, not the sweep.
+      // [B1-P2] mount→readiness is covered with the real GC in
+      // landing-image-gc.test.ts `[B1+B2]` (spyOn cannot intercept same-module
+      // internal calls from markLandingEditorMounted → markLandingDraftsReady).
+      const markReady = vi
+        .spyOn(landingImageGc, "markLandingDraftsReady")
+        .mockImplementation(() => undefined);
+      const markAuthoritative = vi
+        .spyOn(landingImageGc, "markLandingDraftsAuthoritativeNonEmpty")
+        .mockImplementation(() => undefined);
+      const patches: DesktopPerWindowStatePatch[] = [];
+      setLandingDraftDesktopProjectionBridge({
+        update: (patch) => {
+          patches.push(patch);
+          return Promise.resolve();
+        },
+        flush: () => Promise.resolve(),
+        dispose: () => undefined,
+      });
+
+      try {
+        // The first host-owned snapshot is authoritative even when empty. Only
+        // later empty updates may be rejected as spurious live-window churn.
+        applyLandingDraftDesktopProjection(emptyWindowSnapshot({}));
+        const id = useLandingDraftStore.getState().createDraft(null, undefined);
+        useLandingDraftStore
+          .getState()
+          .setDraftContent(id, textContent("alive draft"), null);
+        const inMemoryBefore = useLandingDraftStore.getState().drafts;
+        expect(inMemoryBefore).toHaveLength(1);
+        patches.length = 0;
+        markReady.mockClear();
+        markAuthoritative.mockClear();
+
+        // Spurious empty projection (registry churn / stale cold-start read).
+        applyLandingDraftDesktopProjection(
+          emptyWindowSnapshot({
+            landingDrafts: [],
+            activeLandingDraftId: null,
+          }),
+        );
+
+        // In-memory truth is preserved.
+        expect(useLandingDraftStore.getState().drafts).toEqual(inMemoryBefore);
+        expect(useLandingDraftStore.getState().activeDraftId).toBe(id);
+        // Guard re-projects outbound so disk reconverges to the live draft.
+        expect(patches).toHaveLength(1);
+        expect(patches[0].landingDrafts).toHaveLength(1);
+        expect(patches[0].landingDrafts?.[0]?.id).toBe(id);
+        expect(patches[0].activeLandingDraftId).toBe(id);
+        // Ready/authoritative gates must NOT flip on a bad empty inbound -
+        // that is the exact path that would fire a reaping reconcile.
+        expect(markReady).not.toHaveBeenCalled();
+        expect(markAuthoritative).not.toHaveBeenCalled();
+      } finally {
+        setLandingDraftDesktopProjectionBridge(null);
+        markReady.mockRestore();
+        markAuthoritative.mockRestore();
+      }
+    });
+
+    it("applies the first empty desktop hydrate over stale local drafts", () => {
+      const markReady = vi
+        .spyOn(landingImageGc, "markLandingDraftsReady")
+        .mockImplementation(() => undefined);
+      const patches: DesktopPerWindowStatePatch[] = [];
+      setLandingDraftDesktopProjectionBridge({
+        update: (patch) => {
+          patches.push(patch);
+          return Promise.resolve();
+        },
+        flush: () => Promise.resolve(),
+        dispose: () => undefined,
+      });
+
+      try {
+        const staleId = useLandingDraftStore
+          .getState()
+          .createDraft(null, undefined);
+        useLandingDraftStore
+          .getState()
+          .setDraftContent(staleId, textContent("stale local draft"), null);
+        patches.length = 0;
+        markReady.mockClear();
+
+        applyLandingDraftDesktopProjection(
+          emptyWindowSnapshot({
+            landingDrafts: [],
+            activeLandingDraftId: null,
+          }),
+        );
+
+        expect(useLandingDraftStore.getState().drafts).toEqual([]);
+        expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+        expect(patches).toEqual([]);
+        expect(markReady).toHaveBeenCalledOnce();
+      } finally {
+        setLandingDraftDesktopProjectionBridge(null);
+        markReady.mockRestore();
+      }
+    });
+
+    it("applies an empty inbound normally when in-memory drafts are already empty", () => {
+      const markReady = vi
+        .spyOn(landingImageGc, "markLandingDraftsReady")
+        .mockImplementation(() => undefined);
+      markReady.mockClear();
+
+      try {
+        expect(useLandingDraftStore.getState().drafts).toEqual([]);
+
+        applyLandingDraftDesktopProjection(
+          emptyWindowSnapshot({
+            landingDrafts: [],
+            activeLandingDraftId: null,
+          }),
+        );
+
+        expect(useLandingDraftStore.getState().drafts).toEqual([]);
+        expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+        // Empty+empty is a legitimate first projection: ready gate may fire.
+        expect(markReady).toHaveBeenCalled();
+      } finally {
+        markReady.mockRestore();
+      }
+    });
   });
 });

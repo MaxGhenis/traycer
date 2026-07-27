@@ -6,6 +6,7 @@
 import "../../../../../__tests__/test-browser-apis";
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
+import { createArtifactInDocForTests } from "./projection-helpers-test-shims";
 import {
   createOpenEpicStore,
   type EpicStreamClientFactory,
@@ -116,6 +117,24 @@ function makeTerminalAgentEntry(
   return agent;
 }
 
+function makeRoleClaimEntry(args: {
+  readonly claimId: string;
+  readonly agentId: string;
+  readonly userId: string;
+  readonly role: string;
+  readonly scope: string;
+  readonly claimedAt: number;
+}): Y.Map<unknown> {
+  const claim = new Y.Map<unknown>();
+  claim.set("claimId", args.claimId);
+  claim.set("agentId", args.agentId);
+  claim.set("userId", args.userId);
+  claim.set("role", args.role);
+  claim.set("scope", args.scope);
+  claim.set("claimedAt", args.claimedAt);
+  return claim;
+}
+
 /**
  * Build a deleted-artifact tombstone entry exactly as the host writes it into
  * `epic.deletedArtifacts`. `status` is only set for ticket/story (spec/review
@@ -149,9 +168,9 @@ describe("epic-projector", () => {
     handle.dispose();
   });
 
-  it("createArtifact populates artifacts.byId, allIds and the tree", () => {
+  it("a seeded artifact populates artifacts.byId, allIds and the tree", () => {
     const { handle } = newSession();
-    const id = handle.store.getState().createArtifact("spec", null);
+    const id = createArtifactInDocForTests(handle.doc, "spec", null);
     const state = handle.store.getState();
     expect(state.artifacts.allIds).toContain(id);
     expect(state.artifacts.byId[id].kind).toBe("spec");
@@ -164,7 +183,7 @@ describe("epic-projector", () => {
 
   it("projects artifactRoomId metadata without changing tree display fields", () => {
     const { handle } = newSession();
-    const id = handle.store.getState().createArtifact("spec", null);
+    const id = createArtifactInDocForTests(handle.doc, "spec", null);
     const artifactBefore = handle.store.getState().artifacts.byId[id];
     const treeBefore = handle.store.getState().tree;
 
@@ -189,8 +208,8 @@ describe("epic-projector", () => {
 
   it("rename only re-allocates the renamed slot; siblings keep ===", () => {
     const { handle } = newSession();
-    const a = handle.store.getState().createArtifact("spec", null);
-    const b = handle.store.getState().createArtifact("ticket", null);
+    const a = createArtifactInDocForTests(handle.doc, "spec", null);
+    const b = createArtifactInDocForTests(handle.doc, "ticket", null);
     const beforeA = handle.store.getState().artifacts.byId[a];
     const beforeB = handle.store.getState().artifacts.byId[b];
 
@@ -206,7 +225,7 @@ describe("epic-projector", () => {
 
   it("title edit does not invalidate tree rootIds when set is unchanged", () => {
     const { handle } = newSession();
-    const a = handle.store.getState().createArtifact("spec", null);
+    const a = createArtifactInDocForTests(handle.doc, "spec", null);
     const treeBefore = handle.store.getState().tree;
 
     handle.store.getState().renameArtifact(a, "Renamed");
@@ -219,8 +238,8 @@ describe("epic-projector", () => {
 
   it("structural change (parent move) updates childrenByParent buckets", () => {
     const { handle } = newSession();
-    const parent = handle.store.getState().createArtifact("spec", null);
-    const child = handle.store.getState().createArtifact("ticket", null);
+    const parent = createArtifactInDocForTests(handle.doc, "spec", null);
+    const child = createArtifactInDocForTests(handle.doc, "ticket", null);
 
     handle.store.getState().reparentArtifact(child, parent);
 
@@ -233,10 +252,10 @@ describe("epic-projector", () => {
 
   it("delete preserves artifact child parent links for host cascade", () => {
     const { handle } = newSession();
-    const root = handle.store.getState().createArtifact("spec", null);
-    const mid = handle.store.getState().createArtifact("spec", root);
-    const leaf = handle.store.getState().createArtifact("ticket", mid);
-    const chat = handle.store.getState().createArtifact("chat", mid);
+    const root = createArtifactInDocForTests(handle.doc, "spec", null);
+    const mid = createArtifactInDocForTests(handle.doc, "spec", root);
+    const leaf = createArtifactInDocForTests(handle.doc, "ticket", mid);
+    const chat = createArtifactInDocForTests(handle.doc, "chat", mid);
 
     handle.store.getState().deleteArtifact(mid);
 
@@ -251,7 +270,7 @@ describe("epic-projector", () => {
 
   it("chat creation populates chats slice and tree as a chat node", () => {
     const { handle } = newSession();
-    const id = handle.store.getState().createArtifact("chat", null);
+    const id = createArtifactInDocForTests(handle.doc, "chat", null);
     const state = handle.store.getState();
     expect(state.chats.allIds).toContain(id);
     expect(state.chats.byId[id].title).toBe("New chat");
@@ -275,9 +294,9 @@ describe("epic-projector", () => {
 
   it("projected slices match a fresh full projection of the live Y.Doc", () => {
     const { handle } = newSession();
-    const a = handle.store.getState().createArtifact("spec", null);
-    const b = handle.store.getState().createArtifact("ticket", a);
-    const c = handle.store.getState().createArtifact("chat", null);
+    const a = createArtifactInDocForTests(handle.doc, "spec", null);
+    const b = createArtifactInDocForTests(handle.doc, "ticket", a);
+    const c = createArtifactInDocForTests(handle.doc, "chat", null);
     handle.store.getState().setEpicTitle("Parity Check");
     handle.store.getState().renameArtifact(b, "Ticket B");
     void a;
@@ -388,6 +407,80 @@ describe("epic-projector", () => {
       expect(state.tree.nodeById.theirs).toBeUndefined();
       handle.dispose();
     } finally {
+      useAuthStore.getState().setSignedOut();
+    }
+  });
+
+  it("projects live same-account role claims and removes badges with their agents", () => {
+    useAuthStore
+      .getState()
+      .setSignedIn(
+        { userId: "user-a", userName: "A", email: "a@example.com" },
+        { userId: "user-a", username: "A" },
+        [],
+      );
+    const { handle } = newSession();
+    try {
+      const claimId = "10000000-0000-4000-8000-000000000001";
+      const visibleClaim = makeRoleClaimEntry({
+        claimId,
+        agentId: "agent-a",
+        userId: "user-a",
+        role: "Planner",
+        scope: "Authentication",
+        claimedAt: 1,
+      });
+      handle.doc.transact(() => {
+        const chats = new Y.Map<unknown>();
+        chats.set("agent-a", makeChatEntry("agent-a", "user-a", "Agent A"));
+        const claims = new Y.Map<unknown>();
+        claims.set(claimId, visibleClaim);
+        claims.set(
+          "10000000-0000-4000-8000-000000000002",
+          makeRoleClaimEntry({
+            claimId: "10000000-0000-4000-8000-000000000002",
+            agentId: "agent-a",
+            userId: "user-b",
+            role: "Foreign",
+            scope: "Hidden",
+            claimedAt: 2,
+          }),
+        );
+        claims.set(
+          "10000000-0000-4000-8000-000000000003",
+          makeRoleClaimEntry({
+            claimId: "10000000-0000-4000-8000-000000000003",
+            agentId: "deleted-agent",
+            userId: "user-a",
+            role: "Stale",
+            scope: "Hidden",
+            claimedAt: 3,
+          }),
+        );
+        handle.doc.getMap("epic").set("chats", chats);
+        handle.doc.getMap("epic").set("roleClaims", claims);
+      });
+
+      expect(handle.store.getState().agentRoles.byAgentId["agent-a"]).toEqual([
+        expect.objectContaining({ role: "Planner", scope: "Authentication" }),
+      ]);
+      expect(
+        handle.store.getState().agentRoles.byAgentId["deleted-agent"],
+      ).toBeUndefined();
+
+      visibleClaim.set("role", "Lead Planner");
+      expect(
+        handle.store.getState().agentRoles.byAgentId["agent-a"][0].role,
+      ).toBe("Lead Planner");
+
+      const chats = handle.doc.getMap("epic").get("chats");
+      if (!(chats instanceof Y.Map)) throw new Error("expected chats map");
+      chats.delete("agent-a");
+      expect(
+        handle.store.getState().agentRoles.byAgentId["agent-a"],
+      ).toBeUndefined();
+    } finally {
+      handle.dispose();
       useAuthStore.getState().setSignedOut();
     }
   });
@@ -635,7 +728,7 @@ describe("epic-projector", () => {
 
   it("a tombstone-only change does not rebuild the live artifact tree or byId", () => {
     const { handle } = newSession();
-    const live = handle.store.getState().createArtifact("spec", null);
+    const live = createArtifactInDocForTests(handle.doc, "spec", null);
 
     const treeBefore = handle.store.getState().tree;
     const artifactsBefore = handle.store.getState().artifacts;
@@ -671,8 +764,8 @@ describe("epic-projector", () => {
 
   it("preserves live artifact rename identity semantics when tombstones exist", () => {
     const { handle } = newSession();
-    const a = handle.store.getState().createArtifact("spec", null);
-    const b = handle.store.getState().createArtifact("ticket", null);
+    const a = createArtifactInDocForTests(handle.doc, "spec", null);
+    const b = createArtifactInDocForTests(handle.doc, "ticket", null);
 
     handle.doc.transact(() => {
       const tombstones = new Y.Map<unknown>();

@@ -28,23 +28,21 @@ import {
 import { useOpenEpicHandle } from "@/providers/use-open-epic-handle";
 import { requestArtifactEditorFocus } from "@/lib/artifacts/pending-editor-focus";
 import { openProjectedSidebarNodeInTabWhenAvailable } from "@/components/epic-canvas/sidebar/open-projected-sidebar-node";
+import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
+import { useEpicExportArtifacts } from "@/hooks/epic/use-epic-export-artifacts-mutation";
 import { cn } from "@/lib/utils";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { ArtifactPanelSearchShell } from "@/components/epic-canvas/sidebar/epic-sidebar-artifact-search";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
 import { ConfirmDestructiveDialog } from "@/components/ui/confirm-destructive-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  SidebarContent,
-  SidebarGroup,
-  SidebarGroupContent,
-} from "@/components/ui/sidebar";
+import { ContextMenuContent } from "@/components/ui/context-menu";
+import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
 import { TreeChevron, TreeChevronSpacer } from "@/components/ui/tree-chevron";
 import {
   Tooltip,
@@ -97,6 +95,7 @@ import { isEditableRole } from "@/lib/epic-permissions";
 import { useSettingsStore } from "@/stores/settings/settings-store";
 import {
   Check,
+  FileDown,
   FileText,
   MoreHorizontal,
   Pencil,
@@ -152,6 +151,11 @@ import {
 import { SidebarReparentRowDropWrapper } from "@/components/epic-canvas/sidebar/sidebar-reparent-row-drop-wrapper";
 import { SidebarPanelEmptyState } from "@/components/epic-canvas/sidebar/sidebar-panel-empty-state";
 import type { ArtifactsSlice, TreeSlice } from "@/stores/epics/open-epic/types";
+import {
+  SidebarContextMenuItems,
+  SidebarDropdownMenuItems,
+  type SidebarRowMenuEntry,
+} from "@/components/epic-canvas/sidebar/sidebar-row-menu-items";
 
 interface ArtifactTreePanelBodyProps {
   readonly epicId: string;
@@ -594,13 +598,13 @@ export function ArtifactTreePanelBody(props: ArtifactTreePanelBodyProps) {
   return (
     <SidebarSortContext.Provider value={comparator}>
       <SidebarFilterVisibilityContext.Provider value={visibleIds}>
-        <SidebarContent className="gap-0">
+        <ArtifactPanelSearchShell epicId={epicId} tabId={tabId}>
           <SidebarGroup className="min-h-0 flex-1 px-2 py-1">
             <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
               {panelContent}
             </SidebarGroupContent>
           </SidebarGroup>
-        </SidebarContent>
+        </ArtifactPanelSearchShell>
       </SidebarFilterVisibilityContext.Provider>
     </SidebarSortContext.Provider>
   );
@@ -665,10 +669,15 @@ const ArtifactNode = memo(function ArtifactNode(props: ArtifactNodeProps) {
   const { expandedIds, toggleExpanded, ensureExpanded } = expansion;
   const node = useEpicTreeNode(nodeId);
   const childIds = useFilteredPanelChildIds(nodeId, treeFilter);
-  const openTileInTab = useEpicCanvasStore((s) => s.openTileInTab);
-  const closeCanvasTab = useEpicCanvasStore((s) => s.closeCanvasTab);
-  const openTilePreviewInTab = useEpicCanvasStore(
-    (s) => s.openTilePreviewInTab,
+  const navigateNested = useEpicNestedFocusNavigation();
+  const prepareOpenTileInTabFocusTarget = useEpicCanvasStore(
+    (s) => s.prepareOpenTileInTabFocusTargetFromSource,
+  );
+  const prepareCloseCanvasTabFocusTarget = useEpicCanvasStore(
+    (s) => s.prepareCloseCanvasTabFocusTarget,
+  );
+  const prepareOpenTilePreviewInTabFocusTarget = useEpicCanvasStore(
+    (s) => s.prepareOpenTilePreviewInTabFocusTargetFromSource,
   );
   const promotePreviewInTab = useEpicCanvasStore((s) => s.promotePreviewInTab);
   const markArtifactSelfDeleted = useEpicCanvasStore(
@@ -681,7 +690,7 @@ const ArtifactNode = memo(function ArtifactNode(props: ArtifactNodeProps) {
 
   const createArtifact = useEpicCreateArtifact();
   const deleteArtifact = useEpicDeleteArtifact();
-  const renameArtifact = useEpicRenameArtifact();
+  const renameArtifact = useEpicRenameArtifact(true);
   const renameArtifactInTab = useEpicCanvasStore((s) => s.renameArtifactInTab);
 
   const [pendingChildName, setPendingChildName] = useState<string | null>(null);
@@ -764,7 +773,15 @@ const ArtifactNode = memo(function ArtifactNode(props: ArtifactNodeProps) {
           tabId,
           nodeId: projectedNodeId,
           fallbackHostId: activeHostId,
-          openTileInTab,
+          openTileInTab: (targetTabId, nodeRef) => {
+            navigateNested(epicId, targetTabId, () =>
+              prepareOpenTileInTabFocusTarget(
+                targetTabId,
+                nodeRef,
+                "direct_ui",
+              ),
+            );
+          },
           onBeforeOpen,
           onOpened: () => {
             pendingProjectedOpenCancelRef.current = null;
@@ -781,7 +798,14 @@ const ArtifactNode = memo(function ArtifactNode(props: ArtifactNodeProps) {
           onCleanup: null,
         });
     },
-    [activeHostId, epicHandle, openTileInTab, tabId],
+    [
+      activeHostId,
+      epicHandle,
+      epicId,
+      navigateNested,
+      prepareOpenTileInTabFocusTarget,
+      tabId,
+    ],
   );
 
   const clearPendingChildCreate = useCallback(() => {
@@ -795,20 +819,28 @@ const ArtifactNode = memo(function ArtifactNode(props: ArtifactNodeProps) {
   const selectArtifactNode = useCallback(() => {
     if (isRenaming) return;
     if (openableType === null) return;
-    openTilePreviewInTab(tabId, {
-      id: nodeId,
-      instanceId: uuidv4(),
-      type: openableType,
-      name: nodeName,
-      hostId: activeHostId,
-    });
+    navigateNested(epicId, tabId, () =>
+      prepareOpenTilePreviewInTabFocusTarget(
+        tabId,
+        {
+          id: nodeId,
+          instanceId: uuidv4(),
+          type: openableType,
+          name: nodeName,
+          hostId: activeHostId,
+        },
+        "direct_ui",
+      ),
+    );
   }, [
     activeHostId,
+    epicId,
     isRenaming,
+    navigateNested,
     nodeName,
     nodeId,
-    openTilePreviewInTab,
     openableType,
+    prepareOpenTilePreviewInTabFocusTarget,
     tabId,
   ]);
 
@@ -817,23 +849,37 @@ const ArtifactNode = memo(function ArtifactNode(props: ArtifactNodeProps) {
     if (openableType === null) return;
     const found = findOpenArtifactInTab(tabId, nodeId);
     if (found !== null) {
-      promotePreviewInTab(tabId, found.paneId);
-    } else {
-      openTileInTab(tabId, {
-        id: nodeId,
-        instanceId: uuidv4(),
-        type: openableType,
-        name: nodeName,
-        hostId: activeHostId,
+      navigateNested(epicId, tabId, () => {
+        promotePreviewInTab(tabId, found.paneId);
+        return {
+          paneId: found.paneId,
+          tileInstanceId: found.instanceId,
+        };
       });
+    } else {
+      navigateNested(epicId, tabId, () =>
+        prepareOpenTileInTabFocusTarget(
+          tabId,
+          {
+            id: nodeId,
+            instanceId: uuidv4(),
+            type: openableType,
+            name: nodeName,
+            hostId: activeHostId,
+          },
+          "direct_ui",
+        ),
+      );
     }
   }, [
     activeHostId,
+    epicId,
     isRenaming,
+    navigateNested,
     nodeId,
     nodeName,
     openableType,
-    openTileInTab,
+    prepareOpenTileInTabFocusTarget,
     promotePreviewInTab,
     tabId,
   ]);
@@ -954,7 +1000,13 @@ const ArtifactNode = memo(function ArtifactNode(props: ArtifactNodeProps) {
       setConfirmDeleteOpen(false);
       const found = findOpenArtifactInTab(tabId, nodeId);
       if (found !== null) {
-        closeCanvasTab(tabId, found.paneId, found.instanceId);
+        navigateNested(epicId, tabId, () =>
+          prepareCloseCanvasTabFocusTarget(
+            tabId,
+            found.paneId,
+            found.instanceId,
+          ),
+        );
       }
     };
     const handleDeleteError = () => {
@@ -1148,6 +1200,13 @@ function ArtifactNodeShell(props: ArtifactNodeShellProps) {
     selectedIds,
     onToggleSelection,
   } = props;
+  const rowMenuEntries = useArtifactRowMenuEntries({
+    nodeId,
+    nodeName,
+    canMutate,
+    onStartRename,
+    onPerformDelete,
+  });
 
   return (
     <li
@@ -1160,6 +1219,13 @@ function ArtifactNodeShell(props: ArtifactNodeShellProps) {
         viewTabId={tabId}
         nodeId={nodeId}
         panelId="artifacts"
+        contextMenu={
+          !isRenaming && !selectionMode ? (
+            <ContextMenuContent>
+              <SidebarContextMenuItems entries={rowMenuEntries} />
+            </ContextMenuContent>
+          ) : null
+        }
       >
         {isRenaming ? (
           <ArtifactRenameRow
@@ -1219,13 +1285,11 @@ function ArtifactNodeShell(props: ArtifactNodeShellProps) {
           />
         ) : null}
 
-        {canEdit && !isRenaming && !selectionMode ? (
+        {!isRenaming && !selectionMode ? (
           <ArtifactMoreMenu
             nodeId={nodeId}
             nodeName={nodeName}
-            canMutate={canMutate}
-            onStartRename={onStartRename}
-            onPerformDelete={onPerformDelete}
+            entries={rowMenuEntries}
           />
         ) : null}
       </SidebarReparentRowDropWrapper>
@@ -1780,7 +1844,7 @@ function ArtifactAddChildButton(props: ArtifactAddChildButtonProps) {
   );
 }
 
-interface ArtifactMoreMenuProps {
+interface ArtifactRowMenuEntriesProps {
   readonly nodeId: string;
   readonly nodeName: string;
   readonly canMutate: boolean;
@@ -1788,8 +1852,91 @@ interface ArtifactMoreMenuProps {
   readonly onPerformDelete: () => void;
 }
 
-function ArtifactMoreMenu(props: ArtifactMoreMenuProps) {
-  const { nodeId, nodeName, canMutate, onStartRename, onPerformDelete } = props;
+function useArtifactRowMenuEntries(
+  props: ArtifactRowMenuEntriesProps,
+): ReadonlyArray<SidebarRowMenuEntry> {
+  const exportArtifacts = useEpicExportArtifacts();
+  const exportOne = (format: "markdown" | "pdf"): void => {
+    exportArtifacts.mutate({
+      artifacts: [{ id: props.nodeId, title: props.nodeName }],
+      format,
+      archive: false,
+      archiveTitle: null,
+    });
+  };
+  const exportIcon = exportArtifacts.isPending ? (
+    <AgentSpinningDots
+      className={undefined}
+      testId={undefined}
+      variant={undefined}
+    />
+  ) : (
+    <FileDown className="size-3.5" />
+  );
+  return [
+    {
+      kind: "item",
+      id: "export-markdown",
+      label: "Export as Markdown",
+      icon: exportIcon,
+      disabled: exportArtifacts.isPending,
+      variant: "default",
+      testIds: {
+        dropdown: `epic-sidebar-export-markdown-${props.nodeId}`,
+        context: `epic-sidebar-context-export-markdown-${props.nodeId}`,
+      },
+      onSelect: () => exportOne("markdown"),
+    },
+    {
+      kind: "item",
+      id: "export-pdf",
+      label: "Export as PDF",
+      icon: exportIcon,
+      disabled: exportArtifacts.isPending,
+      variant: "default",
+      testIds: {
+        dropdown: `epic-sidebar-export-pdf-${props.nodeId}`,
+        context: `epic-sidebar-context-export-pdf-${props.nodeId}`,
+      },
+      onSelect: () => exportOne("pdf"),
+    },
+    { kind: "separator", id: "after-export" },
+    {
+      kind: "item",
+      id: "rename",
+      label: "Rename",
+      icon: <Pencil className="size-3.5" />,
+      disabled: !props.canMutate,
+      variant: "default",
+      testIds: {
+        dropdown: `epic-sidebar-rename-${props.nodeId}`,
+        context: `epic-sidebar-context-rename-${props.nodeId}`,
+      },
+      onSelect: props.onStartRename,
+    },
+    { kind: "separator", id: "before-delete" },
+    {
+      kind: "item",
+      id: "delete",
+      label: "Delete",
+      icon: <Trash2 className="size-3.5" />,
+      disabled: !props.canMutate,
+      variant: "destructive",
+      testIds: {
+        dropdown: `epic-sidebar-delete-${props.nodeId}`,
+        context: `epic-sidebar-context-delete-${props.nodeId}`,
+      },
+      onSelect: props.onPerformDelete,
+    },
+  ];
+}
+
+function ArtifactMoreMenu(props: {
+  readonly nodeId: string;
+  readonly nodeName: string;
+  readonly entries: ReadonlyArray<SidebarRowMenuEntry>;
+}) {
+  const { nodeId, nodeName, entries } = props;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -1808,28 +1955,7 @@ function ArtifactMoreMenu(props: ArtifactMoreMenuProps) {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem
-          data-testid={`epic-sidebar-rename-${nodeId}`}
-          disabled={!canMutate}
-          onSelect={() => {
-            onStartRename();
-          }}
-        >
-          <Pencil className="size-3.5" />
-          Rename
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          data-testid={`epic-sidebar-delete-${nodeId}`}
-          disabled={!canMutate}
-          onSelect={() => {
-            onPerformDelete();
-          }}
-          variant="destructive"
-        >
-          <Trash2 className="size-3.5" />
-          Delete
-        </DropdownMenuItem>
+        <SidebarDropdownMenuItems entries={entries} />
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -1,21 +1,27 @@
 import type {
+  MethodDegradeDeclaration,
   MethodVersionRegistry,
   SchemaVersion,
+  SplitConnectionManifest,
   VersionedRpcRegistry,
 } from "@traycer/protocol/framework/index";
 import {
   downgradeRequestAcrossMajors,
   isRpcErrorCode,
+  mergeConnectionManifests,
+  splitConnectionManifest,
   upgradeResponseToVersion,
 } from "@traycer/protocol/framework/index";
+import { RELEASED_FLOOR_METHOD_NAMES } from "@traycer/protocol/host/released-floor";
 import { CredentialLeaseReleasedError } from "@traycer/protocol/auth/request-context";
-import type {
-  BearerSourceProvider,
-  OpenFrameBearerSource,
-} from "@traycer-clients/shared/auth/bearer-source";
+import type { OpenFrameBearerSource } from "@traycer-clients/shared/auth/bearer-source";
 import {
+  HostRequestAbortedError,
   HostRpcError,
+  HostTransportFailureError,
   RetryableTransportError,
+  type HostRequestAuthority,
+  type HostTransportEndpoint,
   type IHostMessenger,
   type RequestOfMethod,
   type ResponseOfMethod,
@@ -38,8 +44,8 @@ import {
   type IncompatibleMethodDetails,
   type FatalErrorDetails,
 } from "@traycer/protocol/framework/index";
-import { canonicalForMethodVersionLine } from "@traycer/protocol/framework/compat-helpers";
 import type { TimerHandle } from "./timer-handle";
+import { recordNegotiatedHostMethods } from "./negotiated-manifest-registry";
 
 /**
  * Minimal endpoint shape the transport layer needs to dial a host. The
@@ -48,10 +54,7 @@ import type { TimerHandle } from "./timer-handle";
  * exists purely to keep `host-transport` free of any dependency on the
  * app-runtime host-directory module.
  */
-export interface HostTransportEndpoint {
-  readonly hostId: string;
-  readonly websocketUrl: string | null;
-}
+export type { HostTransportEndpoint } from "./host-messenger";
 
 /**
  * Injectable source of the host endpoint the client should target. Returning
@@ -65,14 +68,6 @@ export type RequestIdProvider = () => string;
 
 export interface WsRpcClientOptions<Registry extends VersionedRpcRegistry> {
   readonly registry: Registry;
-  readonly endpoint: HostEndpointProvider;
-  /**
-   * Source of the bearer for the WS `open` frame. The transport is the ONLY
-   * client-side layer permitted to read it (`source.getBearerToken()`); every
-   * consumer above threads the bearer source itself. `null` → no bearer → the
-   * transport fails before dialing.
-   */
-  readonly bearer: BearerSourceProvider;
   readonly requestId: RequestIdProvider;
   readonly webSocketFactory: IWebSocketFactory;
   readonly dialTimeoutMs: number;
@@ -110,7 +105,8 @@ export interface WsRpcClientOptions<Registry extends VersionedRpcRegistry> {
  *
  * Failure mapping (Refactoring Approach D-N2):
  *   - dial timeout / transport unreachable / transport aborted / frame timeout
- *     → `HostRpcError(code: "RPC_ERROR")`
+ *     → `HostTransportFailureError(code: "RPC_ERROR")` (the pre-send subset is
+ *     a `RetryableTransportError`)
  *   - missing / released bearer before dial → `HostRpcError(code: "RPC_ERROR")`
  *   - host `fatalError { code }` (`INCOMPATIBLE`, `UNAUTHORIZED`, or a
  *     domain-specific code) → known RPC codes are preserved on
@@ -136,8 +132,6 @@ export class WsRpcClient<
   Registry extends VersionedRpcRegistry,
 > implements IHostMessenger<Registry> {
   private readonly registry: Registry;
-  private readonly endpoint: HostEndpointProvider;
-  private readonly bearer: BearerSourceProvider;
   private readonly requestIdProvider: RequestIdProvider;
   private readonly webSocketFactory: IWebSocketFactory;
   private readonly dialTimeoutMs: number;
@@ -145,8 +139,6 @@ export class WsRpcClient<
 
   constructor(options: WsRpcClientOptions<Registry>) {
     this.registry = options.registry;
-    this.endpoint = options.endpoint;
-    this.bearer = options.bearer;
     this.requestIdProvider = options.requestId;
     this.webSocketFactory = options.webSocketFactory;
     this.dialTimeoutMs = options.dialTimeoutMs;
@@ -156,19 +148,26 @@ export class WsRpcClient<
   async request<Method extends keyof Registry & string>(
     method: Method,
     params: RequestOfMethod<Registry, Method>,
+    authority: HostRequestAuthority,
+  ): Promise<ResponseOfMethod<Registry, Method>> {
+    return this.requestWithResponseTimeout(
+      method,
+      params,
+      this.frameTimeoutMs,
+      authority,
+    );
+  }
+
+  async requestWithResponseTimeout<Method extends keyof Registry & string>(
+    method: Method,
+    params: RequestOfMethod<Registry, Method>,
+    responseTimeoutMs: number,
+    authority: HostRequestAuthority,
   ): Promise<ResponseOfMethod<Registry, Method>> {
     const requestId = this.requestIdProvider();
-    const selected = this.endpoint();
+    const selected = authority.endpoint;
 
-    if (selected === null) {
-      throw new HostRpcError({
-        code: "RPC_ERROR",
-        message: "No host is currently bound to the client",
-        requestId,
-        method,
-        fatalDetails: null,
-      });
-    }
+    throwIfAuthorityAborted(authority, requestId, method);
 
     if (selected.websocketUrl === null) {
       throw new HostRpcError({
@@ -182,7 +181,7 @@ export class WsRpcClient<
 
     const clientManifest = this.buildManifest();
     const token = extractBearerOrThrowRpcError(
-      this.bearer(),
+      authority.bearer,
       requestId,
       method,
     );
@@ -190,17 +189,31 @@ export class WsRpcClient<
     const session = openSession({
       socket: this.webSocketFactory.create(selected.websocketUrl),
       dialTimeoutMs: this.dialTimeoutMs,
-      frameTimeoutMs: this.frameTimeoutMs,
       requestId,
       method,
     });
+    const onAbort = (): void => {
+      session.abort();
+    };
+    authority.abortSignal.addEventListener("abort", onAbort, { once: true });
+    if (authority.abortSignal.aborted) {
+      onAbort();
+    }
 
     try {
       await session.dial();
 
-      session.send({ kind: "open", token, manifest: clientManifest });
+      session.send({
+        kind: "open",
+        token,
+        manifest: clientManifest.manifest,
+        optionalManifest: clientManifest.optionalManifest,
+      });
 
-      const ackFrame = await session.next();
+      // Handshake stays on the transport default even when the caller
+      // extended the response wait - a host that can't complete `openAck`
+      // quickly is unreachable, and long-poll patience must not mask that.
+      const ackFrame = await session.next(this.frameTimeoutMs);
 
       if (ackFrame.kind === "fatalError") {
         throw hostFatalError(ackFrame, requestId, method);
@@ -215,12 +228,29 @@ export class WsRpcClient<
         });
       }
 
-      const clientCanonical = clientManifest[method];
-      const hostCanonical = ackFrame.manifest[method];
+      const mergedClientManifest = mergeConnectionManifests(
+        clientManifest.manifest,
+        clientManifest.optionalManifest,
+      );
+      const mergedHostManifest = mergeConnectionManifests(
+        ackFrame.manifest,
+        ackFrame.optionalManifest,
+      );
+      // Publish what this host advertised so UI layers can gate an optional
+      // (non-floor) affordance without calling the method to find out. Recorded
+      // BEFORE the compatibility check: an incompatible pairing still tells us
+      // truthfully which methods the host has, and the gate wants that fact
+      // even when this particular call is about to fail.
+      recordNegotiatedHostMethods(
+        selected.hostId,
+        Object.keys(mergedHostManifest),
+      );
+      const clientCanonical = mergedClientManifest[method];
+      const hostCanonical = mergedHostManifest[method];
 
       const compat = checkCompatibility(
         this.registry,
-        clientManifest,
+        clientManifest.manifest,
         ackFrame.manifest,
         "client",
       );
@@ -253,69 +283,242 @@ export class WsRpcClient<
       }
 
       const methodRegistry = this.registry[method] as MethodVersionRegistry;
-      const preparedRequest = prepareRequestPayload<
-        RequestOfMethod<Registry, Method>
+      if (hostCanonical === undefined) {
+        return await executeUnavailableMethodDegrade(
+          this.registry,
+          session,
+          method,
+          methodRegistry,
+          clientCanonical,
+          mergedClientManifest,
+          mergedHostManifest,
+          params,
+          requestId,
+          responseTimeoutMs,
+        );
+      }
+
+      return await executeAvailableMethodRequest<
+        RequestOfMethod<Registry, Method>,
+        ResponseOfMethod<Registry, Method>
       >(
+        session,
         methodRegistry,
+        method,
         clientCanonical,
         hostCanonical,
         params,
         requestId,
-        method,
-      );
-
-      session.send({
-        kind: "request",
-        requestId,
-        method,
-        schemaVersion: preparedRequest.onWireVersion,
-        params: preparedRequest.onWirePayload,
-      });
-
-      const responseFrame = await session.next();
-
-      if (responseFrame.kind === "fatalError") {
-        throw hostFatalError(responseFrame, requestId, method);
-      }
-      if (responseFrame.kind !== "response") {
-        throw new HostRpcError({
-          code: "RPC_ERROR",
-          message: `Unexpected host frame '${responseFrame.kind}' awaiting response`,
-          requestId,
-          method,
-          fatalDetails: null,
-        });
-      }
-
-      const decodedResult = decodeResponseFrame(
-        responseFrame,
-        requestId,
-        method,
-      );
-
-      return decodeResponsePayload<ResponseOfMethod<Registry, Method>>(
-        methodRegistry,
-        clientCanonical,
-        hostCanonical,
-        decodedResult,
-        requestId,
-        method,
+        responseTimeoutMs,
       );
     } finally {
+      authority.abortSignal.removeEventListener("abort", onAbort);
       session.close(1000, "ok");
     }
   }
 
-  private buildManifest(): ConnectionManifest {
-    const manifest: Record<string, SchemaVersion> = {};
-    for (const method of Object.keys(this.registry)) {
-      manifest[method] = canonicalForMethodVersionLine(
-        this.registry[method],
-        method,
-      );
-    }
-    return manifest;
+  private buildManifest(): SplitConnectionManifest {
+    return splitConnectionManifest(this.registry, RELEASED_FLOOR_METHOD_NAMES);
   }
+}
+
+async function executeAvailableMethodRequest<Payload, Response>(
+  session: Session,
+  methodRegistry: MethodVersionRegistry,
+  method: string,
+  clientCanonical: SchemaVersion,
+  hostCanonical: SchemaVersion,
+  params: Payload,
+  requestId: string,
+  responseTimeoutMs: number,
+): Promise<Response> {
+  const preparedRequest = prepareRequestPayload<Payload>(
+    methodRegistry,
+    clientCanonical,
+    hostCanonical,
+    params,
+    requestId,
+    method,
+  );
+
+  session.send({
+    kind: "request",
+    requestId,
+    method,
+    schemaVersion: preparedRequest.onWireVersion,
+    params: preparedRequest.onWirePayload,
+  });
+
+  const responseFrame = await session.next(responseTimeoutMs);
+
+  if (responseFrame.kind === "fatalError") {
+    throw hostFatalError(responseFrame, requestId, method);
+  }
+  if (responseFrame.kind !== "response") {
+    throw new HostRpcError({
+      code: "RPC_ERROR",
+      message: `Unexpected host frame '${responseFrame.kind}' awaiting response`,
+      requestId,
+      method,
+      fatalDetails: null,
+    });
+  }
+
+  const decodedResult = decodeResponseFrame(responseFrame, requestId, method);
+
+  return decodeResponsePayload<Response>(
+    methodRegistry,
+    clientCanonical,
+    hostCanonical,
+    decodedResult,
+    requestId,
+    method,
+  );
+}
+
+async function executeUnavailableMethodDegrade<
+  Registry extends VersionedRpcRegistry,
+  Method extends keyof Registry & string,
+>(
+  registry: Registry,
+  session: Session,
+  method: Method,
+  methodRegistry: MethodVersionRegistry,
+  clientCanonical: SchemaVersion | undefined,
+  clientManifest: ConnectionManifest,
+  hostManifest: ConnectionManifest,
+  params: RequestOfMethod<Registry, Method>,
+  requestId: string,
+  responseTimeoutMs: number,
+): Promise<ResponseOfMethod<Registry, Method>> {
+  if (clientCanonical === undefined) {
+    throw new HostRpcError({
+      code: "RPC_ERROR",
+      message: `Client registry has no canonical manifest entry for method '${method}'`,
+      requestId,
+      method,
+      fatalDetails: null,
+    });
+  }
+
+  const degrade = methodRegistry.degrade;
+  if (degrade === undefined) {
+    throw new HostRpcError({
+      code: "RPC_ERROR",
+      message: `Host does not advertise method '${method}', and the client registry declares no degrade strategy`,
+      requestId,
+      method,
+      fatalDetails: null,
+    });
+  }
+
+  if (degrade.kind === "unsupported") {
+    throw unsupportedHostMethodError(method, requestId);
+  }
+
+  return executeFallbackMethodDegrade(
+    registry,
+    session,
+    method,
+    degrade,
+    clientManifest,
+    hostManifest,
+    params,
+    requestId,
+    responseTimeoutMs,
+  );
+}
+
+async function executeFallbackMethodDegrade<
+  Registry extends VersionedRpcRegistry,
+  Method extends keyof Registry & string,
+>(
+  registry: Registry,
+  session: Session,
+  method: Method,
+  degrade: MethodDegradeDeclaration,
+  clientManifest: ConnectionManifest,
+  hostManifest: ConnectionManifest,
+  params: RequestOfMethod<Registry, Method>,
+  requestId: string,
+  responseTimeoutMs: number,
+): Promise<ResponseOfMethod<Registry, Method>> {
+  if (degrade.kind !== "fallback") {
+    throw unsupportedHostMethodError(method, requestId);
+  }
+
+  const targetMethod = degrade.to.method;
+  if (!hasRegistryMethod(registry, targetMethod)) {
+    throw new HostRpcError({
+      code: "RPC_ERROR",
+      message: `Fallback for method '${method}' targets unknown method '${targetMethod}'`,
+      requestId,
+      method,
+      fatalDetails: null,
+    });
+  }
+
+  const targetClientCanonical = {
+    major: degrade.to.major,
+    minor: degrade.to.minor,
+  };
+  const targetHostCanonical = hostManifest[targetMethod];
+  if (
+    clientManifest[targetMethod] === undefined ||
+    targetHostCanonical === undefined
+  ) {
+    throw new HostRpcError({
+      code: "RPC_ERROR",
+      message: `Fallback for method '${method}' targets unavailable floor method '${targetMethod}'`,
+      requestId,
+      method,
+      fatalDetails: null,
+    });
+  }
+
+  const fallbackParams = degrade.adaptRequest(params);
+  const fallbackResult = await executeAvailableMethodRequest<unknown, unknown>(
+    session,
+    registry[targetMethod] as MethodVersionRegistry,
+    targetMethod,
+    targetClientCanonical,
+    targetHostCanonical,
+    fallbackParams,
+    requestId,
+    responseTimeoutMs,
+  );
+  return degrade.adaptResponse(fallbackResult) as ResponseOfMethod<
+    Registry,
+    Method
+  >;
+}
+
+function unsupportedHostMethodError(
+  method: string,
+  requestId: string,
+): HostRpcError {
+  return new HostRpcError({
+    code: "E_HOST_UNSUPPORTED",
+    message: `This host does not support '${method}'. Upgrade the host to use this feature.`,
+    requestId,
+    method,
+    fatalDetails: {
+      code: "E_HOST_UNSUPPORTED",
+      reason: `This host does not support '${method}'. Upgrade the host to use this feature.`,
+      incompatibleMethods: null,
+      upgradeGuidance: {
+        clientShouldUpgrade: false,
+        hostShouldUpgrade: true,
+      },
+    },
+  });
+}
+
+function hasRegistryMethod<Registry extends VersionedRpcRegistry>(
+  registry: Registry,
+  method: string,
+): method is keyof Registry & string {
+  return Object.prototype.hasOwnProperty.call(registry, method);
 }
 
 interface PreparedRequest<Payload> {
@@ -448,11 +651,32 @@ function upgradeResponseAlongChain<Payload>(
   method: string,
 ): Payload {
   try {
+    // The host is the older side here, so `result` is raw wire data framed at
+    // `fromVersion` - the one place old-host payloads enter the client. Parse
+    // it through that version's response schema before upgrading so the
+    // line's `.catch(...)` tolerances (fields added mid-line that old host
+    // builds omit, e.g. `providers.list@3.0`'s `profiles`) actually apply -
+    // otherwise the upgraded payload can violate the caller's canonical type
+    // and blow up deep in app code instead of at this boundary. A version
+    // absent from the registry falls through untouched and surfaces the
+    // chain's own not-installed error below.
+    const fromEntry =
+      methodRegistry[fromVersion.major]?.versions[fromVersion.minor];
+    let chainInput = result;
+    if (fromEntry !== undefined) {
+      const parsed = fromEntry.contract.responseSchema.safeParse(result);
+      if (!parsed.success) {
+        throw new Error(
+          `response does not match the ${fromVersion.major}.${fromVersion.minor} response schema`,
+        );
+      }
+      chainInput = parsed.data;
+    }
     const upgraded = upgradeResponseToVersion(
       methodRegistry,
       fromVersion,
       toVersion,
-      result as never,
+      chainInput as never,
     );
     return upgraded as Payload;
   } catch (cause) {
@@ -558,15 +782,21 @@ function decodeResponseFrame(
 interface SessionOptions {
   readonly socket: WebSocketLike;
   readonly dialTimeoutMs: number;
-  readonly frameTimeoutMs: number;
   readonly requestId: string;
   readonly method: string;
 }
 
 interface Session {
   dial(): Promise<void>;
-  next(): Promise<HostFrame>;
+  /**
+   * Waits up to `timeoutMs` for the next host frame. The budget is per wait,
+   * not per session: the handshake (`openAck`) wait passes the transport's
+   * default frame timeout, while the response wait may pass a caller-extended
+   * budget for long-poll methods.
+   */
+  next(timeoutMs: number): Promise<HostFrame>;
   send(frame: ClientFrame): void;
+  abort(): void;
   close(code: number, reason: string): void;
 }
 
@@ -578,15 +808,15 @@ interface Session {
  * channel.
  */
 function openSession(options: SessionOptions): Session {
-  const { socket, dialTimeoutMs, frameTimeoutMs, requestId, method } = options;
+  const { socket, dialTimeoutMs, requestId, method } = options;
 
   let opened = false;
   let closed = false;
   // Flipped the instant the `request` frame is handed to `send`. Before this
   // point every transient failure is provably pre-send (the host never saw the
   // call), so it surfaces as a `RetryableTransportError`; after it, the same
-  // failure shapes stay a plain `HostRpcError` because a retry could
-  // re-execute a non-idempotent method.
+  // failure shapes stay a non-retryable `HostTransportFailureError` because a
+  // retry could re-execute a non-idempotent method.
   let requestSent = false;
   let failure: HostRpcError | null = null;
 
@@ -598,7 +828,7 @@ function openSession(options: SessionOptions): Session {
    */
   const transientFailure = (message: string): HostRpcError =>
     requestSent
-      ? new HostRpcError({
+      ? new HostTransportFailureError({
           code: "RPC_ERROR",
           message,
           requestId,
@@ -736,7 +966,7 @@ function openSession(options: SessionOptions): Session {
       });
     },
 
-    next(): Promise<HostFrame> {
+    next(timeoutMs: number): Promise<HostFrame> {
       if (failure !== null) {
         return Promise.reject(failure);
       }
@@ -747,11 +977,9 @@ function openSession(options: SessionOptions): Session {
       return new Promise<HostFrame>((resolve, reject) => {
         const timer = setTimeout(() => {
           failAll(
-            transientFailure(
-              `WebSocket frame timed out after ${frameTimeoutMs}ms`,
-            ),
+            transientFailure(`WebSocket frame timed out after ${timeoutMs}ms`),
           );
-        }, frameTimeoutMs);
+        }, timeoutMs);
         frameResolver = { resolve, reject, timer };
       });
     },
@@ -763,6 +991,26 @@ function openSession(options: SessionOptions): Session {
         requestSent = true;
       }
       socket.send(JSON.stringify(frame));
+    },
+
+    abort(): void {
+      failAll(
+        new HostRequestAbortedError({
+          message:
+            "Host request authority was aborted while the WebSocket was open",
+          requestId,
+          method,
+        }),
+      );
+      if (closed) {
+        return;
+      }
+      closed = true;
+      try {
+        socket.close(1000, "authority-aborted");
+      } catch (cause) {
+        void cause;
+      }
     },
 
     close(code: number, reason: string): void {
@@ -835,7 +1083,7 @@ export function extractBearerForOpenFrame(
 }
 
 function extractBearerOrThrowRpcError(
-  source: OpenFrameBearerSource | null,
+  source: OpenFrameBearerSource,
   requestId: string,
   method: string,
 ): string {
@@ -853,4 +1101,19 @@ function extractBearerOrThrowRpcError(
     }
     throw cause;
   }
+}
+
+function throwIfAuthorityAborted(
+  authority: HostRequestAuthority,
+  requestId: string,
+  method: string,
+): void {
+  if (!authority.abortSignal.aborted) {
+    return;
+  }
+  throw new HostRequestAbortedError({
+    message: "Host request authority was aborted before the WebSocket dial",
+    requestId,
+    method,
+  });
 }

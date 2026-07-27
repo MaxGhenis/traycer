@@ -66,7 +66,11 @@ describe("useChatComposerSubmit", () => {
       seedKey: "test",
       values: {
         permission: "supervised",
-        selection: { harnessId: "codex", modelSlug: "gpt-5" },
+        selection: {
+          harnessId: "codex",
+          modelSlug: "gpt-5",
+          profileId: null,
+        },
         reasoning: "medium",
         serviceTier: "auto",
         agentMode: "regular",
@@ -82,15 +86,20 @@ describe("useChatComposerSubmit", () => {
         pickerStore: createComposerPickerStore(),
         toolbarStore,
         activeTurnStatus: null,
+        steerCapable: false,
+        steerEnabled: true,
+        steerProtocolSupported: true,
+        getActiveTurnForSteer: () => null,
         hasPendingApprovals: false,
         sendDisabled: false,
         workspaceBlocked: false,
         imagesUnsupported: false,
+        attachmentPreparationPending: false,
         onSubmitMessage: submit,
       }),
     );
 
-    result.current();
+    result.current.submitDraft("enter");
 
     expect(submit).toHaveBeenCalledTimes(1);
     expect(submit.mock.calls[0]?.[0]).toMatchObject({
@@ -129,7 +138,9 @@ function fakeEditor(content: JsonContent): ComposerPromptEditorHandle {
     clear: () => undefined,
     setContent: () => undefined,
     insertImageAttachments: () => undefined,
+    beginPathInsertion: () => null,
     removeImageAttachmentById: () => undefined,
+    rewriteImageAttachmentHashById: () => false,
     insertDictatedText: () => undefined,
     dismissActiveSuggestion: () => false,
   };

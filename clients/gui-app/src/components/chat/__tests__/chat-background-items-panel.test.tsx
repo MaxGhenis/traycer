@@ -49,7 +49,7 @@ describe("<BackgroundItemsPanel />", () => {
     );
 
     const parentButton = screen.getByRole("button", {
-      name: /Parent agent.*Agent/,
+      name: /Parent agent.*Sub-agent/,
     });
     const childButton = screen.getByRole("button", {
       name: /Child command.*Command/,
@@ -220,7 +220,7 @@ describe("<BackgroundItemsPanel />", () => {
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
-      screen.queryByRole("button", { name: /Remembered parent.*Agent/ }),
+      screen.queryByRole("button", { name: /Remembered parent.*Sub-agent/ }),
     ).toBeNull();
     expect(screen.getByRole("button", { name: "Stop Command" })).toBeTruthy();
   });
@@ -346,6 +346,202 @@ describe("<BackgroundItemsPanel />", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel wake" }));
     expect(onStopItem).toHaveBeenCalledWith("wake-tool");
+  });
+
+  it("renders an mcp row with structured identity, live elapsed, and its stop affordance", () => {
+    const onStopItem = vi.fn(() => null);
+    const mcp = backgroundItem({
+      taskId: "mcp-task",
+      kind: "mcp",
+      title: "probe/slow_op",
+      blockId: "tool-9",
+      parentTaskId: null,
+      serverName: "probe",
+      toolName: "slow_op",
+      startedAt: Date.now() - 65_000,
+    });
+
+    renderPanel({
+      items: [mcp],
+      onItemClick: () => undefined,
+      onStopItem,
+      onStopAll: () => null,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Background.*1 running/ }),
+    );
+
+    const row = screen.getByRole("button", {
+      name: /probe · slow_op.*1m 5s.*MCP tool/,
+    });
+    expect(row).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop MCP tool" }));
+    expect(onStopItem).toHaveBeenCalledWith("mcp-task");
+  });
+
+  it("hides the mcp elapsed counter when the host predates startedAt", () => {
+    const mcp = backgroundItem({
+      taskId: "mcp-task",
+      kind: "mcp",
+      title: "probe/slow_op",
+      blockId: "tool-9",
+      parentTaskId: null,
+      serverName: "probe",
+      toolName: "slow_op",
+      startedAt: null,
+    });
+
+    renderPanel({
+      items: [mcp],
+      onItemClick: () => undefined,
+      onStopItem: () => null,
+      onStopAll: () => null,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Background.*1 running/ }),
+    );
+
+    const row = screen.getByRole("button", { name: /probe · slow_op/ });
+    expect(row.textContent).toBe("probe · slow_opMCP tool");
+  });
+
+  it("renders a workflow row with its phase/active-label/counts summary and Workflow chip", () => {
+    const onItemClick = vi.fn();
+    const workflow = backgroundItem({
+      taskId: "workflow-1",
+      kind: "workflow",
+      title: "max-effort-review",
+      blockId: "workflow-1",
+      parentTaskId: null,
+      phase: "Verify",
+      activeLabel: "verify:chat-loss",
+      agentsStarted: 47,
+      agentsFinished: 31,
+    });
+
+    renderPanel({
+      items: [workflow],
+      onItemClick,
+      onStopItem: () => null,
+      onStopAll: () => null,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Background.*1 running/ }),
+    );
+
+    const row = screen.getByRole("button", {
+      name: /max-effort-review — Verify · verify:chat-loss · 31\/47 done.*Workflow/,
+    });
+    expect(row).toBeTruthy();
+
+    fireEvent.click(row);
+    expect(onItemClick).toHaveBeenCalledWith(workflow);
+  });
+
+  it("falls back to the plain title when a workflow row has no progress yet", () => {
+    const workflow = backgroundItem({
+      taskId: "workflow-2",
+      kind: "workflow",
+      title: "fresh-workflow",
+      blockId: "workflow-2",
+      parentTaskId: null,
+      phase: null,
+      activeLabel: null,
+      agentsStarted: null,
+      agentsFinished: null,
+    });
+
+    renderPanel({
+      items: [workflow],
+      onItemClick: () => undefined,
+      onStopItem: () => null,
+      onStopAll: () => null,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Background.*1 running/ }),
+    );
+
+    expect(
+      screen.getByRole("button", { name: /^fresh-workflow.*Workflow/ }),
+    ).toBeTruthy();
+  });
+
+  it("stops a workflow row via its own stop affordance", () => {
+    const onStopItem = vi.fn(() => null);
+    const workflow = backgroundItem({
+      taskId: "workflow-3",
+      kind: "workflow",
+      title: "review-fleet",
+      blockId: "workflow-3",
+      parentTaskId: null,
+      phase: "Find",
+      activeLabel: "find:host-core",
+      agentsStarted: 10,
+      agentsFinished: 2,
+    });
+
+    renderPanel({
+      items: [workflow],
+      onItemClick: () => undefined,
+      onStopItem,
+      onStopAll: () => null,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Background.*1 running/ }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Stop Workflow" }));
+    expect(onStopItem).toHaveBeenCalledWith("workflow-3");
+  });
+
+  it("nests a fleet-attributed command under its owning workflow row", () => {
+    const workflow = backgroundItem({
+      taskId: "workflow-4",
+      kind: "workflow",
+      title: "review-fleet",
+      blockId: "workflow-4",
+      parentTaskId: null,
+      phase: "Find",
+      activeLabel: "find:host-core",
+      agentsStarted: 10,
+      agentsFinished: 2,
+    });
+    const fleetCommand = backgroundItem({
+      taskId: "fleet-command",
+      kind: "command",
+      title: "bun run compile",
+      blockId: "fleet-command-tool",
+      parentTaskId: "workflow-4",
+      scheduledFor: null,
+    });
+
+    renderPanel({
+      items: [workflow, fleetCommand],
+      onItemClick: () => undefined,
+      onStopItem: () => null,
+      onStopAll: () => null,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Background.*1 running/ }),
+    );
+
+    const workflowRow = screen.getByRole("button", {
+      name: /review-fleet.*Workflow/,
+    });
+    const commandRow = screen.getByRole("button", {
+      name: /bun run compile.*Command/,
+    });
+    expect(
+      workflowRow.compareDocumentPosition(commandRow) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getAllByRole("group")).toHaveLength(1);
   });
 });
 

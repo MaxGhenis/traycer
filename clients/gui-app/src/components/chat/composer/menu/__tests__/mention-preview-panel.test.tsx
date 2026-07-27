@@ -34,6 +34,10 @@ function makeActiveRow(): HTMLElement {
   return row;
 }
 
+function makePanelRef(): { current: HTMLDivElement | null } {
+  return { current: null };
+}
+
 describe("panelFitFor", () => {
   it("shows the panel unconstrained when there's ample room on the chosen side", () => {
     const fit = panelFitFor(500, 400);
@@ -80,7 +84,13 @@ describe("MentionPreviewPanel", () => {
   it("renders nothing when the active preview is null", async () => {
     const listRef = makeListRef(makeActiveRow());
     render(
-      <MentionPreviewPanel listRef={listRef} activeIndex={0} preview={null} />,
+      <MentionPreviewPanel
+        panelRef={makePanelRef()}
+        listRef={listRef}
+        activeIndex={0}
+        preview={null}
+        disabledReason={null}
+      />,
     );
     await flush();
     expect(
@@ -98,15 +108,78 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();
 
     expect(screen.getByText("Fix login redirect bug")).toBeTruthy();
     expect(screen.getByText("Epic: Auth revamp")).toBeTruthy();
+  });
+
+  it("leads with the disabled notice above the description", async () => {
+    const listRef = makeListRef(makeActiveRow());
+    const preview: MentionPreview = {
+      kind: "text",
+      primary: "Free up context by summarizing the conversation so far",
+      secondary: null,
+      mono: false,
+    };
+    render(
+      <MentionPreviewPanel
+        panelRef={makePanelRef()}
+        listRef={listRef}
+        activeIndex={0}
+        preview={preview}
+        disabledReason="This command is only allowed at the start of the message"
+      />,
+    );
+    await flush();
+
+    const notice = document.querySelector<HTMLElement>(
+      '[data-slot="mention-preview-panel-disabled"]',
+    );
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain("Disabled");
+    expect(notice?.textContent).toContain(
+      "This command is only allowed at the start of the message",
+    );
+    // The reason must read before the description, not as a footnote to it.
+    expect(
+      notice?.compareDocumentPosition(
+        screen.getByText(
+          "Free up context by summarizing the conversation so far",
+        ),
+      ) ?? 0,
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("omits the disabled notice when the row is selectable", async () => {
+    const listRef = makeListRef(makeActiveRow());
+    const preview: MentionPreview = {
+      kind: "text",
+      primary: "Review the current diff",
+      secondary: null,
+      mono: false,
+    };
+    render(
+      <MentionPreviewPanel
+        panelRef={makePanelRef()}
+        listRef={listRef}
+        activeIndex={0}
+        preview={preview}
+        disabledReason={null}
+      />,
+    );
+    await flush();
+
+    expect(
+      document.querySelector('[data-slot="mention-preview-panel-disabled"]'),
+    ).toBeNull();
   });
 
   it("omits the secondary line when null", async () => {
@@ -119,9 +192,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -141,9 +216,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -162,9 +239,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={titleListRef}
         activeIndex={0}
         preview={titlePreview}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -187,9 +266,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -200,7 +281,7 @@ describe("MentionPreviewPanel", () => {
     expect(titleEl.className).not.toContain("font-mono");
   });
 
-  it("is pointer-events-none and aria-hidden so it never intercepts input", async () => {
+  it("allows pointer scrolling while remaining hidden from assistive technology", async () => {
     const listRef = makeListRef(makeActiveRow());
     const preview: MentionPreview = {
       kind: "text",
@@ -210,9 +291,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -220,13 +303,20 @@ describe("MentionPreviewPanel", () => {
     const panel = document.querySelector('[data-slot="mention-preview-panel"]');
     expect(panel).not.toBeNull();
     expect(panel?.getAttribute("aria-hidden")).toBe("true");
-    expect(panel?.className).toContain("pointer-events-none");
+    expect(panel?.className).toContain("pointer-events-auto");
+    expect(panel?.className).toContain("flex");
+    const scrollArea = document.querySelector(
+      '[data-slot="mention-preview-panel-scroll-area"]',
+    );
+    expect(scrollArea?.className).toContain("min-h-0");
+    expect(scrollArea?.className).toContain("overflow-y-auto");
   });
 
   it("follows content updates instantly across activeIndex changes", async () => {
     const listRef = makeListRef(makeActiveRow());
     const { rerender } = render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={{
@@ -235,6 +325,7 @@ describe("MentionPreviewPanel", () => {
           secondary: null,
           mono: false,
         }}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -242,6 +333,7 @@ describe("MentionPreviewPanel", () => {
 
     rerender(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={1}
         preview={{
@@ -250,6 +342,7 @@ describe("MentionPreviewPanel", () => {
           secondary: "second row detail",
           mono: false,
         }}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -268,9 +361,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -304,9 +399,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -337,9 +434,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -370,9 +469,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -395,9 +496,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -419,9 +522,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();
@@ -446,9 +551,11 @@ describe("MentionPreviewPanel", () => {
     };
     render(
       <MentionPreviewPanel
+        panelRef={makePanelRef()}
         listRef={listRef}
         activeIndex={0}
         preview={preview}
+        disabledReason={null}
       />,
     );
     await flush();

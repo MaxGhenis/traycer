@@ -1,4 +1,6 @@
 import { AlertTriangle } from "lucide-react";
+import { ReportIssueAction } from "@/components/report-issue/report-issue-action";
+import { createReportIssueContext } from "@/lib/report-issue-context";
 
 interface ErrorSegmentProps {
   message: string;
@@ -6,9 +8,9 @@ interface ErrorSegmentProps {
   findUnitId: string | null;
 }
 
-// Static error row. Auth errors never reach here - they are suppressed at the
-// projection layer (`suppressAuthErrors` in `rendered-messages.ts`) and surfaced
-// live as the composer's re-auth banner instead.
+// Static error row. Auth errors (`code: "auth"`) render here like any other
+// error - the durable transcript row is what keeps a headless (A2A-triggered)
+// auth failure visible after the composer's re-auth banner clears.
 export function ErrorSegment({ code, findUnitId, message }: ErrorSegmentProps) {
   return (
     <div
@@ -35,6 +37,16 @@ export function ErrorSegment({ code, findUnitId, message }: ErrorSegmentProps) {
             {message}
           </span>
         </div>
+        <ReportIssueAction
+          context={createReportIssueContext({
+            title: "Agent error",
+            message: null,
+            code: null,
+            source: "Chat",
+          })}
+          presentation="icon"
+          className="-mt-1 -mr-1 shrink-0"
+        />
       </div>
     </div>
   );

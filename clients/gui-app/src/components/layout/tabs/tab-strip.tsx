@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { LayoutGroup } from "motion/react";
 import { useDroppable } from "@dnd-kit/core";
+import { toast } from "sonner";
 import {
   HEADER_TAB_SLOT_DND_TYPE,
   HEADER_TAB_TRAILING_SLOT_DROP_ID,
@@ -27,6 +28,13 @@ import { draftTabIntent, navigateToTabIntent } from "@/lib/tab-navigation";
 import { TabItem } from "@/components/layout/tabs/tab-strip-item";
 import { TabStripNewButton } from "@/components/layout/tabs/tab-strip-new-button";
 import { useHorizontalWheelScroll } from "@/hooks/use-horizontal-wheel-scroll";
+import { useHostNotificationIndicators } from "@/hooks/notifications/use-host-notification-indicators-query";
+import { NotificationIndicatorsProvider } from "@/components/notifications/notification-indicators-provider";
+import {
+  useEpicSetPinned,
+  usePendingSetPinnedEpicIds,
+} from "@/hooks/epic/use-epic-set-pinned-mutation";
+import { useEpicTaskPinnedStates } from "@/hooks/epic/use-epic-task-pinned-states-query";
 
 export function TabStrip() {
   const hasHydrated = useWindowsBridgeHydrated();
@@ -56,6 +64,38 @@ function TabStripBody() {
   const activeTabs = useMemo(
     () => allTabs.map((tab) => isTabActive(tab, activePathname)),
     [activePathname, allTabs],
+  );
+  const indicatorEpicIds = useMemo(
+    () => allTabs.flatMap((tab) => (tab.kind === "epic" ? [tab.epicId] : [])),
+    [allTabs],
+  );
+  const notificationIndicators = useHostNotificationIndicators({
+    epicIds: indicatorEpicIds,
+    chatIds: [],
+    enabled: indicatorEpicIds.length > 0,
+  });
+  const taskPinnedStates = useEpicTaskPinnedStates(indicatorEpicIds);
+  const pendingSetPinnedEpicIds = usePendingSetPinnedEpicIds();
+  const { mutate: setEpicPinned } = useEpicSetPinned();
+  const handleSetTaskPinned = useCallback(
+    (epicId: string, pinned: boolean, displayName: string) => {
+      setEpicPinned(
+        { epicId, pinned },
+        {
+          onSuccess: () => {
+            toast.success(pinConfirmationMessage(displayName, pinned), {
+              action: {
+                label: "Undo",
+                onClick: () => {
+                  setEpicPinned({ epicId, pinned: !pinned });
+                },
+              },
+            });
+          },
+        },
+      );
+    },
+    [setEpicPinned],
   );
 
   // Trailing slot: the strip's empty space after the last tab accepts drops
@@ -112,52 +152,66 @@ function TabStripBody() {
   const canCloseOtherTabs = allTabs.length > 1;
 
   return (
-    <div
-      role="tablist"
-      aria-label="Open tabs"
-      data-testid="tab-strip"
-      className="relative flex min-w-0 flex-1 items-end"
-    >
-      <div className="relative flex min-w-0 max-w-full flex-[0_1_auto] items-end">
-        <LayoutGroup id="header-tabs">
-          <div
-            ref={trailingSlotRef}
-            data-testid="header-tab-strip-scroll"
-            onWheel={handleWheel}
-            className="no-scrollbar flex min-w-0 max-w-full flex-[0_1_auto] touch-pan-x items-end overflow-x-auto overscroll-x-contain"
-          >
-            {allTabs.map((tab, index) => {
-              const isLastTab = index === allTabs.length - 1;
-              const isActive = activeTabs[index];
-              const isNextActive = activeTabs[index + 1];
-              const showDropIndicatorBefore = dropIndicatorIndex === index;
-              const showDropIndicatorAfter =
-                dropIndicatorIndex === index + 1 && isLastTab;
-              return (
-                <TabItem
-                  key={refKey(tab.kind, tab.id)}
-                  tab={tab}
-                  index={index}
-                  isActive={isActive}
-                  showSeparatorAfter={!isLastTab && !isActive && !isNextActive}
-                  showDropIndicatorBefore={showDropIndicatorBefore}
-                  showDropIndicatorAfter={showDropIndicatorAfter}
-                  onClose={closeTabFlow.requestCloseTab}
-                  onCloseOtherTabs={closeTabFlow.closeOtherTabs}
-                  onDuplicateTab={handleDuplicateTab}
-                  canCloseOtherTabs={canCloseOtherTabs}
-                  onOpenInNewWindow={openInNewWindowFlow.requestOpen}
-                  canOpenInNewWindow={openInNewWindowFlow.isAvailable}
-                />
-              );
-            })}
-          </div>
-        </LayoutGroup>
-        <TabStripNewButton onNewTab={handleNewTab} />
+    <NotificationIndicatorsProvider indicators={notificationIndicators.data}>
+      <div
+        role="tablist"
+        aria-label="Open tabs"
+        data-testid="tab-strip"
+        className="relative flex min-w-0 flex-1 items-end"
+      >
+        <div className="relative flex min-w-0 max-w-full flex-[0_1_auto] items-end">
+          <LayoutGroup id="header-tabs">
+            <div
+              ref={trailingSlotRef}
+              data-testid="header-tab-strip-scroll"
+              onWheel={handleWheel}
+              className="no-scrollbar flex min-w-0 max-w-full flex-[0_1_auto] touch-pan-x items-end overflow-x-auto overscroll-x-contain"
+            >
+              {allTabs.map((tab, index) => {
+                const isLastTab = index === allTabs.length - 1;
+                const isActive = activeTabs[index];
+                const isNextActive = activeTabs[index + 1];
+                const showDropIndicatorBefore = dropIndicatorIndex === index;
+                const showDropIndicatorAfter =
+                  dropIndicatorIndex === index + 1 && isLastTab;
+                return (
+                  <TabItem
+                    key={refKey(tab.kind, tab.id)}
+                    tab={tab}
+                    index={index}
+                    isActive={isActive}
+                    showSeparatorAfter={
+                      !isLastTab && !isActive && !isNextActive
+                    }
+                    showDropIndicatorBefore={showDropIndicatorBefore}
+                    showDropIndicatorAfter={showDropIndicatorAfter}
+                    onClose={closeTabFlow.requestCloseTab}
+                    onCloseOtherTabs={closeTabFlow.closeOtherTabs}
+                    onDuplicateTab={handleDuplicateTab}
+                    canCloseOtherTabs={canCloseOtherTabs}
+                    onOpenInNewWindow={openInNewWindowFlow.requestOpen}
+                    canOpenInNewWindow={openInNewWindowFlow.isAvailable}
+                    taskPinned={
+                      tab.kind === "epic"
+                        ? (taskPinnedStates.get(tab.epicId) ?? null)
+                        : null
+                    }
+                    isTaskPinPending={
+                      tab.kind === "epic" &&
+                      pendingSetPinnedEpicIds.has(tab.epicId)
+                    }
+                    onSetTaskPinned={handleSetTaskPinned}
+                  />
+                );
+              })}
+            </div>
+          </LayoutGroup>
+          <TabStripNewButton onNewTab={handleNewTab} />
+        </div>
+        {closeTabFlow.unsyncedDialog}
+        <UnsyncedEpicMoveDialog flow={openInNewWindowFlow.epicFlow} />
       </div>
-      {closeTabFlow.unsyncedDialog}
-      <UnsyncedEpicMoveDialog flow={openInNewWindowFlow.epicFlow} />
-    </div>
+    </NotificationIndicatorsProvider>
   );
 }
 
@@ -167,4 +221,10 @@ function isTabActive(tab: HeaderTab, pathname: string): boolean {
 
 function refKey(kind: HeaderTab["kind"], id: string): string {
   return `${kind}:${id}`;
+}
+
+function pinConfirmationMessage(displayName: string, pinned: boolean): string {
+  return pinned
+    ? `Pinned “${displayName}” to the top of History`
+    : `Unpinned “${displayName}” from History`;
 }

@@ -4,6 +4,9 @@ const SECOND_MS = 1_000;
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
+const WEEK_MS = 7 * DAY_MS;
+// Where the compact ladder stops counting weeks and shows a date instead.
+const COMPACT_WEEKS_CUTOFF_MS = 4 * WEEK_MS;
 
 // Shared 60s clock. A single setInterval drives every component that renders
 // a relative timestamp, so a popover with 20 rows pays one timer - not 20.
@@ -81,6 +84,43 @@ function formatShortDate(timestamp: number): string {
 }
 
 /**
+ * The COMPACT ladder, for dense surfaces that show a timestamp beside other
+ * values rather than as a sentence: `now` / `10m` / `4h` / `1d` / `1w`, then a
+ * short date. No "ago" - the suffix costs width on every row to say what the
+ * surface's context already says.
+ *
+ * Each unit runs to its own natural rollover (60m, 24h, 7d) so the label always
+ * names the largest whole unit. Weeks stop at 4: past a month "5w" is harder to
+ * place than "Mar 5", and the counting gets less meaningful the further back it
+ * goes. Negative deltas clamp to 0, so clock skew reads as `now` rather than a
+ * negative duration.
+ */
+export function formatCompactRelativeTime(
+  timestamp: number,
+  now: number,
+): string {
+  const diffMs = Math.max(0, now - timestamp);
+  if (diffMs < MINUTE_MS) return "now";
+  if (diffMs < HOUR_MS) return `${Math.floor(diffMs / MINUTE_MS)}m`;
+  if (diffMs < DAY_MS) return `${Math.floor(diffMs / HOUR_MS)}h`;
+  if (diffMs < WEEK_MS) return `${Math.floor(diffMs / DAY_MS)}d`;
+  if (diffMs < COMPACT_WEEKS_CUTOFF_MS) {
+    return `${Math.floor(diffMs / WEEK_MS)}w`;
+  }
+  return formatShortDate(timestamp);
+}
+
+/**
+ * `formatCompactRelativeTime` bound to the shared 60s clock. Same leaf-component
+ * guidance as {@link useRelativeTimestamp}: call it from a small leaf so the
+ * tick repaints the label rather than its surrounding row.
+ */
+export function useCompactRelativeTime(timestamp: number): string {
+  useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  return formatCompactRelativeTime(timestamp, sampledNow);
+}
+
+/**
  * Subscribes the calling component to the shared 60s tick clock and returns
  * the current bucketed label for `createdAt`. Intended to be called from a
  * small leaf component (e.g. `<NotificationTimestamp />`) so the surrounding
@@ -89,6 +129,11 @@ function formatShortDate(timestamp: number): string {
 export function useRelativeTimestamp(createdAt: number): string {
   useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   return formatRelativeTimestamp(createdAt, sampledNow);
+}
+
+export function useSampledNow(): number {
+  useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  return sampledNow;
 }
 
 /**
@@ -133,14 +178,14 @@ export function useResetCountdown(resetsAt: number | null): string | null {
 }
 
 /**
- * Whether a reset is far enough away that an absolute weekday/time reads
+ * Whether a reset is far enough away that an absolute calendar date/time reads
  * better than a relative countdown ("Resets in 3d" is too coarse to act on).
  * Based on the real time remaining rather than a window's nominal duration:
  * some windows (e.g. Claude's per-model `modelScoped` buckets) carry no
  * `durationMinutes` at all, so gating this decision on duration meant those
  * windows always fell back to the relative countdown even when their real
  * reset was days away (regression: Claude's "Fable" per-model window showed
- * "Resets in 3d" instead of "Resets Tue 5:29 PM"). Every window always has a
+ * "Resets in 3d" instead of a precise calendar date/time). Every window always has a
  * real `resetsAt`, so every caller now derives this the same way instead of
  * each threading through its own duration-based flag (or, worse, hardcoding
  * one).
@@ -151,9 +196,9 @@ export function isFarReset(resetsAt: number, now: number): boolean {
 
 /**
  * Subscribes to the shared 60s tick clock and returns whether `resetsAt` is
- * currently far enough away to warrant `formatResetDateTime` over
+ * currently far enough away to warrant an absolute calendar date/time over
  * `formatResetCountdown` - `false` for a `null` resetsAt (nothing to compare).
- * Reactive (unlike `formatResetDateTime` itself) so a window that crosses the
+ * Reactive so a window that crosses the
  * one-day threshold while the popover is open flips from absolute to relative
  * display without a remount.
  */
@@ -182,4 +227,20 @@ export function formatResetDateTime(resetsAt: number): string {
     hour12: true,
   });
   return `${weekday} ${time}`;
+}
+
+/**
+ * Full calendar form for roomy surfaces such as Settings, where the explicit
+ * date is more useful than the popover's compact weekday-only label.
+ */
+export function formatResetFullDateTime(resetsAt: number): string {
+  return new Date(resetsAt).toLocaleString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
 }

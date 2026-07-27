@@ -13,9 +13,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StartTruncatedText } from "@/components/ui/start-truncated-text";
 import { useGitGetFileDiffQuery } from "@/hooks/git/use-git-get-file-diff-query";
+import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import type { DiffViewerPreferences } from "@/lib/diff/diff-viewer-preferences";
-import { makeGitFileDiffTileForFile } from "@/lib/git/git-diff-tile";
+import { useOpenEpicId } from "@/lib/epic-selectors";
+import { getBasename } from "@/lib/path/cross-platform-path";
+import { workspaceFileRefFromTreePath } from "@/components/epic-canvas/workspace-file/workspace-file-ref";
 import { BUNDLE_INLINE_LINE_THRESHOLD } from "@/lib/git/bundle-thresholds";
 import { NO_HIGHLIGHT } from "@/lib/git/path-highlight";
 import { useBundleDiffFindRegistrationContext } from "@/components/diff/bundle-diff-find-registration-hooks";
@@ -46,7 +49,11 @@ interface BundleFileSectionProps {
 
 export function BundleFileSection(props: BundleFileSectionProps): ReactNode {
   const bundleFindRegistration = useBundleDiffFindRegistrationContext();
-  const openTileInTab = useEpicCanvasStore((s) => s.openTileInTab);
+  const epicId = useOpenEpicId();
+  const navigateNested = useEpicNestedFocusNavigation();
+  const prepareOpenTileInTabFocusTarget = useEpicCanvasStore(
+    (s) => s.prepareOpenTileInTabFocusTarget,
+  );
   const toggleCollapsed = useEpicCanvasStore(
     (s) => s.toggleGitDiffBundleFileCollapsedInTab,
   );
@@ -58,17 +65,21 @@ export function BundleFileSection(props: BundleFileSectionProps): ReactNode {
   const isLarge = totalChangedLines > BUNDLE_INLINE_LINE_THRESHOLD;
 
   const handleOpenFileTile = useCallback(() => {
-    openTileInTab(
-      props.viewTabId,
-      makeGitFileDiffTileForFile({
-        hostId: props.node.hostId,
-        runningDir: props.node.diff.runningDir,
-        file: props.file,
-      }),
+    const tile = workspaceFileRefFromTreePath(
+      props.node.hostId,
+      props.node.diff.runningDir,
+      props.file.path,
+      getBasename(props.file.path),
+    );
+    if (tile === null) return;
+    navigateNested(epicId, props.viewTabId, () =>
+      prepareOpenTileInTabFocusTarget(props.viewTabId, tile),
     );
   }, [
-    openTileInTab,
-    props.file,
+    epicId,
+    navigateNested,
+    prepareOpenTileInTabFocusTarget,
+    props.file.path,
     props.node.hostId,
     props.node.diff.runningDir,
     props.viewTabId,

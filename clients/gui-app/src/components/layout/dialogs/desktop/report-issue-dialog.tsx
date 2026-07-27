@@ -1,7 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Bug } from "lucide-react";
-import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -18,9 +18,16 @@ import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { cn } from "@/lib/utils";
 import { buildGitHubIssueUrl } from "@traycer-clients/shared/support/issue-reporter";
 import { runnerMutationKeys } from "@/lib/query-keys";
+import type { ReportIssueContext } from "@/lib/report-issue-context";
 import type { DesktopSupportSnapshot } from "@/lib/windows/types";
 import { useRunnerHost } from "@/providers/use-runner-host";
+import { useDesktopDialogStore } from "@/stores/dialogs/desktop-dialog-store";
 import type { DesktopSupportDialogProps } from "./types";
+import {
+  Analytics,
+  AnalyticsEvent,
+  analyticsBlockerFromError,
+} from "@/lib/analytics";
 
 interface ReportIssueForm {
   title: string;
@@ -28,6 +35,12 @@ interface ReportIssueForm {
   stepsToReproduce: string;
   expectedBehavior: string;
   actualBehavior: string;
+}
+
+interface ReportIssueSubmission {
+  readonly draftId: number;
+  readonly form: ReportIssueForm;
+  readonly snapshot: DesktopSupportSnapshot | null;
 }
 
 const EMPTY_FORM: ReportIssueForm = {
@@ -38,11 +51,20 @@ const EMPTY_FORM: ReportIssueForm = {
   actualBehavior: "",
 };
 
-export function ReportIssueDialog(props: DesktopSupportDialogProps): ReactNode {
-  const { onOpenChange, open, support } = props;
+export function ReportIssueDialog(
+  props: DesktopSupportDialogProps & { readonly draftId: number },
+): ReactNode {
+  const { draftId, onOpenChange, open, support } = props;
   const runnerHost = useRunnerHost();
-  const [form, setForm] = useState<ReportIssueForm>(EMPTY_FORM);
+  const context = useDesktopDialogStore((state) => state.reportIssueContext);
+  const closeReportIssueDraft = useDesktopDialogStore(
+    (state) => state.closeReportIssueDraft,
+  );
+  const [form, setForm] = useState<ReportIssueForm>(() =>
+    reportIssueFormFromContext(context),
+  );
   const [snapshot, setSnapshot] = useState<DesktopSupportSnapshot | null>(null);
+  const submitErrorRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!open || support === null) return;
@@ -51,24 +73,46 @@ export function ReportIssueDialog(props: DesktopSupportDialogProps): ReactNode {
 
   const submitMutation = useMutation({
     mutationKey: runnerMutationKeys.supportSubmitReport(),
-    mutationFn: async () => {
+    mutationFn: async (submission: ReportIssueSubmission) => {
       if (support === null) throw new Error("Support bridge unavailable");
-      const result = await support.submitReport(form);
+      const result = await support.submitReport(submission.form);
       return result.reportId;
     },
-    onSuccess: (reportId) => {
-      const url = buildSupportIssueUrl(snapshot, form, reportId);
+    onSuccess: (reportId, submission) => {
+      Analytics.getInstance().track(AnalyticsEvent.ReportIssueHandedOff, {
+        outcome: "succeeded",
+        blocker: null,
+      });
+      // The hand-off to GitHub is the primary channel and must survive a
+      // Sentry outage, so a failed diagnostics upload does not block it. It
+      // does have to be visible: this dialog closes below, so the warning goes
+      // to a toast rather than an inline banner nobody would ever see.
+      if (reportId === null) {
+        toast.warning("Diagnostic logs could not be uploaded", {
+          description:
+            "Your report will still open on GitHub. Attach your logs manually from Settings → Diagnostics so the team can diagnose it.",
+        });
+      }
+      const url = buildSupportIssueUrl(
+        submission.snapshot,
+        submission.form,
+        reportId,
+      );
       void runnerHost.openExternalLink(url);
-      // Close directly: handleOpenChange short-circuits while the mutation
-      // is still in its onSuccess callback (isPending hasn't flipped yet).
-      setForm(EMPTY_FORM);
-      setSnapshot(null);
-      onOpenChange(false);
+      closeReportIssueDraft(submission.draftId);
     },
-    onError: () => {
-      toast.error("Failed to submit report. Please try again.");
+    onError: (error) => {
+      Analytics.getInstance().track(AnalyticsEvent.ReportIssueHandedOff, {
+        outcome: "failed",
+        blocker: analyticsBlockerFromError(error),
+      });
     },
   });
+
+  useEffect(() => {
+    if (!submitMutation.isError) return;
+    submitErrorRef.current?.focus();
+  }, [submitMutation.isError]);
 
   const handleOpenChange = (open: boolean) => {
     if (!open && submitMutation.isPending) return;
@@ -102,8 +146,9 @@ export function ReportIssueDialog(props: DesktopSupportDialogProps): ReactNode {
           <div className="grid gap-4 py-1 pr-1">
             {snapshot !== null && <EnvBadge snapshot={snapshot} />}
 
-            <Field label="Title" required>
+            <Field htmlFor="report-issue-title" label="Title" required>
               <Input
+                id="report-issue-title"
                 placeholder="Short summary of the issue"
                 value={form.title}
                 onChange={update("title")}
@@ -111,8 +156,9 @@ export function ReportIssueDialog(props: DesktopSupportDialogProps): ReactNode {
               />
             </Field>
 
-            <Field label="What happened?">
+            <Field htmlFor="report-issue-what-happened" label="What happened?">
               <Textarea
+                id="report-issue-what-happened"
                 placeholder="A clear description of the bug. Include any error messages you saw."
                 value={form.whatHappened}
                 onChange={update("whatHappened")}
@@ -121,8 +167,12 @@ export function ReportIssueDialog(props: DesktopSupportDialogProps): ReactNode {
               />
             </Field>
 
-            <Field label="Steps to reproduce">
+            <Field
+              htmlFor="report-issue-steps-to-reproduce"
+              label="Steps to reproduce"
+            >
               <Textarea
+                id="report-issue-steps-to-reproduce"
                 placeholder={"1.\n2.\n3."}
                 value={form.stepsToReproduce}
                 onChange={update("stepsToReproduce")}
@@ -132,8 +182,12 @@ export function ReportIssueDialog(props: DesktopSupportDialogProps): ReactNode {
             </Field>
 
             <div className="grid grid-cols-2 gap-4">
-              <Field label="Expected behavior">
+              <Field
+                htmlFor="report-issue-expected-behavior"
+                label="Expected behavior"
+              >
                 <Textarea
+                  id="report-issue-expected-behavior"
                   placeholder="What did you expect to happen?"
                   value={form.expectedBehavior}
                   onChange={update("expectedBehavior")}
@@ -141,8 +195,12 @@ export function ReportIssueDialog(props: DesktopSupportDialogProps): ReactNode {
                   className="min-h-20 resize-none"
                 />
               </Field>
-              <Field label="Actual behavior">
+              <Field
+                htmlFor="report-issue-actual-behavior"
+                label="Actual behavior"
+              >
                 <Textarea
+                  id="report-issue-actual-behavior"
                   placeholder="What actually happened instead?"
                   value={form.actualBehavior}
                   onChange={update("actualBehavior")}
@@ -156,6 +214,17 @@ export function ReportIssueDialog(props: DesktopSupportDialogProps): ReactNode {
           </div>
         </div>
 
+        {submitMutation.isError ? (
+          <div
+            ref={submitErrorRef}
+            role="alert"
+            tabIndex={-1}
+            className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-ui-sm text-destructive outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Failed to submit report. Please try again.
+          </div>
+        ) : null}
+
         <DialogFooter>
           <Button
             variant="outline"
@@ -165,7 +234,7 @@ export function ReportIssueDialog(props: DesktopSupportDialogProps): ReactNode {
             Cancel
           </Button>
           <Button
-            onClick={() => submitMutation.mutate()}
+            onClick={() => submitMutation.mutate({ draftId, form, snapshot })}
             disabled={
               submitMutation.isPending || form.title.trim().length === 0
             }
@@ -185,10 +254,26 @@ export function ReportIssueDialog(props: DesktopSupportDialogProps): ReactNode {
   );
 }
 
+function reportIssueFormFromContext(
+  context: ReportIssueContext | null,
+): ReportIssueForm {
+  if (context === null) return EMPTY_FORM;
+  const contextLines = [
+    context.source === null ? null : `Area: ${context.source}`,
+    context.code === null ? null : `Error code: ${context.code}`,
+    context.message,
+  ].filter((line): line is string => line !== null);
+  return {
+    ...EMPTY_FORM,
+    title: context.title,
+    whatHappened: contextLines.join("\n\n"),
+  };
+}
+
 function buildSupportIssueUrl(
   snapshot: DesktopSupportSnapshot | null,
   form: ReportIssueForm,
-  reportId: string,
+  reportId: string | null,
 ): string {
   return buildGitHubIssueUrl({
     ...supportSnapshotIssueFields(snapshot),
@@ -228,10 +313,12 @@ function supportHostIssueFields(snapshot: DesktopSupportSnapshot | null) {
 }
 
 function Field({
+  htmlFor,
   label,
   required,
   children,
 }: {
+  htmlFor: string;
   label: string;
   required?: boolean;
   children: ReactNode;
@@ -239,6 +326,7 @@ function Field({
   return (
     <div className="grid gap-1.5">
       <Label
+        htmlFor={htmlFor}
         className={cn(
           "text-ui-sm",
           required && "after:ml-0.5 after:text-destructive after:content-['*']",

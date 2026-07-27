@@ -26,7 +26,10 @@ import type {
   PlanSource,
   PlanStatus,
   PlanStep,
+  ProviderNoticeDetail,
+  ProviderNoticeTone,
   ToolInputDetail,
+  WorkflowMeta,
 } from "@traycer/protocol/persistence/epic/content-blocks";
 import type { ParsedTaskTodo } from "@traycer/protocol/host/agent/gui/task-todo-tools";
 
@@ -133,8 +136,36 @@ export interface ToolSegment {
   parentId: string | null;
 }
 
+// Recursive: a subagent's own children can themselves be nested subagent
+// cards (any spawn depth), not just their tool/file_change/command activity.
+// Unlike tool/file_change/command (which only ride along for spawn-tool-call
+// suppression bookkeeping), a nested `ProviderNoticeSegment` DOES render as a
+// visible row inside the owning card - see `SubagentChildProviderNotices` in
+// `subagent-segment.tsx`.
 export type SubagentChildSegment =
-  ToolSegment | FileChangeSegment | CommandSegment;
+  | ToolSegment
+  | FileChangeSegment
+  | CommandSegment
+  | SubagentSegment
+  | ProviderNoticeSegment;
+
+// A durable provider-generated notice (Codex model reroute / safety
+// verification / buffering, and future harness equivalents), projected from a
+// `text` content block whose `providerNotice` enrichment is set. Renders as a
+// compact row - see `ProviderNoticeSegment` in
+// `components/chat/segments/provider-notice-segment.tsx`.
+export interface ProviderNoticeSegment {
+  id: string;
+  kind: "provider_notice";
+  status: "streaming" | "completed" | "errored";
+  tone: ProviderNoticeTone;
+  title: string;
+  message: string | null;
+  details: ReadonlyArray<ProviderNoticeDetail>;
+  // Owning subagent block id when this notice arrived on a subagent's thread
+  // (nests under that subagent block). Null for a top-level notice.
+  parentId: string | null;
+}
 
 export interface ReasoningSegment {
   id: string;
@@ -193,8 +224,19 @@ export interface SubagentSegment {
   // builder drops the matching top-level tool segment so the card is the sole
   // representation. Null for harnesses that emit no separate spawn tool call.
   spawnToolCallId: string | null;
-  // The subagent's own activity (tool calls + file changes) nested under this
-  // block, keyed off each child segment's `parentId === this.id`.
+  // Owning subagent block id when this agent was itself spawned by another
+  // agent (nests under that parent's card, any depth). Null for a top-level
+  // agent.
+  parentId: string | null;
+  // Present iff this card is a workflow run's dual-written card - the rich
+  // fleet data (intent, activity timeline, fleet counts, tokens) an old reader
+  // can't render. Null for an ordinary agent card.
+  workflowMeta: WorkflowMeta | null;
+  // The subagent's own activity nested under this block, keyed off each child
+  // segment's `parentId === this.id` - tool calls, file changes, commands, AND
+  // nested agent cards (any depth). Only the `subagent`-kind entries render
+  // (the "Sub-agents" section); the rest ride along for spawn-tool-call
+  // suppression.
   children: ReadonlyArray<SubagentChildSegment>;
 }
 
@@ -293,6 +335,7 @@ export type MessageSegment =
   | ApprovalSegment
   | ArtifactOperationSegment
   | PlanSegmentModel
+  | ProviderNoticeSegment
   | {
       id: string;
       kind: "todo";
@@ -354,6 +397,14 @@ export interface InterviewSegment {
   questions: ReadonlyArray<InterviewQuestion>;
   answers: ReadonlyArray<InterviewAnswer>;
   error: string | null;
+  /**
+   * True when this question was carried into a Cross Question fork without
+   * being answered (the host settles the copied block with a
+   * `forkedWithoutAnswer` marker). Rendered as inline reference — expanded,
+   * with carried-from-the-original copy — instead of a misleading
+   * "Answered 0 of N" summary.
+   */
+  forkedWithoutAnswer: boolean;
 }
 
 /**
@@ -394,7 +445,8 @@ export interface ChatMessageSteerBadge {
 
 /**
  * Per-turn agent run metadata for an assistant row, surfaced in the elapsed
- * footer's info tooltip (provider, model, reasoning effort, fast mode). Only
+ * footer's info tooltip (provider, profile, model, reasoning effort, fast
+ * mode). Only
  * set on assistant rows; `null` for user/system rows and assistant turns that
  * predate the persisted `reasoningEffort` / `serviceTier` fields.
  */
@@ -402,6 +454,8 @@ export interface AssistantTurnMeta {
   /** Raw harness id, used to pick the provider's mono icon for the footer. */
   readonly provider: GuiHarnessId;
   readonly providerLabel: string;
+  /** Profile label snapshotted when the turn's provider session was minted. */
+  readonly profileLabel: string | null;
   readonly modelLabel: string | null;
   /** Raw persisted reasoning effort id from the host turn. */
   readonly reasoningEffort: string | null;
@@ -414,6 +468,42 @@ export interface AssistantTurnMeta {
    * pending turns whose cost isn't known until completion.
    */
   readonly costUsd: number | null;
+}
+
+/**
+ * Present when the user (or a cascaded `agent.stop`) ended this turn via the
+ * persisted `turn.stopped` chat event, rather than the turn finishing
+ * naturally. Drives the "Stopped · Nm Xs" elapsed-footer variant and its
+ * tooltip detail. Stamped only on the completed turn's last assistant row
+ * (mirrors `completedAt`); `null` for every other terminal outcome - a
+ * natural completion (`turn.completed`) or an interruption (`turn.interrupted`,
+ * e.g. a steer-restart). Determined solely by which event landed, not by the
+ * turn's segment content: a stopped turn whose last segment happens to be an
+ * `error` block still gets this stamped (a mid-turn failure doesn't change
+ * why the turn actually ended).
+ */
+export interface ChatMessageStoppedInfo {
+  readonly stoppedAt: number;
+  readonly reason: string | null;
+  /**
+   * Whether the TURN (not necessarily this specific row) produced any
+   * visible output before it was stopped. A split turn's stamped row is
+   * sometimes a content-less boundary marker synthesized after a trailing
+   * steer bubble - its own `segments` are empty even though an earlier row
+   * in the same turn has real content. `false` drives "Stopped before
+   * responding" (the turn truly never produced anything); `true` drives the
+   * full "Stopped · Nm Xs" footer even on a row with no segments of its own.
+   */
+  readonly turnHadOutput: boolean;
+  /**
+   * The turn's assistant reply text, aggregated across every row of the
+   * turn (not just this one) via the same join `collectAssistantReplyText`
+   * uses. A content-less boundary row's own segments can never supply
+   * copyable text, so the elapsed footer's copy button reads this instead
+   * of the row-local text whenever the row itself is empty - see
+   * `AssistantMessageBody`. Empty string when the turn produced no text.
+   */
+  readonly turnReplyText: string;
 }
 
 export interface ChatMessage {
@@ -431,6 +521,8 @@ export interface ChatMessage {
    * `null` for user rows, pending rows, and in-progress assistant turns.
    */
   completedAt: number | null;
+  /** See `ChatMessageStoppedInfo`. */
+  stopped: ChatMessageStoppedInfo | null;
   /**
    * User-wait time already accumulated during this assistant turn. The
    * assistant timer subtracts this so it measures agent work rather than time
@@ -494,6 +586,7 @@ export const useChatStore = create<ChatStore>((set) => ({
         settings: input.settings,
         createdAt: Date.now(),
         completedAt: null,
+        stopped: null,
         persistentMessageId: null,
         senderLabel: null,
         assistantMeta: null,

@@ -8,6 +8,11 @@ import type { WorktreeBindingOwnerKind } from "@traycer/protocol/host/worktree-s
 import type { HostRpcRegistry } from "@/lib/host";
 import { useHostQuery } from "@/hooks/host/use-host-query";
 
+type WorktreeGetBindingResponse = ResponseOfMethod<
+  HostRpcRegistry,
+  "worktree.getBinding"
+>;
+
 export function useWorktreeGetBinding(args: {
   readonly client: HostClient<HostRpcRegistry> | null;
   readonly epicId: string;
@@ -20,10 +25,11 @@ export function useWorktreeGetBinding(args: {
   // only needs the binding for rendering passes a normal staleTime + `false`.
   readonly staleTime: number;
   readonly refetchOnWindowFocus: boolean;
-}): UseQueryResult<
-  ResponseOfMethod<HostRpcRegistry, "worktree.getBinding">,
-  HostRpcError
-> {
+  // Background setup runs server-side and only mutates the binding. Consumers
+  // that surface setup transitions participate in table-owned polling; seeds
+  // and metadata readers remain passive cache observers.
+  readonly poll: boolean;
+}): UseQueryResult<WorktreeGetBindingResponse, HostRpcError> {
   return useHostQuery<HostRpcRegistry, "worktree.getBinding">({
     cacheKeyIdentity: undefined,
     client: args.client,
@@ -37,6 +43,7 @@ export function useWorktreeGetBinding(args: {
       enabled: args.enabled,
       staleTime: args.staleTime,
       refetchOnWindowFocus: args.refetchOnWindowFocus,
+      poll: args.poll,
     },
   });
 }

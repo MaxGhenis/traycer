@@ -8,10 +8,12 @@ import type {
   ChatRunSettings,
 } from "@traycer/protocol/host/agent/gui/subscribe";
 import type { InterviewAnswer } from "@traycer/protocol/persistence/epic/schemas";
+import type { ChatForkMode } from "@/components/chat/chat-message";
 import {
   ChatComposer,
   type ChatComposerSubmitInput,
 } from "@/components/chat/composer/chat-composer";
+import { ChatComposerBannerPortalProvider } from "@/components/chat/composer/chat-composer-banner-portal";
 import { ChatLowerDock } from "@/components/chat/chat-lower-dock";
 import {
   type ChatLowerSurfaceTopSpacing,
@@ -28,10 +30,7 @@ import { ComposerSlotApprovalQueue } from "@/components/chat/segments/composer-s
 import { ComposerSlotFileEditApprovalQueue } from "@/components/chat/segments/composer-slot-file-edit-approval-queue";
 import { ComposerReadonlyWorkspaceModeRow } from "@/components/home/composer/composer-workspace-mode-row";
 import { lowerScrollRegionMaxHeightClass } from "@/lib/chat/chat-lower-scroll-budget";
-import {
-  WORKSPACE_COMPOSER_READY,
-  type WorkspaceComposerAvailability,
-} from "@/lib/composer/workspace-composer-availability";
+import type { WorkspaceComposerAvailability } from "@/lib/composer/workspace-composer-availability";
 import type { ChatSessionState } from "@/stores/chats/chat-session-store";
 import { cn } from "@/lib/utils";
 import type { PendingInterviewView } from "./chat-tile-types";
@@ -69,19 +68,48 @@ export interface ChatLowerAccessState {
   readonly canAct: boolean;
 }
 
+/**
+ * Why the composer's send is blocked, for the send button's tooltip. `canAct`
+ * folds role and connection: a viewer can never act; a non-viewer with
+ * `canAct === false` means the chat stream is not open (host reconnecting
+ * after a drop / renderer resume).
+ */
+function chatSendDisabledHint(access: ChatLowerAccessState): string | null {
+  if (access.canAct) return null;
+  if (access.isViewer) return "You have view-only access to this chat";
+  return "Reconnecting to the host — sending is paused";
+}
+
 export interface ChatLowerTurnState {
   readonly activeTurnStatus: ChatActiveTurn["status"] | null;
+  /** Host-projected same-turn steering capability of the running turn's harness. */
+  readonly steerCapable: boolean;
+  /**
+   * Whether the tab's negotiated `chat.subscribe` version understands
+   * `after_safe_point` (host handshake minor >= 5). Gates whether `Mod-Enter`
+   * can steer at all, keeping a new renderer from steering a <=1.4 host.
+   */
+  readonly steerProtocolSupported: boolean;
+  /** Reads the live active turn at submit time for the Cmd+Enter drift check. */
+  readonly getActiveTurnForSteer: () => ChatActiveTurn | null;
   readonly stopDisabled: boolean;
   readonly onStopTurn: () => string | null;
 }
 
 export interface ChatLowerInterviewState {
   readonly pending: PendingInterviewView | null;
+  // True while an answer/skip for the pending block is in flight or accepted
+  // but unresolved (derived from the chat session's pending/accepted actions).
+  // Gates the card so the same action cannot be double-sent.
+  readonly isBusy: boolean;
   readonly onAnswer: (
     blockId: string,
     answers: ReadonlyArray<InterviewAnswer>,
   ) => string | null;
   readonly onError: (blockId: string, reason: string) => string | null;
+  // Branch the chat at the pending question (see ChatForkMode). null when the
+  // pending interview has no stable fork boundary.
+  readonly onFork: ((mode: ChatForkMode) => void) | null;
 }
 
 export interface ChatLowerApprovalsState {
@@ -157,6 +185,9 @@ export function ChatLowerInteractionSurfaces(
   const turnOnStopTurn = props.turn.onStopTurn;
   const turnActiveTurnStatus = props.turn.activeTurnStatus;
   const turnStopDisabled = props.turn.stopDisabled;
+  const turnSteerCapable = props.turn.steerCapable;
+  const turnSteerProtocolSupported = props.turn.steerProtocolSupported;
+  const turnGetActiveTurnForSteer = props.turn.getActiveTurnForSteer;
 
   // Intercept the composer Stop button: when this chat has active
   // sub-agents, raise the cascade prompt instead of stopping only its turn.
@@ -172,10 +203,20 @@ export function ChatLowerInteractionSurfaces(
   const turnWithCascade = useMemo(
     () => ({
       activeTurnStatus: turnActiveTurnStatus,
+      steerCapable: turnSteerCapable,
+      steerProtocolSupported: turnSteerProtocolSupported,
+      getActiveTurnForSteer: turnGetActiveTurnForSteer,
       stopDisabled: turnStopDisabled,
       onStopTurn: requestStopTurn,
     }),
-    [turnActiveTurnStatus, turnStopDisabled, requestStopTurn],
+    [
+      turnActiveTurnStatus,
+      turnSteerCapable,
+      turnSteerProtocolSupported,
+      turnGetActiveTurnForSteer,
+      turnStopDisabled,
+      requestStopTurn,
+    ],
   );
 
   // Memoize on the underlying approvals array: `visibleComposerApprovals`
@@ -278,7 +319,7 @@ export function ChatLowerInteractionSurfaces(
   );
 
   return (
-    <>
+    <ChatComposerBannerPortalProvider>
       <RuntimeGatedApprovalSurface
         model={composerModel}
         layout={approvalLayout}
@@ -329,7 +370,7 @@ export function ChatLowerInteractionSurfaces(
           setStopChildrenOpen(false);
         }}
       />
-    </>
+    </ChatComposerBannerPortalProvider>
   );
 }
 
@@ -383,19 +424,7 @@ function ComposerSurface(props: {
 }): ReactNode {
   const { model, layout } = props;
   if (!model.runtime.snapshotLoaded) {
-    return (
-      <InertChatComposer
-        taskId={model.composer.nodeId}
-        isActive={model.composer.isActive}
-        mentionRoots={model.composer.mentionRoots}
-        fallbackToGlobalMentionRoots={
-          model.composer.fallbackToGlobalMentionRoots
-        }
-        currentEpicId={model.composer.currentEpicId}
-        workspaceControls={model.composer.workspaceControls}
-        topSpacing={layout.topSpacing}
-      />
-    );
+    return null;
   }
   if (model.access.isViewer) {
     return (
@@ -414,15 +443,18 @@ function ComposerSurface(props: {
     return (
       <ComposerSlotShell topSpacing={layout.topSpacing} bottomSpacing="normal">
         <PendingInterviewCard
-          key={model.interview.pending.blockId}
+          key={`${model.composer.nodeId}:${model.interview.pending.blockId}`}
+          chatId={model.composer.nodeId}
           blockId={model.interview.pending.blockId}
           toolName={model.interview.pending.toolName}
           title={model.interview.pending.title}
           description={model.interview.pending.description}
           questions={model.interview.pending.questions}
           isActive={model.composer.isActive}
+          isBusy={model.interview.isBusy}
           onSubmit={model.access.canAct ? model.interview.onAnswer : null}
           onSkip={model.access.canAct ? model.interview.onError : null}
+          onFork={model.access.canAct ? model.interview.onFork : null}
         />
       </ComposerSlotShell>
     );
@@ -448,6 +480,7 @@ function LiveChatComposer(props: {
       taskId={model.composer.nodeId}
       isActive={model.composer.isActive}
       sendDisabled={!model.access.canAct}
+      sendDisabledHint={chatSendDisabledHint(model.access)}
       mentionRoots={model.composer.mentionRoots}
       fallbackToGlobalMentionRoots={model.composer.fallbackToGlobalMentionRoots}
       currentEpicId={model.composer.currentEpicId}
@@ -458,6 +491,9 @@ function LiveChatComposer(props: {
       onSubmitMessage={model.composer.onSubmitMessage}
       onSettingsChange={model.composer.onSettingsChange}
       activeTurnStatus={model.turn.activeTurnStatus}
+      steerCapable={model.turn.steerCapable}
+      steerProtocolSupported={model.turn.steerProtocolSupported}
+      getActiveTurnForSteer={model.turn.getActiveTurnForSteer}
       editingQueueItemId={model.queue.editingItem?.queueItemId ?? null}
       onCancelQueueEdit={model.queue.onCancelEdit}
       hasPendingApprovals={props.hasPendingApprovals}
@@ -494,41 +530,6 @@ function PendingApprovalQueues(props: {
   );
 }
 
-export function InertChatComposer(props: {
-  readonly taskId: string;
-  readonly isActive: boolean;
-  readonly mentionRoots: ReadonlyArray<string>;
-  readonly fallbackToGlobalMentionRoots: boolean;
-  readonly currentEpicId: string;
-  readonly workspaceControls: ReactNode;
-  readonly topSpacing: ChatLowerSurfaceTopSpacing;
-}) {
-  return (
-    <ChatComposer
-      taskId={props.taskId}
-      isActive={props.isActive}
-      sendDisabled
-      mentionRoots={props.mentionRoots}
-      fallbackToGlobalMentionRoots={props.fallbackToGlobalMentionRoots}
-      currentEpicId={props.currentEpicId}
-      settingsSeed={null}
-      fallbackSettingsSeed={null}
-      onSubmitMessage={() => false}
-      onSettingsChange={null}
-      activeTurnStatus={null}
-      editingQueueItemId={null}
-      onCancelQueueEdit={null}
-      hasPendingApprovals={false}
-      stopDisabled
-      onStopTurn={null}
-      workspaceControls={props.workspaceControls}
-      workspaceAvailability={WORKSPACE_COMPOSER_READY}
-      topSpacing={props.topSpacing}
-      topSlot={null}
-    />
-  );
-}
-
 function ComposerSlotShell(props: {
   readonly children: ReactNode;
   readonly topSpacing: ChatLowerSurfaceTopSpacing;
@@ -550,7 +551,7 @@ function ComposerSlotShell(props: {
 function ReadOnlyComposerNotice() {
   return (
     <div className="rounded-md border border-canvas-border/70 bg-canvas px-3 py-2 text-ui-sm text-muted-foreground">
-      Read-only viewer. The chat owner can send prompts and manage this queue.
+      Read-only viewer. The agent owner can send prompts and manage this queue.
     </div>
   );
 }

@@ -40,6 +40,7 @@ import {
 } from "@/stores/home/landing-draft-store";
 import { landingComposerLiveImageHashes } from "@/stores/composer/landing-composer-store";
 import { appLogger, describeLogError } from "@/lib/logger";
+import { reportableErrorToast } from "@/lib/reportable-error-toast";
 
 /**
  * Per-partition byte budget for stored landing images. Flagged TUNABLE — shipped
@@ -68,6 +69,55 @@ function isDesktopRuntime(): boolean {
 // One-shot "the draft set is known" gate. Stays false until browser hydration
 // or the first desktop projection flips it — see `markLandingDraftsReady`.
 let draftsReady = false;
+
+// [B2] "The landing roots are trustworthy" gate for the DELETING sweep. On a
+// fresh desktop renderer the session cache is empty and the FIRST desktop
+// projection can be a spurious cold-start empty (a stale disk read, or a snapshot
+// clobbered by registry churn); reconciling then — empty roots, empty session —
+// would reap every restored image's bytes as an "orphan". Deletion is therefore
+// withheld until EITHER a non-empty authoritative draft snapshot has been applied
+// this session (roots definitely include real drafts) OR the live landing editor
+// has mounted (its surface is gated on windows-bridge hydration, so the
+// authoritative snapshot is in and the live-editor + draft roots are real).
+// Browser is exempt: it hydrates the draft set synchronously from localStorage,
+// so its first reconcile already has trustworthy roots.
+let sawAuthoritativeNonEmptyDrafts = false;
+let landingEditorMounted = false;
+
+/**
+ * Record that a non-empty authoritative draft snapshot has been applied this
+ * session. Called by the draft store's desktop-projection path. Opens the [B2]
+ * deletion gate: the reconcile's roots now provably reflect real drafts.
+ */
+export function markLandingDraftsAuthoritativeNonEmpty(): void {
+  sawAuthoritativeNonEmptyDrafts = true;
+}
+
+/**
+ * Record that the live landing editor has mounted (called once from
+ * `LandingComposer`). Opens the [B2] deletion gate and kicks a reconcile so any
+ * genuine orphans deferred while the gate was closed are reclaimed now that the
+ * roots are trustworthy.
+ */
+export function markLandingEditorMounted(): void {
+  if (landingEditorMounted) return;
+  landingEditorMounted = true;
+  // [B1] The editor mounting means the draft set is known, so satisfy readiness
+  // even if an empty-inbound projection guard suppressed the projection's own
+  // `markLandingDraftsReady` — otherwise reconcile would stay a no-op for this
+  // renderer's whole lifetime. Idempotent when readiness already fired.
+  markLandingDraftsReady();
+  // Ready may already have been set (no-op above); run a sweep now that the
+  // deletion gate is open so genuine orphans deferred while it was closed are
+  // reclaimed.
+  scheduleLandingImageReconcile();
+}
+
+/** Whether the [B2] deleting sweep is allowed to run (see the gate note above). */
+function landingDeletionAllowed(): boolean {
+  if (!isDesktopRuntime()) return true;
+  return sawAuthoritativeNonEmptyDrafts || landingEditorMounted;
+}
 
 /**
  * Flip the one-shot ready signal and run the startup orphan sweep. Idempotent:
@@ -102,10 +152,9 @@ function imageHashesOf(content: JsonContent): Set<string> {
 }
 
 /**
- * Every hash that must NOT be collected: union of all persisted drafts' content
- * and the live editor mirror. The session cache is handled separately (it
- * protects the paste→insert window but its entries are reclaimed once a hash
- * leaves the live roots).
+ * Every hash that must NOT be collected: union of all persisted drafts'
+ * content and the live editor mirror. The session cache is handled separately
+ * to protect the normal paste-to-insert window.
  */
 function computeLiveRoots(): Set<string> {
   const roots = new Set<string>();
@@ -139,10 +188,28 @@ export async function reconcile(): Promise<void> {
   const orphans = stored.filter(
     (hash) => !liveRoots.has(hash) && !protectedFromDelete.has(hash),
   );
+  // [B2] Withhold the whole sweep while the roots are untrustworthy (cold-start
+  // desktop): deleting would reap freshly-restored bytes, and there is nothing to
+  // release either (the session is empty before the editor mounts). Once the gate
+  // opens, `markLandingEditorMounted` re-runs the reconcile so genuine orphans are
+  // still reaped.
+  if (orphans.length > 0 && !landingDeletionAllowed()) return;
   await Promise.all(orphans.map((hash) => deleteImage(hash)));
+  let releasedUnreferenced = false;
   for (const hash of sessionKeys) {
-    if (!liveRoots.has(hash)) releaseSession(hash);
+    if (!liveRoots.has(hash)) {
+      releaseSession(hash);
+      releasedUnreferenced = true;
+    }
   }
+  // A hash that was session-protected THIS sweep but is no longer referenced had
+  // its bytes spared (the session is a delete-root) and its session just
+  // released; only the NEXT sweep can reclaim those now-unprotected bytes. Kick
+  // one so a partial-failure orphan (a successful sibling of a failed putImage)
+  // is reclaimed promptly instead of lingering until an unrelated later sweep.
+  // Terminates: the follow-up finds the hash session-free and deletes it,
+  // releasing nothing new.
+  if (releasedUnreferenced) scheduleLandingImageReconcile();
 }
 
 let reconcileTimer: Parameters<typeof clearTimeout>[0] | null = null;
@@ -212,9 +279,18 @@ export function reserveLandingImageBudget(incomingBytes: number): boolean {
   // would destroy unrelated in-progress drafts to make room for it. Block the
   // paste instead — we never evict user drafts for an unattributed paste.
   if (activeDraftId === null) {
-    toast.error("Couldn't add the image.", {
-      description: "It would exceed this window's image storage budget.",
-    });
+    reportableErrorToast(
+      "Couldn't add the image.",
+      {
+        description: "It would exceed this window's image storage budget.",
+      },
+      {
+        title: "Could not add image",
+        message: "The image storage budget was exceeded.",
+        code: null,
+        source: "Chat composer",
+      },
+    );
     return false;
   }
 
@@ -231,9 +307,18 @@ export function reserveLandingImageBudget(incomingBytes: number): boolean {
 
   if (referenced + incomingBytes <= LANDING_IMAGE_BUDGET_BYTES) return true;
 
-  toast.error("Couldn't add the image.", {
-    description: "It would exceed this window's image storage budget.",
-  });
+  reportableErrorToast(
+    "Couldn't add the image.",
+    {
+      description: "It would exceed this window's image storage budget.",
+    },
+    {
+      title: "Could not add image",
+      message: "The image storage budget was exceeded.",
+      code: null,
+      source: "Chat composer",
+    },
+  );
   return false;
 }
 

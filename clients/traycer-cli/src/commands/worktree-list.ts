@@ -1,5 +1,8 @@
-import { worktreeListAllForHostResponseSchemaV11 } from "@traycer/protocol/host";
-import type { WorktreeHostEntryV11 } from "@traycer/protocol/host";
+import {
+  worktreeListAllForHostRequestSchemaV14,
+  worktreeListAllForHostResponseSchemaV14,
+} from "@traycer/protocol/host";
+import type { WorktreeHostEntryV14 } from "@traycer/protocol/host";
 import {
   WORKTREE_TIER_LABEL,
   classifyWorktreeTier,
@@ -8,9 +11,17 @@ import {
 import {
   callHostRpc,
   parseHostResponse,
+  parseUserInput,
   toAgentCliError,
 } from "../internal/host-rpc";
+import { cliError, CLI_ERROR_CODES, toCliError } from "../runner/errors";
+import { parsePositiveIntegerArg } from "../runner/parse-positive-integer-arg";
 import type { CommandFn } from "../runner/runner";
+
+// A client-side ask, not a guarantee: the host clamps page size by request mode
+// (currently smaller for probed pages, larger for base pages). Over-asking is
+// harmless because the loop trusts `nextCursor` until exhaustion.
+const DEFAULT_WORKTREE_LIST_PAGE_LIMIT = 32;
 
 /**
  * One listing row: the raw enriched host entry plus the evidence tier computed
@@ -20,7 +31,7 @@ import type { CommandFn } from "../runner/runner";
  * feed the greens, so classifying unprobed entries would misread every worktree
  * as Review. Null mirrors the probe-skipped semantics of the other fields.
  */
-export type WorktreeListRow = WorktreeHostEntryV11 & {
+export type WorktreeListRow = WorktreeHostEntryV14 & {
   readonly tier: WorktreeTier | null;
 };
 
@@ -30,11 +41,18 @@ export interface WorktreeListCommandOpts {
   // cheap; the housekeeping skill turns it on to classify staleness. `owners`
   // and `createdAt` are returned either way.
   readonly includeActivity: boolean;
+  readonly cursor: string | null;
+  readonly limit: string | null;
+}
+
+interface WorktreeListPage {
+  readonly worktrees: WorktreeListRow[];
+  readonly nextCursor: string | null;
 }
 
 /**
  * `traycer worktree list` - host-wide listing of every Traycer-managed
- * worktree under `~/.traycer/worktrees/`. Calls `worktree.listAllForHost@1.1`;
+ * worktree under `~/.traycer/worktrees/`. Calls `worktree.listAllForHost@1.4`;
  * the canonical (latest) request carries `includeActivity`, so a v1.0 host is
  * bridged up transparently (enriched fields default to empty `owners` / `null`
  * timestamps). Human mode renders a scannable table; `--json` hands the
@@ -45,28 +63,116 @@ export function buildWorktreeListCommand(
   opts: WorktreeListCommandOpts,
 ): CommandFn {
   return async () => {
-    const result = await toAgentCliError(
-      callHostRpc("worktree.listAllForHost", {
-        includeActivity: opts.includeActivity,
-        // Whole-list mode: the CLI lists every managed worktree, never a
-        // per-viewport slice.
-        activityPaths: null,
-      }),
-    );
-    const parsed = parseHostResponse(
-      worktreeListAllForHostResponseSchemaV11,
-      result,
-    );
-    const worktrees: WorktreeListRow[] = parsed.worktrees.map((entry) => ({
-      ...entry,
-      tier: opts.includeActivity ? classifyWorktreeTier(entry) : null,
-    }));
-    return {
-      data: { worktrees },
-      human: formatWorktreeListTable(worktrees, opts.includeActivity),
-      exitCode: 0,
-    };
+    const explicitPaging = opts.limit !== null;
+    const explicitLimit = parseWorktreeListLimit(opts.limit);
+
+    if (explicitPaging) {
+      const page = await requestWorktreeListPage(
+        opts.includeActivity,
+        opts.cursor,
+        explicitLimit,
+      );
+      return {
+        data: { worktrees: page.worktrees, nextCursor: page.nextCursor },
+        human: formatWorktreeListTable(
+          page.worktrees,
+          opts.includeActivity,
+          page.nextCursor,
+        ),
+        exitCode: 0,
+      };
+    }
+
+    const worktrees: WorktreeListRow[] = [];
+    let cursor: string | null = opts.cursor;
+
+    while (true) {
+      let page: WorktreeListPage;
+      try {
+        page = await requestWorktreeListPage(
+          opts.includeActivity,
+          cursor,
+          DEFAULT_WORKTREE_LIST_PAGE_LIMIT,
+        );
+      } catch (err) {
+        throw worktreeListResumeError(err, worktrees, cursor);
+      }
+
+      worktrees.push(...page.worktrees);
+      if (page.nextCursor === null) {
+        return {
+          data: { worktrees, nextCursor: null },
+          human: formatWorktreeListTable(worktrees, opts.includeActivity, null),
+          exitCode: 0,
+        };
+      }
+      cursor = page.nextCursor;
+    }
   };
+}
+
+export function parseWorktreeListLimit(value: string | null): number | null {
+  if (value === null) return null;
+  const limit = parsePositiveIntegerArg(value);
+  if (limit !== null) return limit;
+  throw cliError({
+    code: CLI_ERROR_CODES.INVALID_ARGUMENT,
+    message: "traycer worktree list: --limit must be a positive integer.",
+    details: { limit: value },
+    exitCode: 1,
+  });
+}
+
+async function requestWorktreeListPage(
+  includeActivity: boolean,
+  cursor: string | null,
+  limit: number | null,
+): Promise<WorktreeListPage> {
+  const request = parseUserInput(worktreeListAllForHostRequestSchemaV14, {
+    includeActivity,
+    // The CLI is a paged-listing caller, never a GUI per-selection probe.
+    activityPaths: null,
+    cursor,
+    limit,
+    // CLI invocations are one-shot accuracy reads, so each page deliberately
+    // awaits resolve-now instead of inheriting the GUI's cache-only poll path.
+    forceRefresh: true,
+  });
+  const result = await toAgentCliError(
+    callHostRpc("worktree.listAllForHost", request),
+  );
+  const parsed = parseHostResponse(
+    worktreeListAllForHostResponseSchemaV14,
+    result,
+  );
+  return {
+    worktrees: parsed.worktrees.map((entry) => ({
+      ...entry,
+      tier: includeActivity ? classifyWorktreeTier(entry) : null,
+    })),
+    nextCursor: parsed.nextCursor,
+  };
+}
+
+function worktreeListResumeError(
+  err: unknown,
+  worktrees: ReadonlyArray<WorktreeListRow>,
+  resumeCursor: string | null,
+): Error {
+  const cliErr = toCliError(err);
+  const resumeHint =
+    resumeCursor === null
+      ? "retry the command to resume from the beginning"
+      : `resume with --cursor ${resumeCursor}`;
+  return cliError({
+    code: cliErr.code,
+    message: `${cliErr.message} Partial worktree rows are available; ${resumeHint}.`,
+    details: {
+      worktrees,
+      resumeCursor,
+    },
+    exitCode: cliErr.exitCode,
+  });
 }
 
 const COLUMNS = [
@@ -89,10 +195,10 @@ const COLUMNS = [
 export function formatWorktreeListTable(
   worktrees: ReadonlyArray<WorktreeListRow>,
   includeActivity: boolean,
+  nextCursor: string | null,
 ): string {
-  if (worktrees.length === 0) {
-    return "No Traycer-managed worktrees found.";
-  }
+  if (worktrees.length === 0)
+    return formatWorktreeListTailHints([], nextCursor);
   const rows = worktrees.map((entry) => [
     entry.repoLabel,
     entry.branch ?? "(detached)",
@@ -122,7 +228,22 @@ export function formatWorktreeListTable(
       "Pass --include-activity for last-active timestamps, branch status, and the computed tier.",
     );
   }
-  return lines.join("\n");
+  return formatWorktreeListTailHints(lines, nextCursor);
+}
+
+function formatWorktreeListTailHints(
+  lines: ReadonlyArray<string>,
+  nextCursor: string | null,
+): string {
+  const outputLines =
+    lines.length === 0 ? ["No Traycer-managed worktrees found."] : [...lines];
+  if (nextCursor !== null) {
+    outputLines.push(
+      "",
+      `More worktrees available - resume with --cursor ${nextCursor}.`,
+    );
+  }
+  return outputLines.join("\n");
 }
 
 /**

@@ -15,12 +15,14 @@ import {
   makeBrowserPeekTileRef,
   makeBrowserTileRef,
 } from "@/stores/epics/canvas/tile-schema/browser-tile";
+import { makePrDetailTile } from "@/lib/pr/pr-detail-tile";
 import type {
   BrowserPeekTileRef,
   BrowserTileRef,
   EpicArtifactRef,
   EpicTerminalRef,
   GitDiffTileRef,
+  PrDetailTileRef,
   WorkspaceFileRef,
 } from "@/stores/epics/canvas/types";
 
@@ -268,11 +270,19 @@ describe("parseTileRef / serializeTileRef", () => {
       runningDir: "/repo",
       filePath: "src/a.ts",
       stage: "unstaged",
+      repositoryContext: {
+        workspaceLabel: "workspace",
+        repositoryLabel: "packages/traycer",
+      },
     });
     const bundle = makeGitBundleDiffTile({
       hostId: HOST,
       runningDir: "/repo",
       bundleGroup: "changes",
+      repositoryContext: {
+        workspaceLabel: "workspace",
+        repositoryLabel: "packages/traycer",
+      },
     });
     expect(parseTileRef(serializeTileRef(file))).toEqual(file);
     expect(parseTileRef(serializeTileRef(bundle))).toEqual(bundle);
@@ -284,6 +294,7 @@ describe("parseTileRef / serializeTileRef", () => {
       runningDir: "/repo",
       filePath: "src/a.ts",
       stage: "unstaged",
+      repositoryContext: null,
     });
     const parsed = parseTileRef({
       id: "legacy-random-uuid",
@@ -302,6 +313,62 @@ describe("parseTileRef / serializeTileRef", () => {
     });
     expect(parsed).not.toBeNull();
     expect(parsed?.id).toBe(tile.id);
+  });
+
+  it("round-trips a pr-detail tile", () => {
+    const tile = makePrDetailTile({
+      hostId: HOST,
+      githubHost: "github.com",
+      owner: "acme",
+      repo: "widgets",
+      prNumber: 42,
+      name: "acme/widgets#42",
+    });
+    expect(parseTileRef(serializeTileRef(tile))).toEqual(tile);
+  });
+
+  it("recomputes the pr-detail id on parse from host + base coordinates", () => {
+    const tile = makePrDetailTile({
+      hostId: HOST,
+      githubHost: "github.com",
+      owner: "acme",
+      repo: "widgets",
+      prNumber: 42,
+      name: "acme/widgets#42",
+    });
+    const parsed = parseTileRef({
+      id: "legacy-random-uuid",
+      instanceId: tile.instanceId,
+      type: "pr-detail",
+      name: tile.name,
+      hostId: tile.hostId,
+      githubHost: tile.githubHost,
+      owner: tile.owner,
+      repo: tile.repo,
+      prNumber: tile.prNumber,
+    });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.id).toBe(tile.id);
+  });
+
+  it("upgrades legacy Git bundle titles with the repository directory", () => {
+    const parsed = parseTileRef({
+      id: "legacy-random-uuid",
+      type: "git-diff",
+      name: "Changes",
+      hostId: HOST,
+      diff: {
+        kind: "bundle",
+        runningDir: "/worktrees/right-click-context-menu/traycer",
+        bundleGroup: "changes",
+      },
+      view: {
+        collapsedFilePaths: [],
+      },
+    });
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.name).toBe("traycer · Changes");
   });
 
   it("rejects unknown tile kinds", () => {
@@ -342,11 +409,21 @@ describe("isTileRefRecordBacked", () => {
       runningDir: "/repo",
       filePath: "src/a.ts",
       stage: "unstaged",
+      repositoryContext: null,
+    });
+    const prDetail: PrDetailTileRef = makePrDetailTile({
+      hostId: HOST,
+      githubHost: "github.com",
+      owner: "acme",
+      repo: "widgets",
+      prNumber: 42,
+      name: "acme/widgets#42",
     });
     expect(isTileRefRecordBacked(chat)).toBe(true);
     expect(isTileRefRecordBacked(terminal)).toBe(false);
     expect(isTileRefRecordBacked(browser)).toBe(false);
     expect(isTileRefRecordBacked(gitDiff)).toBe(false);
+    expect(isTileRefRecordBacked(prDetail)).toBe(false);
   });
 
   it("treats stale unknown persisted tile kinds as not record-backed", () => {

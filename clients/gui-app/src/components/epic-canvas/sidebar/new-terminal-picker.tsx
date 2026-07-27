@@ -13,8 +13,10 @@
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { Plus } from "lucide-react";
-import type { WorktreeBindingSelectorRow } from "@traycer/protocol/host";
+import type { WorktreeBindingSelectorRowV12 } from "@traycer/protocol/host";
 import { Button } from "@/components/ui/button";
+import { ReportIssueAction } from "@/components/report-issue/report-issue-action";
+import { createReportIssueContext } from "@/lib/report-issue-context";
 import {
   Popover,
   PopoverContent,
@@ -23,10 +25,11 @@ import {
 import { WorktreeFolderListBody } from "@/components/worktree/worktree-folder-list-body";
 import { WorktreePickerHostSection } from "@/components/worktree/worktree-picker-host-section";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
-import { useTerminalDefaultCwd } from "@/hooks/terminal/use-terminal-default-cwd-query";
 import { useWorktreeListBindingsForEpic } from "@/hooks/worktree/use-worktree-list-bindings-for-epic-query";
+import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { DEFAULT_TERMINAL_TITLE } from "@/lib/terminals/terminal-title";
 import { worktreeRowKey } from "@/lib/worktree/worktree-row-key";
+import { withoutResolvedMissingRows } from "@/lib/worktree/worktree-row-resolved-missing";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 
 interface NewTerminalPickerProps {
@@ -40,9 +43,12 @@ export function NewTerminalPicker(props: NewTerminalPickerProps) {
   // the effective selection is derived below so a default never has to be
   // written into state via an effect.
   const [explicitRow, setExplicitRow] =
-    useState<WorktreeBindingSelectorRow | null>(null);
-  const openTileInTab = useEpicCanvasStore((s) => s.openTileInTab);
+    useState<WorktreeBindingSelectorRowV12 | null>(null);
   const activeHostId = useReactiveActiveHostId();
+  const navigateNested = useEpicNestedFocusNavigation();
+  const prepareOpenTileInTabFocusTarget = useEpicCanvasStore(
+    (s) => s.prepareOpenTileInTabFocusTarget,
+  );
 
   // Gated on `isOpen` so the "+" button costs no RPC while idle; the query
   // becomes active only while the popover is open.
@@ -50,9 +56,18 @@ export function NewTerminalPicker(props: NewTerminalPickerProps) {
     epicId: props.epicId,
     enabled: isOpen,
   });
+  // Host-proven-missing rows are hidden here (a deleted worktree can't host a
+  // terminal); the explicit pick is exempt so a worktree deleted while this
+  // popover is open degrades to its disabled badge instead of vanishing.
   const rows = useMemo(
-    () => bindingsQuery.data?.rows ?? [],
-    [bindingsQuery.data?.rows],
+    () =>
+      withoutResolvedMissingRows(
+        bindingsQuery.data?.rows ?? [],
+        explicitRow === null
+          ? null
+          : { hostId: explicitRow.hostId, runningDir: explicitRow.runningDir },
+      ),
+    [bindingsQuery.data?.rows, explicitRow],
   );
   // Explicit pick wins while it stays selectable; otherwise auto-select the
   // default (primary, skipping disabled rows, falling back to the first
@@ -67,29 +82,21 @@ export function NewTerminalPicker(props: NewTerminalPickerProps) {
     !bindingsQuery.isPending &&
     !bindingsQuery.isError &&
     rows.length === 0;
-  const defaultCwdQuery = useTerminalDefaultCwd({
-    epicId: props.epicId,
-    enabled: hasLoadedNoRows,
-  });
-  const folderlessCwdPending = hasLoadedNoRows && defaultCwdQuery.isPending;
-  const folderlessCwdFailed = hasLoadedNoRows && defaultCwdQuery.isError;
+  // The fallback cwd for folderless launches rides the bindings response
+  // (`worktree.listBindingsForEpic@1.1`). `null` means the host predates
+  // folderless workspaces (bridged v1.0 response), so launch stays disabled.
+  const folderlessCwd = bindingsQuery.data?.folderlessCwd ?? null;
+  const folderlessCwdFailed = hasLoadedNoRows && folderlessCwd === null;
   const launchTarget = useMemo(
     () =>
       selectedRow === null
         ? resolveFolderlessTerminalTarget(
-            hasLoadedNoRows && !folderlessCwdPending && !folderlessCwdFailed,
+            hasLoadedNoRows,
             activeHostId,
-            defaultCwdQuery.data?.cwd,
+            folderlessCwd,
           )
         : { hostId: selectedRow.hostId, cwd: selectedRow.runningDir },
-    [
-      activeHostId,
-      defaultCwdQuery.data?.cwd,
-      folderlessCwdFailed,
-      folderlessCwdPending,
-      hasLoadedNoRows,
-      selectedRow,
-    ],
+    [activeHostId, folderlessCwd, hasLoadedNoRows, selectedRow],
   );
 
   // A double-click on the launch action fires twice before `setIsOpen(false)`
@@ -107,37 +114,49 @@ export function NewTerminalPicker(props: NewTerminalPickerProps) {
   const handleLaunch = useCallback(() => {
     if (hasLaunchedRef.current || launchTarget === null) return;
     hasLaunchedRef.current = true;
-    openTileInTab(props.tabId, {
-      id: `term-${uuidv4()}`,
-      instanceId: uuidv4(),
-      type: "terminal",
-      name: DEFAULT_TERMINAL_TITLE,
-      titleSource: "default",
-      hostId: launchTarget.hostId,
-      cwd: launchTarget.cwd,
-    });
+    navigateNested(props.epicId, props.tabId, () =>
+      prepareOpenTileInTabFocusTarget(props.tabId, {
+        id: `term-${uuidv4()}`,
+        instanceId: uuidv4(),
+        type: "terminal",
+        name: DEFAULT_TERMINAL_TITLE,
+        titleSource: "default",
+        hostId: launchTarget.hostId,
+        cwd: launchTarget.cwd,
+      }),
+    );
     setIsOpen(false);
-  }, [launchTarget, openTileInTab, props.tabId]);
+  }, [
+    navigateNested,
+    prepareOpenTileInTabFocusTarget,
+    props.epicId,
+    props.tabId,
+    launchTarget,
+  ]);
 
-  const handleSelectRow = useCallback((row: WorktreeBindingSelectorRow) => {
+  const handleSelectRow = useCallback((row: WorktreeBindingSelectorRowV12) => {
     setExplicitRow(row);
   }, []);
 
   const launchDisabled = launchTarget === null;
   let folderlessCwdStatus: ReactNode = null;
-  if (folderlessCwdPending) {
-    folderlessCwdStatus = (
-      <span data-testid="new-terminal-folderless-cwd-pending">
-        Resolving terminal directory.
-      </span>
-    );
-  } else if (folderlessCwdFailed) {
+  if (folderlessCwdFailed) {
     folderlessCwdStatus = (
       <span
-        className="text-destructive"
+        className="flex items-center gap-1.5 text-destructive"
         data-testid="new-terminal-folderless-cwd-error"
       >
         Couldn't resolve terminal directory.
+        <ReportIssueAction
+          context={createReportIssueContext({
+            title: "Couldn't resolve terminal directory",
+            message: "The terminal working directory could not be resolved.",
+            code: null,
+            source: "New terminal",
+          })}
+          presentation="icon"
+          className={undefined}
+        />
       </span>
     );
   }
@@ -202,8 +221,8 @@ export function NewTerminalPicker(props: NewTerminalPickerProps) {
  * is just `disabledReason === null` (unlike the git surfaces' `isGitSelectable`).
  */
 function pickDefaultTerminalRow(
-  rows: ReadonlyArray<WorktreeBindingSelectorRow>,
-): WorktreeBindingSelectorRow | null {
+  rows: ReadonlyArray<WorktreeBindingSelectorRowV12>,
+): WorktreeBindingSelectorRowV12 | null {
   const selectable = rows.filter((row) => row.disabledReason === null);
   if (selectable.length === 0) return null;
   return selectable.find((row) => row.isPrimary) ?? selectable[0];
@@ -216,9 +235,9 @@ function pickDefaultTerminalRow(
  * fields across binding updates.
  */
 function resolveTerminalSelection(
-  explicit: WorktreeBindingSelectorRow | null,
-  rows: ReadonlyArray<WorktreeBindingSelectorRow>,
-): WorktreeBindingSelectorRow | null {
+  explicit: WorktreeBindingSelectorRowV12 | null,
+  rows: ReadonlyArray<WorktreeBindingSelectorRowV12>,
+): WorktreeBindingSelectorRowV12 | null {
   if (explicit !== null) {
     const explicitKey = worktreeRowKey(explicit);
     const live = rows.find(
@@ -238,9 +257,9 @@ interface TerminalLaunchTarget {
 function resolveFolderlessTerminalTarget(
   enabled: boolean,
   hostId: string | null,
-  cwd: string | undefined,
+  cwd: string | null,
 ): TerminalLaunchTarget | null {
-  if (!enabled || hostId === null || cwd === undefined || cwd.length === 0) {
+  if (!enabled || hostId === null || cwd === null || cwd.length === 0) {
     return null;
   }
   return { hostId, cwd };

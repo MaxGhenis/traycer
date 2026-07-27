@@ -2,24 +2,29 @@ import type {
   ProviderRateLimits,
   ProviderRateLimitWindow,
 } from "@traycer/protocol/host";
+import { classifyProviderRateLimitWindow } from "@traycer/protocol/host/rate-limit";
 import { useHostQueriesWithResponseMap } from "@/hooks/host/use-host-queries";
 import {
   providerRateLimitQueryOptions,
   type ProviderRateLimitTanstackOptions,
 } from "@/hooks/host/provider-rate-limit-query-options";
-import { useConfiguredRateLimitProviders } from "@/hooks/rate-limits/use-configured-rate-limit-providers";
+import { useVisibleRateLimitProviders } from "@/hooks/rate-limits/use-configured-rate-limit-providers";
+import {
+  resolveRateLimitProfileId,
+  type RateLimitProfileSelection,
+} from "@/hooks/rate-limits/use-rate-limit-profile-selection";
 import { useHostClient, type HostRpcRegistry } from "@/lib/host";
-import type { RateLimitProviderId } from "@/lib/rate-limit-providers";
+import {
+  isRateLimitProfileFetchEligible,
+  type RateLimitProviderId,
+} from "@/lib/rate-limit-providers";
 import {
   envelopeDegradedReason,
   mapResponseToProviderRateLimitEnvelope,
   resolveRetainedProviderRateLimits,
   type ProviderRateLimitEnvelope,
 } from "@/lib/rate-limits/rate-limit-envelope";
-import {
-  rateLimitWindowSeverity,
-  type RateLimitWindowSeverity,
-} from "@/lib/rate-limits/window-severity";
+import { type RateLimitWindowSeverity } from "@/lib/rate-limits/window-severity";
 
 /**
  * The two windows a glyph bar can stand for, in fixed draw order: a provider's
@@ -48,6 +53,12 @@ const GLYPH_PROVIDER_IDS = ["codex", "claude-code"] as const;
 
 type GlyphProviderId = (typeof GLYPH_PROVIDER_IDS)[number];
 
+interface GlyphProviderTarget {
+  readonly providerId: GlyphProviderId;
+  readonly profileId: string | null;
+  readonly fetchEligible: boolean;
+}
+
 /** A glyph provider's live query state, paired with its id (in draw order). */
 interface GlyphProviderReading {
   readonly providerId: GlyphProviderId;
@@ -65,10 +76,12 @@ function fiveHourWindow(
       return rateLimits.primary;
     case "claude-code":
       return rateLimits.fiveHour;
-    // OpenRouter/Kilo Code are never queried for a glyph slot; kept for
-    // exhaustiveness over the union.
+    // OpenRouter/Kilo Code/Grok are never queried for a glyph slot (grok stays
+    // out of `GLYPH_PROVIDER_IDS` - its billing period isn't a short rolling
+    // window); kept for exhaustiveness over the union.
     case "openrouter":
     case "kilocode":
+    case "grok":
       return null;
   }
 }
@@ -85,6 +98,7 @@ function weeklyWindow(
       return rateLimits.sevenDay;
     case "openrouter":
     case "kilocode":
+    case "grok":
       return null;
   }
 }
@@ -100,7 +114,7 @@ function toBar(
     providerId,
     windowLabel,
     usedPercent: window.usedPercent,
-    severity: rateLimitWindowSeverity(window.usedPercent),
+    severity: classifyProviderRateLimitWindow(window),
     degraded,
   };
 }
@@ -196,15 +210,40 @@ function selectGlyphBars(
  * neutral/placeholder glyph while this returns `[]`, never a loading state, so
  * the icon never gates header render on a fetch.
  */
-export function useHeaderRateLimitBars(): ReadonlyArray<HeaderRateLimitBar> {
+export function useHeaderRateLimitBars(
+  profileSelection: RateLimitProfileSelection,
+): ReadonlyArray<HeaderRateLimitBar> {
   const client = useHostClient();
-  const configured = useConfiguredRateLimitProviders();
-  const configuredIds = new Set(
-    configured.map((provider) => provider.providerId),
-  );
-  const glyphProviders = GLYPH_PROVIDER_IDS.filter((id) =>
-    configuredIds.has(id),
-  );
+  const displayProviders = useVisibleRateLimitProviders();
+  const glyphProviders: ReadonlyArray<GlyphProviderTarget> =
+    GLYPH_PROVIDER_IDS.flatMap((providerId) => {
+      const provider = displayProviders.find(
+        (candidate) => candidate.providerId === providerId,
+      );
+      if (provider === undefined) return [];
+      const profileId = resolveRateLimitProfileId(
+        profileSelection,
+        providerId,
+        provider.profiles,
+      );
+      const selectedProfile = provider.profiles.find(
+        (profile) =>
+          (profile.kind === "ambient" ? null : profile.profileId) === profileId,
+      );
+      return [
+        {
+          providerId,
+          profileId,
+          fetchEligible:
+            selectedProfile === undefined
+              ? provider.fetchEligibility.ambient
+              : isRateLimitProfileFetchEligible(
+                  provider.fetchEligibility,
+                  selectedProfile,
+                ),
+        },
+      ];
+    });
 
   // `useHostQueriesWithResponseMap` applies one shared `options` object to
   // every request in the batch, so it's only safe to reuse a single glyph
@@ -213,18 +252,20 @@ export function useHeaderRateLimitBars(): ReadonlyArray<HeaderRateLimitBar> {
   // Verified here - rather than just trusted from `GLYPH_PROVIDER_IDS`'s own
   // comment - so a future glyph provider on a different lane falls back to
   // `null` (TanStack's defaults) instead of silently borrowing an unrelated
-  // provider's refetch behavior.
+  // provider's polling participation.
   const glyphOptions = glyphProviders.map(
-    (providerId) => providerRateLimitQueryOptions(providerId).options,
+    (target) =>
+      providerRateLimitQueryOptions(
+        target.providerId,
+        target.profileId,
+        target.fetchEligible,
+      ).options,
   );
   const firstGlyphOptions: ProviderRateLimitTanstackOptions | null =
     glyphOptions.length > 0 ? glyphOptions[0] : null;
   const sharedGlyphOptions =
     firstGlyphOptions !== null &&
-    glyphOptions.every(
-      (options) =>
-        options.refetchInterval === firstGlyphOptions.refetchInterval,
-    )
+    glyphOptions.every((options) => options.poll === firstGlyphOptions.poll)
       ? firstGlyphOptions
       : null;
 
@@ -234,18 +275,23 @@ export function useHeaderRateLimitBars(): ReadonlyArray<HeaderRateLimitBar> {
     ProviderRateLimitEnvelope
   >({
     client,
-    requests: glyphProviders.map((providerId) => {
-      const { method, params } = providerRateLimitQueryOptions(providerId);
+    cacheKeyIdentity: undefined,
+    requests: glyphProviders.map((target) => {
+      const { method, params } = providerRateLimitQueryOptions(
+        target.providerId,
+        target.profileId,
+        target.fetchEligible,
+      );
       return { method, params };
     }),
     options: sharedGlyphOptions,
     mapResponse: mapResponseToProviderRateLimitEnvelope,
   });
 
-  const readings = glyphProviders.map((providerId, index) => {
+  const readings = glyphProviders.map((target, index) => {
     const envelope = results[index].data ?? null;
     return {
-      providerId,
+      providerId: target.providerId,
       rateLimits: resolveRetainedProviderRateLimits(envelope),
       degraded:
         results[index].isError || envelopeDegradedReason(envelope) !== null,

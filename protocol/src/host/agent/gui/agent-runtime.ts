@@ -7,6 +7,10 @@ import {
 import { guiHarnessIdSchema } from "@traycer/protocol/host/agent/shared";
 import { getRecordSchema } from "@traycer/protocol/framework/index";
 import {
+  userMessageSenderSchema,
+  userMessageSenderSchemaPreInReplyTo,
+} from "@traycer/protocol/persistence/epic/senders";
+import {
   interviewAnswerSchema,
   interviewQuestionOptionSchema,
   interviewQuestionSchema,
@@ -17,6 +21,11 @@ import {
   backgroundTaskOutputSchema,
   diffSourceSchema,
   fileEditReasonSchema,
+  providerNoticeDetailSchema,
+  providerNoticeKindSchema,
+  providerNoticeNormalizedMetadataSchema,
+  providerNoticeToneSchema,
+  workflowActivityEntrySchema,
 } from "@traycer/protocol/persistence/epic/content-blocks";
 
 export {
@@ -24,10 +33,20 @@ export {
   backgroundTaskOutputSchema,
   diffSourceSchema,
   fileEditReasonSchema,
+  providerNoticeDetailSchema,
+  providerNoticeKindSchema,
+  providerNoticeNormalizedMetadataSchema,
+  providerNoticeToneSchema,
+  workflowActivityEntrySchema,
   type AgentMessageSend,
   type BackgroundTaskOutput,
   type DiffSource,
   type FileEditReason,
+  type ProviderNoticeDetail,
+  type ProviderNoticeKind,
+  type ProviderNoticeNormalizedMetadata,
+  type ProviderNoticeTone,
+  type WorkflowActivityEntry,
 } from "@traycer/protocol/persistence/epic/content-blocks";
 import { z } from "zod";
 
@@ -168,6 +187,15 @@ export type RuntimeSlashInvocation = z.infer<
   typeof runtimeSlashInvocationSchema
 >;
 
+export const runtimeSkillInvocationSchema = z.object({
+  name: z.string(),
+  path: z.string().nullable(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+});
+export type RuntimeSkillInvocation = z.infer<
+  typeof runtimeSkillInvocationSchema
+>;
+
 export const runtimeAgentRunInputSchema = z.object({
   harnessId: guiHarnessIdSchema,
   prompt: z.string(),
@@ -186,12 +214,21 @@ export const runtimeAgentRunInputSchema = z.object({
   providerWorkspace: providerWorkspaceSchema,
   systemPrompt: z.string().nullable().default(null),
   slashInvocation: runtimeSlashInvocationSchema.nullable().default(null),
+  // Skills selected as inline composer modifiers. Optional preserves runtime
+  // compatibility with callers created before multi-skill composer support.
+  skillInvocations: z.array(runtimeSkillInvocationSchema).optional(),
   // Billing/account context for the turn, sourced from the turn-bearing frame's
   // `accountContext` (a global app-wide selection), not from per-chat
   // `chatRunSettings`. The Traycer harness threads this to its per-user
   // OpenCode server so the inference call bills the right account; other
   // harnesses ignore it.
   accountContext: accountContextSchema.default(DEFAULT_ACCOUNT_CONTEXT),
+  // Which of the harness's logged-in profiles (subscriptions) to spawn this
+  // turn's adapter with (resolved to a config-dir env override by the host's
+  // ProfileResolver). `null` = the ambient/host login. Distinct from
+  // `accountContext`, which selects Traycer's own billing org, not a
+  // provider-CLI login. See the multi-profile decision log.
+  profileId: z.string().nullable().default(null),
 });
 export type RuntimeAgentRunInput = z.infer<typeof runtimeAgentRunInputSchema>;
 
@@ -505,8 +542,30 @@ export const steerSubmittedEventSchema = z.object({
   messageId: z.string(),
   content: jsonContentSchema,
   mode: chatQueueSteerModeSchema.default("safe_point"),
+  // Who authored the steered message, carried onto the `steer` content block by
+  // the shared accumulator. The steered USER row (`messageId`) is the primary
+  // record, but it and the block have asymmetric durability - so a renderer that
+  // sees only the block must still be able to tell an agent-to-agent message
+  // from a human one. Additive + nullable: a host that predates this field sends
+  // no sender, the block's stays `null`, and the fallback renders a plain user
+  // row exactly as before.
+  sender: userMessageSenderSchema.nullable().default(null),
 });
 export type SteerSubmittedEvent = z.infer<typeof steerSubmittedEventSchema>;
+
+// Wire-freeze copy with the `sender` swapped for its pre-`inReplyTo` freeze,
+// bound (via the frozen runtime unions below) to the `blockDelta` frame on the
+// released `chat.subscribe@1.0–1.3` lines so those lines strip `inReplyTo` from
+// a steer sender too. Hand-frozen; see `agentSenderSchemaPreInReplyTo`.
+export const steerSubmittedEventSchemaPreInReplyTo = z.object({
+  ...baseRuntimeEventFields,
+  type: z.literal("steer.submitted"),
+  queueItemId: z.string(),
+  messageId: z.string(),
+  content: jsonContentSchema,
+  mode: chatQueueSteerModeSchema.default("safe_point"),
+  sender: userMessageSenderSchemaPreInReplyTo.nullable().default(null),
+});
 
 export const interviewRequestedEventSchema = z.object({
   ...baseRuntimeEventFields,
@@ -577,6 +636,86 @@ export const subAgentCompletedEventSchema = z.object({
 });
 export type SubAgentCompletedEvent = z.infer<
   typeof subAgentCompletedEventSchema
+>;
+
+/**
+ * `workflow.*` mirrors the `subagent.*` triple above for a Workflow tool run
+ * (a `/code-review`-style finder fleet). Inner `agent()` calls have no
+ * individually addressable identity on the wire (see the detection findings) -
+ * these events carry only the aggregate the host can observe: name/intent at
+ * spawn, one activity milestone + fleet counts + tokens per progress tick, and
+ * a terminal outcome. The accumulator dual-writes them onto a `subagent` block
+ * (base fields = degradation, `workflowMeta` = the rich data) rather than a
+ * distinct block type - see `persistence/epic/content-blocks.ts`.
+ */
+export const workflowStartedEventSchema = z.object({
+  ...baseRuntimeEventFields,
+  type: z.literal("workflow.started"),
+  name: z.string(),
+  // `meta.description` extracted from the workflow script (best-effort,
+  // never the raw script source). `null` on extraction failure.
+  intent: z.string().nullable(),
+  // The spawning `Workflow` tool_call block id - same suppression policy as
+  // `subAgentStartedEventSchema.spawnToolCallId`.
+  spawnToolCallId: z.string().optional(),
+});
+export type WorkflowStartedEvent = z.infer<typeof workflowStartedEventSchema>;
+
+export const workflowProgressEventSchema = z.object({
+  ...baseRuntimeEventFields,
+  type: z.literal("workflow.progress"),
+  // One new milestone (a phase transition or a label sighting), or `null`
+  // when this tick only refreshes counts/tokens with no new milestone.
+  activity: workflowActivityEntrySchema.nullable().default(null),
+  // Latest known fleet counts / aggregate token usage. Absent/`null` ⇒
+  // "unknown or unchanged this tick" - the accumulator preserves the prior
+  // value rather than clearing it.
+  agentsStarted: z.number().nullable().optional(),
+  agentsFinished: z.number().nullable().optional(),
+  totalTokens: z.number().nullable().optional(),
+});
+export type WorkflowProgressEvent = z.infer<typeof workflowProgressEventSchema>;
+
+export const workflowCompletedEventSchema = z.object({
+  ...baseRuntimeEventFields,
+  type: z.literal("workflow.completed"),
+  // Defaulted "completed" for the same reason as `subAgentCompletedEventSchema.
+  // outcome` - an emitter that never sets this reproduces a clean finish.
+  outcome: z.enum(["completed", "failed", "stopped"]).default("completed"),
+  result: z.string().optional(),
+});
+export type WorkflowCompletedEvent = z.infer<
+  typeof workflowCompletedEventSchema
+>;
+
+/**
+ * Upserts a durable provider-generated notice (Codex model reroute / safety
+ * verification / buffering, and future equivalents) - see the tech plan.
+ * `chat.subscribe@1.3`-only, like `workflow.*` above. The accumulator writes
+ * this onto a compatibility-safe persisted `text` block (`text: fallbackText`
+ * + `providerNotice` enrichment) rather than a new `ContentBlock.type`, so
+ * older same-major readers still parse the chat - see
+ * `persistence/epic/content-blocks.ts`'s `providerNotice` field. Repeated
+ * events for the same `blockId` replace the rendered fields and fallback
+ * text; this is NOT a content boundary (see
+ * `completionEventsBeforeRuntimeEvent`), so an interleaved notice never
+ * finalizes an active text/reasoning stream.
+ */
+export const providerNoticeUpsertEventSchema = z.object({
+  ...baseRuntimeEventFields,
+  type: z.literal("provider_notice.upsert"),
+  harnessId: guiHarnessIdSchema,
+  noticeKind: providerNoticeKindSchema,
+  tone: providerNoticeToneSchema,
+  status: z.enum(["streaming", "completed"]),
+  title: z.string(),
+  message: z.string().nullable(),
+  details: z.array(providerNoticeDetailSchema),
+  fallbackText: z.string().min(1),
+  metadata: providerNoticeNormalizedMetadataSchema.nullable(),
+});
+export type ProviderNoticeUpsertEvent = z.infer<
+  typeof providerNoticeUpsertEventSchema
 >;
 
 export const fileChangeStartedEventSchema = z.object({
@@ -775,6 +914,38 @@ export const ampUserMessageAnchorResolvedSchema = z.object({
   ampSessionId: z.string().nullable(),
 });
 
+export const devinUserMessageAnchorResolvedSchema = z.object({
+  harnessId: z.literal("devin"),
+  sessionId: z.string(),
+  // The ACP session id the `devin acp` process assigned for this turn.
+  // Null until `session/new` resolves; used to resume the same ACP session.
+  devinSessionId: z.string().nullable(),
+});
+
+export const piUserMessageAnchorResolvedSchema = z.object({
+  harnessId: z.literal("pi"),
+  sessionId: z.string(),
+  // The Pi session id assigned for this turn. Null until the session is
+  // resolved; used to resume the same Pi session on a later turn.
+  piSessionId: z.string().nullable(),
+});
+
+export const hermesUserMessageAnchorResolvedSchema = z.object({
+  harnessId: z.literal("hermes"),
+  sessionId: z.string(),
+  // The ACP session id the `hermes acp` process assigned for this turn.
+  // Null until `session/new` resolves; used to resume the same ACP session.
+  hermesSessionId: z.string().nullable(),
+});
+
+export const ompUserMessageAnchorResolvedSchema = z.object({
+  harnessId: z.literal("omp"),
+  sessionId: z.string(),
+  // The omp RPC session id assigned for this turn. Null until the session is
+  // resolved; used to resume the same omp session on a later turn.
+  ompSessionId: z.string().nullable(),
+});
+
 export const userMessageAnchorResolvedEventSchema = z.object({
   ...baseRuntimeEventFields,
   type: z.literal("user_message.anchor_resolved"),
@@ -794,6 +965,10 @@ export const userMessageAnchorResolvedEventSchema = z.object({
     copilotUserMessageAnchorResolvedSchema,
     kilocodeUserMessageAnchorResolvedSchema,
     ampUserMessageAnchorResolvedSchema,
+    devinUserMessageAnchorResolvedSchema,
+    piUserMessageAnchorResolvedSchema,
+    hermesUserMessageAnchorResolvedSchema,
+    ompUserMessageAnchorResolvedSchema,
   ]),
 });
 export type UserMessageAnchorResolvedEvent = z.infer<
@@ -870,13 +1045,21 @@ export type ErrorEvent = z.infer<typeof errorEventSchema>;
  * Stable `ErrorEvent.code` flagging a *recoverable* provider auth failure (an
  * invalid/expired/missing credential the user can fix by reconnecting). Part of
  * the wire contract: host harnesses emit it and the renderer keys on it,
- * provider-agnostic, to suppress the transcript row, mount the composer re-auth
- * banner, and restore the doomed prompt for re-send. Lives here (next to
- * `errorEventSchema`) so both sides import the one definition.
+ * provider-agnostic, to mount the composer re-auth banner and restore the
+ * doomed prompt for re-send. The error row itself renders in the transcript
+ * like any other error - it is the failure's durable record (a headless
+ * A2A-triggered turn may fail with no live subscriber, so the persisted row is
+ * the only trace). Lives here (next to `errorEventSchema`) so both sides
+ * import the one definition.
  */
 export const AUTH_ERROR_CODE = "auth";
 
-export const runtimeEventSchema = z.discriminatedUnion("type", [
+// ─── Frozen pre-`workflow.*` runtime-event union (`chat.subscribe@1.2`) ────
+//
+// Kept so `chat.subscribe@1.2`'s frozen `blockDelta` frame schema (see
+// `subscribe.ts`) parses only events a real 1.2 peer could produce. Do not
+// add the `workflow.*` variants here - a 1.2 peer must never observe them.
+export const runtimeEventSchemaV12 = z.discriminatedUnion("type", [
   textDeltaEventSchema,
   textCompletedEventSchema,
   reasoningDeltaEventSchema,
@@ -916,4 +1099,67 @@ export const runtimeEventSchema = z.discriminatedUnion("type", [
   usageUpdatedEventSchema,
   errorEventSchema,
 ]);
+
+export const runtimeEventSchema = z.discriminatedUnion("type", [
+  ...runtimeEventSchemaV12.def.options,
+  workflowStartedEventSchema,
+  workflowProgressEventSchema,
+  workflowCompletedEventSchema,
+  providerNoticeUpsertEventSchema,
+]);
 export type RuntimeEvent = z.infer<typeof runtimeEventSchema>;
+
+// Wire-freeze copies of the runtime-event unions with `steer.submitted` swapped
+// for its pre-`inReplyTo` freeze — bound to the `blockDelta` frame on the
+// released `chat.subscribe@1.0–1.3` lines. `steer.submitted` is the only runtime
+// event that carries a sender. Explicitly listed (not derived from the live
+// union) so the freeze can't silently absorb a future sender-bearing event, and
+// to keep the discriminated-union typing intact.
+export const runtimeEventSchemaV12PreInReplyTo = z.discriminatedUnion("type", [
+  textDeltaEventSchema,
+  textCompletedEventSchema,
+  reasoningDeltaEventSchema,
+  reasoningCompletedEventSchema,
+  toolCallStartedEventSchema,
+  toolCallCompletedEventSchema,
+  toolCallErroredEventSchema,
+  toolCallProgressEventSchema,
+  approvalRequestedEventSchema,
+  approvalResolvedEventSchema,
+  todoUpdatedEventSchema,
+  planDeltaEventSchema,
+  planUpdatedEventSchema,
+  planCompletedEventSchema,
+  compactionStartedEventSchema,
+  compactionCompletedEventSchema,
+  compactionErroredEventSchema,
+  interviewRequestedEventSchema,
+  interviewResolvedEventSchema,
+  interviewErroredEventSchema,
+  subAgentStartedEventSchema,
+  subAgentProgressEventSchema,
+  subAgentCompletedEventSchema,
+  fileChangeStartedEventSchema,
+  fileChangeCompletedEventSchema,
+  artifactOperationEventSchema,
+  commandStartedEventSchema,
+  commandCompletedEventSchema,
+  sessionCreatedEventSchema,
+  sessionResumedEventSchema,
+  turnStartedEventSchema,
+  userMessageAnchorResolvedEventSchema,
+  turnCompletedEventSchema,
+  turnStoppedEventSchema,
+  turnInterruptedEventSchema,
+  steerSubmittedEventSchemaPreInReplyTo,
+  usageUpdatedEventSchema,
+  errorEventSchema,
+]);
+
+export const runtimeEventSchemaPreInReplyTo = z.discriminatedUnion("type", [
+  ...runtimeEventSchemaV12PreInReplyTo.def.options,
+  workflowStartedEventSchema,
+  workflowProgressEventSchema,
+  workflowCompletedEventSchema,
+  providerNoticeUpsertEventSchema,
+]);

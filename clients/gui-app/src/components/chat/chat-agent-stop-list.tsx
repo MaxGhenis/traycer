@@ -3,8 +3,9 @@ import { v4 as uuidv4 } from "uuid";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { AgentStopButton } from "@/components/chat/agent-stop-button";
 import type { AgentRow } from "@/hooks/agent/use-agent-stop-controls";
-import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import { useEpicTileNavigation } from "@/hooks/epic/use-epic-tile-navigation";
 
+import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 /**
  * A row's `surface` is UI copy ("gui"/"tui"); opening a tile needs the
  * record-backed node kind. The two map 1:1 (the inverse of `surfaceOf` in
@@ -73,13 +74,12 @@ export function AgentStopList(props: {
   readonly surface: "composer-panel" | "tui-popover";
 }) {
   const compact = props.surface === "composer-panel";
+  const tileNavigation = useEpicTileNavigation();
   // Opening a sub-agent reuses the same path as the agent-reference chip:
   // resolve the epic's target tab and open (or focus) the agent's tile there.
   const openAgent = useCallback(
     (agent: AgentRow) => {
-      const canvas = useEpicCanvasStore.getState();
-      const tabId = canvas.resolveTargetTabForEpic(props.epicId, undefined);
-      canvas.openTileInTab(tabId, {
+      tileNavigation.openTileInEpic(props.epicId, {
         id: agent.id,
         instanceId: uuidv4(),
         type: nodeKindForSurface(agent.surface),
@@ -87,7 +87,7 @@ export function AgentStopList(props: {
         hostId: agent.hostId,
       });
     },
-    [props.epicId],
+    [props.epicId, tileNavigation],
   );
   return (
     <ul className="m-0 flex list-none flex-col gap-0.5 p-1.5">
@@ -115,20 +115,26 @@ export function AgentStopList(props: {
           key={agent.id}
           className="group flex min-w-0 items-center gap-2 rounded-md pl-5 pr-2 hover:bg-muted/40"
         >
-          <button
-            type="button"
-            onClick={() => openAgent(agent)}
-            title={`Open ${agent.title}`}
-            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md py-1 text-left focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+          <TooltipWrapper
+            label={`Open ${agent.title}`}
+            side="top"
+            sideOffset={undefined}
+            align={undefined}
           >
-            <ActivityDot active={agent.active} />
-            <span className="block min-w-0 flex-1 truncate text-ui-xs text-foreground/85">
-              {agent.title}
-            </span>
-            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-ui-xs uppercase text-muted-foreground">
-              {agent.surface}
-            </span>
-          </button>
+            <button
+              type="button"
+              onClick={() => openAgent(agent)}
+              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md py-1 text-left focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+            >
+              <ActivityDot active={agent.active} />
+              <span className="block min-w-0 flex-1 truncate text-ui-xs text-foreground/85">
+                {agent.title}
+              </span>
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-ui-xs uppercase text-muted-foreground">
+                {agent.surface}
+              </span>
+            </button>
+          </TooltipWrapper>
           <StopAffordance revealOnHover={compact}>
             <AgentStopButton
               epicId={props.epicId}

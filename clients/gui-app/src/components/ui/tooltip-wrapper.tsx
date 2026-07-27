@@ -12,6 +12,8 @@ interface TooltipWrapperProps {
   readonly side: "top" | "right" | "bottom" | "left";
   readonly sideOffset: number | undefined;
   readonly align: "start" | "center" | "end" | undefined;
+  readonly open?: boolean;
+  readonly onOpenChange?: (open: boolean) => void;
 }
 
 // Transparent wrapper: when `label` is empty/null, behaves as a Radix Slot so
@@ -26,12 +28,30 @@ interface TooltipWrapperProps {
 // (`onClick`, `onPointerDown`, `ref`, etc.). The rest-spread forwards those
 // to the inner Slot/TooltipTrigger so they reach the real interactive element.
 export function TooltipWrapper(props: TooltipWrapperProps) {
-  const { children, label, side, sideOffset, align, ...rest } = props;
-  if (label === null || (typeof label === "string" && label.length === 0)) {
+  const {
+    children,
+    label,
+    side,
+    sideOffset,
+    align,
+    open,
+    onOpenChange,
+    ...rest
+  } = props;
+  // `undefined` degrades exactly like `null`. It used to fall through and
+  // render an empty tooltip box, which is never what a caller means - and the
+  // shape that produces it (`someReason ?? undefined`, left over from the
+  // native `title` attribute this component replaces) is the single most
+  // common way to call it.
+  if (
+    label === null ||
+    label === undefined ||
+    (typeof label === "string" && label.length === 0)
+  ) {
     return <Slot.Root {...rest}>{children}</Slot.Root>;
   }
   return (
-    <Tooltip>
+    <Tooltip open={open} onOpenChange={onOpenChange}>
       <TooltipTrigger asChild {...rest}>
         {children}
       </TooltipTrigger>

@@ -25,9 +25,14 @@ import type {
 } from "@/lib/windows/types";
 import type { DesktopPerWindowProjectionBridge } from "@/lib/windows/per-window-projection-debounce";
 import { basePersistOptions, persistKey, STORE_KEYS } from "@/lib/persist";
+import {
+  resolvePrimaryPath,
+  trimFoldersPreservingPrimary,
+} from "@/lib/worktree/resolve-primary-path";
 import { EMPTY_LANDING_DRAFT_CONTENT } from "./landing-draft-content";
 import {
   markLandingDraftsReady,
+  markLandingDraftsAuthoritativeNonEmpty,
   scheduleLandingImageReconcile,
 } from "@/lib/composer/landing-image-gc";
 
@@ -60,13 +65,21 @@ export { EMPTY_LANDING_DRAFT_CONTENT };
 export interface LandingDraftWorkspaceSnapshot {
   readonly folders: ReadonlyArray<string>;
   readonly folderInfoByPath: Readonly<Record<string, WorkspaceFolderInfo>>;
+  readonly primaryPath: string | null;
 }
 
 interface LandingDraftStoreState {
   readonly drafts: ReadonlyArray<LandingDraftTab>;
   readonly activeDraftId: string | null;
-  /** Always creates a fresh draft, sets it as active, returns its id. */
-  createDraft: (settings: ChatRunSettings | null) => string;
+  /**
+   * Always creates a fresh draft, sets it as active, returns its id.
+   * Pass `id` to create with a pre-minted identity (landing null-draft mount
+   * key stability); pass `undefined` to allocate a new uuid.
+   */
+  createDraft: (
+    settings: ChatRunSettings | null,
+    id: string | undefined,
+  ) => string;
   /** Remove a draft by id. If it was the active draft, clears `activeDraftId`;
    *  strip-neighbor navigation in the close-flow handles where the user lands. */
   closeDraft: (id: string) => void;
@@ -87,11 +100,14 @@ interface LandingDraftStoreState {
   setDraftSettings: (id: string, settings: ChatRunSettings) => void;
   /** Update the chat-vs-terminal starting point of a specific draft. */
   setDraftComposerMode: (id: string, mode: ComposerMode) => void;
+  // Returns the paths EVICTED by the 50-folder cap (empty when nothing was
+  // evicted) so callers can unstage any in-flight worktree intent for them.
   addDraftResolvedFolders: (
     id: string,
     folders: ReadonlyArray<WorkspaceFolderInfo>,
-  ) => void;
+  ) => ReadonlyArray<string>;
   removeDraftFolder: (id: string, folderPath: string) => void;
+  setDraftWorkspacePrimary: (id: string, folderPath: string) => void;
 }
 
 export const LANDING_DRAFT_PERSIST_KEY = persistKey(STORE_KEYS.landingDraft);
@@ -100,6 +116,7 @@ const MAX_DRAFT_WORKSPACE_FOLDERS = 50;
 let localPersistenceEnabled = true;
 let desktopProjectionBridge: DesktopPerWindowProjectionBridge | null = null;
 let applyingDesktopProjection = false;
+let hasAppliedDesktopProjection = false;
 
 const landingDraftStorage: StateStorage = {
   getItem: (name) => window.localStorage.getItem(name),
@@ -119,6 +136,7 @@ export function setLandingDraftDesktopProjectionBridge(
   bridge: DesktopPerWindowProjectionBridge | null,
 ): void {
   desktopProjectionBridge = bridge;
+  hasAppliedDesktopProjection = false;
   setLandingDraftLocalPersistenceEnabled(bridge === null);
 }
 
@@ -127,6 +145,25 @@ export function applyLandingDraftDesktopProjection(
 ): void {
   const drafts = uniqueLandingDrafts(readProjectedDrafts(snapshot));
   const activeDraftId = readProjectedActiveDraftId(snapshot, drafts);
+  const currentState = useLandingDraftStore.getState();
+  // [B1] Empty-inbound clobber guard. The FIRST desktop projection is always
+  // authoritative, even when empty: pre-hydration in-memory drafts may be stale
+  // localStorage state from an earlier web-mode run. After that hydrate, landing
+  // drafts are per-window and this window's live in-memory state is authoritative,
+  // so a later EMPTY inbound snapshot must not replace NON-EMPTY live drafts.
+  // Left unguarded, a spurious clear (registry churn) would wipe an alive draft
+  // AND — via `markLandingDraftsReady` → reconcile with now-empty roots — reap
+  // its persisted image bytes. Re-project the in-memory truth outbound so disk
+  // reconverges, and do NOT flip the ready gate on this bad later inbound (its
+  // roots are wrong).
+  if (
+    hasAppliedDesktopProjection &&
+    drafts.length === 0 &&
+    currentState.drafts.length > 0
+  ) {
+    projectLandingDraftsToDesktop(currentState);
+    return;
+  }
   applyingDesktopProjection = true;
   // try/finally so a throw in setState/equality can never leave the flag stuck
   // `true` — which would permanently suppress all outbound projections.
@@ -146,6 +183,11 @@ export function applyLandingDraftDesktopProjection(
   } finally {
     applyingDesktopProjection = false;
   }
+  hasAppliedDesktopProjection = true;
+  // [B2] A non-empty authoritative snapshot confirms the landing roots are real,
+  // so the GC's deleting sweep may run (reaping genuine orphans) without risking
+  // freshly-restored bytes.
+  if (drafts.length > 0) markLandingDraftsAuthoritativeNonEmpty();
   // [C1] Desktop drafts arrive asynchronously over IPC, so the orphan sweep is
   // gated until they do: the FIRST projection means the draft set is now known.
   markLandingDraftsReady();
@@ -287,9 +329,9 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
       drafts: [],
       activeDraftId: null,
 
-      createDraft: (settings) => {
+      createDraft: (settings, id) => {
         const next: LandingDraftTab = {
-          id: uuidv4(),
+          id: id ?? uuidv4(),
           content: EMPTY_LANDING_DRAFT_CONTENT,
           selection: null,
           lastTouchedAt: Date.now(),
@@ -328,6 +370,15 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
       setDraftContent: (id, content, selection) => {
         const draft = get().drafts.find((d) => d.id === id);
         if (!draft) return;
+        // The in-memory draft content is CANONICAL: it is both the source the
+        // serializers read AND the source `openDraft` re-seeds the keyed remount
+        // from, so it must keep a paste's still-pending b64 node verbatim — an
+        // in-session navigate-away-and-back re-ingests that node (mount-time
+        // re-entry in `landing-composer`). The "persisted landing drafts never
+        // carry base64" invariant [Mechanism A] is enforced at the two true
+        // serialization seams instead — the persist `partialize` and
+        // `projectLandingDraftForDesktop` — never here (a store that feeds a
+        // remount is not a serialization sink).
         if (
           sameJsonContent(draft.content, content) &&
           sameDraftSelection(draft.selection, selection)
@@ -337,7 +388,12 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
         set((state) => ({
           drafts: state.drafts.map((d) =>
             d.id === id
-              ? { ...d, content, selection, lastTouchedAt: Date.now() }
+              ? {
+                  ...d,
+                  content,
+                  selection,
+                  lastTouchedAt: Date.now(),
+                }
               : d,
           ),
         }));
@@ -372,11 +428,17 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
       },
 
       addDraftResolvedFolders: (id, folders) => {
+        const before =
+          get().drafts.find((d) => d.id === id)?.workspace.folders ?? [];
         set((state) =>
           updateDraftWorkspace(state, id, (workspace) =>
             mergeLandingDraftWorkspaceFolders(workspace, folders),
           ),
         );
+        const afterSet = new Set(
+          get().drafts.find((d) => d.id === id)?.workspace.folders ?? [],
+        );
+        return before.filter((path) => !afterSet.has(path));
       },
 
       removeDraftFolder: (id, folderPath) => {
@@ -386,10 +448,35 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
           ),
         );
       },
+
+      setDraftWorkspacePrimary: (id, folderPath) => {
+        set((state) =>
+          updateDraftWorkspace(state, id, (workspace) =>
+            setLandingDraftWorkspacePrimary(workspace, folderPath),
+          ),
+        );
+      },
     }),
     {
       ...basePersistOptions(LANDING_DRAFT_PERSIST_KEY),
       storage: createJSONStorage(() => landingDraftStorage),
+      // Serialization boundary [Mechanism A]: persisted landing drafts NEVER
+      // carry base64. The in-memory `drafts` array is canonical and DOES hold a
+      // paste's still-pending b64 node (so an in-session navigate-away-and-back
+      // re-ingests it — mount-time re-entry in `landing-composer`); the strip
+      // lives ONLY here, at the localStorage seam, and in
+      // `projectLandingDraftForDesktop` (the desktop seam). A hash-only node,
+      // whose bytes are durably stored, always survives.
+      // ACCEPTED IMPERFECTION: process exit (quit or crash) during the sub-second
+      // ingest window omits that paste's still-pending image from the serialized
+      // draft, because its b64 node has not yet converted to a hash.
+      partialize: (state) => ({
+        drafts: state.drafts.map((draft) => ({
+          ...draft,
+          content: stripBase64ImageNodes(draft.content),
+        })),
+        activeDraftId: state.activeDraftId,
+      }),
       // Sanitize the localStorage payload on rehydration the same way
       // `readProjectedDrafts` sanitizes the desktop projection, so a legacy tab
       // (pre-`content` retype / pre-`workspace`) can't rehydrate a shape whose
@@ -487,12 +574,23 @@ function uniqueLandingDrafts(
   });
 }
 
-useLandingDraftStore.subscribe((state) => {
-  if (desktopProjectionBridge === null || applyingDesktopProjection) return;
+// Project the current in-memory drafts to the desktop per-window store. Used by
+// the store subscription (on every local edit) AND by the [B1] empty-inbound
+// guard, which re-projects truth so a spurious empty snapshot on disk is
+// overwritten. Safe to call directly during a guard trip: it does not touch the
+// `applyingDesktopProjection` flag, and main suppresses the echo of a window's
+// own update, so no inbound loop results.
+function projectLandingDraftsToDesktop(state: LandingDraftStoreState): void {
+  if (desktopProjectionBridge === null) return;
   void desktopProjectionBridge.update({
     landingDrafts: state.drafts.map(projectLandingDraftForDesktop),
     activeLandingDraftId: state.activeDraftId,
   });
+}
+
+useLandingDraftStore.subscribe((state) => {
+  if (desktopProjectionBridge === null || applyingDesktopProjection) return;
+  projectLandingDraftsToDesktop(state);
 });
 
 function projectLandingDraftForDesktop(
@@ -500,11 +598,17 @@ function projectLandingDraftForDesktop(
 ): DesktopPerWindowLandingDraft {
   return {
     id: draft.id,
-    // T6: emit the real hash-only editor JSON (no base64), the cursor, and the
-    // edit time. `content` is plain JSON already; the walker reproduces it as a
+    // T6: emit the real hash-only editor JSON, the cursor, and the edit time.
+    // Desktop serialization seam [Mechanism A]: strip a paste's still-pending b64
+    // node first so the projected draft is hash-only — this covers BOTH the store
+    // subscription and the [B1] empty-inbound guard re-projection (both route
+    // through here). Same narrowed accepted imperfection as the persist
+    // `partialize`. `content` is plain JSON already; the walker reproduces it as a
     // `DesktopJsonValue` without a cast (`JsonContent`'s `unknown`-valued attrs
     // are not structurally assignable to `DesktopJsonValue`).
-    content: landingDraftContentToDesktopValue(draft.content),
+    content: landingDraftContentToDesktopValue(
+      stripBase64ImageNodes(draft.content),
+    ),
     // `DraftSelection` lacks an index signature, so rebuild it as a fresh
     // record literal (numbers) to satisfy `DesktopJsonValue` without a cast.
     selection:
@@ -606,11 +710,13 @@ function normalizeChatRunSettings(
 }
 
 function readCurrentLandingDraftWorkspaceSnapshot(): LandingDraftWorkspaceSnapshot {
+  const globalState = useWorkspaceFoldersStore.getState();
   return normalizeLandingDraftWorkspace({
-    folders: [...useWorkspaceFoldersStore.getState().folders],
+    folders: [...globalState.folders],
     folderInfoByPath: copyWorkspaceFolderInfoByPath(
-      useWorkspaceFoldersStore.getState().folderInfoByPath,
+      globalState.folderInfoByPath,
     ),
+    primaryPath: globalState.primaryPath,
   });
 }
 
@@ -618,6 +724,7 @@ export function emptyLandingDraftWorkspaceSnapshot(): LandingDraftWorkspaceSnaps
   return {
     folders: [],
     folderInfoByPath: {},
+    primaryPath: null,
   };
 }
 
@@ -688,11 +795,32 @@ export function removeLandingDraftWorkspaceFolder(
   if (!workspace.folders.includes(folderPath)) return workspace;
   const nextInfoByPath = { ...workspace.folderInfoByPath };
   delete nextInfoByPath[folderPath];
+  const nextFolders = workspace.folders.filter((path) => path !== folderPath);
   return {
     ...workspace,
-    folders: workspace.folders.filter((path) => path !== folderPath),
+    folders: nextFolders,
     folderInfoByPath: nextInfoByPath,
+    // Deterministic fallback to the first remaining folder when the removed
+    // folder WAS the explicit primary; `resolvePrimaryPath` also covers the
+    // "no folders left" case (`null`).
+    primaryPath: resolvePrimaryPath(nextFolders, workspace.primaryPath),
   };
+}
+
+/**
+ * Sets the explicit primary folder for a draft/modal workspace snapshot,
+ * matching the `mergeLandingDraftWorkspaceFolders` / `removeLandingDraft-
+ * WorkspaceFolder` pure-helper pattern so every action (draft store, modal
+ * store) routes through one implementation. No-op (same reference) when
+ * `folderPath` isn't a member of the snapshot, or is already primary.
+ */
+export function setLandingDraftWorkspacePrimary(
+  workspace: LandingDraftWorkspaceSnapshot,
+  folderPath: string,
+): LandingDraftWorkspaceSnapshot {
+  if (!workspace.folders.includes(folderPath)) return workspace;
+  if (workspace.primaryPath === folderPath) return workspace;
+  return { ...workspace, primaryPath: folderPath };
 }
 
 function parseLandingDraftWorkspaceSnapshot(
@@ -706,7 +834,12 @@ function parseLandingDraftWorkspaceSnapshot(
   return normalizeLandingDraftWorkspace({
     folders,
     folderInfoByPath,
+    primaryPath: parsePersistedPrimaryPath(value.primaryPath),
   });
+}
+
+function parsePersistedPrimaryPath(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }
 
 function parseWorkspaceFolders(
@@ -766,12 +899,13 @@ function parseRepoIdentifier(
 function normalizeLandingDraftWorkspace(
   workspace: LandingDraftWorkspaceSnapshot,
 ): LandingDraftWorkspaceSnapshot {
-  const folders =
-    workspace.folders.length > MAX_DRAFT_WORKSPACE_FOLDERS
-      ? workspace.folders.slice(
-          workspace.folders.length - MAX_DRAFT_WORKSPACE_FOLDERS,
-        )
-      : workspace.folders;
+  // Cap eviction must never silently move primary: trim the oldest
+  // SECONDARY folders first, keeping the resolved primary's slot intact.
+  const folders = trimFoldersPreservingPrimary(
+    workspace.folders,
+    workspace.primaryPath,
+    MAX_DRAFT_WORKSPACE_FOLDERS,
+  );
   const folderSet = new Set(folders);
   return {
     ...workspace,
@@ -780,6 +914,7 @@ function normalizeLandingDraftWorkspace(
       workspace.folderInfoByPath,
       folderSet,
     ),
+    primaryPath: resolvePrimaryPath(folders, workspace.primaryPath),
   };
 }
 
@@ -822,6 +957,7 @@ function sameLandingDraftWorkspace(
   b: LandingDraftWorkspaceSnapshot,
 ): boolean {
   return (
+    a.primaryPath === b.primaryPath &&
     sameStringArrays(a.folders, b.folders) &&
     sameWorkspaceFolderInfoByPath(a.folderInfoByPath, b.folderInfoByPath)
   );
@@ -869,6 +1005,7 @@ function landingDraftWorkspaceToDesktopValue(
     folderInfoByPath: workspaceFolderInfoByPathToDesktopValue(
       normalizedWorkspace.folderInfoByPath,
     ),
+    primaryPath: normalizedWorkspace.primaryPath,
   };
 }
 
@@ -897,9 +1034,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-// Value-based content equality (H2). Image nodes are hash-only, so the
-// serialized content is cheap/bounded; a stable JSON serialization is enough to
-// short-circuit identical desktop echoes without a deep structural walk.
+// Strip pending base64 image nodes (and any `attachmentGroup` left empty) from
+// content at the two SERIALIZATION seams [Mechanism A] — the persist
+// `partialize` and `projectLandingDraftForDesktop` — NOT in `setDraftContent`
+// (in-memory draft content is canonical and may carry a paste's still-pending
+// b64 node). Hash-only image nodes (whose bytes are durably stored) are kept; a
+// still-pending b64 node is dropped from the serialized form until its background
+// job flips it to a hash and the next serialization captures the converted node.
+function stripBase64ImageNodes(content: JsonContent): JsonContent {
+  return stripBase64ImageNode(content) ?? EMPTY_LANDING_DRAFT_CONTENT;
+}
+
+function stripBase64ImageNode(node: JsonContent): JsonContent | null {
+  if (node.type === "imageAttachment") {
+    return typeof node.attrs?.b64content === "string" ? null : node;
+  }
+  const children = node.content;
+  if (children === undefined) return node;
+  const nextChildren = children.flatMap((child) => {
+    const stripped = stripBase64ImageNode(child);
+    return stripped === null ? [] : [stripped];
+  });
+  if (node.type === "attachmentGroup" && nextChildren.length === 0) return null;
+  return { ...node, content: nextChildren };
+}
+
+// Value-based content equality (H2). This runs on the CANONICAL in-memory
+// content, which may transiently carry a paste's pending b64 image node (bounded
+// by the per-image 5MB cap plus the aggregate image budget) until its background
+// job flips it to a hash. The serialization is therefore bounded, and a stable
+// JSON serialization still short-circuits identical desktop echoes without a deep
+// structural walk.
 function sameJsonContent(a: JsonContent, b: JsonContent): boolean {
   if (a === b) return true;
   return JSON.stringify(a) === JSON.stringify(b);

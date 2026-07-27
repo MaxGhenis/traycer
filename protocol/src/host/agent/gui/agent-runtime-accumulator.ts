@@ -12,8 +12,11 @@ import type {
   PlanAction,
   PlanBlock,
   PlanStep,
+  ProviderNoticeMetadata,
   ToolInputDetail,
   TodoItem,
+  WorkflowActivityEntry,
+  WorkflowMeta,
 } from "@traycer/protocol/persistence/epic/schemas";
 import { deriveToolInputDetail } from "@traycer/protocol/host/agent/gui/tool-input-detail";
 import { deriveToolInputSummary } from "@traycer/protocol/host/agent/gui/tool-input-summary";
@@ -280,12 +283,14 @@ function taskTodoItemsFromInput(
 
 // One construction point for a freshly-opened sub-agent block, shared by the
 // `subagent.started` open and the `progress`/`completed` orphan fallbacks (a
-// block created when its `started` was dropped or arrived out of order). Keeps
+// block created when its `started` was dropped or arrived out of order), and
+// by the `workflow.*` triple's dual-write onto this same block shape. Keeps
 // the block shape - and the `type` discriminant - defined once.
 function makeSubAgentBlock(fields: {
   blockId: string;
   status: "streaming" | "completed" | "errored";
   timestamp: number;
+  parentBlockId: string | null;
   startedAt: number | null;
   name: string | null;
   agentType: string | null;
@@ -294,8 +299,50 @@ function makeSubAgentBlock(fields: {
   result: string | null;
   spawnToolCallId: string | null;
   stopped: boolean;
+  workflowMeta: WorkflowMeta | null;
 }): Extract<ContentBlock, { type: "subagent" }> {
   return { type: "subagent", ...fields };
+}
+
+function isNewSubagentRun(
+  incomingSpawnToolCallId: string | undefined,
+  existingSpawnToolCallId: string | null,
+): boolean {
+  return (
+    incomingSpawnToolCallId !== undefined &&
+    existingSpawnToolCallId !== null &&
+    incomingSpawnToolCallId !== existingSpawnToolCallId
+  );
+}
+
+// Appends a new workflow activity entry, skipping a consecutive duplicate
+// (the same aggregate `task_progress` line can re-arrive on repeated polls
+// with no new milestone) so the persisted timeline reads as distinct steps.
+function appendWorkflowActivity(
+  activity: WorkflowActivityEntry[],
+  entry: WorkflowActivityEntry | null,
+): WorkflowActivityEntry[] {
+  if (entry === null) return activity;
+  const last = activity[activity.length - 1];
+  if (
+    last !== undefined &&
+    last.kind === entry.kind &&
+    last.text === entry.text
+  ) {
+    return activity;
+  }
+  return [...activity, entry];
+}
+
+function emptyWorkflowMeta(name: string | null): WorkflowMeta {
+  return {
+    name: name ?? "",
+    intent: null,
+    activity: [],
+    agentsStarted: null,
+    agentsFinished: null,
+    totalTokens: null,
+  };
 }
 
 function nullableMetadata(
@@ -549,6 +596,10 @@ export function accumulateEvent(
           messageId: event.messageId,
           content: event.content,
           mode: event.mode,
+          // Provenance, so the block can stand in for the steered user row if
+          // that row is ever missing (the two are not equally durable). `null`
+          // from a pre-field host keeps the old "render as a user row" fallback.
+          sender: event.sender,
         },
       ];
 
@@ -595,12 +646,55 @@ export function accumulateEvent(
           status: "streaming",
           timestamp: event.timestamp,
           text: event.delta,
+          providerNotice: null,
         },
       ];
     }
 
     case "text.completed":
       return finalizeBlock(blocks, event.blockId, "text", event.timestamp);
+
+    case "provider_notice.upsert": {
+      // Upserts a compatibility-safe `text` block (see
+      // `persistence/epic/content-blocks.ts`'s `providerNotice` field) rather
+      // than a distinct block type. A repeat for the same `blockId` REPLACES
+      // the rendered fields and fallback text - not append-only like
+      // `text.delta` - so a later `showBufferingUi` update or terminal
+      // completion overwrites the prior rendering in place.
+      const providerNotice: ProviderNoticeMetadata = {
+        harnessId: event.harnessId,
+        noticeKind: event.noticeKind,
+        tone: event.tone,
+        title: event.title,
+        message: event.message,
+        details: event.details,
+        metadata: event.metadata,
+      };
+      const existing = findBlockOfType(blocks, event.blockId, "text");
+      if (existing) {
+        const updated = {
+          ...existing,
+          status: event.status,
+          timestamp: event.timestamp,
+          parentBlockId: resolveParentBlockId(event, existing),
+          text: event.fallbackText,
+          providerNotice,
+        };
+        return replaceBlock(blocks, event.blockId, updated);
+      }
+      return [
+        ...blocks,
+        {
+          type: "text",
+          blockId: event.blockId,
+          status: event.status,
+          timestamp: event.timestamp,
+          parentBlockId: resolveParentBlockId(event, undefined),
+          text: event.fallbackText,
+          providerNotice,
+        },
+      ];
+    }
 
     case "reasoning.delta": {
       const existing = findBlockOfType(blocks, event.blockId, "reasoning");
@@ -1407,6 +1501,20 @@ export function accumulateEvent(
       // name/task in place rather than appending a duplicate card.
       const existing = findBlockOfType(blocks, event.blockId, "subagent");
       if (existing) {
+        if (isNewSubagentRun(event.spawnToolCallId, existing.spawnToolCallId)) {
+          return replaceBlock(blocks, event.blockId, {
+            ...existing,
+            status: "streaming",
+            timestamp: event.timestamp,
+            startedAt: event.timestamp,
+            task: nullableString(event.task),
+            progressUpdates: [],
+            result: null,
+            spawnToolCallId: event.spawnToolCallId ?? null,
+            stopped: false,
+            workflowMeta: null,
+          });
+        }
         return replaceBlock(blocks, event.blockId, {
           ...existing,
           name: event.name,
@@ -1414,6 +1522,7 @@ export function accumulateEvent(
           // preserve the prior value when a re-emit omits it.
           agentType: event.agentType ?? existing.agentType,
           task: nullableString(event.task) ?? existing.task,
+          parentBlockId: resolveParentBlockId(event, existing),
           // Advance `timestamp` only while still streaming. Codex re-emits
           // `subagent.started` (async nickname fetch) which can land AFTER the
           // sub-agent already completed; bumping a terminal block's timestamp
@@ -1435,6 +1544,7 @@ export function accumulateEvent(
           blockId: event.blockId,
           status: "streaming",
           timestamp: event.timestamp,
+          parentBlockId: resolveParentBlockId(event, undefined),
           startedAt: event.timestamp,
           name: event.name,
           agentType: event.agentType ?? null,
@@ -1443,6 +1553,7 @@ export function accumulateEvent(
           result: null,
           spawnToolCallId: event.spawnToolCallId ?? null,
           stopped: false,
+          workflowMeta: null,
         }),
       ];
     }
@@ -1453,6 +1564,7 @@ export function accumulateEvent(
         const updated = {
           ...existing,
           progressUpdates: [...existing.progressUpdates, event.update],
+          parentBlockId: resolveParentBlockId(event, existing),
           timestamp: event.timestamp,
         };
         return replaceBlock(blocks, event.blockId, updated);
@@ -1463,6 +1575,7 @@ export function accumulateEvent(
           blockId: event.blockId,
           status: "streaming",
           timestamp: event.timestamp,
+          parentBlockId: resolveParentBlockId(event, undefined),
           // First signal we have for this card; the true spawn is earlier but
           // unknown, so anchor the live timer here.
           startedAt: event.timestamp,
@@ -1473,6 +1586,7 @@ export function accumulateEvent(
           result: null,
           spawnToolCallId: null,
           stopped: false,
+          workflowMeta: null,
         }),
       ];
     }
@@ -1491,6 +1605,7 @@ export function accumulateEvent(
           status,
           stopped,
           result: event.result ?? existing.result,
+          parentBlockId: resolveParentBlockId(event, existing),
           timestamp: event.timestamp,
         };
         return replaceBlock(blocks, event.blockId, updated);
@@ -1502,6 +1617,7 @@ export function accumulateEvent(
           status,
           stopped,
           timestamp: event.timestamp,
+          parentBlockId: resolveParentBlockId(event, undefined),
           // No `started` was seen, so the spawn time is unknown. Leave it null
           // (rather than the completion time) so the card shows no duration
           // instead of a misleading "0s" total.
@@ -1512,6 +1628,168 @@ export function accumulateEvent(
           progressUpdates: [],
           result: nullableString(event.result),
           spawnToolCallId: null,
+          workflowMeta: null,
+        }),
+      ];
+    }
+
+    case "workflow.started": {
+      // Mirrors `subagent.started`: update the open card in place on a
+      // re-emit (never clearing `parentBlockId`/`spawnToolCallId`), otherwise
+      // open a fresh dual-written subagent block.
+      const existing = findBlockOfType(blocks, event.blockId, "subagent");
+      if (existing) {
+        if (isNewSubagentRun(event.spawnToolCallId, existing.spawnToolCallId)) {
+          return replaceBlock(blocks, event.blockId, {
+            ...existing,
+            status: "streaming",
+            timestamp: event.timestamp,
+            startedAt: event.timestamp,
+            task: event.intent,
+            progressUpdates: [],
+            result: null,
+            spawnToolCallId: event.spawnToolCallId ?? null,
+            stopped: false,
+            workflowMeta: {
+              ...emptyWorkflowMeta(existing.name),
+              intent: event.intent,
+            },
+          });
+        }
+        const meta = existing.workflowMeta ?? emptyWorkflowMeta(event.name);
+        // A re-emit's `intent` is a required key but not necessarily a
+        // meaningful one - only a genuine non-null value overwrites, mirroring
+        // the preserve-on-omit policy every other re-emittable field here uses.
+        const intent = event.intent ?? meta.intent;
+        return replaceBlock(blocks, event.blockId, {
+          ...existing,
+          name: event.name,
+          task: intent ?? existing.task,
+          parentBlockId: resolveParentBlockId(event, existing),
+          timestamp:
+            existing.status === "streaming"
+              ? event.timestamp
+              : existing.timestamp,
+          spawnToolCallId:
+            existing.spawnToolCallId ?? event.spawnToolCallId ?? null,
+          workflowMeta: {
+            ...meta,
+            name: event.name,
+            intent,
+          },
+        });
+      }
+      return [
+        ...blocks,
+        makeSubAgentBlock({
+          blockId: event.blockId,
+          status: "streaming",
+          timestamp: event.timestamp,
+          parentBlockId: resolveParentBlockId(event, undefined),
+          startedAt: event.timestamp,
+          name: event.name,
+          agentType: null,
+          task: event.intent,
+          progressUpdates: [],
+          result: null,
+          spawnToolCallId: event.spawnToolCallId ?? null,
+          stopped: false,
+          workflowMeta: {
+            ...emptyWorkflowMeta(event.name),
+            intent: event.intent,
+          },
+        }),
+      ];
+    }
+
+    case "workflow.progress": {
+      const existing = findBlockOfType(blocks, event.blockId, "subagent");
+      const progressLine = event.activity !== null ? event.activity.text : null;
+      if (existing) {
+        const meta = existing.workflowMeta ?? emptyWorkflowMeta(existing.name);
+        const updated = {
+          ...existing,
+          progressUpdates:
+            progressLine !== null
+              ? [...existing.progressUpdates, progressLine]
+              : existing.progressUpdates,
+          parentBlockId: resolveParentBlockId(event, existing),
+          timestamp: event.timestamp,
+          workflowMeta: {
+            ...meta,
+            activity: appendWorkflowActivity(meta.activity, event.activity),
+            agentsStarted: event.agentsStarted ?? meta.agentsStarted,
+            agentsFinished: event.agentsFinished ?? meta.agentsFinished,
+            totalTokens: event.totalTokens ?? meta.totalTokens,
+          },
+        };
+        return replaceBlock(blocks, event.blockId, updated);
+      }
+      const meta = emptyWorkflowMeta(null);
+      return [
+        ...blocks,
+        makeSubAgentBlock({
+          blockId: event.blockId,
+          status: "streaming",
+          timestamp: event.timestamp,
+          parentBlockId: resolveParentBlockId(event, undefined),
+          // First signal we have for this card; the true spawn is earlier but
+          // unknown, so anchor the live timer here.
+          startedAt: event.timestamp,
+          name: null,
+          agentType: null,
+          task: null,
+          progressUpdates: progressLine !== null ? [progressLine] : [],
+          result: null,
+          spawnToolCallId: null,
+          stopped: false,
+          workflowMeta: {
+            ...meta,
+            activity: appendWorkflowActivity(meta.activity, event.activity),
+            agentsStarted: event.agentsStarted ?? null,
+            agentsFinished: event.agentsFinished ?? null,
+            totalTokens: event.totalTokens ?? null,
+          },
+        }),
+      ];
+    }
+
+    case "workflow.completed": {
+      const existing = findBlockOfType(blocks, event.blockId, "subagent");
+      // `outcome` is defaulted "completed", mirroring `subagent.completed`.
+      const status: "completed" | "errored" =
+        event.outcome === "completed" ? "completed" : "errored";
+      const stopped = event.outcome === "stopped";
+      if (existing) {
+        const updated = {
+          ...existing,
+          status,
+          stopped,
+          result: event.result ?? existing.result,
+          parentBlockId: resolveParentBlockId(event, existing),
+          timestamp: event.timestamp,
+        };
+        return replaceBlock(blocks, event.blockId, updated);
+      }
+      return [
+        ...blocks,
+        makeSubAgentBlock({
+          blockId: event.blockId,
+          status,
+          stopped,
+          timestamp: event.timestamp,
+          parentBlockId: resolveParentBlockId(event, undefined),
+          // No `started` was seen, so the spawn time is unknown. Leave it null
+          // (rather than the completion time) so the card shows no duration
+          // instead of a misleading "0s" total.
+          startedAt: null,
+          name: null,
+          agentType: null,
+          task: null,
+          progressUpdates: [],
+          result: nullableString(event.result),
+          spawnToolCallId: null,
+          workflowMeta: emptyWorkflowMeta(null),
         }),
       ];
     }

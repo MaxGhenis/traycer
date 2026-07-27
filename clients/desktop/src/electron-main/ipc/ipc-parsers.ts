@@ -20,6 +20,10 @@ import {
   parseJsonRecord,
   parseLandingDrafts,
 } from "../../ipc-contracts/window-state-parsers";
+import type {
+  StoredAuthTokens,
+  StoredCredentialsIdentity,
+} from "../../ipc-contracts/auth-types";
 
 export {
   parseJsonRecord,
@@ -36,6 +40,60 @@ export function assertString(
   if (typeof value !== "string") {
     throw new Error(`${context} requires a string argument`);
   }
+}
+
+/**
+ * Parses the `{ token, refreshToken }` pair the renderer hands to
+ * `tokenStore.signIn` over IPC. Fail-closed: a non-string field throws so a
+ * malformed payload never lands as credentials.
+ */
+export function parseStoredAuthTokens(value: unknown): StoredAuthTokens {
+  if (value === null || typeof value !== "object") {
+    throw new Error(
+      "tokenStore.signIn requires a { token, refreshToken } object",
+    );
+  }
+  const record = value as Record<string, unknown>;
+  assertString(record.token, "tokenStore.signIn.token");
+  assertString(record.refreshToken, "tokenStore.signIn.refreshToken");
+  return { token: record.token, refreshToken: record.refreshToken };
+}
+
+/**
+ * Parses the `{ id, email, name }` identity block the renderer hands to
+ * `tokenStore.signIn`. The main store stamps `authnBaseUrl` + `savedAt`, so only
+ * the user identity crosses here. Fail-closed on any non-string field.
+ */
+export function parseStoredCredentialsIdentity(
+  value: unknown,
+): StoredCredentialsIdentity {
+  if (value === null || typeof value !== "object") {
+    throw new Error(
+      "tokenStore.signIn requires an { id, email, name } identity",
+    );
+  }
+  const record = value as Record<string, unknown>;
+  assertString(record.id, "tokenStore.signIn.identity.id");
+  assertString(record.email, "tokenStore.signIn.identity.email");
+  assertString(record.name, "tokenStore.signIn.identity.name");
+  return { id: record.id, email: record.email, name: record.name };
+}
+
+/**
+ * Parses the `{ userId, token }` CAS guard the renderer hands to
+ * `tokenStore.rotate`. Fail-closed on any non-string field.
+ */
+export function parseTokenRotateExpected(value: unknown): {
+  readonly userId: string;
+  readonly token: string;
+} {
+  if (value === null || typeof value !== "object") {
+    throw new Error("tokenStore.rotate requires a { userId, token } object");
+  }
+  const record = value as Record<string, unknown>;
+  assertString(record.userId, "tokenStore.rotate.userId");
+  assertString(record.token, "tokenStore.rotate.token");
+  return { userId: record.userId, token: record.token };
 }
 
 export function parseEpics(value: unknown): readonly DesktopTrayEpic[] {
@@ -291,33 +349,26 @@ export function readSenderWebContentsId(
   return sender.id;
 }
 
-export function readEpicId(payload: unknown): string | null {
-  if (
-    payload === null ||
-    typeof payload !== "object" ||
-    Array.isArray(payload)
-  ) {
-    return null;
-  }
-  const obj = payload as Record<string, unknown>;
-  return typeof obj.epicId === "string" ? obj.epicId : null;
-}
-
-export function isDialogHostedMenuCommand(command: MenuCommandId): boolean {
+/**
+ * App-scoped commands that may fire with no focused renderer - tray-menu and
+ * Windows jump-list clicks happen while another app is foregrounded. The
+ * dispatcher falls back to the MRU window (focusing it) for these, so they
+ * never silently no-op. Window-scoped commands (close tab, find in page, ...)
+ * deliberately stay focused-window-only: delivering them to an arbitrary
+ * window would act on the wrong target.
+ */
+export function isMruFallbackMenuCommand(command: MenuCommandId): boolean {
   return (
     command === "epic.openInNewWindow" ||
     command === "app.aboutDetails" ||
     command === "app.openLogs" ||
-    // Tray-initiated "Update available: <ver> - Install" can fire with no
-    // focused renderer (tray click while another app is foregrounded). The
-    // dispatcher falls back to the MRU window for dialog-hosted commands,
-    // so route the install through the same fallback path. The renderer
-    // owns the actual CLI mutation; main only needs to make sure *some*
-    // renderer receives the command and is focused/visible to the user.
+    command === "app.openSettings" ||
+    command === "app.signIn" ||
+    command === "app.signOut" ||
+    // The renderer owns the CLI mutation behind host update/restart; main
+    // only needs to make sure *some* renderer receives the command and is
+    // focused/visible to the user (restart is renderer-confirmed).
     command === "host.installUpdate" ||
-    // Help -> Restart Host is destructive and renderer-confirmed. Use the
-    // same MRU fallback so menu activation without a focused renderer still
-    // presents the confirmation modal instead of no-oping.
     command === "host.restart"
   );
 }

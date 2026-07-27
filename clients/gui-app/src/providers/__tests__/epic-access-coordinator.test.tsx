@@ -47,6 +47,7 @@ const TEST_SETTINGS: ChatRunSettings = {
   reasoningEffort: null,
   serviceTier: null,
   agentMode: "regular",
+  profileId: null,
 };
 
 const fakeFactory: EpicStreamClientFactory = () => ({
@@ -186,7 +187,7 @@ describe("EpicAccessCoordinator", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
     expect(toastInfo).toHaveBeenCalledWith(
       'Epic "Epic One" was deleted by Alice',
-      { id: "epic-access:epic-1" },
+      { id: "epic-access:epic-1", cancel: null },
     );
   });
 
@@ -213,7 +214,7 @@ describe("EpicAccessCoordinator", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
     expect(toastInfo).toHaveBeenCalledWith(
       expect.stringContaining("no longer have access"),
-      { id: "epic-access:epic-1" },
+      { id: "epic-access:epic-1", cancel: null },
     );
   });
 
@@ -251,6 +252,7 @@ describe("EpicAccessCoordinator", () => {
     );
     expect(toastInfo).toHaveBeenCalledWith('Epic "Background" was deleted', {
       id: "epic-access:epic-bg",
+      cancel: null,
     });
   });
 
@@ -281,7 +283,7 @@ describe("EpicAccessCoordinator", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
     expect(toastInfo).toHaveBeenCalledWith(
       expect.stringContaining("no longer available"),
-      { id: "epic-access:epic-1" },
+      { id: "epic-access:epic-1", cancel: null },
     );
   });
 
@@ -371,7 +373,7 @@ describe("EpicAccessCoordinator", () => {
     ]);
     expect(toastInfo).toHaveBeenCalledWith(
       'Epic "Broadcast Title" was deleted',
-      { id: "epic-access:epic-1" },
+      { id: "epic-access:epic-1", cancel: null },
     );
   });
 });

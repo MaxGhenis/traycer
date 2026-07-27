@@ -8,10 +8,23 @@ import {
   vi,
   type Mock,
 } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { DEFAULT_ACCOUNT_CONTEXT } from "@traycer/protocol/common/schemas";
+import {
+  DEFAULT_ACCOUNT_CONTEXT,
+  type AccountContext,
+} from "@traycer/protocol/common/schemas";
 import type { ProviderRateLimits } from "@traycer/protocol/host";
+import type { ProvidersConsumeRateLimitResetCreditRequest } from "@traycer/protocol/host/rate-limit";
+import type { ChatRunSettings } from "@traycer/protocol/host/agent/gui/subscribe";
+import type { ProviderProfile } from "@traycer/protocol/host/provider-schemas";
 import type {
   AuthenticatedUser,
   SubscriptionStatus,
@@ -19,11 +32,18 @@ import type {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Popover, PopoverTrigger } from "@/components/ui/popover";
 import { useAccountContextStore } from "@/stores/auth/account-context-store";
+import { useDesktopDialogStore } from "@/stores/dialogs/desktop-dialog-store";
 import type {
   AvailableProviderRateLimits,
   ProviderRateLimitEnvelope,
 } from "@/lib/rate-limits/rate-limit-envelope";
+import { accountContextValue } from "@/lib/auth/traycer-subscription-content";
 import { queryKeys } from "@/lib/query-keys";
+import {
+  PROVIDER_RATE_LIMITS_STALE_TIME_MS,
+  type RateLimitFetchEligibility,
+} from "@/lib/rate-limit-providers";
+import { formatResetFullDateTime } from "@/lib/relative-time";
 
 type QueryResult = {
   data: ProviderRateLimitEnvelope | undefined;
@@ -44,11 +64,25 @@ type MockAuthUser = {
 };
 
 type MockState = {
-  configured: ReadonlyArray<{ providerId: string; lane: string }>;
+  configured: ReadonlyArray<{
+    providerId: string;
+    lane: string;
+    profiles: ReadonlyArray<ProviderProfile> | undefined;
+    fetchEligibility?: RateLimitFetchEligibility;
+  }>;
   results: Record<string, QueryResult>;
   draining: boolean;
+  traycerUsageFetching: boolean;
+  traycerUsageUpdatedAt: Readonly<Record<string, number>>;
   openSettings: Mock<(...args: unknown[]) => void>;
   enqueue: Mock<(...args: unknown[]) => Promise<void>>;
+  enqueueBatch: Mock<(...args: unknown[]) => Promise<void>>;
+  consumeReset: Mock<
+    (
+      request: ProvidersConsumeRateLimitResetCreditRequest,
+      options: { readonly onSuccess: () => void },
+    ) => void
+  >;
   authUser: MockAuthUser;
   // Last `options` object `RateLimitRefreshAllButton` passed to
   // `useHostQueries`, so a test can assert it reused the real lane options
@@ -58,6 +92,10 @@ type MockState = {
   // a test can assert the button subscribes to EVERY configured httpFetch
   // provider's query state, not just the first.
   lastUseHostQueriesProviderIds: ReadonlyArray<string> | null;
+  profileSelection: {
+    activeChatSettings: ChatRunSettings | null;
+    lastProfileByHarness: Readonly<Record<string, string | null>>;
+  };
 };
 
 function coldAuthUser(): MockAuthUser {
@@ -75,10 +113,18 @@ const mocks = vi.hoisted<MockState>(() => ({
   configured: [],
   results: {},
   draining: false,
+  traycerUsageFetching: false,
+  traycerUsageUpdatedAt: {},
   openSettings: vi.fn(),
   enqueue: vi.fn((..._args: unknown[]) => Promise.resolve()),
+  enqueueBatch: vi.fn((..._args: unknown[]) => Promise.resolve()),
+  consumeReset: vi.fn(),
   lastUseHostQueriesOptions: null,
   lastUseHostQueriesProviderIds: null,
+  profileSelection: {
+    activeChatSettings: null,
+    lastProfileByHarness: {},
+  },
   authUser: {
     data: null,
     isPending: false,
@@ -88,16 +134,36 @@ const mocks = vi.hoisted<MockState>(() => ({
     refetch: vi.fn(() => Promise.resolve({})),
   },
 }));
+const queueScope = vi.hoisted(() => ({ hostId: "host-1" }));
 
 vi.mock("@/hooks/rate-limits/use-configured-rate-limit-providers", () => ({
-  useConfiguredRateLimitProviders: () => mocks.configured,
+  useConfiguredRateLimitProviders: () =>
+    mocks.configured.map((provider) => ({
+      ...provider,
+      fetchEligibility: provider.fetchEligibility ?? {
+        ambient: true,
+        managedProfiles: true,
+      },
+      profiles: provider.profiles ?? [],
+    })),
+  useVisibleRateLimitProviders: () =>
+    mocks.configured.map((provider) => ({
+      ...provider,
+      fetchEligibility: provider.fetchEligibility ?? {
+        ambient: true,
+        managedProfiles: true,
+      },
+      profiles: provider.profiles ?? [],
+    })),
 }));
 vi.mock("@/hooks/rate-limits/use-is-rate-limit-queue-draining", () => ({
   useIsRateLimitQueueDraining: () => mocks.draining,
 }));
 vi.mock("@/hooks/host/use-host-provider-rate-limits-query", () => ({
-  useHostProviderRateLimitsQuery: (providerId: string) =>
-    mocks.results[providerId] ?? readyResult(null),
+  useHostProviderRateLimitsQuery: (
+    providerId: string,
+    profileId: string | null,
+  ) => mocks.results[resultKey(providerId, profileId)] ?? readyResult(null),
 }));
 // `RateLimitRefreshAllButton` reads each configured httpFetch provider's
 // query state directly (to fold its `isFetching` into the button's own
@@ -107,16 +173,46 @@ vi.mock("@/hooks/host/use-host-provider-rate-limits-query", () => ({
 // exports both names with equivalent behavior; the extra `mapResponse` field
 // production passes is irrelevant to this fixture-backed double.
 function mockUseHostQueriesImpl(args: {
-  requests: ReadonlyArray<{ params: { providerId: string } }>;
-  options: { retry: boolean | undefined } | null;
+  requests: ReadonlyArray<{
+    params:
+      | { providerId: string; profileId: string | null }
+      | { accountContext: AccountContext; profileId: null };
+  }>;
+  options: { retry: boolean | undefined } | { enabled: boolean } | null;
 }) {
-  mocks.lastUseHostQueriesOptions = args.options;
-  mocks.lastUseHostQueriesProviderIds = args.requests.map(
-    (request) => request.params.providerId,
+  const providerRequests = args.requests.filter(
+    (
+      request,
+    ): request is {
+      params: { providerId: string; profileId: string | null };
+    } => "providerId" in request.params,
   );
-  return args.requests.map(
-    (request) => mocks.results[request.params.providerId] ?? readyResult(null),
-  );
+  if (providerRequests.length > 0) {
+    mocks.lastUseHostQueriesOptions =
+      args.options !== null && "retry" in args.options
+        ? { retry: args.options.retry }
+        : null;
+    mocks.lastUseHostQueriesProviderIds = providerRequests.map(
+      (request) => request.params.providerId,
+    );
+  }
+  return args.requests.map((request) => {
+    if (!("providerId" in request.params)) {
+      return {
+        ...readyResult(null),
+        isFetching: mocks.traycerUsageFetching,
+        dataUpdatedAt:
+          mocks.traycerUsageUpdatedAt[
+            accountContextValue(request.params.accountContext)
+          ] ?? 0,
+      };
+    }
+    return (
+      mocks.results[
+        resultKey(request.params.providerId, request.params.profileId)
+      ] ?? readyResult(null)
+    );
+  });
 }
 vi.mock("@/hooks/host/use-host-queries", () => ({
   useHostQueries: mockUseHostQueriesImpl,
@@ -129,10 +225,26 @@ vi.mock("@/lib/host", async (importOriginal) => {
 vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
   useReactiveActiveHostId: () => "host-1",
 }));
+vi.mock("@/hooks/rate-limits/use-rate-limit-queue-scope", () => ({
+  useRateLimitQueueScope: () => queueScope,
+}));
+vi.mock(
+  "@/hooks/providers/use-consume-rate-limit-reset-credit-mutation",
+  () => ({
+    useConsumeRateLimitResetCreditMutation: () => ({
+      isPending: false,
+      mutate: mocks.consumeReset,
+    }),
+  }),
+);
 vi.mock("@/lib/rate-limits/ephemeral-fetch-queue", () => ({
   // Wrapper (not `mocks.enqueue` directly) so `beforeEach` can swap the spy -
   // an object-literal binding would freeze the original fn at module load.
   enqueueRateLimitFetch: (...args: unknown[]) => mocks.enqueue(...args),
+  enqueueRateLimitFetchBatch: (...args: unknown[]) =>
+    mocks.enqueueBatch(...args),
+  enqueueRateLimitFetchForScope: (...args: unknown[]) =>
+    mocks.enqueue(...args.slice(1)),
 }));
 vi.mock("@/stores/tabs/use-system-tab-modal", () => ({
   useSystemTabModalActions: () => ({ openSettings: mocks.openSettings }),
@@ -157,6 +269,10 @@ import { RateLimitPopover } from "@/components/layout/header/rate-limit-popover"
 import { useRateLimitPopoverStore } from "@/stores/rate-limits/rate-limit-popover-store";
 
 const NOW = Date.now();
+
+function resultKey(providerId: string, profileId: string | null): string {
+  return profileId === null ? providerId : `${providerId}:${profileId}`;
+}
 
 function envelopeFor(
   providerRateLimits: ProviderRateLimits,
@@ -231,10 +347,10 @@ function claudeReady(): AvailableProviderRateLimits {
   };
 }
 
-function codexReady(): AvailableProviderRateLimits {
+function codexReady() {
   return {
-    provider: "codex",
-    available: true,
+    provider: "codex" as const,
+    available: true as const,
     planType: "pro_5x",
     limitId: null,
     limitName: null,
@@ -249,6 +365,56 @@ function codexReady(): AvailableProviderRateLimits {
     individualLimit: null,
     resetCredits: null,
     rateLimitReachedType: null,
+  };
+}
+
+function providerProfile(input: {
+  readonly profileId: string;
+  readonly kind: ProviderProfile["kind"];
+  readonly label: string;
+  readonly tier: string | null;
+  readonly usageUpdatedAt: number | null;
+}): ProviderProfile {
+  return {
+    profileId: input.profileId,
+    kind: input.kind,
+    authType: "oauth",
+    label: input.label,
+    auth: {
+      status: "authenticated",
+      badgeText: null,
+      label: null,
+      detail: null,
+    },
+    identity: {
+      email: `${input.label.toLowerCase()}@example.com`,
+      tier: input.tier,
+      accountUuid: `${input.profileId}-uuid`,
+    },
+    usageUpdatedAt: input.usageUpdatedAt,
+    rateLimitStatus: "unknown",
+    rateLimitLimitedScopes: null,
+    duplicateOfProfileId: null,
+    accentColor: null,
+    ambientDriftNotice: null,
+  };
+}
+
+function unauthenticatedAmbientProfile(): ProviderProfile {
+  return {
+    ...providerProfile({
+      profileId: "ambient",
+      kind: "ambient",
+      label: "Terminal",
+      tier: "Pro",
+      usageUpdatedAt: null,
+    }),
+    auth: {
+      status: "unauthenticated",
+      badgeText: null,
+      label: null,
+      detail: null,
+    },
   };
 }
 
@@ -355,8 +521,8 @@ function readyAuthUser(data: AuthenticatedUser): MockAuthUser {
   };
 }
 
-function traycerUsageQueryKey() {
-  return queryKeys.hostTraycerRateLimitUsage("host-1", DEFAULT_ACCOUNT_CONTEXT);
+function traycerUsageQueryKey(accountContext: AccountContext) {
+  return queryKeys.hostTraycerRateLimitUsage("host-1", accountContext);
 }
 
 let onClose: () => void;
@@ -368,7 +534,10 @@ function renderPopover() {
       <TooltipProvider>
         <Popover open>
           <PopoverTrigger>trigger</PopoverTrigger>
-          <RateLimitPopover onClose={onClose} />
+          <RateLimitPopover
+            onClose={onClose}
+            profileSelection={mocks.profileSelection}
+          />
         </Popover>
       </TooltipProvider>
     </QueryClientProvider>,
@@ -376,23 +545,218 @@ function renderPopover() {
   return { ...rendered, client };
 }
 
+function pointerEvent(
+  type:
+    | "pointerdown"
+    | "pointermove"
+    | "pointerup"
+    | "pointercancel"
+    | "lostpointercapture",
+  options: {
+    readonly pointerId: number;
+    readonly clientX: number;
+    readonly clientY: number;
+    readonly button: number;
+  },
+): MouseEvent {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: options.clientX,
+    clientY: options.clientY,
+    button: options.button,
+  });
+  Object.defineProperty(event, "pointerId", { value: options.pointerId });
+  return event;
+}
+
+function parseTranslate(transform: string): {
+  readonly xPx: number;
+  readonly yPx: number;
+} {
+  const matches = Array.from(
+    transform.matchAll(/translate\(\s*(-?[\d.]+)px\s*,\s*(-?[\d.]+)px\s*\)/g),
+  );
+  return {
+    xPx: matches.reduce(
+      (total, match) => total + Number.parseFloat(match[1]),
+      0,
+    ),
+    yPx: matches.reduce(
+      (total, match) => total + Number.parseFloat(match[2]),
+      0,
+    ),
+  };
+}
+
+function mockRadixResizeGeometry(
+  surface: HTMLElement,
+  initialWidth: number,
+  initialHeight: number,
+) {
+  const positionWrapper = surface.closest<HTMLElement>(
+    "[data-radix-popper-content-wrapper]",
+  );
+  if (positionWrapper === null) {
+    throw new Error("Expected the Radix popover positioning elements");
+  }
+  const startLeftPx = 100;
+  const startTopPx = 100;
+  const initialTransform = `translate(${startLeftPx}px, ${startTopPx}px)`;
+  positionWrapper.style.transform = initialTransform;
+  const rectSpy = vi
+    .spyOn(surface, "getBoundingClientRect")
+    .mockImplementation(() => {
+      const width = Number.parseFloat(surface.style.width) || initialWidth;
+      const height = Number.parseFloat(surface.style.height) || initialHeight;
+      const translate = parseTranslate(positionWrapper.style.transform);
+      return new DOMRect(translate.xPx, translate.yPx, width, height);
+    });
+  return {
+    initialTransform,
+    positionWrapper,
+    rectSpy,
+    overwriteRadixPosition: (xPx: number, yPx: number) => {
+      positionWrapper.style.transform = `translate(${xPx}px, ${yPx}px)`;
+    },
+  };
+}
+
+const RESIZE_GEOMETRY_CASES = [
+  {
+    direction: "n",
+    deltaX: 0,
+    deltaY: -40,
+    expected: { left: 100, top: 60, right: 580, bottom: 460 },
+  },
+  {
+    direction: "ne",
+    deltaX: 40,
+    deltaY: -40,
+    expected: { left: 100, top: 60, right: 620, bottom: 460 },
+  },
+  {
+    direction: "e",
+    deltaX: 40,
+    deltaY: 0,
+    expected: { left: 100, top: 100, right: 620, bottom: 460 },
+  },
+  {
+    direction: "se",
+    deltaX: 40,
+    deltaY: 40,
+    expected: { left: 100, top: 100, right: 620, bottom: 500 },
+  },
+  {
+    direction: "s",
+    deltaX: 0,
+    deltaY: 40,
+    expected: { left: 100, top: 100, right: 580, bottom: 500 },
+  },
+  {
+    direction: "sw",
+    deltaX: -40,
+    deltaY: 40,
+    expected: { left: 60, top: 100, right: 580, bottom: 500 },
+  },
+  {
+    direction: "w",
+    deltaX: -40,
+    deltaY: 0,
+    expected: { left: 60, top: 100, right: 580, bottom: 460 },
+  },
+  {
+    direction: "nw",
+    deltaX: -40,
+    deltaY: -40,
+    expected: { left: 60, top: 60, right: 580, bottom: 460 },
+  },
+] as const;
+
+function dragResize(
+  surface: HTMLElement,
+  direction: (typeof RESIZE_GEOMETRY_CASES)[number]["direction"],
+  pointerId: number,
+  delta: { readonly x: number; readonly y: number },
+): void {
+  const startClientX = 580;
+  const startClientY = 460;
+  fireEvent(
+    screen.getByTestId(`rate-limit-popover-resize-${direction}`),
+    pointerEvent("pointerdown", {
+      pointerId,
+      clientX: startClientX,
+      clientY: startClientY,
+      button: 0,
+    }),
+  );
+  fireEvent(
+    surface,
+    pointerEvent("pointermove", {
+      pointerId,
+      clientX: startClientX + delta.x,
+      clientY: startClientY + delta.y,
+      button: 0,
+    }),
+  );
+}
+
+function endResize(
+  surface: HTMLElement,
+  type: "pointerup" | "pointercancel" | "lostpointercapture",
+  pointerId: number,
+  delta: { readonly x: number; readonly y: number },
+): void {
+  fireEvent(
+    surface,
+    pointerEvent(type, {
+      pointerId,
+      clientX: 580 + delta.x,
+      clientY: 460 + delta.y,
+      button: 0,
+    }),
+  );
+}
+
+function renderCodexPopover(): HTMLElement {
+  mocks.configured = [
+    { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+  ];
+  mocks.results = { codex: readyResult(codexReady()) };
+  renderPopover();
+  return screen.getByTestId("rate-limit-popover-resize-surface");
+}
+
 beforeEach(() => {
   mocks.configured = [];
   mocks.results = {};
   mocks.draining = false;
+  mocks.traycerUsageFetching = false;
+  mocks.traycerUsageUpdatedAt = {};
   mocks.openSettings = vi.fn();
   mocks.enqueue = vi.fn((..._args: unknown[]) => Promise.resolve());
+  mocks.enqueueBatch = vi.fn((..._args: unknown[]) => Promise.resolve());
+  mocks.consumeReset = vi.fn();
   mocks.lastUseHostQueriesOptions = null;
   mocks.lastUseHostQueriesProviderIds = null;
+  mocks.profileSelection = {
+    activeChatSettings: null,
+    lastProfileByHarness: {},
+  };
   mocks.authUser = coldAuthUser();
   useAccountContextStore.setState({ accountContext: { type: "PERSONAL" } });
-  useRateLimitPopoverStore.setState({ activeTab: "overview" });
+  useRateLimitPopoverStore.setState({ activeTab: "overview", size: null });
   useRateLimitPopoverStore.persist.clearStorage();
   onClose = vi.fn();
 });
 
 afterEach(() => {
   cleanup();
+  useDesktopDialogStore.setState({
+    activeDialog: null,
+    reportIssueAvailable: false,
+    reportIssueContext: null,
+  });
 });
 
 describe("<RateLimitPopover /> zero-provider state", () => {
@@ -403,6 +767,32 @@ describe("<RateLimitPopover /> zero-provider state", () => {
       screen.getByText("Connect Claude Code or Codex to see usage here."),
     ).toBeTruthy();
     expect(screen.queryByRole("tablist")).toBeNull();
+  });
+
+  it("keeps the empty surface resizable within the available viewport", () => {
+    renderPopover();
+
+    const surface = screen.getByTestId("rate-limit-popover-resize-surface");
+    expect(surface.className).toContain(
+      "max-w-[var(--radix-popover-content-available-width)]",
+    );
+    expect(surface.className).toContain(
+      "max-h-[var(--radix-popover-content-available-height)]",
+    );
+    expect(surface.className).toContain(
+      "min-w-[min(92vw,20rem,var(--radix-popover-content-available-width))]",
+    );
+    expect(surface.className).toContain(
+      "min-h-[min(20vh,8rem,var(--radix-popover-content-available-height))]",
+    );
+    expect(
+      Array.from(surface.querySelectorAll("[data-resize-direction]")).map(
+        (handle) => handle.getAttribute("data-resize-direction"),
+      ),
+    ).toEqual(["n", "ne", "e", "se", "s", "sw", "w", "nw"]);
+    expect(
+      screen.getByTestId("rate-limit-popover-resize-sw").className,
+    ).toContain("cursor-sw-resize");
   });
 
   it("opens provider settings and closes the popover from the CTA", () => {
@@ -420,11 +810,257 @@ describe("<RateLimitPopover /> zero-provider state", () => {
 });
 
 describe("<RateLimitPopover /> rail", () => {
+  it.each(RESIZE_GEOMETRY_CASES)(
+    "keeps the opposite edges fixed while resizing $direction",
+    ({ direction, deltaX, deltaY, expected }) => {
+      const surface = renderCodexPopover();
+      mockRadixResizeGeometry(surface, 480, 360);
+
+      dragResize(surface, direction, 7, { x: deltaX, y: deltaY });
+
+      const rect = surface.getBoundingClientRect();
+      expect(rect.left).toBe(expected.left);
+      expect(rect.top).toBe(expected.top);
+      expect(rect.right).toBe(expected.right);
+      expect(rect.bottom).toBe(expected.bottom);
+      expect(useRateLimitPopoverStore.getState().size).toBeNull();
+
+      endResize(surface, "pointerup", 7, { x: deltaX, y: deltaY });
+      expect(useRateLimitPopoverStore.getState().size).toEqual({
+        widthPx: expected.right - expected.left,
+        heightPx: expected.bottom - expected.top,
+      });
+    },
+  );
+
+  it("keeps the wrapper locked when Radix rewrites its transform mid-drag", async () => {
+    const surface = renderCodexPopover();
+    const geometry = mockRadixResizeGeometry(surface, 480, 360);
+    dragResize(surface, "e", 8, { x: 40, y: 0 });
+
+    await act(async () => {
+      geometry.overwriteRadixPosition(-80, 120);
+      await Promise.resolve();
+    });
+
+    const rect = surface.getBoundingClientRect();
+    expect(rect.left).toBe(100);
+    expect(rect.top).toBe(100);
+    expect(rect.right).toBe(620);
+    expect(rect.bottom).toBe(460);
+    endResize(surface, "pointerup", 8, { x: 40, y: 0 });
+  });
+
+  it("does not accumulate position across repeated horizontal Radix rewrites", async () => {
+    const surface = renderCodexPopover();
+    const geometry = mockRadixResizeGeometry(surface, 480, 360);
+    fireEvent(
+      screen.getByTestId("rate-limit-popover-resize-e"),
+      pointerEvent("pointerdown", {
+        pointerId: 14,
+        clientX: 580,
+        clientY: 460,
+        button: 0,
+      }),
+    );
+    const assertHorizontalDragStep = async (deltaX: number): Promise<void> => {
+      fireEvent(
+        surface,
+        pointerEvent("pointermove", {
+          pointerId: 14,
+          clientX: 580 + deltaX,
+          clientY: 460,
+          button: 0,
+        }),
+      );
+      await act(async () => {
+        // Simulate bottom-end Radix re-anchoring after each content-size update.
+        geometry.overwriteRadixPosition(100 - deltaX, 100);
+        await Promise.resolve();
+      });
+      const rect = surface.getBoundingClientRect();
+      expect(rect.left).toBe(100);
+      expect(rect.right).toBe(580 + deltaX);
+    };
+
+    await assertHorizontalDragStep(20);
+    await assertHorizontalDragStep(40);
+    await assertHorizontalDragStep(80);
+    await assertHorizontalDragStep(120);
+    endResize(surface, "pointerup", 14, { x: 120, y: 0 });
+  });
+
+  it("caps outward resizing at the popover collision boundary", () => {
+    const widthSpy = vi
+      .spyOn(document.documentElement, "clientWidth", "get")
+      .mockReturnValue(700);
+    const heightSpy = vi
+      .spyOn(document.documentElement, "clientHeight", "get")
+      .mockReturnValue(600);
+    try {
+      const surface = renderCodexPopover();
+      mockRadixResizeGeometry(surface, 480, 360);
+      dragResize(surface, "ne", 9, { x: 1_000, y: -1_000 });
+
+      const rect = surface.getBoundingClientRect();
+      expect(rect.left).toBe(100);
+      expect(rect.top).toBe(12);
+      expect(rect.right).toBe(688);
+      expect(rect.bottom).toBe(460);
+      endResize(surface, "pointerup", 9, { x: 1_000, y: -1_000 });
+      expect(useRateLimitPopoverStore.getState().size).toEqual({
+        widthPx: 588,
+        heightPx: 448,
+      });
+    } finally {
+      widthSpy.mockRestore();
+      heightSpy.mockRestore();
+    }
+  });
+
+  it("does not commit a drag clamped to the starting dimensions", () => {
+    const widthSpy = vi
+      .spyOn(document.documentElement, "clientWidth", "get")
+      .mockReturnValue(592);
+    const heightSpy = vi
+      .spyOn(document.documentElement, "clientHeight", "get")
+      .mockReturnValue(600);
+    try {
+      const surface = renderCodexPopover();
+      const geometry = mockRadixResizeGeometry(surface, 480, 360);
+
+      dragResize(surface, "e", 15, { x: 100, y: 0 });
+      expect(surface.getBoundingClientRect().width).toBe(480);
+
+      endResize(surface, "pointerup", 15, { x: 100, y: 0 });
+
+      expect(surface.style.width).toBe("");
+      expect(surface.style.height).toBe("");
+      expect(geometry.positionWrapper.style.transform).toBe(
+        geometry.initialTransform,
+      );
+      expect(useRateLimitPopoverStore.getState().size).toBeNull();
+    } finally {
+      widthSpy.mockRestore();
+      heightSpy.mockRestore();
+    }
+  });
+
+  it.each(["pointercancel", "lostpointercapture"] as const)(
+    "rolls back an interrupted drag on %s",
+    (eventType) => {
+      const surface = renderCodexPopover();
+      const geometry = mockRadixResizeGeometry(surface, 480, 360);
+      dragResize(surface, "ne", 10, { x: 40, y: -40 });
+      expect(geometry.positionWrapper.style.transform).not.toBe(
+        geometry.initialTransform,
+      );
+
+      endResize(surface, eventType, 10, { x: 40, y: -40 });
+
+      expect(surface.style.width).toBe("");
+      expect(surface.style.height).toBe("");
+      expect(geometry.positionWrapper.style.transform).toBe(
+        geometry.initialTransform,
+      );
+      expect(useRateLimitPopoverStore.getState().size).toBeNull();
+    },
+  );
+
+  it("ignores events from a different pointer id", () => {
+    const surface = renderCodexPopover();
+    mockRadixResizeGeometry(surface, 480, 360);
+    fireEvent(
+      screen.getByTestId("rate-limit-popover-resize-e"),
+      pointerEvent("pointerdown", {
+        pointerId: 11,
+        clientX: 580,
+        clientY: 460,
+        button: 0,
+      }),
+    );
+    fireEvent(
+      surface,
+      pointerEvent("pointermove", {
+        pointerId: 99,
+        clientX: 620,
+        clientY: 460,
+        button: 0,
+      }),
+    );
+    expect(surface.style.width).toBe("480px");
+    fireEvent(
+      surface,
+      pointerEvent("pointermove", {
+        pointerId: 11,
+        clientX: 620,
+        clientY: 460,
+        button: 0,
+      }),
+    );
+
+    endResize(surface, "pointerup", 99, { x: 40, y: 0 });
+    expect(surface.style.width).toBe("520px");
+    expect(useRateLimitPopoverStore.getState().size).toBeNull();
+
+    endResize(surface, "pointercancel", 11, { x: 40, y: 0 });
+    expect(surface.style.width).toBe("");
+  });
+
+  it("does not roll back a committed resize when capture is lost after pointer-up", () => {
+    const surface = renderCodexPopover();
+    mockRadixResizeGeometry(surface, 480, 360);
+    dragResize(surface, "ne", 12, { x: 40, y: -40 });
+    endResize(surface, "pointerup", 12, { x: 40, y: -40 });
+    const committedSize = useRateLimitPopoverStore.getState().size;
+
+    endResize(surface, "lostpointercapture", 12, { x: 40, y: -40 });
+
+    expect(useRateLimitPopoverStore.getState().size).toEqual(committedSize);
+    expect(surface.style.width).toBe("520px");
+    expect(surface.style.height).toBe("400px");
+  });
+
+  it("remembers the last drag size across popover reopens", () => {
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
+    mocks.results = { codex: readyResult(codexReady()) };
+    const first = renderPopover();
+
+    const surface = screen.getByTestId("rate-limit-popover-resize-surface");
+    const geometry = mockRadixResizeGeometry(surface, 480, 360);
+    dragResize(surface, "se", 13, { x: 60, y: 100 });
+    endResize(surface, "pointerup", 13, { x: 60, y: 100 });
+
+    expect(useRateLimitPopoverStore.getState().size).toEqual({
+      widthPx: 540,
+      heightPx: 460,
+    });
+    expect(surface.style.width).toBe("540px");
+    expect(surface.style.height).toBe("460px");
+    expect(surface.className).toContain("grid-rows-[minmax(0,1fr)]");
+    expect(surface.className).toContain(
+      "min-h-[min(35vh,16rem,var(--radix-popover-content-available-height))]",
+    );
+    expect(surface.className).toContain("overflow-hidden");
+
+    geometry.rectSpy.mockRestore();
+    first.unmount();
+    renderPopover();
+
+    const reopenedSurface = screen.getByTestId(
+      "rate-limit-popover-resize-surface",
+    );
+    expect(reopenedSurface.style.width).toBe("540px");
+    expect(reopenedSurface.style.height).toBe("460px");
+  });
+
   it("pins Overview first, then one tab per provider in app order", () => {
     // Passed out of order; the rail must sort to codex, claude-code, ...
     mocks.configured = [
-      { providerId: "kilocode", lane: "httpFetch" },
-      { providerId: "codex", lane: "ephemeralProcess" },
+      { providerId: "kilocode", lane: "httpFetch", profiles: undefined },
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
     ];
     mocks.results = {
       codex: readyResult(codexReady()),
@@ -446,8 +1082,12 @@ describe("<RateLimitPopover /> rail", () => {
 
   it("lands on Overview, stacking every provider's condensed block", () => {
     mocks.configured = [
-      { providerId: "codex", lane: "ephemeralProcess" },
-      { providerId: "claude-code", lane: "ephemeralProcess" },
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+      {
+        providerId: "claude-code",
+        lane: "ephemeralProcess",
+        profiles: undefined,
+      },
     ];
     mocks.results = {
       codex: readyResult(codexReady()),
@@ -467,10 +1107,243 @@ describe("<RateLimitPopover /> rail", () => {
     expect(screen.queryByText("Pro 5x")).toBeNull();
   });
 
+  it("highlights the focused chat profile and the other harness's remembered profile", () => {
+    const codexProfiles = [
+      providerProfile({
+        profileId: "ambient",
+        kind: "ambient",
+        label: "Default Codex",
+        tier: "Terminal",
+        usageUpdatedAt: NOW - 10_000,
+      }),
+      providerProfile({
+        profileId: "work-profile",
+        kind: "managed",
+        label: "Work",
+        tier: "Pro 5x",
+        usageUpdatedAt: NOW - 10_000,
+      }),
+    ];
+    const claudeProfiles = [
+      providerProfile({
+        profileId: "ambient",
+        kind: "ambient",
+        label: "Default Claude",
+        tier: "Max",
+        usageUpdatedAt: NOW - 10_000,
+      }),
+      providerProfile({
+        profileId: "personal-profile",
+        kind: "managed",
+        label: "Personal",
+        tier: "Pro",
+        usageUpdatedAt: NOW - 10_000,
+      }),
+    ];
+    mocks.configured = [
+      {
+        providerId: "codex",
+        lane: "ephemeralProcess",
+        profiles: codexProfiles,
+      },
+      {
+        providerId: "claude-code",
+        lane: "ephemeralProcess",
+        profiles: claudeProfiles,
+      },
+    ];
+    mocks.results = {
+      codex: readyResult(codexReady()),
+      [resultKey("codex", "work-profile")]: readyResult(codexReady()),
+      "claude-code": readyResult(claudeReady()),
+      [resultKey("claude-code", "personal-profile")]:
+        readyResult(claudeReady()),
+    };
+    mocks.profileSelection = {
+      activeChatSettings: {
+        harnessId: "codex",
+        model: "gpt-5-codex",
+        permissionMode: "supervised",
+        reasoningEffort: null,
+        serviceTier: null,
+        agentMode: "regular",
+        profileId: null,
+      },
+      lastProfileByHarness: {
+        codex: "work-profile",
+        claude: "personal-profile",
+      },
+    };
+
+    renderPopover();
+
+    expect(screen.getByText("Codex")).toBeTruthy();
+    expect(screen.getByText("Claude Code")).toBeTruthy();
+    expect(screen.getByText("Default Codex")).toBeTruthy();
+    expect(screen.getByText("Default Claude")).toBeTruthy();
+    expect(screen.getByText("Work")).toBeTruthy();
+    expect(screen.getByText("Personal")).toBeTruthy();
+    expect(screen.getAllByText("Active")).toHaveLength(2);
+    const activeRows = document.querySelectorAll('[aria-current="true"]');
+    expect(activeRows).toHaveLength(2);
+    expect(activeRows[0].textContent).toContain("Default Codex");
+    expect(activeRows[0].textContent).not.toContain("Work");
+    expect(activeRows[1].textContent).toContain("Personal");
+    expect(screen.getByText("Pro 5x")).toBeTruthy();
+  });
+
+  it("renders the profile-card layout when a provider has only one profile", () => {
+    mocks.configured = [
+      {
+        providerId: "codex",
+        lane: "ephemeralProcess",
+        profiles: [
+          providerProfile({
+            profileId: "work-profile",
+            kind: "managed",
+            label: "Work",
+            tier: "Pro 5x",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+        ],
+      },
+    ];
+    mocks.results = {
+      [resultKey("codex", "work-profile")]: readyResult(codexReady()),
+    };
+    renderPopover();
+
+    expect(screen.getByText("Codex")).toBeTruthy();
+    expect(screen.getByText("Current session")).toBeTruthy();
+    expect(screen.getByText("Work")).toBeTruthy();
+    expect(screen.getByText("Pro 5x")).toBeTruthy();
+  });
+
+  it("keeps an unauthenticated ambient row with cached lastGood data visible without a refresh action", () => {
+    mocks.configured = [
+      {
+        providerId: "codex",
+        lane: "ephemeralProcess",
+        profiles: [unauthenticatedAmbientProfile()],
+        fetchEligibility: { ambient: false, managedProfiles: true },
+      },
+    ];
+    mocks.results = {
+      codex: degradedRetainedResult(codexReady(), "usage_fetch_failed"),
+    };
+
+    renderPopover();
+
+    expect(screen.getByText("Terminal")).toBeTruthy();
+    expect(screen.getByText("4% used")).toBeTruthy();
+    expect(screen.queryByText("No logged-in profiles")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Refresh all" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    expect(screen.queryByRole("button", { name: "Refresh Codex" })).toBeNull();
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("keeps the ambient row passive while making the authenticated managed row refreshable", () => {
+    const ambient = unauthenticatedAmbientProfile();
+    const managed: ProviderProfile = {
+      ...ambient,
+      profileId: "work-profile",
+      kind: "managed",
+      label: "Work",
+      auth: {
+        status: "authenticated",
+        badgeText: null,
+        label: null,
+        detail: null,
+      },
+      identity: {
+        email: "work@example.com",
+        tier: "Pro 5x",
+        accountUuid: "work-profile-uuid",
+      },
+      usageUpdatedAt: NOW - 1_000,
+    };
+    mocks.configured = [
+      {
+        providerId: "codex",
+        lane: "ephemeralProcess",
+        profiles: [ambient, managed],
+        fetchEligibility: { ambient: false, managedProfiles: true },
+      },
+    ];
+    mocks.results = {
+      [resultKey("codex", "work-profile")]: readyResult(codexReady()),
+    };
+
+    renderPopover();
+
+    expect(screen.getByText("Terminal")).toBeTruthy();
+    expect(screen.getByText("Work")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh all" })).toBeTruthy();
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    expect(screen.getByRole("button", { name: "Refresh Codex" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Codex" }));
+    expect(mocks.enqueueBatch).toHaveBeenCalledWith(
+      [
+        {
+          providerId: "codex",
+          accountContext: { type: "PERSONAL" },
+          profileId: "work-profile",
+        },
+      ],
+      { force: true },
+    );
+  });
+
+  it("enqueues open-time refresh only for stale multi-profile rows", async () => {
+    mocks.configured = [
+      {
+        providerId: "codex",
+        lane: "ephemeralProcess",
+        profiles: [
+          providerProfile({
+            profileId: "ambient",
+            kind: "ambient",
+            label: "Terminal",
+            tier: "Pro",
+            usageUpdatedAt: NOW - 1_000,
+          }),
+          providerProfile({
+            profileId: "work-profile",
+            kind: "managed",
+            label: "Work",
+            tier: "Pro 5x",
+            usageUpdatedAt: NOW - PROVIDER_RATE_LIMITS_STALE_TIME_MS - 1_000,
+          }),
+        ],
+      },
+    ];
+    mocks.results = {
+      codex: readyResult(codexReady()),
+      [resultKey("codex", "work-profile")]: readyResult(codexReady()),
+    };
+
+    renderPopover();
+
+    await waitFor(() => expect(mocks.enqueue).toHaveBeenCalledTimes(1));
+    expect(mocks.enqueue).toHaveBeenCalledWith(
+      "codex",
+      { type: "PERSONAL" },
+      { force: false, profileId: "work-profile" },
+    );
+  });
+
   it("draws a divider only between consecutive condensed blocks (no header row)", () => {
     mocks.configured = [
-      { providerId: "codex", lane: "ephemeralProcess" },
-      { providerId: "claude-code", lane: "ephemeralProcess" },
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+      {
+        providerId: "claude-code",
+        lane: "ephemeralProcess",
+        profiles: undefined,
+      },
     ];
     mocks.results = {
       codex: readyResult(codexReady()),
@@ -483,8 +1356,56 @@ describe("<RateLimitPopover /> rail", () => {
     expect(document.querySelectorAll('[class*="bg-border/70"]').length).toBe(1);
   });
 
+  it("wraps an ambient (profile-less) provider's block in the same card codex/claude profiles use, in both tabs", () => {
+    // Design-language fix: grok/openrouter/kilocode render via the
+    // profile-less block, which used to float flat while codex/claude's
+    // per-profile rows sat in a `rounded-lg border ... bg-background/40 p-2`
+    // card. The ambient block now reuses that exact card container so every
+    // provider's usage sits inside a card - in Overview and the detail tab.
+    mocks.configured = [
+      { providerId: "grok", lane: "ephemeralProcess", profiles: undefined },
+    ];
+    mocks.results = {
+      grok: readyResult({
+        provider: "grok",
+        available: true,
+        subscriptionTier: "SuperGrok",
+        periodType: "USAGE_PERIOD_TYPE_WEEKLY",
+        periodStart: NOW,
+        periodEnd: NOW + 7 * 24 * 60 * 60 * 1000,
+        period: {
+          usedPercent: 12,
+          resetsAt: NOW + 7 * 24 * 60 * 60 * 1000,
+          durationMinutes: 10_080,
+        },
+        monthlyLimit: null,
+        onDemandCap: null,
+        onDemandUsed: null,
+        prepaidBalance: 25,
+      }),
+    };
+    renderPopover();
+    // Overview: the block's own name+body sits inside the shared card.
+    const overviewCard = screen
+      .getByText("Grok")
+      .closest('[class*="bg-background/40"]');
+    expect(overviewCard).toBeTruthy();
+    expect(overviewCard?.className).toContain("rounded-lg");
+    expect(overviewCard?.className).toContain("border-border/60");
+    // Detail tab: same card container.
+    fireEvent.click(screen.getByRole("tab", { name: "Grok" }));
+    const detailCard = screen
+      .getByText("Grok")
+      .closest('[class*="bg-background/40"]');
+    expect(detailCard).toBeTruthy();
+    expect(detailCard?.className).toContain("rounded-lg");
+    expect(detailCard?.className).toContain("border-border/60");
+  });
+
   it("switches to a single provider detail (with plan label) on tab click", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = { codex: readyResult(codexReady()) };
     renderPopover();
     // Overview is condensed, so the plan label isn't shown there...
@@ -496,7 +1417,9 @@ describe("<RateLimitPopover /> rail", () => {
   });
 
   it("reopens on the last selected provider tab", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = { codex: readyResult(codexReady()) };
     const first = renderPopover();
     expect(screen.queryByText("Pro 5x")).toBeNull();
@@ -514,7 +1437,9 @@ describe("<RateLimitPopover /> rail", () => {
 
   it("falls back to Overview when the remembered provider is not available", () => {
     useRateLimitPopoverStore.setState({ activeTab: "claude-code" });
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = { codex: readyResult(codexReady()) };
 
     renderPopover();
@@ -531,7 +1456,9 @@ describe("<RateLimitPopover /> rail", () => {
   });
 
   it("shows a relative countdown for a short window and an absolute date for a weekly one", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = {
       codex: readyResult({
         provider: "codex",
@@ -558,11 +1485,43 @@ describe("<RateLimitPopover /> rail", () => {
     };
     renderPopover();
     // Fixup C #1: 5h primary -> relative countdown; weekly secondary -> absolute
-    // weekday-tagged time. Both split the same way as the Settings card.
+    // full calendar date/time. Both split the same way as the Settings card.
     expect(screen.getByText(/^Resets in /)).toBeTruthy();
     expect(
-      screen.getByText(/^Resets [A-Za-z]{3} \d{1,2}:\d{2}\s?[AP]M$/i),
+      screen.getByText(
+        `Resets ${formatResetFullDateTime(NOW + 3 * 24 * 60 * 60 * 1000)}`,
+      ),
     ).toBeTruthy();
+  });
+
+  it("omits reset text when a provider reports an implausible reset timestamp", () => {
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
+    mocks.results = {
+      codex: readyResult({
+        provider: "codex",
+        available: true,
+        planType: "pro_5x",
+        limitId: null,
+        limitName: null,
+        primary: {
+          usedPercent: 4,
+          resetsAt: NOW + 2 * 365 * 24 * 60 * 60 * 1000,
+          durationMinutes: 300,
+        },
+        secondary: null,
+        extraWindows: [],
+        credits: null,
+        individualLimit: null,
+        resetCredits: null,
+        rateLimitReachedType: null,
+      }),
+    };
+    renderPopover();
+
+    expect(screen.getByText("4% used")).toBeTruthy();
+    expect(screen.queryByText(/^Resets/)).toBeNull();
   });
 });
 
@@ -584,7 +1543,10 @@ describe("<RateLimitPopover /> Overview progressive reveal", () => {
         <TooltipProvider>
           <Popover open>
             <PopoverTrigger>trigger</PopoverTrigger>
-            <RateLimitPopover onClose={onClose} />
+            <RateLimitPopover
+              onClose={onClose}
+              profileSelection={mocks.profileSelection}
+            />
           </Popover>
         </TooltipProvider>
       </QueryClientProvider>
@@ -593,8 +1555,12 @@ describe("<RateLimitPopover /> Overview progressive reveal", () => {
 
   it("shows one centered loading indicator, no per-provider sections, while nothing has resolved yet", () => {
     mocks.configured = [
-      { providerId: "codex", lane: "ephemeralProcess" },
-      { providerId: "claude-code", lane: "ephemeralProcess" },
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+      {
+        providerId: "claude-code",
+        lane: "ephemeralProcess",
+        profiles: undefined,
+      },
     ];
     mocks.results = { codex: coldResult(), "claude-code": coldResult() };
     renderPopover();
@@ -605,10 +1571,45 @@ describe("<RateLimitPopover /> Overview progressive reveal", () => {
     expect(screen.queryByText("4% used")).toBeNull();
   });
 
+  it("reveals an uncached signed-out provider instead of leaving Overview loading forever", async () => {
+    mocks.configured = [
+      {
+        providerId: "codex",
+        lane: "ephemeralProcess",
+        profiles: undefined,
+        fetchEligibility: { ambient: false, managedProfiles: true },
+      },
+    ];
+    mocks.results = {
+      codex: {
+        data: undefined,
+        isPending: true,
+        isFetching: false,
+        isError: false,
+        dataUpdatedAt: 0,
+        refetch: vi.fn(() => Promise.resolve({})),
+      },
+    };
+
+    renderPopover();
+
+    await waitFor(() => {
+      expect(screen.queryByText("Fetching usage limits")).toBeNull();
+    });
+    expect(
+      screen.getByText("Codex").closest('[class*="gap-4"]')?.className,
+    ).not.toContain("hidden");
+    expect(screen.getByTestId("rate-limit-detail-skeleton")).toBeTruthy();
+  });
+
   it("reveals a provider in place as it resolves, hiding still-cold siblings, and drops the combined loader", () => {
     mocks.configured = [
-      { providerId: "codex", lane: "ephemeralProcess" },
-      { providerId: "claude-code", lane: "ephemeralProcess" },
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+      {
+        providerId: "claude-code",
+        lane: "ephemeralProcess",
+        profiles: undefined,
+      },
     ];
     mocks.results = { codex: coldResult(), "claude-code": coldResult() };
     const { rerender } = renderPopover();
@@ -647,8 +1648,61 @@ describe("<RateLimitPopover /> Overview progressive reveal", () => {
 });
 
 describe("<RateLimitPopover /> per-provider states", () => {
+  it("offers a confirmed Codex reset on the detail panel but keeps Overview read-only", () => {
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
+    mocks.results = {
+      codex: readyResult({
+        ...codexReady(),
+        resetCredits: {
+          availableCount: 2,
+          credits: [
+            {
+              id: "credit-later",
+              resetType: "codexRateLimits",
+              status: "available",
+              grantedAt: NOW,
+              expiresAt: NOW + 3 * 60 * 60 * 1000,
+              title: "Later reset",
+              description: null,
+            },
+            {
+              id: "credit-soon",
+              resetType: "codexRateLimits",
+              status: "available",
+              grantedAt: NOW,
+              expiresAt: NOW + 60 * 60 * 1000,
+              title: "Soon reset",
+              description: null,
+            },
+          ],
+        },
+      }),
+    };
+
+    renderPopover();
+    expect(screen.queryByRole("button", { name: "Use reset" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use reset" }));
+    expect(screen.getByText("Use a Codex manual reset?")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("confirm-action"));
+    expect(mocks.consumeReset).toHaveBeenCalledOnce();
+    const request = mocks.consumeReset.mock.calls[0]?.[0];
+    expect(request).toMatchObject({
+      providerId: "codex",
+      profileId: null,
+      creditId: "credit-soon",
+    });
+    expect(typeof request.idempotencyKey).toBe("string");
+  });
+
   it("shows skeleton bars (not a spinner) on cold load", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = {
       codex: {
         data: undefined,
@@ -675,7 +1729,9 @@ describe("<RateLimitPopover /> per-provider states", () => {
   });
 
   it("dims stale content and notes a failed refresh when degraded", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = {
       codex: {
         ...readyResult(codexReady()),
@@ -694,14 +1750,14 @@ describe("<RateLimitPopover /> per-provider states", () => {
     // `usage_fetch_failed`, with a `lastGood` retained from an earlier poll.
     // The dimmed treatment is the same, but the trailing note names the
     // specific transient reason instead of the generic "refresh failed".
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = {
       codex: degradedRetainedResult(codexReady(), "usage_fetch_failed"),
     };
     renderPopover();
-    expect(
-      screen.getByText(/· couldn't fetch usage — will retry/),
-    ).toBeTruthy();
+    expect(screen.getByText(/· failed to fetch usage/)).toBeTruthy();
     expect(screen.getByText(/^Updated \d+m ago ·/)).toBeTruthy();
     expect(screen.queryByText(/^Updated Just now ·/)).toBeNull();
     expect(screen.queryByText(/· refresh failed/)).toBeNull();
@@ -715,7 +1771,9 @@ describe("<RateLimitPopover /> per-provider states", () => {
     // `rate_limits_not_available` (and friends) are account-capability
     // reasons, not transient - they must never be shown alongside a stale
     // reading the way a transient failure is.
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = {
       codex: {
         data: {
@@ -738,7 +1796,7 @@ describe("<RateLimitPopover /> per-provider states", () => {
     renderPopover();
     expect(
       screen.getByText(
-        "Usage limits unavailable — not available for this account",
+        "Usage limits unavailable - not available for this account",
       ),
     ).toBeTruthy();
     expect(screen.queryByText("4% used")).toBeNull();
@@ -746,7 +1804,9 @@ describe("<RateLimitPopover /> per-provider states", () => {
   });
 
   it("shows Refreshing instead of an updated timestamp while a refresh is in progress", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = { codex: readyResult(codexReady()) };
     mocks.draining = true;
     renderPopover();
@@ -759,7 +1819,9 @@ describe("<RateLimitPopover /> per-provider states", () => {
   });
 
   it("shows a plain error message with no inline retry control when a fetch never succeeded", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = {
       codex: {
         data: undefined,
@@ -785,12 +1847,14 @@ describe("<RateLimitPopover /> per-provider states", () => {
     expect(mocks.enqueue).toHaveBeenCalledWith(
       "codex",
       { type: "PERSONAL" },
-      { force: true },
+      { force: true, profileId: null },
     );
   });
 
   it("maps an available:false reason to a plain-language message", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = {
       codex: readyResult({
         provider: "codex",
@@ -800,14 +1864,78 @@ describe("<RateLimitPopover /> per-provider states", () => {
     };
     renderPopover();
     expect(
-      screen.getByText("Usage limits unavailable — the CLI isn't installed"),
+      screen.getByText("Usage limits unavailable - the CLI isn't installed"),
     ).toBeTruthy();
+  });
+
+  it("gates the hard-failure report action on capability and reports only fixed generic context", () => {
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
+    mocks.results = {
+      codex: {
+        data: undefined,
+        isPending: false,
+        isFetching: false,
+        isError: true,
+        dataUpdatedAt: 0,
+        refetch: vi.fn(() => Promise.resolve({})),
+      },
+    };
+    renderPopover();
+
+    // Capability-gated off by default.
+    expect(screen.queryByRole("button", { name: "Report issue" })).toBeNull();
+
+    act(() => {
+      useDesktopDialogStore.setState({ reportIssueAvailable: true });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
+    expect(useDesktopDialogStore.getState()).toMatchObject({
+      activeDialog: "report-issue",
+      reportIssueContext: {
+        title: "Couldn't load usage limits",
+        message: null,
+        code: null,
+        source: "Usage limits",
+      },
+    });
+  });
+
+  it("gates the unavailable-reason report action on capability without leaking the reason into the report context beyond its fixed label", () => {
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
+    mocks.results = {
+      codex: readyResult({
+        provider: "codex",
+        available: false,
+        reason: "cli_not_found",
+      }),
+    };
+    renderPopover();
+
+    act(() => {
+      useDesktopDialogStore.setState({ reportIssueAvailable: true });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
+    expect(useDesktopDialogStore.getState()).toMatchObject({
+      activeDialog: "report-issue",
+      reportIssueContext: {
+        title: "Usage limits unavailable",
+        message: null,
+        code: null,
+        source: "Usage limits",
+      },
+    });
   });
 });
 
 describe("<RateLimitPopover /> Refresh all", () => {
   it("is disabled while the queue is draining", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = { codex: readyResult(codexReady()) };
     mocks.draining = true;
     renderPopover();
@@ -820,7 +1948,9 @@ describe("<RateLimitPopover /> Refresh all", () => {
     // draining flag, so an all-httpFetch popover (or one mid-invalidation on
     // just its httpFetch providers) never visibly spun despite actively
     // refreshing.
-    mocks.configured = [{ providerId: "kilocode", lane: "httpFetch" }];
+    mocks.configured = [
+      { providerId: "kilocode", lane: "httpFetch", profiles: undefined },
+    ];
     mocks.results = {
       kilocode: {
         ...readyResult({
@@ -850,8 +1980,8 @@ describe("<RateLimitPopover /> Refresh all", () => {
     // identical) and must still subscribe to EVERY provider's query state.
     // Passed in non-canonical order to exercise the sort in front of `[0]`.
     mocks.configured = [
-      { providerId: "kilocode", lane: "httpFetch" },
-      { providerId: "openrouter", lane: "httpFetch" },
+      { providerId: "kilocode", lane: "httpFetch", profiles: undefined },
+      { providerId: "openrouter", lane: "httpFetch", profiles: undefined },
     ];
     mocks.results = {
       kilocode: readyResult({
@@ -882,7 +2012,9 @@ describe("<RateLimitPopover /> Refresh all", () => {
   });
 
   it("keeps a single ephemeralProcess provider's own refresh button disabled while the queue is draining, even though its own isFetching has already settled", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = { codex: readyResult(codexReady()) };
     mocks.draining = true;
     renderPopover();
@@ -891,27 +2023,100 @@ describe("<RateLimitPopover /> Refresh all", () => {
     expect((refreshCodex as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("enqueues each ephemeralProcess provider with force:true", () => {
+  it("enqueues every ephemeralProcess profile in one parallel refresh batch", () => {
     mocks.configured = [
-      { providerId: "codex", lane: "ephemeralProcess" },
-      { providerId: "claude-code", lane: "ephemeralProcess" },
+      {
+        providerId: "codex",
+        lane: "ephemeralProcess",
+        profiles: [
+          providerProfile({
+            profileId: "ambient",
+            kind: "ambient",
+            label: "Terminal",
+            tier: "Pro",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+          providerProfile({
+            profileId: "work-profile",
+            kind: "managed",
+            label: "Work",
+            tier: "Pro 5x",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+        ],
+      },
+      {
+        providerId: "claude-code",
+        lane: "ephemeralProcess",
+        profiles: undefined,
+      },
     ];
     mocks.results = {
       codex: readyResult(codexReady()),
       "claude-code": readyResult(claudeReady()),
     };
     renderPopover();
+    mocks.enqueue.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Refresh all" }));
-    expect(mocks.enqueue).toHaveBeenCalledWith(
-      "codex",
-      { type: "PERSONAL" },
+    expect(mocks.enqueueBatch).toHaveBeenCalledWith(
+      [
+        {
+          providerId: "codex",
+          accountContext: { type: "PERSONAL" },
+          profileId: null,
+        },
+        {
+          providerId: "codex",
+          accountContext: { type: "PERSONAL" },
+          profileId: "work-profile",
+        },
+        {
+          providerId: "claude-code",
+          accountContext: { type: "PERSONAL" },
+          profileId: null,
+        },
+      ],
       { force: true },
     );
-    expect(mocks.enqueue).toHaveBeenCalledWith(
-      "claude-code",
-      { type: "PERSONAL" },
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("targets the managed profile id, not null, when refreshing a provider with exactly one managed profile", () => {
+    // Regression: refreshTargetsForProvider used to short-circuit to [null]
+    // whenever profiles.length <= 1, so a lone managed profile's card
+    // (keyed by work-profile) never received the Refresh-all invalidation.
+    mocks.configured = [
+      {
+        providerId: "codex",
+        lane: "ephemeralProcess",
+        profiles: [
+          providerProfile({
+            profileId: "work-profile",
+            kind: "managed",
+            label: "Work",
+            tier: "Pro 5x",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+        ],
+      },
+    ];
+    mocks.results = {
+      [resultKey("codex", "work-profile")]: readyResult(codexReady()),
+    };
+    renderPopover();
+    mocks.enqueue.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh all" }));
+    expect(mocks.enqueueBatch).toHaveBeenCalledWith(
+      [
+        {
+          providerId: "codex",
+          accountContext: { type: "PERSONAL" },
+          profileId: "work-profile",
+        },
+      ],
       { force: true },
     );
+    expect(mocks.enqueue).not.toHaveBeenCalled();
   });
 
   it("refetches Traycer when the synthetic Traycer entry is eligible", () => {
@@ -942,7 +2147,30 @@ describe("<RateLimitPopover /> Refresh all", () => {
 
     expect(authUser.refetch).toHaveBeenCalledTimes(1);
     expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: traycerUsageQueryKey(),
+      queryKey: traycerUsageQueryKey(DEFAULT_ACCOUNT_CONTEXT),
+      exact: true,
+    });
+  });
+
+  it("refreshes every rendered rate-limit-based Traycer account", () => {
+    mocks.configured = [];
+    const fixture = authUserFixture({ status: "PRO", withTeam: true });
+    const team = fixture.teamSubscriptions[0];
+    mocks.authUser = readyAuthUser({
+      ...fixture,
+      teamSubscriptions: [{ ...team, subscriptionStatus: "PRO" }],
+    });
+    const { client } = renderPopover();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh all" }));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: traycerUsageQueryKey(DEFAULT_ACCOUNT_CONTEXT),
+      exact: true,
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: traycerUsageQueryKey({ type: "TEAM", teamId: "team-1" }),
       exact: true,
     });
   });
@@ -962,11 +2190,53 @@ describe("<RateLimitPopover /> Refresh all", () => {
     const refreshAll = screen.getByRole("button", { name: "Refresh all" });
     expect(refreshAll.getAttribute("disabled")).not.toBeNull();
   });
+
+  it("keeps the Traycer card refreshing while account usage refetches", () => {
+    mocks.configured = [];
+    mocks.authUser = readyAuthUser(
+      authUserFixture({ status: "PRO", withTeam: false }),
+    );
+    mocks.traycerUsageFetching = true;
+
+    renderPopover();
+
+    expect(screen.getByText("Refreshing")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: "Refresh all" })
+        .getAttribute("disabled"),
+    ).not.toBeNull();
+  });
+
+  it("keeps rate-limit usage freshness scoped to its Traycer account", () => {
+    mocks.configured = [];
+    const fixture = authUserFixture({ status: "PRO", withTeam: true });
+    const team = fixture.teamSubscriptions[0];
+    mocks.authUser = readyAuthUser({
+      ...fixture,
+      teamSubscriptions: [{ ...team, subscriptionStatus: "PRO" }],
+    });
+    mocks.traycerUsageUpdatedAt = {
+      [accountContextValue(DEFAULT_ACCOUNT_CONTEXT)]: NOW - 1_000,
+      [accountContextValue({ type: "TEAM", teamId: "team-1" })]: 0,
+    };
+
+    renderPopover();
+
+    expect(
+      screen.getByRole("button", { name: "Use Personal account" }).textContent,
+    ).toContain("Just now");
+    expect(
+      screen.getByRole("button", { name: "Use acme account" }).textContent,
+    ).toContain("stale");
+  });
 });
 
 describe("<RateLimitPopover /> rail settings", () => {
   it("opens provider settings and closes the popover from the rail settings icon", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = { codex: readyResult(codexReady()) };
     renderPopover();
     fireEvent.click(screen.getByRole("button", { name: "Provider settings" }));
@@ -981,7 +2251,9 @@ describe("<RateLimitPopover /> rail settings", () => {
 describe("<RateLimitPopover /> per-provider refresh", () => {
   it("routes an httpFetch provider's refresh through refetch, not the queue", () => {
     const refetch = vi.fn(() => Promise.resolve({}));
-    mocks.configured = [{ providerId: "kilocode", lane: "httpFetch" }];
+    mocks.configured = [
+      { providerId: "kilocode", lane: "httpFetch", profiles: undefined },
+    ];
     mocks.results = {
       kilocode: {
         ...readyResult({
@@ -1001,6 +2273,174 @@ describe("<RateLimitPopover /> per-provider refresh", () => {
     expect(refetch).toHaveBeenCalledTimes(1);
     expect(mocks.enqueue).not.toHaveBeenCalled();
   });
+
+  it("refreshes every profile in parallel from one provider-heading control", () => {
+    mocks.configured = [
+      {
+        providerId: "codex",
+        lane: "ephemeralProcess",
+        profiles: [
+          providerProfile({
+            profileId: "ambient",
+            kind: "ambient",
+            label: "Terminal",
+            tier: "Pro",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+          providerProfile({
+            profileId: "work-profile",
+            kind: "managed",
+            label: "Work",
+            tier: "Pro 5x",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+        ],
+      },
+    ];
+    mocks.results = {
+      codex: readyResult(codexReady()),
+      [resultKey("codex", "work-profile")]: readyResult(codexReady()),
+    };
+    renderPopover();
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+
+    const refreshProvider = screen.getByRole("button", {
+      name: "Refresh Codex",
+    });
+    expect(screen.queryByRole("button", { name: "Refresh Work" })).toBeNull();
+    fireEvent.click(refreshProvider);
+
+    expect(mocks.enqueueBatch).toHaveBeenCalledWith(
+      [
+        {
+          providerId: "codex",
+          accountContext: { type: "PERSONAL" },
+          profileId: null,
+        },
+        {
+          providerId: "codex",
+          accountContext: { type: "PERSONAL" },
+          profileId: "work-profile",
+        },
+      ],
+      { force: true },
+    );
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("keeps profile cards out of a shared loading state while the provider refresh queue drains", () => {
+    mocks.configured = [
+      {
+        providerId: "codex",
+        lane: "ephemeralProcess",
+        profiles: [
+          providerProfile({
+            profileId: "ambient",
+            kind: "ambient",
+            label: "Terminal",
+            tier: "Pro",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+          providerProfile({
+            profileId: "work-profile",
+            kind: "managed",
+            label: "Work",
+            tier: "Pro 5x",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+        ],
+      },
+    ];
+    mocks.results = {
+      codex: readyResult(codexReady()),
+      [resultKey("codex", "work-profile")]: readyResult(codexReady()),
+    };
+    mocks.draining = true;
+    renderPopover();
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+
+    expect(
+      screen
+        .getByRole("button", { name: "Refresh Codex" })
+        .getAttribute("disabled"),
+    ).not.toBeNull();
+    expect(screen.queryByText("Refreshing")).toBeNull();
+  });
+
+  // The queue's `draining` flag is lane-global, not per-provider, so a refresh
+  // on ANY ephemeralProcess provider disables every provider's control in that
+  // lane - not just the one whose fetch is in flight. Deliberate: queue items run
+  // one at a time (each provider click is one parallel profile batch), so this
+  // matches a "refresh round is in progress" mental model rather than "my own
+  // fetch is in flight". See the spinner-state note in
+  // `use-provider-rate-limit-refresh.ts`. Pinned here so the shared disable isn't
+  // mistaken for cross-provider leakage and "fixed" away.
+  it("disables both ephemeralProcess providers' refresh controls while the shared queue drains", () => {
+    mocks.configured = [
+      {
+        providerId: "codex",
+        lane: "ephemeralProcess",
+        profiles: [
+          providerProfile({
+            profileId: "ambient",
+            kind: "ambient",
+            label: "Terminal",
+            tier: "Pro",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+          providerProfile({
+            profileId: "work-profile",
+            kind: "managed",
+            label: "Work",
+            tier: "Pro 5x",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+        ],
+      },
+      {
+        providerId: "claude-code",
+        lane: "ephemeralProcess",
+        profiles: [
+          providerProfile({
+            profileId: "ambient",
+            kind: "ambient",
+            label: "Personal",
+            tier: "Max",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+          providerProfile({
+            profileId: "team-profile",
+            kind: "managed",
+            label: "Team",
+            tier: "Max 20x",
+            usageUpdatedAt: NOW - 10_000,
+          }),
+        ],
+      },
+    ];
+    mocks.results = {
+      codex: readyResult(codexReady()),
+      [resultKey("codex", "work-profile")]: readyResult(codexReady()),
+      "claude-code": readyResult(claudeReady()),
+      [resultKey("claude-code", "team-profile")]: readyResult(claudeReady()),
+    };
+    mocks.draining = true;
+    renderPopover();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    const refreshCodex = screen.getByRole("button", { name: "Refresh Codex" });
+    expect((refreshCodex as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Claude Code" }));
+    const refreshClaude = screen.getByRole("button", {
+      name: "Refresh Claude Code",
+    });
+    expect((refreshClaude as HTMLButtonElement).disabled).toBe(true);
+
+    // The shared lane gates the control, but it must not bleed into the profile
+    // cards' own loading state.
+    expect(screen.queryByText("Refreshing")).toBeNull();
+  });
 });
 
 // Guards that a stacked Overview keeps each provider's block scoped, and that
@@ -1009,8 +2449,12 @@ describe("<RateLimitPopover /> per-provider refresh", () => {
 describe("<RateLimitPopover /> Overview block scoping", () => {
   it("shows no per-provider refresh controls on Overview, only Refresh all", () => {
     mocks.configured = [
-      { providerId: "codex", lane: "ephemeralProcess" },
-      { providerId: "claude-code", lane: "ephemeralProcess" },
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+      {
+        providerId: "claude-code",
+        lane: "ephemeralProcess",
+        profiles: undefined,
+      },
     ];
     mocks.results = {
       codex: readyResult(codexReady()),
@@ -1028,7 +2472,9 @@ describe("<RateLimitPopover /> Overview block scoping", () => {
   });
 
   it("keeps the per-provider refresh control in the single-provider detail tab", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = { codex: readyResult(codexReady()) };
     renderPopover();
     fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
@@ -1055,7 +2501,9 @@ describe("<RateLimitPopover /> Traycer tab", () => {
   });
 
   it("omits the Traycer tab for a free, unbundled account", () => {
-    mocks.configured = [{ providerId: "codex", lane: "ephemeralProcess" }];
+    mocks.configured = [
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
+    ];
     mocks.results = { codex: readyResult(codexReady()) };
     mocks.authUser = readyAuthUser(
       authUserFixture({ status: "FREE", withTeam: false }),
@@ -1068,10 +2516,26 @@ describe("<RateLimitPopover /> Traycer tab", () => {
     ]);
   });
 
+  it("keeps paid team accounts selectable when Personal is ineligible", () => {
+    mocks.configured = [];
+    mocks.authUser = readyAuthUser(
+      authUserFixture({ status: "FREE", withTeam: true }),
+    );
+
+    renderPopover();
+
+    expect(screen.getByRole("tab", { name: "Traycer Inference" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Use acme account" }));
+    expect(useAccountContextStore.getState().accountContext).toEqual({
+      type: "TEAM",
+      teamId: "team-1",
+    });
+  });
+
   it("orders the Traycer tab per PROVIDER_ID_ORDER (after Codex, before Kilo Code)", () => {
     mocks.configured = [
-      { providerId: "kilocode", lane: "httpFetch" },
-      { providerId: "codex", lane: "ephemeralProcess" },
+      { providerId: "kilocode", lane: "httpFetch", profiles: undefined },
+      { providerId: "codex", lane: "ephemeralProcess", profiles: undefined },
     ];
     mocks.results = {
       codex: readyResult(codexReady()),
@@ -1095,37 +2559,56 @@ describe("<RateLimitPopover /> Traycer tab", () => {
     ]);
   });
 
-  it("shows the subscription detail with an account picker on the Traycer tab", () => {
+  it("shows one subscription card per Traycer account and marks the active one", () => {
     mocks.configured = [];
     mocks.authUser = readyAuthUser(
       authUserFixture({ status: "PRO_V3", withTeam: true }),
     );
     renderPopover();
     fireEvent.click(screen.getByRole("tab", { name: "Traycer Inference" }));
-    // Shared subscription view: plan credit breakdown (30 of 100).
+    // Shared subscription view: personal plan credit breakdown (30 of 100).
     expect(screen.getByText("$30.00 / $100.00")).toBeTruthy();
-    // Detail tab surfaces the same Personal/Team picker as the Settings card.
-    expect(screen.getByRole("combobox", { name: "Account" })).toBeTruthy();
-    // Plan/tier chip next to the name - the trailing "_V3" pricing-generation
-    // tag is stripped (matching Cloud UI's own Settings pages), so "PRO_V3"
-    // reads as "Pro", not "Pro V3".
+    expect(
+      screen.getByRole("button", { name: "Use Personal account" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Use acme account" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "Account" })).toBeNull();
+    const activeCards = document.querySelectorAll('[aria-current="true"]');
+    expect(activeCards).toHaveLength(1);
+    expect(activeCards[0].textContent).toContain("Personal");
+    expect(screen.getByText("Active")).toBeTruthy();
+    // Plan chips live on their matching cards. The trailing "_V3"
+    // pricing-generation tag remains hidden.
     expect(screen.getByText("Pro")).toBeTruthy();
+    expect(screen.getByText("Ultra")).toBeTruthy();
   });
 
-  it("renders a condensed Traycer block with no picker or plan chip on Overview", () => {
+  it("renders Traycer account cards with active state on Overview", () => {
     mocks.configured = [];
     mocks.authUser = readyAuthUser(
       authUserFixture({ status: "PRO_V3", withTeam: true }),
     );
     renderPopover();
-    // Overview reflects the selected account's numbers, but exposes no controls.
+    // Overview now uses the same account-card structure as the Traycer detail tab.
     expect(screen.getByText("$30.00 / $100.00")).toBeTruthy();
     expect(screen.queryByRole("combobox", { name: "Account" })).toBeNull();
-    // Overview is condensed, same as the host-RPC providers' plan chip.
-    expect(screen.queryByText("Pro")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Use Personal account" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Use acme account" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Pro")).toBeTruthy();
+    expect(screen.getByText("Ultra")).toBeTruthy();
+    expect(screen.getByText("Active")).toBeTruthy();
+    const activeCards = document.querySelectorAll('[aria-current="true"]');
+    expect(activeCards).toHaveLength(1);
+    expect(activeCards[0].textContent).toContain("Personal");
   });
 
-  it("reflects the selected account's own plan in the chip, not the personal account's", () => {
+  it("marks the selected team card active while retaining every account's plan", () => {
     mocks.configured = [];
     mocks.authUser = readyAuthUser(
       authUserFixture({ status: "PRO_V3", withTeam: true }),
@@ -1137,11 +2620,30 @@ describe("<RateLimitPopover /> Traycer tab", () => {
     });
     renderPopover();
     fireEvent.click(screen.getByRole("tab", { name: "Traycer Inference" }));
-    // "ULTRA_1X_V3" reads as the bare "Ultra" tier name (matching
-    // `subscriptionPlanLabel`'s own tier-name mapping), not the personal
-    // account's "Pro".
+    const activeCards = document.querySelectorAll('[aria-current="true"]');
+    expect(activeCards).toHaveLength(1);
+    expect(activeCards[0].textContent).toContain("acme");
     expect(screen.getByText("Ultra")).toBeTruthy();
-    expect(screen.queryByText("Pro")).toBeNull();
+    expect(screen.getByText("Pro")).toBeTruthy();
+  });
+
+  it("switches the active Traycer account from its profile card", () => {
+    mocks.configured = [];
+    mocks.authUser = readyAuthUser(
+      authUserFixture({ status: "PRO_V3", withTeam: true }),
+    );
+    renderPopover();
+    fireEvent.click(screen.getByRole("tab", { name: "Traycer Inference" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Use acme account" }));
+
+    expect(useAccountContextStore.getState().accountContext).toEqual({
+      type: "TEAM",
+      teamId: "team-1",
+    });
+    const activeCards = document.querySelectorAll('[aria-current="true"]');
+    expect(activeCards).toHaveLength(1);
+    expect(activeCards[0].textContent).toContain("acme");
   });
 
   it("refetches the subscription from the Traycer tab's refresh button", () => {

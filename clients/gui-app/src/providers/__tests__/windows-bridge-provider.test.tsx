@@ -147,10 +147,8 @@ function createBaseRunnerHost(): IRunnerHost {
     signInUrl: "https://auth.example.invalid/sign-in",
     authnBaseUrl: "https://auth.example.invalid",
     hasLocalHost: true,
-    validateAuthToken: () => Promise.resolve({ kind: "rejected" as const }),
     validateAuthTokenIdentity: () =>
       Promise.resolve({ kind: "rejected" as const }),
-    refreshAuthToken: () => Promise.resolve({ kind: "network-error" as const }),
     openExternalLink: () => Promise.resolve(),
     getRegisteredUrlSchemes: () => Promise.resolve([]),
     requestMicrophoneAccess: () => Promise.resolve("granted" as const),
@@ -186,11 +184,17 @@ function createBaseRunnerHost(): IRunnerHost {
     fileDrops: {
       resolveDroppedFilePaths: () => Promise.resolve([]),
       copyDroppedFilePaths: (paths) => Promise.resolve(paths),
+      readNativeClipboardFilePaths: () => Promise.resolve([]),
     },
     tokenStore: {
       get: () => Promise.resolve(null),
-      set: () => Promise.resolve(),
+      signIn: () => Promise.resolve(),
+      rotate: () =>
+        Promise.resolve({ outcome: "deleted" as const, pair: null }),
       delete: () => Promise.resolve(),
+      subscribe: () => ({ dispose: () => undefined }),
+      migrateLegacyCredentials: () =>
+        Promise.resolve("identity-unknown" as const),
     },
     onLocalHostChange: (handler) => {
       handler(null);
@@ -384,6 +388,36 @@ describe("<WindowsBridgeProvider />", () => {
     });
   });
 
+  it("still marks hydration complete when the per-window snapshot fetch rejects", async () => {
+    const fake = createDesktopWindowsBridge();
+    const failingBridge = {
+      ...fake.bridge,
+      perWindowState: {
+        ...fake.bridge.perWindowState,
+        get: () => Promise.reject(new Error("perWindowState.get failed")),
+      },
+    } satisfies DesktopWindowsBridge;
+
+    render(
+      <RunnerHostProvider
+        runnerHost={createRunnerHostWithWindows(failingBridge)}
+      >
+        <WindowsBridgeProvider>
+          <HydrationProbe />
+        </WindowsBridgeProvider>
+      </RunnerHostProvider>,
+    );
+
+    expect(screen.getByTestId("hydration-state").textContent).toBe("pending");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("hydration-state").textContent).toBe(
+        "hydrated",
+      );
+    });
+    expect(fake.perWindowUpdates).toEqual([]);
+  });
+
   it("does not write the restored per-window snapshot back during first hydration", async () => {
     vi.useFakeTimers();
     const fake = createDesktopWindowsBridge();
@@ -505,7 +539,7 @@ describe("<WindowsBridgeProvider />", () => {
     act(() => {
       tabId = useEpicCanvasStore.getState().openEpicTab("epic-a", "A");
       useEpicCanvasStore.getState().renameTab(tabId, "A Prime");
-      draftId = useLandingDraftStore.getState().createDraft(null);
+      draftId = useLandingDraftStore.getState().createDraft(null, undefined);
       useLandingDraftStore
         .getState()
         .setDraftContent(draftId, landingTextContent("first prompt"), null);
@@ -549,7 +583,7 @@ describe("<WindowsBridgeProvider />", () => {
     act(() => {
       tabA = useEpicCanvasStore.getState().openEpicTab("epic-a", "A");
       tabB = useEpicCanvasStore.getState().openEpicTab("epic-b", "B");
-      draftId = useLandingDraftStore.getState().createDraft(null);
+      draftId = useLandingDraftStore.getState().createDraft(null, undefined);
       useLandingDraftStore
         .getState()
         .setDraftContent(draftId, landingTextContent("old prompt"), null);
@@ -610,7 +644,7 @@ describe("<WindowsBridgeProvider />", () => {
     act(() => {
       tabA = useEpicCanvasStore.getState().openEpicTab("epic-a", "A");
       tabB = useEpicCanvasStore.getState().openEpicTab("epic-b", "B");
-      draftId = useLandingDraftStore.getState().createDraft(null);
+      draftId = useLandingDraftStore.getState().createDraft(null, undefined);
       useLandingDraftStore
         .getState()
         .setDraftContent(draftId, landingTextContent("final prompt"), null);

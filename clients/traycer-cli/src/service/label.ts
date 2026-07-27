@@ -1,6 +1,7 @@
 import { homedir, platform as osPlatform } from "node:os";
 import { join } from "node:path";
 import type { Environment } from "../runner/environment";
+import { devDesktopSlotForEnvironment } from "../store/dev-desktop-slot";
 
 // A `ServiceLabel` namespaces an OS-service registration (LaunchAgent /
 // systemd unit / Scheduled Task) so hosts for different environments can
@@ -23,12 +24,17 @@ export interface ServiceLabel {
   readonly displayName: string;
   // Exact runtime environment this label operates on.
   readonly environment: Environment;
+  // The dev-desktop run slot baked into `id`/`displayName`, or `null` when
+  // this label isn't slot-specific. First-class so consumers (e.g.
+  // `windowsTaskName`) never have to re-derive it by re-parsing `id`.
+  readonly devSlot: string | null;
 }
 
 const PRODUCTION_LABEL: ServiceLabel = {
   id: "ai.traycer.host",
   displayName: "Traycer Host",
   environment: "production",
+  devSlot: null,
 };
 
 // Each non-production environment gets its OWN service slot
@@ -45,11 +51,40 @@ function capitalizeEnvironment(environment: Environment): string {
 
 export function serviceLabelFor(environment: Environment): ServiceLabel {
   if (environment === "production") return PRODUCTION_LABEL;
+  const devSlot = devDesktopSlotForEnvironment(environment, process.env);
+  if (devSlot !== null) {
+    return {
+      id: `ai.traycer.host.dev.${devSlot}`,
+      displayName: `Traycer Host (Dev ${devSlot})`,
+      environment,
+      devSlot,
+    };
+  }
   return {
     id: `ai.traycer.host.${environment}`,
     displayName: `Traycer Host (${capitalizeEnvironment(environment)})`,
     environment,
+    devSlot: null,
   };
+}
+
+// The label Traycer Desktop registers via SMAppService for the same
+// environment's host: `<cli-label>.agent`. Split from the CLI label because
+// macOS BTM matches an SMAppService registration to an existing legacy
+// record (a raw `~/Library/LaunchAgents` plist ever registered under the
+// label) BY LABEL, and that record survives file deletion and bootout -
+// same-label registration lands `not-registered` forever on such machines.
+// The CLI never registers this label; it only probes it (install refusal /
+// status ownership) and boots it out on uninstall.
+//
+// LOCKSTEP: the `.agent` derivation is duplicated in the desktop's
+// `electron-main/host/host-paths.ts` (`smAppServiceAgentLabelId`), the OSS
+// packaging injector (`clients/desktop/scripts/prepack/
+// inject-host-launch-agent.cjs`), and the internal repo's
+// `scripts/desktop-install-cloud.js` (`hostAgentLabel`) - separate bundles
+// that cannot import this module. Change all four together.
+export function smAppServiceAgentLabelId(label: ServiceLabel): string {
+  return `${label.id}.agent`;
 }
 
 // Platform-specific manifest path (plist / unit / task XML).
@@ -73,5 +108,8 @@ export function serviceManifestPath(label: ServiceLabel): string {
 // `Host-Staging`).
 export function windowsTaskName(label: ServiceLabel): string {
   if (label.environment === "production") return "\\Traycer\\Host";
+  if (label.devSlot !== null) {
+    return `\\Traycer\\Host-Dev-${capitalizeEnvironment(label.devSlot)}`;
+  }
   return `\\Traycer\\Host-${capitalizeEnvironment(label.environment)}`;
 }

@@ -1003,7 +1003,6 @@ describe("<BrowserTile /> cookie crypto banner", () => {
       readonly delayMs: number;
     }> = [];
     const realSetTimeout = globalThis.setTimeout;
-    const realWindowSetTimeout = window.setTimeout;
     let setTimeoutSpy: { readonly mockRestore: () => void } | null = null;
     let windowSetTimeoutSpy: { readonly mockRestore: () => void } | null = null;
     const captureSensitiveTimeout = (
@@ -1072,16 +1071,26 @@ describe("<BrowserTile /> cookie crypto banner", () => {
         .spyOn(globalThis, "setTimeout")
         .mockImplementation(
           (handler: TimerHandler, timeout: number | undefined) => {
-            captureSensitiveTimeout(handler, timeout);
-            return realSetTimeout.call(globalThis, handler, timeout);
+            const callback = (): void => {
+              if (typeof handler === "function") {
+                Reflect.apply(handler, globalThis, []);
+              }
+            };
+            captureSensitiveTimeout(callback, timeout);
+            return realSetTimeout(callback, timeout);
           },
         );
       windowSetTimeoutSpy = vi
         .spyOn(window, "setTimeout")
         .mockImplementation(
           (handler: TimerHandler, timeout: number | undefined) => {
-            captureSensitiveTimeout(handler, timeout);
-            return realWindowSetTimeout.call(window, handler, timeout);
+            const callback = (): void => {
+              if (typeof handler === "function") {
+                Reflect.apply(handler, globalThis, []);
+              }
+            };
+            captureSensitiveTimeout(callback, timeout);
+            return realSetTimeout(callback, timeout);
           },
         );
       act(() => {
@@ -1102,7 +1111,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
         await screen.findByText("Sensitive browser typing requires approval"),
       ).toBeTruthy();
       await new Promise<void>((resolve) => {
-        realSetTimeout.call(globalThis, resolve, 0);
+        realSetTimeout(resolve, 0);
       });
       const scheduledTimeout = scheduledTimeouts[0];
       expect(scheduledTimeout.delayMs).toBeGreaterThanOrEqual(59_000);

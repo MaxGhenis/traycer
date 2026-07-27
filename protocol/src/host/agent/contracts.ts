@@ -5,6 +5,8 @@ import {
 } from "@traycer/protocol/framework/index";
 import {
   createAgentRequestSchema,
+  createAgentRequestSchemaV20,
+  createAgentRequestSchemaV30,
   createAgentResponseSchema,
   agentSelectionGuideRequestSchema,
   agentSelectionGuideResponseSchema,
@@ -25,8 +27,14 @@ import {
   listAgentsResponseSchema,
   listAgentsResponseSchemaV10,
   listAgentsResponseSchemaV20,
+  listAgentsResponseSchemaV30,
+  listAgentsResponseSchemaV40,
+  listAgentsResponseSchemaV50,
   agentSummarySchemaV10,
   agentSummarySchemaV20,
+  agentSummarySchemaV30,
+  agentSummarySchemaV40,
+  agentSummarySchemaV50,
   sendAgentMessageRequestSchema,
   sendAgentMessageResponseSchema,
   stopAgentRequestSchema,
@@ -50,6 +58,156 @@ export const agentCreateV10 = defineRpcContract({
   schemaVersion: { major: 1, minor: 0 } as const,
   requestSchema: createAgentRequestSchema,
   responseSchema: createAgentResponseSchema,
+});
+
+export const agentCreateV20 = defineRpcContract({
+  method: "agent.create",
+  schemaVersion: { major: 2, minor: 0 } as const,
+  requestSchema: createAgentRequestSchemaV20,
+  responseSchema: createAgentResponseSchema,
+});
+
+export const agentCreateV30 = defineRpcContract({
+  method: "agent.create",
+  schemaVersion: { major: 3, minor: 0 } as const,
+  requestSchema: createAgentRequestSchemaV30,
+  responseSchema: createAgentResponseSchema,
+});
+
+/**
+ * A v1.0 caller's nullable `profileId` maps onto the new selection model at
+ * the boundary the multi-profile decision log calls compatibility-only:
+ * `null` is legacy sender inheritance (`inherit_sender`), a non-null string
+ * is an explicit managed-profile pin. The response shape is unchanged
+ * (same warnings list), so its upgrade is the identity.
+ */
+export const agentCreateUpgradeV10ToV20 = defineUpgradePath<
+  typeof agentCreateV10,
+  typeof agentCreateV20
+>({
+  from: { major: 1, minor: 0 },
+  to: { major: 2, minor: 0 },
+  upgradeRequest: (request) => {
+    const { profileId, ...rest } = request;
+    return {
+      ...rest,
+      profileSelection:
+        profileId === null
+          ? { kind: "inherit_sender" as const }
+          : { kind: "profile" as const, profileId },
+    };
+  },
+  upgradeResponse: (response) => response,
+});
+
+/**
+ * Projects the frozen v2.0 request back onto the frozen v1.0 wire for an old
+ * host.
+ * Explicit managed and compatibility-only inherited profile selections have a
+ * v1.0-representable shape (a profile-id string, or `profileId: null` meaning
+ * sender inheritance). `ambient` and `last_used` fail because v1.0 cannot
+ * represent their profile semantics.
+ *
+ * Batch-1 review correction: the original plan treated explicit `ambient` as
+ * downgrade-compatible (also projecting to `profileId: null`), but frozen
+ * v1.0 already gives `null` a fixed meaning - sender inheritance for a
+ * same-surface/same-harness child. Silently reusing `null` for an explicit
+ * ambient choice could route the new agent onto the sender's managed
+ * account instead of the ambient login the caller actually asked for. Nor
+ * does the legacy `"ambient"` sentinel string help: v1.0 may persist it as a
+ * literal profile id, violating the runtime/persistence normalization
+ * invariant (see the profile-awareness decision log's "Old-host creation
+ * downgrade" row).
+ */
+export const agentCreateDowngradeV20ToV10 = defineDowngradePath<
+  typeof agentCreateV20,
+  typeof agentCreateV10
+>({
+  from: { major: 2, minor: 0 },
+  to: { major: 1, minor: 0 },
+  downgradeRequest: (request) => {
+    const { profileSelection, ...rest } = request;
+    if (profileSelection.kind === "last_used") {
+      return {
+        ok: false,
+        error: {
+          code: "DOWNGRADE_UNSUPPORTED",
+          message:
+            "Creating an agent with the last-used provider profile requires a newer Traycer host. Choose a specific profile, or upgrade the host.",
+        },
+      };
+    }
+    if (profileSelection.kind === "ambient") {
+      return {
+        ok: false,
+        error: {
+          code: "DOWNGRADE_UNSUPPORTED",
+          message:
+            "Creating an agent with the ambient provider login requires a newer Traycer host - the frozen v1.0 wire cannot distinguish an explicit ambient choice from inheriting the sender's profile. Choose a specific profile, or upgrade the host.",
+        },
+      };
+    }
+    return {
+      ok: true,
+      value: createAgentRequestSchema.parse({
+        ...rest,
+        profileId:
+          profileSelection.kind === "profile"
+            ? profileSelection.profileId
+            : null,
+      }),
+    };
+  },
+  downgradeResponse: (response) => ({ ok: true, value: response }),
+});
+
+/**
+ * Released v2 callers did not carry a permission choice. Upgrade them with the
+ * compatibility-only `null` sentinel so the host preserves a GUI sender's mode
+ * (and applies the intentional full-access default for TUI->GUI creation).
+ */
+export const agentCreateUpgradeV20ToV30 = defineUpgradePath<
+  typeof agentCreateV20,
+  typeof agentCreateV30
+>({
+  from: { major: 2, minor: 0 },
+  to: { major: 3, minor: 0 },
+  upgradeRequest: (request) => ({ ...request, permissionMode: null }),
+  upgradeResponse: (response) => response,
+});
+
+export const agentCreateDowngradeV30ToV20 = defineDowngradePath<
+  typeof agentCreateV30,
+  typeof agentCreateV20
+>({
+  from: { major: 3, minor: 0 },
+  to: { major: 2, minor: 0 },
+  downgradeRequest: () => ({
+    ok: false,
+    error: {
+      code: "DOWNGRADE_UNSUPPORTED",
+      message:
+        "Selecting an agent permission mode requires a newer Traycer host. Upgrade the host before creating this agent.",
+    },
+  }),
+  downgradeResponse: (response) => ({ ok: true, value: response }),
+});
+
+export const agentCreateDowngradeV30ToV10 = defineDowngradePath<
+  typeof agentCreateV30,
+  typeof agentCreateV10
+>({
+  from: { major: 3, minor: 0 },
+  to: { major: 1, minor: 0 },
+  downgradeRequest: () => ({
+    ok: false,
+    error: {
+      code: "DOWNGRADE_UNSUPPORTED",
+      message:
+        "Selecting an agent permission mode requires a newer Traycer host. Upgrade the host before creating this agent.",
+    },
+  }),
+  downgradeResponse: (response) => ({ ok: true, value: response }),
 });
 
 export const agentSelectionGuideV10 = defineRpcContract({
@@ -193,7 +351,7 @@ export const agentListV30 = defineRpcContract({
   method: "agent.list",
   schemaVersion: { major: 3, minor: 0 } as const,
   requestSchema: listAgentsRequestSchema,
-  responseSchema: listAgentsResponseSchema,
+  responseSchema: listAgentsResponseSchemaV30,
 });
 
 export const agentListUpgradeV2ToV3 = defineUpgradePath<
@@ -238,6 +396,297 @@ export const agentListDowngradeV3ToV1 = defineDowngradePath<
   downgradeRequest: (request) => ({ ok: true, value: request }),
   // Drop post-v1.0 GUI harness agents (ACP harnesses AND Amp) directly, so a
   // v1.0 client's strict decode never sees any of them.
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV10.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV10.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListV40 = defineRpcContract({
+  method: "agent.list",
+  schemaVersion: { major: 4, minor: 0 } as const,
+  requestSchema: listAgentsRequestSchema,
+  responseSchema: listAgentsResponseSchemaV40,
+});
+
+export const agentListUpgradeV3ToV4 = defineUpgradePath<
+  typeof agentListV30,
+  typeof agentListV40
+>({
+  from: { major: 3, minor: 0 },
+  to: { major: 4, minor: 0 },
+  // A v3.0 response without Devin/Pi agents is a valid v4.0 response (purely
+  // additive), and the request shape is identical - both upgrades are
+  // identity.
+  upgradeRequest: (request) => request,
+  upgradeResponse: (response) => response,
+});
+
+export const agentListDowngradeV4ToV3 = defineDowngradePath<
+  typeof agentListV40,
+  typeof agentListV30
+>({
+  from: { major: 4, minor: 0 },
+  to: { major: 3, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
+  // Drop Devin/Pi agents so an already-shipped v3.0 client's strict decode
+  // never sees one.
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV30.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV30.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListDowngradeV4ToV2 = defineDowngradePath<
+  typeof agentListV40,
+  typeof agentListV20
+>({
+  from: { major: 4, minor: 0 },
+  to: { major: 2, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV20.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV20.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListDowngradeV4ToV1 = defineDowngradePath<
+  typeof agentListV40,
+  typeof agentListV10
+>({
+  from: { major: 4, minor: 0 },
+  to: { major: 1, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV10.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV10.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListV50 = defineRpcContract({
+  method: "agent.list",
+  schemaVersion: { major: 5, minor: 0 } as const,
+  requestSchema: listAgentsRequestSchema,
+  // Frozen: the v1.1.8 tags shipped this line, so it must serve the v5.0
+  // harness id set rather than the live one. Before that release it pointed at
+  // the canonical schema, which is exactly how `omp` first tried to ride v5.0.
+  responseSchema: listAgentsResponseSchemaV50,
+});
+
+export const agentListUpgradeV4ToV5 = defineUpgradePath<
+  typeof agentListV40,
+  typeof agentListV50
+>({
+  from: { major: 4, minor: 0 },
+  to: { major: 5, minor: 0 },
+  // A v4.0 response without Hermes agents is a valid v5.0 response (purely
+  // additive), and the request shape is identical - both upgrades are
+  // identity.
+  upgradeRequest: (request) => request,
+  upgradeResponse: (response) => response,
+});
+
+export const agentListDowngradeV5ToV4 = defineDowngradePath<
+  typeof agentListV50,
+  typeof agentListV40
+>({
+  from: { major: 5, minor: 0 },
+  to: { major: 4, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
+  // Drop Hermes agents so an already-shipped v4.0 client's strict decode
+  // never sees one.
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV40.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV40.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListDowngradeV5ToV3 = defineDowngradePath<
+  typeof agentListV50,
+  typeof agentListV30
+>({
+  from: { major: 5, minor: 0 },
+  to: { major: 3, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
+  // Drop Devin/Pi/Hermes agents so an already-shipped v3.0 client's strict
+  // decode never sees one.
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV30.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV30.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListDowngradeV5ToV2 = defineDowngradePath<
+  typeof agentListV50,
+  typeof agentListV20
+>({
+  from: { major: 5, minor: 0 },
+  to: { major: 2, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV20.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV20.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListDowngradeV5ToV1 = defineDowngradePath<
+  typeof agentListV50,
+  typeof agentListV10
+>({
+  from: { major: 5, minor: 0 },
+  to: { major: 1, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV10.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV10.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListV60 = defineRpcContract({
+  method: "agent.list",
+  schemaVersion: { major: 6, minor: 0 } as const,
+  requestSchema: listAgentsRequestSchema,
+  responseSchema: listAgentsResponseSchema,
+});
+
+export const agentListUpgradeV5ToV6 = defineUpgradePath<
+  typeof agentListV50,
+  typeof agentListV60
+>({
+  from: { major: 5, minor: 0 },
+  to: { major: 6, minor: 0 },
+  // A v5.0 response without omp agents is a valid v6.0 response (purely
+  // additive), and the request shape is identical - both upgrades are
+  // identity.
+  upgradeRequest: (request) => request,
+  upgradeResponse: (response) => response,
+});
+
+export const agentListDowngradeV6ToV5 = defineDowngradePath<
+  typeof agentListV60,
+  typeof agentListV50
+>({
+  from: { major: 6, minor: 0 },
+  to: { major: 5, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
+  // Drop omp agents so an already-shipped v5.0 client's strict decode never
+  // sees one.
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV50.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV50.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListDowngradeV6ToV4 = defineDowngradePath<
+  typeof agentListV60,
+  typeof agentListV40
+>({
+  from: { major: 6, minor: 0 },
+  to: { major: 4, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
+  // Drop Hermes/omp agents so an already-shipped v4.0 client's strict decode
+  // never sees one.
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV40.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV40.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListDowngradeV6ToV3 = defineDowngradePath<
+  typeof agentListV60,
+  typeof agentListV30
+>({
+  from: { major: 6, minor: 0 },
+  to: { major: 3, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
+  // Drop Devin/Pi/Hermes/omp agents so an already-shipped v3.0 client's strict
+  // decode never sees one.
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV30.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV30.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListDowngradeV6ToV2 = defineDowngradePath<
+  typeof agentListV60,
+  typeof agentListV20
+>({
+  from: { major: 6, minor: 0 },
+  to: { major: 2, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
+  downgradeResponse: (response) => ({
+    ok: true,
+    value: listAgentsResponseSchemaV20.parse({
+      ...response,
+      agents: response.agents.filter(
+        (agent) => agentSummarySchemaV20.safeParse(agent).success,
+      ),
+    }),
+  }),
+});
+
+export const agentListDowngradeV6ToV1 = defineDowngradePath<
+  typeof agentListV60,
+  typeof agentListV10
+>({
+  from: { major: 6, minor: 0 },
+  to: { major: 1, minor: 0 },
+  downgradeRequest: (request) => ({ ok: true, value: request }),
   downgradeResponse: (response) => ({
     ok: true,
     value: listAgentsResponseSchemaV10.parse({

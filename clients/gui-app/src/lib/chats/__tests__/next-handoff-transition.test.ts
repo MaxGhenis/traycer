@@ -32,6 +32,7 @@ function makeHandoff(
       reasoningEffort: null,
       serviceTier: null,
       agentMode: "epic",
+      profileId: null,
     },
     worktreeIntent: null,
     placement: { kind: "active-tile" },
@@ -101,6 +102,7 @@ describe("nextHandoffTransition", () => {
       acceptedActions: {
         "action-1": {
           action: "send",
+          interviewBlockId: null,
           clientActionId: "action-1",
           messageId: "message-1",
           acceptedAt: 1000,

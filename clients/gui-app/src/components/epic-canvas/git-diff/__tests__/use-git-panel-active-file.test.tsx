@@ -55,8 +55,9 @@ describe("useGitPanelActiveFile", () => {
       runningDir: RUNNING_DIR,
       filePath: "src/a.ts",
       stage: "staged",
+      repositoryContext: null,
     });
-    seedViewTab(openTile(createEmptyCanvas(), tile, false));
+    seedViewTab(openTile(createEmptyCanvas(), tile, false, null));
 
     const { result } = renderHook(() =>
       useGitPanelActiveFile({
@@ -79,8 +80,9 @@ describe("useGitPanelActiveFile", () => {
       runningDir: "/other-worktree",
       filePath: "src/a.ts",
       stage: "unstaged",
+      repositoryContext: null,
     });
-    seedViewTab(openTile(createEmptyCanvas(), tile, false));
+    seedViewTab(openTile(createEmptyCanvas(), tile, false, null));
 
     const { result } = renderHook(() =>
       useGitPanelActiveFile({

@@ -103,7 +103,10 @@ function completeHandshake(socket: StubStreamWebSocket): void {
   const openParsed = JSON.parse(socket.textSent[0]) as {
     readonly manifest: Record<string, { major: number; minor: number }>;
   };
-  socket.fireText({ kind: "openAck", manifest: openParsed.manifest });
+  socket.fireText({
+    kind: "openAck",
+    manifest: openParsed.manifest,
+  });
 }
 
 function parseText(raw: string): Record<string, unknown> {
@@ -123,6 +126,7 @@ const OWNER = {
   },
   sampledAt: 1_000,
   rootPids: [1],
+  harnessId: null,
   activeProcessName: "bash",
   processCount: 2,
   cpuPercent: 10,
@@ -167,6 +171,32 @@ const APP = {
   rssBytes: 2_000,
 };
 
+const HOST_TREE = {
+  sampledAt: 1_000,
+  processCount: 3,
+  cpuPercent: 15,
+  rssBytes: 3_000,
+};
+
+const OTHER = {
+  sampledAt: 1_000,
+  rootPids: [20],
+  processCount: 1,
+  cpuPercent: 4,
+  rssBytes: 500,
+  processes: [
+    {
+      pid: 20,
+      parentPid: null,
+      rootPid: 20,
+      name: "worker",
+      command: "worker",
+      cpuPercent: 4,
+      rssBytes: 500,
+    },
+  ],
+};
+
 describe("ResourcesStreamClient", () => {
   it("subscribes to resources.subscribe with the epicId and dispatches typed frames", () => {
     const { factory, sockets } = makeFactory();
@@ -180,7 +210,7 @@ describe("ResourcesStreamClient", () => {
 
     const client = new ResourcesStreamClient({
       wsStreamClient: makeWsStreamClient(factory),
-      epicId: "epic-1",
+      scope: { kind: "epic", epicId: "epic-1" },
       callbacks,
     });
     completeHandshake(sockets[0]);
@@ -188,8 +218,11 @@ describe("ResourcesStreamClient", () => {
     expect(parseText(sockets[0].textSent[1])).toEqual({
       kind: "subscribe",
       method: "resources.subscribe",
-      schemaVersion: { major: 1, minor: 0 },
-      params: { epicId: "epic-1" },
+      schemaVersion: { major: 1, minor: 3 },
+      params: {
+        epicId: "epic-1",
+        scope: { kind: "epic", epicId: "epic-1" },
+      },
     });
 
     sockets[0].fireText({
@@ -200,6 +233,8 @@ describe("ResourcesStreamClient", () => {
       app: APP,
       owners: [OWNER],
       epic: EPIC,
+      hostTree: HOST_TREE,
+      other: OTHER,
     });
     sockets[0].fireText({
       kind: "update",
@@ -209,17 +244,59 @@ describe("ResourcesStreamClient", () => {
       app: { ...APP, sampledAt: 2_000, cpuPercent: 2 },
       owners: [{ ...OWNER, cpuPercent: 55, sampledAt: 2_000 }],
       epic: { ...EPIC, cpuPercent: 55, sampledAt: 2_000 },
+      hostTree: { ...HOST_TREE, sampledAt: 2_000, cpuPercent: 60 },
+      other: { ...OTHER, sampledAt: 2_000, cpuPercent: 5 },
     });
 
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0].app?.process?.name).toBe("traycer-host");
     expect(snapshots[0].owners[0].owner.ownerId).toBe("s1");
+    expect(snapshots[0].owners[0].harnessId).toBeNull();
     expect(snapshots[0].owners[0].processes[0].command).toBe("/bin/bash");
     expect(snapshots[0].epic?.epicId).toBe("epic-1");
+    expect(snapshots[0].epics).toEqual([]);
+    expect(snapshots[0].hostTree?.cpuPercent).toBe(15);
+    expect(snapshots[0].other?.processes[0].name).toBe("worker");
     expect(updates).toHaveLength(1);
     expect(updates[0].owners[0].cpuPercent).toBe(55);
     expect(updates[0].sampledAt).toBe(2_000);
+    expect(updates[0].hostTree?.cpuPercent).toBe(60);
 
+    client.close();
+  });
+
+  it("backfills harnessId to null for a pre-1.3 (harnessId-less) frame", () => {
+    const { factory, sockets } = makeFactory();
+    const snapshots: ResourcesProjectionPayload[] = [];
+    const client = new ResourcesStreamClient({
+      wsStreamClient: makeWsStreamClient(factory),
+      scope: { kind: "epic", epicId: "epic-1" },
+      callbacks: {
+        onSnapshot: (p) => snapshots.push(p),
+        onUpdate: () => {},
+        onConnectionStatus: () => {},
+      },
+    });
+    completeHandshake(sockets[0]);
+
+    // An older host emits a `@1.2` frame whose owner carries NO harnessId. It
+    // fails the `@1.3` parse, falls back to `@1.2`, and `toPayload` normalizes
+    // the missing field to `null` so downstream always reads a defined value.
+    const { harnessId: _omit, ...ownerWithoutHarness } = OWNER;
+    sockets[0].fireText({
+      kind: "snapshot",
+      hasBinaryPayload: false,
+      epicId: "epic-1",
+      sampledAt: 1_000,
+      app: APP,
+      owners: [ownerWithoutHarness],
+      epic: EPIC,
+      hostTree: HOST_TREE,
+      other: OTHER,
+    });
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].owners[0].harnessId).toBeNull();
     client.close();
   });
 
@@ -229,7 +306,7 @@ describe("ResourcesStreamClient", () => {
     const updates: ResourcesProjectionPayload[] = [];
     const client = new ResourcesStreamClient({
       wsStreamClient: makeWsStreamClient(factory),
-      epicId: "epic-1",
+      scope: { kind: "epic", epicId: "epic-1" },
       callbacks: {
         onSnapshot: (p) => snapshots.push(p),
         onUpdate: (p) => updates.push(p),

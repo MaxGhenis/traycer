@@ -10,20 +10,19 @@ import {
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { v4 as uuidv4 } from "uuid";
-import { toast } from "sonner";
 import { ArrowLeftRight, Plus, XIcon } from "lucide-react";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import type { ChatRunSettings } from "@traycer/protocol/host/agent/gui/subscribe";
-import type {
-  WorktreeFolderIntent,
-  WorktreeIntent,
-} from "@traycer/protocol/host/worktree-schemas";
+import type { WorktreeIntent } from "@traycer/protocol/host/worktree-schemas";
 
 import {
   AttachmentStrip,
   NO_SESSION_OBJECT_URL,
 } from "@/components/chat/composer/attachments/attachment-strip";
-import { useEpicImageFetcher } from "@/lib/attachments/use-attachment-blob-src";
+import {
+  useEpicAttachmentBytesPresence,
+  useEpicImageFetcher,
+} from "@/lib/attachments/use-attachment-blob-src";
 import { DialogOverlayBoundaryContext } from "@/providers/dialog-overlay-boundary-context";
 import type { ComposerPromptEditorHandle } from "@/components/chat/composer/composer-prompt-editor";
 import { createComposerPickerStore } from "@/components/chat/composer/picker/composer-picker-store";
@@ -42,11 +41,15 @@ import {
 } from "@/hooks/agent/use-create-tui-agent";
 import { useComposerDictation } from "@/hooks/composer/use-composer-dictation";
 import { useLeaderScopeAbsorber } from "@/hooks/keybindings/use-leader-scope-absorber";
-import { useComposerPaste } from "@/hooks/composer/use-composer-paste";
+import {
+  isAttachmentIngestPending,
+  useComposerPaste,
+} from "@/hooks/composer/use-composer-paste";
 import {
   mentionRootsFromWorktreeIntent,
   useWorkspaceMentionRoots,
 } from "@/hooks/composer/use-workspace-mention-roots";
+import { useRunnerHost } from "@/providers/use-runner-host";
 import { useEpicCreateChat } from "@/hooks/epic/use-epic-chat-mutations";
 import { useResolvedWorkspaceFolders } from "@/hooks/workspace/use-resolved-workspace-folders-query";
 import {
@@ -77,7 +80,7 @@ import {
   deriveFolderlessAllowedWorkspaceAvailability,
   workspaceComposerCanStart,
 } from "@/lib/composer/workspace-composer-availability";
-import { buildForkWorkspaceSeedFromWorkspaceFolders } from "@/lib/worktree/fork-workspace-seed";
+import { effectiveWorktreeIntent } from "@/lib/worktree/effective-worktree-intent";
 import { deriveWorkspaceMode } from "@/lib/worktree/workspace-mode";
 import { cn } from "@/lib/utils";
 import { ActiveHostWorkspaceControls } from "@/components/home/host-workspace-selector/host-workspace-selector";
@@ -89,6 +92,7 @@ import {
   type ComposerMode,
 } from "@/components/home/data/landing-options";
 import { useComposerToolbarStore } from "@/components/home/hooks/use-composer-toolbar-store";
+import { fallbackSeedSource } from "@/lib/composer/composer-seed-source";
 import type { TerminalAgentLaunch } from "@/components/home/hooks/use-landing-composer-actions";
 import { useAuthStore } from "@/stores/auth/auth-store";
 import { useAccountContextStore } from "@/stores/auth/account-context-store";
@@ -115,6 +119,7 @@ import {
   worktreeStagingKeyString,
 } from "@/stores/worktree/worktree-intent-staging-store";
 import { useWorktreeIntentMemoryStore } from "@/stores/worktree/worktree-intent-memory-store";
+import { reportableErrorToast } from "@/lib/reportable-error-toast";
 
 /**
  * Isolated subscriber for the live draft content. The editor rewrites content
@@ -329,9 +334,7 @@ function NewConversationModalDialog(props: {
             <XIcon className="size-3.5" />
           </Button>
         </DialogClose>
-        <DialogTitle className="sr-only">
-          New chat or terminal agent
-        </DialogTitle>
+        <DialogTitle className="sr-only">New agent</DialogTitle>
         {props.open ? (
           <DialogOverlayBoundaryContext.Provider value={overlayBoundaryEl}>
             <SurfaceActivityProvider active>
@@ -358,25 +361,23 @@ function NewConversationModalDialog(props: {
  * parent (chat or terminal agent), and tracks the current mode ("child chat" vs
  * "child terminal agent") so it stays accurate as the user switches.
  */
-function NewConversationModalHeader(props: {
+export function NewConversationModalHeader(props: {
   readonly composerMode: ComposerMode;
   readonly parentId: string | null;
   readonly switcher: ReactNode;
 }) {
   const { composerMode, parentId, switcher } = props;
-  const isChildChat = parentId !== null;
-  // The parent can be a chat or a terminal agent (both live in the chats tree);
-  // resolve its display title from the right projection slice.
+  const isChildAgent = parentId !== null;
+  // The parent is an Agent either way - the two projection slices are just the
+  // interface it uses - so both arms resolve to the interface-agnostic
+  // "Untitled agent" fallback rather than naming the interface.
   const parentTitle = useEpicStore((state) => {
     if (parentId === null) return null;
     if (Object.hasOwn(state.chats.byId, parentId)) {
-      return displayTitle(state.chats.byId[parentId].title, "chat");
+      return displayTitle(state.chats.byId[parentId].title, "agent");
     }
     if (Object.hasOwn(state.tuiAgents.byId, parentId)) {
-      return displayTitle(
-        state.tuiAgents.byId[parentId].title,
-        "terminal-agent",
-      );
+      return displayTitle(state.tuiAgents.byId[parentId].title, "agent");
     }
     return null;
   });
@@ -384,23 +385,30 @@ function NewConversationModalHeader(props: {
     <div className="flex min-w-0 flex-col gap-0.5">
       <div className="flex min-w-0 items-center justify-between">
         <span className="text-sm font-medium text-foreground">
-          {composerMode === "chat"
-            ? "Start a new chat"
-            : "Start a new terminal agent"}
+          Start a new agent
         </span>
         {switcher}
       </div>
-      {isChildChat ? (
-        <span className="truncate text-ui-xs text-muted-foreground">
-          Creating a child {composerMode === "chat" ? "chat" : "terminal agent"}{" "}
-          from {parentTitle ?? displayTitle("", "chat")}
-        </span>
-      ) : null}
+      <span className="truncate text-ui-xs text-muted-foreground">
+        {isChildAgent
+          ? `Child agent of ${parentTitle ?? displayTitle("", "agent")} · ${AGENT_INTERFACE_LABELS[composerMode]} interface`
+          : `${AGENT_INTERFACE_LABELS[composerMode]} interface`}
+      </span>
     </div>
   );
 }
 
-function NewConversationModalBody(props: {
+/**
+ * Interface names for the creation header. Chat and Terminal are how the user
+ * interacts with the new Agent, not what it is - the title above stays
+ * "Start a new agent" for both.
+ */
+const AGENT_INTERFACE_LABELS: Readonly<Record<ComposerMode, string>> = {
+  chat: "Chat",
+  terminal: "Terminal",
+};
+
+export function NewConversationModalBody(props: {
   readonly epicId: string;
   readonly tabId: string;
   readonly placement: ConversationTilePlacement;
@@ -492,9 +500,17 @@ function NewConversationModalBody(props: {
     },
     [epicId, setSettings],
   );
+  // `draftSettings` can fall back to `runSettingsSeed`/`latestSettingsSeed`
+  // (see `useNewConversationModalSeed`), neither of which is host-scoped or
+  // kept in sync with live profile removals - validated against the active
+  // host (this modal always creates there, per its workspace controls below)
+  // via the same machinery `useComposerToolbarStore` runs for every composer
+  // surface. Never authoritative: this modal has no reauth gate of its own,
+  // so a genuinely-removed profile must be corrected to ambient here rather
+  // than silently submitted as the new chat/agent's initial settings.
   const toolbarStore = useComposerToolbarStore(
     null,
-    draftSettings,
+    fallbackSeedSource(draftSettings, hostClient),
     handleToolbarSettingsChange,
     draftComposerMode === "terminal",
   );
@@ -540,17 +556,29 @@ function NewConversationModalBody(props: {
       deriveFolderlessAllowedWorkspaceAvailability(
         resolvedWorkspace.folders,
         resolvedWorkspace.isLoading,
+        resolvedWorkspace.isError,
       ),
-    [resolvedWorkspace.folders, resolvedWorkspace.isLoading],
+    [
+      resolvedWorkspace.folders,
+      resolvedWorkspace.isLoading,
+      resolvedWorkspace.isError,
+    ],
   );
   const workspaceCanStart = workspaceComposerCanStart(workspaceAvailability);
   const draftWorkspaceFolderCount = draftWorkspace.folders.length;
+  const runnerHost = useRunnerHost();
+  const paste = useComposerPaste(editorRef, runnerHost.fileDrops, mentionRoots);
+  const attachmentPending = isAttachmentIngestPending(paste);
   const canSubmit =
-    canMutate && !isSubmitting && workspaceCanStart && hasSubmittableContent;
+    canMutate &&
+    !isSubmitting &&
+    !attachmentPending &&
+    workspaceCanStart &&
+    hasSubmittableContent;
   const composerDisabledHint =
     mutationDisabledHint(permissionRole, isDisconnected, "make changes") ??
     workspaceAvailability.disabledHint;
-  const paste = useComposerPaste(editorRef);
+  const hasPastedImageBytes = useEpicAttachmentBytesPresence();
   const { dictationControl, dictationPreparing } = useComposerDictation({
     editorRef,
     isActive: chatComposerActive,
@@ -561,6 +589,7 @@ function NewConversationModalBody(props: {
       layout="inline"
       workspaceSeed={draftWorkspace}
       seedIntent={latestWorkspaceSeed?.intent ?? null}
+      seedIntentOverride={null}
       hostScope={{ kind: "active" }}
     />
   );
@@ -569,8 +598,8 @@ function NewConversationModalBody(props: {
       type="button"
       aria-label={
         draftComposerMode === "chat"
-          ? "Switch to terminal mode"
-          : "Switch to chat mode"
+          ? "Switch to the Terminal interface"
+          : "Switch to the Chat interface"
       }
       className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-ui-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onClick={() => {
@@ -627,9 +656,18 @@ function NewConversationModalBody(props: {
     // open with no feedback - mirror the landing flow's host-first toast.
     const activeHostId = hostClient.getActiveHostId();
     if (activeHostId === null) {
-      toast.error("Couldn't start the chat.", {
-        description: "No active device. Reconnect and try again.",
-      });
+      reportableErrorToast(
+        "Couldn't start the agent.",
+        {
+          description: "No active device. Reconnect and try again.",
+        },
+        {
+          title: "Could not start agent",
+          message: "No active device was available.",
+          code: null,
+          source: "Chat",
+        },
+      );
       return;
     }
     const content = buildSubmittedChatJSONContent(editor.getJSON());
@@ -707,7 +745,7 @@ function NewConversationModalBody(props: {
             .getState()
             .markFailed(
               { hostId: activeHostId, userId, epicId },
-              "Couldn't create the chat.",
+              "Couldn't create the agent.",
             );
         },
       },
@@ -756,6 +794,7 @@ function NewConversationModalBody(props: {
           worktreeIntent,
           workspaceMode,
           terminalAgentArgs: launch.terminalAgentArgs,
+          profileId: launch.profileId,
         })
         .catch(() => undefined);
     },
@@ -794,8 +833,10 @@ function NewConversationModalBody(props: {
       initialSelection={null}
       canSubmit={canSubmit}
       isSubmitting={isSubmitting}
+      attachmentPending={attachmentPending}
       workspaceDisabledHint={composerDisabledHint}
       header={header}
+      topBanner={null}
       attachmentsStrip={
         <NewConversationModalAttachmentStrip
           epicId={epicId}
@@ -807,6 +848,9 @@ function NewConversationModalBody(props: {
       dictationControl={dictationControl}
       dictationPreparing={dictationPreparing}
       paste={paste}
+      hasPastedImageBytes={hasPastedImageBytes}
+      ingestPastedComposerImages={null}
+      onEditorReady={null}
       onSubmit={handleSubmit}
       onStartTerminal={handleStartTerminal}
       onSnapshot={handleSnapshot}
@@ -943,6 +987,7 @@ function useLatestConversationSettingsSeed(): {
             ? null
             : defaults.defaultServiceTier,
         agentMode: agent.agentMode,
+        profileId: agent.profileId,
         // TUI agents carry no billing context; seed Personal (the store
         // default). The composer lets the user switch before sending.
         accountContext: { type: "PERSONAL" },
@@ -957,6 +1002,7 @@ function useGlobalWorkspaceSnapshot(): LandingDraftWorkspaceSnapshot {
     useShallow((state) => ({
       folders: state.folders,
       folderInfoByPath: state.folderInfoByPath,
+      primaryPath: state.primaryPath,
     })),
   );
 }
@@ -974,68 +1020,4 @@ function toTuiPlacement(
     return { kind: "target-group", groupId: placement.groupId };
   }
   return { kind: "active-tile" };
-}
-
-function effectiveWorktreeIntent(input: {
-  readonly workspace: LandingDraftWorkspaceSnapshot;
-  readonly seedIntent: WorktreeIntent | null;
-  readonly stagedIntent: WorktreeIntent | null;
-}): WorktreeIntent | null {
-  const fallback =
-    input.seedIntent ??
-    buildForkWorkspaceSeedFromWorkspaceFolders(input.workspace.folders).intent;
-  if (input.stagedIntent === null) {
-    return trimIntentToWorkspace(input.workspace, fallback);
-  }
-  const fallbackByPath = intentEntriesByWorkspacePath(fallback);
-  const stagedByPath = intentEntriesByWorkspacePath(input.stagedIntent);
-  const entries = input.workspace.folders.flatMap((workspacePath, index) => {
-    const entry =
-      stagedByPath.get(workspacePath) ?? fallbackByPath.get(workspacePath);
-    if (entry === undefined) {
-      return localIntentEntry(input.workspace, workspacePath, index);
-    }
-    return [{ ...entry, isPrimary: index === 0 }];
-  });
-  return entries.length === 0 ? null : { entries };
-}
-
-function trimIntentToWorkspace(
-  workspace: LandingDraftWorkspaceSnapshot,
-  intent: WorktreeIntent | null,
-): WorktreeIntent | null {
-  const intentByPath = intentEntriesByWorkspacePath(intent);
-  const entries = workspace.folders.flatMap((workspacePath, index) => {
-    const entry = intentByPath.get(workspacePath);
-    if (entry === undefined) {
-      return localIntentEntry(workspace, workspacePath, index);
-    }
-    return [{ ...entry, isPrimary: index === 0 }];
-  });
-  return entries.length === 0 ? null : { entries };
-}
-
-function localIntentEntry(
-  workspace: LandingDraftWorkspaceSnapshot,
-  workspacePath: string,
-  index: number,
-): WorktreeFolderIntent[] {
-  if (!Object.hasOwn(workspace.folderInfoByPath, workspacePath)) return [];
-  const folder = workspace.folderInfoByPath[workspacePath];
-  return [
-    {
-      kind: "local",
-      workspacePath,
-      repoIdentifier: folder.repoIdentifier,
-      isPrimary: index === 0,
-    },
-  ];
-}
-
-function intentEntriesByWorkspacePath(
-  intent: WorktreeIntent | null,
-): ReadonlyMap<string, WorktreeFolderIntent> {
-  return new Map(
-    intent?.entries.map((entry) => [entry.workspacePath, entry]) ?? [],
-  );
 }
