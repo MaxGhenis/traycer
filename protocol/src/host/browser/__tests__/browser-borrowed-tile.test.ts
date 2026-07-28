@@ -76,10 +76,17 @@ describe("browser.sessions@1.4 borrowed-tile attachment frames", () => {
     ).toBe(true);
   });
 
-  it("advertises 1.4 as the negotiated latest minor with 1.0-1.3 still installed", () => {
+  it("advertises 1.5 as the negotiated latest minor with 1.0-1.4 still installed", () => {
     const line = hostStreamRpcRegistry["browser.sessions"][1];
-    expect(line.latestMinor).toBe(4);
-    expect(Object.keys(line.versions).sort()).toEqual(["0", "1", "2", "3", "4"]);
+    expect(line.latestMinor).toBe(5);
+    expect(Object.keys(line.versions).sort()).toEqual([
+      "0",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+    ]);
   });
 
   it("adds no tile enumeration frame - the agent reaches the tile the user named and nothing else", () => {
