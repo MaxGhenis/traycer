@@ -87,6 +87,23 @@ must be added in BOTH places - the route file under `src/routes/` AND the modal
     chord's mid-turn-steering semantics - stays out of Keybindings, which is
     for rebinding), Pin context usage breakdown (global toggle for the
     always-visible agent context-window breakdown, default off).
+  - **Browser (beta)**: In-app browser (beta) (`inAppBrowserBetaEnabled`,
+    default off - master toggle for browser tiles and default link routing),
+    Web link default + per-kind terminal/markdown link open-mode selects
+    (disabled until the master toggle is on), and a conditional Detected dev
+    origins row. The master toggle's `SettingsRow` carries a standing `risk`
+    paragraph (always rendered, distinct from the conditional `hint` used
+    for the mock-keychain restart notice below it) disclosing that the agent
+    can run code on an attached tab's page - reading or doing anything the
+    user could there - and, because every in-app browser tab shares one
+    `persist:traycer-browser` partition and `browser-repl-api.ts`'s
+    `navigate()` performs no origin check (`authorizeBrowserAction` in
+    `browser-origin-policy.ts` has zero production callers - origin tier is
+    metadata only), the agent can navigate to and act on any other site the
+    user is logged into in that shared browser, not only the tab attached -
+    per ticket 11 and v3's "accepted blast radius": this is the one place
+    that risk is surfaced to the user, so the copy must not be softened or
+    hidden behind an expander.
   - **Running agents**: Prevent sleep while running, Show global resources
     button, Show navigator resource stats (these stay out of Appearance -
     they change information visibility, not styling).

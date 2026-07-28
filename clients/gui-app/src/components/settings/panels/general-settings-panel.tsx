@@ -250,6 +250,7 @@ export function GeneralSettingsPanel() {
           <SettingsRow
             label="In-app browser (beta)"
             description="Enable browser tiles and route web links into Traycer by default."
+            risk="When you attach a tab open in the in-app browser, the agent can run code on that page - it can do or read anything you could there, and act as you on it. Because every in-app browser tab shares one logged-in session, this reaches further than the tab you attached: the agent can navigate to any other site you're logged into in Traycer's browser and act there too. The agent gets this access only when you explicitly attach a tab - never on its own, and never to a tab you haven't attached. Nothing in Traycer stops this, and it isn't a rare case - reading page content is how the agent works, every time. It never applies to the agent's own browser, which holds none of your logins."
             hint={
               inAppBrowserBetaEnabled &&
               browserCookieCryptoState?.reason === "mock-keychain"
