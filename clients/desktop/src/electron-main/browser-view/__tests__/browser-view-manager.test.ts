@@ -1208,6 +1208,73 @@ describe("BrowserViewManager", () => {
     expect(view.webContents.closeCalls).toBe(1);
   });
 
+  it("ends CDP access synchronously on releaseTile, not only once the grace period tears the view down", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    const view = harness.views[0];
+    view.webContents.emit(
+      "did-frame-navigate",
+      {},
+      "http://localhost:3000",
+      200,
+      "OK",
+      true,
+    );
+    await Promise.resolve();
+    expect(view.webContents.debugger.attached).toBe(true);
+
+    harness.manager.releaseTile("window-1", BASE_KEY);
+
+    // The debugger must already be detached before any part of the grace
+    // period elapses - "released" and "still drivable via CDP" must never
+    // both be true, even for the 10ms this harness's `releaseGraceMs`
+    // configures. The webContents itself is not torn down yet (that is
+    // still deferred to the grace period, so a fast release+reclaim can
+    // reuse it), only the CDP access ends immediately.
+    expect(view.webContents.debugger.detached).toBe(true);
+    expect(view.webContents.closeCalls).toBe(0);
+  });
+
+  it("re-arms the debug session when a released tile is reclaimed within the grace period", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    const view = harness.views[0];
+    view.webContents.emit(
+      "did-frame-navigate",
+      {},
+      "http://localhost:3000",
+      200,
+      "OK",
+      true,
+    );
+    await Promise.resolve();
+    expect(view.webContents.debugger.attached).toBe(true);
+
+    harness.manager.releaseTile("window-1", BASE_KEY);
+    expect(view.webContents.debugger.detached).toBe(true);
+
+    vi.advanceTimersByTime(5);
+    // Reclaimed with the SAME url, so nothing navigates and no commit event
+    // fires - re-arming CDP access can only come from the reclaim path
+    // itself, which is exactly what this pins.
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    await Promise.resolve();
+
+    expect(view.webContents.debugger.attached).toBe(true);
+
+    vi.advanceTimersByTime(10);
+    expect(view.webContents.closeCalls).toBe(0);
+  });
+
   it("ignores subframe in-page navigations when projecting tile URL", () => {
     const harness = createHarness();
     harness.manager.upsertTile(
@@ -2195,6 +2262,41 @@ describe("BrowserViewManager CDP dispatch", () => {
       }),
     );
     expect(result).toMatchObject({ kind: "cdpEvaluate", ok: true });
+  });
+
+  it("enriches a generic 'Uncaught' cdpEvaluate exception with the page's own error text", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    view.webContents.debugger.deferCommands = true;
+
+    const pending = harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: {
+        kind: "cdpEvaluate",
+        expression: "(() => { throw new Error('page-boom') })()",
+        awaitPromise: false,
+        returnByValue: true,
+        contextId: null,
+      },
+    });
+    // A bare "Uncaught" loses the page's own error text; the model needs the
+    // real reason from `exception.description`, not the generic CDP
+    // placeholder that `exceptionDetails.text` alone carries here.
+    view.webContents.debugger.commandResolvers.at(-1)?.({
+      exceptionDetails: {
+        text: "Uncaught",
+        exception: { description: "Error: page-boom\n    at <anonymous>:1:7" },
+      },
+    });
+    const result = await pending;
+
+    expect(result).toMatchObject({
+      kind: "cdpEvaluate",
+      ok: true,
+      exceptionDescription:
+        "Uncaught: Error: page-boom\n    at <anonymous>:1:7",
+    });
   });
 
   it("dispatches cdpDispatchMouseEvent as Input.dispatchMouseEvent", async () => {

@@ -561,6 +561,18 @@ export class BrowserViewManager {
     this.endPickerSession(entry);
     entry.desiredVisible = false;
     entry.view.setVisible(false);
+    // End CDP access now, synchronously, rather than leaving it to
+    // `closeEntry()` at the end of the grace period below. "Released" and
+    // "still drivable via CDP" must never both be true (v3's detach-ends-
+    // access property; this method is one of its own two documented
+    // revocation paths alongside `revokeControl`) - `releaseTile` used to
+    // resolve on the caller's side while the debugger stayed attached for
+    // the full `releaseGraceMs` window, so a caller that treated "released"
+    // as "access has ended" was wrong for up to `releaseGraceMs`.
+    // `dispose()` is idempotent, so a second `releaseTile` while a release
+    // is already pending below is a no-op here.
+    entry.debugSession?.dispose();
+    entry.debugSession = null;
     if (this.releaseTimersByKey.has(keyId)) return;
     const timer = setTimeout(() => {
       this.releaseTimersByKey.delete(keyId);
@@ -1224,6 +1236,15 @@ export class BrowserViewManager {
         return released === entry;
       },
     );
+    if (candidates.length > 0) {
+      // The entry was mid-release: `releaseTile` already detached its CDP
+      // access (see there) and cleared `entry.debugSession`, ahead of the
+      // grace-period `closeEntry()` this cancels. Re-arm it the same way a
+      // first commit does - nothing else will if `upsertTile` reuses the
+      // same URL, since that path only navigates (and so only re-triggers
+      // `enableDebugAfterCommit` via a commit event) when the URL changes.
+      this.enableDebugAfterCommit(entry);
+    }
     for (const [keyId, timer] of candidates) {
       clearTimeout(timer);
       this.releaseTimersByKey.delete(keyId);
@@ -2710,10 +2731,38 @@ function remoteObjectResult(
     resultJson: result === null ? null : (result.value ?? null),
     objectId: result === null ? null : stringOrNull(result.objectId),
     exceptionDescription:
-      exceptionDetails === null
-        ? null
-        : (stringOrNull(exceptionDetails.text) ?? "Uncaught exception"),
+      exceptionDetails === null ? null : describeException(exceptionDetails),
   };
+}
+
+/**
+ * `exceptionDetails.text` alone is a generic CDP placeholder ("Uncaught" /
+ * "Uncaught (in promise)") whenever the thrown/rejected value isn't itself an
+ * `Error` with a message baked into that placeholder - a syntax error's real
+ * reason lives only in `exceptionDetails.exception.description`, and a
+ * rejected primitive (`Promise.reject("boom")`) has no `description` at all
+ * and would otherwise vanish entirely behind the bare placeholder. Enriching
+ * only when `text` is one of the known-generic placeholders leaves the
+ * already-informative case (a thrown `Error`, whose `text` already includes
+ * its message) untouched. Mirrors `traycer-host`'s
+ * `playwright-cdp-dispatch.ts`'s `describeException` for the same CDP shape
+ * on the other runtime - kept as a parallel implementation rather than a
+ * shared one, per this module's cross-repo boundary with `traycer-host`.
+ */
+const GENERIC_EXCEPTION_TEXT = new Set(["Uncaught", "Uncaught (in promise)"]);
+
+function describeException(exceptionDetails: Record<string, unknown>): string {
+  const text = stringOrNull(exceptionDetails.text) ?? "Uncaught exception";
+  if (!GENERIC_EXCEPTION_TEXT.has(text)) return text;
+  const exception = isRecord(exceptionDetails.exception)
+    ? exceptionDetails.exception
+    : null;
+  if (exception === null) return text;
+  const description = stringOrNull(exception.description);
+  if (description !== null) return `${text}: ${description}`;
+  if ("value" in exception)
+    return `${text}: ${JSON.stringify(exception.value)}`;
+  return text;
 }
 
 function flattenFrameTree(value: unknown): AgentBrowserViewCdpFrameInfo[] {
