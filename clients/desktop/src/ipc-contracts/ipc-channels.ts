@@ -340,7 +340,9 @@ export const RunnerHostEvent = {
   agentBrowserViewCdpTargetAttached:
     "runnerHost:event:agentBrowserView:cdp:targetAttached",
   // Ticket 12 / ticket 08's interaction-signal draft. Fired once per native
-  // `before-input-event`/`input-event` on the agent's own tile.
+  // `before-input-event` (keyboard only) on the agent's own tile - not
+  // `input-event`, which a live probe proved also fires for CDP-dispatched
+  // input.
   agentBrowserViewCdpInteractionObserved:
     "runnerHost:event:agentBrowserView:cdp:interactionObserved",
   // Ticket 12 / ticket 10's design. Fired once, just before the agent tile

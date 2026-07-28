@@ -756,11 +756,15 @@ export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
   z.object({
     // Ticket 12 / ticket 08's interaction-signal draft
     // (`08-concurrency-properties/interaction-signal-protocol-draft`). Pushed
-    // once per native `before-input-event`/`input-event` firing on an
-    // Electron tile - CDP's `Input.dispatchMouseEvent`/`dispatchKeyEvent`
-    // never reach those listeners, which is exactly what lets this
-    // discriminate real user input from agent-dispatched input the DOM's own
-    // `isTrusted` cannot (both report `isTrusted: true`). Electron-only by
+    // once per native `before-input-event` firing on an Electron tile
+    // (keyboard only - a live probe on ticket 18's pass proved `input-event`
+    // also fires for CDP-dispatched input, so it is deliberately not a
+    // source; see `pushCdpInteractionObserved`'s doc comment,
+    // `browser-view-manager.ts`, desktop side). CDP's
+    // `Input.dispatchMouseEvent`/`dispatchKeyEvent` never reach
+    // `before-input-event`, which is exactly what lets this discriminate
+    // real user input from agent-dispatched input the DOM's own `isTrusted`
+    // cannot (both report `isTrusted: true`). Electron-only by
     // construction: headless Playwright has no physical user to observe, so
     // there is no equivalent push there - see `browser-action-epoch.ts`'s
     // "not applicable", distinct from "unimplemented".

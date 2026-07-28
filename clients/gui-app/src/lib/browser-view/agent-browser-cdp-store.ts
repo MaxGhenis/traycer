@@ -142,9 +142,11 @@ export function notifyAgentBrowserCdpTargetAttached(
  * Ticket 12 / ticket 08's interaction-signal draft. Same best-effort caveat
  * as `notifyAgentBrowserCdpSessionEnded`: a tile with no captured
  * `sendFrame` yet has nothing to push through. Unlike detach, a missed push
- * here is not a correctness gap either - real user input keeps firing
- * `before-input-event`/`input-event` on every subsequent keystroke, so a
- * missed one only delays the epoch bump, it never fabricates one.
+ * here is not a correctness gap either - real user *typing* keeps firing
+ * `before-input-event` on every subsequent keystroke (a live probe proved
+ * `input-event` is not a safe source - see `pushCdpInteractionObserved`'s
+ * doc comment on the desktop side), so a missed one only delays the epoch
+ * bump, it never fabricates one.
  */
 export function notifyAgentBrowserCdpInteractionObserved(
   tileInstanceId: string,
