@@ -1238,6 +1238,36 @@ describe("BrowserViewManager", () => {
     expect(view.webContents.closeCalls).toBe(0);
   });
 
+  it("rejects dispatchCdp with not_attached immediately after releaseTile, while the view is still open", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    expect(view.webContents.debugger.attached).toBe(true);
+
+    harness.manager.releaseTile("window-1", BASE_KEY);
+
+    // Stronger than checking debugger.detached alone: the public dispatch
+    // gate must refuse access the moment release returns, even though the
+    // webContents is still alive for the grace window (closeCalls still 0).
+    // That is the property a caller relying on "released means undrivable"
+    // actually needs.
+    const result = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: { kind: "cdpGetFrameTree" },
+    });
+
+    expect(result).toEqual({
+      kind: "cdpGetFrameTree",
+      ok: false,
+      error: {
+        kind: "not_attached",
+        message: "Agent browser tile's debugger is not attached.",
+        code: null,
+      },
+    });
+    expect(view.webContents.closeCalls).toBe(0);
+  });
+
   it("re-arms the debug session when a released tile is reclaimed within the grace period", async () => {
     const harness = createHarness();
     harness.manager.upsertTile(
@@ -2296,6 +2326,40 @@ describe("BrowserViewManager CDP dispatch", () => {
       ok: true,
       exceptionDescription:
         "Uncaught: Error: page-boom\n    at <anonymous>:1:7",
+    });
+  });
+
+  it("enriches a generic 'Uncaught (in promise)' with the rejected value when there is no description", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    view.webContents.debugger.deferCommands = true;
+
+    const pending = harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: {
+        kind: "cdpEvaluate",
+        expression: "Promise.reject('boom')",
+        awaitPromise: true,
+        returnByValue: true,
+        contextId: null,
+      },
+    });
+    // Rejected primitives have no `exception.description` - without the
+    // value fallback they vanish behind the bare placeholder (mirrors the
+    // host-side playwright-cdp-dispatch enrichment for the same CDP shape).
+    view.webContents.debugger.commandResolvers.at(-1)?.({
+      exceptionDetails: {
+        text: "Uncaught (in promise)",
+        exception: { value: "boom" },
+      },
+    });
+    const result = await pending;
+
+    expect(result).toMatchObject({
+      kind: "cdpEvaluate",
+      ok: true,
+      exceptionDescription: 'Uncaught (in promise): "boom"',
     });
   });
 
