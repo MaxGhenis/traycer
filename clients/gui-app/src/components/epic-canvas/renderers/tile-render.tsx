@@ -105,8 +105,13 @@ const TILE_RENDERERS: TileRendererRegistry = {
       isActive={isActive}
     />
   ),
-  browser: ({ node, viewTabId, tileId }) => (
-    <BrowserTile node={node} viewTabId={viewTabId} paneId={tileId} />
+  browser: ({ node, viewTabId, tileId, epicId }) => (
+    <BrowserTile
+      node={node}
+      viewTabId={viewTabId}
+      paneId={tileId}
+      epicId={epicId}
+    />
   ),
   "browser-peek": ({ node }) => <BrowserPeekTile node={node} />,
   "agent-browser": ({ node, viewTabId, tileId }) => (

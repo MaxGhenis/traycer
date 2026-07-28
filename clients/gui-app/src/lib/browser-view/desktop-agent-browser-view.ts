@@ -186,6 +186,14 @@ export interface AgentBrowserViewCdpTargetAttachedChange extends BrowserViewTile
   readonly waitingForDebugger: boolean;
 }
 
+export type AgentBrowserViewCdpInteractionObservedChange = BrowserViewTileKey;
+
+export interface AgentBrowserViewTileHandoffChange extends BrowserViewTileKey {
+  readonly capturedUrl: string;
+  readonly capturedStorageState: unknown;
+  readonly reason: "gui-quit" | "tile-released" | "crash-no-capture";
+}
+
 export interface DesktopAgentBrowserViewBridge {
   upsertTile(input: AgentBrowserViewTileUpsert): Promise<void>;
   updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
@@ -204,6 +212,14 @@ export interface DesktopAgentBrowserViewBridge {
   onCdpTargetAttached(
     handler: (change: AgentBrowserViewCdpTargetAttachedChange) => void,
   ): {
+    dispose: () => void;
+  };
+  onCdpInteractionObserved(
+    handler: (change: AgentBrowserViewCdpInteractionObservedChange) => void,
+  ): {
+    dispose: () => void;
+  };
+  onTileHandoff(handler: (change: AgentBrowserViewTileHandoffChange) => void): {
     dispose: () => void;
   };
 }
@@ -227,6 +243,8 @@ const REQUIRED_AGENT_BROWSER_VIEW_BRIDGE_METHODS = [
   "dispatchCdp",
   "onCdpSessionEnded",
   "onCdpTargetAttached",
+  "onCdpInteractionObserved",
+  "onTileHandoff",
 ] satisfies readonly (keyof DesktopAgentBrowserViewBridge)[];
 
 export function resolveDesktopAgentBrowserViewBridge(
@@ -249,6 +267,10 @@ export function resolveDesktopAgentBrowserViewBridge(
       readDisposable(methods.onCdpSessionEnded.call(value, handler)),
     onCdpTargetAttached: (handler) =>
       readDisposable(methods.onCdpTargetAttached.call(value, handler)),
+    onCdpInteractionObserved: (handler) =>
+      readDisposable(methods.onCdpInteractionObserved.call(value, handler)),
+    onTileHandoff: (handler) =>
+      readDisposable(methods.onTileHandoff.call(value, handler)),
   };
 }
 
@@ -273,6 +295,11 @@ function readAgentBrowserViewBridgeMethods(
     dispatchCdp: readBridgeMethod(value, "dispatchCdp"),
     onCdpSessionEnded: readBridgeMethod(value, "onCdpSessionEnded"),
     onCdpTargetAttached: readBridgeMethod(value, "onCdpTargetAttached"),
+    onCdpInteractionObserved: readBridgeMethod(
+      value,
+      "onCdpInteractionObserved",
+    ),
+    onTileHandoff: readBridgeMethod(value, "onTileHandoff"),
   };
 }
 

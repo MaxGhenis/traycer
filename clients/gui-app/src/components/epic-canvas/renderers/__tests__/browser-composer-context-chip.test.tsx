@@ -429,5 +429,7 @@ function createFakeBridge(): FakeBridge {
     ),
     onCdpSessionEnded: vi.fn(() => ({ dispose: () => undefined })),
     onCdpTargetAttached: vi.fn(() => ({ dispose: () => undefined })),
+    onCdpInteractionObserved: vi.fn(() => ({ dispose: () => undefined })),
+    onTileHandoff: vi.fn(() => ({ dispose: () => undefined })),
   };
 }

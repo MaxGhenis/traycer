@@ -6,9 +6,11 @@ import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
 // second one on this bridge, and they are erased at build time either way.
 import type {
   AgentBrowserViewCdpDispatch,
+  AgentBrowserViewCdpInteractionObservedChange,
   AgentBrowserViewCdpResult,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
+  AgentBrowserViewTileHandoffChange,
 } from "./desktop-agent-browser-view";
 
 export interface BrowserViewTileKey {
@@ -465,6 +467,14 @@ export interface DesktopBrowserViewBridge {
   ): {
     dispose: () => void;
   };
+  onCdpInteractionObserved(
+    handler: (change: AgentBrowserViewCdpInteractionObservedChange) => void,
+  ): {
+    dispose: () => void;
+  };
+  onTileHandoff(handler: (change: AgentBrowserViewTileHandoffChange) => void): {
+    dispose: () => void;
+  };
   onControlRevoked(
     handler: (change: BrowserViewControlRevokedChange) => void,
   ): {
@@ -609,6 +619,11 @@ function readBrowserViewBridgeMethods(
     dispatchCdp: readBridgeMethod(value, "dispatchCdp"),
     onCdpSessionEnded: readBridgeMethod(value, "onCdpSessionEnded"),
     onCdpTargetAttached: readBridgeMethod(value, "onCdpTargetAttached"),
+    onCdpInteractionObserved: readBridgeMethod(
+      value,
+      "onCdpInteractionObserved",
+    ),
+    onTileHandoff: readBridgeMethod(value, "onTileHandoff"),
   };
 }
 
@@ -819,11 +834,17 @@ function createBrowserViewSubscriptionBridge(
       readBridgeSubscription(value, methods.onCdpSessionEnded, handler),
     onCdpTargetAttached: (handler) =>
       readBridgeSubscription(value, methods.onCdpTargetAttached, handler),
+    onCdpInteractionObserved: (handler) =>
+      readBridgeSubscription(value, methods.onCdpInteractionObserved, handler),
+    onTileHandoff: (handler) =>
+      readBridgeSubscription(value, methods.onTileHandoff, handler),
   } satisfies Pick<
     DesktopBrowserViewBridge,
     | "dispatchCdp"
     | "onCdpSessionEnded"
     | "onCdpTargetAttached"
+    | "onCdpInteractionObserved"
+    | "onTileHandoff"
     | "onStatusChange"
     | "onFindChange"
     | "onDownloadChange"

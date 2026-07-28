@@ -320,6 +320,11 @@ export const RunnerHostEvent = {
   browserViewCdpSessionEnded: "runnerHost:event:browserView:cdp:sessionEnded",
   browserViewCdpTargetAttached:
     "runnerHost:event:browserView:cdp:targetAttached",
+  // Ticket 12. Interaction-epoch signal and tile-teardown handoff, borrowed-
+  // tile counterparts of the agent-tile events below.
+  browserViewCdpInteractionObserved:
+    "runnerHost:event:browserView:cdp:interactionObserved",
+  browserViewTileHandoff: "runnerHost:event:browserView:tileHandoff",
   agentBrowserViewStatusChange:
     "runnerHost:event:agentBrowserView:statusChange",
   // Fired the moment the agent tile's CDP debugger detaches for a reason
@@ -334,6 +339,13 @@ export const RunnerHostEvent = {
   // to the host.
   agentBrowserViewCdpTargetAttached:
     "runnerHost:event:agentBrowserView:cdp:targetAttached",
+  // Ticket 12 / ticket 08's interaction-signal draft. Fired once per native
+  // `before-input-event`/`input-event` on the agent's own tile.
+  agentBrowserViewCdpInteractionObserved:
+    "runnerHost:event:agentBrowserView:cdp:interactionObserved",
+  // Ticket 12 / ticket 10's design. Fired once, just before the agent tile
+  // dies for any teardown reason, carrying captured `{url, storageState}`.
+  agentBrowserViewTileHandoff: "runnerHost:event:agentBrowserView:tileHandoff",
   globalShortcutsChange: "runnerHost:event:globalShortcuts:change",
 } as const;
 

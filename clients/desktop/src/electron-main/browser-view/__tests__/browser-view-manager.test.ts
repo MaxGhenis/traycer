@@ -11,8 +11,10 @@ import {
   type ManagedContentView,
 } from "../browser-view-manager";
 import type {
+  AgentBrowserViewCdpInteractionObservedChange,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
+  AgentBrowserViewTileHandoffChange,
   BrowserViewCertificateErrorChange,
   BrowserViewDebugSnapshotChange,
   BrowserViewDownloadChange,
@@ -466,6 +468,9 @@ function createHarness(): Harness {
     [];
   const cdpTargetAttachedNotifications: AgentBrowserViewCdpTargetAttachedChange[] =
     [];
+  const cdpInteractionObservedNotifications: AgentBrowserViewCdpInteractionObservedChange[] =
+    [];
+  const tileHandoffNotifications: AgentBrowserViewTileHandoffChange[] = [];
   const snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[] = [];
   const storageStateApplications: BrowserViewStorageStateApply[] = [];
   const storageStateCaptures: BrowserViewStorageStateCapture[] = [];
@@ -542,6 +547,12 @@ function createHarness(): Harness {
     },
     notifyCdpTargetAttached: (_windowId, change) => {
       cdpTargetAttachedNotifications.push(change);
+    },
+    notifyCdpInteractionObserved: (_windowId, change) => {
+      cdpInteractionObservedNotifications.push(change);
+    },
+    notifyTileHandoff: (_windowId, change) => {
+      tileHandoffNotifications.push(change);
     },
     scheduleDebugSnapshot: (callback) => {
       const timer = setTimeout(callback, 16);
@@ -629,7 +640,7 @@ describe("BrowserViewManager", () => {
     expect(harness.storageStateApplications).toEqual([{ storageState }]);
   });
 
-  it("closes webContents after a released tile is not claimed again", () => {
+  it("closes webContents after a released tile is not claimed again", async () => {
     const harness = createHarness();
     harness.manager.upsertTile(
       "window-1",
@@ -650,6 +661,13 @@ describe("BrowserViewManager", () => {
     expect(view.webContents.closeCalls).toBe(0);
 
     vi.advanceTimersByTime(1);
+    // Ticket 12: `closeEntry` awaits the tile-teardown handoff capture
+    // (`pushTileHandoff` -> `captureHandoffStorageState` ->
+    // `captureStorageStateFromBrowser`) before tearing the webContents
+    // down, so the timer firing alone no longer settles it synchronously.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     expect(view.webContents.closeCalls).toBe(1);
     expect(harness.windows.get("window-1")?.contentView.children).toEqual([]);
   });
@@ -1203,6 +1221,11 @@ describe("BrowserViewManager", () => {
 
     harness.manager.releaseTile("window-1", BASE_KEY);
     vi.advanceTimersByTime(10);
+    // Ticket 12: see the equivalent comment in "closes webContents after a
+    // released tile is not claimed again" above.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(view.webContents.debugger.detached).toBe(true);
     expect(view.webContents.closeCalls).toBe(1);
@@ -1643,6 +1666,10 @@ describe("BrowserViewManager", () => {
     const beforeReleaseStatusCount = harness.statuses.length;
     harness.manager.releaseTile("window-1", BASE_KEY);
     vi.advanceTimersByTime(10);
+    // Ticket 12: see the equivalent comment in "closes webContents after a
+    // released tile is not claimed again" above.
+    await Promise.resolve();
+    await Promise.resolve();
     await Promise.resolve();
 
     expect(harness.views[0].webContents.closeCalls).toBe(1);

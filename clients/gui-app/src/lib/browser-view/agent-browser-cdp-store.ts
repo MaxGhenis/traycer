@@ -138,6 +138,57 @@ export function notifyAgentBrowserCdpTargetAttached(
   });
 }
 
+/**
+ * Ticket 12 / ticket 08's interaction-signal draft. Same best-effort caveat
+ * as `notifyAgentBrowserCdpSessionEnded`: a tile with no captured
+ * `sendFrame` yet has nothing to push through. Unlike detach, a missed push
+ * here is not a correctness gap either - real user input keeps firing
+ * `before-input-event`/`input-event` on every subsequent keystroke, so a
+ * missed one only delays the epoch bump, it never fabricates one.
+ */
+export function notifyAgentBrowserCdpInteractionObserved(
+  tileInstanceId: string,
+): void {
+  const sendFrame = sendFrameByTileInstanceId.get(tileInstanceId);
+  if (sendFrame === undefined) return;
+  sendFrame({
+    kind: "cdpInteractionObserved",
+    hasBinaryPayload: false,
+    requestId: crypto.randomUUID(),
+    tileInstanceId,
+  });
+}
+
+/**
+ * Ticket 12 / ticket 10's design. Same best-effort caveat as the other two
+ * notifiers above: pushed just before the tile dies, so a tile that never
+ * had a request published (never dispatched anything) has no captured
+ * `sendFrame` to push the handoff through either. The host's
+ * `reclaimUnreachableTileSession` TTL path is the fallback for exactly this
+ * case - a session with nothing to hand off is reaped, not left orphaned.
+ */
+export function notifyAgentBrowserTileHandoff(
+  tileInstanceId: string,
+  handoff: {
+    readonly capturedUrl: string;
+    readonly capturedStorageState: unknown;
+    readonly reason: "gui-quit" | "tile-released" | "crash-no-capture";
+  },
+): void {
+  const sendFrame = sendFrameByTileInstanceId.get(tileInstanceId);
+  if (sendFrame === undefined) return;
+  sendFrame({
+    kind: "tileHandoff",
+    hasBinaryPayload: false,
+    requestId: crypto.randomUUID(),
+    tileInstanceId,
+    capturedUrl: handoff.capturedUrl,
+    capturedStorageState:
+      handoff.capturedStorageState as BrowserCdpResultJsonValue,
+    reason: handoff.reason,
+  });
+}
+
 export function resetAgentBrowserCdpStoreForTests(): void {
   handlerByTileInstanceId.clear();
   sendFrameByTileInstanceId.clear();

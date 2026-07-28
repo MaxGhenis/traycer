@@ -160,6 +160,20 @@ export function registerBrowserViewIpc(bridge: RunnerIpcBridge): void {
         change,
       );
     },
+    notifyCdpInteractionObserved: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.browserViewCdpInteractionObserved,
+        change,
+      );
+    },
+    notifyTileHandoff: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.browserViewTileHandoff,
+        change,
+      );
+    },
     scheduleDebugSnapshot: scheduleBrowserViewDebugSnapshot,
     applyStorageState: applyBrowserViewStorageState,
     captureStorageState: captureBrowserViewStorageState,

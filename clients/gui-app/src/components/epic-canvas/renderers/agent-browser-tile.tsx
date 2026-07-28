@@ -9,8 +9,10 @@ import {
 import type { BrowserViewStatus } from "@/lib/browser-view/desktop-browser-view";
 import {
   buildCdpResultFrame,
+  notifyAgentBrowserCdpInteractionObserved,
   notifyAgentBrowserCdpSessionEnded,
   notifyAgentBrowserCdpTargetAttached,
+  notifyAgentBrowserTileHandoff,
   registerAgentBrowserCdpHandler,
 } from "@/lib/browser-view/agent-browser-cdp-store";
 import { PANEL_RESIZING_CLASS_NAME } from "@/lib/layout/panel-resizing-class";
@@ -138,6 +140,32 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     const subscription = browserView.onCdpTargetAttached((change) => {
       if (!isChangeForTile(change, tileKey)) return;
       notifyAgentBrowserCdpTargetAttached(change.tileInstanceId, change);
+    });
+    return () => {
+      subscription.dispose();
+    };
+  }, [browserView, tileKey]);
+
+  useEffect(() => {
+    if (browserView === null) return;
+    const subscription = browserView.onCdpInteractionObserved((change) => {
+      if (!isChangeForTile(change, tileKey)) return;
+      notifyAgentBrowserCdpInteractionObserved(change.tileInstanceId);
+    });
+    return () => {
+      subscription.dispose();
+    };
+  }, [browserView, tileKey]);
+
+  useEffect(() => {
+    if (browserView === null) return;
+    const subscription = browserView.onTileHandoff((change) => {
+      if (!isChangeForTile(change, tileKey)) return;
+      notifyAgentBrowserTileHandoff(change.tileInstanceId, {
+        capturedUrl: change.capturedUrl,
+        capturedStorageState: change.capturedStorageState,
+        reason: change.reason,
+      });
     });
     return () => {
       subscription.dispose();

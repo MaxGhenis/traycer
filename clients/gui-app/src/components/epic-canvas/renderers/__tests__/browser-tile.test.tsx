@@ -52,9 +52,11 @@ import type {
 } from "@/lib/browser-view/desktop-browser-view";
 import type {
   AgentBrowserViewCdpDispatch,
+  AgentBrowserViewCdpInteractionObservedChange,
   AgentBrowserViewCdpResult,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
+  AgentBrowserViewTileHandoffChange,
 } from "@/lib/browser-view/desktop-agent-browser-view";
 import type { TileFindAdapter } from "@/stores/tile-find";
 import { TILE_KIND_BROWSER } from "@/stores/epics/canvas/tile-kinds";
@@ -232,6 +234,12 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
   >();
   private readonly cdpTargetAttachedHandlers = new Set<
     (change: AgentBrowserViewCdpTargetAttachedChange) => void
+  >();
+  private readonly cdpInteractionObservedHandlers = new Set<
+    (change: AgentBrowserViewCdpInteractionObservedChange) => void
+  >();
+  private readonly tileHandoffHandlers = new Set<
+    (change: AgentBrowserViewTileHandoffChange) => void
   >();
 
   constructor(private readonly cryptoState: BrowserCookieCryptoState) {}
@@ -538,8 +546,38 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
     };
   }
 
+  onCdpInteractionObserved(
+    handler: (change: AgentBrowserViewCdpInteractionObservedChange) => void,
+  ): {
+    dispose: () => void;
+  } {
+    this.cdpInteractionObservedHandlers.add(handler);
+    return {
+      dispose: () => {
+        this.cdpInteractionObservedHandlers.delete(handler);
+      },
+    };
+  }
+
+  onTileHandoff(handler: (change: AgentBrowserViewTileHandoffChange) => void): {
+    dispose: () => void;
+  } {
+    this.tileHandoffHandlers.add(handler);
+    return {
+      dispose: () => {
+        this.tileHandoffHandlers.delete(handler);
+      },
+    };
+  }
+
   emitCdpSessionEnded(change: AgentBrowserViewCdpSessionEndedChange): void {
     this.cdpSessionEndedHandlers.forEach((handler) => handler(change));
+  }
+
+  emitCdpInteractionObserved(
+    change: AgentBrowserViewCdpInteractionObservedChange,
+  ): void {
+    this.cdpInteractionObservedHandlers.forEach((handler) => handler(change));
   }
 
   emitStatus(change: BrowserViewStatusChange): void {
@@ -581,7 +619,12 @@ function renderBrowserTile(
 ): void {
   const tile = (
     <TooltipProvider>
-      <BrowserTile node={NODE} viewTabId="view-tab-1" paneId="pane-1" />
+      <BrowserTile
+        node={NODE}
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+      />
     </TooltipProvider>
   );
   if (registerAdapter === null) {

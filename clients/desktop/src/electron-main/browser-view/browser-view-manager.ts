@@ -5,9 +5,11 @@ import type {
   AgentBrowserViewCdpDispatch,
   AgentBrowserViewCdpErrorInfo,
   AgentBrowserViewCdpFrameInfo,
+  AgentBrowserViewCdpInteractionObservedChange,
   AgentBrowserViewCdpResult,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
+  AgentBrowserViewTileHandoffChange,
   BrowserViewBounds,
   BrowserViewBoundsUpdate,
   BrowserViewCapturePageResult,
@@ -259,6 +261,22 @@ export interface BrowserViewManagerOptions {
     windowId: string,
     change: AgentBrowserViewCdpTargetAttachedChange,
   ) => void;
+  // Ticket 12 / ticket 08's interaction-signal draft. Fired once per native
+  // `before-input-event`/`input-event` on the tile - never reached by CDP's
+  // `Input.dispatchMouseEvent`/`dispatchKeyEvent`, which is the property
+  // that makes it the one reliable discriminator between real user input
+  // and agent-dispatched input.
+  readonly notifyCdpInteractionObserved: (
+    windowId: string,
+    change: AgentBrowserViewCdpInteractionObservedChange,
+  ) => void;
+  // Ticket 12 / ticket 10's design. Fired once, just before a tile dies for
+  // any teardown reason, carrying captured `{url, storageState}` so the
+  // host can continue the session headless.
+  readonly notifyTileHandoff: (
+    windowId: string,
+    change: AgentBrowserViewTileHandoffChange,
+  ) => void;
   readonly scheduleDebugSnapshot: (
     callback: () => void,
   ) => BrowserViewScheduledTask;
@@ -437,6 +455,14 @@ export class BrowserViewManager {
     windowId: string,
     change: AgentBrowserViewCdpTargetAttachedChange,
   ) => void;
+  private readonly notifyCdpInteractionObserved: (
+    windowId: string,
+    change: AgentBrowserViewCdpInteractionObservedChange,
+  ) => void;
+  private readonly notifyTileHandoff: (
+    windowId: string,
+    change: AgentBrowserViewTileHandoffChange,
+  ) => void;
   private readonly scheduleDebugSnapshot: (
     callback: () => void,
   ) => BrowserViewScheduledTask;
@@ -482,6 +508,8 @@ export class BrowserViewManager {
     this.notifyControlRevoked = options.notifyControlRevoked;
     this.notifyCdpSessionEnded = options.notifyCdpSessionEnded;
     this.notifyCdpTargetAttached = options.notifyCdpTargetAttached;
+    this.notifyCdpInteractionObserved = options.notifyCdpInteractionObserved;
+    this.notifyTileHandoff = options.notifyTileHandoff;
     this.scheduleDebugSnapshot = options.scheduleDebugSnapshot;
     this.applyStorageStateToBrowser = options.applyStorageState;
     this.captureStorageStateFromBrowser = options.captureStorageState;
@@ -608,7 +636,9 @@ export class BrowserViewManager {
     const timer = setTimeout(() => {
       this.releaseTimersByKey.delete(keyId);
       const releasedEntry = this.entriesByKey.get(keyId);
-      if (releasedEntry !== undefined) this.closeEntry(releasedEntry);
+      if (releasedEntry !== undefined) {
+        void this.closeEntry(releasedEntry, "tile-released");
+      }
     }, this.releaseGraceMs);
     this.releaseTimersByKey.set(keyId, timer);
   }
@@ -1114,7 +1144,7 @@ export class BrowserViewManager {
     }
     this.releaseTimersByKey.clear();
     for (const entry of Array.from(this.entriesByKey.values())) {
-      this.closeEntry(entry);
+      void this.closeEntry(entry, "gui-quit");
     }
     for (const popup of Array.from(this.popupEntriesByWebContentsId.values())) {
       this.closePopupEntry(popup, true);
@@ -1164,6 +1194,7 @@ export class BrowserViewManager {
           this.handleBeforeInputEvent(entry, args);
         },
         inputEvent: () => {
+          this.pushCdpInteractionObserved(entry);
           this.handleNativeUserInput(entry, "user took over");
         },
         contextMenu: () => {
@@ -1402,6 +1433,7 @@ export class BrowserViewManager {
   ): void {
     const input = readBeforeInput(args);
     if (input === null) return;
+    this.pushCdpInteractionObserved(entry);
     this.handleNativeUserInput(entry, "user took over");
     if (!input.modifier) return;
     const step = browserZoomStepForKey(input.key);
@@ -1914,7 +1946,7 @@ export class BrowserViewManager {
     for (const entry of Array.from(this.entriesByKey.values())) {
       const window = this.getWindow(entry.key.windowId);
       if (window === null || window.isDestroyed()) {
-        this.closeEntry(entry);
+        void this.closeEntry(entry, "gui-quit");
         continue;
       }
       this.attachToCurrentWindow(entry);
@@ -1922,16 +1954,37 @@ export class BrowserViewManager {
     }
   }
 
-  private closeEntry(entry: BrowserViewEntry): void {
-    this.destroyDevToolsWindow(entry);
-    this.cancelControl(entry, "browser tile closed", null);
+  private async closeEntry(
+    entry: BrowserViewEntry,
+    handoffReason: AgentBrowserViewTileHandoffChange["reason"],
+  ): Promise<void> {
     const keyId = entryKeyId(entry.key);
+    // Claim this entry synchronously, before the `await` below yields
+    // control: `closeEntry` is now async (the handoff capture needs a live
+    // `webContents`), and every one of its three call sites fires-and-
+    // forgets rather than awaiting, so a second teardown trigger racing the
+    // first (e.g. two window-change events) must not find this entry again
+    // via `entriesByKey` and process it a second time.
+    if (this.entriesByKey.get(keyId) !== entry) return;
     this.entriesByKey.delete(keyId);
     const timer = this.releaseTimersByKey.get(keyId);
     if (timer !== undefined) {
       clearTimeout(timer);
       this.releaseTimersByKey.delete(keyId);
     }
+    this.destroyDevToolsWindow(entry);
+    this.cancelControl(entry, "browser tile closed", null);
+    // Ticket 12 item 2: capture and push before anything below tears the
+    // tile down - `webContents` must still be alive for the capture.
+    // `entry.status === "dead"` means `handleRenderProcessGone` already
+    // fired for this tile (the renderer crashed) - the caller's requested
+    // reason is overridden with "crash-no-capture" regardless of which of
+    // the three teardown paths is processing it now, since a crashed
+    // renderer cannot safely be captured from either way.
+    await this.pushTileHandoff(
+      entry,
+      entry.status === "dead" ? "crash-no-capture" : handoffReason,
+    );
     const window =
       entry.parentWindowId === null
         ? null
@@ -1989,6 +2042,69 @@ export class BrowserViewManager {
 
   private handleNativeUserInput(entry: BrowserViewEntry, reason: string): void {
     this.cancelControl(entry, reason, null);
+  }
+
+  /**
+   * Ticket 12 / ticket 08's interaction-signal draft. Pushes once per native
+   * `before-input-event`/`input-event` firing - deliberately not routed
+   * through `handleNativeUserInput`, which also fires for `context-menu`
+   * and `blur`, neither of which is native user input in the sense this
+   * signal exists for. No coalescing (see the draft's own reasoning): a
+   * rapidly-typing user firing many of these is fine, since the host side
+   * only needs "at least one bump before the next precondition check".
+   */
+  private pushCdpInteractionObserved(entry: BrowserViewEntry): void {
+    this.notifyCdpInteractionObserved(entry.key.windowId, {
+      ...toTileKey(entry.key),
+    });
+  }
+
+  /**
+   * Ticket 12 / ticket 10's design. Captures `{url, storageState}` and
+   * pushes it to the host just before a tile dies, for whatever `reason`
+   * the caller names. Best-effort by construction, same posture already
+   * accepted for `cdpSessionEnded`: a push that is delayed, dropped, or
+   * fails to capture storage still lets the host continue the session
+   * headless at `capturedUrl`, and `reclaimUnreachableTileSession`'s TTL
+   * path is the fallback if the push never arrives at all.
+   */
+  private async pushTileHandoff(
+    entry: BrowserViewEntry,
+    reason: AgentBrowserViewTileHandoffChange["reason"],
+  ): Promise<void> {
+    const capturedStorageState = await this.captureHandoffStorageState(
+      entry,
+      reason,
+    );
+    this.notifyTileHandoff(entry.key.windowId, {
+      ...toTileKey(entry.key),
+      capturedUrl: entry.currentUrl,
+      capturedStorageState,
+      reason,
+    });
+  }
+
+  private async captureHandoffStorageState(
+    entry: BrowserViewEntry,
+    reason: AgentBrowserViewTileHandoffChange["reason"],
+  ): Promise<unknown> {
+    // A crashed renderer cannot safely run `executeJavaScript` for
+    // localStorage, and its webContents state is not trustworthy - honor
+    // "no-capture" in the reason literally rather than attempting one.
+    if (reason === "crash-no-capture") return null;
+    try {
+      const result = await this.captureStorageStateFromBrowser(
+        { ...toTileKey(entry.key), origin: entry.currentUrl },
+        entry.view.webContents,
+      );
+      return result.storageState;
+    } catch {
+      // `entry.currentUrl` is not http(s) (e.g. a fresh "about:blank" tile
+      // never navigated), or the capture raced the teardown it precedes.
+      // Still hand the session off at its URL, just without carried
+      // storage, rather than dropping the whole handoff over this.
+      return null;
+    }
   }
 
   private cancelControl(

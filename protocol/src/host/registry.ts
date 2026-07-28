@@ -261,7 +261,9 @@ import {
   browserSessionsV12,
   browserSessionsV13,
   browserSessionsV14,
+  browserSessionsV15,
 } from "@traycer/protocol/host/browser/contracts";
+import { browserStopAgentActivityV10 } from "@traycer/protocol/host/browser/stop-contract";
 import {
   hostNotificationHooksSave,
   hostNotificationHooksStatus,
@@ -3082,6 +3084,22 @@ const HOST_RPC_REGISTRY_DEFINITION = {
       downgradePathsFromLatest: {},
     },
   },
+  "browser.stopAgentActivity": {
+    // Ticket 12: a new method, not part of the host-v1.0.0 floor channel -
+    // an older host that predates it degrades to unsupported rather than
+    // needing a floor-channel fallback.
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: browserStopAgentActivityV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
   "phase.migrateToEpic": {
     1: {
       latestMinor: 0,
@@ -4742,7 +4760,7 @@ export type HostRpcRegistry = typeof hostRpcRegistry;
  * One manifest per `/stream` WS: `epic.subscribe@1.1`,
  * `chat.subscribe@1.5`, `notifications.subscribe@1.0`,
  * `terminal.subscribe@1.4`, `git.subscribeStatus@1.2`,
- * `browser.sessions@1.4`, `browser.screencast@1.0`,
+ * `browser.sessions@1.5`, `browser.screencast@1.0`,
  * `resources.subscribe@1.3`, `agent.inbox.subscribe@1.0`,
  * `speech.dictate@1.0`, `pr.subscribeListForEpic@1.0`,
  * `pr.subscribeDetail@1.0`, and
@@ -4852,10 +4870,15 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       // one request/result frame pair per enumerated CDP method, plus a
       // `cdpSessionEnded` push when the tile's debugger detaches.
       // @1.4 (ticket 09) adds borrowed-tile attachment lifetime frames
-      // (`borrowedTileAttached` / `borrowedTileDetached` /
-      // `borrowedTileDetachedByUser`) so the same CDP bridge can address a
-      // tile the user already had open. @1.0-@1.3 stay installed and FROZEN.
-      latestMinor: 4,
+      // (`borrowedTileAttached` / `borrowedTileDetached` on the server side,
+      // `borrowedTileReleased` on the client side) so the same CDP bridge can
+      // address a tile the user already had open.
+      // @1.5 (ticket 12) adds two client pushes deferred from tickets 08 and
+      // 10: `cdpInteractionObserved` (real native input on a tile, the
+      // interaction-epoch signal) and `tileHandoff` (captured `{url,
+      // storageState}` pushed just before a tile dies, for the headless
+      // handoff). @1.0-@1.4 stay installed and FROZEN.
+      latestMinor: 5,
       versions: {
         0: {
           contract: browserSessionsV10,
@@ -4871,6 +4894,9 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
         },
         4: {
           contract: browserSessionsV14,
+        },
+        5: {
+          contract: browserSessionsV15,
         },
       },
     },

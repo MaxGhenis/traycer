@@ -723,7 +723,7 @@ const browserSessionsClientFrameSchemaV13 = z.discriminatedUnion("kind", [
   }),
 ]);
 
-export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
+const browserSessionsClientFrameSchemaV14 = z.discriminatedUnion("kind", [
   ...browserSessionsClientFrameSchemaV13.def.options,
   z.object({
     // Ticket 09. The renderer has ENDED a borrowed-tile attachment - the user
@@ -750,16 +750,80 @@ export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
     reason: z.string(),
   }),
 ]);
+
+export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
+  ...browserSessionsClientFrameSchemaV14.def.options,
+  z.object({
+    // Ticket 12 / ticket 08's interaction-signal draft
+    // (`08-concurrency-properties/interaction-signal-protocol-draft`). Pushed
+    // once per native `before-input-event`/`input-event` firing on an
+    // Electron tile - CDP's `Input.dispatchMouseEvent`/`dispatchKeyEvent`
+    // never reach those listeners, which is exactly what lets this
+    // discriminate real user input from agent-dispatched input the DOM's own
+    // `isTrusted` cannot (both report `isTrusted: true`). Electron-only by
+    // construction: headless Playwright has no physical user to observe, so
+    // there is no equivalent push there - see `browser-action-epoch.ts`'s
+    // "not applicable", distinct from "unimplemented".
+    //
+    // No payload beyond routing - any firing of the source listener is real
+    // input by construction, so nothing is left to filter or classify. No
+    // coalescing: the host only needs "at least one bump before the next
+    // precondition check", which per-event firing trivially gives; a
+    // rapidly-typing user firing many of these is a scoping concern for
+    // whoever hits it as a real problem, not a correctness one, and is
+    // deliberately not pre-solved here.
+    kind: z.literal("cdpInteractionObserved"),
+    ...requestFrameFields,
+    tileInstanceId: z.string(),
+  }),
+  z.object({
+    // Ticket 12 / ticket 10's design. Desktop pushes this once, just before a
+    // tile dies, for ANY teardown reason - there is no signal distinguishing
+    // "the whole GUI quit" from "one subscriber detached" (see ticket 10's
+    // artifact), so the real trigger is "the tile is going away", which
+    // `closeEntry`'s three call sites and a renderer crash all are.
+    //
+    // The host resolves `tileInstanceId` to a session via
+    // `getSessionIdForTile` (the same lookup every other CDP frame on this
+    // bridge uses) and replays `capturedStorageState` origin-by-origin
+    // through the existing `lendStorage()` driver method, so lent storage
+    // keeps landing in an in-memory browser context only, never a persisted
+    // profile dir (decision #33) - this frame does not open a new write path
+    // for that invariant.
+    //
+    // `capturedStorageState` is an opaque JSON blob (Playwright storageState
+    // shape), same convention as `promoteState`/`lendStorage` above: the
+    // protocol does not structurally type it, because tightening the field
+    // schema in a later minor would be breaking and streams cannot bump
+    // majors. `null` means desktop could not safely capture state for this
+    // teardown (see `reason: "crash-no-capture"`) - the host still hands the
+    // session off headless at `capturedUrl`, just without carried storage.
+    kind: z.literal("tileHandoff"),
+    ...requestFrameFields,
+    tileInstanceId: z.string(),
+    capturedUrl: z.string(),
+    capturedStorageState: z.json().nullable(),
+    reason: z.enum(["gui-quit", "tile-released", "crash-no-capture"]),
+  }),
+]);
 export type BrowserSessionsClientFrame = z.infer<
   typeof browserSessionsClientFrameSchema
 >;
+
+export const browserSessionsV15 = defineStreamRpcContract({
+  method: "browser.sessions",
+  schemaVersion: { major: 1, minor: 5 } as const,
+  openRequestSchema: browserSessionsOpenRequestSchema,
+  serverFrameSchema: browserSessionsServerFrameSchema,
+  clientFrameSchema: browserSessionsClientFrameSchema,
+});
 
 export const browserSessionsV14 = defineStreamRpcContract({
   method: "browser.sessions",
   schemaVersion: { major: 1, minor: 4 } as const,
   openRequestSchema: browserSessionsOpenRequestSchema,
   serverFrameSchema: browserSessionsServerFrameSchema,
-  clientFrameSchema: browserSessionsClientFrameSchema,
+  clientFrameSchema: browserSessionsClientFrameSchemaV14,
 });
 
 export const browserSessionsV13 = defineStreamRpcContract({

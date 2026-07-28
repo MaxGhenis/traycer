@@ -383,6 +383,13 @@ export const HOST_METHOD_POLL_TABLE = {
   },
   // Stopping an agent terminates its active execution.
   "agent.stop": { mode: "fifo", joinResponseTimeoutMs: null, poll: null },
+  // Ticket 12: the passive borrowed-tile indicator's Stop button. Same
+  // posture as `agent.stop` - a mutation with side effects, not a query.
+  "browser.stopAgentActivity": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
   // Migrating a phase changes the epic's persisted workflow state.
   "phase.migrateToEpic": {
     mode: "fifo",

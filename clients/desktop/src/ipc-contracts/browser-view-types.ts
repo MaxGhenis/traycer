@@ -397,6 +397,29 @@ export interface AgentBrowserViewCdpTargetAttachedChange extends BrowserViewTile
   readonly waitingForDebugger: boolean;
 }
 
+/**
+ * Ticket 12 / ticket 08's interaction-signal draft. Push notification
+ * (electron-main -> renderer -> host), fired once per native
+ * `before-input-event`/`input-event` on the tile - the routing fields on
+ * `BrowserViewTileKey` are the entire payload, by design: any firing of the
+ * source listener is real input, so there is nothing left to carry.
+ */
+export type AgentBrowserViewCdpInteractionObservedChange = BrowserViewTileKey;
+
+/**
+ * Ticket 12 / ticket 10's design. Push notification (electron-main ->
+ * renderer -> host), fired once just before a tile dies, for any teardown
+ * reason. `capturedStorageState` stays `unknown` on this leg too - same
+ * "protocol does not structurally type it" convention as
+ * `BrowserViewStorageStateCaptureResult.storageState` above - the host
+ * validates it at its own boundary.
+ */
+export interface AgentBrowserViewTileHandoffChange extends BrowserViewTileKey {
+  readonly capturedUrl: string;
+  readonly capturedStorageState: unknown;
+  readonly reason: "gui-quit" | "tile-released" | "crash-no-capture";
+}
+
 export type BrowserViewStorageStateApplyResult =
   | {
       readonly status: "applied";

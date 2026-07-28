@@ -5,9 +5,11 @@ import {
 } from "../ipc-contracts/ipc-channels";
 import type {
   AgentBrowserViewCdpDispatch,
+  AgentBrowserViewCdpInteractionObservedChange,
   AgentBrowserViewCdpResult,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
+  AgentBrowserViewTileHandoffChange,
   BrowserCookieCryptoState,
   BrowserLabsStateUpdate,
   BrowserViewBoundsUpdate,
@@ -123,6 +125,12 @@ export interface BrowserViewBridgeSurface {
     ): Disposable;
     onCdpTargetAttached(
       handler: Listener<AgentBrowserViewCdpTargetAttachedChange>,
+    ): Disposable;
+    onCdpInteractionObserved(
+      handler: Listener<AgentBrowserViewCdpInteractionObservedChange>,
+    ): Disposable;
+    onTileHandoff(
+      handler: Listener<AgentBrowserViewTileHandoffChange>,
     ): Disposable;
   };
 }
@@ -327,6 +335,16 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
       onCdpTargetAttached: (handler) =>
         subscribe<AgentBrowserViewCdpTargetAttachedChange>(
           RunnerHostEvent.browserViewCdpTargetAttached,
+          handler,
+        ),
+      onCdpInteractionObserved: (handler) =>
+        subscribe<AgentBrowserViewCdpInteractionObservedChange>(
+          RunnerHostEvent.browserViewCdpInteractionObserved,
+          handler,
+        ),
+      onTileHandoff: (handler) =>
+        subscribe<AgentBrowserViewTileHandoffChange>(
+          RunnerHostEvent.browserViewTileHandoff,
           handler,
         ),
     },

@@ -52,9 +52,11 @@ import type {
 } from "@/lib/browser-view/desktop-browser-view";
 import type {
   AgentBrowserViewCdpDispatch,
+  AgentBrowserViewCdpInteractionObservedChange,
   AgentBrowserViewCdpResult,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
+  AgentBrowserViewTileHandoffChange,
 } from "@/lib/browser-view/desktop-agent-browser-view";
 import { TILE_KIND_BROWSER } from "@/stores/epics/canvas/tile-kinds";
 import type { BrowserTileRef } from "@/stores/epics/canvas/types";
@@ -93,6 +95,19 @@ vi.mock("@/components/epic-canvas/hooks/use-tile-body-visible", () => ({
 
 vi.mock("@/providers/use-runner-host", () => ({
   useRunnerHost: () => runnerHostHarness.host,
+}));
+
+// Ticket 12: `BrowserTileBorrowedBanner` calls `useStopBrowserAgentActivity`,
+// which needs a `HostRuntimeProvider` this file's harness does not set up -
+// mocked the same way `useTabHostId`/`useRunnerHost` above are, rather than
+// building out the provider stack for a hook these tests do not exercise.
+const stopBrowserAgentActivityMock = vi.hoisted(() => ({
+  mutate: vi.fn(),
+  isPending: false,
+}));
+
+vi.mock("@/hooks/browser/use-stop-browser-agent-activity-mutation", () => ({
+  useStopBrowserAgentActivity: () => stopBrowserAgentActivityMock,
 }));
 
 vi.mock("@/stores/epics/canvas/store", () => ({
@@ -210,6 +225,12 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
   >();
   private readonly cdpTargetAttachedHandlers = new Set<
     (change: AgentBrowserViewCdpTargetAttachedChange) => void
+  >();
+  private readonly cdpInteractionObservedHandlers = new Set<
+    (change: AgentBrowserViewCdpInteractionObservedChange) => void
+  >();
+  private readonly tileHandoffHandlers = new Set<
+    (change: AgentBrowserViewTileHandoffChange) => void
   >();
 
   constructor(private readonly cryptoState: BrowserCookieCryptoState) {}
@@ -503,8 +524,38 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
     };
   }
 
+  onCdpInteractionObserved(
+    handler: (change: AgentBrowserViewCdpInteractionObservedChange) => void,
+  ): {
+    dispose: () => void;
+  } {
+    this.cdpInteractionObservedHandlers.add(handler);
+    return {
+      dispose: () => {
+        this.cdpInteractionObservedHandlers.delete(handler);
+      },
+    };
+  }
+
+  onTileHandoff(handler: (change: AgentBrowserViewTileHandoffChange) => void): {
+    dispose: () => void;
+  } {
+    this.tileHandoffHandlers.add(handler);
+    return {
+      dispose: () => {
+        this.tileHandoffHandlers.delete(handler);
+      },
+    };
+  }
+
   emitCdpSessionEnded(change: AgentBrowserViewCdpSessionEndedChange): void {
     this.cdpSessionEndedHandlers.forEach((handler) => handler(change));
+  }
+
+  emitCdpInteractionObserved(
+    change: AgentBrowserViewCdpInteractionObservedChange,
+  ): void {
+    this.cdpInteractionObservedHandlers.forEach((handler) => handler(change));
   }
 }
 
@@ -543,7 +594,12 @@ function expectUserTileStillOpen(bridge: FakeBrowserViewBridge): void {
 function renderBrowserTile(): void {
   render(
     <TooltipProvider>
-      <BrowserTile node={NODE} viewTabId="view-tab-1" paneId="pane-1" />
+      <BrowserTile
+        node={NODE}
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+      />
     </TooltipProvider>,
   );
 }
