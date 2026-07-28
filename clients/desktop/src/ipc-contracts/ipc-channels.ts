@@ -322,8 +322,11 @@ export const RunnerHostEvent = {
     "runnerHost:event:browserView:cdp:targetAttached",
   agentBrowserViewStatusChange:
     "runnerHost:event:agentBrowserView:statusChange",
-  // Fired the moment the agent tile's CDP debugger detaches (e.g. the user
-  // opened DevTools) - ends the agent's access rather than only logging it.
+  // Fired the moment the agent tile's CDP debugger detaches for a reason
+  // outside our control (target destroyed, renderer crash, explicit
+  // detach) - ends the agent's access rather than only logging it. Opening
+  // DevTools is not one of those reasons on Electron 42.7.1 - it coexists
+  // with the attached debugger there (verified 2026-07-28).
   agentBrowserViewCdpSessionEnded:
     "runnerHost:event:agentBrowserView:cdp:sessionEnded",
   // Fired whenever CDP's own `Target.attachedToTarget` fires on the agent

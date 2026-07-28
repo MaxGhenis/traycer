@@ -665,10 +665,13 @@ const browserSessionsClientFrameSchemaV13 = z.discriminatedUnion("kind", [
     ...cdpResultFrameFields,
   }),
   z.object({
-    // Electron detaches the tile's debugger when the user opens DevTools (or
-    // any other detach cause). The renderer pushes this the moment
-    // `onDetached` fires so the host ends the agent's access immediately
-    // instead of only discovering it lazily on the next failed dispatch.
+    // The tile's CDP debugger can detach for reasons outside our control
+    // (target destroyed, renderer crash, explicit detach). The renderer
+    // pushes this the moment `onDetached` fires so the host ends the
+    // agent's access immediately instead of only discovering it lazily on
+    // the next failed dispatch. Opening DevTools is NOT one of those causes
+    // on Electron 42.7.1/Chromium 148 - verified 2026-07-28, it coexists
+    // with the attached debugger there.
     kind: z.literal("cdpSessionEnded"),
     ...requestFrameFields,
     tileInstanceId: z.string(),

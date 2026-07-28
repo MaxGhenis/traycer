@@ -400,8 +400,12 @@ export function registerBrowserViewIpc(bridge: RunnerIpcBridge): void {
    *
    * What this layer does own is the guarantee ticket 03 established and
    * which matters far more on a credentialed tile: `dispatchCdp` fails fast
-   * with `not_attached` the moment the debugger is detached, so a user
-   * opening DevTools ends agent access rather than silently going stale.
+   * with `not_attached` the moment the debugger detaches for a reason
+   * outside our control (target destroyed, renderer crash, explicit
+   * detach), rather than silently going stale. Verified 2026-07-28, live:
+   * opening DevTools is NOT one of those triggers on Electron
+   * 42.7.1/Chromium 148 - the debugger and DevTools coexist there, so a
+   * user can watch a borrowed tile without ending the agent's access to it.
    */
   bridge.handleInvoke(
     RunnerHostInvoke.browserViewCdpDispatch,

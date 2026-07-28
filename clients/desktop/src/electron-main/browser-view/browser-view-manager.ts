@@ -237,11 +237,16 @@ export interface BrowserViewManagerOptions {
     windowId: string,
     change: BrowserViewControlRevokedChange,
   ) => void;
-  // Fired once, immediately, when a tile's CDP debugger detaches - Electron
-  // detaches on things like the user opening DevTools. This is the only
-  // consumer-facing signal that the agent's typed CDP bridge (ticket 03) must
-  // treat as ending its access to that tile rather than silently discovering
-  // it on the next failed dispatch.
+  // Fired once, immediately, when a tile's CDP debugger detaches - causes
+  // outside our control include the target being destroyed, a renderer
+  // crash, or an explicit `Target.detachFromTarget`/`Debugger.detach`. This
+  // is the only consumer-facing signal that the agent's typed CDP bridge
+  // (ticket 03) must treat as ending its access to that tile rather than
+  // silently discovering it on the next failed dispatch. Verified
+  // 2026-07-28, live: opening DevTools does NOT cause this on Electron
+  // 42.7.1/Chromium 148 - `webContents.debugger.attach()` and
+  // `openDevTools()` coexist there, so do not cite DevTools-open as a
+  // trigger elsewhere.
   readonly notifyCdpSessionEnded: (
     windowId: string,
     change: AgentBrowserViewCdpSessionEndedChange,
@@ -1569,16 +1574,28 @@ export class BrowserViewManager {
   }
 
   /**
-   * Electron detaches a tile's debugger on things like the user opening
-   * DevTools. A detached debugger means whatever was driving the tile has a
-   * stale view of it, so detach must end that access rather than only be
-   * logged (ticket 03). This is generic across both consumers of
-   * `BrowserViewManager`: the visible tile's T18 control grant (if one is
-   * active) is revoked through the same path user-initiated cancellation
-   * already uses, and the agent tile's CDP bridge is notified so the host can
-   * fail fast instead of discovering the detach lazily on the next dispatch.
-   * `BrowserDebugSession` re-attaches on the next committed navigation on its
-   * own; this only closes the gap in between.
+   * A tile's CDP debugger can detach for reasons outside our control - the
+   * target being destroyed, a renderer crash, or an explicit
+   * `Target.detachFromTarget`/`Debugger.detach`. A detached debugger means
+   * whatever was driving the tile has a stale view of it, so detach must end
+   * that access rather than only be logged (ticket 03). This is generic
+   * across both consumers of `BrowserViewManager`: the visible tile's T18
+   * control grant (if one is active) is revoked through the same path
+   * user-initiated cancellation already uses, and the agent tile's CDP
+   * bridge is notified so the host can fail fast instead of discovering the
+   * detach lazily on the next dispatch. `BrowserDebugSession` re-attaches on
+   * the next committed navigation on its own; this only closes the gap in
+   * between.
+   *
+   * Verified 2026-07-28, live: opening DevTools does NOT trigger this path
+   * on Electron 42.7.1/Chromium 148 - `webContents.debugger.attach()` and
+   * `openDevTools()` coexist there (confirmed via a real `devtools://`
+   * target plus 8s of post-open polling with no detach, twice, independent
+   * tile keys). That is a design upgrade, not a gap: a user can open
+   * DevTools to watch the agent drive without ending its access, and
+   * revocation still has its own paths (`revokeControl`, `releaseTile`). Do
+   * not cite DevTools-open as a trigger for this path; it remains correct
+   * for the causes above.
    */
   private handleDebugSessionDetached(
     entry: BrowserViewEntry,

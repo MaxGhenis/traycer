@@ -425,9 +425,13 @@ export function BrowserTile(props: BrowserTileProps) {
   /**
    * Ticket 03's rule - a detached debugger ends agent access rather than
    * being logged - applied to a tile holding the user's real logins, where
-   * it matters more than anywhere else. Electron detaches when the user
-   * opens DevTools, among other causes; the attachment ends rather than
-   * silently going stale, and the indicator goes with it.
+   * it matters more than anywhere else. The debugger can detach for reasons
+   * outside our control (target destroyed, renderer crash, explicit
+   * detach); the attachment ends rather than silently going stale, and the
+   * indicator goes with it. Opening DevTools is NOT one of those causes on
+   * Electron 42.7.1/Chromium 148 - it coexists with the attached debugger
+   * there (verified 2026-07-28), so a user can watch the agent drive
+   * without ending its access.
    */
   useEffect(() => {
     if (browserView === null || borrowedAttachment === null) return;
