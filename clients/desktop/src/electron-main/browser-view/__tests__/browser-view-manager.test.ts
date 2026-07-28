@@ -1268,6 +1268,67 @@ describe("BrowserViewManager", () => {
     expect(view.webContents.closeCalls).toBe(0);
   });
 
+  it("refuses dispatchCdp after releaseTile even when the debugger was attached by something other than BrowserDebugSession", async () => {
+    // Ticket 15 P1-2: agent-browser-posture.ts's background keepalive
+    // attaches webContents.debugger directly, independently of
+    // BrowserDebugSession, and typically wins the race against it (it runs
+    // at view-creation time, before any navigation commit). When that
+    // happens, BrowserDebugSession.enableAfterCommit() sees the debugger is
+    // already attached and never marks itself the attacher
+    // (`attachedBySession` stays false), so its own dispose() skips
+    // detach() entirely - releaseTile's fix must not depend on
+    // BrowserDebugSession having been the one to attach.
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    const view = harness.views[0];
+    // Simulate the posture keepalive's independent attach, ahead of the
+    // navigation commit that would otherwise let BrowserDebugSession attach
+    // it first.
+    view.webContents.debugger.attach("1.3");
+    view.webContents.emit(
+      "did-frame-navigate",
+      {},
+      "http://localhost:3000",
+      200,
+      "OK",
+      true,
+    );
+    await Promise.resolve();
+    expect(view.webContents.debugger.attached).toBe(true);
+
+    const beforeRelease = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: { kind: "cdpGetFrameTree" },
+    });
+    expect(beforeRelease.ok).toBe(true);
+
+    harness.manager.releaseTile("window-1", BASE_KEY);
+
+    const afterRelease = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: { kind: "cdpGetFrameTree" },
+    });
+    expect(afterRelease).toEqual({
+      kind: "cdpGetFrameTree",
+      ok: false,
+      error: {
+        kind: "not_attached",
+        message: "Agent browser tile's debugger is not attached.",
+        code: null,
+      },
+    });
+    // The gate is what refuses it; the debugger itself is also expected to
+    // end up detached (the unconditional secondary cleanup), but that is not
+    // what this test is pinning - "rejects dispatchCdp..." above covers the
+    // BrowserDebugSession-attached case, this one covers the other attacher.
+    expect(view.webContents.debugger.detached).toBe(true);
+  });
+
   it("re-arms the debug session when a released tile is reclaimed within the grace period", async () => {
     const harness = createHarness();
     harness.manager.upsertTile(

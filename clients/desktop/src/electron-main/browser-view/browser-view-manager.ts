@@ -46,6 +46,7 @@ import type {
 import { describeLogError, log } from "../app/logger";
 import { BrowserDebugSession } from "./browser-debug-session";
 import { BrowserElementPickerSession } from "./browser-element-picker-session";
+import { setAgentBrowserPostureReleased } from "./agent-browser-posture";
 import type {
   BrowserViewCertificateErrorChange as BrowserSessionCertificateErrorChange,
   BrowserViewDownloadChange as BrowserSessionDownloadChange,
@@ -307,6 +308,14 @@ interface BrowserViewEntry {
   overlayOwnerIds: string[];
   overlaySnapshotStale: boolean;
   control: BrowserViewControlState | null;
+  // Ticket 15 P1-2: the authorization gate `dispatchCdp` checks, set
+  // synchronously by `releaseTile` before it resolves and cleared by
+  // `cancelRelease` on reclaim. Deliberately not inferred from
+  // `webContents.debugger.isAttached()` - `agent-browser-posture.ts` attaches
+  // that debugger independently of `BrowserDebugSession` and keeps
+  // re-attaching it on every navigation, so transport attachment state is not
+  // a reliable proxy for "may the agent drive this tile".
+  agentAccessEnded: boolean;
 }
 
 interface BrowserViewControlState {
@@ -561,18 +570,40 @@ export class BrowserViewManager {
     this.endPickerSession(entry);
     entry.desiredVisible = false;
     entry.view.setVisible(false);
-    // End CDP access now, synchronously, rather than leaving it to
-    // `closeEntry()` at the end of the grace period below. "Released" and
-    // "still drivable via CDP" must never both be true (v3's detach-ends-
-    // access property; this method is one of its own two documented
-    // revocation paths alongside `revokeControl`) - `releaseTile` used to
-    // resolve on the caller's side while the debugger stayed attached for
-    // the full `releaseGraceMs` window, so a caller that treated "released"
-    // as "access has ended" was wrong for up to `releaseGraceMs`.
-    // `dispose()` is idempotent, so a second `releaseTile` while a release
-    // is already pending below is a no-op here.
+    // "Released" and "still drivable via CDP" must never both be true (v3's
+    // detach-ends-access property; this method is one of its own two
+    // documented revocation paths alongside `revokeControl`). The primary
+    // enforcement is this synchronous gate, checked first thing by
+    // `dispatchCdp` - not `webContents.debugger.isAttached()`.
+    // `agent-browser-posture.ts` attaches that same debugger independently of
+    // `BrowserDebugSession` to keep an agent tile unthrottled in the
+    // background, and re-attaches it on every navigation, so transport
+    // attachment state can flip back to "attached" on its own and is not a
+    // reliable authorization signal. Set before anything below, including the
+    // dispose calls, so there is no window where this method has done
+    // teardown work but not yet closed the gate.
+    entry.agentAccessEnded = true;
+    setAgentBrowserPostureReleased(entry.view.webContents, true);
+    // Best-effort cleanup, not the enforcement mechanism: detach whatever is
+    // actually attached, regardless of which of the two attachers above
+    // holds it. `BrowserDebugSession.dispose()` only detaches when it was
+    // itself the attacher (`attachedBySession`), which correctly protects an
+    // external DevTools session on a *borrowed* tile from being kicked by an
+    // unrelated dispose() elsewhere (`closeEntry`) - but for an agent-owned
+    // tile there is no legitimate external attacher to protect, so this
+    // release path detaches unconditionally as well.
     entry.debugSession?.dispose();
     entry.debugSession = null;
+    const browserDebugger = entry.view.webContents.debugger;
+    if (browserDebugger.isAttached()) {
+      try {
+        browserDebugger.detach();
+      } catch (err) {
+        log.warn("[browser-view] debugger detach on release failed", {
+          error: describeLogError(err),
+        });
+      }
+    }
     if (this.releaseTimersByKey.has(keyId)) return;
     const timer = setTimeout(() => {
       this.releaseTimersByKey.delete(keyId);
@@ -1003,6 +1034,15 @@ export class BrowserViewManager {
    * agent tile has no borrowed-tile concept - but a detached debugger (see
    * `handleDebugSessionDetached`) must still fail fast rather than hang or
    * attempt a doomed `sendCommand`.
+   *
+   * Ticket 15 P1-2: `entry.agentAccessEnded` is checked before transport
+   * state, not instead of it - and it is the gate that actually decides
+   * whether the agent may drive this tile. `webContents.debugger.isAttached()`
+   * alone is not authorization: `agent-browser-posture.ts` attaches that same
+   * debugger independently of `releaseTile`/`BrowserDebugSession` to keep an
+   * agent tile unthrottled in the background, and re-attaches it on every
+   * navigation, so a released tile whose posture keepalive fires again would
+   * still read as attached without this gate.
    */
   async dispatchCdp(
     windowId: string,
@@ -1016,6 +1056,17 @@ export class BrowserViewManager {
         error: {
           kind: "tile_not_found",
           message: "Agent browser tile is not available.",
+          code: null,
+        },
+      };
+    }
+    if (entry.agentAccessEnded) {
+      return {
+        kind: input.command.kind,
+        ok: false,
+        error: {
+          kind: "not_attached",
+          message: "Agent browser tile's debugger is not attached.",
           code: null,
         },
       };
@@ -1181,6 +1232,7 @@ export class BrowserViewManager {
       overlayOwnerIds: [],
       overlaySnapshotStale: false,
       control: null,
+      agentAccessEnded: false,
     };
     const webContents = view.webContents;
     webContents.setWindowOpenHandler((details) =>
@@ -1237,12 +1289,16 @@ export class BrowserViewManager {
       },
     );
     if (candidates.length > 0) {
-      // The entry was mid-release: `releaseTile` already detached its CDP
-      // access (see there) and cleared `entry.debugSession`, ahead of the
-      // grace-period `closeEntry()` this cancels. Re-arm it the same way a
-      // first commit does - nothing else will if `upsertTile` reuses the
-      // same URL, since that path only navigates (and so only re-triggers
-      // `enableDebugAfterCommit` via a commit event) when the URL changes.
+      // The entry was mid-release: `releaseTile` already closed the
+      // `agentAccessEnded` gate, told the background-posture keepalive to
+      // stop re-attaching, and detached its CDP access (see there), ahead of
+      // the grace-period `closeEntry()` this cancels. Re-open the gate and
+      // re-arm the debugger the same way a first commit does - nothing else
+      // will if `upsertTile` reuses the same URL, since that path only
+      // navigates (and so only re-triggers `enableDebugAfterCommit` via a
+      // commit event) when the URL changes.
+      entry.agentAccessEnded = false;
+      setAgentBrowserPostureReleased(entry.view.webContents, false);
       this.enableDebugAfterCommit(entry);
     }
     for (const [keyId, timer] of candidates) {

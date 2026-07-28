@@ -43,6 +43,7 @@ class FakeDebugger implements AgentBrowserPostureDebugger {
   sendCommand(
     method: string,
     commandParams: Record<string, unknown> | undefined,
+    _sessionId: string | undefined,
   ): Promise<unknown> {
     this.commands.push({ method, params: commandParams });
     return Promise.resolve(null);
@@ -204,5 +205,65 @@ describe("applyAgentBrowserBackgroundPosture", () => {
 
     expect(webContents.debugger.attachCalls).toBe(1);
     expect(webContents.debugger.commands).toEqual([]);
+  });
+
+  it("does not re-attach on did-navigate once setAgentBrowserPostureReleased marks the tile released", async () => {
+    // Ticket 15 P1-2: this keepalive attaching the debugger independently of
+    // BrowserDebugSession, and re-attaching it on every navigation, is what
+    // let a released-but-still-open agent tile stay silently drivable. This
+    // guard is what closes that specific leak.
+    const {
+      applyAgentBrowserBackgroundPosture,
+      setAgentBrowserPostureReleased,
+    } = await import("../agent-browser-posture");
+    const webContents = new FakeWebContents(false);
+
+    applyAgentBrowserBackgroundPosture(asWebContents(webContents));
+    await flush();
+    expect(webContents.debugger.commands).toHaveLength(2);
+
+    setAgentBrowserPostureReleased(asWebContents(webContents), true);
+    webContents.debugger.attached = false;
+    webContents.emit("did-navigate", {}, "https://example.com/a");
+    await flush();
+
+    expect(webContents.debugger.commands).toHaveLength(2);
+    expect(webContents.debugger.attachCalls).toBe(1);
+  });
+
+  it("resumes re-attaching on did-navigate after setAgentBrowserPostureReleased clears the released mark", async () => {
+    const {
+      applyAgentBrowserBackgroundPosture,
+      setAgentBrowserPostureReleased,
+    } = await import("../agent-browser-posture");
+    const webContents = new FakeWebContents(false);
+
+    applyAgentBrowserBackgroundPosture(asWebContents(webContents));
+    await flush();
+    setAgentBrowserPostureReleased(asWebContents(webContents), true);
+    webContents.debugger.attached = false;
+    webContents.emit("did-navigate", {}, "https://example.com/a");
+    await flush();
+    expect(webContents.debugger.commands).toHaveLength(2);
+
+    setAgentBrowserPostureReleased(asWebContents(webContents), false);
+    webContents.emit("did-navigate", {}, "https://example.com/b");
+    await flush();
+
+    expect(webContents.debugger.commands).toHaveLength(4);
+    expect(webContents.debugger.attachCalls).toBe(2);
+  });
+
+  it("treats a webContents that never went through setAgentBrowserPostureReleased as not released", async () => {
+    const { applyAgentBrowserBackgroundPosture } =
+      await import("../agent-browser-posture");
+    const webContents = new FakeWebContents(false);
+
+    applyAgentBrowserBackgroundPosture(asWebContents(webContents));
+    await flush();
+    webContents.emit("did-navigate", {}, "https://example.com/a");
+    await flush();
+
+    expect(webContents.debugger.commands).toHaveLength(4);
   });
 });

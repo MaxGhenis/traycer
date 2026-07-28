@@ -6,6 +6,7 @@ export interface AgentBrowserPostureDebugger {
   sendCommand(
     method: string,
     commandParams: Record<string, unknown>,
+    sessionId: string | undefined,
   ): Promise<unknown>;
 }
 
@@ -14,6 +15,26 @@ export interface AgentBrowserPostureWebContents {
   isDestroyed(): boolean;
   on(event: "did-navigate", listener: () => void): void;
 }
+
+/**
+ * Ticket 15 P1-2: whether a tile's agent access has ended, keyed by the
+ * webContents identity `applyAgentBrowserBackgroundPosture` was called with.
+ *
+ * This attaches the debugger independently of `BrowserDebugSession`, and
+ * keeps re-attaching it on every `did-navigate` - so a released tile that
+ * navigates during its reuse grace window would otherwise have its debugger
+ * silently re-attached by this keepalive, undoing the release. `releaseTile`
+ * marks an entry here before it resolves; `cancelRelease` clears it on
+ * reclaim. A webContents that never went through
+ * `applyAgentBrowserBackgroundPosture` (a borrowed tile, not an agent-owned
+ * one) has no entry here, so `setAgentBrowserPostureReleased` is a no-op for
+ * it - `BrowserViewManager` calls it unconditionally for every entry rather
+ * than needing to know which tiles are agent-owned.
+ */
+const releasedByWebContents = new WeakMap<
+  AgentBrowserPostureWebContents,
+  boolean
+>();
 
 /**
  * Background-work posture for the agent's own browser tile (ticket 02).
@@ -33,8 +54,16 @@ export function applyAgentBrowserBackgroundPosture(
 ): void {
   sendPostureCommands(webContents);
   webContents.on("did-navigate", () => {
+    if (releasedByWebContents.get(webContents) === true) return;
     sendPostureCommands(webContents);
   });
+}
+
+export function setAgentBrowserPostureReleased(
+  webContents: AgentBrowserPostureWebContents,
+  released: boolean,
+): void {
+  releasedByWebContents.set(webContents, released);
 }
 
 function sendPostureCommands(
@@ -54,12 +83,16 @@ function sendPostureCommands(
   }
 
   Promise.all([
-    browserDebugger.sendCommand("Page.setWebLifecycleState", {
-      state: "active",
-    }),
-    browserDebugger.sendCommand("Emulation.setFocusEmulationEnabled", {
-      enabled: true,
-    }),
+    browserDebugger.sendCommand(
+      "Page.setWebLifecycleState",
+      { state: "active" },
+      undefined,
+    ),
+    browserDebugger.sendCommand(
+      "Emulation.setFocusEmulationEnabled",
+      { enabled: true },
+      undefined,
+    ),
   ]).catch((err: unknown) => {
     log.warn("[agent-browser-view] background posture command failed", {
       error: describeLogError(err),
