@@ -11,6 +11,8 @@ import {
   type ManagedContentView,
 } from "../browser-view-manager";
 import type {
+  AgentBrowserViewCdpSessionEndedChange,
+  AgentBrowserViewCdpTargetAttachedChange,
   BrowserViewCertificateErrorChange,
   BrowserViewDebugSnapshotChange,
   BrowserViewDownloadChange,
@@ -131,6 +133,11 @@ class FakeDebugger implements BrowserViewDebugger {
     sessionId: string | undefined,
   ): void {
     this.events.emit("message", {}, method, params, sessionId);
+  }
+
+  emitDetach(reason: string): void {
+    this.attached = false;
+    this.events.emit("detach", {}, reason);
   }
 }
 
@@ -431,6 +438,8 @@ interface Harness {
   readonly openTileRequests: BrowserViewOpenTileRequest[];
   readonly debugSnapshots: BrowserViewDebugSnapshotChange[];
   readonly controlRevocations: BrowserViewControlRevokedChange[];
+  readonly cdpSessionEndedNotifications: AgentBrowserViewCdpSessionEndedChange[];
+  readonly cdpTargetAttachedNotifications: AgentBrowserViewCdpTargetAttachedChange[];
   readonly snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[];
   readonly storageStateApplications: BrowserViewStorageStateApply[];
   readonly storageStateCaptures: BrowserViewStorageStateCapture[];
@@ -453,6 +462,10 @@ function createHarness(): Harness {
   const openTileRequests: BrowserViewOpenTileRequest[] = [];
   const debugSnapshots: BrowserViewDebugSnapshotChange[] = [];
   const controlRevocations: BrowserViewControlRevokedChange[] = [];
+  const cdpSessionEndedNotifications: AgentBrowserViewCdpSessionEndedChange[] =
+    [];
+  const cdpTargetAttachedNotifications: AgentBrowserViewCdpTargetAttachedChange[] =
+    [];
   const snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[] = [];
   const storageStateApplications: BrowserViewStorageStateApply[] = [];
   const storageStateCaptures: BrowserViewStorageStateCapture[] = [];
@@ -524,6 +537,12 @@ function createHarness(): Harness {
     notifyControlRevoked: (_windowId, change) => {
       controlRevocations.push(change);
     },
+    notifyCdpSessionEnded: (_windowId, change) => {
+      cdpSessionEndedNotifications.push(change);
+    },
+    notifyCdpTargetAttached: (_windowId, change) => {
+      cdpTargetAttachedNotifications.push(change);
+    },
     scheduleDebugSnapshot: (callback) => {
       const timer = setTimeout(callback, 16);
       return {
@@ -565,6 +584,8 @@ function createHarness(): Harness {
     openTileRequests,
     debugSnapshots,
     controlRevocations,
+    cdpSessionEndedNotifications,
+    cdpTargetAttachedNotifications,
     snapshotInvalidations,
     storageStateApplications,
     storageStateCaptures,
@@ -845,6 +866,7 @@ describe("BrowserViewManager", () => {
       { method: "Runtime.enable", params: {}, sessionId: undefined },
       { method: "Log.enable", params: {}, sessionId: undefined },
       { method: "Network.enable", params: {}, sessionId: undefined },
+      { method: "DOM.enable", params: {}, sessionId: undefined },
       {
         method: "Target.setAutoAttach",
         params: {
@@ -2098,5 +2120,265 @@ describe("BrowserViewManager", () => {
         params: { text: "hello" },
       }),
     );
+  });
+});
+
+async function upsertAndAttach(
+  harness: Harness,
+  windowId: string,
+  key: BrowserViewTileKey,
+): Promise<FakeBrowserView> {
+  harness.manager.upsertTile(
+    windowId,
+    upsert(key, "http://localhost:3000", true),
+  );
+  const view = harness.views[harness.views.length - 1];
+  view.webContents.emit(
+    "did-frame-navigate",
+    {},
+    "http://localhost:3000",
+    200,
+    "OK",
+    true,
+  );
+  await Promise.resolve();
+  return view;
+}
+
+describe("BrowserViewManager CDP dispatch", () => {
+  it("dispatches cdpNavigate as Page.navigate and returns the typed result", async () => {
+    const harness = createHarness();
+    await upsertAndAttach(harness, "window-1", BASE_KEY);
+
+    const result = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: { kind: "cdpNavigate", url: "https://example.com" },
+    });
+
+    expect(harness.views[0].webContents.debugger.commands).toContainEqual(
+      expect.objectContaining({
+        method: "Page.navigate",
+        params: { url: "https://example.com" },
+        sessionId: undefined,
+      }),
+    );
+    expect(result).toEqual({
+      kind: "cdpNavigate",
+      ok: true,
+      frameId: null,
+      loaderId: null,
+      errorText: null,
+    });
+  });
+
+  it("dispatches cdpEvaluate as Runtime.evaluate, routing sessionId through to the debugger", async () => {
+    const harness = createHarness();
+    await upsertAndAttach(harness, "window-1", BASE_KEY);
+
+    const result = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: "child-session-1",
+      command: {
+        kind: "cdpEvaluate",
+        expression: "1 + 1",
+        awaitPromise: false,
+        returnByValue: true,
+        contextId: null,
+      },
+    });
+
+    expect(harness.views[0].webContents.debugger.commands).toContainEqual(
+      expect.objectContaining({
+        method: "Runtime.evaluate",
+        sessionId: "child-session-1",
+      }),
+    );
+    expect(result).toMatchObject({ kind: "cdpEvaluate", ok: true });
+  });
+
+  it("dispatches cdpDispatchMouseEvent as Input.dispatchMouseEvent", async () => {
+    const harness = createHarness();
+    await upsertAndAttach(harness, "window-1", BASE_KEY);
+
+    const result = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: {
+        kind: "cdpDispatchMouseEvent",
+        type: "mouseMoved",
+        x: 5,
+        y: 5,
+        button: null,
+        clickCount: null,
+        deltaX: null,
+        deltaY: null,
+      },
+    });
+
+    expect(harness.views[0].webContents.debugger.commands).toContainEqual(
+      expect.objectContaining({
+        method: "Input.dispatchMouseEvent",
+        params: expect.objectContaining({ type: "mouseMoved", x: 5, y: 5 }),
+      }),
+    );
+    expect(result).toEqual({ kind: "cdpDispatchMouseEvent", ok: true });
+  });
+
+  it("dispatches cdpSetAutoAttach as Target.setAutoAttach with flatten always true", async () => {
+    const harness = createHarness();
+    await upsertAndAttach(harness, "window-1", BASE_KEY);
+
+    const result = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: {
+        kind: "cdpSetAutoAttach",
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+      },
+    });
+
+    expect(harness.views[0].webContents.debugger.commands).toContainEqual(
+      expect.objectContaining({
+        method: "Target.setAutoAttach",
+        params: {
+          autoAttach: true,
+          flatten: true,
+          waitForDebuggerOnStart: false,
+        },
+      }),
+    );
+    expect(result).toEqual({ kind: "cdpSetAutoAttach", ok: true });
+  });
+
+  it("dispatches cdpDescribeNode as DOM.describeNode with the caller's objectId", async () => {
+    const harness = createHarness();
+    await upsertAndAttach(harness, "window-1", BASE_KEY);
+
+    const result = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: {
+        kind: "cdpDescribeNode",
+        objectId: "object-1",
+        depth: null,
+        pierce: false,
+      },
+    });
+
+    expect(harness.views[0].webContents.debugger.commands).toContainEqual(
+      expect.objectContaining({
+        method: "DOM.describeNode",
+        params: { objectId: "object-1", pierce: false },
+      }),
+    );
+    expect(result).toEqual({
+      kind: "cdpDescribeNode",
+      ok: true,
+      nodeId: null,
+      backendNodeId: null,
+      nodeName: null,
+      frameId: null,
+    });
+  });
+
+  it("returns not_attached without sending any CDP command when the debugger has never attached", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    const view = harness.views[0];
+
+    const result = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: { kind: "cdpGetFrameTree" },
+    });
+
+    expect(result).toEqual({
+      kind: "cdpGetFrameTree",
+      ok: false,
+      error: {
+        kind: "not_attached",
+        message: "Agent browser tile's debugger is not attached.",
+        code: null,
+      },
+    });
+    expect(view.webContents.debugger.commands).toHaveLength(0);
+  });
+
+  it("returns tile_not_found for a dispatch against an unknown tile", async () => {
+    const harness = createHarness();
+
+    const result = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: { kind: "cdpGetFrameTree" },
+    });
+
+    expect(result).toEqual({
+      kind: "cdpGetFrameTree",
+      ok: false,
+      error: {
+        kind: "tile_not_found",
+        message: "Agent browser tile is not available.",
+        code: null,
+      },
+    });
+  });
+
+  it("debugger detach ends agent access rather than merely logging it - revokes an active control grant and notifies the CDP bridge", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    const grant = harness.manager.grantControl("window-1", {
+      ...BASE_KEY,
+      controlId: "control-1",
+      chatId: "chat-1",
+      agentRunId: "agent-1",
+      agentLabel: "Agent One",
+      origin: "http://localhost:3000",
+      expiresAt: Date.now() + 60_000,
+    });
+    expect(grant).toEqual({ status: "granted", controlId: "control-1" });
+
+    view.webContents.debugger.emitDetach("target closed");
+
+    expect(harness.cdpSessionEndedNotifications).toContainEqual(
+      expect.objectContaining({
+        tileInstanceId: BASE_KEY.tileInstanceId,
+        reason: "target closed",
+      }),
+    );
+    expect(harness.controlRevocations).toContainEqual(
+      expect.objectContaining({
+        controlId: "control-1",
+        reason: "debugger detached: target closed",
+      }),
+    );
+  });
+
+  it("a dispatch issued right after detach fails fast with not_attached rather than hanging", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+
+    view.webContents.debugger.emitDetach("target closed");
+
+    const result = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: { kind: "cdpGetFrameTree" },
+    });
+
+    expect(result).toEqual({
+      kind: "cdpGetFrameTree",
+      ok: false,
+      error: {
+        kind: "not_attached",
+        message: "Agent browser tile's debugger is not attached.",
+        code: null,
+      },
+    });
   });
 });

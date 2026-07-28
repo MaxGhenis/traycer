@@ -4,6 +4,10 @@ import {
   RunnerHostInvoke,
 } from "../ipc-contracts/ipc-channels";
 import type {
+  AgentBrowserViewCdpDispatch,
+  AgentBrowserViewCdpResult,
+  AgentBrowserViewCdpSessionEndedChange,
+  AgentBrowserViewCdpTargetAttachedChange,
   BrowserViewBoundsUpdate,
   BrowserViewStatusChange,
   BrowserViewTileKey,
@@ -17,6 +21,15 @@ export interface AgentBrowserViewBridgeSurface {
     updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
     releaseTile(input: BrowserViewTileKey): Promise<void>;
     onStatusChange(handler: Listener<BrowserViewStatusChange>): Disposable;
+    dispatchCdp(
+      input: AgentBrowserViewCdpDispatch,
+    ): Promise<AgentBrowserViewCdpResult>;
+    onCdpSessionEnded(
+      handler: Listener<AgentBrowserViewCdpSessionEndedChange>,
+    ): Disposable;
+    onCdpTargetAttached(
+      handler: Listener<AgentBrowserViewCdpTargetAttachedChange>,
+    ): Disposable;
   };
 }
 
@@ -41,6 +54,21 @@ export function buildAgentBrowserViewBridge(): AgentBrowserViewBridgeSurface {
       onStatusChange: (handler) =>
         subscribe<BrowserViewStatusChange>(
           RunnerHostEvent.agentBrowserViewStatusChange,
+          handler,
+        ),
+      dispatchCdp: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.agentBrowserViewCdpDispatch,
+          input,
+        ) as Promise<AgentBrowserViewCdpResult>,
+      onCdpSessionEnded: (handler) =>
+        subscribe<AgentBrowserViewCdpSessionEndedChange>(
+          RunnerHostEvent.agentBrowserViewCdpSessionEnded,
+          handler,
+        ),
+      onCdpTargetAttached: (handler) =>
+        subscribe<AgentBrowserViewCdpTargetAttachedChange>(
+          RunnerHostEvent.agentBrowserViewCdpTargetAttached,
           handler,
         ),
     },

@@ -259,6 +259,7 @@ import {
   browserSessionsV10,
   browserSessionsV11,
   browserSessionsV12,
+  browserSessionsV13,
 } from "@traycer/protocol/host/browser/contracts";
 import {
   hostNotificationHooksSave,
@@ -4740,7 +4741,7 @@ export type HostRpcRegistry = typeof hostRpcRegistry;
  * One manifest per `/stream` WS: `epic.subscribe@1.1`,
  * `chat.subscribe@1.5`, `notifications.subscribe@1.0`,
  * `terminal.subscribe@1.4`, `git.subscribeStatus@1.2`,
- * `browser.sessions@1.2`, `browser.screencast@1.0`,
+ * `browser.sessions@1.3`, `browser.screencast@1.0`,
  * `resources.subscribe@1.3`, `agent.inbox.subscribe@1.0`,
  * `speech.dictate@1.0`, `pr.subscribeListForEpic@1.0`,
  * `pr.subscribeDetail@1.0`, and
@@ -4846,7 +4847,11 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   },
   "browser.sessions": {
     1: {
-      latestMinor: 2,
+      // @1.3 (ticket 03) adds the typed CDP bridge for the agent's own tile:
+      // one request/result frame pair per enumerated CDP method, plus a
+      // `cdpSessionEnded` push when the tile's debugger detaches. @1.0-@1.2
+      // stay installed and FROZEN.
+      latestMinor: 3,
       versions: {
         0: {
           contract: browserSessionsV10,
@@ -4856,6 +4861,9 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
         },
         2: {
           contract: browserSessionsV12,
+        },
+        3: {
+          contract: browserSessionsV13,
         },
       },
     },

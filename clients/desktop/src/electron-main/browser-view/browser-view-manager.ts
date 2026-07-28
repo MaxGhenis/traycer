@@ -1,6 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { BrowserWindowConstructorOptions } from "electron";
 import type {
+  AgentBrowserViewCdpCommand,
+  AgentBrowserViewCdpDispatch,
+  AgentBrowserViewCdpErrorInfo,
+  AgentBrowserViewCdpFrameInfo,
+  AgentBrowserViewCdpResult,
+  AgentBrowserViewCdpSessionEndedChange,
+  AgentBrowserViewCdpTargetAttachedChange,
   BrowserViewBounds,
   BrowserViewBoundsUpdate,
   BrowserViewCapturePageResult,
@@ -230,6 +237,22 @@ export interface BrowserViewManagerOptions {
     windowId: string,
     change: BrowserViewControlRevokedChange,
   ) => void;
+  // Fired once, immediately, when a tile's CDP debugger detaches - Electron
+  // detaches on things like the user opening DevTools. This is the only
+  // consumer-facing signal that the agent's typed CDP bridge (ticket 03) must
+  // treat as ending its access to that tile rather than silently discovering
+  // it on the next failed dispatch.
+  readonly notifyCdpSessionEnded: (
+    windowId: string,
+    change: AgentBrowserViewCdpSessionEndedChange,
+  ) => void;
+  // Fired whenever CDP's own `Target.attachedToTarget` fires on a tile's
+  // root session, so the host can discover a flattened child (OOPIF/worker)
+  // session id to address further dispatches at.
+  readonly notifyCdpTargetAttached: (
+    windowId: string,
+    change: AgentBrowserViewCdpTargetAttachedChange,
+  ) => void;
   readonly scheduleDebugSnapshot: (
     callback: () => void,
   ) => BrowserViewScheduledTask;
@@ -392,6 +415,14 @@ export class BrowserViewManager {
     windowId: string,
     change: BrowserViewControlRevokedChange,
   ) => void;
+  private readonly notifyCdpSessionEnded: (
+    windowId: string,
+    change: AgentBrowserViewCdpSessionEndedChange,
+  ) => void;
+  private readonly notifyCdpTargetAttached: (
+    windowId: string,
+    change: AgentBrowserViewCdpTargetAttachedChange,
+  ) => void;
   private readonly scheduleDebugSnapshot: (
     callback: () => void,
   ) => BrowserViewScheduledTask;
@@ -435,6 +466,8 @@ export class BrowserViewManager {
     this.notifySnapshotInvalidated = options.notifySnapshotInvalidated;
     this.notifyDebugSnapshot = options.notifyDebugSnapshot;
     this.notifyControlRevoked = options.notifyControlRevoked;
+    this.notifyCdpSessionEnded = options.notifyCdpSessionEnded;
+    this.notifyCdpTargetAttached = options.notifyCdpTargetAttached;
     this.scheduleDebugSnapshot = options.scheduleDebugSnapshot;
     this.applyStorageStateToBrowser = options.applyStorageState;
     this.captureStorageStateFromBrowser = options.captureStorageState;
@@ -945,6 +978,56 @@ export class BrowserViewManager {
       status: "denied",
       reason: error instanceof Error ? error.message : String(error),
     }));
+  }
+
+  /**
+   * Ticket 03's typed CDP bridge, for the agent's own tile. Unlike
+   * `executeControlAction` there is no control-grant lock to check - the
+   * agent tile has no borrowed-tile concept - but a detached debugger (see
+   * `handleDebugSessionDetached`) must still fail fast rather than hang or
+   * attempt a doomed `sendCommand`.
+   */
+  async dispatchCdp(
+    windowId: string,
+    input: AgentBrowserViewCdpDispatch,
+  ): Promise<AgentBrowserViewCdpResult> {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) {
+      return {
+        kind: input.command.kind,
+        ok: false,
+        error: {
+          kind: "tile_not_found",
+          message: "Agent browser tile is not available.",
+          code: null,
+        },
+      };
+    }
+    const browserDebugger = entry.view.webContents.debugger;
+    if (!browserDebugger.isAttached()) {
+      return {
+        kind: input.command.kind,
+        ok: false,
+        error: {
+          kind: "not_attached",
+          message: "Agent browser tile's debugger is not attached.",
+          code: null,
+        },
+      };
+    }
+    try {
+      return await sendCdpCommand(
+        browserDebugger,
+        input.sessionId ?? undefined,
+        input.command,
+      );
+    } catch (err) {
+      return {
+        kind: input.command.kind,
+        ok: false,
+        error: classifyCdpError(err),
+      };
+    }
   }
 
   private endPickerSession(entry: BrowserViewEntry): void {
@@ -1472,14 +1555,46 @@ export class BrowserViewManager {
         this.queueDebugSnapshot(entry);
       },
       onDetached: (reason) => {
-        log.warn("[browser-view] debugger detached", {
-          reason,
-          webContentsId: entry.view.webContents.id,
+        this.handleDebugSessionDetached(entry, reason);
+      },
+      onTargetAttached: (event) => {
+        this.notifyCdpTargetAttached(entry.key.windowId, {
+          ...toTileKey(entry.key),
+          ...event,
         });
       },
     });
     entry.debugSession = session;
     return session;
+  }
+
+  /**
+   * Electron detaches a tile's debugger on things like the user opening
+   * DevTools. A detached debugger means whatever was driving the tile has a
+   * stale view of it, so detach must end that access rather than only be
+   * logged (ticket 03). This is generic across both consumers of
+   * `BrowserViewManager`: the visible tile's T18 control grant (if one is
+   * active) is revoked through the same path user-initiated cancellation
+   * already uses, and the agent tile's CDP bridge is notified so the host can
+   * fail fast instead of discovering the detach lazily on the next dispatch.
+   * `BrowserDebugSession` re-attaches on the next committed navigation on its
+   * own; this only closes the gap in between.
+   */
+  private handleDebugSessionDetached(
+    entry: BrowserViewEntry,
+    reason: string,
+  ): void {
+    log.warn("[browser-view] debugger detached", {
+      reason,
+      webContentsId: entry.view.webContents.id,
+    });
+    if (entry.control !== null) {
+      this.cancelControl(entry, `debugger detached: ${reason}`, null);
+    }
+    this.notifyCdpSessionEnded(entry.key.windowId, {
+      ...toTileKey(entry.key),
+      reason,
+    });
   }
 
   private readDebugSnapshot(
@@ -2340,4 +2455,290 @@ function browserViewControlActionsEqual(
     );
   }
   return right.kind === "navigate" && left.url === right.url;
+}
+
+/**
+ * Ticket 03's enumerated CDP dispatch. Each `AgentBrowserViewCdpCommand` kind
+ * maps to exactly one CDP method - deliberately not a generic
+ * `sendCommand(method, params)` passthrough, so growth here always means
+ * adding a case, never widening what a single case accepts.
+ */
+async function sendCdpCommand(
+  browserDebugger: BrowserViewDebugger,
+  sessionId: string | undefined,
+  command: AgentBrowserViewCdpCommand,
+): Promise<AgentBrowserViewCdpResult> {
+  switch (command.kind) {
+    case "cdpNavigate": {
+      const value = await browserDebugger.sendCommand(
+        "Page.navigate",
+        { url: command.url },
+        sessionId,
+      );
+      const record = isRecord(value) ? value : {};
+      return {
+        kind: "cdpNavigate",
+        ok: true,
+        frameId: stringOrNull(record.frameId),
+        loaderId: stringOrNull(record.loaderId),
+        errorText: stringOrNull(record.errorText),
+      };
+    }
+    case "cdpCaptureScreenshot": {
+      const params: Record<string, unknown> = { format: command.format };
+      if (command.quality !== null) params.quality = command.quality;
+      const value = await browserDebugger.sendCommand(
+        "Page.captureScreenshot",
+        params,
+        sessionId,
+      );
+      const record = isRecord(value) ? value : {};
+      return {
+        kind: "cdpCaptureScreenshot",
+        ok: true,
+        dataBase64: stringOrNull(record.data) ?? "",
+      };
+    }
+    case "cdpGetFrameTree": {
+      const value = await browserDebugger.sendCommand(
+        "Page.getFrameTree",
+        {},
+        sessionId,
+      );
+      const record = isRecord(value) ? value : {};
+      return {
+        kind: "cdpGetFrameTree",
+        ok: true,
+        frames: flattenFrameTree(record.frameTree),
+      };
+    }
+    case "cdpCreateIsolatedWorld": {
+      const value = await browserDebugger.sendCommand(
+        "Page.createIsolatedWorld",
+        {
+          frameId: command.frameId,
+          worldName: command.worldName,
+          grantUniveralAccess: command.grantUniversalAccess,
+        },
+        sessionId,
+      );
+      const record = isRecord(value) ? value : {};
+      return {
+        kind: "cdpCreateIsolatedWorld",
+        ok: true,
+        executionContextId: numberOrNull(record.executionContextId),
+      };
+    }
+    case "cdpEvaluate": {
+      const params: Record<string, unknown> = {
+        expression: command.expression,
+        awaitPromise: command.awaitPromise,
+        returnByValue: command.returnByValue,
+      };
+      if (command.contextId !== null) params.contextId = command.contextId;
+      const value = await browserDebugger.sendCommand(
+        "Runtime.evaluate",
+        params,
+        sessionId,
+      );
+      return remoteObjectResult("cdpEvaluate", value);
+    }
+    case "cdpCallFunctionOn": {
+      const params: Record<string, unknown> = {
+        functionDeclaration: command.functionDeclaration,
+        returnByValue: command.returnByValue,
+      };
+      if (command.objectId !== null) params.objectId = command.objectId;
+      if (command.executionContextId !== null) {
+        params.executionContextId = command.executionContextId;
+      }
+      if (command.argumentsJson !== null) {
+        params.arguments = command.argumentsJson;
+      }
+      const value = await browserDebugger.sendCommand(
+        "Runtime.callFunctionOn",
+        params,
+        sessionId,
+      );
+      return remoteObjectResult("cdpCallFunctionOn", value);
+    }
+    case "cdpReleaseObject": {
+      await browserDebugger.sendCommand(
+        "Runtime.releaseObject",
+        { objectId: command.objectId },
+        sessionId,
+      );
+      return { kind: "cdpReleaseObject", ok: true };
+    }
+    case "cdpDispatchMouseEvent": {
+      const params: Record<string, unknown> = {
+        type: command.type,
+        x: command.x,
+        y: command.y,
+      };
+      if (command.button !== null) params.button = command.button;
+      if (command.clickCount !== null) params.clickCount = command.clickCount;
+      if (command.deltaX !== null) params.deltaX = command.deltaX;
+      if (command.deltaY !== null) params.deltaY = command.deltaY;
+      await browserDebugger.sendCommand(
+        "Input.dispatchMouseEvent",
+        params,
+        sessionId,
+      );
+      return { kind: "cdpDispatchMouseEvent", ok: true };
+    }
+    case "cdpInsertText": {
+      await browserDebugger.sendCommand(
+        "Input.insertText",
+        { text: command.text },
+        sessionId,
+      );
+      return { kind: "cdpInsertText", ok: true };
+    }
+    case "cdpDispatchKeyEvent": {
+      const params: Record<string, unknown> = { type: command.type };
+      if (command.key !== null) params.key = command.key;
+      if (command.code !== null) params.code = command.code;
+      if (command.text !== null) params.text = command.text;
+      await browserDebugger.sendCommand(
+        "Input.dispatchKeyEvent",
+        params,
+        sessionId,
+      );
+      return { kind: "cdpDispatchKeyEvent", ok: true };
+    }
+    case "cdpSetDeviceMetricsOverride": {
+      await browserDebugger.sendCommand(
+        "Emulation.setDeviceMetricsOverride",
+        {
+          width: command.width,
+          height: command.height,
+          deviceScaleFactor: command.deviceScaleFactor,
+          mobile: command.mobile,
+        },
+        sessionId,
+      );
+      return { kind: "cdpSetDeviceMetricsOverride", ok: true };
+    }
+    case "cdpSetAutoAttach": {
+      await browserDebugger.sendCommand(
+        "Target.setAutoAttach",
+        {
+          autoAttach: command.autoAttach,
+          flatten: true,
+          waitForDebuggerOnStart: command.waitForDebuggerOnStart,
+        },
+        sessionId,
+      );
+      return { kind: "cdpSetAutoAttach", ok: true };
+    }
+    case "cdpDescribeNode": {
+      const params: Record<string, unknown> = {
+        objectId: command.objectId,
+        pierce: command.pierce,
+      };
+      if (command.depth !== null) params.depth = command.depth;
+      const value = await browserDebugger.sendCommand(
+        "DOM.describeNode",
+        params,
+        sessionId,
+      );
+      const record = isRecord(value) ? value : {};
+      const node = isRecord(record.node) ? record.node : null;
+      return {
+        kind: "cdpDescribeNode",
+        ok: true,
+        nodeId: node === null ? null : numberOrNull(node.nodeId),
+        backendNodeId: node === null ? null : numberOrNull(node.backendNodeId),
+        nodeName: node === null ? null : stringOrNull(node.nodeName),
+        frameId: node === null ? null : stringOrNull(node.frameId),
+      };
+    }
+    case "cdpGetFullAXTree": {
+      const params: Record<string, unknown> = {};
+      if (command.depth !== null) params.depth = command.depth;
+      const value = await browserDebugger.sendCommand(
+        "Accessibility.getFullAXTree",
+        params,
+        sessionId,
+      );
+      const record = isRecord(value) ? value : {};
+      return {
+        kind: "cdpGetFullAXTree",
+        ok: true,
+        nodesJson: record.nodes ?? null,
+      };
+    }
+    default: {
+      const exhaustive: never = command;
+      throw new Error(
+        `Unhandled agent CDP command: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+}
+
+function remoteObjectResult(
+  kind: "cdpEvaluate" | "cdpCallFunctionOn",
+  value: unknown,
+): AgentBrowserViewCdpResult {
+  const record = isRecord(value) ? value : {};
+  const result = isRecord(record.result) ? record.result : null;
+  const exceptionDetails = isRecord(record.exceptionDetails)
+    ? record.exceptionDetails
+    : null;
+  return {
+    kind,
+    ok: true,
+    resultJson: result === null ? null : (result.value ?? null),
+    objectId: result === null ? null : stringOrNull(result.objectId),
+    exceptionDescription:
+      exceptionDetails === null
+        ? null
+        : (stringOrNull(exceptionDetails.text) ?? "Uncaught exception"),
+  };
+}
+
+function flattenFrameTree(value: unknown): AgentBrowserViewCdpFrameInfo[] {
+  const root = isRecord(value) ? value : null;
+  if (root === null) return [];
+  const out: AgentBrowserViewCdpFrameInfo[] = [];
+  collectFrameTreeNode(root, out);
+  return out;
+}
+
+function collectFrameTreeNode(
+  node: Record<string, unknown>,
+  out: AgentBrowserViewCdpFrameInfo[],
+): void {
+  const frame = isRecord(node.frame) ? node.frame : null;
+  if (frame !== null) {
+    out.push({
+      frameId: stringOrNull(frame.id) ?? "",
+      parentFrameId: stringOrNull(frame.parentId),
+      url: stringOrNull(frame.url) ?? "",
+      securityOrigin: stringOrNull(frame.securityOrigin),
+    });
+  }
+  const childFrames = Array.isArray(node.childFrames) ? node.childFrames : [];
+  for (const child of childFrames) {
+    if (isRecord(child)) collectFrameTreeNode(child, out);
+  }
+}
+
+function classifyCdpError(err: unknown): AgentBrowserViewCdpErrorInfo {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.toLowerCase().includes("not attached")) {
+    return { kind: "not_attached", message, code: null };
+  }
+  const code = isRecord(err) && typeof err.code === "number" ? err.code : null;
+  return { kind: "cdp_error", message, code };
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
 }

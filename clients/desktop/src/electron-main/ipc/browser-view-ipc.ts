@@ -134,6 +134,11 @@ export function registerBrowserViewIpc(bridge: RunnerIpcBridge): void {
         change,
       );
     },
+    // The visible tile's own detach handling already runs through
+    // `notifyControlRevoked` above (see `handleDebugSessionDetached`) - this
+    // tile has no ticket-03 CDP bridge to notify.
+    notifyCdpSessionEnded: () => {},
+    notifyCdpTargetAttached: () => {},
     scheduleDebugSnapshot: scheduleBrowserViewDebugSnapshot,
     applyStorageState: applyBrowserViewStorageState,
     captureStorageState: captureBrowserViewStorageState,

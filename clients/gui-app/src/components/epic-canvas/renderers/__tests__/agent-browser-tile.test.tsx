@@ -9,6 +9,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentBrowserTile } from "@/components/epic-canvas/renderers/agent-browser-tile";
 import type {
+  AgentBrowserViewCdpDispatch,
+  AgentBrowserViewCdpResult,
+  AgentBrowserViewCdpSessionEndedChange,
+  AgentBrowserViewCdpTargetAttachedChange,
   AgentBrowserViewTileUpsert,
   DesktopAgentBrowserViewBridge,
 } from "@/lib/browser-view/desktop-agent-browser-view";
@@ -89,6 +93,60 @@ class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
 
   get statusHandlerCount(): number {
     return this.statusHandlers.size;
+  }
+
+  readonly dispatchCdpCalls: AgentBrowserViewCdpDispatch[] = [];
+  private readonly cdpSessionEndedHandlers = new Set<
+    (change: AgentBrowserViewCdpSessionEndedChange) => void
+  >();
+
+  dispatchCdp(
+    input: AgentBrowserViewCdpDispatch,
+  ): Promise<AgentBrowserViewCdpResult> {
+    this.dispatchCdpCalls.push(input);
+    return Promise.resolve({
+      kind: input.command.kind,
+      ok: false,
+      error: {
+        kind: "not_attached",
+        message: "Not attached in test.",
+        code: null,
+      },
+    });
+  }
+
+  onCdpSessionEnded(
+    handler: (change: AgentBrowserViewCdpSessionEndedChange) => void,
+  ): { dispose: () => void } {
+    this.cdpSessionEndedHandlers.add(handler);
+    return {
+      dispose: () => {
+        this.cdpSessionEndedHandlers.delete(handler);
+      },
+    };
+  }
+
+  emitCdpSessionEnded(change: AgentBrowserViewCdpSessionEndedChange): void {
+    this.cdpSessionEndedHandlers.forEach((handler) => handler(change));
+  }
+
+  private readonly cdpTargetAttachedHandlers = new Set<
+    (change: AgentBrowserViewCdpTargetAttachedChange) => void
+  >();
+
+  onCdpTargetAttached(
+    handler: (change: AgentBrowserViewCdpTargetAttachedChange) => void,
+  ): { dispose: () => void } {
+    this.cdpTargetAttachedHandlers.add(handler);
+    return {
+      dispose: () => {
+        this.cdpTargetAttachedHandlers.delete(handler);
+      },
+    };
+  }
+
+  emitCdpTargetAttached(change: AgentBrowserViewCdpTargetAttachedChange): void {
+    this.cdpTargetAttachedHandlers.forEach((handler) => handler(change));
   }
 }
 

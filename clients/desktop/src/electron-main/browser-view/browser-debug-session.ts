@@ -18,10 +18,21 @@ const MAX_DEBUG_TEXT_LENGTH = 4096;
 const MAX_DEBUG_URL_LENGTH = 2048;
 const TRUNCATED_SUFFIX = "...";
 
+export interface BrowserDebugTargetAttachedEvent {
+  readonly sessionId: string;
+  readonly targetId: string;
+  readonly targetType: string;
+  readonly url: string;
+  readonly waitingForDebugger: boolean;
+}
+
 interface BrowserDebugSessionOptions {
   readonly webContents: BrowserViewWebContents;
   readonly onSnapshotChange: () => void;
   readonly onDetached: (reason: string) => void;
+  // Ticket 03: forwards CDP's own `Target.attachedToTarget` so the host can
+  // discover a flattened child (OOPIF/worker) session id to dispatch at.
+  readonly onTargetAttached: (event: BrowserDebugTargetAttachedEvent) => void;
 }
 
 interface NetworkEntryRecord {
@@ -39,6 +50,9 @@ export class BrowserDebugSession {
   private readonly webContents: BrowserViewWebContents;
   private readonly onSnapshotChange: () => void;
   private readonly onDetached: (reason: string) => void;
+  private readonly onTargetAttached: (
+    event: BrowserDebugTargetAttachedEvent,
+  ) => void;
   private readonly consoleEntries: BrowserViewConsoleEntry[] = [];
   private readonly networkEntriesById = new Map<string, NetworkEntryRecord>();
   private readonly childSessionIds = new Set<string>();
@@ -58,6 +72,7 @@ export class BrowserDebugSession {
     this.webContents = options.webContents;
     this.onSnapshotChange = options.onSnapshotChange;
     this.onDetached = options.onDetached;
+    this.onTargetAttached = options.onTargetAttached;
   }
 
   enableAfterCommit(): void {
@@ -84,6 +99,11 @@ export class BrowserDebugSession {
       sendDebuggerCommand(browserDebugger, "Runtime.enable", {}, undefined),
       sendDebuggerCommand(browserDebugger, "Log.enable", {}, undefined),
       sendDebuggerCommand(browserDebugger, "Network.enable", {}, undefined),
+      // Ticket 03's `cdpDescribeNode` (DOM.describeNode) needs the DOM
+      // domain enabled first, same convention as every other domain here -
+      // CDP commands from a domain are unreliable (often outright rejected)
+      // before that domain's own `enable` has been sent.
+      sendDebuggerCommand(browserDebugger, "DOM.enable", {}, undefined),
       sendDebuggerCommand(
         browserDebugger,
         "Target.setAutoAttach",
@@ -215,6 +235,14 @@ export class BrowserDebugSession {
     const sessionId = stringValue(params.sessionId);
     if (sessionId === null || this.childSessionIds.has(sessionId)) return;
     this.childSessionIds.add(sessionId);
+    const targetInfo = recordValue(params.targetInfo);
+    this.onTargetAttached({
+      sessionId,
+      targetId: stringValue(targetInfo?.targetId) ?? "",
+      targetType: stringValue(targetInfo?.type) ?? "",
+      url: stringValue(targetInfo?.url) ?? "",
+      waitingForDebugger: booleanValue(params.waitingForDebugger),
+    });
     Promise.all([
       sendDebuggerCommand(
         this.webContents.debugger,
@@ -231,6 +259,12 @@ export class BrowserDebugSession {
       sendDebuggerCommand(
         this.webContents.debugger,
         "Network.enable",
+        {},
+        sessionId,
+      ),
+      sendDebuggerCommand(
+        this.webContents.debugger,
+        "DOM.enable",
         {},
         sessionId,
       ),

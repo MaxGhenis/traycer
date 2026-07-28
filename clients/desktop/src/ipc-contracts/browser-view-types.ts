@@ -210,6 +210,193 @@ export type BrowserViewControlActionResult =
   | { readonly status: "cancelled"; readonly reason: string }
   | { readonly status: "denied"; readonly reason: string };
 
+// Ticket 03's typed CDP bridge for the agent's own tile. IPC itself is not
+// versioned (only the host<->renderer protocol leg is - see
+// `browser.sessions@1.3` in `@traycer/protocol`), but the shape here still
+// mirrors that wire contract one-for-one: one command kind per enumerated CDP
+// method, no generic `method: string, params: unknown` passthrough.
+export type AgentBrowserViewCdpCommand =
+  | {
+      readonly kind: "cdpNavigate";
+      readonly url: string;
+    }
+  | {
+      readonly kind: "cdpCaptureScreenshot";
+      readonly format: "png" | "jpeg";
+      readonly quality: number | null;
+    }
+  | {
+      readonly kind: "cdpGetFrameTree";
+    }
+  | {
+      readonly kind: "cdpCreateIsolatedWorld";
+      readonly frameId: string;
+      readonly worldName: string;
+      readonly grantUniversalAccess: boolean;
+    }
+  | {
+      readonly kind: "cdpEvaluate";
+      readonly expression: string;
+      readonly awaitPromise: boolean;
+      readonly returnByValue: boolean;
+      readonly contextId: number | null;
+    }
+  | {
+      readonly kind: "cdpCallFunctionOn";
+      readonly objectId: string | null;
+      readonly executionContextId: number | null;
+      readonly functionDeclaration: string;
+      readonly argumentsJson: unknown;
+      readonly returnByValue: boolean;
+    }
+  | {
+      readonly kind: "cdpReleaseObject";
+      readonly objectId: string;
+    }
+  | {
+      readonly kind: "cdpDispatchMouseEvent";
+      readonly type:
+        "mousePressed" | "mouseReleased" | "mouseMoved" | "mouseWheel";
+      readonly x: number;
+      readonly y: number;
+      readonly button: "left" | "right" | "middle" | "none" | null;
+      readonly clickCount: number | null;
+      readonly deltaX: number | null;
+      readonly deltaY: number | null;
+    }
+  | {
+      readonly kind: "cdpInsertText";
+      readonly text: string;
+    }
+  | {
+      readonly kind: "cdpDispatchKeyEvent";
+      readonly type: "keyDown" | "keyUp" | "rawKeyDown" | "char";
+      readonly key: string | null;
+      readonly code: string | null;
+      readonly text: string | null;
+    }
+  | {
+      readonly kind: "cdpSetDeviceMetricsOverride";
+      readonly width: number;
+      readonly height: number;
+      readonly deviceScaleFactor: number;
+      readonly mobile: boolean;
+    }
+  | {
+      readonly kind: "cdpSetAutoAttach";
+      readonly autoAttach: boolean;
+      readonly waitForDebuggerOnStart: boolean;
+    }
+  | {
+      readonly kind: "cdpDescribeNode";
+      readonly objectId: string;
+      readonly depth: number | null;
+      readonly pierce: boolean;
+    }
+  | {
+      readonly kind: "cdpGetFullAXTree";
+      readonly depth: number | null;
+    };
+
+export interface AgentBrowserViewCdpDispatch extends BrowserViewTileKey {
+  readonly sessionId: string | null;
+  readonly command: AgentBrowserViewCdpCommand;
+}
+
+export interface AgentBrowserViewCdpFrameInfo {
+  readonly frameId: string;
+  readonly parentFrameId: string | null;
+  readonly url: string;
+  readonly securityOrigin: string | null;
+}
+
+export interface AgentBrowserViewCdpErrorInfo {
+  readonly kind: "not_attached" | "tile_not_found" | "cdp_error";
+  readonly message: string;
+  readonly code: number | null;
+}
+
+export type AgentBrowserViewCdpResult =
+  | {
+      readonly kind: "cdpNavigate";
+      readonly ok: true;
+      readonly frameId: string | null;
+      readonly loaderId: string | null;
+      readonly errorText: string | null;
+    }
+  | {
+      readonly kind: "cdpCaptureScreenshot";
+      readonly ok: true;
+      readonly dataBase64: string;
+    }
+  | {
+      readonly kind: "cdpGetFrameTree";
+      readonly ok: true;
+      readonly frames: readonly AgentBrowserViewCdpFrameInfo[];
+    }
+  | {
+      readonly kind: "cdpCreateIsolatedWorld";
+      readonly ok: true;
+      readonly executionContextId: number | null;
+    }
+  | {
+      readonly kind: "cdpEvaluate";
+      readonly ok: true;
+      readonly resultJson: unknown;
+      readonly objectId: string | null;
+      readonly exceptionDescription: string | null;
+    }
+  | {
+      readonly kind: "cdpCallFunctionOn";
+      readonly ok: true;
+      readonly resultJson: unknown;
+      readonly objectId: string | null;
+      readonly exceptionDescription: string | null;
+    }
+  | { readonly kind: "cdpReleaseObject"; readonly ok: true }
+  | { readonly kind: "cdpDispatchMouseEvent"; readonly ok: true }
+  | { readonly kind: "cdpInsertText"; readonly ok: true }
+  | { readonly kind: "cdpDispatchKeyEvent"; readonly ok: true }
+  | { readonly kind: "cdpSetDeviceMetricsOverride"; readonly ok: true }
+  | { readonly kind: "cdpSetAutoAttach"; readonly ok: true }
+  | {
+      readonly kind: "cdpDescribeNode";
+      readonly ok: true;
+      readonly nodeId: number | null;
+      readonly backendNodeId: number | null;
+      readonly nodeName: string | null;
+      readonly frameId: string | null;
+    }
+  | {
+      readonly kind: "cdpGetFullAXTree";
+      readonly ok: true;
+      readonly nodesJson: unknown;
+    }
+  | {
+      readonly kind: AgentBrowserViewCdpCommand["kind"];
+      readonly ok: false;
+      readonly error: AgentBrowserViewCdpErrorInfo;
+    };
+
+export interface AgentBrowserViewCdpSessionEndedChange extends BrowserViewTileKey {
+  readonly reason: string;
+}
+
+/**
+ * Push notification (electron-main -> renderer -> host), not a response to a
+ * specific request - mirrors `AgentBrowserViewCdpSessionEndedChange`'s shape.
+ * Fired whenever CDP's own `Target.attachedToTarget` fires on the tile's
+ * root session, so the host can discover a flattened child (OOPIF/worker)
+ * session id to address further dispatches at.
+ */
+export interface AgentBrowserViewCdpTargetAttachedChange extends BrowserViewTileKey {
+  readonly sessionId: string;
+  readonly targetId: string;
+  readonly targetType: string;
+  readonly url: string;
+  readonly waitingForDebugger: boolean;
+}
+
 export type BrowserViewStorageStateApplyResult =
   | {
       readonly status: "applied";

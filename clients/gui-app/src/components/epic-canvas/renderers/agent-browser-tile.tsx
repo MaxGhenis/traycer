@@ -7,6 +7,12 @@ import {
   type DesktopAgentBrowserViewBridge,
 } from "@/lib/browser-view/desktop-agent-browser-view";
 import type { BrowserViewStatus } from "@/lib/browser-view/desktop-browser-view";
+import {
+  buildCdpResultFrame,
+  notifyAgentBrowserCdpSessionEnded,
+  notifyAgentBrowserCdpTargetAttached,
+  registerAgentBrowserCdpHandler,
+} from "@/lib/browser-view/agent-browser-cdp-store";
 import { PANEL_RESIZING_CLASS_NAME } from "@/lib/layout/panel-resizing-class";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import type { AgentBrowserTileRef } from "@/stores/epics/canvas/types";
@@ -19,9 +25,11 @@ export interface AgentBrowserTileProps {
 
 /**
  * The agent's own browser tile: a real `WebContentsView` in a
- * credential-free partition, watchable and clickable but not (yet) driven
- * from here - driving is ticket 04+'s REPL surface. Deliberately does not
- * reuse `BrowserTile`'s chrome (address bar, zoom, find, devtools,
+ * credential-free partition. Ticket 03 wires the typed CDP bridge's
+ * transport mechanics here (forwarding enumerated commands to the electron
+ * preload and back) - it does not decide what gets sent or why, that is
+ * ticket 04+'s runtime adapter and REPL surface. Deliberately does not reuse
+ * `BrowserTile`'s chrome (address bar, zoom, find, devtools,
  * download/certificate UI, overlay-occlusion snapshotting): those are
  * driving/UX concerns this ticket does not build, not things forgotten.
  */
@@ -74,6 +82,62 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       if (!isChangeForTile(change, tileKey)) return;
       setStatus(change.status);
       setStatusReason(change.reason);
+    });
+    return () => {
+      subscription.dispose();
+    };
+  }, [browserView, tileKey]);
+
+  useEffect(() => {
+    if (browserView === null) return;
+    return registerAgentBrowserCdpHandler(tileKey.tileInstanceId, (request) => {
+      browserView
+        .dispatchCdp({
+          ...tileKey,
+          sessionId: request.sessionId,
+          command: request.command,
+        })
+        .then((result) => {
+          request.sendFrame(
+            buildCdpResultFrame(
+              request.requestId,
+              request.tileInstanceId,
+              result,
+            ),
+          );
+        })
+        .catch((error: unknown) => {
+          request.sendFrame(
+            buildCdpResultFrame(request.requestId, request.tileInstanceId, {
+              kind: request.command.kind,
+              ok: false,
+              error: {
+                kind: "cdp_error",
+                message: error instanceof Error ? error.message : String(error),
+                code: null,
+              },
+            }),
+          );
+        });
+    });
+  }, [browserView, tileKey]);
+
+  useEffect(() => {
+    if (browserView === null) return;
+    const subscription = browserView.onCdpSessionEnded((change) => {
+      if (!isChangeForTile(change, tileKey)) return;
+      notifyAgentBrowserCdpSessionEnded(change.tileInstanceId, change.reason);
+    });
+    return () => {
+      subscription.dispose();
+    };
+  }, [browserView, tileKey]);
+
+  useEffect(() => {
+    if (browserView === null) return;
+    const subscription = browserView.onCdpTargetAttached((change) => {
+      if (!isChangeForTile(change, tileKey)) return;
+      notifyAgentBrowserCdpTargetAttached(change.tileInstanceId, change);
     });
     return () => {
       subscription.dispose();

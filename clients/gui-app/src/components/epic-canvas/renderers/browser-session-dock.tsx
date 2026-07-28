@@ -35,6 +35,8 @@ import {
   publishBrowserTileControlActionRequest,
   publishBrowserTileControlRequest,
 } from "@/lib/browser-view/browser-tile-control-store";
+import { publishAgentBrowserCdpRequest } from "@/lib/browser-view/agent-browser-cdp-store";
+import type { AgentBrowserViewCdpCommand } from "@/lib/browser-view/desktop-agent-browser-view";
 import {
   resolveDesktopBrowserViewBridge,
   type BrowserViewStorageStateCaptureResult,
@@ -796,25 +798,12 @@ function handleBrowserSessionsFrame(args: {
   >;
   readonly sendClientFrame: (frame: BrowserSessionsClientFrame) => void;
 }): void {
-  if (args.frame.kind === "snapshot") {
-    args.setItems(args.frame.sessions);
-    return;
-  }
-  if (args.frame.kind === "sessionCreated") {
-    const session = args.frame.session;
-    args.setItems((current) => upsertSession(current, session));
-    return;
-  }
-  if (args.frame.kind === "sessionUpdated") {
-    const session = args.frame.session;
-    args.setItems((current) => upsertSession(current, session));
-    return;
-  }
-  if (args.frame.kind === "sessionClosed") {
-    const sessionId = args.frame.sessionId;
-    args.setItems((current) =>
-      current.filter((session) => session.sessionId !== sessionId),
-    );
+  if (
+    handleBrowserSessionLifecycleFrame({
+      frame: args.frame,
+      setItems: args.setItems,
+    })
+  ) {
     return;
   }
   if (args.frame.kind === "promoteState") {
@@ -853,6 +842,227 @@ function handleBrowserSessionsFrame(args: {
     })
   ) {
     return;
+  }
+  if (
+    handleAgentBrowserCdpFrame({
+      frame: args.frame,
+      sendClientFrame: args.sendClientFrame,
+    })
+  ) {
+    return;
+  }
+}
+
+function handleBrowserSessionLifecycleFrame(args: {
+  readonly frame: BrowserSessionsServerFrame;
+  readonly setItems: Dispatch<SetStateAction<readonly BrowserSessionInfo[]>>;
+}): boolean {
+  if (args.frame.kind === "snapshot") {
+    args.setItems(args.frame.sessions);
+    return true;
+  }
+  if (args.frame.kind === "sessionCreated") {
+    const session = args.frame.session;
+    args.setItems((current) => upsertSession(current, session));
+    return true;
+  }
+  if (args.frame.kind === "sessionUpdated") {
+    const session = args.frame.session;
+    args.setItems((current) => upsertSession(current, session));
+    return true;
+  }
+  if (args.frame.kind === "sessionClosed") {
+    const sessionId = args.frame.sessionId;
+    args.setItems((current) =>
+      current.filter((session) => session.sessionId !== sessionId),
+    );
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Ticket 03's transport plumbing: translates each enumerated `cdpXxx` server
+ * frame into the gui-app-local `AgentBrowserViewCdpCommand` shape and hands
+ * it to whichever `AgentBrowserTile` registered for this `tileInstanceId`.
+ * Does not decide what to send - only forwards what the host already decided.
+ */
+function handleAgentBrowserCdpFrame(args: {
+  readonly frame: BrowserSessionsServerFrame;
+  readonly sendClientFrame: (frame: BrowserSessionsClientFrame) => void;
+}): boolean {
+  const request = agentBrowserCdpRequestFromFrame(args.frame);
+  if (request === null) return false;
+  publishAgentBrowserCdpRequest({
+    ...request,
+    sendFrame: args.sendClientFrame,
+  });
+  return true;
+}
+
+type AgentBrowserCdpFrameRequest = {
+  readonly requestId: string;
+  readonly tileInstanceId: string;
+  readonly sessionId: string | null;
+  readonly command: AgentBrowserViewCdpCommand;
+};
+
+function agentBrowserCdpRequestFromFrame(
+  frame: BrowserSessionsServerFrame,
+): AgentBrowserCdpFrameRequest | null {
+  switch (frame.kind) {
+    case "cdpNavigate":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: { kind: "cdpNavigate", url: frame.url },
+      };
+    case "cdpCaptureScreenshot":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: {
+          kind: "cdpCaptureScreenshot",
+          format: frame.format,
+          quality: frame.quality,
+        },
+      };
+    case "cdpGetFrameTree":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: { kind: "cdpGetFrameTree" },
+      };
+    case "cdpCreateIsolatedWorld":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: {
+          kind: "cdpCreateIsolatedWorld",
+          frameId: frame.frameId,
+          worldName: frame.worldName,
+          grantUniversalAccess: frame.grantUniversalAccess,
+        },
+      };
+    case "cdpEvaluate":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: {
+          kind: "cdpEvaluate",
+          expression: frame.expression,
+          awaitPromise: frame.awaitPromise,
+          returnByValue: frame.returnByValue,
+          contextId: frame.contextId,
+        },
+      };
+    case "cdpCallFunctionOn":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: {
+          kind: "cdpCallFunctionOn",
+          objectId: frame.objectId,
+          executionContextId: frame.executionContextId,
+          functionDeclaration: frame.functionDeclaration,
+          argumentsJson: frame.argumentsJson,
+          returnByValue: frame.returnByValue,
+        },
+      };
+    case "cdpReleaseObject":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: { kind: "cdpReleaseObject", objectId: frame.objectId },
+      };
+    case "cdpDispatchMouseEvent":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: {
+          kind: "cdpDispatchMouseEvent",
+          type: frame.type,
+          x: frame.x,
+          y: frame.y,
+          button: frame.button,
+          clickCount: frame.clickCount,
+          deltaX: frame.deltaX,
+          deltaY: frame.deltaY,
+        },
+      };
+    case "cdpInsertText":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: { kind: "cdpInsertText", text: frame.text },
+      };
+    case "cdpDispatchKeyEvent":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: {
+          kind: "cdpDispatchKeyEvent",
+          type: frame.type,
+          key: frame.key,
+          code: frame.code,
+          text: frame.text,
+        },
+      };
+    case "cdpSetDeviceMetricsOverride":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: {
+          kind: "cdpSetDeviceMetricsOverride",
+          width: frame.width,
+          height: frame.height,
+          deviceScaleFactor: frame.deviceScaleFactor,
+          mobile: frame.mobile,
+        },
+      };
+    case "cdpSetAutoAttach":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: {
+          kind: "cdpSetAutoAttach",
+          autoAttach: frame.autoAttach,
+          waitForDebuggerOnStart: frame.waitForDebuggerOnStart,
+        },
+      };
+    case "cdpDescribeNode":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: {
+          kind: "cdpDescribeNode",
+          objectId: frame.objectId,
+          depth: frame.depth,
+          pierce: frame.pierce,
+        },
+      };
+    case "cdpGetFullAXTree":
+      return {
+        requestId: frame.requestId,
+        tileInstanceId: frame.tileInstanceId,
+        sessionId: frame.sessionId,
+        command: { kind: "cdpGetFullAXTree", depth: frame.depth },
+      };
+    default:
+      return null;
   }
 }
 

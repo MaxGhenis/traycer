@@ -246,6 +246,9 @@ export const RunnerHostInvoke = {
   agentBrowserViewUpsert: "runnerHost:agentBrowserView:upsert",
   agentBrowserViewUpdateBounds: "runnerHost:agentBrowserView:updateBounds",
   agentBrowserViewRelease: "runnerHost:agentBrowserView:release",
+  // Ticket 03's typed CDP bridge: one invoke carrying an enumerated command
+  // (see `AgentBrowserViewCdpCommand`), never a generic method/params pair.
+  agentBrowserViewCdpDispatch: "runnerHost:agentBrowserView:cdp:dispatch",
 } as const;
 
 export const RunnerHostEvent = {
@@ -302,6 +305,15 @@ export const RunnerHostEvent = {
   browserViewControlRevoked: "runnerHost:event:browserView:controlRevoked",
   agentBrowserViewStatusChange:
     "runnerHost:event:agentBrowserView:statusChange",
+  // Fired the moment the agent tile's CDP debugger detaches (e.g. the user
+  // opened DevTools) - ends the agent's access rather than only logging it.
+  agentBrowserViewCdpSessionEnded:
+    "runnerHost:event:agentBrowserView:cdp:sessionEnded",
+  // Fired whenever CDP's own `Target.attachedToTarget` fires on the agent
+  // tile's root session, so the renderer can forward child-session discovery
+  // to the host.
+  agentBrowserViewCdpTargetAttached:
+    "runnerHost:event:agentBrowserView:cdp:targetAttached",
   globalShortcutsChange: "runnerHost:event:globalShortcuts:change",
 } as const;
 
