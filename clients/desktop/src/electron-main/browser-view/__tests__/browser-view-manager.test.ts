@@ -442,6 +442,8 @@ interface Harness {
   readonly controlRevocations: BrowserViewControlRevokedChange[];
   readonly cdpSessionEndedNotifications: AgentBrowserViewCdpSessionEndedChange[];
   readonly cdpTargetAttachedNotifications: AgentBrowserViewCdpTargetAttachedChange[];
+  readonly cdpInteractionObservedNotifications: AgentBrowserViewCdpInteractionObservedChange[];
+  readonly tileHandoffNotifications: AgentBrowserViewTileHandoffChange[];
   readonly snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[];
   readonly storageStateApplications: BrowserViewStorageStateApply[];
   readonly storageStateCaptures: BrowserViewStorageStateCapture[];
@@ -597,6 +599,8 @@ function createHarness(): Harness {
     controlRevocations,
     cdpSessionEndedNotifications,
     cdpTargetAttachedNotifications,
+    cdpInteractionObservedNotifications,
+    tileHandoffNotifications,
     snapshotInvalidations,
     storageStateApplications,
     storageStateCaptures,
@@ -611,6 +615,15 @@ function createHarness(): Harness {
       for (const listener of windowListeners) listener();
     },
   };
+}
+
+/** Ticket 12: flush the async closeEntry → pushTileHandoff → capture chain. */
+async function flushCloseEntry(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe("BrowserViewManager", () => {
@@ -2634,5 +2647,168 @@ describe("BrowserViewManager CDP dispatch", () => {
         code: null,
       },
     });
+  });
+});
+
+// -------------------------------------------------------------------------
+// Ticket 12: closeEntry re-entrancy + handoff reason mapping
+// -------------------------------------------------------------------------
+
+describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (ticket 12)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function upsertLiveTile(harness: Harness): FakeBrowserView {
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    harness.manager.updateBounds("window-1", {
+      ...BASE_KEY,
+      bounds: { x: 0, y: 0, width: 500, height: 300 },
+    });
+    const view = harness.views[0];
+    if (view === undefined) {
+      throw new Error("expected a view after upsert");
+    }
+    return view;
+  }
+
+  it("two racing teardown triggers only push one handoff and close webContents once (window-change race)", async () => {
+    const harness = createHarness();
+    const view = upsertLiveTile(harness);
+    const window = harness.windows.get("window-1");
+    if (window === undefined) throw new Error("missing window-1");
+    window.destroyed = true;
+
+    // Two reconcileWindowVisibility passes race the same entry: each
+    // fire-and-forgets closeEntry. The synchronous claim must admit only one.
+    harness.emitWindowChange();
+    harness.emitWindowChange();
+    await flushCloseEntry();
+
+    expect(harness.tileHandoffNotifications).toHaveLength(1);
+    expect(harness.tileHandoffNotifications[0]?.reason).toBe("gui-quit");
+    expect(view.webContents.closeCalls).toBe(1);
+  });
+
+  it("releaseTile grace timer and dispose racing the same entry do not double-process", async () => {
+    const harness = createHarness();
+    const view = upsertLiveTile(harness);
+
+    harness.manager.releaseTile("window-1", BASE_KEY);
+    // Fire the grace timer so closeEntry starts, then dispose also tries.
+    // dispose clears remaining timers and iterates entriesByKey - if the
+    // timer already claimed the entry, dispose finds nothing; if dispose
+    // wins first, the timer's re-read of entriesByKey is undefined.
+    vi.advanceTimersByTime(10);
+    harness.manager.dispose();
+    await flushCloseEntry();
+
+    expect(harness.tileHandoffNotifications).toHaveLength(1);
+    expect(view.webContents.closeCalls).toBe(1);
+    // Whichever path claimed first: either tile-released (timer) or gui-quit
+    // (dispose). Exactly one reason, not two handoffs.
+    expect(["tile-released", "gui-quit"]).toContain(
+      harness.tileHandoffNotifications[0]?.reason,
+    );
+  });
+
+  it("maps grace-timer teardown to reason tile-released", async () => {
+    const harness = createHarness();
+    const view = upsertLiveTile(harness);
+
+    harness.manager.releaseTile("window-1", BASE_KEY);
+    vi.advanceTimersByTime(10);
+    await flushCloseEntry();
+
+    expect(harness.tileHandoffNotifications).toEqual([
+      expect.objectContaining({
+        ...BASE_KEY,
+        reason: "tile-released",
+        capturedUrl: "http://localhost:3000",
+      }),
+    ]);
+    expect(view.webContents.closeCalls).toBe(1);
+  });
+
+  it("maps dispose teardown to reason gui-quit", async () => {
+    const harness = createHarness();
+    const view = upsertLiveTile(harness);
+
+    harness.manager.dispose();
+    await flushCloseEntry();
+
+    expect(harness.tileHandoffNotifications).toEqual([
+      expect.objectContaining({
+        ...BASE_KEY,
+        reason: "gui-quit",
+      }),
+    ]);
+    expect(view.webContents.closeCalls).toBe(1);
+  });
+
+  it("crash then releaseTile overrides reason to crash-no-capture (and skips storage capture)", async () => {
+    const harness = createHarness();
+    const view = upsertLiveTile(harness);
+    view.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+    expect(harness.statuses.at(-1)).toMatchObject({ status: "dead" });
+
+    const capturesBefore = harness.storageStateCaptures.length;
+    harness.manager.releaseTile("window-1", BASE_KEY);
+    vi.advanceTimersByTime(10);
+    await flushCloseEntry();
+
+    expect(harness.tileHandoffNotifications).toHaveLength(1);
+    expect(harness.tileHandoffNotifications[0]).toMatchObject({
+      ...BASE_KEY,
+      reason: "crash-no-capture",
+      capturedStorageState: null,
+    });
+    // crash-no-capture must not attempt captureStorageStateFromBrowser.
+    expect(harness.storageStateCaptures.length).toBe(capturesBefore);
+    expect(view.webContents.closeCalls).toBe(1);
+  });
+
+  it("crash then dispose overrides reason to crash-no-capture regardless of gui-quit path", async () => {
+    const harness = createHarness();
+    const view = upsertLiveTile(harness);
+    view.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+
+    harness.manager.dispose();
+    await flushCloseEntry();
+
+    expect(harness.tileHandoffNotifications).toHaveLength(1);
+    expect(harness.tileHandoffNotifications[0]).toMatchObject({
+      ...BASE_KEY,
+      reason: "crash-no-capture",
+      capturedStorageState: null,
+    });
+    expect(view.webContents.closeCalls).toBe(1);
+  });
+
+  it("crash then destroyed-window reconcile also reports crash-no-capture", async () => {
+    const harness = createHarness();
+    const view = upsertLiveTile(harness);
+    view.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+    const window = harness.windows.get("window-1");
+    if (window === undefined) throw new Error("missing window-1");
+    window.destroyed = true;
+
+    harness.emitWindowChange();
+    await flushCloseEntry();
+
+    expect(harness.tileHandoffNotifications).toEqual([
+      expect.objectContaining({
+        reason: "crash-no-capture",
+        capturedStorageState: null,
+      }),
+    ]);
+    expect(view.webContents.closeCalls).toBe(1);
   });
 });
