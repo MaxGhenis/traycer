@@ -360,6 +360,7 @@ describe("useChatSetupFailureRestoreDriver", () => {
           message: {
             kind: "user",
             content: failedContent,
+            browserContextAttachments: [],
           },
           timestamp: 2,
           sessionAnchor: null,

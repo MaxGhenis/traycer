@@ -471,6 +471,7 @@ function hostUserMessage(): Message {
           },
         ],
       },
+      browserContextAttachments: [],
     },
     timestamp: 1,
     sessionAnchor: null,
@@ -1994,6 +1995,7 @@ describe("<ChatTile />", () => {
           message: {
             kind: "user",
             content: INITIAL_HANDOFF_CONTENT,
+            browserContextAttachments: [],
           },
           timestamp: 3,
           sessionAnchor: null,
@@ -2150,6 +2152,7 @@ describe("<ChatTile />", () => {
         message: {
           kind: "user",
           content: QUEUED_CONTENT,
+          browserContextAttachments: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,
@@ -2168,6 +2171,7 @@ describe("<ChatTile />", () => {
         message: {
           kind: "user",
           content: QUEUED_CONTENT,
+          browserContextAttachments: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,
@@ -2257,6 +2261,7 @@ describe("<ChatTile />", () => {
         message: {
           kind: "user",
           content: QUEUED_CONTENT,
+          browserContextAttachments: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,
@@ -2290,6 +2295,7 @@ describe("<ChatTile />", () => {
         message: {
           kind: "user",
           content: QUEUED_CONTENT,
+          browserContextAttachments: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,
@@ -2323,6 +2329,7 @@ describe("<ChatTile />", () => {
         message: {
           kind: "user",
           content: QUEUED_CONTENT,
+          browserContextAttachments: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,
@@ -2396,6 +2403,7 @@ describe("<ChatTile />", () => {
         message: {
           kind: "user",
           content: QUEUED_CONTENT,
+          browserContextAttachments: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,
@@ -2450,6 +2458,7 @@ describe("<ChatTile />", () => {
         message: {
           kind: "user",
           content: QUEUED_CONTENT,
+          browserContextAttachments: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,
@@ -2506,6 +2515,7 @@ describe("<ChatTile />", () => {
         message: {
           kind: "user",
           content: QUEUED_CONTENT,
+          browserContextAttachments: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,
@@ -2524,6 +2534,7 @@ describe("<ChatTile />", () => {
         message: {
           kind: "user",
           content: SECOND_QUEUED_CONTENT,
+          browserContextAttachments: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,

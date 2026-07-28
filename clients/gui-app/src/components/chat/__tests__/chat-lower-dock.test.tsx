@@ -232,6 +232,7 @@ function queuedItem(queueItemId: string, text: string): ChatQueuedItem {
     message: {
       kind: "user",
       content: content(text),
+      browserContextAttachments: [],
     },
     sender: { type: "user", userId: "owner-1" },
     settings: SETTINGS,

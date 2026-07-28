@@ -293,6 +293,7 @@ function emitChatSnapshot(
                   },
                 ],
               },
+              browserContextAttachments: [],
             },
             timestamp: 1,
             sessionAnchor: null,
@@ -395,6 +396,7 @@ describe("chat-tile queue edit save-and-steer routing (decision 14)", () => {
         message: {
           kind: "user",
           content: QUEUED_CONTENT,
+          browserContextAttachments: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,
@@ -471,6 +473,7 @@ describe("chat-tile queue edit save-and-steer routing (decision 14)", () => {
         message: {
           kind: "user",
           content: QUEUED_CONTENT,
+          browserContextAttachments: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,

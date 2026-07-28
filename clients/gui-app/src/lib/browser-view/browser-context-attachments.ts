@@ -5,6 +5,7 @@ import type {
   BrowserViewNetworkEntry,
   BrowserViewTileKey,
 } from "@/lib/browser-view/desktop-browser-view";
+import type { BrowserContextAttachmentWire } from "@traycer/protocol/host/agent/gui/subscribe";
 
 export type BrowserContextAttachmentKind =
   | "browser-console-entry"
@@ -508,4 +509,22 @@ function originFromUrl(url: string): string {
   } catch {
     return "local";
   }
+}
+
+/**
+ * Ticket 13. The wire shape a `send` frame carries for this attachment: the
+ * `tileInstanceId` here is the RAW id (the host mints an opaque handle from
+ * it and never persists or forwards the raw value itself), never something
+ * this composer path exposes back to the user or the model.
+ */
+export function browserContextAttachmentToWire(
+  payload: BrowserContextAttachmentPayload,
+): BrowserContextAttachmentWire {
+  return {
+    kind: payload.kind,
+    origin: payload.source.origin,
+    pageUrl: payload.source.pageUrl,
+    composerText: payload.composerText,
+    tileInstanceId: payload.source.tile.tileInstanceId,
+  };
 }

@@ -219,6 +219,7 @@ function makeQueuedItem(queueItemId: string): ChatQueuedItem {
           },
         ],
       },
+      browserContextAttachments: [],
     },
     sender: { type: "user", userId: "owner-1" },
     settings: TEST_SETTINGS,

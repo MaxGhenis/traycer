@@ -38,7 +38,11 @@ import type {
 } from "@traycer-clients/shared/host-transport/i-stream-session";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import { buildAttachmentsFromJSONContent } from "@/lib/composer/tiptap-json-content";
-import type { Attachment } from "@/lib/composer/types";
+import type {
+  Attachment,
+  BrowserContextAttachment,
+} from "@/lib/composer/types";
+import { browserContextAttachmentToWire } from "@/lib/browser-view/browser-context-attachments";
 import type {
   RuntimeApprovalDecision,
   RuntimeEvent,
@@ -1710,6 +1714,17 @@ export function createChatSessionStore(
         };
         if (stagedWorktreeIntentIsSuspended(stagedKey)) return null;
         const worktreeIntent = readStagedWorktreeIntent(stagedKey);
+        // Ticket 13: the ONLY attachment kind this frame carries off of
+        // `input.attachments` - image/mention attachments are already
+        // embedded in `input.content` and need no separate wire field.
+        const browserContextAttachments = input.attachments
+          .filter(
+            (attachment): attachment is BrowserContextAttachment =>
+              attachment.kind === "browser-context",
+          )
+          .map((attachment) =>
+            browserContextAttachmentToWire(attachment.payload),
+          );
         const frame: ChatOwnerActionFrame = {
           kind: "send",
           hasBinaryPayload: false,
@@ -1723,6 +1738,7 @@ export function createChatSessionStore(
           accountContext: useAccountContextStore.getState().accountContext,
           deliveryPolicy: input.deliveryPolicy,
           worktreeIntent,
+          browserContextAttachments,
         };
         // Consume before dispatch so the pending action captures precisely the
         // revision it may later restore. A synchronous action rejection cannot
@@ -1839,6 +1855,8 @@ export function createChatSessionStore(
           // The landing handoff carries its worktree intent via `epic.create`,
           // not the send frame.
           worktreeIntent: null,
+          // The landing page's composer has no browser tile to attach from.
+          browserContextAttachments: [],
         };
         const sentClientActionId = sendAction({
           set,
@@ -2818,6 +2836,9 @@ function optimisticQueuedItemForSend(
     message: {
       kind: "user",
       content: input.content,
+      // Optimistic local echo only - the real `queue.added` event (carrying
+      // the host-minted handles) reconciles this row once it arrives.
+      browserContextAttachments: [],
     },
     sender: input.sender,
     settings: input.settings,

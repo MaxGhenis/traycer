@@ -271,7 +271,11 @@ function runnableQueue(itemCount: number): ChatQueueState {
     items: Array.from({ length: itemCount }, (_, index) => ({
       queueItemId: `item-${index}`,
       messageId: `message-${index}`,
-      message: { kind: "user" as const, content: CONTENT },
+      message: {
+        kind: "user" as const,
+        content: CONTENT,
+        browserContextAttachments: [],
+      },
       sender: { type: "user" as const, userId: "owner-1" },
       settings: SETTINGS,
       accountContext: { type: "PERSONAL" as const },

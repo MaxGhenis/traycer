@@ -16,6 +16,7 @@ import { commonRecordRegistry } from "@traycer/protocol/common/registry";
 import { getRecordSchema } from "@traycer/protocol/framework/index";
 import { defineStreamRpcContract } from "@traycer/protocol/framework/versioned-stream-rpc";
 import {
+  browserContextAttachmentKindSchema,
   chatEventSchema,
   chatEventSchemaPreInReplyTo,
   chatRunSettingsSchema,
@@ -775,6 +776,26 @@ const activeProfileUpdateClientFrameSchema = z.object({
   profileId: z.string().nullable(),
 });
 
+/**
+ * Ticket 13. The wire-only shape a `browser-context` chat attachment sends:
+ * origin/pageUrl/composerText the model will eventually see verbatim, plus
+ * the RAW `tileInstanceId`. The raw id travels no further than the host's
+ * `send` handler, which mints an opaque handle from it and forwards that
+ * handle - never the id itself - onto the persisted
+ * `browserContextAttachmentRecordSchema` (`persistence/epic/messages.ts`)
+ * and into the prompt.
+ */
+export const browserContextAttachmentWireSchema = z.object({
+  kind: browserContextAttachmentKindSchema,
+  origin: z.string(),
+  pageUrl: z.string(),
+  composerText: z.string(),
+  tileInstanceId: z.string(),
+});
+export type BrowserContextAttachmentWire = z.infer<
+  typeof browserContextAttachmentWireSchema
+>;
+
 const chatSubscribeClientFrameSchemaBeforeV13Options = [
   z.object({
     kind: z.literal("send"),
@@ -793,6 +814,13 @@ const chatSubscribeClientFrameSchemaBeforeV13Options = [
     // gating on setup - mirroring how the landing page bundles the intent
     // with `epic.create`. `null` for an ordinary send.
     worktreeIntent: worktreeIntentSchema.nullable().default(null),
+    // Tiles the user attached in chat (ticket 13) - empty for every send
+    // before this shipped and for one with nothing attached. Same additive
+    // treatment as `worktreeIntent` above: `.default([])`, no separate
+    // versioned tier, since an older host simply never reads the key.
+    browserContextAttachments: z
+      .array(browserContextAttachmentWireSchema)
+      .default([]),
   }),
   z.object({
     kind: z.literal("deleteMessageSuffix"),
@@ -1193,6 +1221,9 @@ const chatSubscribeClientFrameSchemaV10 = z.discriminatedUnion("kind", [
     accountContext: accountContextSchema,
     deliveryPolicy: chatQueueDeliveryPolicySchema.default("auto"),
     worktreeIntent: worktreeIntentSchema.nullable().default(null),
+    browserContextAttachments: z
+      .array(browserContextAttachmentWireSchema)
+      .default([]),
   }),
   z.object({
     kind: z.literal("deleteMessageSuffix"),

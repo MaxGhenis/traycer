@@ -98,6 +98,7 @@ function createQueueItem(
     message: {
       kind: "user",
       content,
+      browserContextAttachments: [],
     },
     sender: SENDER,
     settings: SETTINGS,
@@ -270,6 +271,7 @@ describe("chat-queue-reconciler", () => {
         message: {
           kind: "user",
           content: CONTENT,
+          browserContextAttachments: [],
         },
         timestamp: 1000,
         sessionAnchor: null,
@@ -390,6 +392,7 @@ describe("chat-queue-reconciler", () => {
         message: {
           kind: "user",
           content: CONTENT,
+          browserContextAttachments: [],
         },
         timestamp: 1000,
         sessionAnchor: null,
@@ -435,6 +438,7 @@ describe("chat-queue-reconciler", () => {
         message: {
           kind: "user",
           content: CONTENT,
+          browserContextAttachments: [],
         },
         timestamp: 1000,
         sessionAnchor: null,
@@ -493,6 +497,7 @@ describe("chat-queue-reconciler", () => {
         message: {
           kind: "user",
           content: CONTENT,
+          browserContextAttachments: [],
         },
         timestamp: 1000,
         sessionAnchor: null,

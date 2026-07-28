@@ -22,6 +22,38 @@ const jsonContentSchema = getRecordSchema(
   "latest",
 );
 
+/**
+ * Ticket 13. A browser tile's context the user attached to a chat message
+ * (composer attach, console row, screenshot, element - see
+ * `browser-context-attachments.ts` in gui-app), carried alongside `content`
+ * rather than embedded in it. `handle` is the opaque, chat-scoped token the
+ * host minted from the tile's real `tileInstanceId` when the message was
+ * accepted (`browser-tile-handle.ts`) - the raw id itself never reaches
+ * persistence or the model; only this record does, matching what the model
+ * is shown (origin, page URL, handle) via the prompt.
+ */
+export const browserContextAttachmentKindSchema = z.enum([
+  "browser-console-entry",
+  "browser-network-request",
+  "browser-screenshot",
+  "browser-element",
+  "browser-debug-context",
+]);
+export type BrowserContextAttachmentKind = z.infer<
+  typeof browserContextAttachmentKindSchema
+>;
+
+export const browserContextAttachmentRecordSchema = z.object({
+  kind: browserContextAttachmentKindSchema,
+  origin: z.string(),
+  pageUrl: z.string(),
+  composerText: z.string(),
+  handle: z.string(),
+});
+export type BrowserContextAttachmentRecord = z.infer<
+  typeof browserContextAttachmentRecordSchema
+>;
+
 export const agentUserMessageSchema = z.object({
   kind: z.literal("agent"),
   content: jsonContentSchema,
@@ -42,6 +74,23 @@ export const agentUserMessageSchema = z.object({
 export const userAuthoredMessageSchema = z.object({
   kind: z.literal("user"),
   content: jsonContentSchema,
+  /**
+   * Empty for every message before ticket 13 and for one with no browser
+   * tile attached - `.default([])` rather than `.optional()` so an already-
+   * persisted record written before this field existed parses cleanly.
+   *
+   * Persisted here rather than kept as transient send-time state (contrast
+   * `worktreeIntent`, a wire-only "send" field the host consumes and
+   * discards): a queued send re-derives its prompt from THIS persisted
+   * message at drain time, not from the original `send` frame, so dropping
+   * the field here would silently lose the user's attachment for any
+   * message that sits in the queue before its turn starts. This is also why
+   * the handle inside each record is minted once, at accept time, and never
+   * re-derived at drain - see `mintBrowserContextAttachmentRecords`.
+   */
+  browserContextAttachments: z
+    .array(browserContextAttachmentRecordSchema)
+    .default([]),
 });
 
 export const userMessagePayloadSchema = z.discriminatedUnion("kind", [

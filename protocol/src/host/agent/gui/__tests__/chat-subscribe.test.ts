@@ -33,6 +33,7 @@ const userMessage: UserMessage = {
   message: {
     kind: "user",
     content: { type: "doc", content: [] },
+    browserContextAttachments: [],
   },
   timestamp: 1000,
   sessionAnchor: null,

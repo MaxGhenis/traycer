@@ -87,6 +87,7 @@ function userMessage(messageId: string): Extract<Message, { role: "user" }> {
     message: {
       kind: "user",
       content: CONTENT,
+      browserContextAttachments: [],
     },
     timestamp: 1000 + messageId.length,
     sessionAnchor: null,
@@ -137,6 +138,7 @@ function steerRequestedQueueItem(
     message: {
       kind: "user",
       content: CONTENT,
+      browserContextAttachments: [],
     },
     sender: { type: "user", userId: "owner-1" },
     settings: SETTINGS,
@@ -1109,6 +1111,7 @@ describe("useRenderedMessages", () => {
       message: {
         kind: "user",
         content,
+        browserContextAttachments: [],
       },
       timestamp: 2002,
     };
@@ -1176,6 +1179,7 @@ describe("useRenderedMessages", () => {
       message: {
         kind: "user",
         content,
+        browserContextAttachments: [],
       },
       timestamp: 2002,
     };

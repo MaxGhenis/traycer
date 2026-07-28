@@ -127,6 +127,7 @@ function queuedItem(input: {
           },
         ],
       },
+      browserContextAttachments: [],
     },
     sender: input.sender,
     settings: TEST_SETTINGS,
