@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  Bot,
   Bug,
   Monitor,
   RotateCw,
@@ -20,6 +21,7 @@ import {
   Smartphone,
   Square,
   Tablet,
+  Unplug,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -70,6 +72,15 @@ import {
   type BrowserTileActiveControl,
   type BrowserTileControlActionRequest,
 } from "@/lib/browser-view/browser-tile-control-store";
+import {
+  registerAgentBrowserCdpHandler,
+  buildCdpResultFrame,
+} from "@/lib/browser-view/agent-browser-cdp-store";
+import {
+  releaseBorrowedTileAttachment,
+  useBorrowedTileAttachment,
+  type BrowserBorrowedTileAttachment,
+} from "@/lib/browser-view/browser-borrowed-tile-store";
 import { PANEL_RESIZING_CLASS_NAME } from "@/lib/layout/panel-resizing-class";
 import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
@@ -328,6 +339,7 @@ export function BrowserTile(props: BrowserTileProps) {
     targetChatId: browserAttachmentTargetChatId,
   });
   const controlState = useBrowserTileControlState(props.node.instanceId);
+  const borrowedAttachment = useBorrowedTileAttachment(props.node.instanceId);
 
   useEffect(() => {
     if (browserView === null) return;
@@ -359,6 +371,77 @@ export function BrowserTile(props: BrowserTileProps) {
       subscription.dispose();
     };
   }, [browserView, controlState.active, sensitiveActionPrompt, tileKey]);
+
+  /**
+   * Ticket 09: while - and only while - this tile is borrowed, answer the
+   * host's CDP dispatches for it.
+   *
+   * This registration IS the containment. The transport that can drive a
+   * user-partition tile now exists in this renderer, so what keeps the agent
+   * off a tile the user never named is that no handler is registered for it:
+   * `publishAgentBrowserCdpRequest` falls through to a `tile_not_found`
+   * reply, which is the same answer an unmounted tile gives, so an unattached
+   * tile is not distinguishable from one that does not exist.
+   *
+   * The handler is deliberately a thin forwarder to the same
+   * `AgentBrowserViewCdpCommand` surface the agent's own tile uses - v3's
+   * capability-parity ruling means a borrowed tile is not a reduced surface,
+   * and a filter here would be a policy boundary this design does not have.
+   */
+  useEffect(() => {
+    if (browserView === null || borrowedAttachment === null) return;
+    return registerAgentBrowserCdpHandler(props.node.instanceId, (request) => {
+      void browserView
+        .dispatchCdp({
+          ...tileKey,
+          sessionId: request.sessionId,
+          command: request.command,
+        })
+        .then((result) => {
+          request.sendFrame(
+            buildCdpResultFrame(
+              request.requestId,
+              request.tileInstanceId,
+              result,
+            ),
+          );
+        })
+        .catch((error: unknown) => {
+          request.sendFrame(
+            buildCdpResultFrame(request.requestId, request.tileInstanceId, {
+              kind: request.command.kind,
+              ok: false,
+              error: {
+                kind: "cdp_error",
+                message: error instanceof Error ? error.message : String(error),
+                code: null,
+              },
+            }),
+          );
+        });
+    });
+  }, [borrowedAttachment, browserView, props.node.instanceId, tileKey]);
+
+  /**
+   * Ticket 03's rule - a detached debugger ends agent access rather than
+   * being logged - applied to a tile holding the user's real logins, where
+   * it matters more than anywhere else. Electron detaches when the user
+   * opens DevTools, among other causes; the attachment ends rather than
+   * silently going stale, and the indicator goes with it.
+   */
+  useEffect(() => {
+    if (browserView === null || borrowedAttachment === null) return;
+    const subscription = browserView.onCdpSessionEnded((change) => {
+      if (!isStatusForTile(change, tileKey)) return;
+      releaseBorrowedTileAttachment({
+        attachment: borrowedAttachment,
+        reason: `Browser debugger detached: ${change.reason}`,
+      });
+    });
+    return () => {
+      subscription.dispose();
+    };
+  }, [borrowedAttachment, browserView, tileKey]);
 
   useEffect(() => {
     return registerBrowserTileControlActionHandler(
@@ -642,6 +725,15 @@ export function BrowserTile(props: BrowserTileProps) {
     });
   };
 
+  const detachBorrowedTile = (
+    attachment: BrowserBorrowedTileAttachment,
+  ): void => {
+    releaseBorrowedTileAttachment({
+      attachment,
+      reason: "User detached the agent from this browser tab.",
+    });
+  };
+
   const approveSensitiveAction = (
     prompt: BrowserTileSensitiveActionPrompt,
   ): void => {
@@ -836,6 +928,10 @@ export function BrowserTile(props: BrowserTileProps) {
         prompt={sensitiveActionPrompt}
         onApprove={approveSensitiveAction}
         onDeny={denySensitiveAction}
+      />
+      <BrowserTileBorrowedBanner
+        attachment={borrowedAttachment}
+        onDetach={detachBorrowedTile}
       />
       <BrowserTileControlBanner
         pending={controlState.pending}
@@ -1038,6 +1134,61 @@ function BrowserTileSensitiveActionBanner(props: {
         onClick={() => props.onApprove(prompt)}
       >
         Approve
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * Ticket 09's passive indicator, and our one deliberate divergence from
+ * Aside, which marks borrowed tabs not at all.
+ *
+ * It is an **indicator, not a prompt**: nothing is blocked behind it, it
+ * asks no question, and ignoring it entirely is a valid thing for the user
+ * to do - the consent was the request they already made in chat. What it
+ * owes them is that the state is never a surprise: who is driving, until
+ * when, and a way out that works immediately.
+ *
+ * Visually distinct from `BrowserTileControlBanner` below on purpose. That
+ * one is T18's ask-then-grant flow and is green-for-approved; this is amber,
+ * because a page the agent reads here can steer it and it is acting inside
+ * the user's own logged-in session (v3's accepted blast radius). Same tile,
+ * two different things, and they must not be mistaken for each other.
+ *
+ * Ticket 12 adds the one-click Stop beside Detach, with the honest "stopped"
+ * versus "outcome unknown" distinction that needs host-side composition this
+ * ticket does not own. Deliberately not stubbed here: a Stop that does
+ * nothing, or that claims "stopped" when a dispatched command may already
+ * have landed, is worse than the empty space.
+ */
+function BrowserTileBorrowedBanner(props: {
+  readonly attachment: BrowserBorrowedTileAttachment | null;
+  readonly onDetach: (attachment: BrowserBorrowedTileAttachment) => void;
+}) {
+  const attachment = props.attachment;
+  if (attachment === null) return null;
+  return (
+    <div className="flex min-w-0 items-center gap-2 border-b border-amber-500/35 bg-amber-500/10 px-3 py-1.5 text-ui-xs">
+      <Bot className="size-3.5 shrink-0 text-amber-600" />
+      <div className="min-w-0 flex-1 truncate text-amber-950 dark:text-amber-100">
+        {/* States the fact rather than warning about it: the load-bearing
+            part is "your browser session", i.e. this is the user's own
+            partition and whatever it is signed into, not the agent's
+            credential-free one. Deliberately does not assert the user IS
+            signed in on this site - that would be a guess, and a banner that
+            is sometimes wrong is a banner people learn to ignore. The
+            up-front risk copy belongs at the labs toggle (ticket 11). */}
+        {attachment.agentLabel} is driving this tab in your browser session
+      </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="h-7 shrink-0 gap-1.5 px-2 text-ui-xs"
+        onClick={() => props.onDetach(attachment)}
+      >
+        <Unplug className="size-3" />
+        Detach
       </Button>
     </div>
   );

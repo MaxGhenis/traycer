@@ -50,6 +50,12 @@ import type {
   BrowserViewViewportPresetChange,
   DesktopBrowserViewBridge,
 } from "@/lib/browser-view/desktop-browser-view";
+import type {
+  AgentBrowserViewCdpDispatch,
+  AgentBrowserViewCdpResult,
+  AgentBrowserViewCdpSessionEndedChange,
+  AgentBrowserViewCdpTargetAttachedChange,
+} from "@/lib/browser-view/desktop-agent-browser-view";
 import type { TileFindAdapter } from "@/stores/tile-find";
 import { TILE_KIND_BROWSER } from "@/stores/epics/canvas/tile-kinds";
 import type { BrowserTileRef } from "@/stores/epics/canvas/types";
@@ -200,6 +206,9 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
   readonly revokeControlCalls: BrowserViewControlRevoke[] = [];
   readonly controlActionCalls: BrowserViewControlAction[] = [];
   readonly controlActionResults: BrowserViewControlActionResult[] = [];
+  // Ticket 09: recorded rather than inert, because "did a CDP dispatch
+  // actually reach this tile" is the question the borrowed-tile tests ask.
+  readonly cdpDispatchCalls: AgentBrowserViewCdpDispatch[] = [];
   private readonly statusHandlers = new Set<
     (change: BrowserViewStatusChange) => void
   >();
@@ -217,6 +226,12 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
   >();
   private readonly controlRevokedHandlers = new Set<
     (change: BrowserViewControlRevokedChange) => void
+  >();
+  private readonly cdpSessionEndedHandlers = new Set<
+    (change: AgentBrowserViewCdpSessionEndedChange) => void
+  >();
+  private readonly cdpTargetAttachedHandlers = new Set<
+    (change: AgentBrowserViewCdpTargetAttachedChange) => void
   >();
 
   constructor(private readonly cryptoState: BrowserCookieCryptoState) {}
@@ -484,6 +499,47 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
         this.controlRevokedHandlers.delete(handler);
       },
     };
+  }
+
+  dispatchCdp(
+    input: AgentBrowserViewCdpDispatch,
+  ): Promise<AgentBrowserViewCdpResult> {
+    this.cdpDispatchCalls.push(input);
+    return Promise.resolve({
+      kind: "cdpGetFrameTree" as const,
+      ok: true as const,
+      frames: [],
+    });
+  }
+
+  onCdpSessionEnded(
+    handler: (change: AgentBrowserViewCdpSessionEndedChange) => void,
+  ): {
+    dispose: () => void;
+  } {
+    this.cdpSessionEndedHandlers.add(handler);
+    return {
+      dispose: () => {
+        this.cdpSessionEndedHandlers.delete(handler);
+      },
+    };
+  }
+
+  onCdpTargetAttached(
+    handler: (change: AgentBrowserViewCdpTargetAttachedChange) => void,
+  ): {
+    dispose: () => void;
+  } {
+    this.cdpTargetAttachedHandlers.add(handler);
+    return {
+      dispose: () => {
+        this.cdpTargetAttachedHandlers.delete(handler);
+      },
+    };
+  }
+
+  emitCdpSessionEnded(change: AgentBrowserViewCdpSessionEndedChange): void {
+    this.cdpSessionEndedHandlers.forEach((handler) => handler(change));
   }
 
   emitStatus(change: BrowserViewStatusChange): void {

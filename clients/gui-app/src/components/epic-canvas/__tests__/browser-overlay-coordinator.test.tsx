@@ -37,6 +37,7 @@ import type {
   BrowserViewTileKey,
   DesktopBrowserViewBridge,
 } from "@/lib/browser-view/desktop-browser-view";
+import type { AgentBrowserViewCdpResult } from "@/lib/browser-view/desktop-agent-browser-view";
 import { RunnerHostProvider } from "@/providers/runner-host-provider";
 
 const BASE_KEY: BrowserViewTileKey = {
@@ -299,6 +300,30 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
   ): {
     dispose: () => void;
   } {
+    return { dispose: () => undefined };
+  }
+
+  // Ticket 09's borrowed-tile CDP members. This fake exists to exercise the
+  // overlay coordinator, which never drives a tile, so they are inert here -
+  // the borrowed-tile behaviour has its own tests rather than riding on this
+  // one's fake.
+  dispatchCdp(): Promise<AgentBrowserViewCdpResult> {
+    return Promise.resolve({
+      kind: "cdpGetFrameTree",
+      ok: false,
+      error: {
+        kind: "tile_not_found",
+        message: "Fake bridge does not dispatch CDP.",
+        code: null,
+      },
+    });
+  }
+
+  onCdpSessionEnded(): { dispose: () => void } {
+    return { dispose: () => undefined };
+  }
+
+  onCdpTargetAttached(): { dispose: () => void } {
     return { dispose: () => undefined };
   }
 

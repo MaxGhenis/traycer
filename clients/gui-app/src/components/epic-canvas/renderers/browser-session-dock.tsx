@@ -36,6 +36,10 @@ import {
   publishBrowserTileControlRequest,
 } from "@/lib/browser-view/browser-tile-control-store";
 import { publishAgentBrowserCdpRequest } from "@/lib/browser-view/agent-browser-cdp-store";
+import {
+  clearBorrowedTileAttachment,
+  publishBorrowedTileAttachment,
+} from "@/lib/browser-view/browser-borrowed-tile-store";
 import type { AgentBrowserViewCdpCommand } from "@/lib/browser-view/desktop-agent-browser-view";
 import {
   resolveDesktopBrowserViewBridge,
@@ -844,6 +848,14 @@ function handleBrowserSessionsFrame(args: {
     return;
   }
   if (
+    handleBorrowedTileFrame({
+      frame: args.frame,
+      sendClientFrame: args.sendClientFrame,
+    })
+  ) {
+    return;
+  }
+  if (
     handleAgentBrowserCdpFrame({
       frame: args.frame,
       sendClientFrame: args.sendClientFrame,
@@ -851,6 +863,44 @@ function handleBrowserSessionsFrame(args: {
   ) {
     return;
   }
+}
+
+/**
+ * Ticket 09's borrowed-tile attachment lifetime. Routing only: this decides
+ * nothing about whether the agent may drive the tile, it records what the
+ * host already decided so `BrowserTile` can register that tile's CDP handler
+ * and show the passive indicator for exactly as long as the attachment lasts.
+ *
+ * `sendClientFrame` is captured onto the attachment because the detach
+ * affordance needs a way back to the host that does not depend on a CDP
+ * dispatch having happened first - unlike `cdpSessionEnded`, whose sender is
+ * only known once something has been dispatched.
+ */
+function handleBorrowedTileFrame(args: {
+  readonly frame: BrowserSessionsServerFrame;
+  readonly sendClientFrame: (frame: BrowserSessionsClientFrame) => void;
+}): boolean {
+  if (args.frame.kind === "borrowedTileAttached") {
+    publishBorrowedTileAttachment({
+      attachmentId: args.frame.attachmentId,
+      tileInstanceId: args.frame.tileInstanceId,
+      chatId: args.frame.chatId,
+      agentRunId: args.frame.agentRunId,
+      agentLabel: args.frame.agentLabel,
+      attachedAt: args.frame.attachedAt,
+      expiresAt: args.frame.expiresAt,
+      sendFrame: args.sendClientFrame,
+    });
+    return true;
+  }
+  if (args.frame.kind === "borrowedTileDetached") {
+    clearBorrowedTileAttachment({
+      tileInstanceId: args.frame.tileInstanceId,
+      attachmentId: args.frame.attachmentId,
+    });
+    return true;
+  }
+  return false;
 }
 
 function handleBrowserSessionLifecycleFrame(args: {

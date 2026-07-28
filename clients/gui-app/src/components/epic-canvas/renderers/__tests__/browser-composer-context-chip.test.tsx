@@ -414,5 +414,20 @@ function createFakeBridge(): FakeBridge {
     onSnapshotInvalidated: vi.fn(() => ({ dispose: () => undefined })),
     onDebugSnapshotChange: vi.fn(() => ({ dispose: () => undefined })),
     onControlRevoked: vi.fn(() => ({ dispose: () => undefined })),
+    // Ticket 09's borrowed-tile CDP members. Inert here - this fake exists
+    // for the composer context chip, which never drives a tile.
+    dispatchCdp: vi.fn(() =>
+      Promise.resolve({
+        kind: "cdpGetFrameTree" as const,
+        ok: false as const,
+        error: {
+          kind: "tile_not_found" as const,
+          message: "Fake bridge does not dispatch CDP.",
+          code: null,
+        },
+      }),
+    ),
+    onCdpSessionEnded: vi.fn(() => ({ dispose: () => undefined })),
+    onCdpTargetAttached: vi.fn(() => ({ dispose: () => undefined })),
   };
 }

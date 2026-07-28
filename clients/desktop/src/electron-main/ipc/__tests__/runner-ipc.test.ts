@@ -753,6 +753,18 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.browserViewControlAction,
         RunnerHostInvoke.browserViewCookieCryptoStateGet,
         RunnerHostInvoke.browserViewLabsStateSet,
+        // Ticket 09: the borrowed-tile CDP bridge - the same typed dispatch as
+        // the agent tile's below, pointed at a tile the user already had open.
+        RunnerHostInvoke.browserViewCdpDispatch,
+        // Tickets 02 and 03: the agent's own browser tile and its typed CDP
+        // bridge. This list had not been updated for either, so it has been
+        // failing since ticket 02 landed - invisible because the submodule
+        // pre-commit hook runs build/compile/lint/format but not tests (see
+        // AGENTS.md), so only CI or a manual run surfaces it.
+        RunnerHostInvoke.agentBrowserViewUpsert,
+        RunnerHostInvoke.agentBrowserViewUpdateBounds,
+        RunnerHostInvoke.agentBrowserViewRelease,
+        RunnerHostInvoke.agentBrowserViewCdpDispatch,
       ].sort(),
     );
     bridge.dispose();

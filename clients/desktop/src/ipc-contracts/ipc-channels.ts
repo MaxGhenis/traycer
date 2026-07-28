@@ -232,6 +232,15 @@ export const RunnerHostInvoke = {
   browserViewControlGrant: "runnerHost:browserView:control:grant",
   browserViewControlRevoke: "runnerHost:browserView:control:revoke",
   browserViewControlAction: "runnerHost:browserView:control:action",
+  // Ticket 09: the same typed CDP bridge as `agentBrowserViewCdpDispatch`,
+  // pointed at a tile the USER already had open and asked the agent to
+  // drive. Identical command set - capability parity between a borrowed tile
+  // and the agent's own is a v3 ruling, so this is deliberately not a
+  // reduced surface. What differs is lifetime, not capability: the host only
+  // ever sends one of these while a borrowed-tile attachment is live, and
+  // the renderer only routes one to a tile whose attachment it is currently
+  // showing an indicator for.
+  browserViewCdpDispatch: "runnerHost:browserView:cdp:dispatch",
   browserViewCookieCryptoStateGet:
     "runnerHost:browserView:cookieCryptoState:get",
   browserViewLabsStateSet: "runnerHost:browserView:labsState:set",
@@ -303,6 +312,14 @@ export const RunnerHostEvent = {
   browserViewDebugSnapshotChange:
     "runnerHost:event:browserView:debugSnapshotChange",
   browserViewControlRevoked: "runnerHost:event:browserView:controlRevoked",
+  // Ticket 09, borrowed-tile counterparts of the agent-tile events below.
+  // The session-ended one matters more here than on the agent's own tile:
+  // a detached debugger on a tile holding the user's real logins means the
+  // agent's view of it is stale, and detach must end access rather than be
+  // discovered lazily on the next dispatch.
+  browserViewCdpSessionEnded: "runnerHost:event:browserView:cdp:sessionEnded",
+  browserViewCdpTargetAttached:
+    "runnerHost:event:browserView:cdp:targetAttached",
   agentBrowserViewStatusChange:
     "runnerHost:event:agentBrowserView:statusChange",
   // Fired the moment the agent tile's CDP debugger detaches (e.g. the user

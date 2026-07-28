@@ -8,7 +8,12 @@ import {
   RunnerHostEvent,
   RunnerHostInvoke,
 } from "../../ipc-contracts/ipc-channels";
+import {
+  parseBrowserViewCdpCommand,
+  readCdpNullableString,
+} from "./browser-view-cdp-payload";
 import type {
+  AgentBrowserViewCdpDispatch,
   BrowserLabsStateUpdate,
   BrowserViewBounds,
   BrowserViewBoundsUpdate,
@@ -134,11 +139,27 @@ export function registerBrowserViewIpc(bridge: RunnerIpcBridge): void {
         change,
       );
     },
-    // The visible tile's own detach handling already runs through
-    // `notifyControlRevoked` above (see `handleDebugSessionDetached`) - this
-    // tile has no ticket-03 CDP bridge to notify.
-    notifyCdpSessionEnded: () => {},
-    notifyCdpTargetAttached: () => {},
+    // Ticket 09: a visible tile CAN now be driven over the ticket-03 CDP
+    // bridge, as a *borrowed* tile the user asked the agent to drive, so
+    // these are real rather than the no-ops they were when the agent's own
+    // tile was the bridge's only consumer. The T18 control-grant revocation
+    // through `notifyControlRevoked` above still fires independently - the
+    // two mechanisms address the same tile but are separate surfaces, and a
+    // detached debugger has to end both.
+    notifyCdpSessionEnded: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.browserViewCdpSessionEnded,
+        change,
+      );
+    },
+    notifyCdpTargetAttached: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.browserViewCdpTargetAttached,
+        change,
+      );
+    },
     scheduleDebugSnapshot: scheduleBrowserViewDebugSnapshot,
     applyStorageState: applyBrowserViewStorageState,
     captureStorageState: captureBrowserViewStorageState,
@@ -363,6 +384,33 @@ export function registerBrowserViewIpc(bridge: RunnerIpcBridge): void {
     },
   );
 
+  /**
+   * Ticket 09: drive a borrowed tile - one the user already had open, in
+   * `persist:traycer-browser` with their real logins - over ticket 03's
+   * typed CDP bridge.
+   *
+   * There is no attachment check here, and that is deliberate rather than an
+   * omission. This IPC channel is reachable only from the renderer, and the
+   * renderer only forwards a dispatch to a tile it is currently holding a
+   * live attachment for (`browser-borrowed-tile-store.ts`), which in turn
+   * only exists because the host broadcast one. Adding a second, weaker copy
+   * of that rule here - electron-main has no notion of chats, agents or
+   * attachments - would read as a security boundary while checking nothing
+   * the renderer had not already decided.
+   *
+   * What this layer does own is the guarantee ticket 03 established and
+   * which matters far more on a credentialed tile: `dispatchCdp` fails fast
+   * with `not_attached` the moment the debugger is detached, so a user
+   * opening DevTools ends agent access rather than silently going stale.
+   */
+  bridge.handleInvoke(
+    RunnerHostInvoke.browserViewCdpDispatch,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      return manager.dispatchCdp(windowId, parseCdpDispatch(payload));
+    },
+  );
+
   bridge.handleInvoke(RunnerHostInvoke.browserViewCookieCryptoStateGet, () =>
     getBrowserCookieCryptoState(),
   );
@@ -463,6 +511,15 @@ function parseViewportPresetChange(
   return {
     ...parseTileKey(record),
     viewportPreset: readViewportPresetId(record.viewportPreset),
+  };
+}
+
+function parseCdpDispatch(value: unknown): AgentBrowserViewCdpDispatch {
+  const record = assertRecord(value, "Browser view CDP dispatch payload");
+  return {
+    ...parseTileKey(record),
+    sessionId: readCdpNullableString(record.sessionId, "sessionId"),
+    command: parseBrowserViewCdpCommand(record.command),
   };
 }
 

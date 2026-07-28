@@ -9,7 +9,6 @@ import {
   RunnerHostInvoke,
 } from "../../ipc-contracts/ipc-channels";
 import type {
-  AgentBrowserViewCdpCommand,
   AgentBrowserViewCdpDispatch,
   BrowserViewBounds,
   BrowserViewBoundsUpdate,
@@ -31,6 +30,7 @@ import {
   registerBrowserViewWebContents,
 } from "../browser-view/browser-session";
 import { applyAgentBrowserBackgroundPosture } from "../browser-view/agent-browser-posture";
+import { parseBrowserViewCdpCommand } from "./browser-view-cdp-payload";
 import { log } from "../app/logger";
 import type { RunnerIpcBridge } from "./runner-ipc-bridge";
 
@@ -256,203 +256,14 @@ function parseCdpDispatch(value: unknown): AgentBrowserViewCdpDispatch {
   return {
     ...parseTileKey(record),
     sessionId: readNullableString(record.sessionId, "sessionId"),
-    command: parseCdpCommand(record.command),
+    command: parseBrowserViewCdpCommand(record.command),
   };
-}
-
-function parseCdpCommand(value: unknown): AgentBrowserViewCdpCommand {
-  const record = assertRecord(value, "Agent browser view CDP command");
-  const kind = readString(record.kind, "command.kind");
-  switch (kind) {
-    case "cdpNavigate":
-      return {
-        kind: "cdpNavigate",
-        url: readString(record.url, "command.url"),
-      };
-    case "cdpCaptureScreenshot":
-      return {
-        kind: "cdpCaptureScreenshot",
-        format: readScreenshotFormat(record.format),
-        quality: readNullableFiniteNumber(record.quality, "command.quality"),
-      };
-    case "cdpGetFrameTree":
-      return { kind: "cdpGetFrameTree" };
-    case "cdpCreateIsolatedWorld":
-      return {
-        kind: "cdpCreateIsolatedWorld",
-        frameId: readString(record.frameId, "command.frameId"),
-        worldName: readString(record.worldName, "command.worldName"),
-        grantUniversalAccess: readBoolean(
-          record.grantUniversalAccess,
-          "command.grantUniversalAccess",
-        ),
-      };
-    case "cdpEvaluate":
-      return {
-        kind: "cdpEvaluate",
-        expression: readString(record.expression, "command.expression"),
-        awaitPromise: readBoolean(record.awaitPromise, "command.awaitPromise"),
-        returnByValue: readBoolean(
-          record.returnByValue,
-          "command.returnByValue",
-        ),
-        contextId: readNullableFiniteNumber(
-          record.contextId,
-          "command.contextId",
-        ),
-      };
-    case "cdpCallFunctionOn":
-      return {
-        kind: "cdpCallFunctionOn",
-        objectId: readNullableString(record.objectId, "command.objectId"),
-        executionContextId: readNullableFiniteNumber(
-          record.executionContextId,
-          "command.executionContextId",
-        ),
-        functionDeclaration: readString(
-          record.functionDeclaration,
-          "command.functionDeclaration",
-        ),
-        argumentsJson: record.argumentsJson ?? null,
-        returnByValue: readBoolean(
-          record.returnByValue,
-          "command.returnByValue",
-        ),
-      };
-    case "cdpReleaseObject":
-      return {
-        kind: "cdpReleaseObject",
-        objectId: readString(record.objectId, "command.objectId"),
-      };
-    case "cdpDispatchMouseEvent":
-      return {
-        kind: "cdpDispatchMouseEvent",
-        type: readMouseEventType(record.type),
-        x: readFiniteNumber(record.x, "command.x"),
-        y: readFiniteNumber(record.y, "command.y"),
-        button: readNullableMouseButton(record.button),
-        clickCount: readNullableFiniteNumber(
-          record.clickCount,
-          "command.clickCount",
-        ),
-        deltaX: readNullableFiniteNumber(record.deltaX, "command.deltaX"),
-        deltaY: readNullableFiniteNumber(record.deltaY, "command.deltaY"),
-      };
-    case "cdpInsertText":
-      return {
-        kind: "cdpInsertText",
-        text: readString(record.text, "command.text"),
-      };
-    case "cdpDispatchKeyEvent":
-      return {
-        kind: "cdpDispatchKeyEvent",
-        type: readKeyEventType(record.type),
-        key: readNullableString(record.key, "command.key"),
-        code: readNullableString(record.code, "command.code"),
-        text: readNullableString(record.text, "command.text"),
-      };
-    case "cdpSetDeviceMetricsOverride":
-      return {
-        kind: "cdpSetDeviceMetricsOverride",
-        width: readFiniteNumber(record.width, "command.width"),
-        height: readFiniteNumber(record.height, "command.height"),
-        deviceScaleFactor: readFiniteNumber(
-          record.deviceScaleFactor,
-          "command.deviceScaleFactor",
-        ),
-        mobile: readBoolean(record.mobile, "command.mobile"),
-      };
-    case "cdpSetAutoAttach":
-      return {
-        kind: "cdpSetAutoAttach",
-        autoAttach: readBoolean(record.autoAttach, "command.autoAttach"),
-        waitForDebuggerOnStart: readBoolean(
-          record.waitForDebuggerOnStart,
-          "command.waitForDebuggerOnStart",
-        ),
-      };
-    case "cdpDescribeNode":
-      return {
-        kind: "cdpDescribeNode",
-        objectId: readString(record.objectId, "command.objectId"),
-        depth: readNullableFiniteNumber(record.depth, "command.depth"),
-        pierce: readBoolean(record.pierce, "command.pierce"),
-      };
-    case "cdpGetFullAXTree":
-      return {
-        kind: "cdpGetFullAXTree",
-        depth: readNullableFiniteNumber(record.depth, "command.depth"),
-      };
-    default:
-      throw new Error(`Unknown agent browser view CDP command kind: ${kind}`);
-  }
-}
-
-function readScreenshotFormat(value: unknown): "png" | "jpeg" {
-  if (value === "png" || value === "jpeg") return value;
-  throw new Error(
-    "Agent browser view CDP screenshot format must be png or jpeg",
-  );
-}
-
-function readMouseEventType(
-  value: unknown,
-): "mousePressed" | "mouseReleased" | "mouseMoved" | "mouseWheel" {
-  if (
-    value === "mousePressed" ||
-    value === "mouseReleased" ||
-    value === "mouseMoved" ||
-    value === "mouseWheel"
-  ) {
-    return value;
-  }
-  throw new Error("Agent browser view CDP mouse event type is invalid");
-}
-
-function readNullableMouseButton(
-  value: unknown,
-): "left" | "right" | "middle" | "none" | null {
-  if (value === null) return null;
-  if (
-    value === "left" ||
-    value === "right" ||
-    value === "middle" ||
-    value === "none"
-  ) {
-    return value;
-  }
-  throw new Error("Agent browser view CDP mouse button is invalid");
-}
-
-function readKeyEventType(
-  value: unknown,
-): "keyDown" | "keyUp" | "rawKeyDown" | "char" {
-  if (
-    value === "keyDown" ||
-    value === "keyUp" ||
-    value === "rawKeyDown" ||
-    value === "char"
-  ) {
-    return value;
-  }
-  throw new Error("Agent browser view CDP key event type is invalid");
 }
 
 function readNullableString(value: unknown, field: string): string | null {
   if (value === null) return null;
   if (typeof value === "string") return value;
   throw new Error(`Agent browser view ${field} must be a string or null`);
-}
-
-function readNullableFiniteNumber(
-  value: unknown,
-  field: string,
-): number | null {
-  if (value === null) return null;
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  throw new Error(
-    `Agent browser view ${field} must be a finite number or null`,
-  );
 }
 
 function parseBounds(value: unknown): BrowserViewBounds {

@@ -332,7 +332,7 @@ const cdpResultFrameFields = {
   error: browserCdpErrorSchema.nullable(),
 } as const;
 
-export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
+const browserSessionsServerFrameSchemaV13 = z.discriminatedUnion("kind", [
   ...browserSessionsServerFrameSchemaV12.def.options,
   z.object({
     kind: z.literal("cdpNavigate"),
@@ -463,6 +463,75 @@ export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
     depth: z.number().int().nullable(),
   }),
 ]);
+
+/**
+ * Ticket 09 - borrowed-tile attachment (`browser.sessions@1.4`).
+ *
+ * A borrowed tile is one the USER already had open, in
+ * `persist:traycer-browser` with their real logins, that they asked the agent
+ * in chat to drive. The chat request IS the consent (v3): there is no
+ * confirmation frame here and no grant handshake, deliberately - contrast
+ * `visibleTileControlRequest` above, which is T18's older ask-then-grant
+ * shape for the same tiles.
+ *
+ * These two frames carry only the ATTACHMENT LIFETIME. The driving itself
+ * reuses the `cdp*` frames above unchanged, which is what "capability parity
+ * with the agent's own tile" means concretely: a borrowed tile gets the same
+ * fourteen curated methods, including `cdpEvaluate`, over the same transport.
+ *
+ * What the attachment frames add is the part borrowed tiles need and the
+ * agent's own tile does not:
+ *
+ * - `borrowedTileAttached` tells the renderer which tile is being driven,
+ *   by whom, and until when. The renderer needs all three: it registers that
+ *   tile's CDP handler ONLY while an attachment is live, and it renders the
+ *   passive indicator (our deliberate divergence from Aside, which marks
+ *   borrowed tabs not at all) carrying the detach affordance.
+ * - `borrowedTileDetached` ends it - on user detach, on expiry, or on host
+ *   teardown. The renderer unregisters, agent access ends, indicator goes.
+ *
+ * There is deliberately NO frame that lists or enumerates tiles. A `tiles`
+ * namespace would leak the existence, count and origins of tiles the user
+ * never named, which is exactly the widening this ticket must not do: the
+ * agent reaches the tile the user named and nothing else.
+ *
+ * KNOWN GAP, pre-existing and deliberately not addressed here: this stream
+ * performs no per-minor frame projection - `browser-stream-resolver.ts`
+ * always emits the newest server frames and always parses the newest client
+ * schema - so a subscriber negotiated below 1.4 would receive `kind` values
+ * its own schema has never heard of, which a zod `discriminatedUnion`
+ * rejects outright rather than ignoring as an unknown extra field. That is
+ * inherited from every browser minor since 1.1, not introduced by these
+ * frames; registry-level schema additivity makes projection possible but is
+ * not a substitute for it. Tracked separately, with its own owner.
+ */
+export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
+  ...browserSessionsServerFrameSchemaV13.def.options,
+  z.object({
+    // Push notification, same shape rules as `cdpSessionEnded` above: a
+    // fresh `requestId` per push for envelope consistency, not correlation.
+    kind: z.literal("borrowedTileAttached"),
+    ...requestFrameFields,
+    tileInstanceId: z.string(),
+    attachmentId: z.string(),
+    chatId: z.string(),
+    agentRunId: z.string().nullable(),
+    agentLabel: z.string(),
+    attachedAt: z.number(),
+    // Absolute, host-computed, and never extended in place - an attachment
+    // is time-limited by construction (v3: "time-limited and does not
+    // silently persist"). The renderer holds it so the indicator can end the
+    // attachment on its own clock rather than trusting a frame to arrive.
+    expiresAt: z.number(),
+  }),
+  z.object({
+    kind: z.literal("borrowedTileDetached"),
+    ...requestFrameFields,
+    tileInstanceId: z.string(),
+    attachmentId: z.string(),
+    reason: z.string(),
+  }),
+]);
 export type BrowserSessionsServerFrame = z.infer<
   typeof browserSessionsServerFrameSchema
 >;
@@ -538,7 +607,7 @@ const browserSessionsClientFrameSchemaV12 = z.discriminatedUnion("kind", [
   }),
 ]);
 
-export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
+const browserSessionsClientFrameSchemaV13 = z.discriminatedUnion("kind", [
   ...browserSessionsClientFrameSchemaV12.def.options,
   z.object({
     kind: z.literal("cdpNavigateResult"),
@@ -650,16 +719,52 @@ export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
     nodesJson: z.json().nullable(),
   }),
 ]);
+
+export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
+  ...browserSessionsClientFrameSchemaV13.def.options,
+  z.object({
+    // Ticket 09. The renderer has ENDED a borrowed-tile attachment - the user
+    // pressed detach on the passive indicator, or the tile's debugger
+    // detached out from under it (`reason` says which).
+    //
+    // Named in the past tense on purpose: this REPORTS a release that has
+    // already happened, it does not ask for one. The host has no refusal path
+    // here and must not grow one - detach is the mechanism the borrowed-tile
+    // design's safety rests on, and a refusable detach is not a detach. Same
+    // shape as `visibleTileControlRevoked` above, which is also a report.
+    // (`...requestFrameFields` is a transport convention on every client
+    // frame in this contract; it carries `requestId` for envelope
+    // consistency and implies nothing about request/response semantics.)
+    //
+    // The renderer stops answering dispatches for the tile BEFORE sending
+    // this, and the host refuses every later dispatch for it on receipt, so
+    // a frame that is delayed, dropped, or never sent cannot leave the agent
+    // driving a tile the user has released.
+    kind: z.literal("borrowedTileReleased"),
+    ...requestFrameFields,
+    tileInstanceId: z.string(),
+    attachmentId: z.string(),
+    reason: z.string(),
+  }),
+]);
 export type BrowserSessionsClientFrame = z.infer<
   typeof browserSessionsClientFrameSchema
 >;
+
+export const browserSessionsV14 = defineStreamRpcContract({
+  method: "browser.sessions",
+  schemaVersion: { major: 1, minor: 4 } as const,
+  openRequestSchema: browserSessionsOpenRequestSchema,
+  serverFrameSchema: browserSessionsServerFrameSchema,
+  clientFrameSchema: browserSessionsClientFrameSchema,
+});
 
 export const browserSessionsV13 = defineStreamRpcContract({
   method: "browser.sessions",
   schemaVersion: { major: 1, minor: 3 } as const,
   openRequestSchema: browserSessionsOpenRequestSchema,
-  serverFrameSchema: browserSessionsServerFrameSchema,
-  clientFrameSchema: browserSessionsClientFrameSchema,
+  serverFrameSchema: browserSessionsServerFrameSchemaV13,
+  clientFrameSchema: browserSessionsClientFrameSchemaV13,
 });
 
 export const browserSessionsV12 = defineStreamRpcContract({

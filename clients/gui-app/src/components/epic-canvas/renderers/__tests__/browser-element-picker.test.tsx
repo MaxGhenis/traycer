@@ -166,6 +166,20 @@ function createFakeBridge(
     onSnapshotInvalidated: () => disposable,
     onDebugSnapshotChange: () => disposable,
     onControlRevoked: () => disposable,
+    // Ticket 09's borrowed-tile CDP members. Inert here - this fake exists
+    // for the element picker, which never drives a tile.
+    dispatchCdp: () =>
+      Promise.resolve({
+        kind: "cdpGetFrameTree" as const,
+        ok: false as const,
+        error: {
+          kind: "tile_not_found" as const,
+          message: "Fake bridge does not dispatch CDP.",
+          code: null,
+        },
+      }),
+    onCdpSessionEnded: () => disposable,
+    onCdpTargetAttached: () => disposable,
   };
   return { bridge, pickElement, cancelElementPick };
 }

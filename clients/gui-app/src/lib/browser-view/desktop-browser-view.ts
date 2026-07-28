@@ -1,4 +1,15 @@
 import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
+// Type-only, and deliberately so: `desktop-agent-browser-view.ts` already
+// imports this module's tile-key types, and a value import back would be a
+// real cycle. Ticket 03 defined the CDP command/result shapes there because
+// the agent's own tile was their only consumer; ticket 09 gives them a
+// second one on this bridge, and they are erased at build time either way.
+import type {
+  AgentBrowserViewCdpDispatch,
+  AgentBrowserViewCdpResult,
+  AgentBrowserViewCdpSessionEndedChange,
+  AgentBrowserViewCdpTargetAttachedChange,
+} from "./desktop-agent-browser-view";
 
 export interface BrowserViewTileKey {
   readonly viewTabId: string;
@@ -433,6 +444,27 @@ export interface DesktopBrowserViewBridge {
   ): {
     dispose: () => void;
   };
+  /**
+   * Ticket 09: drive a *borrowed* tile - one the user already had open, in
+   * the credentialed `persist:traycer-browser` partition - over ticket 03's
+   * typed CDP bridge. Deliberately the same three members
+   * `DesktopAgentBrowserViewBridge` exposes for the agent's own tile, since
+   * a borrowed tile gets the same curated surface; what differs is the
+   * attachment lifetime, which lives on the host.
+   */
+  dispatchCdp(
+    input: AgentBrowserViewCdpDispatch,
+  ): Promise<AgentBrowserViewCdpResult>;
+  onCdpSessionEnded(
+    handler: (change: AgentBrowserViewCdpSessionEndedChange) => void,
+  ): {
+    dispose: () => void;
+  };
+  onCdpTargetAttached(
+    handler: (change: AgentBrowserViewCdpTargetAttachedChange) => void,
+  ): {
+    dispose: () => void;
+  };
   onControlRevoked(
     handler: (change: BrowserViewControlRevokedChange) => void,
   ): {
@@ -486,6 +518,24 @@ const REQUIRED_BROWSER_VIEW_BRIDGE_METHODS = [
   "onSnapshotInvalidated",
   "onDebugSnapshotChange",
   "onControlRevoked",
+  // Ticket 09's borrowed-tile CDP members are deliberately NOT required.
+  //
+  // This list is a gate: a preload missing any entry makes
+  // `resolveDesktopBrowserViewBridge` return null and every browser tile in
+  // the app render as unavailable. That is the right answer for members the
+  // bridge is useless without - but a browser tab is not useless without
+  // agent driving. Requiring these would turn "this build cannot lend a tile
+  // to the agent" into "the user has no browser at all", which is a far
+  // worse failure than the capability it guards.
+  //
+  // A renderer newer than its preload is not hypothetical here: the desktop
+  // dev loop hot-reloads the renderer but not the preload, so the strict
+  // form breaks every open browser tile until a full relaunch.
+  //
+  // `readBridgeMethod` already covers the mismatch honestly - a missing
+  // member resolves to a stub that throws when called, so a dispatch fails
+  // with a typed CDP error the model can react to, and nothing else on the
+  // tile is affected.
 ] satisfies readonly (keyof DesktopBrowserViewBridge)[];
 
 export function resolveDesktopBrowserViewBridge(
@@ -556,6 +606,9 @@ function readBrowserViewBridgeMethods(
     onSnapshotInvalidated: readBridgeMethod(value, "onSnapshotInvalidated"),
     onDebugSnapshotChange: readBridgeMethod(value, "onDebugSnapshotChange"),
     onControlRevoked: readBridgeMethod(value, "onControlRevoked"),
+    dispatchCdp: readBridgeMethod(value, "dispatchCdp"),
+    onCdpSessionEnded: readBridgeMethod(value, "onCdpSessionEnded"),
+    onCdpTargetAttached: readBridgeMethod(value, "onCdpTargetAttached"),
   };
 }
 
@@ -758,8 +811,19 @@ function createBrowserViewSubscriptionBridge(
       readBridgeSubscription(value, methods.onDebugSnapshotChange, handler),
     onControlRevoked: (handler) =>
       readBridgeSubscription(value, methods.onControlRevoked, handler),
+    dispatchCdp: (input) =>
+      Promise.resolve(
+        methods.dispatchCdp.call(value, input),
+      ) as Promise<AgentBrowserViewCdpResult>,
+    onCdpSessionEnded: (handler) =>
+      readBridgeSubscription(value, methods.onCdpSessionEnded, handler),
+    onCdpTargetAttached: (handler) =>
+      readBridgeSubscription(value, methods.onCdpTargetAttached, handler),
   } satisfies Pick<
     DesktopBrowserViewBridge,
+    | "dispatchCdp"
+    | "onCdpSessionEnded"
+    | "onCdpTargetAttached"
     | "onStatusChange"
     | "onFindChange"
     | "onDownloadChange"

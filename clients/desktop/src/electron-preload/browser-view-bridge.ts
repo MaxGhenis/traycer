@@ -4,6 +4,10 @@ import {
   RunnerHostInvoke,
 } from "../ipc-contracts/ipc-channels";
 import type {
+  AgentBrowserViewCdpDispatch,
+  AgentBrowserViewCdpResult,
+  AgentBrowserViewCdpSessionEndedChange,
+  AgentBrowserViewCdpTargetAttachedChange,
   BrowserCookieCryptoState,
   BrowserLabsStateUpdate,
   BrowserViewBoundsUpdate,
@@ -106,6 +110,19 @@ export interface BrowserViewBridgeSurface {
     ): Disposable;
     onControlRevoked(
       handler: Listener<BrowserViewControlRevokedChange>,
+    ): Disposable;
+    // Ticket 09: borrowed-tile driving over ticket 03's typed CDP bridge.
+    // Same three members the agent's own tile bridge exposes, because a
+    // borrowed tile gets the same curated surface - only its lifetime
+    // differs (see `browser-borrowed-tile.ts` on the host side).
+    dispatchCdp(
+      input: AgentBrowserViewCdpDispatch,
+    ): Promise<AgentBrowserViewCdpResult>;
+    onCdpSessionEnded(
+      handler: Listener<AgentBrowserViewCdpSessionEndedChange>,
+    ): Disposable;
+    onCdpTargetAttached(
+      handler: Listener<AgentBrowserViewCdpTargetAttachedChange>,
     ): Disposable;
   };
 }
@@ -295,6 +312,21 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
       onControlRevoked: (handler) =>
         subscribe<BrowserViewControlRevokedChange>(
           RunnerHostEvent.browserViewControlRevoked,
+          handler,
+        ),
+      dispatchCdp: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewCdpDispatch,
+          input,
+        ) as Promise<AgentBrowserViewCdpResult>,
+      onCdpSessionEnded: (handler) =>
+        subscribe<AgentBrowserViewCdpSessionEndedChange>(
+          RunnerHostEvent.browserViewCdpSessionEnded,
+          handler,
+        ),
+      onCdpTargetAttached: (handler) =>
+        subscribe<AgentBrowserViewCdpTargetAttachedChange>(
+          RunnerHostEvent.browserViewCdpTargetAttached,
           handler,
         ),
     },
