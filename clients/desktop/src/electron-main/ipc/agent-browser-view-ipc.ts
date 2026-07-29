@@ -105,13 +105,6 @@ export function registerAgentBrowserViewIpc(bridge: RunnerIpcBridge): void {
         change,
       );
     },
-    notifyCdpInteractionObserved: (windowId, change) => {
-      bridge.safeSendToWindow(
-        windowId,
-        RunnerHostEvent.agentBrowserViewCdpInteractionObserved,
-        change,
-      );
-    },
     notifyTileHandoff: (windowId, change) => {
       bridge.safeSendToWindow(
         windowId,

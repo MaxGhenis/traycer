@@ -78,7 +78,6 @@ import {
 import {
   registerAgentBrowserCdpHandler,
   buildCdpResultFrame,
-  notifyAgentBrowserCdpInteractionObserved,
 } from "@/lib/browser-view/agent-browser-cdp-store";
 import {
   releaseBorrowedTileAttachment,
@@ -454,27 +453,6 @@ export function BrowserTile(props: BrowserTileProps) {
         attachment: borrowedAttachment,
         reason: `Browser debugger detached: ${change.reason}`,
       });
-    });
-    return () => {
-      subscription.dispose();
-    };
-  }, [borrowedAttachment, browserView, tileKey]);
-
-  /**
-   * Ticket 12 / ticket 08's interaction-signal draft. This is the case the
-   * rollout gate (ticket 12's execution-log entry) exists for: a borrowed
-   * tile is the user's own logged-in tab, and this is the only guard for
-   * "the user is typing into it while the agent works." Gated on
-   * `borrowedAttachment !== null` for symmetry with the session-ended
-   * effect above, though a bump while unattached is harmless - the host
-   * side only reads it through `getBorrowedTileTabId`, which is empty for
-   * a tile with no live attachment either way.
-   */
-  useEffect(() => {
-    if (browserView === null || borrowedAttachment === null) return;
-    const subscription = browserView.onCdpInteractionObserved((change) => {
-      if (!isStatusForTile(change, tileKey)) return;
-      notifyAgentBrowserCdpInteractionObserved(change.tileInstanceId);
     });
     return () => {
       subscription.dispose();

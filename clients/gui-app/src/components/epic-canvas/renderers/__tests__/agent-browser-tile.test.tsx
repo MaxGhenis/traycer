@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentBrowserTile } from "@/components/epic-canvas/renderers/agent-browser-tile";
 import type {
   AgentBrowserViewCdpDispatch,
-  AgentBrowserViewCdpInteractionObservedChange,
   AgentBrowserViewCdpResult,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
@@ -149,27 +148,6 @@ class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
 
   emitCdpTargetAttached(change: AgentBrowserViewCdpTargetAttachedChange): void {
     this.cdpTargetAttachedHandlers.forEach((handler) => handler(change));
-  }
-
-  private readonly cdpInteractionObservedHandlers = new Set<
-    (change: AgentBrowserViewCdpInteractionObservedChange) => void
-  >();
-
-  onCdpInteractionObserved(
-    handler: (change: AgentBrowserViewCdpInteractionObservedChange) => void,
-  ): { dispose: () => void } {
-    this.cdpInteractionObservedHandlers.add(handler);
-    return {
-      dispose: () => {
-        this.cdpInteractionObservedHandlers.delete(handler);
-      },
-    };
-  }
-
-  emitCdpInteractionObserved(
-    change: AgentBrowserViewCdpInteractionObservedChange,
-  ): void {
-    this.cdpInteractionObservedHandlers.forEach((handler) => handler(change));
   }
 
   private readonly tileHandoffHandlers = new Set<

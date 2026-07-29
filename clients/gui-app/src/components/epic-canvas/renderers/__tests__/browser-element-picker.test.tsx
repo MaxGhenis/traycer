@@ -180,7 +180,6 @@ function createFakeBridge(
       }),
     onCdpSessionEnded: () => disposable,
     onCdpTargetAttached: () => disposable,
-    onCdpInteractionObserved: () => disposable,
     onTileHandoff: () => disposable,
   };
   return { bridge, pickElement, cancelElementPick };

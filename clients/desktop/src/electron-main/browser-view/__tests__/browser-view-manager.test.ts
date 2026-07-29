@@ -11,7 +11,6 @@ import {
   type ManagedContentView,
 } from "../browser-view-manager";
 import type {
-  AgentBrowserViewCdpInteractionObservedChange,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
   AgentBrowserViewTileHandoffChange,
@@ -442,7 +441,6 @@ interface Harness {
   readonly controlRevocations: BrowserViewControlRevokedChange[];
   readonly cdpSessionEndedNotifications: AgentBrowserViewCdpSessionEndedChange[];
   readonly cdpTargetAttachedNotifications: AgentBrowserViewCdpTargetAttachedChange[];
-  readonly cdpInteractionObservedNotifications: AgentBrowserViewCdpInteractionObservedChange[];
   readonly tileHandoffNotifications: AgentBrowserViewTileHandoffChange[];
   readonly snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[];
   readonly storageStateApplications: BrowserViewStorageStateApply[];
@@ -469,8 +467,6 @@ function createHarness(): Harness {
   const cdpSessionEndedNotifications: AgentBrowserViewCdpSessionEndedChange[] =
     [];
   const cdpTargetAttachedNotifications: AgentBrowserViewCdpTargetAttachedChange[] =
-    [];
-  const cdpInteractionObservedNotifications: AgentBrowserViewCdpInteractionObservedChange[] =
     [];
   const tileHandoffNotifications: AgentBrowserViewTileHandoffChange[] = [];
   const snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[] = [];
@@ -550,9 +546,6 @@ function createHarness(): Harness {
     notifyCdpTargetAttached: (_windowId, change) => {
       cdpTargetAttachedNotifications.push(change);
     },
-    notifyCdpInteractionObserved: (_windowId, change) => {
-      cdpInteractionObservedNotifications.push(change);
-    },
     notifyTileHandoff: (_windowId, change) => {
       tileHandoffNotifications.push(change);
     },
@@ -599,7 +592,6 @@ function createHarness(): Harness {
     controlRevocations,
     cdpSessionEndedNotifications,
     cdpTargetAttachedNotifications,
-    cdpInteractionObservedNotifications,
     tileHandoffNotifications,
     snapshotInvalidations,
     storageStateApplications,

@@ -1774,7 +1774,6 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
         );
       },
 
-
       toggleGitDiffBundleFileCollapsedInTab: (tabId, tileId, filePath) => {
         set((state) =>
           updateTabCanvas(state, tabId, (canvas) =>

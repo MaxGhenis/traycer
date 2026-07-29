@@ -4918,11 +4918,14 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       // (`borrowedTileAttached` / `borrowedTileDetached` on the server side,
       // `borrowedTileReleased` on the client side) so the same CDP bridge can
       // address a tile the user already had open.
-      // @1.5 (ticket 12) adds two client pushes deferred from tickets 08 and
-      // 10: `cdpInteractionObserved` (real native input on a tile, the
-      // interaction-epoch signal) and `tileHandoff` (captured `{url,
-      // storageState}` pushed just before a tile dies, for the headless
-      // handoff). @1.0-@1.4 stay installed and FROZEN.
+      // @1.5 (ticket 12, ticket 24) adds one client push: `tileHandoff`
+      // (captured `{url, storageState}` pushed just before a tile dies, for
+      // the headless handoff). Ticket 12 also added `cdpInteractionObserved`
+      // (the input-provenance interaction-epoch signal, ticket 08); ticket 24
+      // retired it before this line ever shipped - Electron's
+      // `before-input-event` never fires for mouse, so the guard it fed was
+      // blind to the commonest interference mode. @1.0-@1.4 stay installed
+      // and FROZEN.
       latestMinor: 5,
       versions: {
         0: {

@@ -754,33 +754,6 @@ const browserSessionsClientFrameSchemaV14 = z.discriminatedUnion("kind", [
 export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
   ...browserSessionsClientFrameSchemaV14.def.options,
   z.object({
-    // Ticket 12 / ticket 08's interaction-signal draft
-    // (`08-concurrency-properties/interaction-signal-protocol-draft`). Pushed
-    // once per native `before-input-event` firing on an Electron tile
-    // (keyboard only - a live probe on ticket 18's pass proved `input-event`
-    // also fires for CDP-dispatched input, so it is deliberately not a
-    // source; see `pushCdpInteractionObserved`'s doc comment,
-    // `browser-view-manager.ts`, desktop side). CDP's
-    // `Input.dispatchMouseEvent`/`dispatchKeyEvent` never reach
-    // `before-input-event`, which is exactly what lets this discriminate
-    // real user input from agent-dispatched input the DOM's own `isTrusted`
-    // cannot (both report `isTrusted: true`). Electron-only by
-    // construction: headless Playwright has no physical user to observe, so
-    // there is no equivalent push there - see `browser-action-epoch.ts`'s
-    // "not applicable", distinct from "unimplemented".
-    //
-    // No payload beyond routing - any firing of the source listener is real
-    // input by construction, so nothing is left to filter or classify. No
-    // coalescing: the host only needs "at least one bump before the next
-    // precondition check", which per-event firing trivially gives; a
-    // rapidly-typing user firing many of these is a scoping concern for
-    // whoever hits it as a real problem, not a correctness one, and is
-    // deliberately not pre-solved here.
-    kind: z.literal("cdpInteractionObserved"),
-    ...requestFrameFields,
-    tileInstanceId: z.string(),
-  }),
-  z.object({
     // Ticket 12 / ticket 10's design. Desktop pushes this once, just before a
     // tile dies, for ANY teardown reason - there is no signal distinguishing
     // "the whole GUI quit" from "one subscriber detached" (see ticket 10's

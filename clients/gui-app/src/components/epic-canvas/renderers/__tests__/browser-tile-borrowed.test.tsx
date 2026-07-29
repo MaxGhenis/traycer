@@ -52,7 +52,6 @@ import type {
 } from "@/lib/browser-view/desktop-browser-view";
 import type {
   AgentBrowserViewCdpDispatch,
-  AgentBrowserViewCdpInteractionObservedChange,
   AgentBrowserViewCdpResult,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
@@ -225,9 +224,6 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
   >();
   private readonly cdpTargetAttachedHandlers = new Set<
     (change: AgentBrowserViewCdpTargetAttachedChange) => void
-  >();
-  private readonly cdpInteractionObservedHandlers = new Set<
-    (change: AgentBrowserViewCdpInteractionObservedChange) => void
   >();
   private readonly tileHandoffHandlers = new Set<
     (change: AgentBrowserViewTileHandoffChange) => void
@@ -524,19 +520,6 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
     };
   }
 
-  onCdpInteractionObserved(
-    handler: (change: AgentBrowserViewCdpInteractionObservedChange) => void,
-  ): {
-    dispose: () => void;
-  } {
-    this.cdpInteractionObservedHandlers.add(handler);
-    return {
-      dispose: () => {
-        this.cdpInteractionObservedHandlers.delete(handler);
-      },
-    };
-  }
-
   onTileHandoff(handler: (change: AgentBrowserViewTileHandoffChange) => void): {
     dispose: () => void;
   } {
@@ -550,12 +533,6 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
 
   emitCdpSessionEnded(change: AgentBrowserViewCdpSessionEndedChange): void {
     this.cdpSessionEndedHandlers.forEach((handler) => handler(change));
-  }
-
-  emitCdpInteractionObserved(
-    change: AgentBrowserViewCdpInteractionObservedChange,
-  ): void {
-    this.cdpInteractionObservedHandlers.forEach((handler) => handler(change));
   }
 }
 

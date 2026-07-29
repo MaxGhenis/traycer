@@ -327,10 +327,6 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
     return { dispose: () => undefined };
   }
 
-  onCdpInteractionObserved(): { dispose: () => void } {
-    return { dispose: () => undefined };
-  }
-
   onTileHandoff(): { dispose: () => void } {
     return { dispose: () => undefined };
   }

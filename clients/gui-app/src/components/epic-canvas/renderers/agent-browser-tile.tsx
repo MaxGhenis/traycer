@@ -9,7 +9,6 @@ import {
 import type { BrowserViewStatus } from "@/lib/browser-view/desktop-browser-view";
 import {
   buildCdpResultFrame,
-  notifyAgentBrowserCdpInteractionObserved,
   notifyAgentBrowserCdpSessionEnded,
   notifyAgentBrowserCdpTargetAttached,
   notifyAgentBrowserTileHandoff,
@@ -140,17 +139,6 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     const subscription = browserView.onCdpTargetAttached((change) => {
       if (!isChangeForTile(change, tileKey)) return;
       notifyAgentBrowserCdpTargetAttached(change.tileInstanceId, change);
-    });
-    return () => {
-      subscription.dispose();
-    };
-  }, [browserView, tileKey]);
-
-  useEffect(() => {
-    if (browserView === null) return;
-    const subscription = browserView.onCdpInteractionObserved((change) => {
-      if (!isChangeForTile(change, tileKey)) return;
-      notifyAgentBrowserCdpInteractionObserved(change.tileInstanceId);
     });
     return () => {
       subscription.dispose();

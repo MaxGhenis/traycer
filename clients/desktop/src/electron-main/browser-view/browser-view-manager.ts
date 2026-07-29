@@ -5,7 +5,6 @@ import type {
   AgentBrowserViewCdpDispatch,
   AgentBrowserViewCdpErrorInfo,
   AgentBrowserViewCdpFrameInfo,
-  AgentBrowserViewCdpInteractionObservedChange,
   AgentBrowserViewCdpResult,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
@@ -261,17 +260,6 @@ export interface BrowserViewManagerOptions {
     windowId: string,
     change: AgentBrowserViewCdpTargetAttachedChange,
   ) => void;
-  // Ticket 12 / ticket 08's interaction-signal draft. Fired once per native
-  // `before-input-event` on the tile (keyboard only - see
-  // `pushCdpInteractionObserved`'s doc comment for why `input-event` is
-  // deliberately not a source) - never reached by CDP's
-  // `Input.dispatchMouseEvent`/`dispatchKeyEvent`, which is the property
-  // that makes it the one reliable discriminator between real user input
-  // and agent-dispatched input, live-verified 2026-07-29.
-  readonly notifyCdpInteractionObserved: (
-    windowId: string,
-    change: AgentBrowserViewCdpInteractionObservedChange,
-  ) => void;
   // Ticket 12 / ticket 10's design. Fired once, just before a tile dies for
   // any teardown reason, carrying captured `{url, storageState}` so the
   // host can continue the session headless.
@@ -457,10 +445,6 @@ export class BrowserViewManager {
     windowId: string,
     change: AgentBrowserViewCdpTargetAttachedChange,
   ) => void;
-  private readonly notifyCdpInteractionObserved: (
-    windowId: string,
-    change: AgentBrowserViewCdpInteractionObservedChange,
-  ) => void;
   private readonly notifyTileHandoff: (
     windowId: string,
     change: AgentBrowserViewTileHandoffChange,
@@ -510,7 +494,6 @@ export class BrowserViewManager {
     this.notifyControlRevoked = options.notifyControlRevoked;
     this.notifyCdpSessionEnded = options.notifyCdpSessionEnded;
     this.notifyCdpTargetAttached = options.notifyCdpTargetAttached;
-    this.notifyCdpInteractionObserved = options.notifyCdpInteractionObserved;
     this.notifyTileHandoff = options.notifyTileHandoff;
     this.scheduleDebugSnapshot = options.scheduleDebugSnapshot;
     this.applyStorageStateToBrowser = options.applyStorageState;
@@ -1434,7 +1417,6 @@ export class BrowserViewManager {
   ): void {
     const input = readBeforeInput(args);
     if (input === null) return;
-    this.pushCdpInteractionObserved(entry);
     this.handleNativeUserInput(entry, "user took over");
     if (!input.modifier) return;
     const step = browserZoomStepForKey(input.key);
@@ -2043,44 +2025,6 @@ export class BrowserViewManager {
 
   private handleNativeUserInput(entry: BrowserViewEntry, reason: string): void {
     this.cancelControl(entry, reason, null);
-  }
-
-  /**
-   * Ticket 12 / ticket 08's interaction-signal draft. Called from
-   * `before-input-event` only - deliberately NOT from `input-event` despite
-   * both firing for real native OS input, and NOT routed through
-   * `handleNativeUserInput` (which also fires for `context-menu` and
-   * `blur`, neither of which is native user input in the sense this signal
-   * exists for).
-   *
-   * Corrected during ticket 18's live pass, which is the whole reason this
-   * property needs a live check rather than a unit test: an earlier version
-   * of this method was also called from `inputEvent`, and a real live probe
-   * (CDP-dispatched `Input.dispatchMouseEvent` + `Input.dispatchKeyEvent`
-   * against a real Electron tile, this session's dev slot, Electron
-   * 42.7.1/Chromium 148) proved `input-event` fires for CDP-dispatched input
-   * too - it does not share `before-input-event`'s native-only guarantee,
-   * so wiring it here silently defeated the discriminator ticket 08 built
-   * this signal to provide, for BOTH mouse and keyboard CDP dispatch. Do not
-   * re-add `input-event` as a source without a fresh live probe proving
-   * otherwise.
-   *
-   * Real consequence of only `before-input-event` firing this: it is
-   * keyboard-only (Electron never fires it for mouse input), so a real
-   * mouse click alone does not bump `interactionEpoch` - only real typing
-   * does. Accepted, not a gap to "fix" with a second signal source: `
-   * documentEpoch` already catches a click that navigates, and ticket 08's
-   * draft names `before-input-event` as the one reliable signal without
-   * proposing a mouse-specific alternative.
-   *
-   * No coalescing (see the draft's own reasoning): a rapidly-typing user
-   * firing many of these is fine, since the host side only needs "at least
-   * one bump before the next precondition check".
-   */
-  private pushCdpInteractionObserved(entry: BrowserViewEntry): void {
-    this.notifyCdpInteractionObserved(entry.key.windowId, {
-      ...toTileKey(entry.key),
-    });
   }
 
   /**

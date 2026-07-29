@@ -5,7 +5,6 @@ import {
 } from "../ipc-contracts/ipc-channels";
 import type {
   AgentBrowserViewCdpDispatch,
-  AgentBrowserViewCdpInteractionObservedChange,
   AgentBrowserViewCdpResult,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
@@ -31,9 +30,6 @@ export interface AgentBrowserViewBridgeSurface {
     ): Disposable;
     onCdpTargetAttached(
       handler: Listener<AgentBrowserViewCdpTargetAttachedChange>,
-    ): Disposable;
-    onCdpInteractionObserved(
-      handler: Listener<AgentBrowserViewCdpInteractionObservedChange>,
     ): Disposable;
     onTileHandoff(
       handler: Listener<AgentBrowserViewTileHandoffChange>,
@@ -77,11 +73,6 @@ export function buildAgentBrowserViewBridge(): AgentBrowserViewBridgeSurface {
       onCdpTargetAttached: (handler) =>
         subscribe<AgentBrowserViewCdpTargetAttachedChange>(
           RunnerHostEvent.agentBrowserViewCdpTargetAttached,
-          handler,
-        ),
-      onCdpInteractionObserved: (handler) =>
-        subscribe<AgentBrowserViewCdpInteractionObservedChange>(
-          RunnerHostEvent.agentBrowserViewCdpInteractionObserved,
           handler,
         ),
       onTileHandoff: (handler) =>

@@ -398,18 +398,6 @@ export interface AgentBrowserViewCdpTargetAttachedChange extends BrowserViewTile
 }
 
 /**
- * Ticket 12 / ticket 08's interaction-signal draft. Push notification
- * (electron-main -> renderer -> host), fired once per native
- * `before-input-event` on the tile (keyboard only - a real live probe
- * proved `input-event` also fires for CDP-dispatched input, so it is
- * deliberately not a source; see `pushCdpInteractionObserved`'s doc
- * comment in `browser-view-manager.ts`) - the routing fields on
- * `BrowserViewTileKey` are the entire payload, by design: any firing of the
- * source listener is real input, so there is nothing left to carry.
- */
-export type AgentBrowserViewCdpInteractionObservedChange = BrowserViewTileKey;
-
-/**
  * Ticket 12 / ticket 10's design. Push notification (electron-main ->
  * renderer -> host), fired once just before a tile dies, for any teardown
  * reason. `capturedStorageState` stays `unknown` on this leg too - same
