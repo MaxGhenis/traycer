@@ -245,7 +245,6 @@ describe("browser debug context attachment (ticket 22)", () => {
     const payload = createBrowserDebugContextAttachment({
       tile: TILE,
       pageUrl: "http://localhost:3000/page",
-      title: "Settings",
       dataLevel: "debug-errors",
       capture: CAPTURE,
       consoleEntries: [CONSOLE_ENTRY],
@@ -279,23 +278,22 @@ describe("browser debug context attachment (ticket 22)", () => {
     );
   });
 
-  it("still populates title and screenshot.name on the attachment for non-composer UI consumers", () => {
+  it("does not carry title or screenshot bytes on the payload - traced against production, nothing reads them (ticket 22 fixup: an earlier version of this test wrongly claimed 'other UI consumers' without tracing the claim)", () => {
     const payload = createBrowserDebugContextAttachment({
       tile: TILE,
       pageUrl: "http://localhost:3000/page",
-      title: "Settings",
       dataLevel: "debug-snapshot",
       capture: CAPTURE,
       consoleEntries: [],
       networkEntries: [],
     });
 
-    expect(payload.title).toBe("Settings");
-    expect(payload.screenshot.name).toBe(
-      `browser-context-${CAPTURE.sha256.slice(0, 12)}.png`,
-    );
-    expect(payload.screenshot.hash).toBe(CAPTURE.sha256);
-    expect(payload.screenshot.base64).toBe(CAPTURE.base64);
+    expect(payload).not.toHaveProperty("title");
+    expect(payload).not.toHaveProperty("screenshot");
+    // `capture`'s base64 must not be retained anywhere reachable from the
+    // returned payload - it was captured only to derive `hash` for
+    // composerText and must not linger in composer draft state.
+    expect(JSON.stringify(payload)).not.toContain(CAPTURE.base64);
     expect(payload.dataLevel).toBe("debug-snapshot");
     expect(payload.observeGrantRequest).toMatchObject({
       dataLevel: "debug-snapshot",

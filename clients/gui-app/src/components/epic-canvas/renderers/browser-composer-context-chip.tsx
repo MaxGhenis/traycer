@@ -146,7 +146,6 @@ async function captureBrowserContext(
   return createBrowserDebugContextAttachment({
     tile: candidate.tileKey,
     pageUrl: candidate.tile.url,
-    title: candidate.title,
     dataLevel: level,
     capture,
     consoleEntries,

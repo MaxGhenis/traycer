@@ -48,7 +48,6 @@ describe("useChatComposerSubmit", () => {
           pageSessionId: "browser-page",
         },
         pageUrl: "https://example.com/page",
-        title: "Example",
         dataLevel: "debug-snapshot",
         capture: CAPTURE,
         consoleEntries: [],
@@ -116,10 +115,6 @@ describe("useChatComposerSubmit", () => {
               origin: "https://example.com",
               dataLevel: "debug-snapshot",
               expiresAt: 605000,
-            },
-            screenshot: {
-              base64: CAPTURE.base64,
-              hash: CAPTURE.sha256,
             },
           },
         },

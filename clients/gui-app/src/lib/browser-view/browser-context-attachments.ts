@@ -87,11 +87,22 @@ export interface BrowserElementContextAttachment extends BrowserContextAttachmen
   readonly element: BrowserViewElementCapture;
 }
 
+/**
+ * Ticket 22 fixup: `title` and `screenshot` were traced and found dead -
+ * `browserContextAttachmentToWire` only ever selects
+ * `kind`/`origin`/`pageUrl`/`composerText`/`tileInstanceId` off any
+ * attachment payload, and no other production code reads `payload.title`
+ * or `payload.screenshot.*` for this kind (only test assertions did, which
+ * is what made the dead fields look load-bearing). Carrying `screenshot`
+ * meant retaining a captured base64 image in composer draft state for a
+ * consumer that never reads it - a real memory cost for nothing. If a
+ * future UI surface needs the title or a screenshot preview for this kind,
+ * add it back deliberately with a real reader, not as leftover capture
+ * plumbing.
+ */
 export interface BrowserDebugContextAttachment extends BrowserContextAttachmentBase {
   readonly kind: "browser-debug-context";
-  readonly title: string;
   readonly dataLevel: "screenshot" | "debug-errors" | "debug-snapshot";
-  readonly screenshot: BrowserScreenshotContextAttachment["screenshot"];
   readonly consoleEntries: readonly BrowserViewConsoleEntry[];
   readonly networkEntries: readonly BrowserViewNetworkEntry[];
 }
@@ -275,7 +286,6 @@ export function createBrowserElementAttachment(input: {
 export function createBrowserDebugContextAttachment(input: {
   readonly tile: BrowserViewTileKey;
   readonly pageUrl: string;
-  readonly title: string;
   readonly dataLevel: "screenshot" | "debug-errors" | "debug-snapshot";
   readonly capture: BrowserViewCapturePageResult;
   readonly consoleEntries: readonly BrowserViewConsoleEntry[];
@@ -283,7 +293,6 @@ export function createBrowserDebugContextAttachment(input: {
 }): BrowserDebugContextAttachment {
   const origin = originFromUrl(input.pageUrl);
   const capturedAt = input.capture.capturedAt;
-  const name = `browser-context-${input.capture.sha256.slice(0, 12)}.png`;
   return {
     schemaVersion: 1,
     kind: "browser-debug-context",
@@ -306,16 +315,7 @@ export function createBrowserDebugContextAttachment(input: {
       networkEntries: input.networkEntries,
       hash: input.capture.sha256,
     }),
-    title: input.title,
     dataLevel: input.dataLevel,
-    screenshot: {
-      mediaType: input.capture.mediaType,
-      base64: input.capture.base64,
-      byteLength: input.capture.byteLength,
-      hash: input.capture.sha256,
-      attachmentsMapKey: input.capture.sha256,
-      name,
-    },
     consoleEntries: input.consoleEntries,
     networkEntries: input.networkEntries,
   };
