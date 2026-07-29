@@ -777,6 +777,80 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     expect(bridge.zoomOutCalls).toEqual([tileKey()]);
   });
 
+  it("does not restore a stale committed URL while navigation is loading", () => {
+    const bridge = new FakeBrowserViewBridge(REAL_STATE);
+    bridgeHarness.current = bridge;
+    const nextNode: BrowserTileRef = {
+      ...NODE,
+      url: "https://next.example/",
+    };
+    const renderTile = (node: BrowserTileRef) => (
+      <TooltipProvider>
+        <BrowserTile
+          node={node}
+          viewTabId="view-tab-1"
+          paneId="pane-1"
+          epicId="epic-1"
+        />
+      </TooltipProvider>
+    );
+    const { rerender } = render(renderTile(NODE));
+
+    fireEvent.change(screen.getByLabelText("Browser address"), {
+      target: { value: nextNode.url },
+    });
+    const addressForm = screen
+      .getByLabelText("Browser address")
+      .closest("form");
+    if (addressForm === null) {
+      throw new Error("browser address input must be wrapped in a form");
+    }
+    fireEvent.submit(addressForm);
+
+    expect(updateBrowserTileUrlMock.fn).toHaveBeenCalledWith(
+      "view-tab-1",
+      NODE.instanceId,
+      nextNode.url,
+    );
+
+    rerender(renderTile(nextNode));
+    updateBrowserTileUrlMock.fn.mockClear();
+
+    act(() => {
+      bridge.emitStatus({
+        ...tileKey(),
+        url: NODE.url,
+        title: "Previous page",
+        status: "loading",
+        reason: null,
+        canGoBack: false,
+        canGoForward: false,
+        zoomPercent: 100,
+      });
+    });
+
+    expect(updateBrowserTileUrlMock.fn).not.toHaveBeenCalled();
+
+    act(() => {
+      bridge.emitStatus({
+        ...tileKey(),
+        url: "https://redirect.example/",
+        title: "Redirected page",
+        status: "ready",
+        reason: null,
+        canGoBack: true,
+        canGoForward: false,
+        zoomPercent: 100,
+      });
+    });
+
+    expect(updateBrowserTileUrlMock.fn).toHaveBeenCalledWith(
+      "view-tab-1",
+      NODE.instanceId,
+      "https://redirect.example/",
+    );
+  });
+
   it("sets viewport presets and opens DevTools through explicit chrome actions", async () => {
     const bridge = new FakeBrowserViewBridge(REAL_STATE);
     bridgeHarness.current = bridge;

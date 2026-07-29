@@ -271,7 +271,14 @@ export function BrowserTile(props: BrowserTileProps) {
       setCanGoBack(change.canGoBack);
       setCanGoForward(change.canGoForward);
       setZoomPercent(change.zoomPercent);
-      if (change.url.length > 0 && change.url !== props.node.url) {
+      // Loading and dead frames retain the last committed URL while a new
+      // navigation is pending. Persisting those stale URLs would send the
+      // native view back to the previous page through the upsert effect.
+      if (
+        change.status === "ready" &&
+        change.url.length > 0 &&
+        change.url !== props.node.url
+      ) {
         updateBrowserTileUrl(
           props.viewTabId,
           props.node.instanceId,
