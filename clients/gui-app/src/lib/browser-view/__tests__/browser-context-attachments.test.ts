@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createBrowserConsoleAttachment,
+  createBrowserDebugContextAttachment,
   createBrowserElementAttachment,
   createBrowserNetworkAttachment,
   createBrowserScreenshotAttachment,
@@ -236,5 +237,75 @@ describe("browser element attachment", () => {
       element: { ...ELEMENT, outerHtmlTruncated: true },
     });
     expect(payload.composerText).toContain("… (truncated)");
+  });
+});
+
+describe("browser debug context attachment (ticket 22)", () => {
+  it("omits Page/Title/Screenshot lines from composerText while keeping Level, Content hash, and error lines", () => {
+    const payload = createBrowserDebugContextAttachment({
+      tile: TILE,
+      pageUrl: "http://localhost:3000/page",
+      title: "Settings",
+      dataLevel: "debug-errors",
+      capture: CAPTURE,
+      consoleEntries: [CONSOLE_ENTRY],
+      networkEntries: [NETWORK_ENTRY],
+    });
+
+    expect(payload.kind).toBe("browser-debug-context");
+    expect(payload.composerText).toContain("Browser context");
+    expect(payload.composerText).toContain(
+      "Level: screenshot + console/network errors",
+    );
+    expect(payload.composerText).toContain(`Content hash: ${CAPTURE.sha256}`);
+    expect(payload.composerText).toContain("Console errors:");
+    expect(payload.composerText).toContain("- boom");
+    expect(payload.composerText).toContain("Network errors:");
+    expect(payload.composerText).toContain(
+      "- POST http://localhost:3000/api: failed (net::ERR_FAILED)",
+    );
+
+    // Ticket 22: volatile page identity and the filename-with-no-picture
+    // pattern leave composerText; snapshot()/envelope is the source of truth.
+    expect(payload.composerText).not.toMatch(/^Page:/m);
+    expect(payload.composerText).not.toMatch(/^Title:/m);
+    expect(payload.composerText).not.toMatch(/^Screenshot:/m);
+    expect(payload.composerText).not.toContain(
+      "Page: http://localhost:3000/page",
+    );
+    expect(payload.composerText).not.toContain("Title: Settings");
+    expect(payload.composerText).not.toContain(
+      `Screenshot: browser-context-${CAPTURE.sha256.slice(0, 12)}.png`,
+    );
+  });
+
+  it("still populates title and screenshot.name on the attachment for non-composer UI consumers", () => {
+    const payload = createBrowserDebugContextAttachment({
+      tile: TILE,
+      pageUrl: "http://localhost:3000/page",
+      title: "Settings",
+      dataLevel: "debug-snapshot",
+      capture: CAPTURE,
+      consoleEntries: [],
+      networkEntries: [],
+    });
+
+    expect(payload.title).toBe("Settings");
+    expect(payload.screenshot.name).toBe(
+      `browser-context-${CAPTURE.sha256.slice(0, 12)}.png`,
+    );
+    expect(payload.screenshot.hash).toBe(CAPTURE.sha256);
+    expect(payload.screenshot.base64).toBe(CAPTURE.base64);
+    expect(payload.dataLevel).toBe("debug-snapshot");
+    expect(payload.observeGrantRequest).toMatchObject({
+      dataLevel: "debug-snapshot",
+      sourceAction: "browser-composer-attach",
+      origin: "http://localhost:3000",
+    });
+    // Empty error lists: no Console/Network error sections, but Level + hash remain.
+    expect(payload.composerText).toContain("Level: full debug snapshot");
+    expect(payload.composerText).toContain(`Content hash: ${CAPTURE.sha256}`);
+    expect(payload.composerText).not.toContain("Console errors:");
+    expect(payload.composerText).not.toContain("Network errors:");
   });
 });

@@ -301,12 +301,9 @@ export function createBrowserDebugContextAttachment(input: {
     }),
     observeGrant: null,
     composerText: debugContextComposerText({
-      pageUrl: input.pageUrl,
-      title: input.title,
       dataLevel: input.dataLevel,
       consoleEntries: input.consoleEntries,
       networkEntries: input.networkEntries,
-      imageName: name,
       hash: input.capture.sha256,
     }),
     title: input.title,
@@ -439,21 +436,24 @@ function elementComposerText(
     .join("\n");
 }
 
+/**
+ * Ticket 22: no `Page:`/`Title:` lines - that's volatile state the
+ * `<browser_tile>` wrapper and `composerText` used to duplicate, and it goes
+ * stale the moment the user navigates (F4); `snapshot()`'s envelope is the
+ * single source of truth now. No `Screenshot: <name>` line either - that
+ * name never had an image attached beside it (the wire schema for this
+ * attachment carries no image bytes), which is exactly the filename-with-
+ * no-picture pattern F4/F-vision flagged as inviting false trust.
+ */
 function debugContextComposerText(input: {
-  readonly pageUrl: string;
-  readonly title: string;
   readonly dataLevel: "screenshot" | "debug-errors" | "debug-snapshot";
   readonly consoleEntries: readonly BrowserViewConsoleEntry[];
   readonly networkEntries: readonly BrowserViewNetworkEntry[];
-  readonly imageName: string;
   readonly hash: string;
 }): string {
   return [
     "Browser context",
-    `Page: ${input.pageUrl}`,
-    input.title.length === 0 ? null : `Title: ${input.title}`,
     `Level: ${browserDebugDataLevelLabel(input.dataLevel)}`,
-    `Screenshot: ${input.imageName}`,
     `Content hash: ${input.hash}`,
     input.consoleEntries.length === 0
       ? null
