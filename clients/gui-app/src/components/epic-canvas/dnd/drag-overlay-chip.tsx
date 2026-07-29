@@ -7,7 +7,7 @@
  */
 import { AnimatePresence } from "motion/react";
 import * as m from "motion/react-m";
-import { Bot, FileDiff, FilePlus, GitPullRequest, Globe } from "lucide-react";
+import { Bot, FileDiff, FilePlus, Globe } from "lucide-react";
 import { LEFT_PANEL_DEFINITIONS } from "@/components/epic-canvas/sidebar/left-panel-registry";
 import { EpicNodeTabIcon } from "@/components/epic-canvas/epic-node-tab-icon";
 import { HeaderTabDragOverlay } from "@/components/layout/tabs/tab-strip-drag-overlay";
@@ -26,8 +26,6 @@ import {
   isBrowserTileRef,
   isDiffTileRef,
   isGitDiffTileRef,
-  isPrDetailTileRef,
-  isPrDiffTileRef,
   type AgentBrowserTileRef,
   type BlankTileRef,
   type BrowserPeekTileRef,
@@ -35,8 +33,6 @@ import {
   type EpicCanvasTileRef,
   type EpicNodeRef,
   type GitDiffTileRef,
-  type PrDetailTileRef,
-  type PrDiffTileRef,
   type SnapshotDiffTileRef,
 } from "@/stores/epics/canvas/types";
 import { cn } from "@/lib/utils";
@@ -141,12 +137,6 @@ function EpicCanvasNodeDragOverlay(props: {
   if (isDiffTileRef(props.node)) {
     return <DiffTileDragOverlay node={props.node} />;
   }
-  if (isPrDetailTileRef(props.node)) {
-    return <PrDetailTileDragOverlay node={props.node} />;
-  }
-  if (isPrDiffTileRef(props.node)) {
-    return <PrDiffTileDragOverlay node={props.node} />;
-  }
   if (isBlankTileRef(props.node)) {
     return <BlankTileDragOverlay node={props.node} />;
   }
@@ -188,15 +178,6 @@ function BrowserTileDragOverlay(props: { readonly node: BrowserTileRef }) {
   );
 }
 
-function PrDetailTileDragOverlay(props: { readonly node: PrDetailTileRef }) {
-  return (
-    <m.div {...CHIP_MOTION} className={cn(CHIP_CLASS)}>
-      <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 truncate font-medium">{props.node.name}</span>
-    </m.div>
-  );
-}
-
 function BrowserPeekTileDragOverlay(props: {
   readonly node: BrowserPeekTileRef;
 }) {
@@ -222,15 +203,6 @@ function AgentBrowserTileDragOverlay(props: {
       data-browser-overlay="drag-overlay"
     >
       <Bot className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 truncate font-medium">{props.node.name}</span>
-    </m.div>
-  );
-}
-
-function PrDiffTileDragOverlay(props: { readonly node: PrDiffTileRef }) {
-  return (
-    <m.div {...CHIP_MOTION} className={cn(CHIP_CLASS)}>
-      <FileDiff className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate font-medium">{props.node.name}</span>
     </m.div>
   );

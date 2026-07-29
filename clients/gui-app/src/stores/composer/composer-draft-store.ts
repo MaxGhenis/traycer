@@ -15,8 +15,8 @@ export interface DraftState {
   readonly browserContextAttachments?: ReadonlyArray<BrowserContextAttachmentPayload>;
   /**
    * Bumped only when the draft is replaced from outside the editor
-   * (queue-edit restore, failed-send handoff). The composer watches
-   * this counter to push the new content into Tiptap; routine
+   * (queue-edit restore, failed-send handoff, submit-clear). The composer
+   * watches this counter to push the new content into Tiptap; routine
    * keystroke snapshots from the editor never bump it.
    */
   readonly resetEpoch: number;
@@ -38,12 +38,26 @@ interface ComposerDraftStore {
     taskId: string,
     attachment: BrowserContextAttachmentPayload,
   ) => void;
+  /**
+   * Resets a task's draft to empty via the same `replaceDraft` broadcast used
+   * by queue-edit restore / failed-send handoff, instead of deleting the map
+   * entry. A delete can't reliably notify every mounted composer for this
+   * `taskId` (split panes, keep-alive tabs): a sibling's `resetEpoch` selector
+   * falls back to the same `?? 0` whether the entry never existed or was just
+   * removed, so a delete after routine (non-bumping) keystrokes produces no
+   * observable change and the sibling's stale Tiptap document never clears.
+   * Bumping `resetEpoch` in place is the only way every mounted
+   * `useChatComposerDraft` for this `taskId` reliably observes the clear. The
+   * explicit empty-document caret applies the reset without invoking
+   * `setContent(..., null)`'s focus-at-end behavior in sibling composers.
+   */
   readonly clearDraft: (taskId: string) => void;
 }
 const EMPTY_COMPOSER_CONTENT: JsonContent = {
   type: "doc",
   content: [{ type: "paragraph" }],
 };
+const EMPTY_COMPOSER_SELECTION: DraftSelection = { from: 1, to: 1 };
 
 export const EMPTY_COMPOSER_DRAFT: DraftState = {
   content: EMPTY_COMPOSER_CONTENT,
@@ -61,7 +75,7 @@ function ensureDraft(
 
 export const useComposerDraftStore = create<ComposerDraftStore>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       drafts: {},
       setSnapshot: (taskId, content, selection) => {
         set((state) => {
@@ -114,12 +128,11 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         });
       },
       clearDraft: (taskId) => {
-        set((state) => {
-          if (!(taskId in state.drafts)) return state;
-          const next = { ...state.drafts };
-          delete next[taskId];
-          return { drafts: next };
-        });
+        get().replaceDraft(
+          taskId,
+          EMPTY_COMPOSER_CONTENT,
+          EMPTY_COMPOSER_SELECTION,
+        );
       },
     }),
     {

@@ -17,6 +17,7 @@ import type {
   HostRemovalState,
   HostTrayCommand,
   HostUninstallResult,
+  HostRestartRequestResult,
   InstallVersionOk,
   MutationOutcome,
   ServiceRegistrationOk,
@@ -126,7 +127,9 @@ import type {
   OwnershipClaimResult,
   OwnershipEntry,
   PerWindowSnapshot,
+  PerWindowStateCapabilities,
   PerWindowStatePatch,
+  PerWindowStateUpdateAcknowledgement,
   SupportLogTarget,
   SupportLogTailResult,
   SupportRevealLogResult,
@@ -180,7 +183,7 @@ export interface DesktopPreloadBridge {
     dispose: () => void;
   };
   onSystemResumed(handler: () => void): { dispose: () => void };
-  requestHostRespawn(): Promise<void>;
+  requestHostRespawn(): Promise<HostRestartRequestResult>;
   trayState: {
     setEpics(epics: readonly TrayEpic[]): Promise<void>;
     setIndicator(state: TrayIndicatorState): Promise<void>;
@@ -250,7 +253,7 @@ export interface DesktopHostManagementBridge {
   uninstallTraycer(): Promise<TraycerUninstallResult>;
   getRemovalState(): Promise<HostRemovalState>;
   clearRemoval(): Promise<void>;
-  restartHost(): Promise<void>;
+  restartHost(): Promise<HostRestartRequestResult>;
   getHostLogs(input: {
     readonly tailLines: number;
   }): Promise<HostLogsTailResult>;
@@ -564,7 +567,10 @@ export interface DesktopWindowsBridge {
   };
   perWindowState: {
     get(): Promise<PerWindowSnapshot>;
-    update(patch: PerWindowStatePatch): Promise<void>;
+    capabilities?(): Promise<PerWindowStateCapabilities>;
+    update(
+      patch: PerWindowStatePatch,
+    ): Promise<PerWindowStateUpdateAcknowledgement | void>;
     clear(): Promise<void>;
     onChange(handler: (snapshot: PerWindowSnapshot) => void): {
       dispose: () => void;
@@ -841,7 +847,7 @@ export class DesktopRunnerHost implements IRunnerHost {
     return toDisposable(this.bridge.onSystemResumed(handler));
   }
 
-  requestHostRespawn(): Promise<void> {
+  requestHostRespawn(): Promise<HostRestartRequestResult> {
     return this.bridge.requestHostRespawn();
   }
 

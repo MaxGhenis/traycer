@@ -150,6 +150,11 @@ import {
   commentsSetThreadStatusV10,
 } from "@traycer/protocol/host/comments/contracts";
 import { hostStatusV10 } from "@traycer/protocol/host/status/contracts";
+import {
+  lifecycleClaimShutdownV10,
+  lifecycleCommitShutdownV10,
+  lifecycleReleaseShutdownV10,
+} from "@traycer/protocol/host/lifecycle/contracts";
 import { hostGetRuntimeCapabilitiesV10 } from "@traycer/protocol/host/runtime-capabilities/contracts";
 import {
   hostGetRateLimitUsageV10,
@@ -271,17 +276,21 @@ import {
   hostNotificationsClearAll,
   hostNotificationsGetConfig,
   hostNotificationsIndicatorState,
-  hostNotificationsListDowngradeV20ToV10,
+  hostNotificationsListDowngradeV21ToV10,
   hostNotificationsListUpgradeV10ToV20,
+  hostNotificationsListUpgradeV20ToV21,
   hostNotificationsListV10,
   hostNotificationsListV20,
+  hostNotificationsListV21,
   hostNotificationsMarkAllRead,
   hostNotificationsMarkRead,
   hostNotificationsResolve,
   hostNotificationsSetConfig,
   hostNotificationsFeedSubscribeV10,
+  hostNotificationsFeedSubscribeV11,
   hostNotificationsSubscribeV10,
   notificationsSubscribeV10,
+  notificationsSubscribeV11,
 } from "@traycer/protocol/host/notifications/contracts";
 import { RELEASED_FLOOR_METHOD_NAMES } from "@traycer/protocol/host/released-floor";
 import {
@@ -300,6 +309,7 @@ import {
   migrationRunV10,
   phaseMigrateToEpicV10,
 } from "@traycer/protocol/host/migration/contracts";
+import { worktreeDeleteBatchByPathStreamV10 } from "@traycer/protocol/host/worktree-delete-batch-stream";
 import { worktreeDeleteByPathStreamV10 } from "@traycer/protocol/host/worktree-delete-stream";
 import { worktreeChangedV10 } from "@traycer/protocol/host/worktree-changed-stream";
 import { editorOpenPathsV10 } from "@traycer/protocol/host/editor/contracts";
@@ -314,11 +324,6 @@ import {
   gitSubscribeStatusV11,
   gitSubscribeStatusV12,
 } from "@traycer/protocol/host/git-contracts";
-import {
-  prSubscribeListForEpicV10,
-  prSubscribeDetailV10,
-  prGetLocalDiffV10,
-} from "@traycer/protocol/host/pr-contracts";
 import { defineRpcContract } from "@traycer/protocol/framework/index";
 import {
   worktreeCreateRequestSchema,
@@ -2310,6 +2315,51 @@ const HOST_RPC_REGISTRY_DEFINITION = {
       downgradePathsFromLatest: {},
     },
   },
+  "lifecycle.claimShutdown": {
+    // Hosts predating the lifecycle layer cannot safely emulate a shutdown
+    // claim, so reconciliation must re-probe and use its legacy-safe path.
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: lifecycleClaimShutdownV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "lifecycle.commitShutdown": {
+    // A commit token has authority only on the host that granted it; there is
+    // no meaningful fallback on an older host.
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: lifecycleCommitShutdownV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "lifecycle.releaseShutdown": {
+    // Release authority is meaningful only to the host that minted the token;
+    // an older host cannot emulate this recovery arm safely.
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: lifecycleReleaseShutdownV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
   "host.getRuntimeCapabilities": {
     1: {
       latestMinor: 0,
@@ -2395,15 +2445,19 @@ const HOST_RPC_REGISTRY_DEFINITION = {
       downgradePathsFromLatest: {},
     },
     2: {
-      latestMinor: 0,
+      latestMinor: 1,
       versions: {
         0: {
           contract: hostNotificationsListV20,
           upgradeFromPreviousVersion: hostNotificationsListUpgradeV10ToV20,
         },
+        1: {
+          contract: hostNotificationsListV21,
+          upgradeFromPreviousVersion: hostNotificationsListUpgradeV20ToV21,
+        },
       },
       downgradePathsFromLatest: {
-        1: hostNotificationsListDowngradeV20ToV10,
+        1: hostNotificationsListDowngradeV21ToV10,
       },
     },
   },
@@ -4726,25 +4780,6 @@ const HOST_RPC_REGISTRY_DEFINITION = {
       },
     },
   },
-  // Additive, post-v1.0.0 optional method: a PR's patch read from the local
-  // checkout. A host that predates it simply lacks it and the PR view falls
-  // back to the GitHub-sourced file list (which is all the detail stream ever
-  // carried), so it rides the optional-capability channel
-  // (`degrade: unsupported`) and stays out of the released floor / baseline
-  // surface.
-  "pr.getLocalDiff": {
-    degrade: { kind: "unsupported" },
-    1: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: prGetLocalDiffV10,
-          upgradeFromPreviousVersion: null,
-        },
-      },
-      downgradePathsFromLatest: {},
-    },
-  },
 } as const;
 
 export const hostRpcRegistry = defineFloorAwareVersionedRpcRegistry(
@@ -4758,12 +4793,11 @@ export type HostRpcRegistry = typeof hostRpcRegistry;
  * Combined streaming-RPC registry for the `/stream` WS manifest.
  *
  * One manifest per `/stream` WS: `epic.subscribe@1.1`,
- * `chat.subscribe@1.5`, `notifications.subscribe@1.0`,
+ * `chat.subscribe@1.5`, `notifications.subscribe@1.1`,
  * `terminal.subscribe@1.4`, `git.subscribeStatus@1.2`,
  * `browser.sessions@1.5`, `browser.screencast@1.0`,
- * `resources.subscribe@1.3`, `agent.inbox.subscribe@1.0`,
- * `speech.dictate@1.0`, `pr.subscribeListForEpic@1.0`,
- * `pr.subscribeDetail@1.0`, and
+ * `resources.subscribe@1.3`, `agent.inbox.subscribe@1.1`,
+ * `speech.dictate@1.0`, and
  * `migration.run@1.0` are negotiated from this registry. Later minors within
  * the same major line must be
  * additive; later majors must carry a real breaking change and ship without a
@@ -4814,10 +4848,18 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   },
   "notifications.subscribe": {
     1: {
-      latestMinor: 0,
+      // @1.1 adds the additive, server-only `awareness` frame (agent-activity
+      // presence on the per-user notification room). @1.0 stays installed and
+      // FROZEN: a client that negotiated it must never receive the new kind -
+      // the emitting resolver MUST gate on the negotiated version rather than
+      // assuming the peer will tolerate an unknown frame.
+      latestMinor: 1,
       versions: {
         0: {
           contract: notificationsSubscribeV10,
+        },
+        1: {
+          contract: notificationsSubscribeV11,
         },
       },
     },
@@ -4834,10 +4876,13 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   },
   "host.notifications.feed.subscribe": {
     1: {
-      latestMinor: 0,
+      latestMinor: 1,
       versions: {
         0: {
           contract: hostNotificationsFeedSubscribeV10,
+        },
+        1: {
+          contract: hostNotificationsFeedSubscribeV11,
         },
       },
     },
@@ -5003,6 +5048,23 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       },
     },
   },
+  // Separate method, not a minor of `worktree.deleteByPath`: its request and
+  // frames are released and frozen, and a client that lands on the batch
+  // method must be able to discover THAT, not negotiate down to a per-target
+  // stream it would then have to drive N times. An older host simply omits
+  // this method from its manifest, so the compatibility check rejects it at
+  // openAck - before the subscribe frame, therefore before any host work -
+  // which is what makes fallback safe for a destructive operation.
+  "worktree.deleteBatchByPath": {
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: worktreeDeleteBatchByPathStreamV10,
+        },
+      },
+    },
+  },
   "worktree.changed": {
     1: {
       latestMinor: 0,
@@ -5019,26 +5081,6 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       versions: {
         0: {
           contract: speechDictateV10,
-        },
-      },
-    },
-  },
-  "pr.subscribeListForEpic": {
-    1: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: prSubscribeListForEpicV10,
-        },
-      },
-    },
-  },
-  "pr.subscribeDetail": {
-    1: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: prSubscribeDetailV10,
         },
       },
     },

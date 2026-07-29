@@ -112,29 +112,6 @@ vi.mock(
   }),
 );
 
-vi.mock("@/stores/composer/landing-composer-store", () => {
-  const dirtyContent = {
-    type: "doc",
-    content: [
-      { type: "paragraph", content: [{ type: "text", text: "dirty" }] },
-    ],
-  };
-  const state = {
-    currentContent: dirtyContent,
-    setSnapshot: vi.fn(),
-    openDraft: () => dirtyContent,
-  };
-  const useLandingComposerStore = Object.assign(
-    (selector: (value: typeof state) => unknown) => selector(state),
-    { getState: () => state },
-  );
-  return {
-    useLandingComposerStore,
-    flushPendingLandingDraftContent: vi.fn(),
-    readLandingComposerDraftContent: () => dirtyContent,
-  };
-});
-
 vi.mock("@/stores/settings/settings-store", () => {
   const state = { composerMode: "chat", setComposerMode: vi.fn() };
   return {
@@ -284,7 +261,7 @@ function renderLandingComposer(): RenderResult {
       draftId={null}
       pendingCreateId={null}
       initialSettings={null}
-      workspaceControls={null}
+      workspaceControls={() => null}
     />,
   );
 }
