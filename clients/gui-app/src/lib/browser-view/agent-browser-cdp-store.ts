@@ -112,6 +112,21 @@ export function notifyAgentBrowserCdpSessionEnded(
  * push through. Unlike detach, there is no synchronous fallback here (this
  * is pure discovery, not a failure mode) - a genuinely missed attach means
  * that child session simply cannot be dispatched to until rediscovered.
+ *
+ * Ticket 29 (review round 1, P1) - named deferral, not silently accepted:
+ * the host side now retains and replays attachments across
+ * `ElectronTileRuntimeAdapter` re-creation (`browser-session-manager.ts`),
+ * and the borrowed tile now forwards this event at all (`browser-tile.tsx`,
+ * previously missing entirely). What remains open is the narrowest case -
+ * an OOPIF attaching before EITHER of those has ever run for this tile once
+ * (e.g. a genuinely fresh Electron-main subscription with no prior
+ * dispatch anywhere in this renderer's lifetime) - since `Target.
+ * attachedToTarget` fires exactly once and this store has no pull-based
+ * "what is currently attached" query to fall back on, only the push event.
+ * Closing that fully needs a new query IPC method on the electron-main
+ * bridge, which is real protocol/manager surgery outside this ticket's
+ * scope. It fails safe, not silently wrong: `composeFrame`'s best-effort
+ * child handling degrades to the bare iframe ref line, never a crash.
  */
 export function notifyAgentBrowserCdpTargetAttached(
   tileInstanceId: string,

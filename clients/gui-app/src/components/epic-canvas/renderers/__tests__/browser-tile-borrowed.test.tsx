@@ -534,6 +534,10 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
   emitCdpSessionEnded(change: AgentBrowserViewCdpSessionEndedChange): void {
     this.cdpSessionEndedHandlers.forEach((handler) => handler(change));
   }
+
+  emitCdpTargetAttached(change: AgentBrowserViewCdpTargetAttachedChange): void {
+    this.cdpTargetAttachedHandlers.forEach((handler) => handler(change));
+  }
 }
 
 function tileKey(): BrowserViewTileKey {
@@ -773,6 +777,80 @@ describe("<BrowserTile /> borrowed-tile attach", () => {
       error: { kind: "tile_not_found" },
     });
     // Debugger detach ends the attachment; it does not close the tab.
+    expectUserTileStillOpen(bridge);
+  });
+
+  /**
+   * Ticket 29 (review round 1, P1): borrowed path previously forwarded CDP
+   * dispatch but not Target.attachedToTarget - a genuine OOPIF on a borrowed
+   * tab was never discoverable. Mirror of AgentBrowserTile's attach forward.
+   */
+  it("forwards onCdpTargetAttached for this tile to notifyAgentBrowserCdpTargetAttached and ignores other tiles (ticket 29 review P1)", async () => {
+    renderBrowserTile();
+
+    act(() => {
+      publishBorrowedTileAttachment(
+        makeAttachment({
+          attachmentId: "att-target-attached",
+          agentLabel: "Claude",
+          expiresAt: Date.now() + 60_000,
+          sendFrame: vi.fn(),
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Claude is driving this tab/)).toBeTruthy();
+    });
+
+    // Seed a sendFrame for this tile so notifyAgentBrowserCdpTargetAttached
+    // has a sink (same registration path a real dispatch uses).
+    const sendFrame = vi.fn<(frame: BrowserSessionsClientFrame) => void>();
+    publishCdpForTile("req-seed-attach-forward", sendFrame);
+    await waitFor(() => {
+      expect(bridge.cdpDispatchCalls).toHaveLength(1);
+    });
+    sendFrame.mockClear();
+
+    act(() => {
+      bridge.emitCdpTargetAttached({
+        ...tileKey(),
+        sessionId: "oopif-session-1",
+        targetId: "CHILD-1",
+        targetType: "iframe",
+        url: "https://child.example/form",
+        waitingForDebugger: false,
+      });
+    });
+
+    expect(sendFrame).toHaveBeenCalledTimes(1);
+    expect(sendFrame.mock.calls[0]?.[0]).toMatchObject({
+      kind: "cdpTargetAttached",
+      tileInstanceId: NODE.instanceId,
+      sessionId: "oopif-session-1",
+      targetId: "CHILD-1",
+      targetType: "iframe",
+      url: "https://child.example/form",
+      waitingForDebugger: false,
+    });
+
+    // Different tile key must be filtered by isStatusForTile - no extra
+    // notify / sendFrame call.
+    act(() => {
+      bridge.emitCdpTargetAttached({
+        viewTabId: "view-tab-other",
+        paneId: "pane-other",
+        tileInstanceId: "other-tile",
+        pageSessionId: "other-page",
+        sessionId: "oopif-other",
+        targetId: "CHILD-OTHER",
+        targetType: "iframe",
+        url: "https://other.example/",
+        waitingForDebugger: false,
+      });
+    });
+
+    expect(sendFrame).toHaveBeenCalledTimes(1);
     expectUserTileStillOpen(bridge);
   });
 

@@ -78,6 +78,7 @@ import {
 import {
   registerAgentBrowserCdpHandler,
   buildCdpResultFrame,
+  notifyAgentBrowserCdpTargetAttached,
 } from "@/lib/browser-view/agent-browser-cdp-store";
 import {
   releaseBorrowedTileAttachment,
@@ -433,6 +434,26 @@ export function BrowserTile(props: BrowserTileProps) {
         });
     });
   }, [borrowedAttachment, browserView, props.node.instanceId, tileKey]);
+
+  /**
+   * Ticket 29 (review round 1, P1): the borrowed path wired CDP request/
+   * dispatch above but never forwarded `Target.attachedToTarget` (a genuine
+   * cross-origin OOPIF) the way `AgentBrowserTile` already does for the
+   * agent's own tile - so a borrowed tab's OOPIF was never discoverable by
+   * `ElectronTileRuntimeAdapter` at all, only the ancestor session, which
+   * cannot address it. Same capability-parity reasoning as the CDP dispatch
+   * registration above: a borrowed tile is not a reduced surface.
+   */
+  useEffect(() => {
+    if (browserView === null || borrowedAttachment === null) return;
+    const subscription = browserView.onCdpTargetAttached((change) => {
+      if (!isStatusForTile(change, tileKey)) return;
+      notifyAgentBrowserCdpTargetAttached(change.tileInstanceId, change);
+    });
+    return () => {
+      subscription.dispose();
+    };
+  }, [borrowedAttachment, browserView, tileKey]);
 
   /**
    * Ticket 03's rule - a detached debugger ends agent access rather than
