@@ -243,7 +243,7 @@ export function createBrowserScreenshotAttachment(input: {
       sourceAction: "browser-screenshot-send",
     }),
     observeGrant: null,
-    composerText: screenshotComposerText(input.capture, input.pageUrl, name),
+    composerText: screenshotComposerText(input.capture),
     screenshot: {
       mediaType: input.capture.mediaType,
       base64: input.capture.base64,
@@ -278,7 +278,7 @@ export function createBrowserElementAttachment(input: {
       sourceAction: "browser-element-send",
     }),
     observeGrant: null,
-    composerText: elementComposerText(input.element, input.pageUrl),
+    composerText: elementComposerText(input.element),
     element: input.element,
   };
 }
@@ -394,31 +394,29 @@ function networkComposerText(
     .join("\n");
 }
 
-function screenshotComposerText(
-  capture: BrowserViewCapturePageResult,
-  pageUrl: string,
-  name: string,
-): string {
+/**
+ * Ticket 29 (A2): no `Page:` line (volatile state, belongs in the
+ * observation not a static block) and no `Image: <name>` line - siblings of
+ * ticket 22's `debugContextComposerText` fix that were not swept at the
+ * time. See that function's doc comment for why: the name never had an
+ * image attached beside it in this attachment's own wire shape.
+ */
+function screenshotComposerText(capture: BrowserViewCapturePageResult): string {
   return [
     "Browser screenshot",
-    `Page: ${pageUrl}`,
-    `Image: ${name}`,
     `Content hash: ${capture.sha256}`,
     `Size: ${capture.byteLength} bytes`,
   ].join("\n");
 }
 
-function elementComposerText(
-  element: BrowserViewElementCapture,
-  pageUrl: string,
-): string {
+/** Ticket 29 (A2): no `Page:` line - same sweep as `screenshotComposerText`. */
+function elementComposerText(element: BrowserViewElementCapture): string {
   const box = element.boundingBox;
   const styleLines = element.computedStyles
     .slice(0, 12)
     .map((style) => `  ${style.property}: ${style.value}`);
   return [
     "Browser element",
-    `Page: ${pageUrl}`,
     `Selector: ${element.selector}`,
     `Tag: ${element.tagName}`,
     element.ariaRole === null ? null : `Role: ${element.ariaRole}`,

@@ -119,6 +119,29 @@ describe("browser context attachment payloads", () => {
     });
   });
 
+  it("omits Page/Image lines from screenshot composerText (ticket 29 A2)", () => {
+    // Same sweep ticket 22 did for debugContextComposerText: Page is volatile
+    // state (belongs in observation), and Image: <name> never had an image
+    // attached beside it in this attachment's wire shape.
+    const payload = createBrowserScreenshotAttachment({
+      tile: TILE,
+      pageUrl: "http://localhost:3000/page",
+      capture: CAPTURE,
+    });
+
+    expect(payload.composerText).toContain("Browser screenshot");
+    expect(payload.composerText).toContain(`Content hash: ${CAPTURE.sha256}`);
+    expect(payload.composerText).toContain(`Size: ${CAPTURE.byteLength} bytes`);
+    expect(payload.composerText).not.toMatch(/^Page:/m);
+    expect(payload.composerText).not.toMatch(/^Image:/m);
+    expect(payload.composerText).not.toContain(
+      "Page: http://localhost:3000/page",
+    );
+    expect(payload.composerText).not.toContain(
+      `Image: browser-screenshot-${CAPTURE.sha256.slice(0, 12)}.png`,
+    );
+  });
+
   it("mints a chat-scoped visible-tile observe grant from trusted payload state", () => {
     const payload = createBrowserScreenshotAttachment({
       tile: TILE,
@@ -228,6 +251,12 @@ describe("browser element attachment", () => {
     expect(payload.composerText).toContain("Role: button");
     expect(payload.composerText).toContain("display: inline-flex");
     expect(payload.composerText).toContain("Save");
+    // Ticket 29 (A2): no Page: line - same sweep as screenshotComposerText /
+    // ticket 22's debugContextComposerText. Selector/role/styles stay.
+    expect(payload.composerText).not.toMatch(/^Page:/m);
+    expect(payload.composerText).not.toContain(
+      "Page: http://localhost:3000/page",
+    );
   });
 
   it("marks truncated outer HTML in the composer text", () => {
