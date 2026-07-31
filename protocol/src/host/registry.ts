@@ -197,8 +197,10 @@ import {
   epicListTasksV10,
   epicListTasksV11,
   epicListTasksV12,
+  epicListTasksV13,
   epicListTasksUpgradeV10ToV11,
   epicListTasksUpgradeV11ToV12,
+  epicListTasksUpgradeV12ToV13,
   epicMentionEpicsV10,
   epicMentionReviewsV10,
   epicMentionSpecsV10,
@@ -3745,7 +3747,7 @@ const HOST_RPC_REGISTRY_DEFINITION = {
   },
   "epic.listTasks": {
     1: {
-      latestMinor: 2,
+      latestMinor: 3,
       versions: {
         0: {
           contract: epicListTasksV10,
@@ -3758,6 +3760,10 @@ const HOST_RPC_REGISTRY_DEFINITION = {
         2: {
           contract: epicListTasksV12,
           upgradeFromPreviousVersion: epicListTasksUpgradeV11ToV12,
+        },
+        3: {
+          contract: epicListTasksV13,
+          upgradeFromPreviousVersion: epicListTasksUpgradeV12ToV13,
         },
       },
       downgradePathsFromLatest: {},
