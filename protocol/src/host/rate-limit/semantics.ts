@@ -65,6 +65,16 @@ export function providerRateLimitWindows(
       // severity/rollup path. A period-less snapshot (tier + dates only, no
       // usage percentage) carries no window.
       return rateLimits.period !== null ? [rateLimits.period] : [];
+    case "jcode":
+      // Meta-harness arm: one window per connected sub-provider that reported a
+      // measurable quota. This is the same many-windows-per-provider shape
+      // claude-code already contributes, so it folds into the shared severity
+      // rollup with no special casing. A sub-provider whose fetch failed (its
+      // `error` is non-null) carries a null window and simply contributes
+      // nothing - it must never read as a healthy zero.
+      return rateLimits.subProviders
+        .map((subProvider) => subProvider.window)
+        .filter((window): window is ProviderRateLimitWindow => window !== null);
     case "openrouter":
     case "kilocode":
       return [];
@@ -108,6 +118,20 @@ export function classifyProviderRateLimits(
     rateLimits.provider === "codex" &&
     rateLimits.rateLimitReachedType !== null
   ) {
+    return "limited";
+  }
+  if (
+    rateLimits.provider === "jcode" &&
+    rateLimits.subProviders.some((subProvider) => subProvider.hardLimitReached)
+  ) {
+    // Authoritative for the same reason Codex's reached-type is, and placed
+    // after the same staleness guard so an all-expired capture still reports
+    // Unknown. Today the host derives `hardLimitReached` from
+    // `usedPercent >= 100` (jcode computes `hard_limit_reached` upstream but
+    // does not serialize it), so this agrees with the window classifier by
+    // construction - reading the flag rather than re-deriving it means an
+    // upstream build that starts serializing a different rule is honoured here
+    // instead of silently disagreeing with itself.
     return "limited";
   }
   if (liveWindows.length === 0) return "unknown";

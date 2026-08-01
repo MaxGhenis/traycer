@@ -167,6 +167,26 @@ function formatProviderRateLimits(rateLimits: ProviderRateLimits): string {
       .filter((line): line is string => line !== null)
       .join("\n");
   }
+  if (rateLimits.provider === "jcode") {
+    // jcode is a meta-harness: quota is per connected sub-provider, so this
+    // renders one line each rather than a single roll-up. An empty list is
+    // stated explicitly - an agent must not read a silent blank as headroom.
+    if (rateLimits.subProviders.length === 0) {
+      return "no connected sub-provider reported quota";
+    }
+    return rateLimits.subProviders
+      .map((subProvider) => {
+        // A failed fetch is reported as a failure, never as an unknown window:
+        // both carry `window: null`, and collapsing them would make a broken
+        // credential look identical to a provider that simply has no quota.
+        if (subProvider.error !== null) {
+          return `${subProvider.subProviderId}: fetch failed - ${subProvider.error}`;
+        }
+        const line = formatWindowLine(subProvider.subProviderId, subProvider.window);
+        return subProvider.hardLimitReached ? `${line} (hard limit reached)` : line;
+      })
+      .join("\n");
+  }
   return [
     `credit balance: ${formatNumber(rateLimits.creditBalance)}`,
     `pass: ${rateLimits.passState ?? "unknown"}`,
