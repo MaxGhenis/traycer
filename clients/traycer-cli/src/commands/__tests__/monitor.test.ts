@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runMonitor } from "../monitor";
 import { resolveHostAuth } from "../../internal/host-auth";
 import { readHostPidMetadata } from "../../host/pid-metadata";
+import { callHostRpc } from "../../internal/host-rpc";
 
 // Drive the monitor's recovery state machine with a mocked WsStreamClient and a
 // mocked revalidator: each `subscribe()` returns a fake session whose
@@ -19,6 +20,7 @@ type CapturedStreamClientOptions = {
 
 const {
   subscribeMock,
+  getMethodSchemaVersionMock,
   revalidateMock,
   disposeMock,
   sessions,
@@ -46,8 +48,14 @@ const {
     sessions.push(session);
     return handle;
   });
+  // Defaults to the latest negotiated minor (@1.2) the monitor itself
+  // targets - every existing test in this file exercises a fully-current
+  // host, so this preserves prior behavior. Mixed-version negotiation is
+  // covered by its own dedicated tests, which override this per-test.
+  const getMethodSchemaVersionMock = vi.fn(() => ({ major: 1, minor: 2 }));
   return {
     subscribeMock,
+    getMethodSchemaVersionMock,
     revalidateMock: vi.fn(),
     disposeMock: vi.fn(),
     sessions,
@@ -75,6 +83,7 @@ vi.mock("../../../../shared/host-transport/ws-stream-client", () => ({
     }
 
     subscribe = subscribeMock;
+    getMethodSchemaVersion = getMethodSchemaVersionMock;
   },
 }));
 
@@ -93,6 +102,15 @@ vi.mock("../../internal/host-auth", () => ({
   resolveHostAuth: vi.fn(),
 }));
 
+vi.mock("../../internal/host-rpc", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../internal/host-rpc")>();
+  return {
+    ...actual,
+    callHostRpc: vi.fn(),
+  };
+});
+
 vi.mock("../../host/pid-metadata", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../host/pid-metadata")>();
@@ -104,6 +122,7 @@ vi.mock("../../host/pid-metadata", async (importOriginal) => {
 
 const resolveAuthMock = vi.mocked(resolveHostAuth);
 const pidMock = vi.mocked(readHostPidMetadata);
+const callHostRpcMock = vi.mocked(callHostRpc);
 
 function unauthorizedFatal() {
   return {
@@ -141,6 +160,8 @@ beforeEach(() => {
   subscribeMock.mockClear();
   revalidateMock.mockReset();
   disposeMock.mockClear();
+  callHostRpcMock.mockReset();
+  callHostRpcMock.mockResolvedValue({});
   resolveAuthMock.mockResolvedValue({
     token: "tok-1",
     authnBaseUrl: "https://authn.test",
@@ -336,6 +357,110 @@ describe("role awareness frames (negotiated @1.1)", () => {
     expect(lines.filter((line) => line.includes("[traycer roles]"))).toEqual(
       [],
     );
+
+    stdoutSpy.mockRestore();
+    void result;
+  });
+});
+
+describe("mixed-version inbox message frames", () => {
+  it("parses and prints an old-host (@1.0-negotiated) message frame with no eventId, and never calls agent.inbox.ack for it", async () => {
+    getMethodSchemaVersionMock.mockReturnValueOnce({ major: 1, minor: 0 });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    const result = runMonitor({ agentId: "a1", epicId: "e1" }).catch((e) => e);
+    await flush(0);
+
+    // The @1.0 wire shape has no `eventId` field at all - parsing this
+    // against the latest (@1.2) schema, which requires it, would fail
+    // outright and silently drop the message. Parsing against the
+    // NEGOTIATED minor must succeed.
+    sessions[0].serverFrame?.({
+      kind: "message",
+      hasBinaryPayload: false,
+      item: {
+        reply: { expectsReply: false },
+        fromAgentId: "peer-1",
+        senderTitle: null,
+        senderHarnessId: null,
+        epicId: "e1",
+        prompt: "hello from an old host",
+        enqueuedAt: 123,
+      },
+    });
+    await flush(0);
+
+    const lines = stdoutSpy.mock.calls.map((call) => String(call[0]));
+    expect(lines.some((line) => line.includes("hello from an old host"))).toBe(
+      true,
+    );
+    expect(callHostRpcMock).not.toHaveBeenCalledWith(
+      "agent.inbox.ack",
+      expect.anything(),
+    );
+
+    stdoutSpy.mockRestore();
+    void result;
+  });
+
+  it("prints a new-host (@1.2-negotiated) message frame and acks only after the stdout write completes", async () => {
+    // Unlike the other tests in this file, this one exercises the ack path,
+    // which awaits `flushStdio()` - that only resolves once the write's own
+    // completion callback fires (see `std-write.ts`), so the mock must
+    // actually invoke it, not just return `true`.
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((..._args: unknown[]) => {
+        const cb = _args.find((arg) => typeof arg === "function") as
+          | (() => void)
+          | undefined;
+        cb?.();
+        return true;
+      });
+    const result = runMonitor({ agentId: "a1", epicId: "e1" }).catch((e) => e);
+    await flush(0);
+
+    sessions[0].serverFrame?.({
+      kind: "message",
+      hasBinaryPayload: false,
+      item: {
+        reply: { expectsReply: false },
+        fromAgentId: "peer-1",
+        senderTitle: null,
+        senderHarnessId: null,
+        epicId: "e1",
+        prompt: "hello from a new host",
+        enqueuedAt: 123,
+        eventId: "evt-1",
+      },
+    });
+    // Before the async write/ack chain settles, the print must already be
+    // visible (write is issued synchronously into the tracked queue) but
+    // the ack must not have fired yet.
+    const linesBeforeFlush = stdoutSpy.mock.calls.map((call) =>
+      String(call[0]),
+    );
+    expect(
+      linesBeforeFlush.some((line) => line.includes("hello from a new host")),
+    ).toBe(true);
+    expect(callHostRpcMock).not.toHaveBeenCalled();
+
+    // `std-write.ts`'s write-completion chain (`stdoutTail`) is MODULE-level
+    // state that outlives any single test - an earlier test in this file
+    // whose stdout mock never invoked its write callback leaves that chain
+    // permanently stuck on an unresolved link, which this test's own write
+    // then chains onto. `flushStdio()`'s `bounded()` wrapper exists for
+    // exactly this - a write whose completion never arrives - falling back
+    // to `FLUSH_TIMEOUT_MS`, so advance fake time past it rather than
+    // assuming a few microtask ticks resolve the chain.
+    await flush(10_000);
+
+    expect(callHostRpcMock).toHaveBeenCalledWith("agent.inbox.ack", {
+      epicId: "e1",
+      agentId: "a1",
+      eventIds: ["evt-1"],
+    });
 
     stdoutSpy.mockRestore();
     void result;

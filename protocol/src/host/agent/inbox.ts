@@ -251,10 +251,15 @@ export const agentInboxSubscribeServerFrameSchemaV11 = z.discriminatedUnion(
 //
 // The "message" item gains `eventId` (see `agentInboxMessageSchemaV12`) so a
 // durable-inbox-aware monitor can acknowledge delivery via `agent.inbox.ack`.
-// A `@1.0`/`@1.1` monitor never sees this schema - it keeps parsing frames
-// against its own frozen tree - so no existing behavior changes for it; it
-// simply never acknowledges, and the durable row stays until a `@1.2`+
-// monitor (re)connects and catches up.
+// A `@1.0`/`@1.1` monitor negotiates one of the older, frozen frame trees
+// above - which have no `eventId` field at all - and can never call
+// `agent.inbox.ack`. Rather than leave the durable row queued forever for an
+// ack that structurally cannot arrive, the resolver applies a SERVER-SIDE
+// compatibility ack: immediately after successfully sending a "message"
+// frame to a connection negotiated below `@1.2`, it retires that row itself.
+// This mirrors the pre-durable-inbox at-most-once behavior those older
+// monitors were always built against - no regression for them - while a
+// `@1.2`+ monitor keeps the stronger at-least-once guarantee via its own ack.
 export const agentInboxSubscribeServerFrameSchemaV12 = z.discriminatedUnion(
   "kind",
   [

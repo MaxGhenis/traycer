@@ -5,10 +5,13 @@ import {
 } from "@traycer/protocol/host/registry";
 import {
   agentInboxSubscribeServerFrameSchema,
+  agentInboxSubscribeServerFrameSchemaV10,
+  agentInboxSubscribeServerFrameSchemaV11,
   type AgentInboxMessage,
   type AgentInboxNotice,
 } from "@traycer/protocol/host/agent/inbox";
 import type { RoleAwarenessEvent } from "@traycer/protocol/host/agent/roles";
+import type { SchemaVersion } from "@traycer/protocol/framework/versioned-stream-rpc";
 import {
   MutableBearerLease,
   readLeaseBearer,
@@ -38,7 +41,7 @@ import {
 import { createCliHostCredentialMintFlow } from "../auth/host-credential-mint";
 import { resolveHostAuth } from "../internal/host-auth";
 import { callHostRpc } from "../internal/host-rpc";
-import { writeStderr, writeStdout } from "../runner/std-write";
+import { flushStdio, writeStderr, writeStdout } from "../runner/std-write";
 import {
   createCliCredentialsStore,
   createStoreBackedRevalidator,
@@ -353,7 +356,7 @@ function runInboxSubscription(
       session = next;
       next.onServerFrame((envelope) => {
         markHealthy();
-        handleServerFrame(envelope, target, logger);
+        void handleServerFrame(envelope, client, target, logger);
       });
       next.onStatusChange((status, reason) => {
         void onStatusChange(status, reason);
@@ -459,41 +462,120 @@ function runInboxSubscription(
   });
 }
 
-function handleServerFrame(
+/**
+ * A server frame normalized to the shape `handleServerFrame` acts on,
+ * independent of which minor it was parsed against. `eventId` is `null` for
+ * a "message" parsed against the `@1.0`/`@1.1` trees - those have no
+ * `eventId` field at all, so there is nothing this monitor could ack; the
+ * host applies its own compatibility ack for a connection at that minor
+ * (see `agentInboxSubscribeServerFrameSchemaV12`'s doc comment).
+ */
+type NormalizedServerFrame =
+  | { readonly kind: "message"; readonly item: AgentInboxMessage; readonly eventId: string | null }
+  | { readonly kind: "notice"; readonly notice: AgentInboxNotice }
+  | { readonly kind: "role-awareness"; readonly event: RoleAwarenessEvent }
+  | { readonly kind: "pong" };
+
+/**
+ * Parses against the schema tree matching the NEGOTIATED minor, not always
+ * the latest one this build knows. A new monitor talking to an old host
+ * negotiates `@1.0`/`@1.1`; parsing its frames against the latest `@1.2`
+ * schema would fail outright (`eventId` is required there) and silently
+ * drop every message - the exact bug this guards against.
+ */
+function parseServerFrame(
   envelope: StreamFrameEnvelope,
+  negotiated: SchemaVersion | null,
+): NormalizedServerFrame | null {
+  if (negotiated !== null && negotiated.major === 1 && negotiated.minor === 0) {
+    const parsed = agentInboxSubscribeServerFrameSchemaV10.safeParse(envelope);
+    if (!parsed.success) return null;
+    if (parsed.data.kind === "message") {
+      return { kind: "message", item: parsed.data.item, eventId: null };
+    }
+    if (parsed.data.kind === "notice") {
+      return { kind: "notice", notice: parsed.data.notice };
+    }
+    return { kind: "pong" };
+  }
+  if (negotiated !== null && negotiated.major === 1 && negotiated.minor === 1) {
+    const parsed = agentInboxSubscribeServerFrameSchemaV11.safeParse(envelope);
+    if (!parsed.success) return null;
+    if (parsed.data.kind === "message") {
+      return { kind: "message", item: parsed.data.item, eventId: null };
+    }
+    if (parsed.data.kind === "notice") {
+      return { kind: "notice", notice: parsed.data.notice };
+    }
+    if (parsed.data.kind === "role-awareness") {
+      return { kind: "role-awareness", event: parsed.data.event };
+    }
+    return { kind: "pong" };
+  }
+  const parsed = agentInboxSubscribeServerFrameSchema.safeParse(envelope);
+  if (!parsed.success) return null;
+  if (parsed.data.kind === "message") {
+    return {
+      kind: "message",
+      item: parsed.data.item,
+      eventId: parsed.data.item.eventId,
+    };
+  }
+  if (parsed.data.kind === "notice") {
+    return { kind: "notice", notice: parsed.data.notice };
+  }
+  if (parsed.data.kind === "role-awareness") {
+    return { kind: "role-awareness", event: parsed.data.event };
+  }
+  return { kind: "pong" };
+}
+
+async function handleServerFrame(
+  envelope: StreamFrameEnvelope,
+  client: WsStreamClient<HostStreamRpcRegistry>,
   target: InboxTarget,
   logger: ILogger,
-): void {
-  const parsed = agentInboxSubscribeServerFrameSchema.safeParse(envelope);
-  if (!parsed.success) {
+): Promise<void> {
+  const negotiated = client.getMethodSchemaVersion(SUBSCRIBE_METHOD);
+  const frame = parseServerFrame(envelope, negotiated);
+  if (frame === null) {
     diag(`dropping unrecognized frame kind=${String(envelope.kind)}`);
     logger.warn("Monitor dropped unrecognized inbox frame", {
       environment: config.environment,
       frameKind: String(envelope.kind),
-      issueCount: parsed.error.issues.length,
+      negotiatedMinor: negotiated?.minor ?? null,
       agentId: target.agentId,
       epicId: target.epicId,
     });
     return;
   }
-  if (parsed.data.kind === "message") {
+  if (frame.kind === "message") {
     logger.debug("Monitor received inbox message frame", {
       environment: config.environment,
       agentId: target.agentId,
       epicId: target.epicId,
-      fromAgentId: parsed.data.item.fromAgentId,
-      hasReply: parsed.data.item.reply !== null,
+      fromAgentId: frame.item.fromAgentId,
+      hasReply: frame.item.reply !== null,
     });
-    printInboxMessage(parsed.data.item);
-    // Acknowledge the durable inbox row now that it has safely surfaced to
-    // the agent (been printed to stdout). Fire-and-forget: a failed ack
-    // just means the row replays on the next reconnect/restart, which is
-    // the documented at-least-once behavior, not data loss - so it must
-    // never block or fail frame handling.
+    printInboxMessage(frame.item);
+    if (frame.eventId === null) {
+      // Negotiated below @1.2 - no eventId to ack; the host retires this
+      // row itself (server-side compatibility ack).
+      return;
+    }
+    // The durable row must only be acknowledged once it has actually
+    // reached the OS (not merely handed to `process.stdout`, which is
+    // asynchronous whenever stdout is a pipe - see `std-write.ts`).
+    // Acking first and having the process die before the write drains
+    // would lose the message even though the row is marked delivered.
+    await flushStdio();
+    // Fire-and-forget the RPC itself: a failed ack just means the row
+    // replays on the next reconnect/restart (documented at-least-once
+    // behavior, not data loss), so it must never block frame handling.
     callHostRpc("agent.inbox.ack", {
       epicId: target.epicId,
       agentId: target.agentId,
-      eventIds: [parsed.data.item.eventId],
+      eventIds: [frame.eventId],
     }).catch((error: unknown) => {
       logger.warn("Monitor failed to acknowledge inbox message", {
         environment: config.environment,
@@ -504,27 +586,27 @@ function handleServerFrame(
     });
     return;
   }
-  if (parsed.data.kind === "notice") {
+  if (frame.kind === "notice") {
     logger.debug("Monitor received inbox notice frame", {
       environment: config.environment,
       agentId: target.agentId,
       epicId: target.epicId,
-      receiverAgentId: parsed.data.notice.receiverAgentId,
-      reason: parsed.data.notice.reason,
-      droppedReceiverCount: parsed.data.notice.droppedReceivers?.length ?? 0,
+      receiverAgentId: frame.notice.receiverAgentId,
+      reason: frame.notice.reason,
+      droppedReceiverCount: frame.notice.droppedReceivers?.length ?? 0,
     });
-    printInboxNotice(parsed.data.notice);
+    printInboxNotice(frame.notice);
     return;
   }
-  if (parsed.data.kind === "role-awareness") {
+  if (frame.kind === "role-awareness") {
     logger.debug("Monitor received role awareness frame", {
       environment: config.environment,
       agentId: target.agentId,
       epicId: target.epicId,
-      eventKind: parsed.data.event.kind,
-      claimAgentId: parsed.data.event.claim.agentId,
+      eventKind: frame.event.kind,
+      claimAgentId: frame.event.claim.agentId,
     });
-    printRoleAwareness(parsed.data.event);
+    printRoleAwareness(frame.event);
   }
 }
 
