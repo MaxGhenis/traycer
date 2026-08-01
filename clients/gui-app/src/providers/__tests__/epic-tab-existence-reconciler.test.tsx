@@ -388,7 +388,9 @@ describe("EpicTabExistenceReconciler fail-closed paths", () => {
  */
 const LOCAL_HOME_EPIC_ID = "epic-local-homed-across-relaunch";
 
-function localHomedListTasksRow(epicId: string): ListTasksResponse["tasks"][number] {
+function localHomedListTasksRow(
+  epicId: string,
+): ListTasksResponse["tasks"][number] {
   return {
     epic: {
       light: {
@@ -483,12 +485,10 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
       },
     );
 
-    const listTasks = vi.fn(
-      (_params: ListTasksRequest): ListTasksResponse => ({
-        tasks: [localHomedListTasksRow(LOCAL_HOME_EPIC_ID)],
-        hasMore: false,
-      }),
-    );
+    const listTasks = vi.fn((_params: ListTasksRequest): ListTasksResponse => ({
+      tasks: [localHomedListTasksRow(LOCAL_HOME_EPIC_ID)],
+      hasMore: false,
+    }));
 
     const queryClient = mountReconciler({ getTaskContexts, listTasks });
 
