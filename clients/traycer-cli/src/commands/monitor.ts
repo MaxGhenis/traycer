@@ -41,7 +41,7 @@ import {
 import { createCliHostCredentialMintFlow } from "../auth/host-credential-mint";
 import { resolveHostAuth } from "../internal/host-auth";
 import { callHostRpc } from "../internal/host-rpc";
-import { flushStdio, writeStderr, writeStdout } from "../runner/std-write";
+import { writeStderr, writeStdout, writeStdoutForAck } from "../runner/std-write";
 import {
   createCliCredentialsStore,
   createStoreBackedRevalidator,
@@ -557,18 +557,35 @@ async function handleServerFrame(
       fromAgentId: frame.item.fromAgentId,
       hasReply: frame.item.reply !== null,
     });
-    printInboxMessage(frame.item);
+    const printed = printInboxMessage(frame.item);
     if (frame.eventId === null) {
       // Negotiated below @1.2 - no eventId to ack; the host retires this
-      // row itself (server-side compatibility ack).
+      // row itself (server-side compatibility ack). Still await the print
+      // so this frame's output has landed before the next one is handled.
+      await printed;
       return;
     }
-    // The durable row must only be acknowledged once it has actually
-    // reached the OS (not merely handed to `process.stdout`, which is
-    // asynchronous whenever stdout is a pipe - see `std-write.ts`).
-    // Acking first and having the process die before the write drains
-    // would lose the message even though the row is marked delivered.
-    await flushStdio();
+    // The durable row must only be acknowledged once THIS write was
+    // CONFIRMED to reach the OS - not merely handed to `process.stdout`
+    // (asynchronous whenever stdout is a pipe - see `std-write.ts`), and not
+    // merely "flushStdio resolved": that helper is deliberately
+    // non-rejecting and can resolve after its own bounded timeout with the
+    // write still incomplete or failed, which previously let an ack fire for
+    // text that was never actually written. `writeStdoutForAck` reports
+    // this exact write's own outcome instead.
+    const delivered = await printed;
+    if (!delivered) {
+      logger.warn(
+        "Monitor: stdout write for inbox message did not confirm; leaving durable row unacked for redelivery",
+        {
+          environment: config.environment,
+          agentId: target.agentId,
+          epicId: target.epicId,
+          eventId: frame.eventId,
+        },
+      );
+      return;
+    }
     // Fire-and-forget the RPC itself: a failed ack just means the row
     // replays on the next reconnect/restart (documented at-least-once
     // behavior, not data loss), so it must never block frame handling.
@@ -661,7 +678,13 @@ function logEndpointResolution(
   write();
 }
 
-function printInboxMessage(item: AgentInboxMessage): void {
+/**
+ * Returns whether this write was CONFIRMED to reach the OS (no error, and
+ * within `writeStdoutForAck`'s bounded wait) - the caller uses this to
+ * decide whether acknowledging the durable row is safe, not `flushStdio()`
+ * (see that function's doc comment for why it cannot answer that).
+ */
+function printInboxMessage(item: AgentInboxMessage): Promise<boolean> {
   const output = formatAgentMessage({
     receiverChannel: "cli",
     sender: {
@@ -672,7 +695,7 @@ function printInboxMessage(item: AgentInboxMessage): void {
     reply: item.reply,
     body: item.prompt,
   });
-  writeStdout(`${output}\n`);
+  return writeStdoutForAck(`${output}\n`);
 }
 
 /**

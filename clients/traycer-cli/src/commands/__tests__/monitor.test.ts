@@ -404,11 +404,11 @@ describe("mixed-version inbox message frames", () => {
     void result;
   });
 
-  it("prints a new-host (@1.2-negotiated) message frame and acks only after the stdout write completes", async () => {
-    // Unlike the other tests in this file, this one exercises the ack path,
-    // which awaits `flushStdio()` - that only resolves once the write's own
-    // completion callback fires (see `std-write.ts`), so the mock must
-    // actually invoke it, not just return `true`.
+  it("prints a new-host (@1.2-negotiated) message frame and acks only after the stdout write is CONFIRMED", async () => {
+    // Exercises the ack path, which now awaits `writeStdoutForAck`'s own
+    // per-write outcome (see `std-write.ts`) rather than the module-wide
+    // `flushStdio()` chain - so the mock must actually invoke the write's
+    // completion callback, not just return `true`.
     const stdoutSpy = vi
       .spyOn(process.stdout, "write")
       .mockImplementation((..._args: unknown[]) => {
@@ -435,32 +435,106 @@ describe("mixed-version inbox message frames", () => {
         eventId: "evt-1",
       },
     });
-    // Before the async write/ack chain settles, the print must already be
-    // visible (write is issued synchronously into the tracked queue) but
-    // the ack must not have fired yet.
-    const linesBeforeFlush = stdoutSpy.mock.calls.map((call) =>
-      String(call[0]),
+    // The write is issued synchronously; `writeStdoutForAck`'s own outcome
+    // promise is now DECOUPLED from any other pending write's completion
+    // (unlike the old `flushStdio()`-gated ack, which wailted on the whole
+    // module-level tail and could be poisoned by an unrelated earlier
+    // write) - so a couple of microtask ticks are enough for both the print
+    // and the ack to land, no fake-timer fallback needed.
+    await flush(0);
+    await flush(0);
+
+    const lines = stdoutSpy.mock.calls.map((call) => String(call[0]));
+    expect(lines.some((line) => line.includes("hello from a new host"))).toBe(
+      true,
     );
-    expect(
-      linesBeforeFlush.some((line) => line.includes("hello from a new host")),
-    ).toBe(true);
-    expect(callHostRpcMock).not.toHaveBeenCalled();
-
-    // `std-write.ts`'s write-completion chain (`stdoutTail`) is MODULE-level
-    // state that outlives any single test - an earlier test in this file
-    // whose stdout mock never invoked its write callback leaves that chain
-    // permanently stuck on an unresolved link, which this test's own write
-    // then chains onto. `flushStdio()`'s `bounded()` wrapper exists for
-    // exactly this - a write whose completion never arrives - falling back
-    // to `FLUSH_TIMEOUT_MS`, so advance fake time past it rather than
-    // assuming a few microtask ticks resolve the chain.
-    await flush(10_000);
-
     expect(callHostRpcMock).toHaveBeenCalledWith("agent.inbox.ack", {
       epicId: "e1",
       agentId: "a1",
       eventIds: ["evt-1"],
     });
+
+    stdoutSpy.mockRestore();
+    void result;
+  });
+
+  it("does NOT ack a new-host (@1.2-negotiated) message frame when the stdout write errors", async () => {
+    // The exact defect the amended go/no-go review found: an ack must never
+    // fire for text that was never successfully written. Simulates a write
+    // whose completion callback reports an error (e.g. EPIPE).
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((..._args: unknown[]) => {
+        const cb = _args.find((arg) => typeof arg === "function") as
+          | ((error: Error) => void)
+          | undefined;
+        cb?.(new Error("EPIPE: broken pipe"));
+        return true;
+      });
+    const result = runMonitor({ agentId: "a1", epicId: "e1" }).catch((e) => e);
+    await flush(0);
+
+    sessions[0].serverFrame?.({
+      kind: "message",
+      hasBinaryPayload: false,
+      item: {
+        reply: { expectsReply: false },
+        fromAgentId: "peer-1",
+        senderTitle: null,
+        senderHarnessId: null,
+        epicId: "e1",
+        prompt: "hello into a broken pipe",
+        enqueuedAt: 123,
+        eventId: "evt-2",
+      },
+    });
+    await flush(0);
+    await flush(0);
+
+    expect(callHostRpcMock).not.toHaveBeenCalledWith(
+      "agent.inbox.ack",
+      expect.anything(),
+    );
+
+    stdoutSpy.mockRestore();
+    void result;
+  });
+
+  it("does NOT ack a new-host (@1.2-negotiated) message frame when the write never confirms (bounded timeout)", async () => {
+    // The write's completion callback is captured but deliberately never
+    // invoked - `writeStdoutForAck` must fall back to its own bounded
+    // timeout and report failure, not treat non-completion as success.
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    const result = runMonitor({ agentId: "a1", epicId: "e1" }).catch((e) => e);
+    await flush(0);
+
+    sessions[0].serverFrame?.({
+      kind: "message",
+      hasBinaryPayload: false,
+      item: {
+        reply: { expectsReply: false },
+        fromAgentId: "peer-1",
+        senderTitle: null,
+        senderHarnessId: null,
+        epicId: "e1",
+        prompt: "hello into a stalled write",
+        enqueuedAt: 123,
+        eventId: "evt-3",
+      },
+    });
+    await flush(0);
+    expect(callHostRpcMock).not.toHaveBeenCalled();
+
+    // Advance past `writeStdoutForAck`'s bounded fallback - it must resolve
+    // `false` (not ack), never treat the still-incomplete write as success.
+    await flush(10_000);
+
+    expect(callHostRpcMock).not.toHaveBeenCalledWith(
+      "agent.inbox.ack",
+      expect.anything(),
+    );
 
     stdoutSpy.mockRestore();
     void result;
