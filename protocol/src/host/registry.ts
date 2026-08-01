@@ -84,9 +84,11 @@ import {
   agentListProviderProfilesUpgradeV20ToV30,
 } from "@traycer/protocol/host/agent/profiles";
 import {
+  agentInboxAckV10,
   agentInboxReadV10,
   agentInboxSubscribeV10,
   agentInboxSubscribeV11,
+  agentInboxSubscribeV12,
 } from "@traycer/protocol/host/agent/inbox";
 import {
   agentRolesClaimUpgradeV10ToV11,
@@ -3719,6 +3721,19 @@ const HOST_RPC_REGISTRY_DEFINITION = {
       downgradePathsFromLatest: {},
     },
   },
+  "agent.inbox.ack": {
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentInboxAckV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+    degrade: { kind: "unsupported" },
+  },
   "agent.stop": {
     1: {
       latestMinor: 0,
@@ -5696,13 +5711,22 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       // FROZEN: a monitor that negotiated it never receives the new kind, and
       // the resolver gates on the negotiated version rather than assuming the
       // peer will tolerate an unknown frame.
-      latestMinor: 1,
+      //
+      // @1.2 adds `eventId` to the EXISTING "message" item (not a new frame
+      // kind) - unlike a new frame kind, an unrecognized extra field inside an
+      // already-known object is silently dropped by a @1.0/@1.1 monitor's own
+      // non-strict zod parse, so the resolver builds the @1.2 shape
+      // unconditionally rather than branching on negotiated minor.
+      latestMinor: 2,
       versions: {
         0: {
           contract: agentInboxSubscribeV10,
         },
         1: {
           contract: agentInboxSubscribeV11,
+        },
+        2: {
+          contract: agentInboxSubscribeV12,
         },
       },
     },

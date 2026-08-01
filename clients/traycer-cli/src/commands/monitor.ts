@@ -37,6 +37,7 @@ import {
 } from "../host/pid-metadata";
 import { createCliHostCredentialMintFlow } from "../auth/host-credential-mint";
 import { resolveHostAuth } from "../internal/host-auth";
+import { callHostRpc } from "../internal/host-rpc";
 import { writeStderr, writeStdout } from "../runner/std-write";
 import {
   createCliCredentialsStore,
@@ -484,6 +485,23 @@ function handleServerFrame(
       hasReply: parsed.data.item.reply !== null,
     });
     printInboxMessage(parsed.data.item);
+    // Acknowledge the durable inbox row now that it has safely surfaced to
+    // the agent (been printed to stdout). Fire-and-forget: a failed ack
+    // just means the row replays on the next reconnect/restart, which is
+    // the documented at-least-once behavior, not data loss - so it must
+    // never block or fail frame handling.
+    callHostRpc("agent.inbox.ack", {
+      epicId: target.epicId,
+      agentId: target.agentId,
+      eventIds: [parsed.data.item.eventId],
+    }).catch((error: unknown) => {
+      logger.warn("Monitor failed to acknowledge inbox message", {
+        environment: config.environment,
+        agentId: target.agentId,
+        epicId: target.epicId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
     return;
   }
   if (parsed.data.kind === "notice") {
