@@ -983,6 +983,7 @@ describe("jcode rate-limit available arm and the 4.0 bridges", () => {
       {
         // Percent CONSUMED, straight from jcode's `usage_percent`.
         subProviderId: "openrouter",
+        limitName: "Credits",
         window: { usedPercent: 99.607, resetsAt: null, durationMinutes: null },
         hardLimitReached: false,
         error: null,
@@ -990,6 +991,7 @@ describe("jcode rate-limit available arm and the 4.0 bridges", () => {
       {
         // Only Antigravity and Copilot report a reset instant upstream.
         subProviderId: "copilot",
+        limitName: "Premium requests",
         window: {
           usedPercent: 12,
           resetsAt: 1_700_000_000_000,
@@ -1001,6 +1003,7 @@ describe("jcode rate-limit available arm and the 4.0 bridges", () => {
       {
         // A failed fetch, NOT a healthy zero - distinguished by `error`.
         subProviderId: "anthropic",
+        limitName: null,
         window: null,
         hardLimitReached: false,
         error: "401 after token refresh",

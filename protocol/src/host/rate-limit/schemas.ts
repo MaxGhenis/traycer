@@ -271,6 +271,13 @@ const jcodeSubProviderRateLimitSchema = z.object({
   // tokens stay bare strings elsewhere in this file. Constraining it would
   // make every new jcode sub-provider a protocol change.
   subProviderId: z.string(),
+  // jcode's own `limits[].name` ("Credits", "Weekly", ...). ONE sub-provider
+  // can report SEVERAL independent quotas, each becoming its own row here, so
+  // `subProviderId` is not a key and is not a sufficient label: without this
+  // field two Copilot rows are indistinguishable in the UI and collide as
+  // React keys. `null` when jcode omits the name - unnamed, not unlabelled by
+  // choice.
+  limitName: z.string().nullable(),
   // Normalized rolling window. `usedPercent` is jcode's `usage_percent`, which
   // is percent CONSUMED (verified upstream: 15990.63/16053.68 = 99.607%), so it
   // maps onto the shared window primitive with no inversion. `resetsAt` is

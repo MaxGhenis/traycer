@@ -1146,6 +1146,7 @@ describe("jcode v4.0 profile-method bridges", () => {
             subProviders: [
               {
                 subProviderId: "openrouter",
+                limitName: "Credits",
                 window: {
                   usedPercent: 99.607,
                   resetsAt: null,

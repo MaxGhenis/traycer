@@ -100,6 +100,23 @@ export function liveProviderRateLimitWindows(
 }
 
 /**
+ * Display name for one jcode quota row. jcode reports a LIST of named limits
+ * per connected sub-provider, so `subProviderId` alone is ambiguous the moment
+ * a provider returns more than one - two Copilot rows would read identically
+ * and, in a keyed list, collide. Shared by the settings meter, the
+ * agent-facing text formatter and the profile-usage projection so those three
+ * surfaces cannot drift apart on what a row is called.
+ */
+export function jcodeSubProviderRateLimitLabel(subProvider: {
+  readonly subProviderId: string;
+  readonly limitName: string | null;
+}): string {
+  return subProvider.limitName === null
+    ? subProvider.subProviderId
+    : `${subProvider.subProviderId} · ${subProvider.limitName}`;
+}
+
+/**
  * Classifies a whole provider snapshot. A Codex reached-type is authoritative,
  * except when every window from that same capture has expired. Missing,
  * unavailable, and fully expired detail is Unknown rather than Healthy.
@@ -122,7 +139,20 @@ export function classifyProviderRateLimits(
   }
   if (
     rateLimits.provider === "jcode" &&
-    rateLimits.subProviders.some((subProvider) => subProvider.hardLimitReached)
+    rateLimits.subProviders.some(
+      (subProvider) =>
+        subProvider.hardLimitReached &&
+        // Per-ROW liveness, not the snapshot-wide guard above. jcode is the
+        // only LIST arm, so one capture mixes rows with independent reset
+        // times: an OpenRouter row that hit 100% and has since rolled over
+        // must not make a healthy live Copilot row report limited. The
+        // all-expired guard cannot catch that - it only fires when EVERY row
+        // is stale. A row with no window (or no reset time) has no evidence
+        // of rolling over, so it stays authoritative, matching
+        // `isProviderRateLimitWindowLive`'s null rule.
+        (subProvider.window === null ||
+          isProviderRateLimitWindowLive(subProvider.window, now)),
+    )
   ) {
     // Authoritative for the same reason Codex's reached-type is, and placed
     // after the same staleness guard so an all-expired capture still reports

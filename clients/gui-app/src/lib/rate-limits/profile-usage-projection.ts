@@ -2,6 +2,7 @@ import {
   classifyProviderRateLimits,
   classifyProviderRateLimitWindow,
   isProviderRateLimitWindowLive,
+  jcodeSubProviderRateLimitLabel,
   providerRateLimitWindows,
   type LiveProviderRateLimitSeverity,
   type ProviderRateLimits,
@@ -325,7 +326,7 @@ function projectedLiveWindows(
               // first *surviving* window is primary even when earlier rows
               // were null/expired/errored.
               role: "extra",
-              name: subProvider.subProviderId,
+              name: jcodeSubProviderRateLimitLabel(subProvider),
               window: subProvider.window,
               now,
             }),

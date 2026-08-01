@@ -10,7 +10,10 @@ import type {
   ProviderRateLimitWindow,
   RateLimitUnavailableReason,
 } from "@traycer/protocol/host";
-import { classifyProviderRateLimitWindow } from "@traycer/protocol/host/rate-limit";
+import {
+  classifyProviderRateLimitWindow,
+  jcodeSubProviderRateLimitLabel,
+} from "@traycer/protocol/host/rate-limit";
 import type { ProviderRateLimitEnvelope } from "@/lib/rate-limits/rate-limit-envelope";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -1179,14 +1182,21 @@ export function JCodeRateLimitView({
   }
   return (
     <div className="flex flex-col gap-3">
-      {data.subProviders.map((sub) => {
+      {data.subProviders.map((sub, index) => {
+        // One sub-provider can contribute SEVERAL rows (jcode reports a list
+        // of named quotas per provider), so `subProviderId` is neither unique
+        // nor self-describing. The row's position in the host-built list is
+        // the only guaranteed-unique key — these rows are never locally
+        // reordered, inserted, or keyed into component state.
+        const key = `${index}:${sub.subProviderId}`;
+        const label = jcodeSubProviderRateLimitLabel(sub);
         if (sub.error !== null) {
           return (
             <div
-              key={`err:${sub.subProviderId}`}
+              key={key}
               className="flex items-start justify-between gap-2 text-ui-sm"
             >
-              <span className="text-muted-foreground">{sub.subProviderId}</span>
+              <span className="text-muted-foreground">{label}</span>
               <span className="text-right text-ui-xs text-destructive">
                 {sub.error}
               </span>
@@ -1195,11 +1205,7 @@ export function JCodeRateLimitView({
         }
         if (sub.window === null) return null;
         return (
-          <RateLimitWindowRow
-            key={`win:${sub.subProviderId}-${sub.window.resetsAt}`}
-            label={sub.subProviderId}
-            window={sub.window}
-          />
+          <RateLimitWindowRow key={key} label={label} window={sub.window} />
         );
       })}
     </div>

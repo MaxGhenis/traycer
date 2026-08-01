@@ -56,6 +56,7 @@ function codex(
 function jcode(
   subProviders: readonly {
     subProviderId: string;
+    limitName: string | null;
     window: ProviderRateLimitWindow | null;
     hardLimitReached: boolean;
     error: string | null;
@@ -74,7 +75,13 @@ function jcodeSub(
   hardLimitReached: boolean,
   error: string | null,
 ) {
-  return { subProviderId, window: windowValue, hardLimitReached, error };
+  return {
+    subProviderId,
+    limitName: null,
+    window: windowValue,
+    hardLimitReached,
+    error,
+  };
 }
 
 describe("classifyProviderRateLimitWindow", () => {
@@ -230,6 +237,38 @@ describe("jcode per-sub-provider severity folding", () => {
         NOW,
       ),
     ).toBe("unknown");
+  });
+
+  it("does not let an EXPIRED hard-limit row limit a healthy live snapshot", () => {
+    // jcode is the only LIST arm, so one capture mixes rows with independent
+    // reset times. The all-expired guard above only fires when EVERY row is
+    // stale, so a rolled-over OpenRouter row must be dropped on its own
+    // liveness - otherwise a user with headroom everywhere reads as limited.
+    expect(
+      classifyProviderRateLimits(
+        jcode([
+          jcodeSub("openrouter", window(100, 300, NOW - 1), true, null),
+          jcodeSub("copilot", window(30, 300, NOW + 1), false, null),
+        ]),
+        NOW,
+      ),
+    ).toBe("healthy");
+  });
+
+  it("keeps a hard-limit row with no window authoritative", () => {
+    // No window is no evidence of rolling over, matching the null-reset rule
+    // in `isProviderRateLimitWindowLive`. Today the host never emits this
+    // pair; an upstream build that starts serializing `hard_limit_reached`
+    // without a percentage would, and it must not be silently discarded.
+    expect(
+      classifyProviderRateLimits(
+        jcode([
+          jcodeSub("copilot", null, true, null),
+          jcodeSub("openrouter", window(30, 300, NOW + 1), false, null),
+        ]),
+        NOW,
+      ),
+    ).toBe("limited");
   });
 
   it("drops expired sub-provider windows from the live set", () => {

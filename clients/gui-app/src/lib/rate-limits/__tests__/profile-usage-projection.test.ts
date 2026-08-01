@@ -239,12 +239,14 @@ describe("projectProfileUsage", () => {
         jcode([
           {
             subProviderId: "openrouter",
+            limitName: null,
             window: window(10, null, null),
             hardLimitReached: false,
             error: null,
           },
           {
             subProviderId: "copilot",
+            limitName: null,
             window: window(85, 300, NOW + 1),
             hardLimitReached: false,
             error: null,
@@ -264,6 +266,41 @@ describe("projectProfileUsage", () => {
     expect(projection.compactWindow?.window.usedPercent).toBe(85);
   });
 
+  it("distinguishes two quotas reported by the same JCode sub-provider", () => {
+    // jcode returns a LIST of named limits per provider, so `subProviderId`
+    // repeats. Two identically-named bars are unreadable — the user cannot
+    // tell which quota is at 92%.
+    const projection = project(
+      "ok",
+      NOW,
+      envelope(
+        jcode([
+          {
+            subProviderId: "copilot",
+            limitName: "Premium requests",
+            window: window(92, 300, NOW + 1),
+            hardLimitReached: false,
+            error: null,
+          },
+          {
+            subProviderId: "copilot",
+            limitName: "Chat",
+            window: window(11, 300, NOW + 1),
+            hardLimitReached: false,
+            error: null,
+          },
+        ]),
+        NOW,
+      ),
+      false,
+    );
+    expect(projection.windows.map((entry) => entry.name)).toEqual([
+      "copilot · Premium requests",
+      "copilot · Chat",
+    ]);
+    expect(projection.compactWindow?.name).toBe("copilot · Premium requests");
+  });
+
   it("omits JCode sub-providers whose error is set (never a 0% bar)", () => {
     // Schema separates error from window:null so a broken credential must not
     // look like a healthy unused quota. Failed rows are omitted entirely.
@@ -274,12 +311,14 @@ describe("projectProfileUsage", () => {
         jcode([
           {
             subProviderId: "anthropic",
+            limitName: null,
             window: null,
             hardLimitReached: false,
             error: "401 after token refresh",
           },
           {
             subProviderId: "openrouter",
+            limitName: null,
             window: window(12, null, null),
             hardLimitReached: false,
             error: null,
@@ -305,6 +344,7 @@ describe("projectProfileUsage", () => {
         jcode([
           {
             subProviderId: "anthropic",
+            limitName: null,
             window: window(0, null, null),
             hardLimitReached: false,
             error: "credential missing",

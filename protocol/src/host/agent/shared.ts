@@ -295,7 +295,14 @@ export const AGENT_FACING_HARNESS_IDS = [
   "pi",
   "hermes",
   "omp",
-  "jcode",
+  // jcode is deliberately ABSENT. This set gates `traycer_create_agent`, i.e.
+  // which harnesses an agent may spawn a CHILD on. jcode has no A2A tool
+  // surface: its ACP transport rejects `mcpServers` outright, and the only
+  // config-driven route would mean writing an MCP file into the user's own
+  // workspace or home, which we will not do. A jcode child could therefore
+  // never call `traycer_send_message` to report back, and would strand its
+  // parent waiting for a reply that cannot arrive. Humans can still open jcode
+  // tabs - that is `guiHarnessIdSchema`, which does include it.
 ] as const;
 
 export const AGENT_FACING_HARNESS_ID_LIST = AGENT_FACING_HARNESS_IDS.join(", ");

@@ -17,6 +17,7 @@
  *
  * `--json` bypasses all of this and emits the RPC DTO unchanged.
  */
+import { jcodeSubProviderRateLimitLabel } from "@traycer/protocol/host/rate-limit";
 import type {
   AgentConfigureResponse,
   AgentGetProviderProfileRateLimitsResponse,
@@ -179,11 +180,14 @@ function formatProviderRateLimits(rateLimits: ProviderRateLimits): string {
         // A failed fetch is reported as a failure, never as an unknown window:
         // both carry `window: null`, and collapsing them would make a broken
         // credential look identical to a provider that simply has no quota.
+        const label = jcodeSubProviderRateLimitLabel(subProvider);
         if (subProvider.error !== null) {
-          return `${subProvider.subProviderId}: fetch failed - ${subProvider.error}`;
+          return `${label}: fetch failed - ${subProvider.error}`;
         }
-        const line = formatWindowLine(subProvider.subProviderId, subProvider.window);
-        return subProvider.hardLimitReached ? `${line} (hard limit reached)` : line;
+        const line = formatWindowLine(label, subProvider.window);
+        return subProvider.hardLimitReached
+          ? `${line} (hard limit reached)`
+          : line;
       })
       .join("\n");
   }
