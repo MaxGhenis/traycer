@@ -201,6 +201,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -265,6 +266,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -288,6 +290,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: {
           ...defaultToolbar(),
           selection: {
@@ -326,7 +329,6 @@ describe("useLandingComposerActions", () => {
       result.current.selectTerminalAgent(
         {
           harnessId: "claude",
-          agentMode: "regular",
           model: null,
           reasoningEffort: null,
           terminalAgentArgs: "",
@@ -377,7 +379,6 @@ describe("useLandingComposerActions", () => {
       result.current.selectTerminalAgent(
         {
           harnessId: "claude",
-          agentMode: "regular",
           model: null,
           reasoningEffort: null,
           terminalAgentArgs: "",
@@ -420,6 +421,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: {
           ...defaultToolbar(),
           selection: { harnessId: "codex", modelSlug: "", profileId: null },
@@ -460,6 +462,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -535,6 +538,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForHashImage("hash-same-session", "look here"),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -571,6 +575,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForHashImage("hash-restored", "restored draft"),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -612,6 +617,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForHashImage("hash-missing", "wiped image"),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -647,6 +653,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForHashImage("hash-error", "unreadable image"),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -688,11 +695,13 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor,
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
       result.current.submit({
         draftId: null,
         editor,
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -749,6 +758,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -835,6 +845,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -933,6 +944,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1024,6 +1036,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1101,6 +1114,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1154,6 +1168,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1201,6 +1216,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1266,6 +1282,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1316,6 +1333,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1380,6 +1398,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1435,6 +1454,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId,
         editor: editorHandleForPrompt("first request"),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1503,6 +1523,7 @@ describe("useLandingComposerActions", () => {
           ...editorHandleForPrompt(SUBMITTED_PROMPT),
           getJSON: () => jsonContentForPrompt(SUBMITTED_PROMPT),
         },
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1565,6 +1586,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: draftA,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1638,6 +1660,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: draftA,
         editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1708,6 +1731,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: draftA,
         editor: editorHandleForPrompt("submit A"),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1722,6 +1746,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: draftB,
         editor: editorHandleForPrompt("submit B"),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1770,7 +1795,6 @@ describe("useLandingComposerActions", () => {
       result.current.selectTerminalAgent(
         {
           harnessId: "claude",
-          agentMode: "regular",
           model: null,
           reasoningEffort: null,
           terminalAgentArgs: "",
@@ -1818,6 +1842,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForHashImage("retry-image", "retry"),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1857,6 +1882,7 @@ describe("useLandingComposerActions", () => {
       result.current.submit({
         draftId: null,
         editor: editorHandleForPrompt("retry create"),
+        slashCatalog: null,
         toolbar: defaultToolbar(),
       });
     });
@@ -1899,7 +1925,6 @@ function defaultToolbar() {
     reasoning: "high" as const,
     serviceTier: "" as const,
     permission: "supervised" as const,
-    agentMode: "regular" as const,
   };
 }
 

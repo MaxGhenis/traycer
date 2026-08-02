@@ -90,6 +90,7 @@ import {
   agentInboxSubscribeV11,
   agentInboxSubscribeV12,
 } from "@traycer/protocol/host/agent/inbox";
+import { agentActivitySubscribeV10 } from "@traycer/protocol/host/agent/activity";
 import {
   agentRolesClaimUpgradeV10ToV11,
   agentRolesClaimV10,
@@ -154,7 +155,11 @@ import {
   commentsListThreadsV10,
   commentsSetThreadStatusV10,
 } from "@traycer/protocol/host/comments/contracts";
-import { hostStatusV10 } from "@traycer/protocol/host/status/contracts";
+import {
+  hostStatusV10,
+  hostStatusV11,
+  hostStatusUpgradeV10ToV11,
+} from "@traycer/protocol/host/status/contracts";
 import {
   lifecycleClaimShutdownV10,
   lifecycleCommitShutdownV10,
@@ -239,6 +244,7 @@ import {
   workspaceListDirectoryV10,
   workspaceListFileTreeV10,
   workspacePrepareFoldersV10,
+  workspacePrepareFoldersV11,
   workspaceReadFileV10,
   workspaceResolvePathsByRepoIdentifiersV10,
   workspaceSearchPathsV10,
@@ -251,18 +257,21 @@ import {
   terminalCreateV20,
   terminalCreateUpgradeV10ToV20,
   terminalKillV10,
-  terminalListDowngradeV21ToV10,
+  terminalListDowngradeV22ToV10,
   terminalListV10,
   terminalListV20,
   terminalListV21,
+  terminalListV22,
   terminalListUpgradeV10ToV20,
   terminalListUpgradeV20ToV21,
+  terminalListUpgradeV21ToV22,
   terminalRenameV10,
   terminalSubscribeV10,
   terminalSubscribeV11,
   terminalSubscribeV12,
   terminalSubscribeV13,
   terminalSubscribeV14,
+  terminalSubscribeV15,
 } from "@traycer/protocol/host/terminal/contracts";
 import {
   hostNotificationHooksSave,
@@ -2823,14 +2832,46 @@ export const worktreeListBindingsForEpicUpgradeV11ToV12 = defineUpgradePath<
 // Note: git contract definitions are imported from git-contracts.ts above
 // and registered inline in hostRpcRegistry and hostStreamRpcRegistry below.
 
+// v1.1 folds the 4 standalone workspace-picker methods (T14) onto
+// `workspace.prepareFolders` instead of shipping new names (T18) - see the
+// RPC backward-compat decision log. An older peer's request only ever
+// carries the "prepare" shape, so the bridge maps it 1:1 onto the new
+// `operation` envelope; a v1.0 peer's response likewise only ever carried
+// `folders`/`repoIdentifiers`, so the new operation-specific fields default
+// to `null`.
+export const workspacePrepareFoldersUpgradeV10ToV11 = defineUpgradePath<
+  typeof workspacePrepareFoldersV10,
+  typeof workspacePrepareFoldersV11
+>({
+  from: workspacePrepareFoldersV10.schemaVersion,
+  to: workspacePrepareFoldersV11.schemaVersion,
+  upgradeRequest: (request) => ({
+    operation: "prepare",
+    folderPaths: request.folderPaths,
+    path: null,
+  }),
+  upgradeResponse: (response) => ({
+    operation: "prepare",
+    folders: response.folders,
+    repoIdentifiers: response.repoIdentifiers,
+    homeDir: null,
+    validation: null,
+    recentWorkspaces: null,
+  }),
+});
+
 const HOST_RPC_REGISTRY_DEFINITION = {
   "host.status": {
     1: {
-      latestMinor: 0,
+      latestMinor: 1,
       versions: {
         0: {
           contract: hostStatusV10,
           upgradeFromPreviousVersion: null,
+        },
+        1: {
+          contract: hostStatusV11,
+          upgradeFromPreviousVersion: hostStatusUpgradeV10ToV11,
         },
       },
       downgradePathsFromLatest: {},
@@ -3849,11 +3890,15 @@ const HOST_RPC_REGISTRY_DEFINITION = {
   },
   "workspace.prepareFolders": {
     1: {
-      latestMinor: 0,
+      latestMinor: 1,
       versions: {
         0: {
           contract: workspacePrepareFoldersV10,
           upgradeFromPreviousVersion: null,
+        },
+        1: {
+          contract: workspacePrepareFoldersV11,
+          upgradeFromPreviousVersion: workspacePrepareFoldersUpgradeV10ToV11,
         },
       },
       downgradePathsFromLatest: {},
@@ -4593,7 +4638,7 @@ const HOST_RPC_REGISTRY_DEFINITION = {
       downgradePathsFromLatest: {},
     },
     2: {
-      latestMinor: 1,
+      latestMinor: 2,
       versions: {
         0: {
           contract: terminalListV20,
@@ -4603,8 +4648,12 @@ const HOST_RPC_REGISTRY_DEFINITION = {
           contract: terminalListV21,
           upgradeFromPreviousVersion: terminalListUpgradeV20ToV21,
         },
+        2: {
+          contract: terminalListV22,
+          upgradeFromPreviousVersion: terminalListUpgradeV21ToV22,
+        },
       },
-      downgradePathsFromLatest: { 1: terminalListDowngradeV21ToV10 },
+      downgradePathsFromLatest: { 1: terminalListDowngradeV22ToV10 },
     },
   },
   "terminal.rename": {
@@ -5633,7 +5682,7 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   },
   "terminal.subscribe": {
     1: {
-      latestMinor: 4,
+      latestMinor: 5,
       versions: {
         0: {
           contract: terminalSubscribeV10,
@@ -5649,6 +5698,9 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
         },
         4: {
           contract: terminalSubscribeV14,
+        },
+        5: {
+          contract: terminalSubscribeV15,
         },
       },
     },
@@ -5730,6 +5782,20 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
         },
         2: {
           contract: agentInboxSubscribeV12,
+        },
+      },
+    },
+  },
+  // One activity capability, with its read plane selected by the host. Current
+  // production wiring selects cloud everywhere; local remains dormant until an
+  // explicit host mode exists. State frames report the selected plane, while
+  // renderers never choose a different RPC from entitlement state.
+  "agent.activity.subscribe": {
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentActivitySubscribeV10,
         },
       },
     },

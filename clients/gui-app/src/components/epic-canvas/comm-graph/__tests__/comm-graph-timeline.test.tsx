@@ -34,6 +34,10 @@ vi.mock("@/lib/host", () => ({
     revalidateCurrentContext: () => Promise.resolve({ kind: "valid" as const }),
   }),
   useHostDirectory: () => hostDirectoryMock,
+  // `EpicSessionProvider` folds the host binding's owner identity into its
+  // rebuild decision; a null binding is the legitimate "directory not bound
+  // yet" state and keeps the identity key null.
+  useHostBinding: () => null,
 }));
 
 const openTransportStub = vi.hoisted(() => () => {
