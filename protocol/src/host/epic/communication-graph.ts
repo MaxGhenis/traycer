@@ -457,20 +457,26 @@ export const hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10 =
       ...textFrameFields,
     }),
     /**
-     * Exactly one per available-authority epoch (after the corresponding
-     * `availability: "available"` transition), the bounded batch of rows
-     * above the retained cursor. Revocation/regrant starts a new epoch and
-     * therefore a new history boundary, but never resets that cursor.
+     * The first frame of this kind in an available-authority epoch is the
+     * bounded initial batch above the retained cursor. A later cloud read may
+     * send another snapshot in the SAME epoch when its deletion frontier
+     * changes. Such a later snapshot is cursor-continuing: it neither starts
+     * a new authority/history epoch nor resets the retained cursor or arrival
+     * boundary. Revocation/regrant starts the next epoch and history boundary,
+     * but still never resets that cursor.
      */
     z.object({
       kind: z.literal("snapshot"),
       epicId: z.string(),
       events: z.array(hostCommunicationGraphCloudFeedEventSchema),
       /**
-       * The cloud's headVersion as of this subscription's first read - the
-       * arrival boundary, exactly like the local contract's `headId`. Never
-       * negative; a graph with nothing ingested yet reports 0, not null,
-       * because the cloud's version is a counter, not a "last row" pointer.
+       * On the initial snapshot, the cloud's headVersion as of the first read:
+       * the arrival boundary, exactly like the local contract's `headId`. On a
+       * later frontier-bearing snapshot, the headVersion is THAT current
+       * read's boundary; it does not revise the epoch's established arrival
+       * boundary or reset the cursor. Never negative; a graph with nothing
+       * ingested yet reports 0, not null, because the cloud's version is a
+       * counter, not a "last row" pointer.
        */
       headVersion: z.number().int().nonnegative(),
       /** Optional retained-row deletion boundary. Rows below it are obsolete. */
@@ -478,7 +484,8 @@ export const hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10 =
       ...textFrameFields,
     }),
     /** One row, continuing the same cursor-ascending sequence after the
-     * snapshot. Same "not a liveness signal" caveat as the local contract. */
+     * initial snapshot and across any later frontier-bearing snapshots. Same
+     * "not a liveness signal" caveat as the local contract. */
     z.object({
       kind: z.literal("event"),
       epicId: z.string(),
