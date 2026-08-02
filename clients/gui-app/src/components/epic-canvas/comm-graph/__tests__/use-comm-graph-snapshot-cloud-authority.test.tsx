@@ -98,7 +98,7 @@ describe("useCommGraphSnapshot cloud authority", () => {
 
     act(() => {
       cloudRequests[0].handlers.onAvailability("available");
-      cloudRequests[0].handlers.onSnapshot([cloudEvent()], 20);
+      cloudRequests[0].handlers.onSnapshot([cloudEvent()], 20, null);
     });
     await waitFor(() => expect(localClose).toHaveBeenCalledTimes(1));
     expect(result.current.events.map((event) => event.eventId)).toEqual([

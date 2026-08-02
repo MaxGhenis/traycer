@@ -47,7 +47,11 @@ function openCommGraphCloudSubscription(
       if (frame.kind === "availability") {
         handlers.onAvailability(frame.availability);
       } else if (frame.kind === "snapshot") {
-        handlers.onSnapshot(frame.events, frame.headVersion);
+        handlers.onSnapshot(
+          frame.events,
+          frame.headVersion,
+          frame.frontier ?? null,
+        );
       } else if (frame.kind === "event") {
         handlers.onEvent(frame.event);
       } else if (frame.kind === "connectionState") {

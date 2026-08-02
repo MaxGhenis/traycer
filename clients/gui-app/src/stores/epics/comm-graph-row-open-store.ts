@@ -54,6 +54,24 @@ export function commGraphRowKey(event: CommGraphEvent): string {
   return commGraphEventKey(event);
 }
 
+/** Drops expansion state for replica rows removed by a cloud frontier. */
+export function dropCommGraphRowOpenKeys(
+  epicId: string,
+  rowKeys: ReadonlySet<string>,
+): void {
+  if (rowKeys.size === 0) return;
+  useCommGraphRowOpenStore.setState((state) => {
+    const current = state.openRowKeysByEpicId[epicId] ?? NO_OPEN_ROWS;
+    const next = new Set(
+      Array.from(current).filter((rowKey) => !rowKeys.has(rowKey)),
+    );
+    if (next.size === current.size) return state;
+    return {
+      openRowKeysByEpicId: { ...state.openRowKeysByEpicId, [epicId]: next },
+    };
+  });
+}
+
 export function useCommGraphRowOpen(epicId: string, rowKey: string): boolean {
   return useCommGraphRowOpenStore(
     (state) => state.openRowKeysByEpicId[epicId]?.has(rowKey) ?? false,

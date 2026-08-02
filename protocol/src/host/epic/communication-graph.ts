@@ -473,6 +473,8 @@ export const hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10 =
        * because the cloud's version is a counter, not a "last row" pointer.
        */
       headVersion: z.number().int().nonnegative(),
+      /** Optional retained-row deletion boundary. Rows below it are obsolete. */
+      frontier: z.number().int().nonnegative().optional(),
       ...textFrameFields,
     }),
     /** One row, continuing the same cursor-ascending sequence after the

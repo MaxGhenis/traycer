@@ -128,6 +128,27 @@ describe("host.communicationGraph.subscribe@1.0 frames", () => {
     expect(parsed.kind === "snapshot" && parsed.headVersion).toBe(0);
   });
 
+  it("reserves an optional deletion frontier without changing absent frames", () => {
+    const withoutFrontier = {
+      kind: "snapshot",
+      epicId: "epic-1",
+      events: [CLOUD_EVENT],
+      headVersion: 100,
+      hasBinaryPayload: false,
+    } as const;
+    expect(
+      hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse(
+        withoutFrontier,
+      ),
+    ).toEqual(withoutFrontier);
+    expect(
+      hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse({
+        ...withoutFrontier,
+        frontier: 75,
+      }),
+    ).toEqual({ ...withoutFrontier, frontier: 75 });
+  });
+
   it("rejects a null headVersion - the cloud counter always reports a number", () => {
     expect(
       hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.safeParse({

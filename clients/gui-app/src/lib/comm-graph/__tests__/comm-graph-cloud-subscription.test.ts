@@ -8,6 +8,10 @@ import {
 } from "@/lib/comm-graph/comm-graph-cloud-subscription";
 import type { CommGraphSnapshot } from "@/lib/comm-graph/comm-graph-events";
 import { commGraphEventKey } from "@/lib/comm-graph/comm-graph-timeline";
+import {
+  dropCommGraphRowOpenKeys,
+  useCommGraphRowOpenStore,
+} from "@/stores/epics/comm-graph-row-open-store";
 
 function cloudEvent(
   overrides: Partial<HostCommunicationGraphCloudFeedEvent>,
@@ -55,13 +59,14 @@ describe("CommGraphCloudSubscriptionManager", () => {
       "epic-1",
       recorded.opener,
       () => undefined,
+      () => undefined,
     );
     manager.setRelayHostIds(["relay-b"]);
     manager.attach();
     const handlers = recorded.requests[0].handlers;
 
     handlers.onAvailability("available");
-    handlers.onSnapshot([cloudEvent({})], 10);
+    handlers.onSnapshot([cloudEvent({})], 10, null);
     // A changed head/snapshot may replay the retained cursor; it is never a
     // bootstrap replacement and cannot duplicate or clear the first row.
     handlers.onSnapshot(
@@ -75,6 +80,7 @@ describe("CommGraphCloudSubscriptionManager", () => {
         }),
       ],
       11,
+      null,
     );
 
     const snapshot = manager.getSnapshot();
@@ -109,6 +115,7 @@ describe("CommGraphCloudSubscriptionManager", () => {
         }),
       ],
       12,
+      null,
     );
     expect(manager.getSnapshot().lastArrival).toBeNull();
   });
@@ -119,13 +126,14 @@ describe("CommGraphCloudSubscriptionManager", () => {
       "epic-1",
       recorded.opener,
       () => undefined,
+      () => undefined,
     );
     manager.setRelayHostIds(["relay-b"]);
     manager.attach();
     const handlers = recorded.requests[0].handlers;
 
     handlers.onAvailability("available");
-    handlers.onSnapshot([cloudEvent({})], 10);
+    handlers.onSnapshot([cloudEvent({})], 10, null);
     expect(manager.getSnapshot().lastArrival).toBeNull();
 
     handlers.onEvent(
@@ -189,12 +197,13 @@ describe("CommGraphCloudSubscriptionManager", () => {
       "epic-1",
       recorded.opener,
       onAuthorityRevoked,
+      () => undefined,
     );
     manager.setRelayHostIds(["relay-b"]);
     manager.attach();
     const handlers = recorded.requests[0].handlers;
     handlers.onAvailability("available");
-    handlers.onSnapshot([cloudEvent({})], 10);
+    handlers.onSnapshot([cloudEvent({})], 10, null);
 
     handlers.onAvailability("unavailable");
     expect(manager.getAvailability()).toBe("unavailable");
@@ -211,8 +220,48 @@ describe("CommGraphCloudSubscriptionManager", () => {
         }),
       ],
       11,
+      null,
     );
     expect(manager.getSnapshot().events).toHaveLength(2);
     expect(manager.getSnapshot().lastArrival).toBeNull();
+  });
+
+  it("applies a delivered frontier before rows without moving the cursor", () => {
+    useCommGraphRowOpenStore.setState({ openRowKeysByEpicId: {} });
+    const recorded = recordedOpener();
+    const manager = new CommGraphCloudSubscriptionManager(
+      "epic-1",
+      recorded.opener,
+      () => undefined,
+      (rowKeys) => dropCommGraphRowOpenKeys("epic-1", rowKeys),
+    );
+    manager.setRelayHostIds(["relay-b"]);
+    manager.attach();
+    const handlers = recorded.requests[0].handlers;
+    handlers.onAvailability("available");
+    handlers.onSnapshot(
+      [
+        cloudEvent({ eventId: "below", ingestVersion: 4 }),
+        cloudEvent({ eventId: "at", ingestVersion: 5 }),
+        cloudEvent({ eventId: "above", ingestVersion: 7 }),
+      ],
+      7,
+      null,
+    );
+    useCommGraphRowOpenStore.getState().setRowOpen("epic-1", "below", true);
+    useCommGraphRowOpenStore.getState().setRowOpen("epic-1", "at", true);
+    const cursorBefore = recorded.requests[0].readSinceCursor();
+
+    handlers.onSnapshot([], 7, 5);
+
+    expect(manager.getSnapshot().events.map((event) => event.eventId)).toEqual([
+      "at",
+      "above",
+    ]);
+    expect(recorded.requests[0].readSinceCursor()).toEqual(cursorBefore);
+    const openRows =
+      useCommGraphRowOpenStore.getState().openRowKeysByEpicId["epic-1"];
+    expect(openRows?.has("below")).toBe(false);
+    expect(openRows?.has("at")).toBe(true);
   });
 });

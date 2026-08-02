@@ -8,6 +8,7 @@ import {
   type CommGraphHostStatus,
   type CommGraphSnapshot,
 } from "@/lib/comm-graph/comm-graph-events";
+import { commGraphEventKey } from "@/lib/comm-graph/comm-graph-timeline";
 import { appLogger } from "@/lib/logger";
 
 export type CommGraphCloudAvailability =
@@ -26,6 +27,7 @@ export interface CommGraphCloudSubscriptionHandlers {
   readonly onSnapshot: (
     events: ReadonlyArray<HostCommunicationGraphCloudFeedEvent>,
     headVersion: number,
+    frontier: number | null,
   ) => void;
   readonly onEvent: (event: HostCommunicationGraphCloudFeedEvent) => void;
   readonly onStatus: (status: CommGraphHostStatus) => void;
@@ -56,6 +58,7 @@ export class CommGraphCloudSubscriptionManager {
   private readonly epicId: string;
   private readonly opener: CommGraphCloudSubscriptionOpener;
   private readonly onAuthorityRevoked: () => void;
+  private readonly onRowsPruned: (rowKeys: ReadonlySet<string>) => void;
   private readonly listeners = new Set<() => void>();
   private relayHostIds: ReadonlyArray<string> = [];
   private rejectedRelayHostIds = new Set<string>();
@@ -82,10 +85,12 @@ export class CommGraphCloudSubscriptionManager {
     epicId: string,
     opener: CommGraphCloudSubscriptionOpener,
     onAuthorityRevoked: () => void,
+    onRowsPruned: (rowKeys: ReadonlySet<string>) => void,
   ) {
     this.epicId = epicId;
     this.opener = opener;
     this.onAuthorityRevoked = onAuthorityRevoked;
+    this.onRowsPruned = onRowsPruned;
   }
 
   setRelayHostIds(hostIds: ReadonlyArray<string>): void {
@@ -207,13 +212,13 @@ export class CommGraphCloudSubscriptionManager {
             if (!isCurrent()) return;
             this.applyAvailability(availability);
           },
-          onSnapshot: (events, headVersion) => {
+          onSnapshot: (events, headVersion, frontier) => {
             if (!isCurrent()) return;
-            this.apply(events, headVersion);
+            this.apply(events, headVersion, frontier);
           },
           onEvent: (event) => {
             if (!isCurrent()) return;
-            this.apply([event], null);
+            this.apply([event], null, null);
           },
           onStatus: (status) => {
             if (!isCurrent()) return;
@@ -255,7 +260,23 @@ export class CommGraphCloudSubscriptionManager {
   private apply(
     wireEvents: ReadonlyArray<HostCommunicationGraphCloudFeedEvent>,
     headVersion: number | null,
+    frontier: number | null,
   ): void {
+    const prunedRowKeys = new Set<string>();
+    if (frontier !== null) {
+      this.events = this.events.filter((event) => {
+        if ((event.ingestVersion ?? 0) >= frontier) return true;
+        prunedRowKeys.add(commGraphEventKey(event));
+        return false;
+      });
+      if (
+        this.lastArrival !== null &&
+        (this.lastArrival.ingestVersion ?? 0) < frontier
+      ) {
+        this.lastArrival = null;
+      }
+      this.onRowsPruned(prunedRowKeys);
+    }
     const accepted: CommGraphEvent[] = [];
     for (const wireEvent of wireEvents) {
       if (!this.accept(wireEvent)) continue;
@@ -271,7 +292,13 @@ export class CommGraphCloudSubscriptionManager {
       this.events = this.events.concat(accepted);
       this.events.sort(compareCommGraphEvents);
     }
-    if (accepted.length > 0 || headVersion !== null) this.publish();
+    if (
+      accepted.length > 0 ||
+      headVersion !== null ||
+      prunedRowKeys.size > 0
+    ) {
+      this.publish();
+    }
   }
 
   private accept(event: HostCommunicationGraphCloudFeedEvent): boolean {
