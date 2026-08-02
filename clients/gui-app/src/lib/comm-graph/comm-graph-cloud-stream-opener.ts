@@ -24,10 +24,13 @@ function openCommGraphCloudSubscription(
   const client = transport.wsStreamClient;
   let closed = false;
   try {
-    const session = client.subscribe(COMM_GRAPH_CLOUD_METHOD, {
-      epicId: request.epicId,
-      sinceCursor: request.sinceCursor,
-    });
+    const session = client.subscribeWithParamsProvider(
+      COMM_GRAPH_CLOUD_METHOD,
+      () => ({
+        epicId: request.epicId,
+        sinceCursor: request.readSinceCursor(),
+      }),
+    );
     session.onServerFrame((envelope) => {
       if (closed) return;
       const parsed =

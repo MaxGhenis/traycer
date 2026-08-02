@@ -42,6 +42,11 @@ export function commGraphEventKey(event: CommGraphEvent): string {
   return event.eventId ?? `${event.hostId}:${event.id}`;
 }
 
+/** Stable event identity formatted for the existing row test-id grammar. */
+export function commGraphEventRowId(event: CommGraphEvent): string {
+  return commGraphEventKey(event).replaceAll(":", "-");
+}
+
 export function commGraphCursorForEvent(
   event: CommGraphEvent,
 ): CommGraphTimeCursor {

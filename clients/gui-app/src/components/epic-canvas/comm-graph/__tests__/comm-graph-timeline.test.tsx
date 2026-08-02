@@ -17,10 +17,23 @@ vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
 }));
 
+const hostDirectoryMock = vi.hoisted(() => ({
+  findById: (hostId: string) => ({
+    hostId,
+    label: hostId,
+    kind: "remote" as const,
+    websocketUrl: `wss://${hostId}.example/stream`,
+    version: "1.0.0",
+    status: "available" as const,
+  }),
+  onChange: () => ({ dispose: () => undefined }),
+}));
+
 vi.mock("@/lib/host", () => ({
   useAuthService: () => ({
     revalidateCurrentContext: () => Promise.resolve({ kind: "valid" as const }),
   }),
+  useHostDirectory: () => hostDirectoryMock,
 }));
 
 const openTransportStub = vi.hoisted(() => () => {

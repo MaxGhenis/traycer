@@ -88,10 +88,14 @@ describe("CommGraphCloudSubscriptionManager", () => {
       timestamp: 1_000,
     });
     expect(commGraphEventKey(snapshot.events[0])).toBe("event-1");
+    expect(recorded.requests[0].readSinceCursor()).toEqual({
+      ingestVersion: 11,
+      eventId: "event-2",
+    });
 
     manager.detach();
     manager.attach();
-    expect(recorded.requests[1].sinceCursor).toEqual({
+    expect(recorded.requests[1].readSinceCursor()).toEqual({
       ingestVersion: 11,
       eventId: "event-2",
     });

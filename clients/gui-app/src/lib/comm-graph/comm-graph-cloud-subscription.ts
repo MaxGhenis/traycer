@@ -34,7 +34,8 @@ export interface CommGraphCloudSubscriptionHandlers {
 export interface CommGraphCloudSubscriptionRequest {
   readonly hostId: string;
   readonly epicId: string;
-  readonly sinceCursor: HostCommunicationGraphCloudFeedCursor | null;
+  /** Read at every physical wire subscribe so reconnect resumes from applied state. */
+  readonly readSinceCursor: () => HostCommunicationGraphCloudFeedCursor | null;
   readonly handlers: CommGraphCloudSubscriptionHandlers;
 }
 
@@ -200,7 +201,7 @@ export class CommGraphCloudSubscriptionManager {
       this.handle = this.opener({
         hostId,
         epicId: this.epicId,
-        sinceCursor: this.cursor,
+        readSinceCursor: () => this.cursor,
         handlers: {
           onAvailability: (availability) => {
             if (!isCurrent()) return;
