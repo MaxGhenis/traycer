@@ -164,6 +164,7 @@ import {
   lifecycleReleaseShutdownV10,
 } from "@traycer/protocol/host/lifecycle/contracts";
 import { hostGetRuntimeCapabilitiesV10 } from "@traycer/protocol/host/runtime-capabilities/contracts";
+import { hostRebindLocalStoreV10 } from "@traycer/protocol/host/local-store/contracts";
 import {
   hostGetRateLimitUsageV10,
   hostGetRateLimitUsageV11,
@@ -231,6 +232,7 @@ import {
   epicSetPinnedV10,
   epicSubscribeV10,
   epicSubscribeV11,
+  epicSubscribeV12,
   epicUpdateArtifactStatusV10,
   epicUpdateTitleV10,
 } from "@traycer/protocol/host/epic/contracts";
@@ -500,6 +502,7 @@ import {
 } from "@traycer/protocol/host/provider-schemas";
 
 export { hostGetRuntimeCapabilitiesV10 };
+export { hostRebindLocalStoreV10 };
 export { hostGetRateLimitUsageV10 };
 
 /**
@@ -2925,6 +2928,21 @@ const HOST_RPC_REGISTRY_DEFINITION = {
       versions: {
         0: {
           contract: hostGetRuntimeCapabilitiesV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "host.rebindLocalStore": {
+    // A pre-durability host cannot repair a refused local WAL safely, so this
+    // button is simply absent when its optional protocol method is unsupported.
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: hostRebindLocalStoreV10,
           upgradeFromPreviousVersion: null,
         },
       },
@@ -5602,17 +5620,21 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   "epic.subscribe": {
     1: {
       // @1.1 adds additive `dirtySnapshot`, `artifactRoomDirty`, and
-      // `rootDirty`. @1.0 stays installed and FROZEN: a renderer that
+      // `rootDirty`; @1.2 adds optional durability keys to cloudSyncStatus.
+      // @1.0 stays installed and FROZEN: a renderer that
       // negotiated it never receives the new kinds, and the resolver gates
       // emission on the negotiated version rather than assuming the peer will
       // tolerate an unknown frame.
-      latestMinor: 1,
+      latestMinor: 2,
       versions: {
         0: {
           contract: epicSubscribeV10,
         },
         1: {
           contract: epicSubscribeV11,
+        },
+        2: {
+          contract: epicSubscribeV12,
         },
       },
     },

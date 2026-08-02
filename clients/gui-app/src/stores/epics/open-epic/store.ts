@@ -9,6 +9,8 @@ import {
 import type { PermissionRole } from "@traycer/protocol/host/epic/unary-schemas";
 import type {
   EpicCloudSyncStatus,
+  EpicDurabilityPauseReason,
+  EpicDurabilityStatus,
   EpicMigrationPhase,
 } from "@traycer/protocol/host/epic/subscribe";
 import type { SnapshotMetaEpic } from "@traycer/protocol/host/epic/snapshot-meta";
@@ -88,6 +90,8 @@ export interface SnapshotFetchError {
    * `describeVersionSkew` (`@/lib/host/version-skew-copy`).
    */
   readonly upgradeGuidance: FatalErrorDetails["upgradeGuidance"];
+  /** The local-store repair copy is carried separately from the error text. */
+  readonly localStoreRemedy?: string;
 }
 
 /**
@@ -171,6 +175,7 @@ function snapshotFetchErrorFrom(
     code: details.code,
     message: details.reason,
     upgradeGuidance: details.upgradeGuidance,
+    localStoreRemedy: details.localStoreRemedy,
   };
 }
 
@@ -350,6 +355,10 @@ export interface OpenEpicState {
    * proof.
    */
   readonly cloudSyncStatus: EpicCloudSyncStatus;
+  /** Optional @1.2 routing truth; null preserves the legacy sync pill. */
+  readonly durabilityStatus?: EpicDurabilityStatus | null;
+  /** Present only for the two recognised paused reasons. */
+  readonly durabilityPauseReason?: EpicDurabilityPauseReason | null;
   /** `true` only after a cloud-status frame for this exact open cycle. */
   readonly hasFreshCloudSyncStatus: boolean;
   /**
@@ -650,6 +659,8 @@ export function createOpenEpicStore(
   // connection status. The sync pill must instead consult
   // `hasFreshCloudSyncStatus`, which is the per-cycle acknowledgement proof.
   let cloudSyncStatus: EpicCloudSyncStatus = "connected";
+  let durabilityStatus: EpicDurabilityStatus | null = null;
+  let durabilityPauseReason: EpicDurabilityPauseReason | null = null;
   let hasFreshCloudSyncStatus = false;
   let currentStatus: StreamConnectionStatus = "connecting";
   // Flips true on the first successful connect so a later drop reads as
@@ -1019,19 +1030,23 @@ export function createOpenEpicStore(
         // blended from, so a reader that needs to know WHERE unsynced work is
         // sitting can never observe the two out of step. Every site that
         // moves `transportStatus` / `cloudSyncStatus` /
-        // `hasFreshCloudSyncStatus` / `hasConnectedOnce`
+        // `hasFreshCloudSyncStatus` / `hasConnectedOnce` / routing durability
         // must set through this.
         const connectionStateSlice = (): Pick<
           OpenEpicState,
           | "connectionStatus"
           | "hostTransportStatus"
           | "cloudSyncStatus"
+          | "durabilityStatus"
+          | "durabilityPauseReason"
           | "hasFreshCloudSyncStatus"
           | "hasConnectedOnce"
         > => ({
           connectionStatus: currentStatus,
           hostTransportStatus: transportStatus,
           cloudSyncStatus,
+          durabilityStatus,
+          durabilityPauseReason,
           hasFreshCloudSyncStatus,
           hasConnectedOnce,
         });
@@ -1533,10 +1548,13 @@ export function createOpenEpicStore(
                 migration: NOT_ALLOWED_MIGRATION_SLICE,
               });
             },
-            onCloudSyncStatus: (status) => {
+            onCloudSyncStatus: (status, durability, pauseReason) => {
               if (disposed || generation !== streamGeneration) return;
               const previousCloudSyncStatus = cloudSyncStatus;
               cloudSyncStatus = status;
+              durabilityStatus = durability ?? null;
+              durabilityPauseReason =
+                durability === "paused" ? (pauseReason ?? null) : null;
               hasFreshCloudSyncStatus = true;
               if (
                 hasConnectedOnce &&
@@ -1590,6 +1608,10 @@ export function createOpenEpicStore(
               const cycleDurabilityState = startedSubscriptionCycle
                 ? resetDurabilityProofForOpenCycle()
                 : null;
+              if (startedSubscriptionCycle) {
+                durabilityStatus = null;
+                durabilityPauseReason = null;
+              }
               const nextStatus = syncCurrentConnectionStatus();
               hasFreshRootSnapshotForOpenCycle = false;
               set(
@@ -1657,6 +1679,8 @@ export function createOpenEpicStore(
           unsyncedQueue.length = 0;
           transportStatus = "connecting";
           cloudSyncStatus = "connected";
+          durabilityStatus = null;
+          durabilityPauseReason = null;
           const cycleDurabilityState = resetDurabilityProofForOpenCycle();
           // A fresh re-subscribe bootstraps from scratch, so the next connect is
           // "connecting", not "reconnecting": clear the latch and let only a

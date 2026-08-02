@@ -393,7 +393,7 @@ describe("createOpenEpicStore", () => {
     handle().callbacks.onConnectionStatus("open", null);
     // Establish a genuine first connect (transport open + cloud caught up) so
     // the later drop reads as a reconnect, not the bootstrap "connecting".
-    handle().callbacks.onCloudSyncStatus("connected");
+    handle().callbacks.onCloudSyncStatus("connected", undefined, undefined);
     handle().callbacks.onSnapshot(
       buildMeta("editor", hostDoc),
       emptySnapshot(),
@@ -402,7 +402,7 @@ describe("createOpenEpicStore", () => {
 
     // Host reports its cloud link dropped. The renderer↔host transport is
     // still open, so the pill shows "reconnecting" ...
-    handle().callbacks.onCloudSyncStatus("disconnected");
+    handle().callbacks.onCloudSyncStatus("disconnected", undefined, undefined);
     expect(opened.store.getState().connectionStatus).toBe("reconnecting");
 
     // ... but a local edit MUST still stream to the (healthy) local host, not
@@ -416,11 +416,27 @@ describe("createOpenEpicStore", () => {
 
     // Cloud reconnect returns the pill to open with nothing left to flush
     // (the edit already reached the host while the cloud was down).
-    handle().callbacks.onCloudSyncStatus("connected");
+    handle().callbacks.onCloudSyncStatus("connected", undefined, undefined);
     expect(opened.store.getState().connectionStatus).toBe("open");
     expect(opened.store.getState().unsyncedQueueSize).toBe(0);
     expect(handle().applied.length).toBe(1);
 
+    opened.dispose();
+  });
+
+  it("keeps an unknown paused reason neutral instead of inventing an upgrade path", () => {
+    const { factory, handle } = fakeFactory();
+    const opened = createOpenEpicStore({
+      epicId: "epic-a",
+      streamClientFactory: factory,
+      userId: null,
+      onAuthError: null,
+    });
+    handle().callbacks.onCloudSyncStatus("connected", "paused", undefined);
+    expect(opened.store.getState()).toMatchObject({
+      durabilityStatus: "paused",
+      durabilityPauseReason: null,
+    });
     opened.dispose();
   });
 
@@ -1438,7 +1454,7 @@ describe("createOpenEpicStore", () => {
     handle().callbacks.onConnectionStatus("open", null);
     // Cloud catch-up completes the first connect (connectionStatus → "open") so
     // the drop below reads as a reconnect, not the bootstrap "connecting".
-    handle().callbacks.onCloudSyncStatus("connected");
+    handle().callbacks.onCloudSyncStatus("connected", undefined, undefined);
     handle().callbacks.onSnapshot(
       buildMeta("editor", null),
       Y.encodeStateAsUpdate(donor),
@@ -1458,7 +1474,7 @@ describe("createOpenEpicStore", () => {
 
     // Host's cloud link drops; the renderer↔host transport stays open, so
     // the pill shows reconnecting...
-    handle().callbacks.onCloudSyncStatus("disconnected");
+    handle().callbacks.onCloudSyncStatus("disconnected", undefined, undefined);
     expect(opened.store.getState().connectionStatus).toBe("reconnecting");
 
     // ...but a body edit must stream straight to the local host (which
@@ -2444,7 +2460,7 @@ describe("createOpenEpicStore", () => {
 
       // Genuine cloud connected frame latches hasConnectedOnce; the blend
       // stays open.
-      handle().callbacks.onCloudSyncStatus("connected");
+      handle().callbacks.onCloudSyncStatus("connected", undefined, undefined);
       state = opened.store.getState();
       expect(state.cloudSyncStatus).toBe("connected");
       expect(state.hasFreshCloudSyncStatus).toBe(true);
@@ -2470,7 +2486,11 @@ describe("createOpenEpicStore", () => {
 
       // A new cloud frame is the fresh proof for this cycle. When it reports
       // a drop, the functional blend remains reconnecting as before.
-      handle().callbacks.onCloudSyncStatus("disconnected");
+      handle().callbacks.onCloudSyncStatus(
+        "disconnected",
+        undefined,
+        undefined,
+      );
       state = opened.store.getState();
       expect(state.hostTransportStatus).toBe("open");
       expect(state.cloudSyncStatus).toBe("disconnected");
@@ -2490,7 +2510,7 @@ describe("createOpenEpicStore", () => {
       });
 
       handle().callbacks.onConnectionStatus("open", null);
-      handle().callbacks.onCloudSyncStatus("connected");
+      handle().callbacks.onCloudSyncStatus("connected", undefined, undefined);
       expect(opened.store.getState().hasConnectedOnce).toBe(true);
 
       opened.requestFreshSnapshot();

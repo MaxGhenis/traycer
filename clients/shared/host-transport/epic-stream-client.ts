@@ -3,6 +3,8 @@ import {
   epicSubscribeServerFrameSchema,
   type EpicArtifactRoomAvailability,
   type EpicCloudSyncStatus,
+  type EpicDurabilityPauseReason,
+  type EpicDurabilityStatus,
   type EpicMigrationPhase,
   type EpicSubscribeClientFrame,
   type EpicSubscribeServerFrame,
@@ -163,7 +165,11 @@ export interface EpicStreamCallbacks {
    * renderer→host `/stream` lifecycle: the local stream can be open while
    * the host is offline from Tiptap Cloud.
    */
-  readonly onCloudSyncStatus: (status: EpicCloudSyncStatus) => void;
+  readonly onCloudSyncStatus: (
+    status: EpicCloudSyncStatus,
+    durability: EpicDurabilityStatus | undefined,
+    pauseReason: EpicDurabilityPauseReason | undefined,
+  ) => void;
   /**
    * Fires once when the host decides this epic needs a major migration -
    * before any `migrationProgress` tick. Drives the migration-progress modal
@@ -394,7 +400,11 @@ export class EpicStreamClient {
         return;
       }
       case "cloudSyncStatus": {
-        this.callbacks.onCloudSyncStatus(frame.status);
+        this.callbacks.onCloudSyncStatus(
+          frame.status,
+          "durability" in frame ? frame.durability : undefined,
+          "pauseReason" in frame ? frame.pauseReason : undefined,
+        );
         return;
       }
       case "epicDeleted": {

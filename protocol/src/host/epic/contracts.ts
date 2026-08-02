@@ -90,6 +90,7 @@ import {
 import {
   epicSubscribeV10,
   epicSubscribeV11,
+  epicSubscribeV12,
 } from "@traycer/protocol/host/epic/subscribe";
 
 // `epic.listTasks@1.0` - frozen pre-pinning host entry point for the CloudData
@@ -520,4 +521,4 @@ export const epicSearchArtifactsV10 = defineRpcContract({
   responseSchema: searchArtifactsResponseSchema,
 });
 
-export { epicSubscribeV10, epicSubscribeV11 };
+export { epicSubscribeV10, epicSubscribeV11, epicSubscribeV12 };
