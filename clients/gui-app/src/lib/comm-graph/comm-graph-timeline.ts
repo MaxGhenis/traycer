@@ -37,9 +37,9 @@ export interface CommGraphTimeCursor {
   readonly id: number;
 }
 
-/** Stable per-row identity: `id` is monotonic PER HOST, never globally. */
+/** Cloud rows use their canonical event id; local ids are scoped per host. */
 export function commGraphEventKey(event: CommGraphEvent): string {
-  return `${event.hostId}:${event.id}`;
+  return event.eventId ?? `${event.hostId}:${event.id}`;
 }
 
 export function commGraphCursorForEvent(

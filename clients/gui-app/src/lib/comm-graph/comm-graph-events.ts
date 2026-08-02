@@ -14,6 +14,12 @@ import type { EpicCommunicationGraphEvent } from "@traycer/protocol/host/epic/co
 export type CommGraphEvent = EpicCommunicationGraphEvent & {
   /** Host whose log this row came from. Scopes `id` (and `sinceCursor`). */
   readonly hostId: string;
+  /** Canonical cloud identity. Absent only on the host-local plane. */
+  readonly eventId?: string;
+  /** Cloud ingestion order. Timeline order remains capture time/origin/id. */
+  readonly ingestVersion?: number;
+  /** Backlog rows render normally but never drive a live arrival pulse. */
+  readonly historicalUpload?: boolean;
 };
 
 export interface CommGraphEventDirection {

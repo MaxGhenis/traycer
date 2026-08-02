@@ -270,6 +270,18 @@ export class CommGraphSubscriptionManager {
     }
   }
 
+  /**
+   * Starts a fresh local authority epoch without discarding retained rows or
+   * cursors. The first resumed snapshot is history learned at the plane
+   * boundary, so it must not pulse as activity that happened after handoff.
+   */
+  prepareAuthorityHandoff(): void {
+    if (this.disposed) return;
+    this.lastArrival = null;
+    for (const entry of this.hosts.values()) entry.snapshotBoundary = null;
+    this.publish();
+  }
+
   private reconcile(): void {
     const desired = new Set(this.desiredHostIds);
     let changed = false;

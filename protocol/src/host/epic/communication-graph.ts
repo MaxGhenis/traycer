@@ -335,7 +335,7 @@ export const epicCommunicationGraphSubscribeV10 = defineStreamRpcContract({
 });
 
 /**
- * `host.communicationGraph.cloudFeed.subscribe@1.0` - the CLOUD-relayed
+ * `host.communicationGraph.subscribe@1.0` - the CLOUD-relayed
  * counterpart of `epic.communicationGraph.subscribe` above: a per-epic
  * Communication Graph feed sourced from Traycer Cloud (any host the user is
  * signed into, not just the one that captured the rows) rather than this
@@ -445,10 +445,22 @@ export type HostCommunicationGraphCloudFeedSubscribeOpenRequestV10 = z.infer<
 export const hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10 =
   z.discriminatedUnion("kind", [
     /**
-     * Exactly one per subscription (after any `connectionState` frames while
-     * the relay was still reaching the cloud), the initial bounded batch of
-     * rows above the open's `sinceCursor` - same bounded/non-completeness
-     * caveats as the local contract's `snapshot` frame.
+     * Host-authoritative plane verdict. The renderer selects the cloud plane
+     * only while the host reports `available`; it never derives this from
+     * subscription, entitlement, or free-tier state itself. A transition to
+     * `unavailable` is durable capability data, while `connectionState`
+     * remains a transient relay-health signal that must not cause fallback.
+     */
+    z.object({
+      kind: z.literal("availability"),
+      availability: z.enum(["available", "unavailable"]),
+      ...textFrameFields,
+    }),
+    /**
+     * Exactly one per available-authority epoch (after the corresponding
+     * `availability: "available"` transition), the bounded batch of rows
+     * above the retained cursor. Revocation/regrant starts a new epoch and
+     * therefore a new history boundary, but never resets that cursor.
      */
     z.object({
       kind: z.literal("snapshot"),
@@ -505,9 +517,12 @@ export type HostCommunicationGraphCloudFeedSubscribeClientFrameV10 = z.infer<
 
 export const hostCommunicationGraphCloudFeedSubscribeV10 =
   defineStreamRpcContract({
-    method: "host.communicationGraph.cloudFeed.subscribe",
+    method: "host.communicationGraph.subscribe",
     schemaVersion: { major: 1, minor: 0 } as const,
-    openRequestSchema: hostCommunicationGraphCloudFeedSubscribeOpenRequestSchemaV10,
-    serverFrameSchema: hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10,
-    clientFrameSchema: hostCommunicationGraphCloudFeedSubscribeClientFrameSchemaV10,
+    openRequestSchema:
+      hostCommunicationGraphCloudFeedSubscribeOpenRequestSchemaV10,
+    serverFrameSchema:
+      hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10,
+    clientFrameSchema:
+      hostCommunicationGraphCloudFeedSubscribeClientFrameSchemaV10,
   });

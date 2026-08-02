@@ -14,7 +14,7 @@ import {
 } from "@traycer/protocol/host/epic/communication-graph";
 
 /**
- * `host.communicationGraph.cloudFeed.subscribe@1.0` contract fixtures + the
+ * `host.communicationGraph.subscribe@1.0` contract fixtures + the
  * optional-method degrade guard.
  *
  * Unlike `host.notifications.cloudFeed.subscribe` (whole-snapshot), this
@@ -24,7 +24,7 @@ import {
  * degrade frame this contract additionally carries over the local one.
  */
 
-const METHOD = "host.communicationGraph.cloudFeed.subscribe";
+const METHOD = "host.communicationGraph.subscribe";
 
 const CLOUD_EVENT = {
   eventId: "0195a1f0-0001-7000-8000-00000000000a",
@@ -46,7 +46,7 @@ const CLOUD_EVENT = {
   historicalUpload: false,
 } as const;
 
-describe("host.communicationGraph.cloudFeed.subscribe@1.0 contract", () => {
+describe("host.communicationGraph.subscribe@1.0 contract", () => {
   it("declares the method at 1.0 and registers it in the stream registry", () => {
     expect(hostCommunicationGraphCloudFeedSubscribeV10.method).toBe(METHOD);
     expect(hostCommunicationGraphCloudFeedSubscribeV10.schemaVersion).toEqual({
@@ -84,17 +84,30 @@ describe("host.communicationGraph.cloudFeed.subscribe@1.0 contract", () => {
   });
 });
 
-describe("host.communicationGraph.cloudFeed.subscribe@1.0 frames", () => {
+describe("host.communicationGraph.subscribe@1.0 frames", () => {
+  it("carries the host-authoritative cloud availability transition", () => {
+    expect(
+      hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse({
+        kind: "availability",
+        availability: "available",
+        hasBinaryPayload: false,
+      }),
+    ).toEqual({
+      kind: "availability",
+      availability: "available",
+      hasBinaryPayload: false,
+    });
+  });
+
   it("parses a snapshot frame carrying a non-negative headVersion, never null", () => {
-    const parsed = hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse(
-      {
+    const parsed =
+      hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse({
         kind: "snapshot",
         epicId: "epic-1",
         events: [CLOUD_EVENT],
         headVersion: 100,
         hasBinaryPayload: false,
-      },
-    );
+      });
     expect(parsed.kind).toBe("snapshot");
     if (parsed.kind === "snapshot") {
       expect(parsed.events).toHaveLength(1);
@@ -103,15 +116,14 @@ describe("host.communicationGraph.cloudFeed.subscribe@1.0 frames", () => {
   });
 
   it("parses an empty snapshot frame with headVersion 0 (nothing ingested yet)", () => {
-    const parsed = hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse(
-      {
+    const parsed =
+      hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse({
         kind: "snapshot",
         epicId: "epic-1",
         events: [],
         headVersion: 0,
         hasBinaryPayload: false,
-      },
-    );
+      });
     expect(parsed.kind === "snapshot" && parsed.events).toEqual([]);
     expect(parsed.kind === "snapshot" && parsed.headVersion).toBe(0);
   });
@@ -129,27 +141,23 @@ describe("host.communicationGraph.cloudFeed.subscribe@1.0 frames", () => {
   });
 
   it("parses an event frame carrying historicalUpload", () => {
-    const parsed = hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse(
-      {
+    const parsed =
+      hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse({
         kind: "event",
         epicId: "epic-1",
         event: { ...CLOUD_EVENT, historicalUpload: true },
         hasBinaryPayload: false,
-      },
-    );
-    expect(parsed.kind === "event" && parsed.event.historicalUpload).toBe(
-      true,
-    );
+      });
+    expect(parsed.kind === "event" && parsed.event.historicalUpload).toBe(true);
   });
 
   it("parses the connectionState: reconnecting degrade frame", () => {
-    const parsed = hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse(
-      {
+    const parsed =
+      hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse({
         kind: "connectionState",
         connectionState: "reconnecting",
         hasBinaryPayload: false,
-      },
-    );
+      });
     expect(parsed.kind).toBe("connectionState");
   });
 
@@ -188,7 +196,7 @@ describe("host.communicationGraph.cloudFeed.subscribe@1.0 frames", () => {
   });
 });
 
-describe("host.communicationGraph.cloudFeed.subscribe@1.0 degrades against an older host", () => {
+describe("host.communicationGraph.subscribe@1.0 degrades against an older host", () => {
   it("fails only this method's subscribe, leaving every other stream method compatible", () => {
     const currentManifest = buildStreamManifest(hostStreamRpcRegistry);
     const olderHostManifest = Object.fromEntries(

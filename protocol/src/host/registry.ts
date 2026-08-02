@@ -5756,7 +5756,7 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   // advertises it, so the client's subscription degrades to `unsupported`
   // and falls back to the local per-host stream. Never add it to the unary
   // released floor - that list is fail-closed on the name set.
-  "host.communicationGraph.cloudFeed.subscribe": {
+  "host.communicationGraph.subscribe": {
     1: {
       latestMinor: 0,
       versions: {
