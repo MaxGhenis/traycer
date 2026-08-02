@@ -226,7 +226,7 @@ describe("CommGraphCloudSubscriptionManager", () => {
     expect(manager.getSnapshot().lastArrival).toBeNull();
   });
 
-  it("applies a delivered frontier before rows without moving the cursor", () => {
+  it("applies an advancing frontier without reconnecting, moving, or stalling the cursor", () => {
     useCommGraphRowOpenStore.setState({ openRowKeysByEpicId: {} });
     const recorded = recordedOpener();
     const manager = new CommGraphCloudSubscriptionManager(
@@ -246,22 +246,35 @@ describe("CommGraphCloudSubscriptionManager", () => {
         cloudEvent({ eventId: "above", ingestVersion: 7 }),
       ],
       7,
-      null,
+      4,
     );
     useCommGraphRowOpenStore.getState().setRowOpen("epic-1", "below", true);
     useCommGraphRowOpenStore.getState().setRowOpen("epic-1", "at", true);
+    handlers.onEvent(
+      cloudEvent({ eventId: "live-8", ingestVersion: 8, capturedAt: 8_000 }),
+    );
     const cursorBefore = recorded.requests[0].readSinceCursor();
 
-    handlers.onSnapshot([], 7, 5);
+    handlers.onSnapshot([], 8, 5);
 
     expect(manager.getSnapshot().events.map((event) => event.eventId)).toEqual([
       "at",
       "above",
+      "live-8",
     ]);
+    expect(recorded.requests).toHaveLength(1);
     expect(recorded.requests[0].readSinceCursor()).toEqual(cursorBefore);
     const openRows =
       useCommGraphRowOpenStore.getState().openRowKeysByEpicId["epic-1"];
     expect(openRows?.has("below")).toBe(false);
     expect(openRows?.has("at")).toBe(true);
+
+    handlers.onEvent(
+      cloudEvent({ eventId: "live-9", ingestVersion: 9, capturedAt: 9_000 }),
+    );
+    expect(recorded.requests[0].readSinceCursor()).toEqual({
+      ingestVersion: 9,
+      eventId: "live-9",
+    });
   });
 });
