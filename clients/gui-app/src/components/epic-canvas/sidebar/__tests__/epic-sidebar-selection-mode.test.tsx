@@ -112,6 +112,21 @@ interface TestState {
   /** Ids whose record carries a non-null `archivedAt`. */
   archivedIds: readonly string[];
   archiveMutate: Mock;
+  archiveBatchPending: boolean;
+  /**
+   * `useEpicArchiveChat().isPending` - the PER-ROW mutation. Distinct from
+   * `archiveBatchPending`, which drives the bulk `useEpicArchiveChats` hook
+   * only; a row's own hard-disabled-while-in-flight state is unreachable
+   * through that one.
+   */
+  archiveRowPending: boolean;
+  archiveMutateAsync: Mock<
+    (input: {
+      readonly epicId: string;
+      readonly chatId: string;
+      readonly archived: boolean;
+    }) => Promise<unknown>
+  >;
   rowHostId: string | null;
   rowHostEntry: unknown;
   rowHostClient: unknown;
@@ -163,6 +178,9 @@ const testState = vi.hoisted<TestState>(() => ({
   showArchived: false,
   archivedIds: [],
   archiveMutate: vi.fn(),
+  archiveBatchPending: false,
+  archiveRowPending: false,
+  archiveMutateAsync: vi.fn(),
   rowHostId: "host-1",
   rowHostEntry: { hostId: "host-1" },
   rowHostClient: { getActiveHostId: () => "host-1" },
@@ -300,17 +318,30 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuContent: (props: { readonly children: ReactNode }) => (
     <div>{props.children}</div>
   ),
+  // Forwards `aria-disabled` as well as `disabled`: real Radix renders a
+  // `<div role="menuitem" aria-disabled>`, and an entry that carries a
+  // disabled-reason is soft-disabled through ARIA alone (so it stays
+  // keyboard-reachable). A mock that dropped it would report every such entry
+  // as ENABLED and quietly invert the assertions that depend on it.
   DropdownMenuItem: (props: {
     readonly children: ReactNode;
     readonly onSelect: () => void;
     readonly "data-testid": string;
     readonly disabled: boolean;
+    // `undefined` is not padding: a HARD-disabled entry OMITS the key entirely
+    // so Radix's own derived `aria-disabled` survives, and only a soft-disabled
+    // one spreads `true`. Declaring it as a required boolean would describe a
+    // shape the production component never emits.
+    readonly "aria-disabled": boolean | undefined;
+    readonly "aria-describedby": string | undefined;
   }) => (
     <button
       type="button"
       role="menuitem"
       data-testid={props["data-testid"]}
       disabled={props.disabled}
+      aria-disabled={props["aria-disabled"]}
+      aria-describedby={props["aria-describedby"]}
       onClick={props.onSelect}
     >
       {props.children}
@@ -370,9 +401,39 @@ vi.mock("@/hooks/worktree/use-worktree-get-binding-query", () => ({
 }));
 
 vi.mock("@/hooks/epic/use-epic-chat-mutations", () => ({
+  useEpicArchiveChats: () => ({
+    isPending: testState.archiveBatchPending,
+    mutate: (
+      variables: {
+        readonly epicId: string;
+        readonly chatIds: readonly string[];
+        readonly archived: boolean;
+      },
+      options: {
+        readonly onSuccess: (
+          results: readonly PromiseSettledResult<unknown>[],
+        ) => void;
+      },
+    ) => {
+      testState.archiveBatchPending = true;
+      void Promise.allSettled(
+        variables.chatIds.map((chatId) =>
+          testState.archiveMutateAsync({
+            epicId: variables.epicId,
+            chatId,
+            archived: variables.archived,
+          }),
+        ),
+      ).then((results) => {
+        testState.archiveBatchPending = false;
+        options.onSuccess(results);
+      });
+    },
+  }),
   useEpicArchiveChat: () => ({
     mutate: testState.archiveMutate,
-    isPending: false,
+    mutateAsync: testState.archiveMutateAsync,
+    isPending: testState.archiveRowPending,
   }),
   useEpicCreateChat: () => ({
     mutate: testState.createChatMutate,
@@ -721,6 +782,7 @@ const EPIC_ID = "epic-1";
 
 describe("epic sidebar selection mode", () => {
   beforeEach(() => {
+    testState.archiveMutateAsync.mockResolvedValue({ updated: true });
     testState.deleteArtifactMutateAsync.mockResolvedValue({});
     testState.deleteChatMutateAsync.mockResolvedValue({});
     testState.deleteTuiAgentMutateAsync.mockResolvedValue({});
@@ -754,6 +816,9 @@ describe("epic sidebar selection mode", () => {
     testState.showArchived = false;
     testState.archivedIds = [];
     testState.archiveMutate = vi.fn();
+    testState.archiveBatchPending = false;
+    testState.archiveRowPending = false;
+    testState.archiveMutateAsync = vi.fn();
     testState.rowHostId = "host-1";
     testState.rowHostEntry = { hostId: "host-1" };
     testState.rowHostClient = { getActiveHostId: () => "host-1" };
@@ -815,6 +880,345 @@ describe("epic sidebar selection mode", () => {
       epicId: EPIC_ID,
       tuiAgentId: "agent-root",
     });
+  });
+
+  it("archives the topmost selected agents and exits selection mode", async () => {
+    seedChatTree();
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Select agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select all" }));
+    fireEvent.click(screen.getByTestId("epic-sidebar-archive-selected-chats"));
+
+    await waitFor(() => {
+      expect(testState.archiveMutateAsync).toHaveBeenCalledWith({
+        epicId: EPIC_ID,
+        chatId: "chat-root",
+        archived: true,
+      });
+      expect(testState.archiveMutateAsync).toHaveBeenCalledWith({
+        epicId: EPIC_ID,
+        chatId: "agent-root",
+        archived: true,
+      });
+    });
+    expect(testState.archiveMutateAsync).not.toHaveBeenCalledWith({
+      epicId: EPIC_ID,
+      chatId: "chat-child",
+      archived: true,
+    });
+    expect(
+      screen.queryByRole("button", { name: "Cancel selection" }),
+    ).toBeNull();
+  });
+
+  it("exits selection after projection prunes archived rows before the batch settles", async () => {
+    let resolveArchive: (value: { readonly updated: boolean }) => void = () => {
+      throw new Error("Archive resolver is unavailable");
+    };
+    const archivePromise = new Promise<{ readonly updated: boolean }>(
+      (resolve) => {
+        resolveArchive = resolve;
+      },
+    );
+    testState.archiveMutateAsync.mockReturnValue(archivePromise);
+    seedChatTree();
+
+    const view = render(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Select agents" }));
+    fireEvent.click(screen.getByTestId("epic-sidebar-select-chat-root"));
+    fireEvent.click(screen.getByTestId("epic-sidebar-archive-selected-chats"));
+
+    testState.archivedIds = ["chat-root"];
+    view.rerender(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+    await waitFor(() => {
+      expect(screen.queryByTestId("epic-sidebar-item-chat-root")).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Cancel selection" }),
+      ).toBeTruthy();
+    });
+
+    resolveArchive({ updated: true });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: "Cancel selection" }),
+      ).toBeNull();
+    });
+  });
+
+  it("preserves agents selected while an archive batch is pending", async () => {
+    let resolveArchive: (value: { readonly updated: boolean }) => void = () => {
+      throw new Error("Archive resolver is unavailable");
+    };
+    const archivePromise = new Promise<{ readonly updated: boolean }>(
+      (resolve) => {
+        resolveArchive = resolve;
+      },
+    );
+    testState.archiveMutateAsync.mockReturnValue(archivePromise);
+    seedChatTree();
+
+    const view = render(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Select agents" }));
+    fireEvent.click(screen.getByTestId("epic-sidebar-select-chat-root"));
+    fireEvent.click(screen.getByTestId("epic-sidebar-archive-selected-chats"));
+    view.rerender(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Select all" }).matches(":disabled"),
+    ).toBe(true);
+    expect(
+      screen
+        .getByRole("button", { name: "Cancel selection" })
+        .matches(":disabled"),
+    ).toBe(true);
+    expect(
+      screen
+        .getByTestId("epic-sidebar-delete-selected-chats")
+        .matches(":disabled"),
+    ).toBe(true);
+    fireEvent.click(screen.getByTestId("epic-sidebar-select-agent-root"));
+
+    resolveArchive({ updated: true });
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("epic-sidebar-select-chat-root").matches(":checked"),
+      ).toBe(false);
+      expect(
+        screen
+          .getByTestId("epic-sidebar-select-agent-root")
+          .matches(":checked"),
+      ).toBe(true);
+    });
+    expect(
+      screen.getByRole("button", { name: "Cancel selection" }),
+    ).toBeTruthy();
+  });
+
+  it("clears descendants selected before an archive response whose projection lands later", async () => {
+    let resolveArchive: (value: { readonly updated: boolean }) => void = () => {
+      throw new Error("Archive resolver is unavailable");
+    };
+    const archivePromise = new Promise<{ readonly updated: boolean }>(
+      (resolve) => {
+        resolveArchive = resolve;
+      },
+    );
+    testState.archiveMutateAsync.mockReturnValue(archivePromise);
+    seedChatTree();
+
+    const view = render(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Select agents" }));
+    fireEvent.click(screen.getByTestId("epic-sidebar-select-chat-root"));
+    fireEvent.click(screen.getByTestId("epic-sidebar-archive-selected-chats"));
+    fireEvent.click(screen.getByTestId("epic-sidebar-select-chat-child"));
+
+    resolveArchive({ updated: true });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: "Cancel selection" }),
+      ).toBeNull();
+    });
+
+    testState.archivedIds = ["chat-root"];
+    view.rerender(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+    await waitFor(() => {
+      expect(screen.queryByTestId("epic-sidebar-item-chat-root")).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Cancel selection" }),
+      ).toBeNull();
+    });
+  });
+
+  it("clears descendants added while an archive request is pending", async () => {
+    let resolveArchive: (value: { readonly updated: boolean }) => void = () => {
+      throw new Error("Archive resolver is unavailable");
+    };
+    const archivePromise = new Promise<{ readonly updated: boolean }>(
+      (resolve) => {
+        resolveArchive = resolve;
+      },
+    );
+    testState.archiveMutateAsync.mockReturnValue(archivePromise);
+    seedChatTree();
+
+    const view = render(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Select agents" }));
+    fireEvent.click(screen.getByTestId("epic-sidebar-select-chat-root"));
+    fireEvent.click(screen.getByTestId("epic-sidebar-archive-selected-chats"));
+
+    const addedChild = treeNode(
+      "chat-added-child",
+      "chat-root",
+      "Added child",
+      "chat",
+    );
+    testState.tree = {
+      rootIds: testState.tree.rootIds,
+      childrenByParent: {
+        ...testState.tree.childrenByParent,
+        "chat-root": ["chat-child", addedChild.id],
+      },
+      nodeById: {
+        ...testState.tree.nodeById,
+        [addedChild.id]: addedChild,
+      },
+    };
+    testState.records = [...testState.records, recordFromNode(addedChild)];
+    view.rerender(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+    fireEvent.click(screen.getByTestId(`epic-sidebar-select-${addedChild.id}`));
+
+    resolveArchive({ updated: true });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: "Cancel selection" }),
+      ).toBeNull();
+    });
+
+    testState.archivedIds = ["chat-root"];
+    view.rerender(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Cancel selection" }),
+    ).toBeNull();
+  });
+
+  it("preserves selected descendants reparented out of an archive request", async () => {
+    let resolveArchive: (value: { readonly updated: boolean }) => void = () => {
+      throw new Error("Archive resolver is unavailable");
+    };
+    const archivePromise = new Promise<{ readonly updated: boolean }>(
+      (resolve) => {
+        resolveArchive = resolve;
+      },
+    );
+    testState.archiveMutateAsync.mockReturnValue(archivePromise);
+    seedChatTree();
+
+    const view = render(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Select agents" }));
+    fireEvent.click(screen.getByTestId("epic-sidebar-select-chat-root"));
+    fireEvent.click(screen.getByTestId("epic-sidebar-archive-selected-chats"));
+    fireEvent.click(screen.getByTestId("epic-sidebar-select-chat-child"));
+
+    const reparentedChild = treeNode("chat-child", null, "Child chat", "chat");
+    testState.tree = {
+      rootIds: ["chat-root", reparentedChild.id, "agent-root"],
+      childrenByParent: { "chat-root": [] },
+      nodeById: {
+        ...testState.tree.nodeById,
+        [reparentedChild.id]: reparentedChild,
+      },
+    };
+    testState.records = testState.records.map((record) =>
+      record.id === reparentedChild.id
+        ? recordFromNode(reparentedChild)
+        : record,
+    );
+    view.rerender(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+
+    resolveArchive({ updated: true });
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("epic-sidebar-select-chat-root").matches(":checked"),
+      ).toBe(false);
+      expect(
+        screen
+          .getByTestId("epic-sidebar-select-chat-child")
+          .matches(":checked"),
+      ).toBe(true);
+    });
+    expect(
+      screen.getByRole("button", { name: "Cancel selection" }),
+    ).toBeTruthy();
+
+    testState.archivedIds = ["chat-root"];
+    view.rerender(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+    expect(screen.queryByTestId("epic-sidebar-item-chat-root")).toBeNull();
+    expect(
+      screen.getByTestId("epic-sidebar-select-chat-child").matches(":checked"),
+    ).toBe(true);
+  });
+
+  it("hides the bulk archive action when the host lacks archive support", () => {
+    seedChatTree();
+    testState.archiveSupport = false;
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Select agents" }));
+    fireEvent.click(screen.getByTestId("epic-sidebar-select-chat-root"));
+
+    expect(
+      screen.queryByTestId("epic-sidebar-archive-selected-chats"),
+    ).toBeNull();
+  });
+
+  it("keeps bulk archive disabled while a selected agent is working", () => {
+    seedChatTree();
+    testState.activeAgentIds = new Set(["chat-root"]);
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Select agents" }));
+    fireEvent.click(screen.getByTestId("epic-sidebar-select-chat-root"));
+
+    expect(
+      screen
+        .getByTestId("epic-sidebar-archive-selected-chats")
+        .matches(":disabled"),
+    ).toBe(true);
+  });
+
+  it("keeps bulk archive disabled for an active collapsed descendant", () => {
+    seedChatTree();
+    testState.expandedIds = new Set<string>();
+    testState.activeAgentIds = new Set(["chat-child"]);
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Select agents" }));
+    fireEvent.click(screen.getByTestId("epic-sidebar-select-chat-root"));
+
+    expect(screen.queryByTestId("epic-sidebar-select-chat-child")).toBeNull();
+    expect(
+      screen
+        .getByTestId("epic-sidebar-archive-selected-chats")
+        .matches(":disabled"),
+    ).toBe(true);
   });
 
   it("toggles the Select all button to Deselect all once everything is selected", () => {
@@ -2771,6 +3175,8 @@ describe("chat row archive", () => {
     testState.showArchived = false;
     testState.archivedIds = [];
     testState.archiveMutate = vi.fn();
+    testState.archiveBatchPending = false;
+    testState.archiveMutateAsync = vi.fn();
     testState.rowHostId = "host-1";
     testState.rowHostEntry = { hostId: "host-1" };
     testState.rowHostClient = { getActiveHostId: () => "host-1" };
@@ -3041,16 +3447,18 @@ describe("chat row archive", () => {
       screen.getByTestId("epic-sidebar-archive-item-agent-root").textContent,
     ).toContain("Archive");
 
-    // Running row: entry present but disabled.
+    // Running row: entry present but unavailable. Soft-disabled (ARIA) rather
+    // than hard-disabled, so it stays keyboard-reachable and can explain
+    // itself - see the keyboard-reachability test below.
     testState.activeAgentIds = new Set(["chat-root"]);
     testState.activityTierById = new Map([["chat-root", "turn"]]);
     view.rerender(
       <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
     );
     expect(
-      screen
-        .getByTestId("epic-sidebar-archive-item-chat-root")
-        .matches(":disabled"),
+      isMenuItemUnavailable(
+        screen.getByTestId("epic-sidebar-archive-item-chat-root"),
+      ),
     ).toBe(true);
 
     // Archived row offers the action "Unarchive".
@@ -3263,7 +3671,294 @@ describe("chat row archive", () => {
 
     expect(screen.queryByTestId("epic-sidebar-item-chat-root")).toBeNull();
   });
+
+  // --- B11: busy rows cannot be archived, and say why ----------------------
+
+  /**
+   * The attention tones are the regression this pins. `chatOwnStatusKind` folds
+   * failure/interview/approval AHEAD of the running tier, so gating archive on
+   * the folded kind left the entry enabled on a chat that was genuinely
+   * mid-turn - and a pending approval is raised from inside a running turn, so
+   * that is the common case, not a rare interleaving.
+   */
+  it("keeps Archive disabled on a running row even under an attention tone (B11)", () => {
+    seedChatTree();
+    testState.activeAgentIds = new Set(["chat-root"]);
+    testState.activityTierById = new Map([["chat-root", "turn"]]);
+
+    const view = render(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+
+    for (const attention of [
+      { pendingApproval: true },
+      { pendingInterview: true },
+      { unreadFailure: true },
+      { unreadDone: true },
+    ] as const) {
+      testState.indicatorChats = { "chat-root": indicator(attention) };
+      view.rerender(
+        <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+      );
+      expect(
+        isMenuItemUnavailable(
+          screen.getByTestId("epic-sidebar-archive-item-chat-root"),
+        ),
+      ).toBe(true);
+    }
+
+    // Control: the same tones on an IDLE row leave archive available, so the
+    // assertion above is pinning "running", not "any notification at all".
+    testState.activeAgentIds = new Set<string>();
+    testState.activityTierById = new Map();
+    testState.indicatorChats = {
+      "chat-root": indicator({ pendingApproval: true }),
+    };
+    view.rerender(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+    expect(
+      isMenuItemUnavailable(
+        screen.getByTestId("epic-sidebar-archive-item-chat-root"),
+      ),
+    ).toBe(false);
+  });
+
+  /**
+   * The tooltip's trigger sits on the menu ITEM, with no element in between.
+   *
+   * A soft-disabled entry is not Radix-`disabled`, so it carries no
+   * `data-disabled` and takes hover itself - the wrapper that used to be needed
+   * for that is gone. Keeping the item a direct child of the menu is what
+   * preserves `menu` -> `menuitem` ownership: an intermediate
+   * `role="presentation"` element could NOT, because ARIA ignores a
+   * presentational role on any element carrying a global ARIA property, and
+   * Radix Tooltip puts `aria-describedby` on its trigger while open. The
+   * wrapper stopped being presentational exactly when a keyboard user focused
+   * the busy entry and opened its tooltip.
+   *
+   * (The `pointer-events` rule itself is CSS, which jsdom does not evaluate;
+   * the mocked tooltip here renders its content eagerly, as every other tooltip
+   * assertion in this file does.)
+   */
+  it("explains the refusal, per activity tier (B11)", () => {
+    seedChatTree();
+    testState.activeAgentIds = new Set(["chat-root"]);
+    testState.activityTierById = new Map([["chat-root", "turn"]]);
+
+    const view = render(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+
+    const turnItem = screen.getByTestId("epic-sidebar-archive-item-chat-root");
+    expect(isMenuItemUnavailable(turnItem)).toBe(true);
+    expect(tooltipTextIn(turnItem)).toBe(
+      "Can't archive while this agent is working. Stopping it ends a turn, but not a detached subagent or workflow. Wait for it to go idle, or stop it, then archive.",
+    );
+    // The `turn` TIER is not "a turn is running": `chatActivityIndicator` maps
+    // a detached subagent or workflow outliving its turn into it, and
+    // `resolvedTurnStatus` reports no active turn for that same state so no
+    // Stop-turn affordance surfaces. An unhedged "stop it" would point at an
+    // action the host early-returns from.
+    expect(tooltipTextIn(turnItem)).toContain("not a detached subagent");
+
+    testState.activityTierById = new Map([["chat-root", "background"]]);
+    view.rerender(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+    const bgItem = screen.getByTestId("epic-sidebar-archive-item-chat-root");
+    expect(tooltipTextIn(bgItem)).toBe(
+      "Can't archive while this agent has background items running. Stopping the agent won't clear them — wait for them to finish, or stop them from its chat.",
+    );
+    // The background arm must never advertise stopping the AGENT as the
+    // remedy. `stopActiveTurn()` early-returns with no turn running, and this
+    // tooltip is the only message a soft-disabled entry produces - the host's
+    // corrected refusal never fires because `onSelect` is prevented. Getting
+    // this wrong sends the user round a loop with nothing to correct it.
+    expect(tooltipTextIn(bgItem)).toContain("stop them from its chat");
+
+    // No wrapper: a busy entry stays a direct sibling of the other entries, so
+    // the menu owns it in every state. Nesting it under a presentational node
+    // would have un-owned it the moment its tooltip opened.
+    expect(bgItem.parentElement).toBe(
+      screen.getByTestId("epic-sidebar-rename-chat-root").parentElement,
+    );
+
+    // On an idle row there is no tooltip at all: an available action must carry
+    // no explanation. Scoped to the item's own menu container rather than the
+    // whole row, because an idle row also renders the hover Archive button,
+    // whose own ("Archive <name>") tooltip would satisfy a looser query and
+    // make this pass for the wrong reason.
+    testState.activeAgentIds = new Set<string>();
+    testState.activityTierById = new Map();
+    view.rerender(
+      <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />,
+    );
+    const idleItem = screen.getByTestId("epic-sidebar-archive-item-chat-root");
+    expect(isMenuItemUnavailable(idleItem)).toBe(false);
+    expect(tooltipTextIn(idleItem)).toBeNull();
+    expect(idleItem.parentElement).toBe(
+      screen.getByTestId("epic-sidebar-rename-chat-root").parentElement,
+    );
+  });
+
+  it("still offers Unarchive on a running archived row (B11)", () => {
+    seedChatTree();
+    testState.archivedIds = ["chat-root"];
+    testState.showArchived = true;
+    // An inbound message auto-unarchives and wakes the agent, so archived+busy
+    // is a real state - and unarchiving is the direction the host allows.
+    testState.activeAgentIds = new Set(["chat-root"]);
+    testState.activityTierById = new Map([["chat-root", "turn"]]);
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    const entry = screen.getByTestId("epic-sidebar-archive-item-chat-root");
+    expect(entry.textContent).toContain("Unarchive");
+    expect(isMenuItemUnavailable(entry)).toBe(false);
+  });
+
+  it("keeps a busy row's Archive entry keyboard-reachable (B11)", () => {
+    // Radix renders a `disabled` item as non-focusable AND filters it out of
+    // typeahead. Since the hover button is hidden while the row is busy, hard
+    // -disabling here would make the action and its reason invisible to
+    // keyboard/screen-reader users: Archive would simply vanish from the menu
+    // with no signal it exists. `aria-disabled` keeps it announced and
+    // focusable while still refusing selection.
+    seedChatTree();
+    testState.activeAgentIds = new Set(["chat-root"]);
+    testState.activityTierById = new Map([["chat-root", "turn"]]);
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    const item = screen.getByTestId("epic-sidebar-archive-item-chat-root");
+    expect(item.getAttribute("aria-disabled")).toBe("true");
+    // NOT the hard-disabled form, which is what removes it from the keyboard.
+    expect(item.matches(":disabled")).toBe(false);
+  });
+
+  it("puts NOTHING between the menu and a busy item (B11)", () => {
+    // Any element between `role="menu"` and `role="menuitem"` breaks the
+    // owned-children relationship, so the item's announced position/count goes
+    // wrong - and only on busy rows. `role="presentation"` does not rescue it
+    // here: ARIA ignores a presentational role on an element carrying a global
+    // ARIA property, and Radix Tooltip assigns `aria-describedby` to its
+    // trigger while open. A wrapper would therefore un-presentation itself at
+    // the exact moment a keyboard user focused the entry and opened its
+    // tooltip - the one state it was added for.
+    seedChatTree();
+    testState.activeAgentIds = new Set(["chat-root"]);
+    testState.activityTierById = new Map([["chat-root", "turn"]]);
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    const busyItem = screen.getByTestId("epic-sidebar-archive-item-chat-root");
+    // Same parent as an entry that has no tooltip: no extra level was
+    // introduced for the busy one.
+    expect(busyItem.parentElement).toBe(
+      screen.getByTestId("epic-sidebar-rename-chat-root").parentElement,
+    );
+  });
+
+  it("applies the same refusal to the CONTEXT menu entry (B11)", () => {
+    // The context menu is the one path that runs against unmocked Radix in
+    // this file (`@/components/ui/dropdown-menu` is mocked,
+    // `@/components/ui/context-menu` is not), so it is the only place a real
+    // Radix regression in the wrapper could surface.
+    seedChatTree();
+    testState.activeAgentIds = new Set(["chat-root"]);
+    testState.activityTierById = new Map([["chat-root", "background"]]);
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+    fireEvent.contextMenu(screen.getByTestId("epic-sidebar-item-chat-root"));
+
+    const item = screen.getByTestId("epic-sidebar-context-archive-chat-root");
+    expect(isMenuItemUnavailable(item)).toBe(true);
+    // Soft-disabled, so Radix `disabled` is false and no `data-disabled`
+    // pointer-events trap applies - which is what lets the tooltip trigger sit
+    // on the item and keeps the item directly under the menu.
+    //
+    // `data-disabled` carries the whole assertion. A `:disabled` check would
+    // read like a second one but could never fail here: this item is real
+    // Radix, so it is a `<div role="menuitem">`, and CSS `:disabled` matches
+    // only form elements. See `isMenuItemUnavailable` below.
+    expect(item.hasAttribute("data-disabled")).toBe(false);
+    expect(item.parentElement).toBe(
+      screen.getByTestId("epic-sidebar-context-rename-chat-root")
+        .parentElement ?? null,
+    );
+  });
+
+  it("describes the FOCUSED item with the reason, not just the wrapper (B11)", () => {
+    // The tooltip alone does not reach a screen reader. `TooltipWrapper` uses
+    // `asChild`, so Radix owns `aria-describedby` on the WRAPPER while keyboard
+    // focus lands on the item inside it - and ARIA descriptions are not
+    // inherited by descendants. Without the item's own description the user
+    // hears "Archive, dimmed" and never the reason, which is the entire point
+    // of keeping the entry reachable.
+    //
+    // Asserted on the context menu because it runs against unmocked Radix: a
+    // mock could satisfy this by construction.
+    seedChatTree();
+    testState.activeAgentIds = new Set(["chat-root"]);
+    testState.activityTierById = new Map([["chat-root", "background"]]);
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+    fireEvent.contextMenu(screen.getByTestId("epic-sidebar-item-chat-root"));
+
+    const item = screen.getByTestId("epic-sidebar-context-archive-chat-root");
+    const describedBy = item.getAttribute("aria-describedby");
+    if (describedBy === null) {
+      throw new Error("expected the item itself to carry aria-describedby");
+    }
+    // Must RESOLVE - a dangling id reads to a screen reader as no description
+    // at all, which is exactly the bug this guards, wearing the right attribute.
+    const description = document.getElementById(describedBy);
+    if (description === null) {
+      throw new Error(`aria-describedby '${describedBy}' resolves to nothing`);
+    }
+    expect(description.textContent).toContain("background items running");
+    expect(description.textContent).toContain("stop them from its chat");
+    // Scoped to the item that owns it, so sibling rows cannot collide.
+    expect(item.contains(description)).toBe(true);
+  });
+
+  it("leaves an unexplained disabled entry undescribed (B11)", () => {
+    // A transient in-flight mutation is hard-disabled and carries no reason.
+    // Pointing `aria-describedby` at an element that does not exist would be
+    // worse than omitting it, so the id must be absent, not empty.
+    //
+    // Driven through `archiveRowPending`, the PER-ROW hook. Clearing
+    // `activeAgentIds` alone would leave the entry fully ENABLED, so the
+    // assertion would hold for a row that is not disabled at all - passing
+    // without ever reaching the state named in the title.
+    seedChatTree();
+    testState.activeAgentIds = new Set();
+    testState.archiveRowPending = true;
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    const item = screen.getByTestId("epic-sidebar-archive-item-chat-root");
+    // Genuinely unavailable...
+    expect(isMenuItemUnavailable(item)).toBe(true);
+    // ...and hard-disabled, so Radix keeps its own ARIA rather than ours.
+    expect(item.getAttribute("aria-describedby")).toBeNull();
+  });
 });
+
+/**
+ * "Unavailable" as the USER experiences it, across both disable mechanisms.
+ *
+ * An entry that carries an explanation is soft-disabled (`aria-disabled`) so it
+ * stays keyboard-reachable and can still surface its tooltip; a transient one
+ * is hard-disabled. Asserting `:disabled` alone would both miss the soft form
+ * and, in this file, only ever be testing the tooltip MOCK - CSS `:disabled`
+ * matches form elements, and real Radix renders
+ * `<div role="menuitem" aria-disabled="true">`, which it can never match.
+ */
+function isMenuItemUnavailable(el: HTMLElement): boolean {
+  return el.matches(":disabled") || el.getAttribute("aria-disabled") === "true";
+}
 
 function seedChatTree(): void {
   const chatRoot = treeNode("chat-root", null, "Root chat", "chat");
