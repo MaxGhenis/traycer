@@ -866,6 +866,58 @@ describe("createOpenEpicStore", () => {
     opened.dispose();
   });
 
+  // The two terminal codes s0 added carry a host-authored `reason` aimed at a
+  // log line. The renderer substitutes copy for exactly those two; the
+  // UNAUTHORIZED test above is the other half of this guard - it pins that an
+  // unmapped code still surfaces `reason` verbatim, so a mapping that swallowed
+  // every code would fail there rather than pass here.
+  it.each([
+    {
+      code: "ROOM_UNINITIALIZED",
+      reason: "tiptap room uninitialized for epic-room-1",
+      expected:
+        "This epic cannot be opened because its collaboration room was never initialized.",
+    },
+    {
+      code: "ENTITLEMENT_REQUIRED",
+      reason: "free tier has no cloud sync",
+      expected: "Cloud sync is not available on your current plan.",
+    },
+  ])(
+    "renders copy instead of the raw host reason for a terminal $code close",
+    ({ code, reason, expected }) => {
+      const { factory, handle } = fakeFactory();
+      let authErrorCount = 0;
+      const opened = createOpenEpicStore({
+        epicId: `epic-${code.toLowerCase()}`,
+        streamClientFactory: factory,
+        userId: null,
+        onAuthError: () => {
+          authErrorCount += 1;
+        },
+      });
+
+      handle().callbacks.onConnectionStatus("closed", {
+        kind: "fatalError",
+        details: {
+          code,
+          reason,
+          incompatibleMethods: null,
+          upgradeGuidance: null,
+        },
+      });
+
+      const error = opened.store.getState().snapshotFetchError;
+      expect(error).toEqual({ code, message: expected, upgradeGuidance: null });
+      // The banner keys its Upgrade button off `code`, so the code must survive
+      // the substitution - copy replaces the message, never the discriminant.
+      expect(error?.code).toBe(code);
+      // Neither code is a credential failure, so neither may run auth recovery.
+      expect(authErrorCount).toBe(0);
+      opened.dispose();
+    },
+  );
+
   // ── B6: artifact-room-scoped frame handling ──────────────────────────────────────
 
   function seedRootArtifactWithArtifactRoom(

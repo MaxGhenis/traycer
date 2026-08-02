@@ -316,7 +316,11 @@ describe("WsStreamClient", () => {
     expect(subscribeFrame).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 1 },
+      // `@1.2` is the newest installed minor (it adds the optional durability
+      // keys to `cloudSyncStatus`). This literal is the point of the fixture:
+      // it pins the version the client *declares*, which is a distinct fact
+      // from the manifest it advertises, so a bump has to be stated here too.
+      schemaVersion: { major: 1, minor: 2 },
       params: { epicId: "epic-1" },
     });
 
@@ -354,7 +358,7 @@ describe("WsStreamClient", () => {
     expect(parseText(stub.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 1 },
+      schemaVersion: { major: 1, minor: 2 },
       params: { epicId: "epic-1" },
     });
 
@@ -426,7 +430,7 @@ describe("WsStreamClient", () => {
     expect(parseText(stub.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 1 },
+      schemaVersion: { major: 1, minor: 2 },
       params: { epicId: "epic-1" },
     });
 
@@ -1124,7 +1128,7 @@ describe("WsStreamClient", () => {
     expect(firstSubscribe).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 1 },
+      schemaVersion: { major: 1, minor: 2 },
       params: { epicId: "epic-42" },
     });
 
@@ -1144,7 +1148,7 @@ describe("WsStreamClient", () => {
     expect(secondSubscribe).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 1 },
+      schemaVersion: { major: 1, minor: 2 },
       params: { epicId: "epic-42" },
     });
 
@@ -1270,7 +1274,7 @@ describe("WsStreamClient", () => {
     expect(parseText(sockets[1].socket.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 1 },
+      schemaVersion: { major: 1, minor: 2 },
       params: { epicId: "epic-42" },
     });
     expect(statuses.at(-1)).toBe("open");

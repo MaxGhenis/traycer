@@ -168,12 +168,28 @@ function isUnavailableUnauthorized(details: FatalErrorDetails): boolean {
   );
 }
 
+// `details.reason` is a host-authored string aimed at a log line, which is the
+// right default for codes the renderer has nothing better to say about. The two
+// terminal codes s0 added are the exception: they name a condition the user can
+// understand and, for one of them, act on - so they get copy rather than the
+// raw reason. Unknown codes keep falling through to `reason`.
+function terminalCloseMessage(details: FatalErrorDetails): string {
+  switch (details.code) {
+    case "ROOM_UNINITIALIZED":
+      return "This epic cannot be opened because its collaboration room was never initialized.";
+    case "ENTITLEMENT_REQUIRED":
+      return "Cloud sync is not available on your current plan.";
+    default:
+      return details.reason;
+  }
+}
+
 function snapshotFetchErrorFrom(
   details: FatalErrorDetails,
 ): SnapshotFetchError {
   return {
     code: details.code,
-    message: details.reason,
+    message: terminalCloseMessage(details),
     upgradeGuidance: details.upgradeGuidance,
     localStoreRemedy: details.localStoreRemedy,
   };

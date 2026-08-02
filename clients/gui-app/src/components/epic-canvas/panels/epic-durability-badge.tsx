@@ -10,6 +10,10 @@ import { isEpicArtifactKind } from "@/lib/artifacts/node-display";
 import { resolveManageSubscriptionUrl } from "@/lib/auth/manage-subscription-url";
 import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
+import type {
+  EpicDurabilityPauseReason,
+  EpicDurabilityStatus,
+} from "@traycer/protocol/host/epic/subscribe";
 
 /**
  * Host routing truth, kept separate from the cloud-sync pill: cloud transport
@@ -26,8 +30,8 @@ export function EpicDurabilityBadge() {
 }
 
 function EpicDurabilityBadgeContent(props: {
-  readonly status: NonNullable<ReturnType<typeof useEpicDurabilityStatus>>;
-  readonly pauseReason: ReturnType<typeof useEpicDurabilityPauseReason>;
+  readonly status: EpicDurabilityStatus;
+  readonly pauseReason: EpicDurabilityPauseReason | null;
 }) {
   const runnerHost = useRunnerHost();
   const exportArtifacts = useEpicExportArtifacts();
@@ -92,8 +96,8 @@ function EpicDurabilityBadgeContent(props: {
 }
 
 function badgeCopy(
-  status: NonNullable<ReturnType<typeof useEpicDurabilityStatus>>,
-  pauseReason: ReturnType<typeof useEpicDurabilityPauseReason>,
+  status: EpicDurabilityStatus,
+  pauseReason: EpicDurabilityPauseReason | null,
 ): { readonly label: string; readonly className: string } {
   switch (status) {
     case "local":
