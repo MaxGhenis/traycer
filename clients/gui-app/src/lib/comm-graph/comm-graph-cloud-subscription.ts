@@ -225,11 +225,18 @@ export class CommGraphCloudSubscriptionManager {
       });
     } catch (cause) {
       this.relayStatus = "failed";
+      // A synchronous dial failure has no handle to emit an `unreachable`
+      // status. Reject this candidate ourselves before continuing through the
+      // remaining scoped relays; otherwise the unchanged relay set would keep
+      // the manager wedged on this null-handle host indefinitely.
+      this.rejectedRelayHostIds.add(hostId);
+      this.relayHostId = null;
       appLogger.error(
         "[comm-graph] cloud relay dial failed",
         { epicId: this.epicId, hostId },
         cause,
       );
+      this.openNextRelay();
       this.publish();
     }
   }

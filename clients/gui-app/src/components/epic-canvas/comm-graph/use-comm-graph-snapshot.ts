@@ -27,7 +27,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useDurableStreamTransportFactory } from "@/lib/host/use-durable-stream-transport";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import {
   EMPTY_COMM_GRAPH_SNAPSHOT,
   type CommGraphSnapshot,
@@ -73,7 +72,6 @@ export function useCommGraphSnapshot(
   // on each dial - but only while this component is mounted to keep refreshing
   // them, which is why the claim below hands it back on unmount.
   const openTransport = useDurableStreamTransportFactory();
-  const activeHostId = useReactiveActiveHostId();
 
   const localOpenerOverride = getCommGraphSubscriptionOpenerOverride();
   const opener = useMemo(
@@ -111,15 +109,15 @@ export function useCommGraphSnapshot(
     [epicId],
   );
 
-  // The graph is intentionally unbound: the selected host is merely the
-  // preferred relay, followed by origin hosts. It never becomes row identity;
-  // the host's availability frame is the sole plane verdict.
+  // Relay selection is scoped to the epic's origin hosts. In particular, it
+  // must not react to the application's globally selected host: a graph tile
+  // can remain mounted while that selection changes, and switching transport
+  // identity beneath its retained subscription would violate tab ownership.
+  // Relay choice never becomes row identity; the host's availability frame is
+  // the sole plane verdict.
   const relayHostIds = useMemo(
-    () =>
-      Array.from(
-        new Set([...(activeHostId === null ? [] : [activeHostId]), ...hostIds]),
-      ),
-    [activeHostId, hostIds],
+    () => Array.from(new Set(hostIds)),
+    [hostIds],
   );
 
   // Read through a ref so acquiring does not re-run (and re-claim) every time

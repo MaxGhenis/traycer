@@ -14,9 +14,6 @@ import type { CommGraphCloudSubscriptionRequest } from "@/lib/comm-graph/comm-gr
 vi.mock("@/lib/host/use-durable-stream-transport", () => ({
   useDurableStreamTransportFactory: () => vi.fn(),
 }));
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => "relay-b",
-}));
 
 function cloudEvent(): HostCommunicationGraphCloudFeedEvent {
   return {
@@ -71,6 +68,7 @@ describe("useCommGraphSnapshot cloud authority", () => {
     );
     await waitFor(() => expect(localRequests).toHaveLength(1));
     await waitFor(() => expect(cloudRequests).toHaveLength(1));
+    expect(cloudRequests[0].hostId).toBe("origin-a");
 
     act(() => {
       localRequests[0].handlers.onSnapshot(

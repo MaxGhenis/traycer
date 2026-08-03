@@ -188,6 +188,28 @@ describe("CommGraphCloudSubscriptionManager", () => {
     );
   });
 
+  it("fails over when the preferred relay throws synchronously while dialing", () => {
+    const requests: CommGraphCloudSubscriptionRequest[] = [];
+    const manager = new CommGraphCloudSubscriptionManager(
+      "epic-1",
+      (request) => {
+        if (request.hostId === "relay-broken") {
+          throw new Error("dial failed");
+        }
+        requests.push(request);
+        return { close: () => undefined };
+      },
+      () => undefined,
+    );
+
+    manager.setRelayHostIds(["relay-broken", "relay-healthy"]);
+    manager.attach();
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].hostId).toBe("relay-healthy");
+    expect(manager.getSnapshot().hosts[0]?.hostId).toBe("relay-healthy");
+  });
+
   it("applies an advancing frontier without reconnecting, moving, or stalling the cursor", () => {
     useCommGraphRowOpenStore.setState({ openRowKeysByEpicId: {} });
     const recorded = recordedOpener();
