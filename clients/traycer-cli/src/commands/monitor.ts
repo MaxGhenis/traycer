@@ -302,6 +302,7 @@ function runInboxSubscription(
     let healthTimer: NodeJS.Timeout | null = null;
     let retryTimer: NodeJS.Timeout | null = null;
     let settled = false;
+    const acknowledgements = new InboxAcknowledgementQueue(target, logger);
 
     const clearHealthTimer = (): void => {
       if (healthTimer !== null) {
@@ -354,7 +355,13 @@ function runInboxSubscription(
       session = next;
       next.onServerFrame((envelope) => {
         markHealthy();
-        void handleServerFrame(envelope, client, target, logger);
+        void handleServerFrame(
+          envelope,
+          client,
+          target,
+          logger,
+          acknowledgements,
+        );
       });
       next.onStatusChange((status, reason) => {
         void onStatusChange(status, reason);
@@ -461,6 +468,73 @@ function runInboxSubscription(
 }
 
 /**
+ * Coalesces durable inbox acknowledgements into bounded unary RPCs. A replay
+ * may deliver many frames concurrently; opening one authenticated RPC per
+ * printed message otherwise creates a connection storm and turns a transient
+ * hiccup into another replay. Failed batches intentionally stay unacked: the
+ * inbox's at-least-once contract redelivers them after reconnect.
+ */
+class InboxAcknowledgementQueue {
+  private static readonly MAX_EVENT_IDS_PER_ACK = 500;
+  private readonly pendingEventIds = new Set<string>();
+  private flushing = false;
+  private flushScheduled = false;
+
+  constructor(
+    private readonly target: InboxTarget,
+    private readonly logger: ILogger,
+  ) {}
+
+  enqueue(eventId: string): void {
+    this.pendingEventIds.add(eventId);
+    if (this.flushScheduled || this.flushing) return;
+    this.flushScheduled = true;
+    queueMicrotask(() => {
+      this.flushScheduled = false;
+      void this.flush();
+    });
+  }
+
+  private async flush(): Promise<void> {
+    if (this.flushing) return;
+    this.flushing = true;
+    try {
+      while (this.pendingEventIds.size > 0) {
+        const eventIds = Array.from(this.pendingEventIds).slice(
+          0,
+          InboxAcknowledgementQueue.MAX_EVENT_IDS_PER_ACK,
+        );
+        for (const eventId of eventIds) this.pendingEventIds.delete(eventId);
+        try {
+          await callHostRpc("agent.inbox.ack", {
+            epicId: this.target.epicId,
+            agentId: this.target.agentId,
+            eventIds,
+          });
+        } catch (error) {
+          this.logger.warn("Monitor failed to acknowledge inbox messages", {
+            environment: config.environment,
+            agentId: this.target.agentId,
+            epicId: this.target.epicId,
+            eventIds: eventIds.length,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    } finally {
+      this.flushing = false;
+      if (this.pendingEventIds.size > 0 && !this.flushScheduled) {
+        this.flushScheduled = true;
+        queueMicrotask(() => {
+          this.flushScheduled = false;
+          void this.flush();
+        });
+      }
+    }
+  }
+}
+
+/**
  * A server frame normalized to the shape `handleServerFrame` acts on,
  * independent of which minor it was parsed against. `eventId` is `null` for
  * a "message" parsed against the `@1.0`/`@1.1` trees - those have no
@@ -533,6 +607,7 @@ async function handleServerFrame(
   client: WsStreamClient<HostStreamRpcRegistry>,
   target: InboxTarget,
   logger: ILogger,
+  acknowledgements: InboxAcknowledgementQueue,
 ): Promise<void> {
   const negotiated = client.getMethodSchemaVersion(SUBSCRIBE_METHOD);
   const frame = parseServerFrame(envelope, negotiated);
@@ -584,21 +659,7 @@ async function handleServerFrame(
       );
       return;
     }
-    // Fire-and-forget the RPC itself: a failed ack just means the row
-    // replays on the next reconnect/restart (documented at-least-once
-    // behavior, not data loss), so it must never block frame handling.
-    callHostRpc("agent.inbox.ack", {
-      epicId: target.epicId,
-      agentId: target.agentId,
-      eventIds: [frame.eventId],
-    }).catch((error: unknown) => {
-      logger.warn("Monitor failed to acknowledge inbox message", {
-        environment: config.environment,
-        agentId: target.agentId,
-        epicId: target.epicId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    acknowledgements.enqueue(frame.eventId);
     return;
   }
   if (frame.kind === "notice") {

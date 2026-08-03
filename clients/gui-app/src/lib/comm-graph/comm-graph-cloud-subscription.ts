@@ -60,6 +60,9 @@ export class CommGraphCloudSubscriptionManager {
   private readonly onRowsPruned: (rowKeys: ReadonlySet<string>) => void;
   private readonly listeners = new Set<() => void>();
   private relayHostIds: ReadonlyArray<string> = [];
+  /** Every host whose agents this epic projects. The cloud feed is shared
+   * across them, so its state must not be shown only on the transport relay. */
+  private originHostIds: ReadonlyArray<string> = [];
   private rejectedRelayHostIds = new Set<string>();
   private unsupportedRelayHostIds = new Set<string>();
   private relayHostId: string | null = null;
@@ -116,9 +119,27 @@ export class CommGraphCloudSubscriptionManager {
     this.publish();
   }
 
+  setOriginHostIds(hostIds: ReadonlyArray<string>): void {
+    if (this.disposed) return;
+    const next = Array.from(new Set(hostIds));
+    if (
+      next.length === this.originHostIds.length &&
+      next.every((hostId, index) => hostId === this.originHostIds[index])
+    ) {
+      return;
+    }
+    this.originHostIds = next;
+    this.publish();
+  }
+
   attach(): void {
     if (this.disposed || this.attached) return;
     this.attached = true;
+    // Unsupported and failed are verdicts for a single retained dial cycle,
+    // not permanent facts about a host. A close/reopen must retry the current
+    // set so a restarted or upgraded host can become the cloud relay.
+    this.rejectedRelayHostIds.clear();
+    this.unsupportedRelayHostIds.clear();
     this.openNextRelay();
   }
 
@@ -333,10 +354,7 @@ export class CommGraphCloudSubscriptionManager {
 
   private applyStatus(hostId: string, status: CommGraphHostStatus): void {
     this.relayStatus = status;
-    if (
-      this.availability === "pending" &&
-      (status === "unsupported" || status === "unreachable")
-    ) {
+    if (status === "unsupported" || status === "unreachable") {
       this.rejectedRelayHostIds.add(hostId);
       if (status === "unsupported") this.unsupportedRelayHostIds.add(hostId);
       this.closeCurrent();
@@ -365,21 +383,22 @@ export class CommGraphCloudSubscriptionManager {
 
   private publish(): void {
     if (this.disposed) return;
+    const statusHostIds =
+      this.originHostIds.length > 0
+        ? this.originHostIds
+        : this.relayHostId === null
+          ? []
+          : [this.relayHostId];
     this.snapshot = {
       events: this.events,
-      hosts:
-        this.relayHostId === null
-          ? []
-          : [
-              {
-                hostId: this.relayHostId,
-                status: this.relayStatus,
-                cursor: this.cursor?.ingestVersion ?? null,
-                snapshotBoundary: this.historyBoundaryInitialized
-                  ? { highestId: this.historyBoundary }
-                  : null,
-              },
-            ],
+      hosts: statusHostIds.map((hostId) => ({
+          hostId,
+          status: this.relayStatus,
+          cursor: this.cursor?.ingestVersion ?? null,
+          snapshotBoundary: this.historyBoundaryInitialized
+            ? { highestId: this.historyBoundary }
+            : null,
+        })),
       lastArrival: this.lastArrival,
     };
     for (const listener of Array.from(this.listeners)) listener();

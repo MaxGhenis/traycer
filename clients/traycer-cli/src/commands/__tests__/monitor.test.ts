@@ -458,6 +458,49 @@ describe("mixed-version inbox message frames", () => {
     void result;
   });
 
+  it("batches concurrently confirmed inbox messages into one bounded acknowledgement", async () => {
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((..._args: unknown[]) => {
+        const cb = _args.find((arg) => typeof arg === "function") as
+          | (() => void)
+          | undefined;
+        cb?.();
+        return true;
+      });
+    const result = runMonitor({ agentId: "a1", epicId: "e1" }).catch((e) => e);
+    await flush(0);
+
+    for (const eventId of ["evt-4", "evt-5"]) {
+      sessions[0].serverFrame?.({
+        kind: "message",
+        hasBinaryPayload: false,
+        item: {
+          reply: { expectsReply: false },
+          fromAgentId: "peer-1",
+          senderTitle: null,
+          senderHarnessId: null,
+          epicId: "e1",
+          prompt: eventId,
+          enqueuedAt: 123,
+          eventId,
+        },
+      });
+    }
+    await flush(0);
+    await flush(0);
+
+    expect(callHostRpcMock).toHaveBeenCalledTimes(1);
+    expect(callHostRpcMock).toHaveBeenCalledWith("agent.inbox.ack", {
+      epicId: "e1",
+      agentId: "a1",
+      eventIds: ["evt-4", "evt-5"],
+    });
+
+    stdoutSpy.mockRestore();
+    void result;
+  });
+
   it("does NOT ack a new-host (@1.2-negotiated) message frame when the stdout write errors", async () => {
     // The exact defect the amended go/no-go review found: an ack must never
     // fire for text that was never successfully written. Simulates a write

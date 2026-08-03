@@ -148,6 +148,10 @@ export function useCommGraphSnapshot(
     cloudManager.setRelayHostIds(relayHostIds);
   }, [cloudManager, relayHostIds]);
 
+  useEffect(() => {
+    cloudManager.setOriginHostIds(hostIds);
+  }, [cloudManager, hostIds]);
+
   const cloudSnapshot = useSyncExternalStore(
     (listener) => cloudManager.subscribe(listener),
     () => cloudManager.getSnapshot(),

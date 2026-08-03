@@ -198,6 +198,8 @@ export interface CommGraphSortKey {
   readonly timestamp: number;
   readonly hostId: string;
   readonly id: number;
+  /** Present for cloud rows, whose origin sequence can legally be reused. */
+  readonly eventId?: string;
 }
 
 export function compareCommGraphSortKeys(
@@ -206,7 +208,11 @@ export function compareCommGraphSortKeys(
 ): number {
   if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
   if (a.hostId !== b.hostId) return a.hostId < b.hostId ? -1 : 1;
-  return a.id - b.id;
+  if (a.id !== b.id) return a.id - b.id;
+  const aEventId = a.eventId ?? "";
+  const bEventId = b.eventId ?? "";
+  if (aEventId === bEventId) return 0;
+  return aEventId < bEventId ? -1 : 1;
 }
 
 export function compareCommGraphEvents(

@@ -7,7 +7,11 @@ import {
   type CommGraphCloudSubscriptionRequest,
 } from "@/lib/comm-graph/comm-graph-cloud-subscription";
 import type { CommGraphSnapshot } from "@/lib/comm-graph/comm-graph-events";
-import { commGraphEventKey } from "@/lib/comm-graph/comm-graph-timeline";
+import {
+  commGraphEventKey,
+  commGraphEventsAsOfCursor,
+  commGraphCursorForEvent,
+} from "@/lib/comm-graph/comm-graph-timeline";
 import {
   dropCommGraphRowOpenKeys,
   useCommGraphRowOpenStore,
@@ -210,6 +214,85 @@ describe("CommGraphCloudSubscriptionManager", () => {
     expect(manager.getSnapshot().hosts[0]?.hostId).toBe("relay-healthy");
   });
 
+  it("retries retained relays after a detached surface reattaches", () => {
+    const recorded = recordedOpener();
+    const manager = new CommGraphCloudSubscriptionManager(
+      "epic-1",
+      recorded.opener,
+      () => undefined,
+    );
+    manager.setRelayHostIds(["relay-a"]);
+    manager.attach();
+    recorded.requests[0].handlers.onStatus("unsupported");
+    expect(manager.getAvailability()).toBe("unsupported");
+
+    manager.detach();
+    manager.attach();
+
+    expect(recorded.requests).toHaveLength(2);
+    expect(recorded.requests[1].hostId).toBe("relay-a");
+  });
+
+  it("fails over a replacement relay without losing established cloud authority", () => {
+    const recorded = recordedOpener();
+    const manager = new CommGraphCloudSubscriptionManager(
+      "epic-1",
+      recorded.opener,
+      () => undefined,
+    );
+    manager.setRelayHostIds(["relay-a", "relay-b"]);
+    manager.attach();
+    recorded.requests[0].handlers.onAvailability("available");
+    recorded.requests[0].handlers.onStatus("unreachable");
+
+    expect(manager.getAvailability()).toBe("available");
+    expect(recorded.requests).toHaveLength(2);
+    expect(recorded.requests[1].hostId).toBe("relay-b");
+  });
+
+  it("projects a cloud feed status to every origin host", () => {
+    const recorded = recordedOpener();
+    const manager = new CommGraphCloudSubscriptionManager(
+      "epic-1",
+      recorded.opener,
+      () => undefined,
+    );
+    manager.setOriginHostIds(["origin-a", "origin-b"]);
+    manager.setRelayHostIds(["relay-a"]);
+    manager.attach();
+    recorded.requests[0].handlers.onStatus("reconnecting");
+
+    expect(manager.getSnapshot().hosts).toEqual([
+      expect.objectContaining({ hostId: "origin-a", status: "reconnecting" }),
+      expect.objectContaining({ hostId: "origin-b", status: "reconnecting" }),
+    ]);
+  });
+
+  it("keeps duplicate cloud origin sequences independently addressable in playback", () => {
+    const recorded = recordedOpener();
+    const manager = new CommGraphCloudSubscriptionManager(
+      "epic-1",
+      recorded.opener,
+      () => undefined,
+    );
+    manager.setRelayHostIds(["relay-a"]);
+    manager.attach();
+    const handlers = recorded.requests[0].handlers;
+    handlers.onSnapshot(
+      [
+        cloudEvent({ eventId: "event-a", originSequence: 7, capturedAt: 1_000 }),
+        cloudEvent({ eventId: "event-b", originSequence: 7, ingestVersion: 11, capturedAt: 1_000 }),
+      ],
+      11,
+      null,
+    );
+
+    const events = manager.getSnapshot().events;
+    expect(commGraphEventsAsOfCursor(events, commGraphCursorForEvent(events[0]))).toEqual([
+      events[0],
+    ]);
+  });
+
   it("applies an advancing frontier without reconnecting, moving, or stalling the cursor", () => {
     useCommGraphRowOpenStore.setState({ openRowKeysByEpicId: {} });
     const recorded = recordedOpener();
@@ -241,8 +324,8 @@ describe("CommGraphCloudSubscriptionManager", () => {
     handlers.onSnapshot([], 8, 5);
 
     expect(manager.getSnapshot().events.map((event) => event.eventId)).toEqual([
-      "at",
       "above",
+      "at",
       "live-8",
     ]);
     expect(recorded.requests).toHaveLength(1);
