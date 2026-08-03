@@ -12,7 +12,7 @@ import { commGraphEventKey } from "@/lib/comm-graph/comm-graph-timeline";
 import { appLogger } from "@/lib/logger";
 
 export type CommGraphCloudAvailability =
-  "pending" | "available" | "unavailable" | "unsupported";
+  "pending" | "available" | "unsupported";
 
 export function selectCommGraphAuthoritativeSnapshot(
   availability: CommGraphCloudAvailability,
@@ -23,7 +23,7 @@ export function selectCommGraphAuthoritativeSnapshot(
 }
 
 export interface CommGraphCloudSubscriptionHandlers {
-  readonly onAvailability: (availability: "available" | "unavailable") => void;
+  readonly onAvailability: (availability: "available") => void;
   readonly onSnapshot: (
     events: ReadonlyArray<HostCommunicationGraphCloudFeedEvent>,
     headVersion: number,
@@ -57,7 +57,6 @@ export type CommGraphCloudSubscriptionOpener = (
 export class CommGraphCloudSubscriptionManager {
   private readonly epicId: string;
   private readonly opener: CommGraphCloudSubscriptionOpener;
-  private readonly onAuthorityRevoked: () => void;
   private readonly onRowsPruned: (rowKeys: ReadonlySet<string>) => void;
   private readonly listeners = new Set<() => void>();
   private relayHostIds: ReadonlyArray<string> = [];
@@ -84,12 +83,10 @@ export class CommGraphCloudSubscriptionManager {
   constructor(
     epicId: string,
     opener: CommGraphCloudSubscriptionOpener,
-    onAuthorityRevoked: () => void,
     onRowsPruned: (rowKeys: ReadonlySet<string>) => void,
   ) {
     this.epicId = epicId;
     this.opener = opener;
-    this.onAuthorityRevoked = onAuthorityRevoked;
     this.onRowsPruned = onRowsPruned;
   }
 
@@ -208,9 +205,9 @@ export class CommGraphCloudSubscriptionManager {
         epicId: this.epicId,
         readSinceCursor: () => this.cursor,
         handlers: {
-          onAvailability: (availability) => {
+          onAvailability: () => {
             if (!isCurrent()) return;
-            this.applyAvailability(availability);
+            this.applyAvailability();
           },
           onSnapshot: (events, headVersion, frontier) => {
             if (!isCurrent()) return;
@@ -237,22 +234,13 @@ export class CommGraphCloudSubscriptionManager {
     }
   }
 
-  private applyAvailability(availability: "available" | "unavailable"): void {
-    const previous = this.availability;
-    if (availability === "available") {
-      if (previous !== "available") {
-        this.historyBoundary = null;
-        this.historyBoundaryInitialized = false;
-        this.lastArrival = null;
-      }
-      this.availability = "available";
-    } else {
-      this.availability = "unavailable";
+  private applyAvailability(): void {
+    if (this.availability !== "available") {
       this.historyBoundary = null;
       this.historyBoundaryInitialized = false;
       this.lastArrival = null;
-      if (previous === "available") this.onAuthorityRevoked();
     }
+    this.availability = "available";
     this.publish();
   }
 

@@ -2,7 +2,6 @@ import {
   CommGraphCloudSubscriptionManager,
   type CommGraphCloudSubscriptionOpener,
 } from "@/lib/comm-graph/comm-graph-cloud-subscription";
-import { getCommGraphSubscriptionManager } from "@/lib/comm-graph/comm-graph-registry";
 import { dropCommGraphRowOpenKeys } from "@/stores/epics/comm-graph-row-open-store";
 
 const DETACHED_CLOUD_MANAGER_LIMIT = 3;
@@ -52,7 +51,6 @@ export function getCommGraphCloudSubscriptionManager(
         }
         return opener(request);
       },
-      () => getCommGraphSubscriptionManager(epicId).prepareAuthorityHandoff(),
       (rowKeys) => dropCommGraphRowOpenKeys(epicId, rowKeys),
     ),
     openersByClaim: new Map(),

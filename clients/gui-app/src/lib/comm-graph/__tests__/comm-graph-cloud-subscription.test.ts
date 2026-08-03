@@ -59,7 +59,6 @@ describe("CommGraphCloudSubscriptionManager", () => {
       "epic-1",
       recorded.opener,
       () => undefined,
-      () => undefined,
     );
     manager.setRelayHostIds(["relay-b"]);
     manager.attach();
@@ -126,7 +125,6 @@ describe("CommGraphCloudSubscriptionManager", () => {
       "epic-1",
       recorded.opener,
       () => undefined,
-      () => undefined,
     );
     manager.setRelayHostIds(["relay-b"]);
     manager.attach();
@@ -190,49 +188,12 @@ describe("CommGraphCloudSubscriptionManager", () => {
     );
   });
 
-  it("treats host revocation as a plane transition without clearing the cloud cursor", () => {
-    const recorded = recordedOpener();
-    const onAuthorityRevoked = vi.fn();
-    const manager = new CommGraphCloudSubscriptionManager(
-      "epic-1",
-      recorded.opener,
-      onAuthorityRevoked,
-      () => undefined,
-    );
-    manager.setRelayHostIds(["relay-b"]);
-    manager.attach();
-    const handlers = recorded.requests[0].handlers;
-    handlers.onAvailability("available");
-    handlers.onSnapshot([cloudEvent({})], 10, null);
-
-    handlers.onAvailability("unavailable");
-    expect(manager.getAvailability()).toBe("unavailable");
-    expect(onAuthorityRevoked).toHaveBeenCalledTimes(1);
-    expect(manager.getSnapshot().events).toHaveLength(1);
-
-    handlers.onAvailability("available");
-    handlers.onSnapshot(
-      [
-        cloudEvent({
-          eventId: "event-2",
-          originSequence: 8,
-          ingestVersion: 11,
-        }),
-      ],
-      11,
-      null,
-    );
-    expect(manager.getSnapshot().events).toHaveLength(2);
-    expect(manager.getSnapshot().lastArrival).toBeNull();
-  });
-
   it("applies an advancing frontier without reconnecting, moving, or stalling the cursor", () => {
     useCommGraphRowOpenStore.setState({ openRowKeysByEpicId: {} });
     const recorded = recordedOpener();
     const manager = new CommGraphCloudSubscriptionManager(
       "epic-1",
       recorded.opener,
-      () => undefined,
       (rowKeys) => dropCommGraphRowOpenKeys("epic-1", rowKeys),
     );
     manager.setRelayHostIds(["relay-b"]);

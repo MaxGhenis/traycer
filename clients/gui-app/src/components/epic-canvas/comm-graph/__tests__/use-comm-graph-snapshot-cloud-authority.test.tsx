@@ -110,10 +110,5 @@ describe("useCommGraphSnapshot cloud authority", () => {
       "cloud-event",
     ]);
     expect(localRequests).toHaveLength(1);
-
-    act(() => cloudRequests[0].handlers.onAvailability("unavailable"));
-    await waitFor(() => expect(localRequests).toHaveLength(2));
-    expect(result.current.events[0]?.messageText).toBe("local only");
-    expect(result.current.lastArrival).toBeNull();
   });
 });

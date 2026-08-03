@@ -85,7 +85,7 @@ describe("host.communicationGraph.subscribe@1.0 contract", () => {
 });
 
 describe("host.communicationGraph.subscribe@1.0 frames", () => {
-  it("carries the host-authoritative cloud availability transition", () => {
+  it("carries only the host-authoritative cloud availability confirmation", () => {
     expect(
       hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.parse({
         kind: "availability",
@@ -97,6 +97,13 @@ describe("host.communicationGraph.subscribe@1.0 frames", () => {
       availability: "available",
       hasBinaryPayload: false,
     });
+    expect(
+      hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10.safeParse({
+        kind: "availability",
+        availability: "unavailable",
+        hasBinaryPayload: false,
+      }).success,
+    ).toBe(false);
   });
 
   it("parses a snapshot frame carrying a non-negative headVersion, never null", () => {

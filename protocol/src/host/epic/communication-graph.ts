@@ -445,15 +445,14 @@ export type HostCommunicationGraphCloudFeedSubscribeOpenRequestV10 = z.infer<
 export const hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10 =
   z.discriminatedUnion("kind", [
     /**
-     * Host-authoritative plane verdict. The renderer selects the cloud plane
-     * only while the host reports `available`; it never derives this from
-     * subscription, entitlement, or free-tier state itself. A transition to
-     * `unavailable` is durable capability data, while `connectionState`
-     * remains a transient relay-health signal that must not cause fallback.
+     * Host-authoritative confirmation that this stream serves the cloud
+     * plane. The renderer never derives this verdict from subscription,
+     * entitlement, or free-tier state itself. Relay failures use
+     * `connectionState`; terminal refusals close the stream with a typed code.
      */
     z.object({
       kind: z.literal("availability"),
-      availability: z.enum(["available", "unavailable"]),
+      availability: z.literal("available"),
       ...textFrameFields,
     }),
     /**
@@ -462,8 +461,9 @@ export const hostCommunicationGraphCloudFeedSubscribeServerFrameSchemaV10 =
      * send another snapshot in the SAME epoch when its deletion frontier
      * changes. Such a later snapshot is cursor-continuing: it neither starts
      * a new authority/history epoch nor resets the retained cursor or arrival
-     * boundary. Revocation/regrant starts the next epoch and history boundary,
-     * but still never resets that cursor.
+     * boundary. No availability frame in this contract revokes the plane or
+     * starts another epoch; a later subscription resumes from the cursor the
+     * client supplies.
      */
     z.object({
       kind: z.literal("snapshot"),
