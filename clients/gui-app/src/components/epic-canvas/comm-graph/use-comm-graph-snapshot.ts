@@ -155,7 +155,11 @@ export function useCommGraphSnapshot(
     () => cloudManager.getSnapshot(),
     () => EMPTY_COMM_GRAPH_SNAPSHOT,
   );
-  const cloudAvailability = cloudManager.getAvailability();
+  const cloudAvailability = useSyncExternalStore(
+    (listener) => cloudManager.subscribe(listener),
+    () => cloudManager.getAvailability(),
+    () => "pending" as const,
+  );
 
   // The CLAIM is an effect, so its cleanup balances a StrictMode double-invoke.
   // The host set goes in WITH it so a retained manager's stale desired set is
