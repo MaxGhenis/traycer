@@ -379,9 +379,11 @@ export type HostNotificationsHome = z.infer<
 
 /**
  * Cross-plane ordering is a protocol rule, not a timestamp comparison.
- * Render every local lane before every cloud lane; each lane retains its own
- * native ordering and cursor semantics. Origin and cloud-arrival clocks are
- * intentionally never compared across these lanes.
+ * Attention severity tiers sort first; within one tier, render the local lane
+ * before the cloud lane. Recent has no tiers and therefore renders local then
+ * cloud directly. Each lane retains its own native ordering and cursor
+ * semantics. Origin and cloud-arrival clocks are intentionally never compared
+ * across lanes.
  */
 export const HOST_NOTIFICATIONS_HOME_ORDER = ["local", "cloud"] as const;
 
