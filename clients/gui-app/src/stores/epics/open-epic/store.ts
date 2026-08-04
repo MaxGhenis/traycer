@@ -12,6 +12,7 @@ import type {
   EpicDurabilityPauseReason,
   EpicDurabilityStatus,
   EpicMigrationPhase,
+  EpicPromotionState,
 } from "@traycer/protocol/host/epic/subscribe";
 import type { SnapshotMetaEpic } from "@traycer/protocol/host/epic/snapshot-meta";
 import type { FatalErrorDetails } from "@traycer/protocol/framework/ws-protocol";
@@ -375,6 +376,8 @@ export interface OpenEpicState {
   readonly durabilityStatus?: EpicDurabilityStatus | null;
   /** Present only for the two recognised paused reasons. */
   readonly durabilityPauseReason?: EpicDurabilityPauseReason | null;
+  /** Optional @1.3 distinction behind a durable promotion reservation. */
+  readonly durabilityPromotionState?: EpicPromotionState | null;
   /** `true` only after a cloud-status frame for this exact open cycle. */
   readonly hasFreshCloudSyncStatus: boolean;
   /**
@@ -677,6 +680,7 @@ export function createOpenEpicStore(
   let cloudSyncStatus: EpicCloudSyncStatus = "connected";
   let durabilityStatus: EpicDurabilityStatus | null = null;
   let durabilityPauseReason: EpicDurabilityPauseReason | null = null;
+  let durabilityPromotionState: EpicPromotionState | null = null;
   let hasFreshCloudSyncStatus = false;
   let currentStatus: StreamConnectionStatus = "connecting";
   // Flips true on the first successful connect so a later drop reads as
@@ -1055,6 +1059,7 @@ export function createOpenEpicStore(
           | "cloudSyncStatus"
           | "durabilityStatus"
           | "durabilityPauseReason"
+          | "durabilityPromotionState"
           | "hasFreshCloudSyncStatus"
           | "hasConnectedOnce"
         > => ({
@@ -1063,6 +1068,7 @@ export function createOpenEpicStore(
           cloudSyncStatus,
           durabilityStatus,
           durabilityPauseReason,
+          durabilityPromotionState,
           hasFreshCloudSyncStatus,
           hasConnectedOnce,
         });
@@ -1564,13 +1570,19 @@ export function createOpenEpicStore(
                 migration: NOT_ALLOWED_MIGRATION_SLICE,
               });
             },
-            onCloudSyncStatus: (status, durability, pauseReason) => {
+            onCloudSyncStatus: (
+              status,
+              durability,
+              pauseReason,
+              promotionState,
+            ) => {
               if (disposed || generation !== streamGeneration) return;
               const previousCloudSyncStatus = cloudSyncStatus;
               cloudSyncStatus = status;
               durabilityStatus = durability ?? null;
               durabilityPauseReason =
                 durability === "paused" ? (pauseReason ?? null) : null;
+              durabilityPromotionState = promotionState ?? null;
               hasFreshCloudSyncStatus = true;
               if (
                 hasConnectedOnce &&
@@ -1627,6 +1639,7 @@ export function createOpenEpicStore(
               if (startedSubscriptionCycle) {
                 durabilityStatus = null;
                 durabilityPauseReason = null;
+                durabilityPromotionState = null;
               }
               const nextStatus = syncCurrentConnectionStatus();
               hasFreshRootSnapshotForOpenCycle = false;
@@ -1697,6 +1710,7 @@ export function createOpenEpicStore(
           cloudSyncStatus = "connected";
           durabilityStatus = null;
           durabilityPauseReason = null;
+          durabilityPromotionState = null;
           const cycleDurabilityState = resetDurabilityProofForOpenCycle();
           // A fresh re-subscribe bootstraps from scratch, so the next connect is
           // "connecting", not "reconnecting": clear the latch and let only a

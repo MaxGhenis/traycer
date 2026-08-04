@@ -141,6 +141,19 @@ export const epicDurabilityStatusSchema = z.enum([
 export type EpicDurabilityStatus = z.infer<typeof epicDurabilityStatusSchema>;
 
 /**
+ * The live state behind a durable promotion reservation. `pending` means the
+ * one-way reservation survived but no uploader is running in this process;
+ * `active` means the host is presently attempting the promotion. This stays
+ * separate from the frozen durability enum so an older GUI keeps its existing
+ * `promoting` behavior while a negotiated @1.3 peer can render the distinction.
+ * This is a closed wire union: a future unrecognised durable source state must
+ * be omitted, falling back to today's rendering just as it does for a host
+ * that does not speak @1.3, rather than widening this released enum.
+ */
+export const epicPromotionStateSchema = z.enum(["pending", "active"]);
+export type EpicPromotionState = z.infer<typeof epicPromotionStateSchema>;
+
+/**
  * The two pause reasons the renderer must act on differently. The persisted
  * registry field is intentionally wider, so the host maps recognised values
  * to this closed wire union and omits unknown values.
@@ -451,8 +464,34 @@ export const epicSubscribeServerFrameSchemaV12 = z.discriminatedUnion("kind", [
   epicSubscribeRootDirtyServerFrameSchema,
 ]);
 
+// ─── `epic.subscribe@1.3` - additive live promotion state ─────────────────
+//
+// `durability` remains exactly the @1.2 field: existing clients use
+// `promoting` as they always have. The optional field below gives a negotiated
+// peer the missing distinction between an in-progress upload and a durable,
+// currently wedged reservation. @1.2 remains frozen and the host gates this
+// key on the negotiated minor.
+const epicSubscribeCloudSyncStatusServerFrameSchemaV13 = z.object({
+  kind: z.literal("cloudSyncStatus"),
+  epicId: z.string(),
+  status: epicCloudSyncStatusSchema,
+  durability: epicDurabilityStatusSchema.optional(),
+  pauseReason: epicDurabilityPauseReasonSchema.optional(),
+  promotionState: epicPromotionStateSchema.optional(),
+  hasBinaryPayload: z.literal(false),
+});
+
+export const epicSubscribeServerFrameSchemaV13 = z.discriminatedUnion("kind", [
+  ...epicSubscribeServerFrameSchemasBeforeCloudSyncStatus,
+  epicSubscribeCloudSyncStatusServerFrameSchemaV13,
+  ...epicSubscribeServerFrameSchemasAfterCloudSyncStatus,
+  epicSubscribeDirtySnapshotServerFrameSchema,
+  epicSubscribeArtifactRoomDirtyServerFrameSchema,
+  epicSubscribeRootDirtyServerFrameSchema,
+]);
+
 /** The latest installed shape. Host code builds frames against this. */
-export const epicSubscribeServerFrameSchema = epicSubscribeServerFrameSchemaV12;
+export const epicSubscribeServerFrameSchema = epicSubscribeServerFrameSchemaV13;
 export type EpicSubscribeServerFrame = z.infer<
   typeof epicSubscribeServerFrameSchema
 >;
@@ -521,5 +560,13 @@ export const epicSubscribeV12 = defineStreamRpcContract({
   schemaVersion: { major: 1, minor: 2 } as const,
   openRequestSchema: epicSubscribeOpenRequestSchema,
   serverFrameSchema: epicSubscribeServerFrameSchemaV12,
+  clientFrameSchema: epicSubscribeClientFrameSchema,
+});
+
+export const epicSubscribeV13 = defineStreamRpcContract({
+  method: "epic.subscribe",
+  schemaVersion: { major: 1, minor: 3 } as const,
+  openRequestSchema: epicSubscribeOpenRequestSchema,
+  serverFrameSchema: epicSubscribeServerFrameSchemaV13,
   clientFrameSchema: epicSubscribeClientFrameSchema,
 });

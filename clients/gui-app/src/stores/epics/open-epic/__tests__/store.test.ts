@@ -432,11 +432,50 @@ describe("createOpenEpicStore", () => {
       userId: null,
       onAuthError: null,
     });
-    handle().callbacks.onCloudSyncStatus("connected", "paused", undefined);
+    handle().callbacks.onCloudSyncStatus(
+      "connected",
+      "paused",
+      undefined,
+      undefined,
+    );
     expect(opened.store.getState()).toMatchObject({
       durabilityStatus: "paused",
       durabilityPauseReason: null,
     });
+    opened.dispose();
+  });
+
+  it("stores the additive promotionState fourth field from cloudSyncStatus as real wire handling", () => {
+    const { factory, handle } = fakeFactory();
+    const opened = createOpenEpicStore({
+      epicId: "epic-a",
+      streamClientFactory: factory,
+      userId: null,
+      onAuthError: null,
+    });
+
+    handle().callbacks.onCloudSyncStatus(
+      "connected",
+      "promoting",
+      undefined,
+      "active",
+    );
+    expect(opened.store.getState()).toMatchObject({
+      durabilityStatus: "promoting",
+      durabilityPromotionState: "active",
+    });
+
+    handle().callbacks.onCloudSyncStatus(
+      "connected",
+      "promoting",
+      undefined,
+      "pending",
+    );
+    expect(opened.store.getState()).toMatchObject({
+      durabilityStatus: "promoting",
+      durabilityPromotionState: "pending",
+    });
+
     opened.dispose();
   });
 

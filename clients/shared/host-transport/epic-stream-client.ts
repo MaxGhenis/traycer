@@ -6,6 +6,7 @@ import {
   type EpicDurabilityPauseReason,
   type EpicDurabilityStatus,
   type EpicMigrationPhase,
+  type EpicPromotionState,
   type EpicSubscribeClientFrame,
   type EpicSubscribeServerFrame,
 } from "@traycer/protocol/host/epic/subscribe";
@@ -169,6 +170,7 @@ export interface EpicStreamCallbacks {
     status: EpicCloudSyncStatus,
     durability: EpicDurabilityStatus | undefined,
     pauseReason: EpicDurabilityPauseReason | undefined,
+    promotionState: EpicPromotionState | undefined,
   ) => void;
   /**
    * Fires once when the host decides this epic needs a major migration -
@@ -404,6 +406,7 @@ export class EpicStreamClient {
           frame.status,
           "durability" in frame ? frame.durability : undefined,
           "pauseReason" in frame ? frame.pauseReason : undefined,
+          "promotionState" in frame ? frame.promotionState : undefined,
         );
         return;
       }

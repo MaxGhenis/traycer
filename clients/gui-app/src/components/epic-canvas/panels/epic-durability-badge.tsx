@@ -3,6 +3,7 @@ import { useEpicExportArtifacts } from "@/hooks/epic/use-epic-export-artifacts-m
 import {
   useEpicArtifactRecords,
   useEpicDurabilityPauseReason,
+  useEpicDurabilityPromotionState,
   useEpicDurabilityStatus,
   useEpicSnapshotMeta,
 } from "@/lib/epic-selectors";
@@ -13,6 +14,7 @@ import { useRunnerHost } from "@/providers/use-runner-host";
 import type {
   EpicDurabilityPauseReason,
   EpicDurabilityStatus,
+  EpicPromotionState,
 } from "@traycer/protocol/host/epic/subscribe";
 
 /**
@@ -23,15 +25,21 @@ import type {
 export function EpicDurabilityBadge() {
   const status = useEpicDurabilityStatus();
   const pauseReason = useEpicDurabilityPauseReason();
+  const promotionState = useEpicDurabilityPromotionState();
   if (status === null) return null;
   return (
-    <EpicDurabilityBadgeContent status={status} pauseReason={pauseReason} />
+    <EpicDurabilityBadgeContent
+      status={status}
+      pauseReason={pauseReason}
+      promotionState={promotionState}
+    />
   );
 }
 
 function EpicDurabilityBadgeContent(props: {
   readonly status: EpicDurabilityStatus;
   readonly pauseReason: EpicDurabilityPauseReason | null;
+  readonly promotionState: EpicPromotionState | null;
 }) {
   const runnerHost = useRunnerHost();
   const exportArtifacts = useEpicExportArtifacts();
@@ -51,12 +59,17 @@ function EpicDurabilityBadgeContent(props: {
       archiveTitle: meta?.epicLight?.title ?? "Traycer",
     });
   };
-  const badge = badgeCopy(props.status, props.pauseReason);
+  const badge = badgeCopy(
+    props.status,
+    props.pauseReason,
+    props.promotionState,
+  );
   return (
     <span
       data-testid="epic-durability-badge"
       data-durability-status={props.status}
       data-pause-reason={props.pauseReason ?? undefined}
+      data-promotion-state={props.promotionState ?? undefined}
       className={cn(
         "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-ui-xs font-medium",
         badge.className,
@@ -98,7 +111,14 @@ function EpicDurabilityBadgeContent(props: {
 function badgeCopy(
   status: EpicDurabilityStatus,
   pauseReason: EpicDurabilityPauseReason | null,
+  promotionState: EpicPromotionState | null,
 ): { readonly label: string; readonly className: string } {
+  if (status === "promoting" && promotionState === "pending") {
+    return {
+      label: "Promotion pending",
+      className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    };
+  }
   switch (status) {
     case "local":
       return {

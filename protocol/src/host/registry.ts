@@ -242,6 +242,7 @@ import {
   epicSubscribeV10,
   epicSubscribeV11,
   epicSubscribeV12,
+  epicSubscribeV13,
   epicUpdateArtifactStatusV10,
   epicUpdateTitleV10,
 } from "@traycer/protocol/host/epic/contracts";
@@ -5788,12 +5789,13 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   "epic.subscribe": {
     1: {
       // @1.1 adds additive `dirtySnapshot`, `artifactRoomDirty`, and
-      // `rootDirty`; @1.2 adds optional durability keys to cloudSyncStatus.
+      // `rootDirty`; @1.2 adds optional durability keys to cloudSyncStatus;
+      // @1.3 adds the optional live-vs-pending promotion state.
       // @1.0 stays installed and FROZEN: a renderer that
       // negotiated it never receives the new kinds, and the resolver gates
       // emission on the negotiated version rather than assuming the peer will
       // tolerate an unknown frame.
-      latestMinor: 2,
+      latestMinor: 3,
       versions: {
         0: {
           contract: epicSubscribeV10,
@@ -5803,6 +5805,9 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
         },
         2: {
           contract: epicSubscribeV12,
+        },
+        3: {
+          contract: epicSubscribeV13,
         },
       },
     },
