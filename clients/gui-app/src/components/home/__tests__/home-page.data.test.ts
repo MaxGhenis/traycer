@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { ListTaskLight } from "@traycer/protocol/host/epic/unary-schemas";
+import type {
+  ListTaskLight,
+  ListTaskLightV13,
+} from "@traycer/protocol/host/epic/unary-schemas";
 import type { WorktreeHostEntryV12 } from "@traycer/protocol/host/worktree-schemas";
 import {
   buildHistoryItemsFromTasks,
@@ -393,7 +396,7 @@ describe("home-page history helpers", () => {
         phase: null,
         pinned: false,
       },
-    ] as ReadonlyArray<ListTaskLight>;
+    ] as ReadonlyArray<ListTaskLightV13>;
 
     const items = buildHistoryItemsFromTasks(
       tasks,

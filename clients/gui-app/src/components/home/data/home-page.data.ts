@@ -1,6 +1,7 @@
 import type {
   PermissionRole,
   ListTaskLight,
+  ListTaskLightV13,
   TaskOwnershipScope,
   TaskWorkspaceIdentifier,
 } from "@traycer/protocol/host/epic/unary-schemas";
@@ -75,7 +76,7 @@ const HISTORY_GROUP_LABELS: Record<HistoryRecencyBucket, string> = {
 };
 
 export function buildHistoryItemsFromTasks(
-  tasks: ReadonlyArray<ListTaskLight>,
+  tasks: ReadonlyArray<ListTaskLight | ListTaskLightV13>,
   nowMs: number,
   userId: string | null,
 ): ReadonlyArray<HistoryItem> {
@@ -93,7 +94,7 @@ export function buildHistoryItemsFromTasks(
           nowMs,
           role: task.epic?.permission?.role ?? null,
           isPinned: task.pinned ?? false,
-          isLocalHome: task.home === "local",
+          isLocalHome: "home" in task && task.home === "local",
         }),
       ];
     }

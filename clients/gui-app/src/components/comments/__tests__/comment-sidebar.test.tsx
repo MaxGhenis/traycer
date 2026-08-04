@@ -109,9 +109,9 @@ beforeEach(() => {
     userId: "user-1",
     onAuthError: null,
   });
-  // Explicit cloud durability: without this the local-mode gate would skip
-  // the list query and invalidate the read-failure assertions below.
-  defaultEpicHandle.store.setState({ durabilityStatus: "cloud" });
+  // Cloud-backed epics leave durability unset; only local lifecycle states
+  // populate this field. That keeps the normal list-query assertions below.
+  defaultEpicHandle.store.setState({ durabilityStatus: null });
 });
 
 afterEach(() => {
@@ -341,7 +341,7 @@ describe("<CommentSidebar /> local durability honesty", () => {
     if (epicHandle === null) {
       throw new Error("expected open epic handle");
     }
-    epicHandle.store.setState({ durabilityStatus: "cloud" });
+    epicHandle.store.setState({ durabilityStatus: null });
 
     renderSidebar(epicHandle);
 
