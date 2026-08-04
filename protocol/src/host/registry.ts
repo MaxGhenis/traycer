@@ -3,7 +3,6 @@ import {
   defineFloorAwareVersionedRpcRegistry,
   defineUpgradePath,
   type DowngradeResult,
-  type UncheckedMethodVersionRegistry,
   type VersionedRpcRegistry,
 } from "@traycer/protocol/framework/index";
 import {
@@ -5650,19 +5649,87 @@ const HOST_RPC_REGISTRY_DEFINITION = {
   ...HOST_RPC_NOTIFICATION_METHODS,
 } as const;
 
-type HostRpcMethodMap = typeof HOST_RPC_REGISTRY_OTHER_DEFINITION & {
-  readonly [
-    Method in keyof typeof HOST_RPC_NOTIFICATION_METHODS
-  ]: UncheckedMethodVersionRegistry;
+type HostRpcNotificationMethodMap = {
+  readonly "host.notifications.list": {
+    readonly degrade: { readonly kind: "unsupported" };
+    readonly 1: {
+      readonly latestMinor: 0;
+      readonly versions: {
+        readonly 0: {
+          readonly contract: typeof hostNotificationsListV10;
+          readonly upgradeFromPreviousVersion: null;
+        };
+      };
+      readonly downgradePathsFromLatest: Record<never, never>;
+    };
+    readonly 2: {
+      readonly latestMinor: 2;
+      readonly versions: {
+        readonly 0: {
+          readonly contract: typeof hostNotificationsListV20;
+          readonly upgradeFromPreviousVersion: typeof hostNotificationsListUpgradeV10ToV20;
+        };
+        readonly 1: {
+          readonly contract: typeof hostNotificationsListV21;
+          readonly upgradeFromPreviousVersion: typeof hostNotificationsListUpgradeV20ToV21;
+        };
+        readonly 2: {
+          readonly contract: typeof hostNotificationsListV22;
+          readonly upgradeFromPreviousVersion: typeof hostNotificationsListUpgradeV21ToV22;
+        };
+      };
+      readonly downgradePathsFromLatest: {
+        readonly 1: typeof hostNotificationsListDowngradeV22ToV10;
+      };
+    };
+  };
+  readonly "host.notifications.markAllRead": {
+    readonly degrade: { readonly kind: "unsupported" };
+    readonly 1: {
+      readonly latestMinor: 1;
+      readonly versions: {
+        readonly 0: {
+          readonly contract: typeof hostNotificationsMarkAllRead;
+          readonly upgradeFromPreviousVersion: null;
+        };
+        readonly 1: {
+          readonly contract: typeof hostNotificationsMarkAllReadV11;
+          readonly upgradeFromPreviousVersion: typeof hostNotificationsMarkAllReadUpgradeV10ToV11;
+        };
+      };
+      readonly downgradePathsFromLatest: Record<never, never>;
+    };
+  };
+  readonly "host.notifications.indicatorState": {
+    readonly degrade: { readonly kind: "unsupported" };
+    readonly 1: {
+      readonly latestMinor: 1;
+      readonly versions: {
+        readonly 0: {
+          readonly contract: typeof hostNotificationsIndicatorState;
+          readonly upgradeFromPreviousVersion: null;
+        };
+        readonly 1: {
+          readonly contract: typeof hostNotificationsIndicatorStateV11;
+          readonly upgradeFromPreviousVersion: typeof hostNotificationsIndicatorStateUpgradeV10ToV11;
+        };
+      };
+      readonly downgradePathsFromLatest: Record<never, never>;
+    };
+  };
 };
 
 /**
- * The post-v1 notification slots are deliberately widened only at the exported
- * registry boundary. Their direct contracts remain the type authority for
- * callers; the full precise literal above is still statically and dynamically
- * validated before this branded registry is created.
+ * The post-v1 notification slots are manually named only at the
+ * declaration-emission boundary. Each slot retains its exact contracts and
+ * bridges, so callers keep resolver/query checking against the latest
+ * request and response shapes. The full precise literal above is still
+ * statically and dynamically validated before this branded registry is
+ * created.
  */
-export type HostRpcRegistry = VersionedRpcRegistry<HostRpcMethodMap>;
+export type HostRpcRegistry = VersionedRpcRegistry<
+  typeof HOST_RPC_REGISTRY_OTHER_DEFINITION & HostRpcNotificationMethodMap
+>;
 
 export const hostRpcRegistry: HostRpcRegistry =
   defineFloorAwareVersionedRpcRegistry(

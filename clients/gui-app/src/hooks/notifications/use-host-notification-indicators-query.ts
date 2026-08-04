@@ -71,7 +71,11 @@ export function useHostNotificationIndicators(
     options: {
       enabled: args.enabled && userId !== null,
     },
-    combine: (results) => ({
+    combine: (
+      results: Array<
+        UseQueryResult<HostNotificationsIndicatorStateResponse, HostRpcError>
+      >,
+    ) => ({
       data: mergeIndicatorResponses(results),
       isPending: results.some((result) => result.isPending),
       isFetching: results.some((result) => result.isFetching),
