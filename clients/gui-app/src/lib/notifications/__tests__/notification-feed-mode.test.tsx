@@ -52,4 +52,30 @@ describe("useNotificationFeedMode", () => {
     hook.rerender();
     expect(hook.result.current).toBe("local");
   });
+
+  it("stays local until both partitioned feed schema versions negotiate", () => {
+    cloudFeedSupport.value = "supported";
+
+    // Cloud method present but still whole-relay (pre-1.1) — mixed mode would
+    // double-count origin replicas, so local remains the single safe view.
+    feedVersions.cloud = { major: 1, minor: 0 };
+    feedVersions.local = { major: 1, minor: 2 };
+    expect(renderHook(() => useNotificationFeedMode()).result.current).toBe(
+      "local",
+    );
+
+    // Local feed present but pre-partition (pre-1.2).
+    feedVersions.cloud = { major: 1, minor: 1 };
+    feedVersions.local = { major: 1, minor: 1 };
+    expect(renderHook(() => useNotificationFeedMode()).result.current).toBe(
+      "local",
+    );
+
+    // Both projection minors present → mixed (named "cloud" feed mode).
+    feedVersions.cloud = { major: 1, minor: 1 };
+    feedVersions.local = { major: 1, minor: 2 };
+    expect(renderHook(() => useNotificationFeedMode()).result.current).toBe(
+      "cloud",
+    );
+  });
 });
