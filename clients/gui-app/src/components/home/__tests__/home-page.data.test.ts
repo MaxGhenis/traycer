@@ -340,6 +340,9 @@ describe("home-page history helpers", () => {
       ownership: "mine",
       permissionRole: "owner",
       isPinned: true,
+      // Cloud-backed rows stay without a local-home mark (legacy fixtures
+      // and callers treat missing as cloud).
+      isLocalHome: false,
     });
     expect(items[1]).toMatchObject({
       id: "phase-phase-real",
@@ -350,6 +353,58 @@ describe("home-page history helpers", () => {
       initialUserPrompt: "",
       updatedBucket: "today",
       linkedRepos: ["traycerai/gui-app"],
+      isPinned: false,
+      isLocalHome: false,
+    });
+  });
+
+  it("marks host-synthesized local-home task rows for cloud-only pin gating", () => {
+    // `home` is carried on listTasks@1.3 rows; the history builder reads it
+    // off the task light the host actually returns.
+    const tasks = [
+      {
+        home: "local" as const,
+        epic: {
+          light: {
+            id: "epic-local",
+            title: "Local home",
+            initialUserPrompt: "local only",
+            ticketCount: 1,
+            specCount: 0,
+            storyCount: 0,
+            reviewCount: 0,
+            status: "active",
+            createdAt: Date.parse("2026-04-21T09:00:00.000Z"),
+            updatedAt: Date.parse("2026-04-22T09:00:00.000Z"),
+            createdBy: "user-1",
+            version: "1",
+          },
+          permission: {
+            role: "owner" as const,
+            accessType: "direct" as const,
+            userId: "user-1",
+            grantedBy: "user-1",
+            grantedAt: 1,
+          },
+          repos: [],
+          workspaces: [],
+          roomInfo: null,
+        },
+        phase: null,
+        pinned: false,
+      },
+    ] as ReadonlyArray<ListTaskLight>;
+
+    const items = buildHistoryItemsFromTasks(
+      tasks,
+      Date.parse("2026-04-22T12:00:00.000Z"),
+      "user-1",
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      epicId: "epic-local",
+      isLocalHome: true,
       isPinned: false,
     });
   });
