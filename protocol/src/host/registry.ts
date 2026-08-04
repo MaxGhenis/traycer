@@ -3,6 +3,8 @@ import {
   defineFloorAwareVersionedRpcRegistry,
   defineUpgradePath,
   type DowngradeResult,
+  type UncheckedMethodVersionRegistry,
+  type VersionedRpcRegistry,
 } from "@traycer/protocol/framework/index";
 import {
   defineVersionedStreamRpcRegistry,
@@ -2877,7 +2879,7 @@ export const workspacePrepareFoldersUpgradeV10ToV11 = defineUpgradePath<
   }),
 });
 
-const HOST_RPC_REGISTRY_DEFINITION = {
+const HOST_RPC_REGISTRY_OTHER_DEFINITION = {
   "host.status": {
     1: {
       latestMinor: 1,
@@ -3026,39 +3028,6 @@ const HOST_RPC_REGISTRY_DEFINITION = {
       downgradePathsFromLatest: {},
     },
   },
-  "host.notifications.list": {
-    degrade: { kind: "unsupported" },
-    1: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: hostNotificationsListV10,
-          upgradeFromPreviousVersion: null,
-        },
-      },
-      downgradePathsFromLatest: {},
-    },
-    2: {
-      latestMinor: 2,
-      versions: {
-        0: {
-          contract: hostNotificationsListV20,
-          upgradeFromPreviousVersion: hostNotificationsListUpgradeV10ToV20,
-        },
-        1: {
-          contract: hostNotificationsListV21,
-          upgradeFromPreviousVersion: hostNotificationsListUpgradeV20ToV21,
-        },
-        2: {
-          contract: hostNotificationsListV22,
-          upgradeFromPreviousVersion: hostNotificationsListUpgradeV21ToV22,
-        },
-      },
-      downgradePathsFromLatest: {
-        1: hostNotificationsListDowngradeV22ToV10,
-      },
-    },
-  },
   "host.notificationHooks.status": {
     degrade: { kind: "unsupported" },
     1: {
@@ -3150,23 +3119,6 @@ const HOST_RPC_REGISTRY_DEFINITION = {
       downgradePathsFromLatest: {},
     },
   },
-  "host.notifications.markAllRead": {
-    degrade: { kind: "unsupported" },
-    1: {
-      latestMinor: 1,
-      versions: {
-        0: {
-          contract: hostNotificationsMarkAllRead,
-          upgradeFromPreviousVersion: null,
-        },
-        1: {
-          contract: hostNotificationsMarkAllReadV11,
-          upgradeFromPreviousVersion: hostNotificationsMarkAllReadUpgradeV10ToV11,
-        },
-      },
-      downgradePathsFromLatest: {},
-    },
-  },
   "host.notifications.clearAll": {
     degrade: { kind: "unsupported" },
     1: {
@@ -3227,24 +3179,6 @@ const HOST_RPC_REGISTRY_DEFINITION = {
         0: {
           contract: hostNotificationsCloudFeedClearAll,
           upgradeFromPreviousVersion: null,
-        },
-      },
-      downgradePathsFromLatest: {},
-    },
-  },
-  "host.notifications.indicatorState": {
-    degrade: { kind: "unsupported" },
-    1: {
-      latestMinor: 1,
-      versions: {
-        0: {
-          contract: hostNotificationsIndicatorState,
-          upgradeFromPreviousVersion: null,
-        },
-        1: {
-          contract: hostNotificationsIndicatorStateV11,
-          upgradeFromPreviousVersion:
-            hostNotificationsIndicatorStateUpgradeV10ToV11,
         },
       },
       downgradePathsFromLatest: {},
@@ -5634,12 +5568,107 @@ const HOST_RPC_REGISTRY_DEFINITION = {
   },
 } as const;
 
-export const hostRpcRegistry = defineFloorAwareVersionedRpcRegistry(
-  RELEASED_FLOOR_METHOD_NAMES,
-  HOST_RPC_REGISTRY_DEFINITION,
-);
+// These three post-v1 notification minors carry the large protocol Zod unions
+// that tip declaration emit over TS7056's serialization ceiling. Keep the
+// authoring literal separate so the exported registry can widen only their
+// storage slots while `defineFloorAwareVersionedRpcRegistry` still validates
+// every precise version and bridge at this call site.
+const HOST_RPC_NOTIFICATION_METHODS = {
+  "host.notifications.list": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: hostNotificationsListV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+    2: {
+      latestMinor: 2,
+      versions: {
+        0: {
+          contract: hostNotificationsListV20,
+          upgradeFromPreviousVersion: hostNotificationsListUpgradeV10ToV20,
+        },
+        1: {
+          contract: hostNotificationsListV21,
+          upgradeFromPreviousVersion: hostNotificationsListUpgradeV20ToV21,
+        },
+        2: {
+          contract: hostNotificationsListV22,
+          upgradeFromPreviousVersion: hostNotificationsListUpgradeV21ToV22,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: hostNotificationsListDowngradeV22ToV10,
+      },
+    },
+  },
+  "host.notifications.markAllRead": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 1,
+      versions: {
+        0: {
+          contract: hostNotificationsMarkAllRead,
+          upgradeFromPreviousVersion: null,
+        },
+        1: {
+          contract: hostNotificationsMarkAllReadV11,
+          upgradeFromPreviousVersion:
+            hostNotificationsMarkAllReadUpgradeV10ToV11,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "host.notifications.indicatorState": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 1,
+      versions: {
+        0: {
+          contract: hostNotificationsIndicatorState,
+          upgradeFromPreviousVersion: null,
+        },
+        1: {
+          contract: hostNotificationsIndicatorStateV11,
+          upgradeFromPreviousVersion:
+            hostNotificationsIndicatorStateUpgradeV10ToV11,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+} as const;
 
-export type HostRpcRegistry = typeof hostRpcRegistry;
+const HOST_RPC_REGISTRY_DEFINITION = {
+  ...HOST_RPC_REGISTRY_OTHER_DEFINITION,
+  ...HOST_RPC_NOTIFICATION_METHODS,
+} as const;
+
+type HostRpcMethodMap = typeof HOST_RPC_REGISTRY_OTHER_DEFINITION & {
+  readonly [
+    Method in keyof typeof HOST_RPC_NOTIFICATION_METHODS
+  ]: UncheckedMethodVersionRegistry;
+};
+
+/**
+ * The post-v1 notification slots are deliberately widened only at the exported
+ * registry boundary. Their direct contracts remain the type authority for
+ * callers; the full precise literal above is still statically and dynamically
+ * validated before this branded registry is created.
+ */
+export type HostRpcRegistry = VersionedRpcRegistry<HostRpcMethodMap>;
+
+export const hostRpcRegistry: HostRpcRegistry =
+  defineFloorAwareVersionedRpcRegistry(
+    RELEASED_FLOOR_METHOD_NAMES,
+    HOST_RPC_REGISTRY_DEFINITION,
+  );
 
 /**
  * Combined streaming-RPC registry for the `/stream` WS manifest.
