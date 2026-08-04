@@ -364,6 +364,40 @@ export type HostNotificationsSummary = z.infer<
   typeof hostNotificationsSummarySchema
 >;
 
+/**
+ * Durable-home projection lanes for the notification feed. A row with an epic
+ * belongs to that epic's current durable home. Entity-less rows are the one
+ * explicit exception: the producing host owns its local-plane copy, while a
+ * different origin belongs to the cloud plane. That origin policy makes a
+ * replicated entity-less row visible exactly once without inventing an epic
+ * association that does not exist.
+ */
+export const hostNotificationsHomeSchema = z.enum(["local", "cloud"]);
+export type HostNotificationsHome = z.infer<
+  typeof hostNotificationsHomeSchema
+>;
+
+/**
+ * Cross-plane ordering is a protocol rule, not a timestamp comparison.
+ * Render every local lane before every cloud lane; each lane retains its own
+ * native ordering and cursor semantics. Origin and cloud-arrival clocks are
+ * intentionally never compared across these lanes.
+ */
+export const HOST_NOTIFICATIONS_HOME_ORDER = ["local", "cloud"] as const;
+
+const hostNotificationsLocalPartitionSchema = z.object({
+  home: z.literal("local"),
+  order: z.literal(0),
+});
+
+const hostNotificationsCloudPartitionSchema = z.object({
+  home: z.literal("cloud"),
+  order: z.literal(1),
+  /** Cloud feed snapshots are complete, so their partition cursor is exact
+   * and exhausted by definition. */
+  nextCursor: z.null(),
+});
+
 /** Every exact-removal list on the wire must be duplicate-free: a repeated
  * id would double-apply a deletion in the renderer's normalized replica. */
 function nonDuplicateIdArraySchema(min: number) {
@@ -414,6 +448,34 @@ export const hostNotificationsListRequestSchema = z.discriminatedUnion(
 );
 export type HostNotificationsListRequest = z.infer<
   typeof hostNotificationsListRequestSchema
+>;
+
+/** `@2.2`: optional durable-home projection for the local origin plane. */
+export const hostNotificationsListRequestSchemaV22 = z.discriminatedUnion(
+  "filter",
+  [
+    z.object({
+      filter: z.literal("attention"),
+      limit: z.number().int().min(1).max(500),
+      cursor: hostNotificationsAttentionCursorSchema.optional(),
+      home: z.literal("local").optional(),
+    }),
+    z.object({
+      filter: z.literal("recent"),
+      limit: z.number().int().min(1).max(500),
+      cursor: hostNotificationsChronologicalCursorSchema.optional(),
+      home: z.literal("local").optional(),
+    }),
+    z.object({
+      filter: z.literal("unreadRecent"),
+      limit: z.number().int().min(1).max(500),
+      cursor: hostNotificationsChronologicalCursorSchema.optional(),
+      home: z.literal("local").optional(),
+    }),
+  ],
+);
+export type HostNotificationsListRequestV22 = z.infer<
+  typeof hostNotificationsListRequestSchemaV22
 >;
 
 export const hostNotificationsListResponseSchema = z.object({
@@ -513,6 +575,17 @@ export const hostNotificationsMarkAllReadRequestSchema = z.object({
 });
 export type HostNotificationsMarkAllReadRequest = z.infer<
   typeof hostNotificationsMarkAllReadRequestSchema
+>;
+
+/** `@1.1`: restrict the destructive bulk action to the local durable-home
+ * partition. Without this selector a mixed-plane host origin retains cloud
+ * replicas and a mark-all would silently touch the wrong plane. */
+export const hostNotificationsMarkAllReadRequestSchemaV11 =
+  hostNotificationsMarkAllReadRequestSchema.extend({
+    home: z.literal("local").optional(),
+  });
+export type HostNotificationsMarkAllReadRequestV11 = z.infer<
+  typeof hostNotificationsMarkAllReadRequestSchemaV11
 >;
 
 export const hostNotificationsMarkAllReadResponseSchema = z.object({});
@@ -788,6 +861,20 @@ export type HostNotificationsIndicatorStateRequest = z.infer<
   typeof hostNotificationsIndicatorStateRequestSchema
 >;
 
+/**
+ * `@1.1`: select the local durable-home projection and supply the parent epic
+ * for chat-only callers. A chat id is not itself a durable-home key, so this
+ * mapping is required for exact local-plane indicator filtering.
+ */
+export const hostNotificationsIndicatorStateRequestSchemaV11 =
+  hostNotificationsIndicatorStateRequestSchema.extend({
+    home: z.literal("local").optional(),
+    chatEpicIds: z.record(z.string(), z.string()).optional(),
+  });
+export type HostNotificationsIndicatorStateRequestV11 = z.infer<
+  typeof hostNotificationsIndicatorStateRequestSchemaV11
+>;
+
 export const hostNotificationsIndicatorStateResponseSchema = z.object({
   epics: z.record(z.string(), hostNotificationsIndicatorStateSchema),
   chats: z.record(z.string(), hostNotificationsIndicatorStateSchema),
@@ -893,6 +980,13 @@ export const hostNotificationsListV21 = defineRpcContract({
   responseSchema: hostNotificationsListResponseSchemaV21,
 });
 
+export const hostNotificationsListV22 = defineRpcContract({
+  method: "host.notifications.list",
+  schemaVersion: { major: 2, minor: 2 } as const,
+  requestSchema: hostNotificationsListRequestSchemaV22,
+  responseSchema: hostNotificationsListResponseSchemaV21,
+});
+
 export const hostNotificationsListUpgradeV10ToV20 = defineUpgradePath<
   typeof hostNotificationsListV10,
   typeof hostNotificationsListV20
@@ -925,6 +1019,17 @@ export const hostNotificationsListUpgradeV20ToV21 = defineUpgradePath<
 >({
   from: hostNotificationsListV20.schemaVersion,
   to: hostNotificationsListV21.schemaVersion,
+  upgradeRequest: (request) => request,
+  upgradeResponse: (response) => response,
+});
+
+/** Additive local-home selector; old callers receive the prior whole-origin view. */
+export const hostNotificationsListUpgradeV21ToV22 = defineUpgradePath<
+  typeof hostNotificationsListV21,
+  typeof hostNotificationsListV22
+>({
+  from: hostNotificationsListV21.schemaVersion,
+  to: hostNotificationsListV22.schemaVersion,
   upgradeRequest: (request) => request,
   upgradeResponse: (response) => response,
 });
@@ -980,6 +1085,23 @@ export const hostNotificationsListDowngradeV21ToV10 = defineDowngradePath<
   }),
 });
 
+/** A released v1 client has no durable-home selector, so discard it on bridge. */
+export const hostNotificationsListDowngradeV22ToV10 = defineDowngradePath<
+  typeof hostNotificationsListV22,
+  typeof hostNotificationsListV10
+>({
+  from: hostNotificationsListV22.schemaVersion,
+  to: hostNotificationsListV10.schemaVersion,
+  downgradeRequest: (request) => {
+    const { home: _home, ...withoutHome } = request;
+    return hostNotificationsListDowngradeV21ToV10.downgradeRequest(
+      withoutHome,
+    );
+  },
+  downgradeResponse: (response) =>
+    hostNotificationsListDowngradeV21ToV10.downgradeResponse(response),
+});
+
 export const hostNotificationsMarkRead = defineRpcContract({
   method: "host.notifications.markRead",
   schemaVersion: { major: 1, minor: 0 } as const,
@@ -999,6 +1121,23 @@ export const hostNotificationsMarkAllRead = defineRpcContract({
   schemaVersion: { major: 1, minor: 0 } as const,
   requestSchema: hostNotificationsMarkAllReadRequestSchema,
   responseSchema: hostNotificationsMarkAllReadResponseSchema,
+});
+
+export const hostNotificationsMarkAllReadV11 = defineRpcContract({
+  method: "host.notifications.markAllRead",
+  schemaVersion: { major: 1, minor: 1 } as const,
+  requestSchema: hostNotificationsMarkAllReadRequestSchemaV11,
+  responseSchema: hostNotificationsMarkAllReadResponseSchema,
+});
+
+export const hostNotificationsMarkAllReadUpgradeV10ToV11 = defineUpgradePath<
+  typeof hostNotificationsMarkAllRead,
+  typeof hostNotificationsMarkAllReadV11
+>({
+  from: hostNotificationsMarkAllRead.schemaVersion,
+  to: hostNotificationsMarkAllReadV11.schemaVersion,
+  upgradeRequest: (request) => request,
+  upgradeResponse: (response) => response,
 });
 
 export const hostNotificationsClearAll = defineRpcContract({
@@ -1138,6 +1277,45 @@ export const hostNotificationsCloudFeedSubscribeV10 = defineStreamRpcContract({
 });
 
 /**
+ * `@1.1` stamps an exact cloud-home partition. The inherited `rows` and
+ * `summary` fields now describe that one partition; `nextCursor: null` makes
+ * the complete-snapshot cursor contract explicit. The optional stamp keeps
+ * the minor additive for peers that only understand the frozen V10 shape.
+ */
+export const hostNotificationsCloudFeedSubscribeServerFrameSchemaV11 =
+  z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("snapshot"),
+      ...textFrameFields,
+      connectionState: z.literal("connected"),
+      version: z.number().int().nonnegative(),
+      rows: z.array(hostNotificationsCloudFeedRowSchema),
+      summary: hostNotificationsCloudFeedSummarySchema,
+      partition: hostNotificationsCloudPartitionSchema.optional(),
+    }),
+    z.object({
+      kind: z.literal("connectionState"),
+      ...textFrameFields,
+      connectionState: z.literal("reconnecting"),
+    }),
+    z.object({
+      kind: z.literal("pong"),
+      ...textFrameFields,
+    }),
+  ]);
+export type HostNotificationsCloudFeedSubscribeServerFrameV11 = z.infer<
+  typeof hostNotificationsCloudFeedSubscribeServerFrameSchemaV11
+>;
+
+export const hostNotificationsCloudFeedSubscribeV11 = defineStreamRpcContract({
+  method: "host.notifications.cloudFeed.subscribe",
+  schemaVersion: { major: 1, minor: 1 } as const,
+  openRequestSchema: hostNotificationsCloudFeedSubscribeOpenRequestSchemaV10,
+  serverFrameSchema: hostNotificationsCloudFeedSubscribeServerFrameSchemaV11,
+  clientFrameSchema: hostNotificationsCloudFeedSubscribeClientFrameSchemaV10,
+});
+
+/**
  * The whole of a per-entry mutation: WHICH entry.
  *
  * A marker is set once and merged by "first time it happened", so the write is
@@ -1234,6 +1412,83 @@ export const hostNotificationsFeedSubscribeV11 = defineStreamRpcContract({
   clientFrameSchema: hostNotificationsSubscribeClientFrameSchema,
 });
 
+/**
+ * Feed `@1.2` selects the local durable-home partition. Its inherited
+ * attention/recent pages, summaries and cursors are all exact for that lane;
+ * `partition` is an additive stamp that supplies the protocol-defined order.
+ */
+export const hostNotificationsSubscribeServerFrameSchemaV12 =
+  z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("snapshot"),
+      ...textFrameFields,
+      attention: z.object({
+        entries: z.array(hostNotificationEntrySchemaV21),
+        nextCursor: hostNotificationsAttentionCursorSchema.nullable(),
+      }),
+      recent: z.object({
+        entries: z.array(hostNotificationEntrySchemaV21),
+        nextCursor: hostNotificationsChronologicalCursorSchema.nullable(),
+      }),
+      summary: hostNotificationsSummarySchema,
+      partition: hostNotificationsLocalPartitionSchema.optional(),
+    }),
+    z.object({
+      kind: z.literal("upserted"),
+      ...textFrameFields,
+      entry: hostNotificationEntrySchemaV21,
+      removedIds: nonDuplicateIdArraySchema(0),
+      summary: hostNotificationsSummarySchema,
+    }),
+    z.object({
+      kind: z.literal("readStateChanged"),
+      ...textFrameFields,
+      ids: z.array(z.string()).min(1),
+      entityRefs: z.array(hostNotificationsEntityRefSchema),
+      readAt: z.number().int().nonnegative().nullable(),
+      resolvedAt: z.number().int().nonnegative().nullable(),
+      removedIds: nonDuplicateIdArraySchema(0),
+      summary: hostNotificationsSummarySchema,
+    }),
+    z.object({
+      kind: z.literal("removed"),
+      ...textFrameFields,
+      removedIds: nonDuplicateIdArraySchema(1),
+      summary: hostNotificationsSummarySchema,
+    }),
+    z.object({
+      kind: z.literal("cleared"),
+      ...textFrameFields,
+      beforeUpdatedAt: z.number().int().nonnegative(),
+      removedIds: nonDuplicateIdArraySchema(0),
+      summary: hostNotificationsSummarySchema,
+    }),
+    z.object({
+      kind: z.literal("channelEmission"),
+      ...textFrameFields,
+      emissionId: z.string(),
+      channelId: hostNotificationChannelIdSchema,
+      severity: hostNotificationSeveritySchema,
+      rows: z.array(hostNotificationEntrySchemaV21).min(1),
+      reason: hostNotificationsChannelEmissionReasonSchema,
+    }),
+    z.object({
+      kind: z.literal("pong"),
+      ...textFrameFields,
+    }),
+  ]);
+export type HostNotificationsSubscribeServerFrameV12 = z.infer<
+  typeof hostNotificationsSubscribeServerFrameSchemaV12
+>;
+
+export const hostNotificationsFeedSubscribeV12 = defineStreamRpcContract({
+  method: "host.notifications.feed.subscribe",
+  schemaVersion: { major: 1, minor: 2 } as const,
+  openRequestSchema: hostNotificationsSubscribeOpenRequestSchema,
+  serverFrameSchema: hostNotificationsSubscribeServerFrameSchemaV12,
+  clientFrameSchema: hostNotificationsSubscribeClientFrameSchema,
+});
+
 export const hostNotificationsGetConfig = defineRpcContract({
   method: "host.notifications.getConfig",
   schemaVersion: { major: 1, minor: 0 } as const,
@@ -1254,6 +1509,24 @@ export const hostNotificationsIndicatorState = defineRpcContract({
   requestSchema: hostNotificationsIndicatorStateRequestSchema,
   responseSchema: hostNotificationsIndicatorStateResponseSchema,
 });
+
+export const hostNotificationsIndicatorStateV11 = defineRpcContract({
+  method: "host.notifications.indicatorState",
+  schemaVersion: { major: 1, minor: 1 } as const,
+  requestSchema: hostNotificationsIndicatorStateRequestSchemaV11,
+  responseSchema: hostNotificationsIndicatorStateResponseSchema,
+});
+
+export const hostNotificationsIndicatorStateUpgradeV10ToV11 =
+  defineUpgradePath<
+    typeof hostNotificationsIndicatorState,
+    typeof hostNotificationsIndicatorStateV11
+  >({
+    from: hostNotificationsIndicatorState.schemaVersion,
+    to: hostNotificationsIndicatorStateV11.schemaVersion,
+    upgradeRequest: (request) => request,
+    upgradeResponse: (response) => response,
+  });
 
 /**
  * `host.notificationHooks.*@1.0` - status, test, and whole-file save surface

@@ -86,6 +86,16 @@ vi.mock("@/lib/host/stream-runtime-context", () => ({
     streamState.useClientSupport
       ? (streamState.client?.getMethodSupport(method) ?? null)
       : streamState.cloudFeedSupport,
+  useStreamMethodSchemaVersion: (
+    method: keyof HostStreamRpcRegistry & string,
+  ) => {
+    if (streamState.useClientSupport) {
+      return streamState.client?.getMethodSchemaVersion(method) ?? null;
+    }
+    return method === "host.notifications.cloudFeed.subscribe"
+      ? { major: 1, minor: 1 }
+      : { major: 1, minor: 2 };
+  },
 }));
 
 // Per the G8 decision the provider binds to the LOCAL host, not the app-wide

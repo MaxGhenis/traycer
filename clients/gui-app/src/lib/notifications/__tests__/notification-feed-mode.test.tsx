@@ -7,15 +7,25 @@ import { useAuthStore } from "@/stores/auth/auth-store";
 const cloudFeedSupport = vi.hoisted<{ value: StreamMethodSupport | null }>(
   () => ({ value: null }),
 );
+const feedVersions = vi.hoisted(() => ({
+  cloud: { major: 1, minor: 1 },
+  local: { major: 1, minor: 2 },
+}));
 
 vi.mock("@/lib/host/stream-runtime-context", () => ({
   useStreamMethodSupport: () => cloudFeedSupport.value,
+  useStreamMethodSchemaVersion: (method: string) =>
+    method === "host.notifications.cloudFeed.subscribe"
+      ? feedVersions.cloud
+      : feedVersions.local,
 }));
 
 describe("useNotificationFeedMode", () => {
   afterEach(() => {
     useAuthStore.setState({ subscriptionStatus: null });
     cloudFeedSupport.value = null;
+    feedVersions.cloud = { major: 1, minor: 1 };
+    feedVersions.local = { major: 1, minor: 2 };
   });
 
   it("selects cloud for a free-tier user when the host confirms support", () => {

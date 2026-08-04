@@ -12,8 +12,9 @@ import {
 } from "@/stores/notifications/notification-indicator-state";
 
 /**
- * Per-entity indicator flags for one surface, from whichever feed is
- * authoritative - mirroring how the notification center itself is mode-aware.
+ * Per-entity indicator flags for one surface. In mixed mode the host and
+ * cloud calls each return one exact durable-home partition and their boolean
+ * flags are ORed; neither side derives counts from its loaded rows.
  *
  * In cloud mode the flags come from the cloud snapshot this client already
  * holds. That is the only derivation that can be correct across hosts: an
@@ -40,7 +41,9 @@ export function useNotificationIndicators(
   const hostIndicators = useHostNotificationIndicators({
     epicIds: args.epicIds,
     chatIds: args.chatIds,
-    enabled: args.enabled && !isCloud,
+    chatEpicIds: args.chatEpicIds,
+    home: isCloud ? "local" : undefined,
+    enabled: args.enabled,
   });
   const cloudRows = useCloudNotificationsStore((state) => state.rows);
   const cloudIndicators = useMemo(
@@ -54,5 +57,39 @@ export function useNotificationIndicators(
         : EMPTY_INDICATOR_STATE_RESPONSE,
     [isCloud, args.enabled, cloudRows, args.epicIds, args.chatIds],
   );
-  return isCloud ? cloudIndicators : hostIndicators.data;
+  return isCloud
+    ? mergeNotificationIndicatorPartitions(hostIndicators.data, cloudIndicators)
+    : hostIndicators.data;
+}
+
+function mergeNotificationIndicatorPartitions(
+  local: HostNotificationsIndicatorStateResponse,
+  cloud: HostNotificationsIndicatorStateResponse,
+): HostNotificationsIndicatorStateResponse {
+  return {
+    epics: mergeIndicatorRecord(local.epics, cloud.epics),
+    chats: mergeIndicatorRecord(local.chats, cloud.chats),
+  };
+}
+
+function mergeIndicatorRecord(
+  local: HostNotificationsIndicatorStateResponse["epics"],
+  cloud: HostNotificationsIndicatorStateResponse["epics"],
+): HostNotificationsIndicatorStateResponse["epics"] {
+  const merged = { ...local };
+  for (const [id, cloudState] of Object.entries(cloud)) {
+    const localState = merged[id];
+    merged[id] =
+      localState === undefined
+        ? cloudState
+        : {
+            pendingApproval:
+              localState.pendingApproval || cloudState.pendingApproval,
+            pendingInterview:
+              localState.pendingInterview || cloudState.pendingInterview,
+            unreadFailure: localState.unreadFailure || cloudState.unreadFailure,
+            unreadDone: localState.unreadDone || cloudState.unreadDone,
+          };
+  }
+  return merged;
 }

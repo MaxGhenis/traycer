@@ -290,19 +290,27 @@ import {
   hostNotificationsClearAll,
   hostNotificationsGetConfig,
   hostNotificationsIndicatorState,
-  hostNotificationsListDowngradeV21ToV10,
+  hostNotificationsIndicatorStateUpgradeV10ToV11,
+  hostNotificationsIndicatorStateV11,
+  hostNotificationsListDowngradeV22ToV10,
   hostNotificationsListUpgradeV10ToV20,
   hostNotificationsListUpgradeV20ToV21,
+  hostNotificationsListUpgradeV21ToV22,
   hostNotificationsListV10,
   hostNotificationsListV20,
   hostNotificationsListV21,
+  hostNotificationsListV22,
   hostNotificationsMarkAllRead,
+  hostNotificationsMarkAllReadUpgradeV10ToV11,
+  hostNotificationsMarkAllReadV11,
   hostNotificationsMarkRead,
   hostNotificationsResolve,
   hostNotificationsSetConfig,
   hostNotificationsFeedSubscribeV10,
   hostNotificationsFeedSubscribeV11,
+  hostNotificationsFeedSubscribeV12,
   hostNotificationsCloudFeedSubscribeV10,
+  hostNotificationsCloudFeedSubscribeV11,
   hostNotificationsCloudFeedMarkRead,
   hostNotificationsCloudFeedResolve,
   hostNotificationsCloudFeedClear,
@@ -3031,7 +3039,7 @@ const HOST_RPC_REGISTRY_DEFINITION = {
       downgradePathsFromLatest: {},
     },
     2: {
-      latestMinor: 1,
+      latestMinor: 2,
       versions: {
         0: {
           contract: hostNotificationsListV20,
@@ -3041,9 +3049,13 @@ const HOST_RPC_REGISTRY_DEFINITION = {
           contract: hostNotificationsListV21,
           upgradeFromPreviousVersion: hostNotificationsListUpgradeV20ToV21,
         },
+        2: {
+          contract: hostNotificationsListV22,
+          upgradeFromPreviousVersion: hostNotificationsListUpgradeV21ToV22,
+        },
       },
       downgradePathsFromLatest: {
-        1: hostNotificationsListDowngradeV21ToV10,
+        1: hostNotificationsListDowngradeV22ToV10,
       },
     },
   },
@@ -3141,11 +3153,15 @@ const HOST_RPC_REGISTRY_DEFINITION = {
   "host.notifications.markAllRead": {
     degrade: { kind: "unsupported" },
     1: {
-      latestMinor: 0,
+      latestMinor: 1,
       versions: {
         0: {
           contract: hostNotificationsMarkAllRead,
           upgradeFromPreviousVersion: null,
+        },
+        1: {
+          contract: hostNotificationsMarkAllReadV11,
+          upgradeFromPreviousVersion: hostNotificationsMarkAllReadUpgradeV10ToV11,
         },
       },
       downgradePathsFromLatest: {},
@@ -3219,11 +3235,16 @@ const HOST_RPC_REGISTRY_DEFINITION = {
   "host.notifications.indicatorState": {
     degrade: { kind: "unsupported" },
     1: {
-      latestMinor: 0,
+      latestMinor: 1,
       versions: {
         0: {
           contract: hostNotificationsIndicatorState,
           upgradeFromPreviousVersion: null,
+        },
+        1: {
+          contract: hostNotificationsIndicatorStateV11,
+          upgradeFromPreviousVersion:
+            hostNotificationsIndicatorStateUpgradeV10ToV11,
         },
       },
       downgradePathsFromLatest: {},
@@ -5720,7 +5741,7 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   },
   "host.notifications.feed.subscribe": {
     1: {
-      latestMinor: 1,
+      latestMinor: 2,
       versions: {
         0: {
           contract: hostNotificationsFeedSubscribeV10,
@@ -5728,15 +5749,21 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
         1: {
           contract: hostNotificationsFeedSubscribeV11,
         },
+        2: {
+          contract: hostNotificationsFeedSubscribeV12,
+        },
       },
     },
   },
   "host.notifications.cloudFeed.subscribe": {
     1: {
-      latestMinor: 0,
+      latestMinor: 1,
       versions: {
         0: {
           contract: hostNotificationsCloudFeedSubscribeV10,
+        },
+        1: {
+          contract: hostNotificationsCloudFeedSubscribeV11,
         },
       },
     },
