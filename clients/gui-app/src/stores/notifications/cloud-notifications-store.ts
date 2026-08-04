@@ -365,7 +365,8 @@ export function openCloudNotificationsStream(
         return;
       }
       switch (parsed.data.kind) {
-        case "snapshot": {
+        case "snapshot":
+        case "partitionSnapshot": {
           const arrivals = useCloudNotificationsStore
             .getState()
             .applySnapshot(parsed.data);

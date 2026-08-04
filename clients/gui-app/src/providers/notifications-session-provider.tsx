@@ -214,6 +214,7 @@ export function NotificationsSessionProvider(
       if (localHostId !== hostId) return;
       if (
         frame.kind === "snapshot" ||
+        frame.kind === "partitionSnapshot" ||
         frame.kind === "cleared" ||
         frame.kind === "removed"
       ) {

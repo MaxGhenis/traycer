@@ -428,54 +428,57 @@ export type HostNotificationsListResponseV10 = z.infer<
   typeof hostNotificationsListResponseSchemaV10
 >;
 
+const hostNotificationsAttentionListRequestSchema = z.object({
+  filter: z.literal("attention"),
+  limit: z.number().int().min(1).max(500),
+  cursor: hostNotificationsAttentionCursorSchema.optional(),
+});
+const hostNotificationsRecentListRequestSchema = z.object({
+  filter: z.literal("recent"),
+  limit: z.number().int().min(1).max(500),
+  cursor: hostNotificationsChronologicalCursorSchema.optional(),
+});
+const hostNotificationsUnreadRecentListRequestSchema = z.object({
+  filter: z.literal("unreadRecent"),
+  limit: z.number().int().min(1).max(500),
+  cursor: hostNotificationsChronologicalCursorSchema.optional(),
+});
 export const hostNotificationsListRequestSchema = z.discriminatedUnion(
   "filter",
   [
-    z.object({
-      filter: z.literal("attention"),
-      limit: z.number().int().min(1).max(500),
-      cursor: hostNotificationsAttentionCursorSchema.optional(),
-    }),
-    z.object({
-      filter: z.literal("recent"),
-      limit: z.number().int().min(1).max(500),
-      cursor: hostNotificationsChronologicalCursorSchema.optional(),
-    }),
-    z.object({
-      filter: z.literal("unreadRecent"),
-      limit: z.number().int().min(1).max(500),
-      cursor: hostNotificationsChronologicalCursorSchema.optional(),
-    }),
+    hostNotificationsAttentionListRequestSchema,
+    hostNotificationsRecentListRequestSchema,
+    hostNotificationsUnreadRecentListRequestSchema,
   ],
 );
 export type HostNotificationsListRequest = z.infer<
   typeof hostNotificationsListRequestSchema
 >;
 
-/** `@2.2`: optional durable-home projection for the local origin plane. */
-export const hostNotificationsListRequestSchemaV22 = z.discriminatedUnion(
-  "filter",
-  [
-    z.object({
-      filter: z.literal("attention"),
-      limit: z.number().int().min(1).max(500),
-      cursor: hostNotificationsAttentionCursorSchema.optional(),
-      home: z.literal("local").optional(),
-    }),
-    z.object({
-      filter: z.literal("recent"),
-      limit: z.number().int().min(1).max(500),
-      cursor: hostNotificationsChronologicalCursorSchema.optional(),
-      home: z.literal("local").optional(),
-    }),
-    z.object({
-      filter: z.literal("unreadRecent"),
-      limit: z.number().int().min(1).max(500),
-      cursor: hostNotificationsChronologicalCursorSchema.optional(),
-      home: z.literal("local").optional(),
-    }),
-  ],
-);
+/** The home-selected V2.2 request is a NEW union variant. Keeping the frozen
+ * V2.1 variants below byte-identical is what makes this an additive minor
+ * rather than a subtly rewritten released arm. */
+const hostNotificationsLocalHomeAttentionListRequestSchema =
+  hostNotificationsAttentionListRequestSchema.extend({
+    home: z.literal("local"),
+  });
+const hostNotificationsLocalHomeRecentListRequestSchema =
+  hostNotificationsRecentListRequestSchema.extend({
+    home: z.literal("local"),
+  });
+const hostNotificationsLocalHomeUnreadRecentListRequestSchema =
+  hostNotificationsUnreadRecentListRequestSchema.extend({
+    home: z.literal("local"),
+  });
+/** `@2.2`: an exact durable-home projection for the local origin plane. */
+export const hostNotificationsListRequestSchemaV22 = z.union([
+  hostNotificationsLocalHomeAttentionListRequestSchema,
+  hostNotificationsLocalHomeRecentListRequestSchema,
+  hostNotificationsLocalHomeUnreadRecentListRequestSchema,
+  hostNotificationsAttentionListRequestSchema,
+  hostNotificationsRecentListRequestSchema,
+  hostNotificationsUnreadRecentListRequestSchema,
+]);
 export type HostNotificationsListRequestV22 = z.infer<
   typeof hostNotificationsListRequestSchemaV22
 >;
@@ -761,64 +764,71 @@ export type HostNotificationsSubscribeServerFrame = z.infer<
  * a future edit here silently rewrite it - the same reason `@1.0`'s own frames
  * are spelled out separately from the legacy `V10` union.
  */
+const hostNotificationsSnapshotSchemaV11 = z.object({
+  kind: z.literal("snapshot"),
+  ...textFrameFields,
+  attention: z.object({
+    entries: z.array(hostNotificationEntrySchemaV21),
+    nextCursor: hostNotificationsAttentionCursorSchema.nullable(),
+  }),
+  recent: z.object({
+    entries: z.array(hostNotificationEntrySchemaV21),
+    nextCursor: hostNotificationsChronologicalCursorSchema.nullable(),
+  }),
+  summary: hostNotificationsSummarySchema,
+});
+const hostNotificationsUpsertedSchemaV11 = z.object({
+  kind: z.literal("upserted"),
+  ...textFrameFields,
+  entry: hostNotificationEntrySchemaV21,
+  removedIds: nonDuplicateIdArraySchema(0),
+  summary: hostNotificationsSummarySchema,
+});
+const hostNotificationsReadStateChangedSchemaV11 = z.object({
+  kind: z.literal("readStateChanged"),
+  ...textFrameFields,
+  ids: z.array(z.string()).min(1),
+  entityRefs: z.array(hostNotificationsEntityRefSchema),
+  readAt: z.number().int().nonnegative().nullable(),
+  resolvedAt: z.number().int().nonnegative().nullable(),
+  removedIds: nonDuplicateIdArraySchema(0),
+  summary: hostNotificationsSummarySchema,
+});
+const hostNotificationsRemovedSchemaV11 = z.object({
+  kind: z.literal("removed"),
+  ...textFrameFields,
+  removedIds: nonDuplicateIdArraySchema(1),
+  summary: hostNotificationsSummarySchema,
+});
+const hostNotificationsClearedSchemaV11 = z.object({
+  kind: z.literal("cleared"),
+  ...textFrameFields,
+  beforeUpdatedAt: z.number().int().nonnegative(),
+  removedIds: nonDuplicateIdArraySchema(0),
+  summary: hostNotificationsSummarySchema,
+});
+const hostNotificationsChannelEmissionSchemaV11 = z.object({
+  kind: z.literal("channelEmission"),
+  ...textFrameFields,
+  emissionId: z.string(),
+  channelId: hostNotificationChannelIdSchema,
+  severity: hostNotificationSeveritySchema,
+  rows: z.array(hostNotificationEntrySchemaV21).min(1),
+  reason: hostNotificationsChannelEmissionReasonSchema,
+});
+const hostNotificationsPongSchemaV11 = z.object({
+  kind: z.literal("pong"),
+  ...textFrameFields,
+});
 export const hostNotificationsSubscribeServerFrameSchemaV11 =
   z.discriminatedUnion("kind", [
-    z.object({
-      kind: z.literal("snapshot"),
-      ...textFrameFields,
-      attention: z.object({
-        entries: z.array(hostNotificationEntrySchemaV21),
-        nextCursor: hostNotificationsAttentionCursorSchema.nullable(),
-      }),
-      recent: z.object({
-        entries: z.array(hostNotificationEntrySchemaV21),
-        nextCursor: hostNotificationsChronologicalCursorSchema.nullable(),
-      }),
-      summary: hostNotificationsSummarySchema,
-    }),
-    z.object({
-      kind: z.literal("upserted"),
-      ...textFrameFields,
-      entry: hostNotificationEntrySchemaV21,
-      removedIds: nonDuplicateIdArraySchema(0),
-      summary: hostNotificationsSummarySchema,
-    }),
-    z.object({
-      kind: z.literal("readStateChanged"),
-      ...textFrameFields,
-      ids: z.array(z.string()).min(1),
-      entityRefs: z.array(hostNotificationsEntityRefSchema),
-      readAt: z.number().int().nonnegative().nullable(),
-      resolvedAt: z.number().int().nonnegative().nullable(),
-      removedIds: nonDuplicateIdArraySchema(0),
-      summary: hostNotificationsSummarySchema,
-    }),
-    z.object({
-      kind: z.literal("removed"),
-      ...textFrameFields,
-      removedIds: nonDuplicateIdArraySchema(1),
-      summary: hostNotificationsSummarySchema,
-    }),
-    z.object({
-      kind: z.literal("cleared"),
-      ...textFrameFields,
-      beforeUpdatedAt: z.number().int().nonnegative(),
-      removedIds: nonDuplicateIdArraySchema(0),
-      summary: hostNotificationsSummarySchema,
-    }),
-    z.object({
-      kind: z.literal("channelEmission"),
-      ...textFrameFields,
-      emissionId: z.string(),
-      channelId: hostNotificationChannelIdSchema,
-      severity: hostNotificationSeveritySchema,
-      rows: z.array(hostNotificationEntrySchemaV21).min(1),
-      reason: hostNotificationsChannelEmissionReasonSchema,
-    }),
-    z.object({
-      kind: z.literal("pong"),
-      ...textFrameFields,
-    }),
+    hostNotificationsSnapshotSchemaV11,
+    hostNotificationsUpsertedSchemaV11,
+    hostNotificationsReadStateChangedSchemaV11,
+    hostNotificationsRemovedSchemaV11,
+    hostNotificationsClearedSchemaV11,
+    hostNotificationsChannelEmissionSchemaV11,
+    hostNotificationsPongSchemaV11,
   ]);
 export type HostNotificationsSubscribeServerFrameV11 = z.infer<
   typeof hostNotificationsSubscribeServerFrameSchemaV11
@@ -1095,10 +1105,13 @@ export const hostNotificationsListDowngradeV22ToV10 = defineDowngradePath<
   from: hostNotificationsListV22.schemaVersion,
   to: hostNotificationsListV10.schemaVersion,
   downgradeRequest: (request) => {
-    const { home: _home, ...withoutHome } = request;
-    return hostNotificationsListDowngradeV21ToV10.downgradeRequest(
-      withoutHome,
-    );
+    if ("home" in request) {
+      const { home: _home, ...withoutHome } = request;
+      return hostNotificationsListDowngradeV21ToV10.downgradeRequest(
+        withoutHome,
+      );
+    }
+    return hostNotificationsListDowngradeV21ToV10.downgradeRequest(request);
   },
   downgradeResponse: (response) =>
     hostNotificationsListDowngradeV21ToV10.downgradeResponse(response),
@@ -1238,25 +1251,28 @@ export type HostNotificationsCloudFeedSubscribeOpenRequestV10 = z.infer<
  * `version` is the cloud's per-user change sequence. The client's only use for
  * it is to name the feed it is LOOKING AT when it issues a `clearAll`.
  */
+const hostNotificationsCloudFeedSnapshotSchemaV10 = z.object({
+  kind: z.literal("snapshot"),
+  ...textFrameFields,
+  connectionState: z.literal("connected"),
+  version: z.number().int().nonnegative(),
+  rows: z.array(hostNotificationsCloudFeedRowSchema),
+  summary: hostNotificationsCloudFeedSummarySchema,
+});
+const hostNotificationsCloudFeedConnectionStateSchemaV10 = z.object({
+  kind: z.literal("connectionState"),
+  ...textFrameFields,
+  connectionState: z.literal("reconnecting"),
+});
+const hostNotificationsCloudFeedPongSchemaV10 = z.object({
+  kind: z.literal("pong"),
+  ...textFrameFields,
+});
 export const hostNotificationsCloudFeedSubscribeServerFrameSchemaV10 =
   z.discriminatedUnion("kind", [
-    z.object({
-      kind: z.literal("snapshot"),
-      ...textFrameFields,
-      connectionState: z.literal("connected"),
-      version: z.number().int().nonnegative(),
-      rows: z.array(hostNotificationsCloudFeedRowSchema),
-      summary: hostNotificationsCloudFeedSummarySchema,
-    }),
-    z.object({
-      kind: z.literal("connectionState"),
-      ...textFrameFields,
-      connectionState: z.literal("reconnecting"),
-    }),
-    z.object({
-      kind: z.literal("pong"),
-      ...textFrameFields,
-    }),
+    hostNotificationsCloudFeedSnapshotSchemaV10,
+    hostNotificationsCloudFeedConnectionStateSchemaV10,
+    hostNotificationsCloudFeedPongSchemaV10,
   ]);
 export type HostNotificationsCloudFeedSubscribeServerFrameV10 = z.infer<
   typeof hostNotificationsCloudFeedSubscribeServerFrameSchemaV10
@@ -1281,29 +1297,20 @@ export const hostNotificationsCloudFeedSubscribeV10 = defineStreamRpcContract({
 /**
  * `@1.1` stamps an exact cloud-home partition. The inherited `rows` and
  * `summary` fields now describe that one partition; `nextCursor: null` makes
- * the complete-snapshot cursor contract explicit. The optional stamp keeps
- * the minor additive for peers that only understand the frozen V10 shape.
+ * the complete-snapshot cursor contract explicit. This is a new selected
+ * snapshot variant; the frozen V10 frame union remains an arm of V11.
  */
+const hostNotificationsCloudFeedPartitionSnapshotSchemaV11 =
+  hostNotificationsCloudFeedSnapshotSchemaV10.extend({
+  kind: z.literal("partitionSnapshot"),
+  partition: hostNotificationsCloudPartitionSchema,
+  });
 export const hostNotificationsCloudFeedSubscribeServerFrameSchemaV11 =
   z.discriminatedUnion("kind", [
-    z.object({
-      kind: z.literal("snapshot"),
-      ...textFrameFields,
-      connectionState: z.literal("connected"),
-      version: z.number().int().nonnegative(),
-      rows: z.array(hostNotificationsCloudFeedRowSchema),
-      summary: hostNotificationsCloudFeedSummarySchema,
-      partition: hostNotificationsCloudPartitionSchema.optional(),
-    }),
-    z.object({
-      kind: z.literal("connectionState"),
-      ...textFrameFields,
-      connectionState: z.literal("reconnecting"),
-    }),
-    z.object({
-      kind: z.literal("pong"),
-      ...textFrameFields,
-    }),
+    hostNotificationsCloudFeedPartitionSnapshotSchemaV11,
+    hostNotificationsCloudFeedSnapshotSchemaV10,
+    hostNotificationsCloudFeedConnectionStateSchemaV10,
+    hostNotificationsCloudFeedPongSchemaV10,
   ]);
 export type HostNotificationsCloudFeedSubscribeServerFrameV11 = z.infer<
   typeof hostNotificationsCloudFeedSubscribeServerFrameSchemaV11
@@ -1417,67 +1424,24 @@ export const hostNotificationsFeedSubscribeV11 = defineStreamRpcContract({
 /**
  * Feed `@1.2` selects the local durable-home partition. Its inherited
  * attention/recent pages, summaries and cursors are all exact for that lane;
- * `partition` is an additive stamp that supplies the protocol-defined order.
+ * `partition` is a selected snapshot variant that supplies the
+ * protocol-defined order while retaining every frozen V11 frame verbatim.
  */
+const hostNotificationsLocalPartitionSnapshotSchemaV12 =
+  hostNotificationsSnapshotSchemaV11.extend({
+  kind: z.literal("partitionSnapshot"),
+  partition: hostNotificationsLocalPartitionSchema,
+  });
 export const hostNotificationsSubscribeServerFrameSchemaV12 =
   z.discriminatedUnion("kind", [
-    z.object({
-      kind: z.literal("snapshot"),
-      ...textFrameFields,
-      attention: z.object({
-        entries: z.array(hostNotificationEntrySchemaV21),
-        nextCursor: hostNotificationsAttentionCursorSchema.nullable(),
-      }),
-      recent: z.object({
-        entries: z.array(hostNotificationEntrySchemaV21),
-        nextCursor: hostNotificationsChronologicalCursorSchema.nullable(),
-      }),
-      summary: hostNotificationsSummarySchema,
-      partition: hostNotificationsLocalPartitionSchema.optional(),
-    }),
-    z.object({
-      kind: z.literal("upserted"),
-      ...textFrameFields,
-      entry: hostNotificationEntrySchemaV21,
-      removedIds: nonDuplicateIdArraySchema(0),
-      summary: hostNotificationsSummarySchema,
-    }),
-    z.object({
-      kind: z.literal("readStateChanged"),
-      ...textFrameFields,
-      ids: z.array(z.string()).min(1),
-      entityRefs: z.array(hostNotificationsEntityRefSchema),
-      readAt: z.number().int().nonnegative().nullable(),
-      resolvedAt: z.number().int().nonnegative().nullable(),
-      removedIds: nonDuplicateIdArraySchema(0),
-      summary: hostNotificationsSummarySchema,
-    }),
-    z.object({
-      kind: z.literal("removed"),
-      ...textFrameFields,
-      removedIds: nonDuplicateIdArraySchema(1),
-      summary: hostNotificationsSummarySchema,
-    }),
-    z.object({
-      kind: z.literal("cleared"),
-      ...textFrameFields,
-      beforeUpdatedAt: z.number().int().nonnegative(),
-      removedIds: nonDuplicateIdArraySchema(0),
-      summary: hostNotificationsSummarySchema,
-    }),
-    z.object({
-      kind: z.literal("channelEmission"),
-      ...textFrameFields,
-      emissionId: z.string(),
-      channelId: hostNotificationChannelIdSchema,
-      severity: hostNotificationSeveritySchema,
-      rows: z.array(hostNotificationEntrySchemaV21).min(1),
-      reason: hostNotificationsChannelEmissionReasonSchema,
-    }),
-    z.object({
-      kind: z.literal("pong"),
-      ...textFrameFields,
-    }),
+    hostNotificationsLocalPartitionSnapshotSchemaV12,
+    hostNotificationsSnapshotSchemaV11,
+    hostNotificationsUpsertedSchemaV11,
+    hostNotificationsReadStateChangedSchemaV11,
+    hostNotificationsRemovedSchemaV11,
+    hostNotificationsClearedSchemaV11,
+    hostNotificationsChannelEmissionSchemaV11,
+    hostNotificationsPongSchemaV11,
   ]);
 export type HostNotificationsSubscribeServerFrameV12 = z.infer<
   typeof hostNotificationsSubscribeServerFrameSchemaV12
