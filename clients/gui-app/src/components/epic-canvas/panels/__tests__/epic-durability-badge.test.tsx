@@ -2,11 +2,23 @@ import "../../../../../__tests__/test-browser-apis";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { EpicDurabilityBadge } from "../epic-durability-badge";
+import type {
+  EpicDurabilityPauseReason,
+  EpicDurabilityStatus,
+} from "@traycer/protocol/host/epic/subscribe";
 
-const durability = vi.hoisted(() => ({
-  status: "paused" as "paused" | "offline" | "local" | "promoting" | null,
-  pauseReason: "access-revoked" as
-    "access-revoked" | "entitlement-lapsed" | null,
+/**
+ * Typed through the protocol union rather than an `as` assertion on the seed
+ * value: `no-unnecessary-type-assertion` autofixes such an assertion away, and
+ * the widened inference that replaces it makes the `null` reassignment below a
+ * type error. The type argument states the same intent where no fixer reaches.
+ */
+const durability = vi.hoisted<{
+  status: EpicDurabilityStatus | null;
+  pauseReason: EpicDurabilityPauseReason | null;
+}>(() => ({
+  status: "paused",
+  pauseReason: "access-revoked",
 }));
 
 vi.mock("@/lib/epic-selectors", () => ({
