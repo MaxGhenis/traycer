@@ -49,6 +49,9 @@ export interface HistoryItem {
   ownership: HistoryOwnershipScope;
   permissionRole: PermissionRole | null;
   isPinned: boolean;
+  /** True only for a host-synthesized local-home task row. Missing legacy
+   *  fixtures and callers are cloud-backed. */
+  isLocalHome?: boolean;
 }
 
 export interface HistoryFilters {
@@ -90,6 +93,7 @@ export function buildHistoryItemsFromTasks(
           nowMs,
           role: task.epic?.permission?.role ?? null,
           isPinned: task.pinned ?? false,
+          isLocalHome: task.home === "local",
         }),
       ];
     }
@@ -111,6 +115,7 @@ export function buildHistoryItemsFromTasks(
         nowMs,
         role: task.phase?.permission?.role ?? null,
         isPinned: false,
+        isLocalHome: false,
       }),
     ];
   });
@@ -126,6 +131,7 @@ function buildHistoryItem(args: {
   nowMs: number;
   role: PermissionRole | null;
   isPinned: boolean;
+  isLocalHome: boolean;
 }): HistoryItem {
   const {
     light,
@@ -137,6 +143,7 @@ function buildHistoryItem(args: {
     nowMs,
     role,
     isPinned,
+    isLocalHome,
   } = args;
   const ownership = light.createdBy === userId ? "mine" : "shared";
   return {
@@ -162,6 +169,7 @@ function buildHistoryItem(args: {
     ownership,
     permissionRole: historyPermissionRole(ownership, role),
     isPinned,
+    isLocalHome,
   };
 }
 

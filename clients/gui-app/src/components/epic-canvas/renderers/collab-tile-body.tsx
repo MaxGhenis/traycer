@@ -29,6 +29,7 @@ import {
   useEpicArtifactBodyAvailability,
   useEpicArtifactBodyAwareness,
   useEpicArtifactFragment,
+  useEpicDurabilityStatus,
   useEpicPermissionRole,
   useEpicSnapshotLoaded,
   useOpenEpicId,
@@ -166,6 +167,7 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
     awareness,
   } = props;
   const role = useEpicPermissionRole();
+  const durabilityStatus = useEpicDurabilityStatus();
   const profile = useAuthStore((s) => s.profile);
   const editable = role === "owner" || role === "editor";
   const [linkPopoverOpen, setLinkPopoverOpen] = useState(false);
@@ -189,9 +191,11 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
     [profile],
   );
 
-  // Comments wiring - chat tiles get `null` and the toolbar / shortcut
-  // surfaces simply don't render; everything else opts in.
-  const commentsSupported = commentArtifactKind !== null;
+  // Local artifact rooms deliberately have no comment-thread provider. Do not
+  // let a person invest a draft in an action that the host can only reject as
+  // `no_active_session`; the comments panel explains this boundary directly.
+  const commentsSupported =
+    commentArtifactKind !== null && durabilityStatus !== "local";
   const setDraft = useCommentThreadsStore((s) => s.setDraft);
   const setActiveThread = useCommentThreadsStore((s) => s.setActiveThread);
   const activeThreadId = useActiveThreadId(epicId);
@@ -210,6 +214,9 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
   const revealCommentsPanel = useLeftPanelStore((s) => s.revealCommentsPanel);
   const setFlashThread = useCommentThreadsStore((s) => s.setFlashThread);
   const clearFlashThread = useCommentThreadsStore((s) => s.clearFlashThread);
+  useEffect(() => {
+    if (durabilityStatus === "local") setDraft(epicId, null);
+  }, [durabilityStatus, epicId, setDraft]);
   const resolvedThreadIds = useMemo(
     () =>
       (threadsQuery.data?.threads ?? []).reduce(
@@ -496,7 +503,7 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
           />
         ) : null}
       </div>
-      {editor !== null && commentArtifactKind !== null ? (
+      {editor !== null && commentsSupported && commentArtifactKind !== null ? (
         <>
           <FloatingDraftPopover
             epicId={epicId}
