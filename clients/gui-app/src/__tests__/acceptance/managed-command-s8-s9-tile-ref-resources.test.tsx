@@ -7,18 +7,25 @@
  * NOTHING written to the epic doc. The key-set assertion is the fence that
  * keeps state from creeping into storage later.
  *
- * S9 (GUI) is the readout join (`UI.md` §6): CPU/mem chips appear on list
- * rows for commands the resources stream names, absence means "untracked"
- * (never zero), and a pre-@1.4 host's frames — which cannot carry a
- * managed-command owner at all — degrade to no chip rather than a wrong one.
- * The old-peer fold itself and its frame invariant are proven host-side in
- * `traycer-host/.../managed-command-ui-acceptance.test.ts` (S9a-c).
+ * S9 (GUI) is the readout join (`UI.md` §6): CPU/mem chips appear on the rows
+ * of a chat's monitors menu for commands the resources stream names, absence
+ * means "untracked" (never zero), and a pre-@1.4 host's frames — which cannot
+ * carry a managed-command owner at all — degrade to no chip rather than a
+ * wrong one. The old-peer fold itself and its frame invariant are proven
+ * host-side in `traycer-host/.../managed-command-ui-acceptance.test.ts`
+ * (S9a-c).
  */
 import "../../../__tests__/test-browser-apis";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ManagedCommandsPanelBody } from "@/components/epic-canvas/sidebar/managed-command-sidebar";
+import { ManagedCommandChatMenu } from "@/components/managed-commands/managed-command-chat-menu";
 import { EpicSessionContext } from "@/lib/registries/epic-session-registry";
 import {
   createOpenEpicStore,
@@ -88,6 +95,9 @@ vi.mock(
 const EPIC_ID = "epic-s8";
 const TAB_ID = "tab-s8";
 const HOST_ID = "host-1";
+// The menu is a chat's own surface, so its rows are exactly the commands this
+// chat owns — the fixtures below and the menu have to name the same chat.
+const CHAT_ID = "chat-owner";
 const T0 = 1_722_000_000_000;
 const MiB = 1024 * 1024;
 
@@ -110,7 +120,7 @@ function makeCommand(over: Partial<ManagedCommand>): ManagedCommand {
     kind: "monitor",
     description: "deploy watcher",
     status: { state: "running", pid: 4410, startedAtMs: T0 },
-    chatId: "chat-owner",
+    chatId: CHAT_ID,
     createdAtMs: T0,
     updatedAtMs: T0,
     ...over,
@@ -215,7 +225,7 @@ function emitResourcesOldHost(): void {
           kind: "chat",
           hostId: HOST_ID,
           epicId: EPIC_ID,
-          ownerId: "chat-owner",
+          ownerId: CHAT_ID,
         },
         sampledAt: T0,
         rootPids: [4100],
@@ -252,7 +262,7 @@ function emitResourcesOldHost(): void {
   });
 }
 
-function renderSidebarWithResources(): void {
+function renderMenuWithResources(): void {
   epicHandle = createOpenEpicStore({
     epicId: EPIC_ID,
     streamClientFactory: noopEpicStreamClientFactory,
@@ -264,17 +274,31 @@ function renderSidebarWithResources(): void {
       <TooltipProvider>
         <ManagedCommandListStreamMount epicId={EPIC_ID} />
         <ResourcesStreamMount epicId={EPIC_ID} />
-        <ManagedCommandsPanelBody epicId={EPIC_ID} tabId={TAB_ID} />
+        <ManagedCommandChatMenu
+          epicId={EPIC_ID}
+          chatId={CHAT_ID}
+          hostId={HOST_ID}
+          viewTabId={TAB_ID}
+        />
       </TooltipProvider>
     </EpicSessionContext.Provider>,
   );
 }
 
+/**
+ * The menu's trigger only exists once the chat owns something, so the list
+ * snapshot has to land before this — the rows are inside a popover that is not
+ * rendered at all until it is opened.
+ */
+function openMenu(): void {
+  fireEvent.click(screen.getByRole("button", { name: "Monitors and shells" }));
+}
+
 function chipOnRow(commandId: string): HTMLElement | null {
   // The row's door is a button covering the title alone - the chip is its
-  // sibling on the second line, so scope to the whole list item.
+  // sibling inside the row, so scope to the whole list item.
   const row = screen
-    .getByTestId(`managed-command-row-${commandId}`)
+    .getByTestId(`managed-command-menu-row-${commandId}`)
     .closest("li");
   return (
     row?.querySelector<HTMLElement>('[data-slot="resource-usage-chip"]') ?? null
@@ -414,13 +438,14 @@ describe("S8 · tile-ref minimalism", () => {
 });
 
 describe("S9 · resource readouts (GUI half)", () => {
-  it("S9d: a tracked running command gets a CPU/mem readout on its row; an untracked one shows nothing, never zero", () => {
-    renderSidebarWithResources();
+  it("S9d: a tracked running command gets a CPU/mem readout on its menu row; an untracked one shows nothing, never zero", () => {
+    renderMenuWithResources();
     emitListSnapshot([
       makeCommand({ id: "cmd-res" }),
       makeCommand({ id: "cmd-quiet", description: "quiet watcher" }),
     ]);
     emitResourcesV14("snapshot", [managedCommandOwnerRow("cmd-res")]);
+    openMenu();
 
     const chip = chipOnRow("cmd-res");
     expect(chip).not.toBeNull();
@@ -434,9 +459,10 @@ describe("S9 · resource readouts (GUI half)", () => {
   });
 
   it("S9e: readouts follow the stream — an update moves the numbers, a command dropping out clears its chip", () => {
-    renderSidebarWithResources();
+    renderMenuWithResources();
     emitListSnapshot([makeCommand({ id: "cmd-res" })]);
     emitResourcesV14("snapshot", [managedCommandOwnerRow("cmd-res")]);
+    openMenu();
     expect(chipOnRow("cmd-res")?.textContent).toMatch(/7(\.0)?%/);
 
     emitResourcesV14("update", [
@@ -448,14 +474,15 @@ describe("S9 · resource readouts (GUI half)", () => {
     expect(chipOnRow("cmd-res")).toBeNull();
   });
 
-  it("S9f: a pre-@1.4 host cannot name a managed-command owner — its frames leave rows readout-free rather than wrong", () => {
-    renderSidebarWithResources();
+  it("S9f: a pre-@1.4 host cannot name a managed-command owner — its frames leave menu rows readout-free rather than wrong", () => {
+    renderMenuWithResources();
     emitListSnapshot([makeCommand({ id: "cmd-res" })]);
     emitResourcesOldHost();
+    openMenu();
 
-    expect(
-      screen.getByTestId("managed-command-row-title-cmd-res").textContent,
-    ).toBe("Monitor · deploy watcher");
+    // The row still says everything the list stream knows — only the readout
+    // the old host could not express is missing.
+    expect(screen.getByText("Monitor · deploy watcher")).toBeTruthy();
     expect(chipOnRow("cmd-res")).toBeNull();
   });
 });

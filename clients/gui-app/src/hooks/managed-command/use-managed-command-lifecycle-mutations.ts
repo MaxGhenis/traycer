@@ -1,4 +1,5 @@
 import { useMutation, type UseMutationResult } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { withHostRpcErrorBoundary } from "@traycer-clients/shared/host-transport/host-messenger";
 import type {
   HostRpcError,
@@ -109,6 +110,62 @@ export function useManagedCommandStop(): UseMutationResult<
         commandId: variables.commandId,
       }),
   );
+}
+
+export interface ManagedCommandStopAllVariables {
+  readonly hostId: string;
+  readonly epicId: string;
+  readonly commandIds: readonly string[];
+}
+
+/**
+ * Several commands stopped as ONE action, for a "Stop all" that has to reach
+ * host-supervised commands alongside the harness's own background work.
+ *
+ * Fanning {@link useManagedCommandStop} out instead judged each stop on its
+ * own, so the usual cause of a failure here - a host that went away - put one
+ * identical toast on screen per row. This sends every stop, waits for all of
+ * them, and says the outcome once. Its pending flag covers the whole span, so
+ * the button a caller disables on it cannot re-send the set mid-flight.
+ */
+export function useManagedCommandStopAll(): UseMutationResult<
+  void,
+  Error,
+  ManagedCommandStopAllVariables
+> {
+  const defaultClient = useHostClient();
+  const directory = useHostDirectory();
+
+  return useMutation<void, Error, ManagedCommandStopAllVariables>({
+    mutationKey: managedCommandMutationKeys.stopAll(),
+    mutationFn: async (variables) => {
+      const entry = directory.findById(variables.hostId);
+      const client: HostClient<HostRpcRegistry> | null =
+        entry === null ? null : buildTransientHostClient(defaultClient, entry);
+      const outcomes = await Promise.allSettled(
+        variables.commandIds.map((commandId) =>
+          client === null
+            ? Promise.reject(hostClientUnavailableError("managedCommand.stop"))
+            : withHostRpcErrorBoundary("managedCommand.stop", () =>
+                client.request("managedCommand.stop", {
+                  epicId: variables.epicId,
+                  commandId,
+                }),
+              ),
+        ),
+      );
+      const failed = outcomes.filter(
+        (outcome) => outcome.status === "rejected",
+      ).length;
+      if (failed === 0) return;
+      throw new Error(
+        `Couldn't stop ${failed} of ${outcomes.length} monitors and shells.`,
+      );
+    },
+    onError: (error) => {
+      toast.error(error.message);
+    },
+  });
 }
 
 export function useManagedCommandDelete(): UseMutationResult<

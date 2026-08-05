@@ -844,6 +844,8 @@ function managedCommandQueuedItem(
     commandId: `${queueItemId}-command`,
     description,
     commandKind: "monitor",
+    delivery: "next_turn",
+    targetTurnId: null,
     status: "pending",
     createdAt: 1,
     updatedAt: 1,

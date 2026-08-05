@@ -176,6 +176,7 @@ import { HostWorkspaceSelector } from "@/components/home/host-workspace-selector
 import type { FatalErrorDetails } from "@traycer/protocol/framework/ws-protocol";
 import type { TraycerNextStepOption } from "@/markdown/traycer-next-steps";
 import { ChatLowerInteractionSurfaces } from "./chat-tile-lower-surfaces";
+import { ManagedCommandChatMenuOverlay } from "@/components/managed-commands/managed-command-chat-menu";
 import { composerHasBlockingApprovals } from "./chat-approval-visibility";
 import {
   chatTileUiReducer,
@@ -880,6 +881,15 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
               composerOverlayHeight={
                 lowerSurfacesElement === null ? 0 : lowerSurfacesHeight
               }
+            />
+            {/* Floats over the transcript's top-right corner; renders nothing
+                until this chat owns a monitor or shell, so it reserves no
+                space and cannot shift what is being read. */}
+            <ManagedCommandChatMenuOverlay
+              epicId={view.currentEpicId}
+              chatId={view.node.id}
+              hostId={view.tabHostId}
+              viewTabId={view.viewTabId}
             />
             {/*
              * SurfaceActivityProvider narrows catalog/provider query subscriptions

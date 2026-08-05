@@ -16,6 +16,10 @@ import type { FatalErrorDetails } from "@traycer/protocol/framework/ws-protocol"
 import type { ManagedCommand } from "@traycer/protocol/host/managed-command/unary-schemas";
 import type { ManagedCommandOutputStreamCallbacks } from "@traycer-clients/shared/host-transport/managed-command-output-stream-client";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  DEFAULT_CODE_FONT_SIZE,
+  useSettingsStore,
+} from "@/stores/settings/settings-store";
 
 /**
  * The output window (`UI.md` §4): one interleaved timeline with timestamps,
@@ -257,9 +261,36 @@ afterEach(() => {
   __setManagedCommandOutputStreamClientFactoryForTests(null);
   epicHandle.dispose();
   useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
+  useSettingsStore.setState({
+    terminalFontFamily: null,
+    terminalFontSize: null,
+    codeFontFamily: null,
+    codeFontSize: DEFAULT_CODE_FONT_SIZE,
+  });
 });
 
 describe("managed-command output window", () => {
+  it("follows the Terminal font settings, not the Code font it falls back to", () => {
+    const stub = installOutputStub();
+    renderTile();
+    openAtTail(stub.emit, [line("stdout", "watching src/")]);
+
+    // Unset means "follow the Code font", which is what the fallback stack is
+    // for - and the size utility classes must not be carrying it instead.
+    expect(timeline().style.fontSize).toBe(`${DEFAULT_CODE_FONT_SIZE}px`);
+    expect(timeline().className).not.toContain("font-mono");
+
+    act(() => {
+      useSettingsStore.setState({
+        terminalFontFamily: "Iosevka",
+        terminalFontSize: 17,
+      });
+    });
+
+    expect(timeline().style.fontSize).toBe("17px");
+    expect(timeline().style.fontFamily).toContain("Iosevka");
+  });
+
   it("interleaves output and lifecycle records in one timestamped timeline", () => {
     const stub = installOutputStub();
     renderTile();

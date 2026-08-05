@@ -351,9 +351,16 @@ export type ChatQueuedPromptItem = z.infer<typeof chatQueuedPromptItemSchema>;
  * delivery cursor at dispatch, so the item carries only the durable dispatch
  * key and a label for the queue chip. There is no `message`/`sender`/
  * `messageId` to fabricate, and no `settings`/`accountContext` stamp to go
- * stale - dispatch runs on the chat's *current* settings. No `delivery` or
- * `steerRequest` either: these are always next-turn and never steerable, and
- * the variant makes those states unrepresentable rather than merely unused.
+ * stale - dispatch runs on the chat's *current* settings. There is no
+ * `steerRequest` either: a delivery is never hand-steered by a person, so that
+ * state stays unrepresentable rather than merely unused.
+ *
+ * `delivery`/`targetTurnId` ARE carried, because a digest that comes due while
+ * the consuming agent is mid-turn on a harness that can take a mid-turn
+ * injection AND report whether the provider consumed it is injected into that
+ * turn rather than waiting for it to end. Every other case - unsupported
+ * harness, idle agent, exhausted budget - stays `next_turn`, which is the
+ * universal fallback.
  *
  * The shared `queueItemId`/`status`/timestamp fields are what keep the
  * status-only machinery (reorder, queue pause, runnability) working across the
@@ -377,11 +384,22 @@ export const chatQueuedManagedCommandItemSchema = z.object({
   // this same line must still rehydrate. Absent means "not recorded", which the
   // chip renders generically - it never stands in for a guessed kind.
   commandKind: z.enum(["monitor", "shell"]).nullable().default(null),
-  // Narrower than the prompt lifecycle enum on purpose: a delivery is never
-  // steered, so `steer_requested`/`steering`/`injected`/`fallback` are not just
-  // unused here, they are unrepresentable. The `1.6` line that introduces this
-  // variant is unshipped, so tightening costs no compatibility.
-  status: z.enum(["pending", "paused"]).default("pending"),
+  // Whether this digest opens its own turn or lands inside the turn already
+  // running. Defaulted `next_turn` so a row written by an earlier build of this
+  // line - and every delivery that has no eligible turn to join - rehydrates as
+  // the fallback shape.
+  delivery: chatQueueItemDeliverySchema.default("next_turn"),
+  // The turn a `same_turn` delivery is aimed at. A turn that ends before the
+  // injection lands leaves this pointing at a finished turn, which is exactly
+  // the signal that returns the item to `next_turn`.
+  targetTurnId: z.string().nullable().default(null),
+  // Narrower than the prompt lifecycle enum on purpose. `steering` (handed to
+  // the runtime, awaiting its delivery outcome) is the only steering state a
+  // delivery can reach: `steer_requested` is a person hand-steering, `injected`
+  // is a row rendered in the transcript, and `fallback` carries a reason string
+  // the content-free variant has nowhere to put - all three stay
+  // unrepresentable here.
+  status: z.enum(["pending", "steering", "paused"]).default("pending"),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -1728,7 +1746,10 @@ export const chatSubscribeV15 = defineStreamRpcContract({
 // The live serverFrame's queue is the `prompt | managed-command` union: a
 // pending managed-command delivery (Monitor log digest, backgrounded shell
 // completion) is a first-class, content-free queue item the user can see,
-// reorder, and cancel. A released ≤1.5 peer negotiates a frozen line above,
+// reorder, and cancel - and, on a harness that confirms it consumed a mid-turn
+// steer, one that can be injected into the running turn rather than waiting for
+// it (`delivery`/`targetTurnId` on the variant). A released ≤1.5 peer
+// negotiates a frozen line above,
 // which cannot represent the variant at all; the host's frame projection omits
 // those items for such peers rather than fabricating a prompt shape for them.
 // The client frame is unchanged from `1.4` - cancel/reorder of a

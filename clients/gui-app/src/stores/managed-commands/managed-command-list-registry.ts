@@ -150,22 +150,37 @@ export function useManagedCommand(
   );
 }
 
+const NO_COMMANDS: readonly ManagedCommand[] = [];
+
 /**
- * The running commands one chat owns - the client-side join behind that chat's
- * running-work strip rows (`UI.md` §5). The epic list already carries the
- * owning chat id, so the strip needs no wire of its own.
+ * Every command one chat owns, whatever state it is in - the client-side join
+ * behind that chat's monitors menu, which is the home for these now. The epic
+ * list already carries the owning chat id and is already ordered running-first,
+ * so the menu needs neither a wire nor a sort of its own.
+ */
+export function useManagedCommandsForChat(
+  epicId: string,
+  chatId: string,
+): readonly ManagedCommand[] {
+  const commands = useManagedCommandList(epicId);
+  return useMemo(() => {
+    if (commands === null) return NO_COMMANDS;
+    return commands.filter((command) => command.chatId === chatId);
+  }, [commands, chatId]);
+}
+
+/**
+ * The subset of {@link useManagedCommandsForChat} that is live right now - what
+ * the chat's Background panel lists, since that panel is about work happening
+ * at this moment rather than about the commands as durable objects.
  */
 export function useRunningManagedCommandsForChat(
   epicId: string,
   chatId: string,
 ): readonly ManagedCommand[] {
-  const commands = useManagedCommandList(epicId);
+  const commands = useManagedCommandsForChat(epicId, chatId);
   return useMemo(
-    () =>
-      (commands ?? []).filter(
-        (command) =>
-          command.chatId === chatId && command.status.state === "running",
-      ),
-    [commands, chatId],
+    () => commands.filter((command) => command.status.state === "running"),
+    [commands],
   );
 }

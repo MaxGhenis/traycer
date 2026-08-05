@@ -1,13 +1,13 @@
 /**
  * Independent acceptance suite — seams S6 and S7: the chat-side surfaces.
  *
- * S6 is the running-work strip: a client-side join of the epic list stream
+ * S6 is the chat's running work: a client-side join of the epic list stream
  * against the open chat (`UI.md` §5, §9a) — running commands owned by THIS
- * chat appear as rows, leave on terminal status frames, and click through to
- * the output window. S7 is the doors: the queued-delivery chip and the resume
- * divider open or focus the command's output window, the divider's terminal
- * copy is kind-explicit per the REAL kind (`UI.md` §3, §8), and one command
- * never has two windows (`UI.md` §9).
+ * chat appear as rows of the chat's Background panel, leave on terminal status
+ * frames, and click through to the output window. S7 is the doors: the
+ * queued-delivery chip and the resume divider open or focus the command's
+ * output window, the divider's terminal copy is kind-explicit per the REAL
+ * kind (`UI.md` §3, §8), and one command never has two windows (`UI.md` §9).
  *
  * Expected behavior derives from the records only. Real stores, registry,
  * stream mount and canvas store; frames and triggers are authored through the
@@ -23,10 +23,10 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ManagedCommandStripRows } from "@/components/chat/managed-command-strip-rows";
+import { BackgroundItemsPanel } from "@/components/chat/chat-background-items-panel";
 import { ManagedCommandBadge } from "@/components/chat/queued-message-surface";
 import { AutonomousResumeSegment } from "@/components/chat/segments/autonomous-resume-segment";
-import { TabHostContext } from "@/components/epic-canvas/hooks/use-tab-host-id";
+import { TabHostProvider } from "@/components/epic-canvas/tab-host-provider";
 import { EpicSessionContext } from "@/lib/registries/epic-session-registry";
 import {
   createOpenEpicStore,
@@ -49,9 +49,9 @@ const mocks = vi.hoisted(() => ({
   methodSupport: { value: "supported" },
 }));
 
-// The strip's rows carry the same lifecycle actions the sidebar rows do, so
-// this suite fakes the same boundary the sidebar suite fakes: the RPCs behind
-// them. What the rows render and where they lead is still real.
+// The Background panel's managed rows carry the same lifecycle actions the
+// chat's monitors menu does, so this suite fakes the one boundary behind them:
+// the RPCs. What the rows render and where they lead is still real.
 vi.mock(
   "@/hooks/managed-command/use-managed-command-lifecycle-mutations",
   () => ({
@@ -156,12 +156,42 @@ function renderInChatContext(children: React.ReactNode): void {
     onAuthError: null,
   });
   render(
-    <TabHostContext.Provider value={HOST_ID}>
+    <TabHostProvider hostId={HOST_ID}>
       <EpicSessionContext.Provider value={epicHandle}>
         <TooltipProvider>{children}</TooltipProvider>
       </EpicSessionContext.Provider>
-    </TabHostContext.Provider>,
+    </TabHostProvider>,
   );
+}
+
+/**
+ * The chat's Background panel, which is where a running monitor or shell shows
+ * up now. It is a drawer that starts closed, so opening it is part of reaching
+ * the rows under test; `items` stays empty because every S6 assertion is about
+ * the managed rows the panel joins in, not the harness work beside them.
+ */
+function renderBackgroundPanelInChat(alongside: React.ReactNode): void {
+  renderInChatContext(
+    <>
+      <ManagedCommandListStreamMount epicId={EPIC_ID} />
+      <BackgroundItemsPanel
+        items={[]}
+        epicId={EPIC_ID}
+        chatId={CHAT_A}
+        canAct
+        readOnly={false}
+        pendingStopTaskIds={new Set()}
+        stopAllPending={false}
+        scrollRegionMaxHeightClass="max-h-96"
+        separated={false}
+        onItemClick={() => undefined}
+        onStopItem={() => null}
+        onStopAll={() => null}
+      />
+      {alongside}
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /Background/ }));
 }
 
 /** Panes across the whole canvas currently holding this command's window. */
@@ -201,14 +231,9 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("S6 · running-work strip", () => {
+describe("S6 · running work in the chat's Background panel", () => {
   it("S6a: shows only THIS chat's running commands, kind-explicit, and none of another chat's or terminal ones", () => {
-    renderInChatContext(
-      <>
-        <ManagedCommandListStreamMount epicId={EPIC_ID} />
-        <ManagedCommandStripRows epicId={EPIC_ID} chatId={CHAT_A} />
-      </>,
-    );
+    renderBackgroundPanelInChat(null);
     emitSnapshot([
       makeCommand({ id: "cmd-mine-running", description: "deploy watcher" }),
       makeCommand({
@@ -225,32 +250,27 @@ describe("S6 · running-work strip", () => {
     ]);
 
     const mine = screen.getByTestId(
-      "managed-command-strip-row-cmd-mine-running",
+      "managed-command-background-row-cmd-mine-running",
     );
     expect(mine.textContent).toContain("Monitor · deploy watcher");
     expect(
-      screen.queryByTestId("managed-command-strip-row-cmd-theirs-running"),
+      screen.queryByTestId("managed-command-background-row-cmd-theirs-running"),
     ).toBeNull();
     expect(
-      screen.queryByTestId("managed-command-strip-row-cmd-mine-done"),
+      screen.queryByTestId("managed-command-background-row-cmd-mine-done"),
     ).toBeNull();
   });
 
   it("S6b: rows appear and disappear on status frames — removed the moment the command reaches a terminal state", () => {
-    renderInChatContext(
-      <>
-        <ManagedCommandListStreamMount epicId={EPIC_ID} />
-        <ManagedCommandStripRows epicId={EPIC_ID} chatId={CHAT_A} />
-      </>,
-    );
+    renderBackgroundPanelInChat(null);
     emitSnapshot([]);
     expect(
-      screen.queryByTestId("managed-command-strip-row-cmd-live"),
+      screen.queryByTestId("managed-command-background-row-cmd-live"),
     ).toBeNull();
 
     emitChanged(makeCommand({ id: "cmd-live", description: "fresh watcher" }));
     expect(
-      screen.getByTestId("managed-command-strip-row-cmd-live"),
+      screen.getByTestId("managed-command-background-row-cmd-live"),
     ).toBeTruthy();
 
     emitChanged(
@@ -267,20 +287,17 @@ describe("S6 · running-work strip", () => {
       }),
     );
     expect(
-      screen.queryByTestId("managed-command-strip-row-cmd-live"),
+      screen.queryByTestId("managed-command-background-row-cmd-live"),
     ).toBeNull();
   });
 
-  it("S6c: clicking a strip row opens the command's output window", () => {
-    renderInChatContext(
-      <>
-        <ManagedCommandListStreamMount epicId={EPIC_ID} />
-        <ManagedCommandStripRows epicId={EPIC_ID} chatId={CHAT_A} />
-      </>,
-    );
+  it("S6c: clicking a background row opens the command's output window", () => {
+    renderBackgroundPanelInChat(null);
     emitSnapshot([makeCommand({ id: "cmd-door" })]);
 
-    fireEvent.click(screen.getByTestId("managed-command-strip-row-cmd-door"));
+    fireEvent.click(
+      screen.getByTestId("managed-command-background-row-cmd-door"),
+    );
     expect(findOpenArtifactInTab(TAB_ID, "cmd-door")).not.toBeNull();
   });
 });
@@ -382,12 +399,8 @@ describe("S7 · doors", () => {
   });
 
   it("S7g: one window per command — every door and a second press converge on a single pane", () => {
-    renderInChatContext(
-      <>
-        <ManagedCommandListStreamMount epicId={EPIC_ID} />
-        <ManagedCommandStripRows epicId={EPIC_ID} chatId={CHAT_A} />
-        <ManagedCommandBadge commandId="cmd-one" commandKind="monitor" />
-      </>,
+    renderBackgroundPanelInChat(
+      <ManagedCommandBadge commandId="cmd-one" commandKind="monitor" />,
     );
     emitSnapshot([makeCommand({ id: "cmd-one", description: "solo watcher" })]);
 
@@ -395,7 +408,9 @@ describe("S7 · doors", () => {
     expect(openWindowCountFor("cmd-one")).toBe(1);
 
     // A different door for the same command focuses the existing window.
-    fireEvent.click(screen.getByTestId("managed-command-strip-row-cmd-one"));
+    fireEvent.click(
+      screen.getByTestId("managed-command-background-row-cmd-one"),
+    );
     expect(openWindowCountFor("cmd-one")).toBe(1);
 
     // And the same door twice does not stack a second pane either.
