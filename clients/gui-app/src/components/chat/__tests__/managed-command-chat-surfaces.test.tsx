@@ -570,15 +570,33 @@ describe("running commands in the Background panel", () => {
     expect(stopMutate).not.toHaveBeenCalled();
   });
 
-  it("disables Stop all for the whole span of the managed fan-out", () => {
+  it("never re-sends the managed set while its stop is in flight", () => {
     stopAllFlight.isPending = true;
     const stub = renderPanel([HARNESS_ITEM]);
     act(() => {
       stub.emit().onSnapshot([command({ id: "m1" })]);
     });
+    expandPanel();
 
-    // Without this the button stayed live while the stops were in flight, so a
-    // second press re-sent the whole set.
+    // The harness half is still ready, so the button stays live - but a press
+    // during the managed fan-out must reach only the harness half, never
+    // re-send the managed set.
+    const stopAllButton = screen.getByTestId("background-stop-all");
+    expect(stopAllButton.getAttribute("disabled")).toBeNull();
+    fireEvent.click(stopAllButton);
+    expect(stub.onStopAll).toHaveBeenCalledTimes(1);
+    expect(stopAllMutate).not.toHaveBeenCalled();
+  });
+
+  it("disables Stop all only when neither half can act", () => {
+    stopAllFlight.isPending = true;
+    const stub = renderPanelWith([HARNESS_ITEM], false);
+    act(() => {
+      stub.emit().onSnapshot([command({ id: "m1" })]);
+    });
+
+    // Harness half gated by the closed stream, managed half in flight: with
+    // nothing left for a press to do, the button finally disables.
     const stopAllButton = screen.getByTestId("background-stop-all");
     expect(stopAllButton.getAttribute("disabled")).not.toBeNull();
     fireEvent.click(stopAllButton);
@@ -602,6 +620,21 @@ describe("running commands in the Background panel", () => {
         .getByRole("button", { name: "Stop Command" })
         .getAttribute("disabled"),
     ).not.toBeNull();
+
+    // And the aggregate follows the same split: the button stays live for the
+    // managed half, and a press skips the unreachable harness half rather
+    // than dying with it - a reconnect is exactly when a runaway monitor
+    // needs the one-click stop.
+    const stopAllButton = screen.getByTestId("background-stop-all");
+    expect(stopAllButton.getAttribute("disabled")).toBeNull();
+    fireEvent.click(stopAllButton);
+    expect(stub.onStopAll).not.toHaveBeenCalled();
+    expect(stopAllMutate).toHaveBeenCalledTimes(1);
+    expect(stopAllMutate).toHaveBeenCalledWith({
+      hostId: "host-1",
+      epicId: EPIC_ID,
+      commandIds: ["m1"],
+    });
   });
 
   it("no longer disclaims a subset Stop all cannot reach", () => {

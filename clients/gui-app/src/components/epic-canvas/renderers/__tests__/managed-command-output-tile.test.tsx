@@ -229,7 +229,7 @@ function setScrollGeometry(
 }
 
 function timeline(): HTMLElement {
-  return screen.getByTestId("managed-command-output-timeline");
+  return screen.getByRole("log");
 }
 
 function rowChannels(): string[] {

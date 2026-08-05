@@ -142,16 +142,20 @@ export function useManagedCommandStopAll(): UseMutationResult<
       const entry = directory.findById(variables.hostId);
       const client: HostClient<HostRpcRegistry> | null =
         entry === null ? null : buildTransientHostClient(defaultClient, entry);
+      // No host client means every stop would fail identically, so fail once
+      // with the real reason instead of manufacturing N rejections that
+      // collapse into an uninformative "couldn't stop N of N" count.
+      if (client === null) {
+        throw hostClientUnavailableError("managedCommand.stop");
+      }
       const outcomes = await Promise.allSettled(
         variables.commandIds.map((commandId) =>
-          client === null
-            ? Promise.reject(hostClientUnavailableError("managedCommand.stop"))
-            : withHostRpcErrorBoundary("managedCommand.stop", () =>
-                client.request("managedCommand.stop", {
-                  epicId: variables.epicId,
-                  commandId,
-                }),
-              ),
+          withHostRpcErrorBoundary("managedCommand.stop", () =>
+            client.request("managedCommand.stop", {
+              epicId: variables.epicId,
+              commandId,
+            }),
+          ),
         ),
       );
       const failed = outcomes.filter(

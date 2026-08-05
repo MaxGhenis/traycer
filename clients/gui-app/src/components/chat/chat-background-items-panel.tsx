@@ -639,17 +639,23 @@ export function BackgroundItemsPanel(props: {
   const hostId = useTabHostId();
   const openManagedCommand = useManagedCommandDoor();
   const stopAllManagedCommands = useManagedCommandStopAll();
-  const stopAllDisabled =
-    !stoppable || props.stopAllPending || stopAllManagedCommands.isPending;
-  // "Stop all" means every row the panel is showing. The harness stop-all is a
-  // single chat action that cannot reach host-supervised commands, so those go
-  // through their own aggregated stop alongside it - two mechanisms, but one
-  // button, because the distinction is ours and not the reader's. Each half
-  // reports its own outcome once, and both halves feed the disabled state, so
-  // a second press cannot land while either is still in flight.
+  // "Stop all" means every row the panel is showing, and its two halves ride
+  // different channels: the harness half needs the chat stream open, the
+  // managed half is an RPC to the host that a reconnecting chat has no bearing
+  // on. Each half is offered and sent on its own capability - gating the
+  // button on the harness half alone left it dead during a reconnect, which is
+  // exactly when a runaway monitor most needs the one-click stop.
+  const harnessStopAllReady = stoppable && !props.stopAllPending;
+  const managedStopAllReady =
+    managedStoppable &&
+    managedCommands.length > 0 &&
+    !stopAllManagedCommands.isPending;
+  const stopAllDisabled = !harnessStopAllReady && !managedStopAllReady;
+  // Each half reports its own outcome once, and both halves feed the disabled
+  // state, so a second press cannot land while either is still in flight.
   const stopAll = () => {
-    props.onStopAll();
-    if (managedCommands.length === 0) return;
+    if (harnessStopAllReady) props.onStopAll();
+    if (!managedStopAllReady) return;
     stopAllManagedCommands.mutate({
       hostId,
       epicId: props.epicId,
