@@ -15,7 +15,6 @@
  * host-side in `traycer-host/.../managed-command-ui-acceptance.test.ts`
  * (S9a-c).
  */
-import "../../../__tests__/test-browser-apis";
 import {
   act,
   cleanup,

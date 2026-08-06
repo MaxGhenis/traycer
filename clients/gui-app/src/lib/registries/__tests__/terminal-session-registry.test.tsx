@@ -1,4 +1,3 @@
-import "../../../../__tests__/test-browser-apis";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -122,6 +121,8 @@ function fakeStreamSession(): IStreamSession {
     sendClientFrame: () => undefined,
     onServerFrame: () => undefined,
     onStatusChange: () => undefined,
+    // Never negotiates: this fake exercises no version-dependent path.
+    getNegotiatedSchemaVersion: () => null,
     requestReconnect: () => undefined,
     close: () => undefined,
   };
@@ -130,6 +131,9 @@ function fakeStreamSession(): IStreamSession {
 function fakeWsStreamClient(): IHostStreamClient<HostStreamRpcRegistry> {
   return {
     subscribe: () => fakeStreamSession(),
+    subscribeWithParamsProvider: () => {
+      throw new Error("not exercised by this test");
+    },
     close: () => undefined,
     isClosed: () => false,
     notifyBearerRotated: () => undefined,
