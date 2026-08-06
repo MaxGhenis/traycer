@@ -56,6 +56,7 @@ vi.mock(
   () => ({
     useManagedCommandStart: () => ({ mutate: vi.fn(), isPending: false }),
     useManagedCommandStop: () => ({ mutate: vi.fn(), isPending: false }),
+    useManagedCommandStopAll: () => ({ mutate: vi.fn(), isPending: false }),
     useManagedCommandDelete: () => ({ mutate: vi.fn(), isPending: false }),
   }),
 );
