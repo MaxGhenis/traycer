@@ -12,7 +12,7 @@
  * presence the first piece of information: a chat with no monitors says so by
  * showing nothing at all, rather than by offering an empty drawer.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { Radar } from "lucide-react";
 import type { ManagedCommand } from "@traycer/protocol/host/managed-command/unary-schemas";
@@ -100,6 +100,15 @@ export function ManagedCommandChatMenu(props: ManagedCommandChatMenuProps) {
     if (!dragging) setOpen(false);
   }, []);
 
+  // Seeing IS the acknowledgement: while the menu is open every outcome is
+  // spelled out in the rows, so anything rendered - an ending that arrives
+  // mid-look included - stops being badge news. Keyed on the commands, not
+  // just the open transition, so the badge cannot go stale behind an open
+  // menu and then nag about outcomes the user watched happen.
+  useEffect(() => {
+    if (open) acknowledge(commands);
+  }, [open, commands, acknowledge]);
+
   // Deleting the last command while the menu is open would otherwise yank the
   // button - and the popover anchored to it - out from under the pointer that
   // just pressed Delete. The menu stays, says it is empty, and leaves on close.
@@ -108,12 +117,7 @@ export function ManagedCommandChatMenu(props: ManagedCommandChatMenuProps) {
   return (
     <Popover
       open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        // Opening IS the acknowledgement: every outcome is spelled out in the
-        // rows below, so there is nothing left for the badge to report.
-        if (next) acknowledge(commands);
-      }}
+      onOpenChange={setOpen}
     >
       <TooltipWrapper
         label="Monitors and shells"
@@ -126,7 +130,9 @@ export function ManagedCommandChatMenu(props: ManagedCommandChatMenuProps) {
             type="button"
             variant="ghost"
             size="sm"
-            aria-label="Monitors and shells"
+            // The badge renders bare numbers, so the accessible name says
+            // what the number counts.
+            aria-label={menuAccessibleName(attentionCount, runningCount)}
             data-testid="managed-command-chat-menu-trigger"
             data-attention={attentionCount > 0 ? "true" : "false"}
             className={cn(
@@ -152,8 +158,16 @@ export function ManagedCommandChatMenu(props: ManagedCommandChatMenuProps) {
         // The trigger sits at the tile's bottom edge, so the list has room
         // above it and none below.
         side="top"
+        // The delete confirmation is a modal dialog portaled outside this
+        // Content's subtree; without this guard Radix reads its focus trap as
+        // focus leaving the popover and dismisses it - unmounting the row and
+        // the confirmation with it. Same guard, same reason, as the
+        // notifications bell's nested filter menu. Escape still closes.
+        onFocusOutside={(event) => event.preventDefault()}
         className={cn(
-          "w-[min(90vw,24rem)] p-1",
+          // Capped to the viewport: a chat can accumulate many finished
+          // shells, and rows past the fold must scroll, not vanish.
+          "max-h-[min(60vh,26rem)] w-[min(90vw,24rem)] overflow-y-auto p-1",
           // Faded rather than closed - see `rowDraggingChanged`.
           rowDragging ? "opacity-40" : null,
         )}
@@ -191,6 +205,19 @@ export function ManagedCommandChatMenu(props: ManagedCommandChatMenuProps) {
   );
 }
 
+function menuAccessibleName(
+  attentionCount: number,
+  runningCount: number,
+): string {
+  if (attentionCount > 0) {
+    return `Monitors and shells, ${attentionCount} need attention`;
+  }
+  if (runningCount > 0) {
+    return `Monitors and shells, ${runningCount} running`;
+  }
+  return "Monitors and shells";
+}
+
 /**
  * Attention beats running: a monitor that died is the thing to say even while
  * three others are healthy. With neither, the glyph carries no count at all -
@@ -202,7 +229,7 @@ function ManagedCommandMenuBadge(props: {
 }) {
   if (props.attentionCount > 0) {
     return (
-      <span data-testid="managed-command-chat-menu-attention">
+      <span aria-hidden data-testid="managed-command-chat-menu-attention">
         {props.attentionCount}
       </span>
     );
@@ -214,7 +241,7 @@ function ManagedCommandMenuBadge(props: {
           aria-hidden
           className="inline-block size-1.5 shrink-0 rounded-full bg-success"
         />
-        <span data-testid="managed-command-chat-menu-running">
+        <span aria-hidden data-testid="managed-command-chat-menu-running">
           {props.runningCount}
         </span>
       </>
@@ -286,10 +313,15 @@ function ManagedCommandMenuRow(props: {
           },
     [epicId, viewTabId, tile],
   );
+  // The same chat can be open in two tiles of one view (a supported canvas
+  // state), so the command id alone would register duplicate draggables and
+  // let a gesture bind to the other copy's node. The occurrence key keeps ids
+  // unique per mounted row; the drop reads the payload, never the id.
+  const occurrenceId = useId();
   const { listeners, setNodeRef, isDragging } = useDraggable({
     id: getPaneScopedDndId(
       viewTabId ?? "",
-      getManagedCommandOutputDragId(command.id),
+      getManagedCommandOutputDragId(`${command.id}:${occurrenceId}`),
     ),
     data: dragData === null ? undefined : dragData,
     disabled: dragData === null,

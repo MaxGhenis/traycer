@@ -23,6 +23,7 @@ import { createHostQueryInvalidator } from "@/lib/host/query-invalidator";
  */
 
 const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }));
+const directoryState = vi.hoisted(() => ({ available: true }));
 
 vi.mock("sonner", () => ({
   toast: { error: toastError, success: vi.fn(), info: vi.fn() },
@@ -30,7 +31,9 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/lib/host", () => ({
   useHostClient: () => hostClient,
-  useHostDirectory: () => ({ findById: () => mockLocalHostEntry }),
+  useHostDirectory: () => ({
+    findById: () => (directoryState.available ? mockLocalHostEntry : null),
+  }),
 }));
 
 import { useManagedCommandStopAll } from "@/hooks/managed-command/use-managed-command-lifecycle-mutations";
@@ -66,6 +69,7 @@ function wrapper(props: { readonly children: ReactNode }): ReactNode {
 
 beforeEach(() => {
   toastError.mockClear();
+  directoryState.available = true;
   refusedCommandIds.clear();
   stoppedCommandIds.length = 0;
   queryClient = new QueryClient({
@@ -104,6 +108,32 @@ afterEach(() => {
 });
 
 describe("useManagedCommandStopAll", () => {
+  it("fails once with the real reason when no host client can be built", async () => {
+    directoryState.available = false;
+    const { result } = renderHook(() => useManagedCommandStopAll(), {
+      wrapper,
+    });
+
+    act(() => {
+      result.current.mutate({
+        hostId: mockLocalHostEntry.hostId,
+        epicId: EPIC_ID,
+        commandIds: ["cmd-1", "cmd-2"],
+      });
+    });
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+
+    // Nothing was sent and nothing was manufactured: one failure, carrying
+    // the actual reason rather than an uninformative "2 of 2" count.
+    expect(stoppedCommandIds).toEqual([]);
+    expect(toastError).toHaveBeenCalledTimes(1);
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringContaining("unavailable"),
+    );
+  });
+
   it("says a partial failure once, naming how many of how many", async () => {
     refusedCommandIds.add("cmd-2");
     const { result } = renderHook(() => useManagedCommandStopAll(), {

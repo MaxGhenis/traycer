@@ -650,9 +650,13 @@ export function BackgroundItemsPanel(props: {
     managedStoppable &&
     managedCommands.length > 0 &&
     !stopAllManagedCommands.isPending;
-  const stopAllDisabled = !harnessStopAllReady && !managedStopAllReady;
-  // Each half reports its own outcome once, and both halves feed the disabled
-  // state, so a second press cannot land while either is still in flight.
+  // One button, one rule: live while there is something it can do, dead while
+  // anything it started is still in flight. Re-enabling as soon as one half
+  // finished let a second press resubmit the finished half mid-flight.
+  const stopAllDisabled =
+    (!harnessStopAllReady && !managedStopAllReady) ||
+    props.stopAllPending ||
+    stopAllManagedCommands.isPending;
   const stopAll = () => {
     if (harnessStopAllReady) props.onStopAll();
     if (!managedStopAllReady) return;

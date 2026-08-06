@@ -559,7 +559,7 @@ describe("running commands in the Background panel", () => {
     expect(stopMutate).not.toHaveBeenCalled();
   });
 
-  it("never re-sends the managed set while its stop is in flight", () => {
+  it("stays dead while anything it started is still in flight", () => {
     stopAllFlight.isPending = true;
     const stub = renderPanel([HARNESS_ITEM]);
     act(() => {
@@ -567,15 +567,15 @@ describe("running commands in the Background panel", () => {
     });
     expandPanel();
 
-    // The harness half is still ready, so the button stays live - but a press
-    // during the managed fan-out must reach only the harness half, never
-    // re-send the managed set.
+    // Re-enabling as soon as one half finished let a second press resubmit
+    // the finished half while the other was still running - one button, one
+    // in-flight state.
     const stopAllButton = screen.getByRole<HTMLButtonElement>("button", {
       name: "Stop all",
     });
-    expect(stopAllButton.disabled).toBe(false);
+    expect(stopAllButton.disabled).toBe(true);
     fireEvent.click(stopAllButton);
-    expect(stub.onStopAll).toHaveBeenCalledTimes(1);
+    expect(stub.onStopAll).not.toHaveBeenCalled();
     expect(stopAllMutate).not.toHaveBeenCalled();
   });
 
@@ -609,10 +609,9 @@ describe("running commands in the Background panel", () => {
     expect(screen.getByTestId("managed-command-stop-m1")).not.toBeNull();
     // The harness row's stop DOES ride the chat stream, so it stays gated.
     expect(
-      screen
-        .getByRole("button", { name: "Stop Command" })
-        .getAttribute("disabled"),
-    ).not.toBeNull();
+      screen.getByRole<HTMLButtonElement>("button", { name: "Stop Command" })
+        .disabled,
+    ).toBe(true);
 
     // And the aggregate follows the same split: the button stays live for the
     // managed half, and a press skips the unreachable harness half rather
@@ -854,7 +853,43 @@ describe("the chat's monitors menu", () => {
     expect(attention).toHaveLength(0);
   });
 
-  it("re-arms when an acknowledged command fails again", () => {
+  it("treats an ending that arrives while the menu is open as seen", () => {
+    const stub = renderMenu();
+    act(() => {
+      stub.emit().onSnapshot([command({ id: "flaky", kind: "shell" })]);
+    });
+    openMenu();
+
+    // The rows are on screen when the exit lands, so the user watched it
+    // happen - the badge has nothing left to report, open or closed.
+    act(() => {
+      stub.emit().onChanged(
+        exited({
+          id: "flaky",
+          kind: "shell",
+          status: {
+            state: "exited",
+            exitCode: 2,
+            signal: null,
+            exitedAtMs: 99,
+          },
+          updatedAtMs: 99,
+        }),
+      );
+    });
+    expect(
+      screen.queryByTestId("managed-command-chat-menu-attention"),
+    ).toBeNull();
+
+    openMenu(); // toggles closed
+    expect(
+      screen
+        .getByTestId("managed-command-chat-menu-trigger")
+        .getAttribute("data-attention"),
+    ).toBe("false");
+  });
+
+  it("re-arms when an acknowledged command fails again after the menu closes", () => {
     const stub = renderMenu();
     act(() => {
       stub.emit().onSnapshot([exited({ id: "flaky", kind: "shell" })]);
@@ -863,7 +898,9 @@ describe("the chat's monitors menu", () => {
     expect(
       screen.queryByTestId("managed-command-chat-menu-attention"),
     ).toBeNull();
+    openMenu(); // toggles closed
 
+    // A failure nobody had on screen is new news.
     act(() => {
       stub.emit().onChanged(
         exited({

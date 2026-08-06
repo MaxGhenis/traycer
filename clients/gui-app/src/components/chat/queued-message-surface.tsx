@@ -869,7 +869,7 @@ function QueuedMessageStatusBadge(props: {
         <LivePulse
           size="xs"
           tone="active"
-          ariaLabel="Steering queued message"
+          ariaLabel={`${props.label} queued message`}
           className={undefined}
         />
       ) : null}
