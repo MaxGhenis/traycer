@@ -1,12 +1,12 @@
 /**
- * A chat's monitors and shells, as a badge floating over the top-right of its
- * transcript. The chat that started a command is where a human goes looking for
- * it, so this menu is the home for them - there is no epic-wide list any more.
+ * A chat's monitors and shells, as a chip in the workspace-controls row under
+ * the composer. The chat that started a command is where a human goes looking
+ * for it, so this menu is the home for them - there is no epic-wide list any
+ * more.
  *
- * A floating badge rather than a header bar or a composer control: the chat tile
- * has no header to extend, the area around the composer is already crowded, and
- * an overlay reserves no layout space - so a badge that comes and goes cannot
- * jump the transcript under someone who is reading it.
+ * It sits beside the host, workspace and context-usage chips because those are
+ * the other per-chat facts a person checks between turns; a badge floating over
+ * the transcript put it where the reading happens instead.
  *
  * The button exists only while the chat owns something. That makes its mere
  * presence the first piece of information: a chat with no monitors says so by
@@ -66,33 +66,6 @@ export interface ManagedCommandChatMenuProps {
    * opens on click.
    */
   readonly viewTabId: string | null;
-}
-
-/**
- * The badge's place on the chat tile: pinned to the top-right of the transcript
- * area, painting over it rather than displacing it.
- *
- * The turn minimap's lane shares this corner when it is on the right, and
- * hovering the first turn floats a preview card across it. That overlap is
- * accepted: the card is transient, and the lane is pointer-inert, so nothing
- * the badge offers ever becomes unclickable - only briefly covered.
- *
- * `pointer-events-none` on the frame so the inert area around the badge never
- * eats a click meant for the transcript beneath it.
- */
-export function ManagedCommandChatMenuOverlay(
-  props: ManagedCommandChatMenuProps,
-) {
-  return (
-    <div
-      className="pointer-events-none absolute right-2 top-2 z-20 flex justify-end"
-      data-testid="managed-command-chat-menu-overlay"
-    >
-      <div className="pointer-events-auto">
-        <ManagedCommandChatMenu {...props} />
-      </div>
-    </div>
-  );
 }
 
 export function ManagedCommandChatMenu(props: ManagedCommandChatMenuProps) {
@@ -157,12 +130,13 @@ export function ManagedCommandChatMenu(props: ManagedCommandChatMenuProps) {
             data-testid="managed-command-chat-menu-trigger"
             data-attention={attentionCount > 0 ? "true" : "false"}
             className={cn(
-              // Its own opaque plate: this floats over live transcript text,
-              // which would otherwise read straight through the badge.
-              "h-7 shrink-0 gap-1 border border-border/60 bg-canvas/90 px-2 text-ui-xs shadow-sm backdrop-blur-sm",
+              // The workspace chips' grammar: no plate or border of its own,
+              // dimmed until hovered.
+              "h-7 shrink-0 gap-1.5 px-1.5 text-ui-sm transition-[background-color,opacity] hover:bg-accent/50 focus-visible:opacity-100",
               attentionCount > 0
-                ? "text-destructive hover:text-destructive"
-                : "text-muted-foreground hover:text-foreground",
+                ? // Attention is the one state that should not be dimmed.
+                  "text-destructive hover:text-destructive"
+                : "text-muted-foreground opacity-70 hover:opacity-100",
             )}
           >
             <Radar aria-hidden className="size-3.5" />
@@ -175,6 +149,9 @@ export function ManagedCommandChatMenu(props: ManagedCommandChatMenuProps) {
       </TooltipWrapper>
       <PopoverContent
         align="end"
+        // The trigger sits at the tile's bottom edge, so the list has room
+        // above it and none below.
+        side="top"
         className={cn(
           "w-[min(90vw,24rem)] p-1",
           // Faded rather than closed - see `rowDraggingChanged`.

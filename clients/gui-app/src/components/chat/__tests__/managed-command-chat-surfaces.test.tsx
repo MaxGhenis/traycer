@@ -70,19 +70,12 @@ import {
 import { ManagedCommandListStreamMount } from "@/providers/managed-command-list-stream-mount";
 import { __setManagedCommandListStreamClientFactoryForTests } from "@/providers/managed-command-list-stream-factory-override";
 import { managedCommandListRegistry } from "@/stores/managed-commands/managed-command-list-registry";
-import {
-  DEFAULT_CHAT_TURN_MINIMAP_SIDE,
-  useSettingsStore,
-} from "@/stores/settings/settings-store";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { findOpenArtifactInTab } from "@/stores/epics/canvas/canvas-selectors";
 import { ManagedCommandBadge } from "@/components/chat/queued-message-surface";
 import { AutonomousResumeSegment } from "@/components/chat/segments/autonomous-resume-segment";
 import { BackgroundItemsPanel } from "@/components/chat/chat-background-items-panel";
-import {
-  ManagedCommandChatMenu,
-  ManagedCommandChatMenuOverlay,
-} from "@/components/managed-commands/managed-command-chat-menu";
+import { ManagedCommandChatMenu } from "@/components/managed-commands/managed-command-chat-menu";
 import { useManagedCommandAttentionStore } from "@/stores/managed-commands/managed-command-attention-store";
 
 const EPIC_ID = "epic-1";
@@ -177,9 +170,6 @@ beforeEach(() => {
     useManagedCommandAttentionStore.getInitialState(),
     true,
   );
-  useSettingsStore.setState({
-    chatTurnMinimapSide: DEFAULT_CHAT_TURN_MINIMAP_SIDE,
-  });
   epicHandle = createOpenEpicStore({
     epicId: EPIC_ID,
     streamClientFactory: noopStreamClientFactory,
@@ -926,12 +916,12 @@ describe("the chat's monitors menu", () => {
     expect(findOpenArtifactInTab(TAB_ID, "door")).not.toBeNull();
   });
 
-  it("sits at the transcript's top-right corner whatever the minimap is doing", () => {
+  it("contributes nothing but its trigger, so the composer row can lay it out", () => {
     const stub = installListStub();
-    renderInChatTile(
+    const { container } = renderInChatTile(
       <DndContext>
         <ManagedCommandListStreamMount epicId={EPIC_ID} />
-        <ManagedCommandChatMenuOverlay
+        <ManagedCommandChatMenu
           epicId={EPIC_ID}
           chatId={CHAT_ID}
           hostId="host-1"
@@ -943,27 +933,13 @@ describe("the chat's monitors menu", () => {
       stub.emit().onSnapshot([command({ id: "only" })]);
     });
 
-    // The badge used to step inboard by the minimap lane's width to dodge the
-    // first-turn hover preview. That card is far wider than the lane, so the
-    // offset landed deeper inside it rather than clear of it - and the lane is
-    // pointer-inert anyway, so the overlap costs nothing but a moment's
-    // occlusion. One placement, no special case.
-    const overlay = screen.getByTestId("managed-command-chat-menu-overlay");
-    expect(overlay.className).toContain("right-2");
-
-    act(() => {
-      useSettingsStore.setState({ chatTurnMinimapSide: "left" });
-    });
-    expect(
-      screen.getByTestId("managed-command-chat-menu-overlay").className,
-    ).toContain("right-2");
-
-    act(() => {
-      useSettingsStore.setState({ chatTurnMinimapSide: "hide" });
-    });
-    expect(
-      screen.getByTestId("managed-command-chat-menu-overlay").className,
-    ).toContain("right-2");
+    // The badge used to hang in an absolutely positioned frame over the
+    // transcript. Now that it lives in the workspace-controls row beside the
+    // context-usage chip, a frame of its own would either hold a slot open
+    // while the chat owns nothing or lift the button out of the row's flow.
+    expect(container.firstElementChild).toBe(
+      screen.getByTestId("managed-command-chat-menu-trigger"),
+    );
   });
 
   it("flags a lost host while keeping the last known rows", () => {
