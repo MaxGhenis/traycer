@@ -827,8 +827,11 @@ function queuedMessageRowActionState(
 function queuedMessageStatusLabel(item: ChatQueuedItem): string | null {
   if (isOptimisticQueuedItem(item)) return "Queuing";
   if (item.kind === "managed-command") {
-    // Only "pending" | "paused" ever occur; the badge is the row's provenance
-    // marker, so a pending item needs no additional label.
+    // The badge is the row's provenance marker, so a pending item needs no
+    // additional label. `steering` is the handover window: the digest is being
+    // delivered into the running turn, and the cancel lever has closed - the
+    // label is what tells the user why the row's controls went away.
+    if (item.status === "steering") return "Delivering";
     return item.status === "paused" ? "Paused" : null;
   }
   if (item.status === "steer_requested") {

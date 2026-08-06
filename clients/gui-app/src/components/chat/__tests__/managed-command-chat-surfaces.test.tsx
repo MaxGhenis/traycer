@@ -581,8 +581,10 @@ describe("running commands in the Background panel", () => {
     // The harness half is still ready, so the button stays live - but a press
     // during the managed fan-out must reach only the harness half, never
     // re-send the managed set.
-    const stopAllButton = screen.getByTestId("background-stop-all");
-    expect(stopAllButton.getAttribute("disabled")).toBeNull();
+    const stopAllButton = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Stop all",
+    });
+    expect(stopAllButton.disabled).toBe(false);
     fireEvent.click(stopAllButton);
     expect(stub.onStopAll).toHaveBeenCalledTimes(1);
     expect(stopAllMutate).not.toHaveBeenCalled();
@@ -597,8 +599,10 @@ describe("running commands in the Background panel", () => {
 
     // Harness half gated by the closed stream, managed half in flight: with
     // nothing left for a press to do, the button finally disables.
-    const stopAllButton = screen.getByTestId("background-stop-all");
-    expect(stopAllButton.getAttribute("disabled")).not.toBeNull();
+    const stopAllButton = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Stop all",
+    });
+    expect(stopAllButton.disabled).toBe(true);
     fireEvent.click(stopAllButton);
     expect(stub.onStopAll).not.toHaveBeenCalled();
   });
@@ -625,8 +629,10 @@ describe("running commands in the Background panel", () => {
     // managed half, and a press skips the unreachable harness half rather
     // than dying with it - a reconnect is exactly when a runaway monitor
     // needs the one-click stop.
-    const stopAllButton = screen.getByTestId("background-stop-all");
-    expect(stopAllButton.getAttribute("disabled")).toBeNull();
+    const stopAllButton = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Stop all",
+    });
+    expect(stopAllButton.disabled).toBe(false);
     fireEvent.click(stopAllButton);
     expect(stub.onStopAll).not.toHaveBeenCalled();
     expect(stopAllMutate).toHaveBeenCalledTimes(1);

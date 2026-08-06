@@ -704,6 +704,30 @@ describe("<QueuedMessagePanel />", () => {
     expect(within(managedRow).getByText("Paused")).not.toBeNull();
   });
 
+  it("labels a steering managed-command item and closes its cancel lever", () => {
+    renderPanel({
+      queue: queueState([
+        {
+          ...managedCommandQueuedItem("queue-managed", "bun test"),
+          status: "steering",
+        },
+      ]),
+      readOnly: false,
+      canAct: true,
+      onReorder: null,
+    });
+
+    // The handover window: the digest is being delivered into the running
+    // turn. The label is what tells the user why the controls went away -
+    // without it the row locks silently.
+    const managedRow = screen.getByTestId("queued-message-row");
+    expect(within(managedRow).getByText("Delivering")).not.toBeNull();
+    expect(managedRow.getAttribute("aria-busy")).toBe("true");
+    expect(
+      within(managedRow).queryByRole("button", { name: /cancel/i }),
+    ).toBeNull();
+  });
+
   // The next two pin `readOnly` and `canAct` one at a time: the cancel action
   // reads them independently, so a single test setting both to their hiding
   // value would still pass with either check regressed.
