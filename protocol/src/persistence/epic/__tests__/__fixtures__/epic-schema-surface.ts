@@ -4302,12 +4302,12 @@ export const epicSchemaSurfaceBaseline = {
                                               commandId: {
                                                 type: "string",
                                               },
-                                              kind: {
-                                                type: "string",
-                                                enum: ["monitor", "shell"],
+                                              notifying: {
+                                                default: false,
+                                                type: "boolean",
                                               },
                                             },
-                                            required: ["commandId", "kind"],
+                                            required: ["commandId"],
                                           },
                                           {
                                             type: "null",
@@ -11031,12 +11031,15 @@ export const epicSchemaSurfaceBaseline = {
                                               commandId: {
                                                 type: "string",
                                               },
-                                              kind: {
-                                                type: "string",
-                                                enum: ["monitor", "shell"],
+                                              notifying: {
+                                                default: false,
+                                                type: "boolean",
                                               },
                                             },
-                                            required: ["commandId", "kind"],
+                                            required: [
+                                              "commandId",
+                                              "notifying",
+                                            ],
                                             additionalProperties: false,
                                           },
                                           {
