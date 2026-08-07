@@ -172,6 +172,7 @@ function managedCommandOwnerRow(commandId: string): Record<string, unknown> {
       commandId,
       notifying: true,
       description: "deploy watcher",
+      createdByAgentId: CHAT_ID,
     },
   };
 }

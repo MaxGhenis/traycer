@@ -136,7 +136,8 @@ function managedCommandEqual(
   return (
     a.commandId === b.commandId &&
     a.notifying === b.notifying &&
-    a.description === b.description
+    a.description === b.description &&
+    a.createdByAgentId === b.createdByAgentId
   );
 }
 
