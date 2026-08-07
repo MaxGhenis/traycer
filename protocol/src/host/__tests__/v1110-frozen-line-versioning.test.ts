@@ -99,7 +99,7 @@ describe("epic.createTuiAgent 1.0 <-> 1.1", () => {
 
 const releasedProvidersRequest = { forceAuthRefresh: true };
 
-describe("providers.list request lines 1.0..6.0 <-> 7.0", () => {
+describe("providers.list request lines 1.0..6.0 <-> latest", () => {
   it("released callers at every major upgrade to canonical with native:null", () => {
     for (const major of [1, 2, 3, 4, 5, 6] as const) {
       const parsed =
@@ -107,7 +107,7 @@ describe("providers.list request lines 1.0..6.0 <-> 7.0", () => {
       const canonical = upgradeRequestToVersion(
         providersListRegistry,
         { major, minor: 0 },
-        { major: 7, minor: 0 },
+        { major: 8, minor: 0 },
         parsed,
       );
       expect(canonical, `major ${major}`).toEqual({
@@ -118,7 +118,7 @@ describe("providers.list request lines 1.0..6.0 <-> 7.0", () => {
     }
   });
 
-  it("a new 7.0 client downgrades its request to every released major without leaking native", () => {
+  it("a new latest-major client downgrades its request to every released major without leaking native", () => {
     const canonical = providersListRequestSchema.parse({
       forceAuthRefresh: true,
       native: {
@@ -131,7 +131,7 @@ describe("providers.list request lines 1.0..6.0 <-> 7.0", () => {
     for (const major of [1, 2, 3, 4, 5, 6] as const) {
       const down = downgradeRequestAcrossMajors(
         providersListRegistry,
-        7,
+        8,
         major,
         canonical,
       );
@@ -145,14 +145,14 @@ describe("providers.list request lines 1.0..6.0 <-> 7.0", () => {
     }
   });
 
-  it("response round-trip 7.0 -> 6.0 -> 7.0 still parses at both ends", () => {
+  it("response round-trip 8.0 -> 6.0 -> 8.0 still parses at both ends", () => {
     const canonicalResponse = providersListResponseSchema.parse({
       providers: [],
       native: null,
     });
     const down = downgradeResponseAcrossMajors(
       providersListRegistry,
-      7,
+      8,
       6,
       canonicalResponse,
     );
@@ -165,7 +165,7 @@ describe("providers.list request lines 1.0..6.0 <-> 7.0", () => {
     const back = upgradeResponseToVersion(
       providersListRegistry,
       { major: 6, minor: 0 },
-      { major: 7, minor: 0 },
+      { major: 8, minor: 0 },
       providersListResponseSchemaV60.parse(down.value),
     );
     expect(back.native).toBeNull();
