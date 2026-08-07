@@ -9,7 +9,7 @@
  * branch so a later gate outcome does not force another protocol PR.
  */
 import { z } from "zod";
-import { providerIdSchema } from "./provider-ids";
+import { providerIdSchema, providerIdSchemaV70 } from "./provider-ids";
 
 // ── Scope tuple (shared by every native verb) ──────────────────────────────
 
@@ -127,36 +127,6 @@ export const providerSettingsTabSchema = z.enum([
   "modelProviders",
 ]);
 export type ProviderSettingsTab = z.infer<typeof providerSettingsTabSchema>;
-
-/**
- * Frozen tab-id set as it stands on the `providers.list@7.0` line - every tab
- * except `modelProviders`, which opens 8.0.
- *
- * This enum is the reason the `modelProviders` tab id could never ship on its
- * own. `supportedTabs` is an ARRAY of this enum nested inside
- * `providerNativeCapabilities`, and the whole capability object is decoded
- * through a single `.catch(DEFAULT_PROVIDER_NATIVE_CAPABILITIES)` on
- * `providerCliStateSchema`. One unparseable member therefore does not degrade
- * to "unknown tab dropped" - it fails the array, fails the object, and
- * collapses MCP/Plugins/Skills to the empty default for that provider. A v7.0
- * client seeing `modelProviders` would silently lose three working tabs.
- *
- * So the v8→v7 projection (`projectProviderNativeCapabilitiesToV70`) FILTERS
- * the tab list rather than relying on a reparse, and this enum is what it
- * filters against. Do not add tabs here - extend the live schema and let the
- * bridge project.
- */
-export const providerSettingsTabSchemaV70 = z.enum([
-  "general",
-  "env",
-  "usage",
-  "mcp",
-  "plugins",
-  "skills",
-]);
-export type ProviderSettingsTabV70 = z.infer<
-  typeof providerSettingsTabSchemaV70
->;
 
 /**
  * Which provider operations receive Settings → Providers environment
@@ -506,33 +476,6 @@ export type ProviderNativeCapabilities = z.infer<
 >;
 
 /**
- * Frozen capability descriptor as shipped on the `providers.list@7.0` line.
- *
- * A hand-copy, NOT `.omit()` on the live schema - the same discipline
- * `providerLoginCapabilitySchemaV40` documents, and for the same reason: a
- * field added to the live capability object must not appear on an already-
- * negotiated line just because the frozen schema was derived from it.
- *
- * `mcp`/`plugins`/`skills` stay wired to the LIVE sub-schemas, matching how
- * `providerCliStateBaseShapeV40` keeps `profiles` live. Those three trees are
- * additive-within-themselves by construction (every field added to them so far
- * is `.default().optional()` or nullable), and the compat gate covers their
- * growth on this line directly. What is NOT tolerable here, and is therefore
- * pinned, is `supportedTabs`: its enum is closed, so growth there is fatal
- * rather than additive (see `providerSettingsTabSchemaV70`).
- */
-export const providerNativeCapabilitiesSchemaV70 = z.object({
-  supportedTabs: z.array(providerSettingsTabSchemaV70),
-  envOverrideScope: providerEnvOverrideScopeSchema.optional(),
-  mcp: providerMcpCapabilitiesSchema.nullable(),
-  plugins: providerPluginsCapabilitiesSchema.nullable(),
-  skills: providerSkillsCapabilitiesSchema.nullable(),
-});
-export type ProviderNativeCapabilitiesV70 = z.infer<
-  typeof providerNativeCapabilitiesSchemaV70
->;
-
-/**
  * Default descriptor for old-host responses / `.catch()` on wire parse.
  * Empty tabs → UI shows only the pre-existing General/Env/Usage surfaces
  * that do not depend on this field.
@@ -544,63 +487,6 @@ export const DEFAULT_PROVIDER_NATIVE_CAPABILITIES: ProviderNativeCapabilities = 
   skills: null,
   modelProviders: null,
 };
-
-/**
- * The v7.0-shaped counterpart of {@link DEFAULT_PROVIDER_NATIVE_CAPABILITIES},
- * used by the frozen v7.0 state's own `.catch()` so that line keeps decoding
- * exactly as it does today.
- */
-export const DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70: ProviderNativeCapabilitiesV70 =
-  {
-    supportedTabs: ["general", "env", "usage"],
-    mcp: null,
-    plugins: null,
-    skills: null,
-  };
-
-/**
- * Project a live capability descriptor onto the frozen v7.0 shape.
- *
- * Two separate cuts, and both are load-bearing:
- *
- * 1. `modelProviders` is dropped. A plain (non-strict) reparse would do this
- *    on its own, but the drop is written out so the projection reads as the
- *    contract it is.
- * 2. `supportedTabs` is FILTERED, not reparsed. This is the cut a reparse
- *    cannot make: `z.array(enum)` rejects the whole array on one unknown
- *    member, the object parse fails with it, and
- *    `providerCliStateSchema`'s whole-object `.catch()` then serves the empty
- *    default - so a v7.0 client would lose MCP, Plugins AND Skills for that
- *    provider, not just the tab it never knew about.
- */
-export function projectProviderNativeCapabilitiesToV70(
-  capabilities: ProviderNativeCapabilities,
-): ProviderNativeCapabilitiesV70 {
-  const { modelProviders: _modelProviders, ...rest } = capabilities;
-  return providerNativeCapabilitiesSchemaV70.parse({
-    ...rest,
-    supportedTabs: capabilities.supportedTabs.filter(
-      (tab): tab is ProviderSettingsTabV70 => tab !== "modelProviders",
-    ),
-  });
-}
-
-/**
- * Lift a frozen v7.0 capability descriptor onto the live shape. A v7.0 host
- * predates the Model Providers surface entirely, so `null` ("this provider
- * cannot manage upstream credentials") is the honest projection - the same
- * "old host never had this feature" reading as the `profiles: []` fill on the
- * v3→v4 hop.
- *
- * Spelled out here rather than left to a live reparse because
- * `upgradeResponseToVersion` chains bridge callbacks by cast, with no parse
- * step in between: an unfilled key stays absent all the way to the consumer.
- */
-export function upgradeNativeCapabilitiesFromV70(
-  capabilities: ProviderNativeCapabilitiesV70,
-): ProviderNativeCapabilities {
-  return { ...capabilities, modelProviders: null };
-}
 
 // ── Transport + auth (write vs masked read) ────────────────────────────────
 
@@ -1411,20 +1297,84 @@ export const modelProviderEntrySchema = z.object({
 });
 export type ModelProviderEntry = z.infer<typeof modelProviderEntrySchema>;
 
+/**
+ * Failure vocabulary for this surface. Deliberately its OWN enum rather than
+ * `providerNativeErrorCodeSchema`.
+ *
+ * That enum describes editing provider CONFIG FILES - `duplicate_name`,
+ * `external_drift`, `rollback_failed`, `no_change_detected`. None of it
+ * describes an OAuth attempt, and this surface's settled semantics (attempts
+ * are single-flight per `(providerId, modelProviderId)`, a new attempt
+ * supersedes the pending one, stale attempt ids are discarded, attempts expire
+ * server-side) have no member there at all. Reusing it would force the host to
+ * report "your attempt was superseded" as `external_drift` - a code whose
+ * meaning is already spoken for, in a union released clients decode.
+ *
+ * Widening the shared enum was the other option and is not available: it rides
+ * released carriers, so a new member is a value already-shipped peers reject.
+ *
+ * Each member exists because a client does something DIFFERENT about it:
+ * - `capability_unavailable` — the surface is not offered here (not the
+ *   `opencode` module, or the CLI is below the version gate). Nothing to
+ *   retry. On the auth methods this is the `unsupported` RESULT ARM instead;
+ *   the list result has no arm vocabulary, so it needs the code.
+ * - `server_unavailable` — the managed server could not be started or leased.
+ *   Nothing is wrong with the credential; retry later.
+ * - `provider_not_found` — the named upstream provider is not in the catalog
+ *   (stale client-side list). Re-list.
+ * - `attempt_not_found` — no attempt with that id: it completed, was
+ *   cancelled, or was never minted. Start a fresh flow.
+ * - `attempt_superseded` — a newer attempt for the same pair replaced this
+ *   one. Do NOT restart: drop this attempt's UI, the newer one owns the
+ *   surface.
+ * - `attempt_expired` — the attempt timed out in the pending-auth registry.
+ *   Start a fresh flow.
+ * - `code_rejected` — the pasted code was refused, and the attempt is STILL
+ *   LIVE. Re-prompt for a code; restarting would throw away a usable attempt.
+ * - `invalid_input` — the submitted prompt answers failed the provider's own
+ *   validation. Re-show the form with the detail.
+ * - `provider_auth_failed` — the provider refused the credential, or the OAuth
+ *   callback failed. Show the detail; retrying is the user's call.
+ */
+export const modelProviderErrorCodeSchema = z.enum([
+  "capability_unavailable",
+  "server_unavailable",
+  "provider_not_found",
+  "attempt_not_found",
+  "attempt_superseded",
+  "attempt_expired",
+  "code_rejected",
+  "invalid_input",
+  "provider_auth_failed",
+]);
+export type ModelProviderErrorCode = z.infer<
+  typeof modelProviderErrorCodeSchema
+>;
+
+/** Same envelope shape as `providerNativeErrorResultSchema`, own vocabulary. */
+export const modelProviderErrorResultSchema = z.object({
+  ok: z.literal(false),
+  code: modelProviderErrorCodeSchema,
+  detail: z.string().nullable(),
+});
+export type ModelProviderErrorResult = z.infer<
+  typeof modelProviderErrorResultSchema
+>;
+
 const modelProvidersListSuccessResultSchema = z.object({
   ok: z.literal(true),
   providers: z.array(modelProviderEntrySchema),
 });
 
 /**
- * `providers.listModelProviders` payload. Success or a typed native error, the
- * same union shape `nativeListResultSchema` uses - a capability that is gated
- * off, or a managed server that would not start, is a result rather than a
+ * `providers.listModelProviders` payload. Success or a typed error, the same
+ * union shape `nativeListResultSchema` uses - a capability that is gated off,
+ * or a managed server that would not start, is a result rather than a
  * transport failure.
  */
 export const modelProvidersListResultSchema = z.union([
   modelProvidersListSuccessResultSchema,
-  providerNativeErrorResultSchema,
+  modelProviderErrorResultSchema,
 ]);
 export type ModelProvidersListResult = z.infer<
   typeof modelProvidersListResultSchema
@@ -1533,7 +1483,11 @@ export type ModelProviderAuthCancelContext = z.infer<
  * - `unsupported` — the action is not available (capability gated off, CLI
  *   below the version gate, the provider advertises no such method). Never
  *   faked into a `done`.
- * - `error` — a typed native failure.
+ * - `error` — a typed failure from `modelProviderErrorCodeSchema`, this
+ *   surface's OWN vocabulary. The shared native error enum cannot express an
+ *   attempt lifecycle at all - see that schema's comment - and the settled
+ *   attempt semantics (supersede, expiry, stale ids) are exactly what a poll
+ *   or a late `submitCode` has to report.
  *
  * `nativeAuthResultSchema`'s `pendingInstruction` arm has no counterpart:
  * upstream carries its instruction text ON the authorization response, so a
@@ -1560,10 +1514,447 @@ export const modelProviderAuthResultSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("error"),
-    code: providerNativeErrorCodeSchema,
+    code: modelProviderErrorCodeSchema,
     detail: z.string().nullable(),
   }),
 ]);
 export type ModelProviderAuthResult = z.infer<
   typeof modelProviderAuthResultSchema
 >;
+
+// ── Frozen v7.0 native payloads ────────────────────────────────────────────
+//
+// Everything `providers.list@7.0` carries in its `native` request/response and
+// its `nativeCapabilities` descriptor, hand-copied as that line actually
+// shipped. `provider-schemas.ts` wires the v7.0 request/response and the v7.0
+// state to THESE and nothing above them.
+//
+// Naming a schema `...V70` while it still points into the live tree is not a
+// freeze - it is a freeze-shaped alias. Every closed enum and every
+// discriminated union reachable from the v7.0 wire is copied below, because
+// those are the shapes whose growth is FATAL rather than additive to an
+// already-shipped peer: a v7.0 client strict-decodes them, so one unknown
+// member fails its array, then its object, and (for `nativeCapabilities`) hits
+// the whole-object `.catch()` that serves the empty default. Object fields
+// added to the live tree would merely be dropped by these plain `z.object`
+// parses; enum and union members would not.
+//
+// The frozen-catalog snapshot is an alarm, not this boundary. It can be
+// regenerated by anyone; these schemas cannot be widened without editing a
+// file whose every comment says not to.
+//
+// Do not add to anything in this section. Extend the live schema, then extend
+// the v8→v7 projection to say explicitly what an older peer sees.
+
+export const providerNativeScopeSchemaV70 = z.enum(["global", "project"]);
+export type ProviderNativeScopeV70 = z.infer<
+  typeof providerNativeScopeSchemaV70
+>;
+
+export const providerNativeErrorCodeSchemaV70 = z.enum([
+  "duplicate_name",
+  "unsupported_scope",
+  "unsupported_action",
+  "no_change_detected",
+  "external_drift",
+  "store_version_unsupported",
+  "rollback_failed",
+]);
+export type ProviderNativeErrorCodeV70 = z.infer<
+  typeof providerNativeErrorCodeSchemaV70
+>;
+
+export const providerNativeErrorResultSchemaV70 = z.object({
+  ok: z.literal(false),
+  code: providerNativeErrorCodeSchemaV70,
+  detail: z.string().nullable(),
+});
+
+export const providerSettingsTabSchemaV70 = z.enum([
+  "general",
+  "env",
+  "usage",
+  "mcp",
+  "plugins",
+  "skills",
+]);
+export type ProviderSettingsTabV70 = z.infer<
+  typeof providerSettingsTabSchemaV70
+>;
+
+export const providerMcpTransportSchemaV70 = z.enum(["stdio", "http", "sse"]);
+export const providerMcpAuthTypeSchemaV70 = z.enum([
+  "none",
+  "header",
+  "env",
+  "oauth",
+]);
+export const providerMcpAuthActionSchemaV70 = z.enum([
+  "login",
+  "submitCode",
+  "logout",
+  "clearAuth",
+  "forceReauth",
+]);
+export const providerMcpPerToolBackingSchemaV70 = z.enum([
+  "native",
+  "store",
+  "degraded-server-level",
+  "none",
+]);
+export const providerMcpDataSourceSchemaV70 = z.enum([
+  "native",
+  "probe",
+  "none",
+]);
+export const providerMcpWritePathSchemaV70 = z.enum(["cli", "patch", "none"]);
+export const providerMcpOauthFieldSchemaV70 = z.enum(["clientId", "resource"]);
+
+export const providerMcpCapabilitiesSchemaV70 = z.object({
+  transports: z.array(providerMcpTransportSchemaV70),
+  authTypes: z.array(providerMcpAuthTypeSchemaV70),
+  authActions: z.array(providerMcpAuthActionSchemaV70),
+  actionScopes: z.object({
+    list: z.array(providerNativeScopeSchemaV70),
+    add: z.array(providerNativeScopeSchemaV70),
+    update: z.array(providerNativeScopeSchemaV70),
+    remove: z.array(providerNativeScopeSchemaV70),
+    toggleServer: z.array(providerNativeScopeSchemaV70),
+    toggleTool: z.array(providerNativeScopeSchemaV70),
+    discover: z.array(providerNativeScopeSchemaV70),
+    auth: z.array(providerNativeScopeSchemaV70),
+  }),
+  addServer: providerMcpWritePathSchemaV70,
+  removeServer: providerMcpWritePathSchemaV70,
+  updateServer: providerMcpWritePathSchemaV70,
+  supportsMultipleHeaders: z.boolean().default(false).optional(),
+  oauthFields: z.array(providerMcpOauthFieldSchemaV70).default([]).optional(),
+  perToolBacking: providerMcpPerToolBackingSchemaV70,
+  statusSource: providerMcpDataSourceSchemaV70,
+  toolsSource: providerMcpDataSourceSchemaV70,
+  schemasSource: providerMcpDataSourceSchemaV70,
+  instructionsSource: z.enum(["probe", "none"]),
+  traycerSessionsOnlyEnforcement: z.boolean(),
+  stdioDegradeNotice: z.boolean(),
+  oauthDegradesToConfigOnly: z.boolean(),
+});
+
+export const providerPluginsAddModeSchemaV70 = z.enum([
+  "cli-source",
+  "marketplace",
+  "file-drop",
+  "patch",
+  "read-only",
+]);
+
+export const providerPluginsCapabilitiesSchemaV70 = z.object({
+  addModes: z.array(providerPluginsAddModeSchemaV70),
+  marketplaceBrowse: z.boolean(),
+  actionScopes: z.object({
+    list: z.array(providerNativeScopeSchemaV70),
+    add: z.array(providerNativeScopeSchemaV70),
+    remove: z.array(providerNativeScopeSchemaV70),
+    setEnabled: z.array(providerNativeScopeSchemaV70),
+  }),
+  traycerSessionToolsNotice: z.boolean(),
+});
+
+export const providerSkillsCapabilitiesSchemaV70 = z.object({
+  actionScopes: z.object({
+    list: z.array(providerNativeScopeSchemaV70),
+    add: z.array(providerNativeScopeSchemaV70),
+    create: z.array(providerNativeScopeSchemaV70),
+    import: z.array(providerNativeScopeSchemaV70),
+    remove: z.array(providerNativeScopeSchemaV70),
+  }),
+});
+
+export const providerMcpSecretMaskSchemaV70 = z.object({
+  name: z.string().min(1),
+  hasValue: z.boolean(),
+});
+
+export const providerMcpAuthReadSchemaV70 = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("header"),
+    name: z.string().min(1),
+    hasValue: z.boolean(),
+  }),
+  z.object({
+    type: z.literal("env"),
+    name: z.string().min(1),
+    hasValue: z.boolean(),
+  }),
+  z.object({
+    type: z.literal("oauth"),
+  }),
+]);
+
+export const providerMcpServerTransportReadSchemaV70 = z.discriminatedUnion(
+  "type",
+  [
+    z.object({
+      type: z.literal("stdio"),
+      command: z.string(),
+      env: z.array(providerMcpSecretMaskSchemaV70).nullable(),
+    }),
+    z.object({
+      type: z.literal("http"),
+      url: z.string(),
+      auth: providerMcpAuthReadSchemaV70.nullable(),
+    }),
+    z.object({
+      type: z.literal("sse"),
+      url: z.string(),
+      auth: providerMcpAuthReadSchemaV70.nullable(),
+    }),
+  ],
+);
+
+export const providerMcpServerStatusSchemaV70 = z.enum([
+  "connected",
+  "disconnected",
+  "connecting",
+  "needs_auth",
+  "error",
+  "unknown",
+  "config_only",
+]);
+
+export const providerMcpToolDenySourceSchemaV70 = z.enum([
+  "user",
+  "shared",
+  "local",
+]);
+
+export const providerMcpToolSchemaV70 = z.object({
+  name: z.string(),
+  description: z.string().nullable(),
+  inputSchema: z.record(z.string(), z.unknown()).nullable(),
+  enabled: z.boolean(),
+  readOnly: z.boolean(),
+  denySources: z
+    .array(providerMcpToolDenySourceSchemaV70)
+    .default([])
+    .optional(),
+});
+
+export const providerMcpServerSchemaV70 = z.object({
+  name: z.string(),
+  enabled: z.boolean(),
+  transport: providerMcpServerTransportReadSchemaV70,
+  status: providerMcpServerStatusSchemaV70,
+  statusSource: providerMcpDataSourceSchemaV70,
+  statusDetail: z.string().nullable(),
+  tools: z.array(providerMcpToolSchemaV70),
+  discoveryPending: z.boolean(),
+  instructions: z.string().nullable(),
+  configOnly: z.boolean(),
+  stdioDegraded: z.boolean(),
+});
+
+export const providerPluginSchemaV70 = z.object({
+  id: z.string(),
+  name: z.string(),
+  version: z.string().nullable(),
+  enabled: z.boolean(),
+  source: z.string().nullable(),
+  readOnly: z.boolean(),
+  description: z.string().nullable().default(null).optional(),
+  displayName: z.string().nullable().default(null).optional(),
+  hasIcon: z.boolean().default(false).optional(),
+  hasDarkIcon: z.boolean().default(false).optional(),
+});
+
+export const providerPluginIconThemeSchemaV70 = z.enum(["light", "dark"]);
+
+export const providerPluginIconSchemaV70 = z.object({
+  dataUri: z.string().nullable(),
+  error: z.string().nullable(),
+});
+
+export const providerSkillSourceBadgeSchemaV70 = z.enum([
+  "shared",
+  "provider",
+  "plugin",
+  "managed",
+]);
+
+export const providerSkillSchemaV70 = z.object({
+  name: z.string(),
+  description: z.string().nullable(),
+  path: z.string(),
+  source: providerSkillSourceBadgeSchemaV70,
+});
+
+/**
+ * The `native` query as `providers.list@7.0` accepts it. A discriminated union
+ * on `kind`, so a v8.0 caller inventing a sixth arm is a value a v7.0 host
+ * rejects outright - which is why the v8→v7 request bridge parses through this
+ * rather than passing the live value along.
+ */
+export const nativeListQuerySchemaV70 = z
+  .discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("mcp"),
+      providerId: providerIdSchemaV70,
+      scope: providerNativeScopeSchemaV70,
+      workspaceRoot: z.string().nullable(),
+    }),
+    z.object({
+      kind: z.literal("plugins"),
+      providerId: providerIdSchemaV70,
+      scope: providerNativeScopeSchemaV70,
+      workspaceRoot: z.string().nullable(),
+    }),
+    z.object({
+      kind: z.literal("skills"),
+      providerId: providerIdSchemaV70,
+      scope: providerNativeScopeSchemaV70,
+      workspaceRoot: z.string().nullable(),
+    }),
+    z.object({
+      kind: z.literal("mcpDiscover"),
+      providerId: providerIdSchemaV70,
+      scope: providerNativeScopeSchemaV70,
+      workspaceRoot: z.string().nullable(),
+      serverName: z.string().min(1),
+      forceRefresh: z.boolean(),
+    }),
+    z.object({
+      kind: z.literal("pluginIcon"),
+      providerId: providerIdSchemaV70,
+      scope: providerNativeScopeSchemaV70,
+      workspaceRoot: z.string().nullable(),
+      pluginId: z.string().min(1),
+      theme: providerPluginIconThemeSchemaV70,
+    }),
+  ])
+  .superRefine(refineProviderNativeScope);
+export type NativeListQueryV70 = z.infer<typeof nativeListQuerySchemaV70>;
+
+const nativeListSuccessResultSchemaV70 = z.discriminatedUnion("kind", [
+  z.object({
+    ok: z.literal(true),
+    kind: z.literal("mcp"),
+    servers: z.array(providerMcpServerSchemaV70),
+  }),
+  z.object({
+    ok: z.literal(true),
+    kind: z.literal("plugins"),
+    plugins: z.array(providerPluginSchemaV70),
+  }),
+  z.object({
+    ok: z.literal(true),
+    kind: z.literal("skills"),
+    skills: z.array(providerSkillSchemaV70),
+  }),
+  z.object({
+    ok: z.literal(true),
+    kind: z.literal("mcpDiscover"),
+    server: providerMcpServerSchemaV70,
+  }),
+  z.object({
+    ok: z.literal(true),
+    kind: z.literal("pluginIcon"),
+    icon: providerPluginIconSchemaV70,
+  }),
+]);
+
+export const nativeListResultSchemaV70 = z.union([
+  nativeListSuccessResultSchemaV70,
+  providerNativeErrorResultSchemaV70,
+]);
+export type NativeListResultV70 = z.infer<typeof nativeListResultSchemaV70>;
+
+/**
+ * Frozen capability descriptor as shipped on the `providers.list@7.0` line.
+ *
+ * A hand-copy, NOT `.omit()` on the live schema - the same discipline
+ * `providerLoginCapabilitySchemaV40` documents, and for the same reason: a
+ * field added to the live capability object must not appear on an already-
+ * negotiated line just because the frozen schema was derived from it.
+ *
+ * `mcp`/`plugins`/`skills` point at the frozen copies above rather than the
+ * live trees. Pointing them at the live trees would have pinned the OUTER
+ * object while leaving every enum inside it free to grow - and this descriptor
+ * is the one place where growth is not merely leaked but fatal, because
+ * `providerCliStateSchemaV70` reads the whole thing through one `.catch()`.
+ */
+export const providerNativeCapabilitiesSchemaV70 = z.object({
+  supportedTabs: z.array(providerSettingsTabSchemaV70),
+  envOverrideScope: providerEnvOverrideScopeSchema.optional(),
+  mcp: providerMcpCapabilitiesSchemaV70.nullable(),
+  plugins: providerPluginsCapabilitiesSchemaV70.nullable(),
+  skills: providerSkillsCapabilitiesSchemaV70.nullable(),
+});
+export type ProviderNativeCapabilitiesV70 = z.infer<
+  typeof providerNativeCapabilitiesSchemaV70
+>;
+
+/**
+ * The v7.0-shaped counterpart of {@link DEFAULT_PROVIDER_NATIVE_CAPABILITIES},
+ * used by the frozen v7.0 state's own `.catch()` so that line keeps decoding
+ * exactly as it does today.
+ */
+export const DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70: ProviderNativeCapabilitiesV70 =
+  {
+    supportedTabs: ["general", "env", "usage"],
+    mcp: null,
+    plugins: null,
+    skills: null,
+  };
+
+/**
+ * Project a live capability descriptor onto the frozen v7.0 shape.
+ *
+ * Two cuts, and they are made in different ways on purpose:
+ *
+ * 1. `modelProviders` is dropped. A plain (non-strict) reparse would do this
+ *    on its own, but the drop is written out so the projection reads as the
+ *    contract it is.
+ * 2. `supportedTabs` is FILTERED before the parse. This is the cut a reparse
+ *    cannot make: `z.array(enum)` rejects the whole array on one unknown
+ *    member, the object parse fails with it, and `providerCliStateSchemaV70`'s
+ *    whole-object `.catch()` then serves the empty default - so a v7.0 client
+ *    would lose MCP, Plugins AND Skills for that provider, not just the tab it
+ *    never knew about.
+ *
+ * Everything else is parsed STRICTLY through the frozen tree, and a value the
+ * v7.0 shapes cannot represent throws rather than degrading. That is
+ * deliberate: `supportedTabs` is the one field known to grow, and its
+ * projection is written down. A future member added to any other frozen enum
+ * has no agreed answer for a v7.0 peer, and inventing one here - dropping it,
+ * or collapsing to the default - would ship that guess silently. The throw
+ * routes the decision back to whoever grew the enum, and
+ * `provider-model-providers-compat.test.ts` pins live-vs-frozen agreement so
+ * they meet it as a red test rather than a field incident.
+ */
+export function projectProviderNativeCapabilitiesToV70(
+  capabilities: ProviderNativeCapabilities,
+): ProviderNativeCapabilitiesV70 {
+  const { modelProviders: _modelProviders, ...rest } = capabilities;
+  return providerNativeCapabilitiesSchemaV70.parse({
+    ...rest,
+    supportedTabs: capabilities.supportedTabs.filter(
+      (tab): tab is ProviderSettingsTabV70 => tab !== "modelProviders",
+    ),
+  });
+}
+
+/**
+ * Lift a frozen v7.0 capability descriptor onto the live shape. A v7.0 host
+ * predates the Model Providers surface entirely, so `null` ("this provider
+ * cannot manage upstream credentials") is the honest projection - the same
+ * "old host never had this feature" reading as the `profiles: []` fill on the
+ * v3→v4 hop.
+ *
+ * Spelled out here rather than left to a live reparse because
+ * `upgradeResponseToVersion` chains bridge callbacks by cast, with no parse
+ * step in between: an unfilled key stays absent all the way to the consumer.
+ */
+export function upgradeNativeCapabilitiesFromV70(
+  capabilities: ProviderNativeCapabilitiesV70,
+): ProviderNativeCapabilities {
+  return { ...capabilities, modelProviders: null };
+}

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   downgradeResponseAcrossMajors,
   upgradeResponseToVersion,
@@ -11,15 +12,28 @@ import {
   modelProviderAuthActionSchema,
   modelProviderAuthResultSchema,
   modelProviderEntrySchema,
+  modelProviderErrorCodeSchema,
   modelProviderPromptSchema,
   modelProvidersListResultSchema,
+  nativeListQuerySchema,
+  nativeListQuerySchemaV70,
+  nativeListResultSchema,
+  nativeListResultSchemaV70,
   projectProviderNativeCapabilitiesToV70,
+  providerMcpCapabilitiesSchema,
+  providerMcpCapabilitiesSchemaV70,
   providerModelProvidersCapabilitiesSchema,
   providerNativeCapabilitiesSchema,
   providerNativeCapabilitiesSchemaV70,
+  providerNativeErrorCodeSchema,
+  providerPluginsCapabilitiesSchema,
+  providerPluginsCapabilitiesSchemaV70,
   providerSettingsTabSchema,
+  providerSkillsCapabilitiesSchema,
+  providerSkillsCapabilitiesSchemaV70,
   providerSettingsTabSchemaV70,
 } from "@traycer/protocol/host/provider-native-schemas";
+import { providerIdSchema, providerIdSchemaV70 } from "@traycer/protocol/host/provider-ids";
 import {
   providerCliStateSchema,
   providerCliStateSchemaV70,
@@ -36,6 +50,7 @@ import {
   providersListResponseSchemaV40,
   providersListResponseSchemaV50,
   providersListResponseSchemaV60,
+  providersListRequestSchemaV70,
   providersListResponseSchemaV70,
   providersModelProviderAuthRequestSchema,
   providersModelProviderAuthResponseSchema,
@@ -52,6 +67,24 @@ import {
  * degrade to "tab ignored", it takes MCP, Plugins and Skills down with it for
  * that provider.
  */
+
+/**
+ * Peel `.nullable()` / `.default()` / `.catch()` wrappers off a field schema to
+ * reach the schema object underneath, so a test can assert WHICH schema a
+ * frozen line is wired to rather than only how it behaves.
+ */
+function unwrapSchema(schema: z.ZodType): z.ZodType {
+  let current: z.ZodType = schema;
+  for (;;) {
+    const def: unknown = current.def;
+    if (typeof def !== "object" || def === null || !("innerType" in def)) {
+      return current;
+    }
+    const inner: unknown = def.innerType;
+    if (!(inner instanceof z.ZodType)) return current;
+    current = inner;
+  }
+}
 
 const MCP_CAPABILITIES = {
   transports: ["stdio"] as const,
@@ -580,7 +613,7 @@ describe("providers.listModelProviders payloads", () => {
     ).toBe(false);
   });
 
-  it("answers with a success arm or a typed native error, never a bare throw", () => {
+  it("answers with a success arm or a typed error, never a bare throw", () => {
     expect(
       modelProvidersListResultSchema.safeParse({ ok: true, providers: [] })
         .success,
@@ -588,10 +621,38 @@ describe("providers.listModelProviders payloads", () => {
     expect(
       modelProvidersListResultSchema.safeParse({
         ok: false,
-        code: "unsupported_action",
+        code: "capability_unavailable",
         detail: "opencode CLI below the minimum version",
       }).success,
     ).toBe(true);
+    expect(
+      modelProvidersListResultSchema.safeParse({
+        ok: false,
+        code: "server_unavailable",
+        detail: "managed server did not start",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects the shared native-config codes on this surface", () => {
+    // The two vocabularies are deliberately disjoint. `external_drift` and
+    // friends describe editing provider CONFIG FILES; nothing here edits one.
+    for (const code of [
+      "duplicate_name",
+      "external_drift",
+      "rollback_failed",
+      "no_change_detected",
+      "unsupported_scope",
+    ]) {
+      expect(
+        modelProvidersListResultSchema.safeParse({
+          ok: false,
+          code,
+          detail: null,
+        }).success,
+        code,
+      ).toBe(false);
+    }
   });
 
   it("gates the request on a known Traycer provider id", () => {
@@ -719,7 +780,7 @@ describe("model provider auth results", () => {
       { kind: "pending" },
       { kind: "done" },
       { kind: "unsupported", reason: "opencode CLI is too old" },
-      { kind: "error", code: "external_drift", detail: null },
+      { kind: "error", code: "provider_auth_failed", detail: null },
     ]) {
       expect(modelProviderAuthResultSchema.safeParse(result).success).toBe(
         true,
@@ -778,5 +839,176 @@ describe("await / cancel attempt addressing", () => {
     });
     expect(response.cancelled).toBe(false);
     expect(response.result.kind).toBe("done");
+  });
+});
+
+describe("attempt lifecycle is encodable end to end", () => {
+  // The plan settles these outcomes; the wire has to be able to SAY them. The
+  // shared native-config enum could not - it has no member for a superseded or
+  // expired attempt - so a host would have had to overload `external_drift` or
+  // invent silence. Each case below is one settled outcome and the client
+  // action it implies.
+  const OUTCOMES = [
+    {
+      name: "a stale attempt id is discarded, not answered with the live attempt's status",
+      code: "attempt_not_found" as const,
+    },
+    {
+      name: "a superseded attempt is told so, so its UI stands down instead of restarting",
+      code: "attempt_superseded" as const,
+    },
+    {
+      name: "an attempt reaped by the pending-auth registry reports expiry",
+      code: "attempt_expired" as const,
+    },
+    {
+      name: "a rejected code leaves the attempt live and asks for another",
+      code: "code_rejected" as const,
+    },
+    {
+      name: "prompt answers the provider refuses come back as invalid input",
+      code: "invalid_input" as const,
+    },
+    {
+      name: "an upstream credential/callback refusal is its own code",
+      code: "provider_auth_failed" as const,
+    },
+    {
+      name: "a managed server that will not start is not blamed on the credential",
+      code: "server_unavailable" as const,
+    },
+    {
+      name: "an unknown upstream provider id is answerable without guessing",
+      code: "provider_not_found" as const,
+    },
+  ];
+
+  it.each(OUTCOMES)("poll: $name", ({ code }) => {
+    const parsed = providersAwaitModelProviderAuthResponseSchema.parse({
+      result: { kind: "error", code, detail: null },
+    });
+    expect(parsed.result.kind).toBe("error");
+    if (parsed.result.kind !== "error") return;
+    expect(parsed.result.code).toBe(code);
+  });
+
+  it.each(OUTCOMES)("auth action: $name", ({ code }) => {
+    expect(
+      providersModelProviderAuthResponseSchema.safeParse({
+        result: { kind: "error", code, detail: "detail text" },
+      }).success,
+    ).toBe(true);
+  });
+
+  it.each(OUTCOMES)("cancel: $name, with cancelled:false", ({ code }) => {
+    // Cancel is best-effort and local. "Nothing was torn down" and "here is
+    // why" are separate facts, and both have to be sayable together.
+    const parsed = providersCancelModelProviderAuthResponseSchema.parse({
+      cancelled: false,
+      result: { kind: "error", code, detail: null },
+    });
+    expect(parsed.cancelled).toBe(false);
+    expect(parsed.result.kind).toBe("error");
+  });
+
+  it("reports a successful cancel as cancelled:true with a non-error result", () => {
+    const parsed = providersCancelModelProviderAuthResponseSchema.parse({
+      cancelled: true,
+      result: { kind: "done" },
+    });
+    expect(parsed.cancelled).toBe(true);
+    expect(parsed.result.kind).toBe("done");
+  });
+
+  it("keeps the auth error vocabulary disjoint from the shared native one", () => {
+    // Not a style preference: `providerNativeErrorCodeSchema` rides RELEASED
+    // carriers, so it cannot be widened, and its members describe config-file
+    // edits. A model-provider code leaking into it (or vice versa) would mean
+    // one of the two enums grew where it must not.
+    for (const code of modelProviderErrorCodeSchema.options) {
+      expect(
+        providerNativeErrorCodeSchema.safeParse(code).success,
+        `${code} must not exist on the shared native enum`,
+      ).toBe(false);
+    }
+    for (const code of providerNativeErrorCodeSchema.options) {
+      expect(
+        modelProviderErrorCodeSchema.safeParse(code).success,
+        `${code} must not exist on the model-provider enum`,
+      ).toBe(false);
+    }
+  });
+});
+
+describe("the v7.0 freeze goes all the way down", () => {
+  // A `...V70` schema that still points into the live tree is a freeze-shaped
+  // alias, not a freeze: the outer object is pinned while every enum inside it
+  // stays free to grow, and enum growth is the half that is FATAL to an
+  // already-shipped v7.0 peer rather than merely leaked.
+  //
+  // These compare the frozen v7.0 subtrees against the live ones. They are
+  // green today because the two agree, and they are here for the day they stop
+  // agreeing: growth on a live subtree turns them red, which routes the
+  // "what does a v7.0 client see?" decision to whoever grew it. Do NOT satisfy
+  // a failure by editing the V70 copy - extend `projectProviderNativeCapabilities
+  // ToV70` (or the v8→v7 response bridge) to say explicitly what gets projected
+  // away.
+  const PAIRS = [
+    ["mcp capabilities", providerMcpCapabilitiesSchema, providerMcpCapabilitiesSchemaV70],
+    [
+      "plugins capabilities",
+      providerPluginsCapabilitiesSchema,
+      providerPluginsCapabilitiesSchemaV70,
+    ],
+    [
+      "skills capabilities",
+      providerSkillsCapabilitiesSchema,
+      providerSkillsCapabilitiesSchemaV70,
+    ],
+    ["native list query", nativeListQuerySchema, nativeListQuerySchemaV70],
+    ["native list result", nativeListResultSchema, nativeListResultSchemaV70],
+  ] as const;
+
+  it.each(PAIRS)(
+    "%s: the frozen v7.0 copy still matches the live schema",
+    (_label, live, frozen) => {
+      expect(z.toJSONSchema(frozen, { unrepresentable: "any" })).toEqual(
+        z.toJSONSchema(live, { unrepresentable: "any" }),
+      );
+    },
+  );
+
+  it("wires the v7.0 request/response/state to the frozen tree, not the live one", () => {
+    // The structural claim the equality checks above cannot make. While live
+    // and frozen agree, NO payload can tell them apart - a v7.0 schema wired
+    // to the live query would pass every round-trip test in this file. So this
+    // asserts the wiring itself: the schema objects reachable from the v7.0
+    // contracts must BE the frozen ones.
+    expect(unwrapSchema(providersListRequestSchemaV70.shape.native)).toBe(
+      nativeListQuerySchemaV70,
+    );
+    expect(unwrapSchema(providersListResponseSchemaV70.shape.native)).toBe(
+      nativeListResultSchemaV70,
+    );
+    expect(
+      unwrapSchema(providerCliStateSchemaV70.shape.nativeCapabilities),
+    ).toBe(providerNativeCapabilitiesSchemaV70);
+    // ...and one level deeper, which is where a shallow freeze actually hides.
+    expect(
+      unwrapSchema(providerNativeCapabilitiesSchemaV70.shape.mcp),
+    ).toBe(providerMcpCapabilitiesSchemaV70);
+    expect(
+      unwrapSchema(providerNativeCapabilitiesSchemaV70.shape.plugins),
+    ).toBe(providerPluginsCapabilitiesSchemaV70);
+    expect(
+      unwrapSchema(providerNativeCapabilitiesSchemaV70.shape.skills),
+    ).toBe(providerSkillsCapabilitiesSchemaV70);
+  });
+
+  it("keeps the frozen provider-id enum out of the live one's future", () => {
+    // The v7.0 native query carries a provider id. A provider added to the
+    // live enum reaches a v7.0 peer only through the bridge, never by the
+    // frozen schema quietly widening underneath it.
+    expect(providerIdSchemaV70.options).toEqual(providerIdSchema.options);
   });
 });

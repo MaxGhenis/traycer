@@ -59,3 +59,42 @@ export const providerIdSchemaV20 = z.enum([
   "openrouter",
 ]);
 export type ProviderIdV20 = z.infer<typeof providerIdSchemaV20>;
+
+/**
+ * Frozen provider id set as shipped in protocol v7.0 (identical to v6.0's -
+ * v7.0 opened for `terminalLogin` and the `native` list carrier, not for a
+ * provider).
+ *
+ * Frozen the moment v8.0 opened, rather than left pointing at the live enum,
+ * because that pointer is precisely how `omp` first tried to ride v5.0 and how
+ * the provider-pack-registry fields grew v6.0: a line stays correct only until
+ * the next thing lands on the live schema. A new provider extends
+ * `providerIdSchema` and reaches v7.0 clients through the v8→v7 bridge, which
+ * drops what this enum does not name.
+ *
+ * Lives here rather than beside the v3.0-v6.0 snapshots in
+ * `provider-schemas.ts` because the frozen v7.0 NATIVE payloads
+ * (`nativeListQuerySchemaV70`) need it too, and `provider-native-schemas.ts`
+ * cannot import from `provider-schemas.ts` - that edge runs the other way.
+ */
+export const providerIdSchemaV70 = z.enum([
+  "claude-code",
+  "codex",
+  "opencode",
+  "cursor",
+  "traycer",
+  "grok",
+  "qwen",
+  "kiro",
+  "droid",
+  "kimi",
+  "copilot",
+  "kilocode",
+  "openrouter",
+  "amp",
+  "devin",
+  "pi",
+  "hermes",
+  "omp",
+]);
+export type ProviderIdV70 = z.infer<typeof providerIdSchemaV70>;

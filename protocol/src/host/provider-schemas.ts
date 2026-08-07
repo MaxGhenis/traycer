@@ -15,9 +15,11 @@ import {
   providerIdSchema,
   providerIdSchemaV10,
   providerIdSchemaV20,
+  providerIdSchemaV70,
   type ProviderId,
   type ProviderIdV10,
   type ProviderIdV20,
+  type ProviderIdV70,
 } from "./provider-ids";
 import {
   DEFAULT_PROVIDER_NATIVE_CAPABILITIES,
@@ -32,7 +34,9 @@ import {
   nativeAuthPollContextSchema,
   nativeAuthResultSchema,
   nativeListQuerySchema,
+  nativeListQuerySchemaV70,
   nativeListResultSchema,
+  nativeListResultSchemaV70,
   nativeMutationResultSchema,
   nativeMutationSchema,
   projectProviderNativeCapabilitiesToV70,
@@ -60,9 +64,11 @@ export {
   providerIdSchema,
   providerIdSchemaV10,
   providerIdSchemaV20,
+  providerIdSchemaV70,
   type ProviderId,
   type ProviderIdV10,
   type ProviderIdV20,
+  type ProviderIdV70,
 };
 
 /**
@@ -174,39 +180,6 @@ export const providerIdSchemaV60 = z.enum([
   "omp",
 ]);
 export type ProviderIdV60 = z.infer<typeof providerIdSchemaV60>;
-
-/**
- * Frozen provider id set as shipped in protocol v7.0 (v6.0 plus nothing - v7.0
- * opened for `terminalLogin` and the `native` list carrier, not for a provider).
- *
- * Frozen here the moment v8.0 opened, rather than left pointing at the live
- * enum, because that pointer is precisely how `omp` first tried to ride v5.0
- * and how the provider-pack-registry fields grew v6.0: a line stays correct
- * only until the next thing lands on the live schema. A new provider extends
- * `providerIdSchema` and reaches v7.0 clients through the v8→v7 bridge, which
- * drops what this enum does not name.
- */
-export const providerIdSchemaV70 = z.enum([
-  "claude-code",
-  "codex",
-  "opencode",
-  "cursor",
-  "traycer",
-  "grok",
-  "qwen",
-  "kiro",
-  "droid",
-  "kimi",
-  "copilot",
-  "kilocode",
-  "openrouter",
-  "amp",
-  "devin",
-  "pi",
-  "hermes",
-  "omp",
-]);
-export type ProviderIdV70 = z.infer<typeof providerIdSchemaV70>;
 
 /** Human-readable provider names, shared by the host and the GUI. */
 export const PROVIDER_DISPLAY_NAMES: Record<ProviderId, string> = {
@@ -1050,10 +1023,17 @@ export type ProvidersListRequestBeforeV70 = z.infer<
  * ceremony; it is the same ceremony that was skipped when `native` was written
  * straight onto the live request and grew three released lines at once. The
  * pin costs one schema and removes the whole class.
+ *
+ * `native` points at `nativeListQuerySchemaV70`, not the live query. The query
+ * is a discriminated union over a closed set of `kind`s carrying a closed
+ * provider-id enum: a v8.0 caller's new arm, or a new provider id inside an
+ * existing one, is a value a v7.0 host rejects outright rather than ignores.
+ * Pinning the outer object while leaving that union live would have frozen the
+ * two fields that cannot grow and left the one that can.
  */
 export const providersListRequestSchemaV70 = z.object({
   forceAuthRefresh: z.boolean().optional(),
-  native: nativeListQuerySchema.nullable().default(null),
+  native: nativeListQuerySchemaV70.nullable().default(null),
 });
 export type ProvidersListRequestV70 = z.infer<
   typeof providersListRequestSchemaV70
@@ -1082,7 +1062,10 @@ export type ProvidersListResponse = z.infer<typeof providersListResponseSchema>;
  * for a v7.0 decoder (see `providerSettingsTabSchemaV70`).
  *
  * The `.catch()` is kept, with the v7.0-shaped default, so this line decodes
- * byte-for-byte the way it does today.
+ * byte-for-byte the way it does today - and `providerNativeCapabilitiesSchemaV70`
+ * is frozen all the way down (every enum and union reachable from it is a
+ * hand-copy), because that `.catch()` is exactly what turns one unrecognized
+ * enum member into a silently empty capability object.
  */
 const providerCliStateBaseShapeV70 = {
   enabled: z.boolean(),
@@ -1121,7 +1104,7 @@ export type ProviderCliStateV70 = z.infer<typeof providerCliStateSchemaV70>;
 
 export const providersListResponseSchemaV70 = z.object({
   providers: z.array(providerCliStateSchemaV70),
-  native: nativeListResultSchema.nullable().default(null),
+  native: nativeListResultSchemaV70.nullable().default(null),
 });
 export type ProvidersListResponseV70 = z.infer<
   typeof providersListResponseSchemaV70
