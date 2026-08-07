@@ -88,6 +88,7 @@ vi.mock(
       mutate: mocks.deleteMutate,
       isPending: false,
     }),
+    useManagedCommandStopAllIsPending: () => false,
   }),
 );
 
@@ -290,7 +291,9 @@ function renderMenuWithResources(): void {
  * rendered at all until it is opened.
  */
 function openMenu(): void {
-  fireEvent.click(screen.getByRole("button", { name: "Monitors and shells" }));
+  // Prefix match: the trigger's accessible name carries the live counts
+  // ("Monitors and shells, 2 running").
+  fireEvent.click(screen.getByRole("button", { name: /^Monitors and shells/ }));
 }
 
 function chipOnRow(commandId: string): HTMLElement | null {
