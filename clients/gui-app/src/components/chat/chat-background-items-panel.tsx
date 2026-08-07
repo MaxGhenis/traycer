@@ -646,9 +646,6 @@ export function BackgroundItemsPanel(props: {
   // owns its own mutation observer - the shared read is what keeps the second
   // tile's button dead while the first tile's batch runs.
   const stopAllManagedPending = useManagedCommandStopAllIsPending(props.chatId);
-  // Rows share the batch's in-flight state: a row press mid-batch would
-  // re-send a stop the batch already carries.
-  const managedRowStoppable = managedStoppable && !stopAllManagedPending;
   // "Stop all" means every row the panel is showing, and its two halves ride
   // different channels: the harness half needs the chat stream open, the
   // managed half is an RPC to the host that a reconnecting chat has no bearing
@@ -739,7 +736,7 @@ export function BackgroundItemsPanel(props: {
                 command={command}
                 epicId={props.epicId}
                 hostId={hostId}
-                stoppable={managedRowStoppable}
+                stoppable={managedStoppable}
                 onOpen={openManagedCommand}
               />
             ))}
