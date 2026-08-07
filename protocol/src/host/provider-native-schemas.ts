@@ -1298,7 +1298,7 @@ export const modelProviderEntrySchema = z.object({
 export type ModelProviderEntry = z.infer<typeof modelProviderEntrySchema>;
 
 /**
- * Failure vocabulary for this surface. Deliberately its OWN enum rather than
+ * Failure vocabulary for this surface. Deliberately its OWN enums rather than
  * `providerNativeErrorCodeSchema`.
  *
  * That enum describes editing provider CONFIG FILES - `duplicate_name`,
@@ -1308,17 +1308,37 @@ export type ModelProviderEntry = z.infer<typeof modelProviderEntrySchema>;
  * supersedes the pending one, stale attempt ids are discarded, attempts expire
  * server-side) have no member there at all. Reusing it would force the host to
  * report "your attempt was superseded" as `external_drift` - a code whose
- * meaning is already spoken for, in a union released clients decode.
+ * meaning is already spoken for, in a union released clients decode. Widening
+ * the shared enum was the other option and is not available: it rides released
+ * carriers, so a new member is a value already-shipped peers reject.
  *
- * Widening the shared enum was the other option and is not available: it rides
- * released carriers, so a new member is a value already-shipped peers reject.
+ * Split in TWO, per context, because most of the vocabulary is impossible in
+ * one of them. Listing the catalog has no attempt to supersede and no code to
+ * reject; the auth methods report the gated-off case through their
+ * `unsupported` RESULT ARM, so a `capability_unavailable` CODE there would be
+ * a second spelling of the same fact. A single wide enum would type-check both
+ * mistakes and leave the impossibility to a comment.
  *
- * Each member exists because a client does something DIFFERENT about it:
+ * Listing failures - both are about REACHING the catalog, never about a
+ * credential:
  * - `capability_unavailable` — the surface is not offered here (not the
  *   `opencode` module, or the CLI is below the version gate). Nothing to
- *   retry. On the auth methods this is the `unsupported` RESULT ARM instead;
- *   the list result has no arm vocabulary, so it needs the code.
+ *   retry. This is the list result's counterpart of the auth methods'
+ *   `unsupported` arm.
  * - `server_unavailable` — the managed server could not be started or leased.
+ */
+export const modelProviderListErrorCodeSchema = z.enum([
+  "capability_unavailable",
+  "server_unavailable",
+]);
+export type ModelProviderListErrorCode = z.infer<
+  typeof modelProviderListErrorCodeSchema
+>;
+
+/**
+ * Auth failures. Each member exists because a client does something DIFFERENT
+ * about it - that is the test for whether a code earns its place here:
+ * - `server_unavailable` — managed server could not be started or leased.
  *   Nothing is wrong with the credential; retry later.
  * - `provider_not_found` — the named upstream provider is not in the catalog
  *   (stale client-side list). Re-list.
@@ -1335,9 +1355,12 @@ export type ModelProviderEntry = z.infer<typeof modelProviderEntrySchema>;
  *   validation. Re-show the form with the detail.
  * - `provider_auth_failed` — the provider refused the credential, or the OAuth
  *   callback failed. Show the detail; retrying is the user's call.
+ *
+ * No `capability_unavailable`: the auth result carries an `unsupported` arm
+ * for exactly that condition, and two ways to say one thing is how consumers
+ * end up handling only one of them.
  */
-export const modelProviderErrorCodeSchema = z.enum([
-  "capability_unavailable",
+export const modelProviderAuthErrorCodeSchema = z.enum([
   "server_unavailable",
   "provider_not_found",
   "attempt_not_found",
@@ -1347,18 +1370,18 @@ export const modelProviderErrorCodeSchema = z.enum([
   "invalid_input",
   "provider_auth_failed",
 ]);
-export type ModelProviderErrorCode = z.infer<
-  typeof modelProviderErrorCodeSchema
+export type ModelProviderAuthErrorCode = z.infer<
+  typeof modelProviderAuthErrorCodeSchema
 >;
 
 /** Same envelope shape as `providerNativeErrorResultSchema`, own vocabulary. */
-export const modelProviderErrorResultSchema = z.object({
+export const modelProviderListErrorResultSchema = z.object({
   ok: z.literal(false),
-  code: modelProviderErrorCodeSchema,
+  code: modelProviderListErrorCodeSchema,
   detail: z.string().nullable(),
 });
-export type ModelProviderErrorResult = z.infer<
-  typeof modelProviderErrorResultSchema
+export type ModelProviderListErrorResult = z.infer<
+  typeof modelProviderListErrorResultSchema
 >;
 
 const modelProvidersListSuccessResultSchema = z.object({
@@ -1374,7 +1397,7 @@ const modelProvidersListSuccessResultSchema = z.object({
  */
 export const modelProvidersListResultSchema = z.union([
   modelProvidersListSuccessResultSchema,
-  modelProviderErrorResultSchema,
+  modelProviderListErrorResultSchema,
 ]);
 export type ModelProvidersListResult = z.infer<
   typeof modelProvidersListResultSchema
@@ -1483,11 +1506,12 @@ export type ModelProviderAuthCancelContext = z.infer<
  * - `unsupported` — the action is not available (capability gated off, CLI
  *   below the version gate, the provider advertises no such method). Never
  *   faked into a `done`.
- * - `error` — a typed failure from `modelProviderErrorCodeSchema`, this
+ * - `error` — a typed failure from `modelProviderAuthErrorCodeSchema`, this
  *   surface's OWN vocabulary. The shared native error enum cannot express an
  *   attempt lifecycle at all - see that schema's comment - and the settled
  *   attempt semantics (supersede, expiry, stale ids) are exactly what a poll
- *   or a late `submitCode` has to report.
+ *   or a late `submitCode` has to report. `capability_unavailable` is NOT a
+ *   member: that condition is the `unsupported` arm above.
  *
  * `nativeAuthResultSchema`'s `pendingInstruction` arm has no counterpart:
  * upstream carries its instruction text ON the authorization response, so a
@@ -1514,7 +1538,7 @@ export const modelProviderAuthResultSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("error"),
-    code: modelProviderErrorCodeSchema,
+    code: modelProviderAuthErrorCodeSchema,
     detail: z.string().nullable(),
   }),
 ]);
@@ -1569,6 +1593,11 @@ export const providerNativeErrorResultSchemaV70 = z.object({
   code: providerNativeErrorCodeSchemaV70,
   detail: z.string().nullable(),
 });
+
+export const providerEnvOverrideScopeSchemaV70 = z.enum([
+  "harness-and-native-config",
+  "native-config-only",
+]);
 
 export const providerSettingsTabSchemaV70 = z.enum([
   "general",
@@ -1883,7 +1912,7 @@ export type NativeListResultV70 = z.infer<typeof nativeListResultSchemaV70>;
  */
 export const providerNativeCapabilitiesSchemaV70 = z.object({
   supportedTabs: z.array(providerSettingsTabSchemaV70),
-  envOverrideScope: providerEnvOverrideScopeSchema.optional(),
+  envOverrideScope: providerEnvOverrideScopeSchemaV70.optional(),
   mcp: providerMcpCapabilitiesSchemaV70.nullable(),
   plugins: providerPluginsCapabilitiesSchemaV70.nullable(),
   skills: providerSkillsCapabilitiesSchemaV70.nullable(),

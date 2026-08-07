@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import * as nativeSchemaModule from "@traycer/protocol/host/provider-native-schemas";
+import * as providerIdModule from "@traycer/protocol/host/provider-ids";
+import * as providerSchemaModule from "@traycer/protocol/host/provider-schemas";
 import {
   downgradeResponseAcrossMajors,
   upgradeResponseToVersion,
@@ -12,7 +15,8 @@ import {
   modelProviderAuthActionSchema,
   modelProviderAuthResultSchema,
   modelProviderEntrySchema,
-  modelProviderErrorCodeSchema,
+  modelProviderAuthErrorCodeSchema,
+  modelProviderListErrorCodeSchema,
   modelProviderPromptSchema,
   modelProvidersListResultSchema,
   nativeListQuerySchema,
@@ -25,6 +29,8 @@ import {
   providerModelProvidersCapabilitiesSchema,
   providerNativeCapabilitiesSchema,
   providerNativeCapabilitiesSchemaV70,
+  providerEnvOverrideScopeSchema,
+  providerEnvOverrideScopeSchemaV70,
   providerNativeErrorCodeSchema,
   providerPluginsCapabilitiesSchema,
   providerPluginsCapabilitiesSchemaV70,
@@ -920,12 +926,104 @@ describe("attempt lifecycle is encodable end to end", () => {
     expect(parsed.result.kind).toBe("done");
   });
 
+  it("refuses attempt errors on the LIST result - they are impossible there", () => {
+    // Listing the catalog has no attempt to supersede, no code to reject and
+    // no prompt answers to validate. A wide enum shared by both contexts would
+    // type-check every one of these and leave the impossibility to a comment.
+    for (const code of [
+      "attempt_not_found",
+      "attempt_superseded",
+      "attempt_expired",
+      "code_rejected",
+      "invalid_input",
+      "provider_auth_failed",
+      "provider_not_found",
+    ]) {
+      expect(
+        modelProvidersListResultSchema.safeParse({
+          ok: false,
+          code,
+          detail: null,
+        }).success,
+        code,
+      ).toBe(false);
+    }
+  });
+
+  it("refuses capability_unavailable on the AUTH error arm - that is the unsupported arm", () => {
+    // The auth result already answers "not offered here" structurally. A code
+    // saying the same thing is a second spelling, and consumers end up
+    // handling one of the two.
+    expect(
+      providersModelProviderAuthResponseSchema.safeParse({
+        result: {
+          kind: "error",
+          code: "capability_unavailable",
+          detail: null,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      providersAwaitModelProviderAuthResponseSchema.safeParse({
+        result: {
+          kind: "error",
+          code: "capability_unavailable",
+          detail: null,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      providersCancelModelProviderAuthResponseSchema.safeParse({
+        cancelled: false,
+        result: {
+          kind: "error",
+          code: "capability_unavailable",
+          detail: null,
+        },
+      }).success,
+    ).toBe(false);
+    // The condition is still sayable - through the arm that owns it.
+    expect(
+      providersModelProviderAuthResponseSchema.safeParse({
+        result: { kind: "unsupported", reason: "opencode CLI is too old" },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("refuses the shared native-config codes on the auth arm too", () => {
+    for (const code of ["external_drift", "rollback_failed", "duplicate_name"]) {
+      expect(
+        providersModelProviderAuthResponseSchema.safeParse({
+          result: { kind: "error", code, detail: null },
+        }).success,
+        code,
+      ).toBe(false);
+    }
+  });
+
+  it("keeps every list code sayable on the list result", () => {
+    for (const code of modelProviderListErrorCodeSchema.options) {
+      expect(
+        modelProvidersListResultSchema.safeParse({
+          ok: false,
+          code,
+          detail: null,
+        }).success,
+        code,
+      ).toBe(true);
+    }
+  });
+
   it("keeps the auth error vocabulary disjoint from the shared native one", () => {
     // Not a style preference: `providerNativeErrorCodeSchema` rides RELEASED
     // carriers, so it cannot be widened, and its members describe config-file
     // edits. A model-provider code leaking into it (or vice versa) would mean
     // one of the two enums grew where it must not.
-    for (const code of modelProviderErrorCodeSchema.options) {
+    const ours = [
+      ...modelProviderListErrorCodeSchema.options,
+      ...modelProviderAuthErrorCodeSchema.options,
+    ];
+    for (const code of ours) {
       expect(
         providerNativeErrorCodeSchema.safeParse(code).success,
         `${code} must not exist on the shared native enum`,
@@ -933,26 +1031,140 @@ describe("attempt lifecycle is encodable end to end", () => {
     }
     for (const code of providerNativeErrorCodeSchema.options) {
       expect(
-        modelProviderErrorCodeSchema.safeParse(code).success,
-        `${code} must not exist on the model-provider enum`,
+        modelProviderListErrorCodeSchema.safeParse(code).success,
+        `${code} must not exist on the list enum`,
+      ).toBe(false);
+      expect(
+        modelProviderAuthErrorCodeSchema.safeParse(code).success,
+        `${code} must not exist on the auth enum`,
       ).toBe(false);
     }
   });
 });
 
+/**
+ * Every zod schema reachable from `root`, by identity.
+ *
+ * Walks `def` generically rather than switching on schema kind: the point is
+ * to be exhaustive, and a per-kind walker silently stops at the first kind
+ * nobody remembered to handle - which is the same class of miss this test
+ * exists to catch.
+ */
+function collectReachableSchemas(root: z.ZodType): Set<z.ZodType> {
+  const schemas = new Set<z.ZodType>();
+  const containers = new WeakSet<object>();
+  const pending: z.ZodType[] = [root];
+
+  function walk(value: unknown): void {
+    if (value instanceof z.ZodType) {
+      pending.push(value);
+      return;
+    }
+    if (typeof value !== "object" || value === null) return;
+    if (containers.has(value)) return;
+    containers.add(value);
+    for (const child of Object.values(value)) walk(child);
+  }
+
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined || schemas.has(current)) continue;
+    schemas.add(current);
+    walk(current.def);
+  }
+  return schemas;
+}
+
+/** Every zod schema this package exports, paired with its export name. */
+const EXPORTED_SCHEMAS: readonly { name: string; schema: z.ZodType }[] = [
+  ...Object.entries(nativeSchemaModule),
+  ...Object.entries(providerSchemaModule),
+  ...Object.entries(providerIdModule),
+].flatMap(([name, value]) =>
+  value instanceof z.ZodType ? [{ name, schema: value }] : [],
+);
+
+/** A name is a freeze marker when it ends in a version suffix (`V70`, `V20`, …). */
+const FROZEN_NAME = /V\d0$/;
+
+const FROZEN_SCHEMA_OBJECTS = new Set(
+  EXPORTED_SCHEMAS.filter(({ name }) => FROZEN_NAME.test(name)).map(
+    ({ schema }) => schema,
+  ),
+);
+
+/**
+ * Exports that are live: not named as a frozen line, and not an ALIAS of one
+ * (`PROVIDER_AUTH_SCHEMA` is the same object as `PROVIDER_AUTH_SCHEMA_V20`, so
+ * it is frozen despite the name).
+ */
+const LIVE_SCHEMA_EXPORTS = EXPORTED_SCHEMAS.filter(
+  ({ name, schema }) =>
+    !FROZEN_NAME.test(name) && !FROZEN_SCHEMA_OBJECTS.has(schema),
+);
+
 describe("the v7.0 freeze goes all the way down", () => {
   // A `...V70` schema that still points into the live tree is a freeze-shaped
-  // alias, not a freeze: the outer object is pinned while every enum inside it
-  // stays free to grow, and enum growth is the half that is FATAL to an
-  // already-shipped v7.0 peer rather than merely leaked.
+  // alias, not a freeze: the outer object is pinned while everything inside it
+  // stays free to grow, and growth in a closed enum or union is the half that
+  // is FATAL to an already-shipped v7.0 peer rather than merely leaked.
   //
-  // These compare the frozen v7.0 subtrees against the live ones. They are
-  // green today because the two agree, and they are here for the day they stop
-  // agreeing: growth on a live subtree turns them red, which routes the
-  // "what does a v7.0 client see?" decision to whoever grew it. Do NOT satisfy
-  // a failure by editing the V70 copy - extend `projectProviderNativeCapabilities
-  // ToV70` (or the v8→v7 response bridge) to say explicitly what gets projected
-  // away.
+  // Two rounds of review found a missed subtree each time, one level deeper
+  // than the last fix. So the primary guard below is not a list of the
+  // subtrees anyone remembered - it is an exhaustive walk of the schema graph,
+  // which makes the NEXT missed subtree fail here instead of in a review.
+
+  const V70_ROOTS: readonly { name: string; schema: z.ZodType }[] = [
+    { name: "providerCliStateSchemaV70", schema: providerCliStateSchemaV70 },
+    {
+      name: "providersListRequestSchemaV70",
+      schema: providersListRequestSchemaV70,
+    },
+    {
+      name: "providersListResponseSchemaV70",
+      schema: providersListResponseSchemaV70,
+    },
+    {
+      name: "providerNativeCapabilitiesSchemaV70",
+      schema: providerNativeCapabilitiesSchemaV70,
+    },
+  ];
+
+  it.each(V70_ROOTS)(
+    "$name reaches no live schema at any depth",
+    ({ schema }) => {
+      // The whole contract in one assertion. If this fails, the named exports
+      // it reports are live schemas sitting on the v7.0 wire: give each a V70
+      // hand-copy and rewire. Do NOT add them to an allowlist - the reason
+      // they are reachable is the defect.
+      const reachable = collectReachableSchemas(schema);
+      const leaks = LIVE_SCHEMA_EXPORTS.filter((entry) =>
+        reachable.has(entry.schema),
+      ).map((entry) => entry.name);
+      expect(leaks).toEqual([]);
+    },
+  );
+
+  it("actually has live schemas to catch, and a graph deep enough to find them", () => {
+    // Guards the guard. A walker that silently stopped at depth 1, or an
+    // EXPORTED_SCHEMAS that came back empty, would make every assertion above
+    // vacuously green.
+    expect(LIVE_SCHEMA_EXPORTS.length).toBeGreaterThan(20);
+    expect(
+      collectReachableSchemas(providerCliStateSchemaV70).size,
+    ).toBeGreaterThan(40);
+    expect(
+      collectReachableSchemas(providerCliStateSchemaV70).has(
+        providerNativeCapabilitiesSchemaV70,
+      ),
+    ).toBe(true);
+  });
+
+  // Live-vs-frozen equality per subtree. Green today because the copies agree;
+  // red the day a live subtree grows, which routes the "what does a v7.0
+  // client see?" decision to whoever grew it. Do NOT satisfy a failure by
+  // editing the V70 copy - extend the v8→v7 projection to say explicitly what
+  // gets projected away.
   const PAIRS = [
     ["mcp capabilities", providerMcpCapabilitiesSchema, providerMcpCapabilitiesSchemaV70],
     [
@@ -967,6 +1179,11 @@ describe("the v7.0 freeze goes all the way down", () => {
     ],
     ["native list query", nativeListQuerySchema, nativeListQuerySchemaV70],
     ["native list result", nativeListResultSchema, nativeListResultSchemaV70],
+    [
+      "env override scope",
+      providerEnvOverrideScopeSchema,
+      providerEnvOverrideScopeSchemaV70,
+    ],
   ] as const;
 
   it.each(PAIRS)(
@@ -978,12 +1195,17 @@ describe("the v7.0 freeze goes all the way down", () => {
     },
   );
 
-  it("wires the v7.0 request/response/state to the frozen tree, not the live one", () => {
-    // The structural claim the equality checks above cannot make. While live
-    // and frozen agree, NO payload can tell them apart - a v7.0 schema wired
-    // to the live query would pass every round-trip test in this file. So this
-    // asserts the wiring itself: the schema objects reachable from the v7.0
-    // contracts must BE the frozen ones.
+  it("keeps the frozen provider-id enum out of the live one's future", () => {
+    // The v7.0 native query and the v7.0 state both carry a provider id. A
+    // provider added to the live enum reaches a v7.0 peer only through the
+    // bridge, never by the frozen schema quietly widening underneath it.
+    expect(providerIdSchemaV70.options).toEqual(providerIdSchema.options);
+  });
+
+  it("wires the v7.0 contracts to the frozen tree by identity", () => {
+    // Spot checks that name the seams a reader cares about. The exhaustive
+    // walk above is the guarantee; these say out loud which schema each v7.0
+    // field is supposed to be.
     expect(unwrapSchema(providersListRequestSchemaV70.shape.native)).toBe(
       nativeListQuerySchemaV70,
     );
@@ -993,22 +1215,11 @@ describe("the v7.0 freeze goes all the way down", () => {
     expect(
       unwrapSchema(providerCliStateSchemaV70.shape.nativeCapabilities),
     ).toBe(providerNativeCapabilitiesSchemaV70);
-    // ...and one level deeper, which is where a shallow freeze actually hides.
+    expect(unwrapSchema(providerNativeCapabilitiesSchemaV70.shape.mcp)).toBe(
+      providerMcpCapabilitiesSchemaV70,
+    );
     expect(
-      unwrapSchema(providerNativeCapabilitiesSchemaV70.shape.mcp),
-    ).toBe(providerMcpCapabilitiesSchemaV70);
-    expect(
-      unwrapSchema(providerNativeCapabilitiesSchemaV70.shape.plugins),
-    ).toBe(providerPluginsCapabilitiesSchemaV70);
-    expect(
-      unwrapSchema(providerNativeCapabilitiesSchemaV70.shape.skills),
-    ).toBe(providerSkillsCapabilitiesSchemaV70);
-  });
-
-  it("keeps the frozen provider-id enum out of the live one's future", () => {
-    // The v7.0 native query carries a provider id. A provider added to the
-    // live enum reaches a v7.0 peer only through the bridge, never by the
-    // frozen schema quietly widening underneath it.
-    expect(providerIdSchemaV70.options).toEqual(providerIdSchema.options);
+      unwrapSchema(providerNativeCapabilitiesSchemaV70.shape.envOverrideScope),
+    ).toBe(providerEnvOverrideScopeSchemaV70);
   });
 });

@@ -1050,48 +1050,216 @@ export const providersListResponseSchema = z.object({
 });
 export type ProvidersListResponse = z.infer<typeof providersListResponseSchema>;
 
+// ── Frozen v7.0 provider state ─────────────────────────────────────────────
+//
+// Every schema `providerCliStateSchemaV70` reaches, hand-copied as the v7.0
+// line shipped it. The rule this section is written to, and the reason it is
+// this long: NOTHING reachable from a frozen contract may be a live schema.
+//
+// Pinning only the closed enums would have been the narrower fix, and it is
+// the wrong one - it leaves the next author to judge, correctly, which of a
+// dozen nested objects is "closed enough". Freezing the whole reachable tree
+// turns that judgement into a mechanical rule a test can enforce, and
+// `provider-model-providers-compat.test.ts` walks the graph asserting exactly
+// it: no live-named export is reachable from any v7.0 root.
+//
+// `PROVIDER_AUTH_SCHEMA_V20` is the one exception, and only because it is
+// already frozen under its own version name.
+
+const providerDisabledBySchemaV70 = z.object({
+  userId: z.string(),
+  handle: z.string().nullable(),
+  at: z.number(),
+});
+
+const providerSelectionSchemaV70 = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("bundled") }),
+  z.object({ kind: z.literal("path") }),
+  z.object({ kind: z.literal("custom"), path: z.string() }),
+]);
+
+const providerCliCandidateSchemaV70 = z.object({
+  kind: z.enum(["bundled", "path", "custom"]),
+  path: z.string(),
+  version: z.string().nullable(),
+  available: z.boolean(),
+  versionPending: z.boolean(),
+});
+
+const providerApiKeyStateSchemaV70 = z.object({
+  supported: z.boolean(),
+  configured: z.boolean(),
+  source: z.enum(["stored", "env"]).nullable(),
+});
+
+const providerEnvOverrideSchemaV70 = z.object({
+  key: z.string(),
+  value: z.string().nullable(),
+});
+
 /**
- * Frozen `providers.list` provider state as it stands on the v7.0 line.
- *
- * Both halves pinned, for the reasons v5.0 and v6.0 each learned the hard way:
- * the id enum (`providerIdSchemaV70`) and the base shape
- * (`providerCliStateBaseShapeV70`). `nativeCapabilities` points at the frozen
- * v7.0 capability descriptor, which is the whole point of this line's freeze -
- * v8.0 adds the `modelProviders` block AND a `modelProviders` member to
- * `supportedTabs`, and the tab id in particular is fatal rather than additive
- * for a v7.0 decoder (see `providerSettingsTabSchemaV70`).
- *
- * The `.catch()` is kept, with the v7.0-shaped default, so this line decodes
- * byte-for-byte the way it does today - and `providerNativeCapabilitiesSchemaV70`
- * is frozen all the way down (every enum and union reachable from it is a
- * hand-copy), because that `.catch()` is exactly what turns one unrecognized
- * enum member into a silently empty capability object.
+ * v7.0 shipped the full four-slot capability (`terminalLogin` rode this line).
+ * Distinct from `providerLoginCapabilitySchemaV40`, which is the same shape
+ * minus `terminalLogin` and belongs to the v4.0/v5.0/v6.0 lines.
  */
+const providerLoginCapabilitySchemaV70 = z.object({
+  oauthArgs: z.array(z.string()).nullable(),
+  token: z.object({ vars: z.array(z.string()) }).nullable(),
+  codePaste: z.object({}).nullable().catch(null),
+  terminalLogin: z.object({}).nullable().catch(null),
+});
+
+const providerProfileKindSchemaV70 = z.enum(["ambient", "managed"]);
+const providerProfileAuthTypeSchemaV70 = z.enum(["oauth"]);
+
+const providerProfileIdentitySchemaV70 = z.object({
+  email: z.string().nullable(),
+  tier: z.string().nullable(),
+  accountUuid: z.string().nullable(),
+});
+
+const providerProfileRateLimitStatusSchemaV70 = z.enum([
+  "ok",
+  "near_limit",
+  "hard_limit",
+  "unknown",
+]);
+
+const providerProfileRateLimitScopeSchemaV70 = z.object({
+  family: z.string().nullable(),
+  severity: z.enum(["near_limit", "hard_limit"]),
+});
+
+/**
+ * The palette is spelled out rather than built from
+ * `PROVIDER_PROFILE_ACCENT_COLORS`: that array is the LIVE palette, and a
+ * colour appended to it would widen this frozen enum through the shared const
+ * - the same leak-by-reference this whole section exists to close.
+ */
+const providerProfileAccentColorSchemaV70 = z.enum([
+  "#ef4444",
+  "#f97316",
+  "#f59e0b",
+  "#84cc16",
+  "#10b981",
+  "#14b8a6",
+  "#06b6d4",
+  "#3b82f6",
+  "#8b5cf6",
+  "#a855f7",
+  "#d946ef",
+  "#ec4899",
+]);
+
+const providerProfileSchemaV70 = z.object({
+  profileId: z.string(),
+  kind: providerProfileKindSchemaV70,
+  authType: providerProfileAuthTypeSchemaV70,
+  label: z.string(),
+  auth: PROVIDER_AUTH_SCHEMA_V20,
+  identity: providerProfileIdentitySchemaV70.nullable(),
+  usageUpdatedAt: z.number().nullable(),
+  rateLimitStatus: providerProfileRateLimitStatusSchemaV70.catch("unknown"),
+  rateLimitLimitedScopes: z
+    .array(providerProfileRateLimitScopeSchemaV70)
+    .nullable()
+    .catch(null),
+  duplicateOfProfileId: z.string().nullable().catch(null),
+  ambientDriftNotice: z
+    .object({
+      previousEmail: z.string().nullable(),
+      changedAt: z.number(),
+    })
+    .nullable()
+    .catch(null),
+  accentColor: providerProfileAccentColorSchemaV70.nullable().catch(null),
+  reusedTombstone: z
+    .object({
+      label: z.string(),
+      accentColor: providerProfileAccentColorSchemaV70.nullable().catch(null),
+    })
+    .nullable()
+    .optional(),
+});
+
+const providerManagedInstallErrorReasonSchemaV70 = z.enum([
+  "disk-full",
+  "network",
+  "verification",
+  "unknown",
+  "unrepairable",
+  "live-owner-stalled",
+  "trust-unavailable",
+  "local-storage-mismatch",
+]);
+
+const providerManagedInstallStateSchemaV70 = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("absent") }),
+  z.object({
+    status: z.literal("downloading"),
+    percent: z.number().min(0).max(100).nullable(),
+  }),
+  z.object({ status: z.literal("installed") }),
+  z.object({
+    status: z.literal("error"),
+    reason: providerManagedInstallErrorReasonSchemaV70,
+    message: z.string(),
+    retryAtMs: z.number().int().nonnegative().nullable(),
+  }),
+]);
+
+const providerVersionVisibilitySchemaV70 = z.object({
+  differingSessionCount: z.number().int().nonnegative(),
+});
+
+const providerAdvisoryKindSchemaV70 = z.enum([
+  "stale-channel",
+  "cannot-confirm-eligibility",
+  "yank-keep-running",
+  "yank-rollback",
+  "row-incompatibility",
+]);
+
+const providerAdvisorySchemaV70 = z.object({
+  kind: providerAdvisoryKindSchemaV70,
+  detail: z.string().nullable(),
+});
+
 const providerCliStateBaseShapeV70 = {
   enabled: z.boolean(),
-  disabledBy: providerDisabledBySchema.nullable(),
-  selected: providerSelectionSchema,
-  candidates: z.array(providerCliCandidateSchema),
+  disabledBy: providerDisabledBySchemaV70.nullable(),
+  selected: providerSelectionSchemaV70,
+  candidates: z.array(providerCliCandidateSchemaV70),
   authPending: z.boolean(),
   checkedAt: z.number().nullable(),
-  apiKey: providerApiKeyStateSchema,
+  apiKey: providerApiKeyStateSchemaV70,
   terminalAgentArgs: z.string().catch(""),
-  envOverrides: z.array(providerEnvOverrideSchema).catch([]),
-  loginCapability: providerLoginCapabilitySchema.nullable().catch(null),
+  envOverrides: z.array(providerEnvOverrideSchemaV70).catch([]),
+  loginCapability: providerLoginCapabilitySchemaV70.nullable().catch(null),
   availabilityPending: z.boolean().catch(false),
-  profiles: z.array(providerProfileSchema).catch([]),
-  managedInstallState: providerManagedInstallStateSchema
+  profiles: z.array(providerProfileSchemaV70).catch([]),
+  managedInstallState: providerManagedInstallStateSchemaV70
     .nullable()
     .catch(null)
     .optional(),
-  versionVisibility: providerVersionVisibilitySchema
+  versionVisibility: providerVersionVisibilitySchemaV70
     .nullable()
     .catch(null)
     .optional(),
-  advisory: providerAdvisorySchema.nullable().catch(null).optional(),
+  advisory: providerAdvisorySchemaV70.nullable().catch(null).optional(),
   cliBinaryResolved: z.boolean().catch(true).optional(),
 };
 
+/**
+ * Frozen `providers.list` provider state as it stands on the v7.0 line.
+ *
+ * The `.catch()` on `nativeCapabilities` is kept, with the v7.0-shaped
+ * default, so this line decodes byte-for-byte the way it does today - and it
+ * is the reason the descriptor beneath it is frozen to the leaf. That
+ * `.catch()` is what turns one unrecognized enum member into a silently empty
+ * capability object, so a v7.0 client would lose MCP, Plugins and Skills for a
+ * provider rather than lose the one value it could not read.
+ */
 export const providerCliStateSchemaV70 = z.object({
   providerId: providerIdSchemaV70,
   ...providerCliStateBaseShapeV70,
