@@ -21,7 +21,10 @@ import { LiveElapsed } from "@/components/chat/segments/segment-elapsed";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { ManagedCommandKindIcon } from "@/components/managed-commands/managed-command-kind-icon";
 import { ManagedCommandStopAction } from "@/components/managed-commands/managed-command-lifecycle-actions";
-import { useManagedCommandStopAll } from "@/hooks/managed-command/use-managed-command-lifecycle-mutations";
+import {
+  useManagedCommandStopAll,
+  useManagedCommandStopAllIsPending,
+} from "@/hooks/managed-command/use-managed-command-lifecycle-mutations";
 import {
   managedCommandKindLabel,
   managedCommandTitle,
@@ -639,6 +642,10 @@ export function BackgroundItemsPanel(props: {
   const hostId = useTabHostId();
   const openManagedCommand = useManagedCommandDoor();
   const stopAllManagedCommands = useManagedCommandStopAll();
+  // Cross-instance: the same chat can be open in two tiles, and each panel
+  // owns its own mutation observer - the shared read is what keeps the second
+  // tile's button dead while the first tile's batch runs.
+  const stopAllManagedPending = useManagedCommandStopAllIsPending();
   // "Stop all" means every row the panel is showing, and its two halves ride
   // different channels: the harness half needs the chat stream open, the
   // managed half is an RPC to the host that a reconnecting chat has no bearing
@@ -647,16 +654,14 @@ export function BackgroundItemsPanel(props: {
   // exactly when a runaway monitor most needs the one-click stop.
   const harnessStopAllReady = stoppable && !props.stopAllPending;
   const managedStopAllReady =
-    managedStoppable &&
-    managedCommands.length > 0 &&
-    !stopAllManagedCommands.isPending;
+    managedStoppable && managedCommands.length > 0 && !stopAllManagedPending;
   // One button, one rule: live while there is something it can do, dead while
   // anything it started is still in flight. Re-enabling as soon as one half
   // finished let a second press resubmit the finished half mid-flight.
   const stopAllDisabled =
     (!harnessStopAllReady && !managedStopAllReady) ||
     props.stopAllPending ||
-    stopAllManagedCommands.isPending;
+    stopAllManagedPending;
   const stopAll = () => {
     if (harnessStopAllReady) props.onStopAll();
     if (!managedStopAllReady) return;

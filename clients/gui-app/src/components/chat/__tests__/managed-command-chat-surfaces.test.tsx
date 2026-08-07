@@ -56,6 +56,7 @@ vi.mock(
       mutate: stopAllMutate,
       isPending: stopAllFlight.isPending,
     }),
+    useManagedCommandStopAllIsPending: () => stopAllFlight.isPending,
     useManagedCommandDelete: () => ({ mutate: vi.fn(), isPending: false }),
   }),
 );

@@ -115,10 +115,7 @@ export function ManagedCommandChatMenu(props: ManagedCommandChatMenuProps) {
   if (commands.length === 0 && !open) return null;
 
   return (
-    <Popover
-      open={open}
-      onOpenChange={setOpen}
-    >
+    <Popover open={open} onOpenChange={setOpen}>
       <TooltipWrapper
         label="Monitors and shells"
         side="top"

@@ -1,4 +1,8 @@
-import { useMutation, type UseMutationResult } from "@tanstack/react-query";
+import {
+  useIsMutating,
+  useMutation,
+  type UseMutationResult,
+} from "@tanstack/react-query";
 import { toast } from "sonner";
 import { withHostRpcErrorBoundary } from "@traycer-clients/shared/host-transport/host-messenger";
 import type {
@@ -116,6 +120,18 @@ export interface ManagedCommandStopAllVariables {
   readonly hostId: string;
   readonly epicId: string;
   readonly commandIds: readonly string[];
+}
+
+/**
+ * Whether ANY Stop all batch is in flight, across every mounted panel. A
+ * mutation result's own `isPending` is per-observer, and the same chat can be
+ * open in two canvas tiles - a second tile's button must go dead the moment
+ * the first tile's batch starts, or it re-submits the same command ids.
+ */
+export function useManagedCommandStopAllIsPending(): boolean {
+  return (
+    useIsMutating({ mutationKey: managedCommandMutationKeys.stopAll() }) > 0
+  );
 }
 
 /**

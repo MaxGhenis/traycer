@@ -36,12 +36,18 @@ vi.mock("@/lib/host", () => ({
   }),
 }));
 
-import { useManagedCommandStopAll } from "@/hooks/managed-command/use-managed-command-lifecycle-mutations";
+import {
+  useManagedCommandStopAll,
+  useManagedCommandStopAllIsPending,
+} from "@/hooks/managed-command/use-managed-command-lifecycle-mutations";
 
 const EPIC_ID = "epic-1";
 
 /** Command ids the mock host refuses to stop. */
 const refusedCommandIds = new Set<string>();
+/** When set, every stop waits on it - the observable in-flight window. */
+let stopGate: Promise<void> | null = null;
+let releaseStopGate: (() => void) | null = null;
 const stoppedCommandIds: string[] = [];
 
 let hostClient: HostClient<HostRpcRegistry>;
@@ -70,6 +76,8 @@ function wrapper(props: { readonly children: ReactNode }): ReactNode {
 beforeEach(() => {
   toastError.mockClear();
   directoryState.available = true;
+  stopGate = null;
+  releaseStopGate = null;
   refusedCommandIds.clear();
   stoppedCommandIds.length = 0;
   queryClient = new QueryClient({
@@ -79,7 +87,8 @@ beforeEach(() => {
     registry: hostRpcRegistry,
     requestId: () => "stop-all-request",
     handlers: {
-      "managedCommand.stop": (request) => {
+      "managedCommand.stop": async (request) => {
+        if (stopGate !== null) await stopGate;
         if (refusedCommandIds.has(request.commandId)) {
           throw new Error(`no such process: ${request.commandId}`);
         }
@@ -184,6 +193,37 @@ describe("useManagedCommandStopAll", () => {
     expect(toastError).toHaveBeenCalledWith(
       "Couldn't stop 2 of 2 monitors and shells.",
     );
+  });
+
+  it("reports a batch in flight to every observer, not just its own", async () => {
+    // Two hooks over one QueryClient stand in for the same chat open in two
+    // tiles: the second tile's button reads the shared pending, so it goes
+    // dead the moment the first tile's batch starts.
+    stopGate = new Promise<void>((resolve) => {
+      releaseStopGate = resolve;
+    });
+    const first = renderHook(() => useManagedCommandStopAll(), { wrapper });
+    const second = renderHook(() => useManagedCommandStopAllIsPending(), {
+      wrapper,
+    });
+    expect(second.result.current).toBe(false);
+
+    act(() => {
+      first.result.current.mutate({
+        hostId: mockLocalHostEntry.hostId,
+        epicId: EPIC_ID,
+        commandIds: ["cmd-1"],
+      });
+    });
+    await waitFor(() => {
+      expect(second.result.current).toBe(true);
+    });
+    act(() => {
+      releaseStopGate?.();
+    });
+    await waitFor(() => {
+      expect(second.result.current).toBe(false);
+    });
   });
 
   it("stays quiet when every stop lands", async () => {
