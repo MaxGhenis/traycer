@@ -1286,7 +1286,7 @@ export const providersListV70 = defineRpcContract({
 // `modelProviders` tab id in `supportedTabs`, and the nullable
 // `modelProviders` capability block beside `mcp`/`plugins`/`skills`. A genuine
 // major rather than a minor: `supportedTabs` is an array of a closed enum, so
-// a new member is a value a v7.0 peer cannot decode - and because the whole
+// a new member is a value the v7.0 contract cannot decode - and because the whole
 // capability object is read through one `.catch()`, it does not degrade to
 // "unknown tab ignored", it collapses MCP/Plugins/Skills with it.
 export const providersListV80 = defineRpcContract({
@@ -1347,7 +1347,7 @@ export const providersListUpgradeV6ToV7 = defineUpgradePath<
   // (`upgradeProviderCliStateListToV70`) rather than on the live one. Pointing
   // this hop at the live shape would have it emit a v8.0-shaped capability
   // object labelled "v7.0", and the v7 -> v8 hop would then be lifting a shape
-  // no v7.0 peer can produce.
+  // no v7.0 contract can carry.
   upgradeResponse: (response) => ({
     providers: upgradeProviderCliStateListToV70(
       response.providers.map((provider) => ({

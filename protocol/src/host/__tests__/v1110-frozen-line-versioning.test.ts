@@ -98,12 +98,17 @@ describe("epic.createTuiAgent 1.0 <-> 1.1", () => {
   });
 });
 
-const releasedProvidersRequest = { forceAuthRefresh: true };
+const frozenProvidersRequest = { forceAuthRefresh: true };
 
 // v7.0 is now a frozen line of its own, and its request is the FIRST that
 // models `native` - so it cannot share the pre-v7.0 schema or the pre-v7.0
 // expectations. The loops below select both per major rather than stopping at
 // 6, which would have left the newest frozen request line untested.
+//
+// "Frozen", not "released": majors 1-6 are both, but v7.0 is frozen at the
+// v8.0 integration cut and has not shipped in a non-RC release yet. The bridge
+// coverage is identical either way - a frozen line's bridges have to be right
+// before the release that makes them load-bearing, not after.
 const OLDER_REQUEST_MAJORS = [1, 2, 3, 4, 5, 6] as const;
 const ALL_FROZEN_REQUEST_MAJORS = [1, 2, 3, 4, 5, 6, 7] as const;
 
@@ -114,10 +119,10 @@ function frozenRequestSchemaFor(major: number) {
 }
 
 describe("providers.list request lines 1.0..7.0 <-> latest", () => {
-  it("released callers at every major upgrade to canonical with native:null", () => {
+  it("frozen callers at every major upgrade to canonical with native:null", () => {
     for (const major of ALL_FROZEN_REQUEST_MAJORS) {
       const parsed = frozenRequestSchemaFor(major).parse(
-        releasedProvidersRequest,
+        frozenProvidersRequest,
       );
       const canonical = upgradeRequestToVersion(
         providersListRegistry,
@@ -136,7 +141,7 @@ describe("providers.list request lines 1.0..7.0 <-> latest", () => {
     }
   });
 
-  it("a new latest-major client downgrades its request to every released major without leaking native", () => {
+  it("a new latest-major client downgrades its request to every older frozen major without leaking native", () => {
     const canonical = providersListRequestSchema.parse({
       forceAuthRefresh: true,
       native: {

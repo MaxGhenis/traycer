@@ -1053,8 +1053,11 @@ export type ProvidersListResponse = z.infer<typeof providersListResponseSchema>;
 // ── Frozen v7.0 provider state ─────────────────────────────────────────────
 //
 // Every schema `providerCliStateSchemaV70` reaches, hand-copied as the v7.0
-// line shipped it. The rule this section is written to, and the reason it is
-// this long: NOTHING reachable from a frozen contract may be a live schema.
+// line stood when v8.0 opened - the integration cut, not a release: v7.0 is
+// not yet released (see the frozen-native-payloads section in
+// `provider-native-schemas.ts` for what that does and does not license). The
+// rule this section is written to, and the reason it is this long: NOTHING
+// reachable from a frozen contract may be a live schema.
 //
 // Pinning only the closed enums would have been the narrower fix, and it is
 // the wrong one - it leaves the next author to judge, correctly, which of a
@@ -2702,7 +2705,7 @@ export function upgradeProviderCliStateListV70ToLatest(
  * The v6 -> v7 hop's target is v7.0, so its fill has to land there: pointing
  * it at the live shape would have the bridge emit a v8.0-shaped capability
  * object as its "v7.0" value, and every later hop would then be reading a
- * shape that no v7.0 peer can produce. `DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70`
+ * shape no v7.0 contract can carry. `DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70`
  * is the same "old host never had this feature" reading its live counterpart
  * carries - a v6.0 host advertised no native capabilities at all.
  */

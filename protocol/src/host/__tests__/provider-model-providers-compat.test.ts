@@ -1169,7 +1169,7 @@ describe("the v7.0 freeze goes all the way down", () => {
   // A `...V70` schema that still points into the live tree is a freeze-shaped
   // alias, not a freeze: the outer object is pinned while everything inside it
   // stays free to grow, and growth in a closed enum or union is the half that
-  // is FATAL to an already-shipped v7.0 peer rather than merely leaked.
+  // is FATAL to a peer that decodes v7.0 rather than merely leaked.
   //
   // Two rounds of review found a missed subtree each time, one level deeper
   // than the last fix. So the primary guard below is not a list of the
@@ -1338,7 +1338,7 @@ describe("the v7.0 freeze goes all the way down", () => {
 
   it("keeps the frozen provider-id enum out of the live one's future", () => {
     // The v7.0 native query and the v7.0 state both carry a provider id. A
-    // provider added to the live enum reaches a v7.0 peer only through the
+    // provider added to the live enum reaches a v7.0 caller only through the
     // bridge, never by the frozen schema quietly widening underneath it.
     expect(providerIdSchemaV70.options).toEqual(providerIdSchema.options);
   });
