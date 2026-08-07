@@ -41,6 +41,7 @@ import {
 } from "@traycer/protocol/host/provider-native-schemas";
 import { providerIdSchema, providerIdSchemaV70 } from "@traycer/protocol/host/provider-ids";
 import {
+  PROVIDER_AUTH_SCHEMA_V20,
   providerCliStateSchema,
   providerCliStateSchemaV70,
   providersAwaitModelProviderAuthRequestSchema,
@@ -56,6 +57,7 @@ import {
   providersListResponseSchemaV40,
   providersListResponseSchemaV50,
   providersListResponseSchemaV60,
+  providersListRequestSchema,
   providersListRequestSchemaV70,
   providersListResponseSchemaV70,
   providersModelProviderAuthRequestSchema,
@@ -1075,32 +1077,90 @@ function collectReachableSchemas(root: z.ZodType): Set<z.ZodType> {
   return schemas;
 }
 
-/** Every zod schema this package exports, paired with its export name. */
-const EXPORTED_SCHEMAS: readonly { name: string; schema: z.ZodType }[] = [
+/**
+ * Every export name each schema object answers to, used only to make a failure
+ * readable - not the guard itself. A LIST per object, not one name: several
+ * schemas are exported twice under an alias (`PROVIDER_AUTH_SCHEMA` is the
+ * same object as `PROVIDER_AUTH_SCHEMA_V20`), and keeping only the last one
+ * seen would make a frozen node look live purely by declaration order.
+ */
+const SCHEMA_EXPORT_NAMES = new Map<z.ZodType, string[]>();
+for (const [name, value] of [
   ...Object.entries(nativeSchemaModule),
   ...Object.entries(providerSchemaModule),
   ...Object.entries(providerIdModule),
-].flatMap(([name, value]) =>
-  value instanceof z.ZodType ? [{ name, schema: value }] : [],
-);
+]) {
+  if (!(value instanceof z.ZodType)) continue;
+  const names = SCHEMA_EXPORT_NAMES.get(value);
+  if (names === undefined) {
+    SCHEMA_EXPORT_NAMES.set(value, [name]);
+    continue;
+  }
+  names.push(name);
+}
 
 /** A name is a freeze marker when it ends in a version suffix (`V70`, `V20`, …). */
 const FROZEN_NAME = /V\d0$/;
 
-const FROZEN_SCHEMA_OBJECTS = new Set(
-  EXPORTED_SCHEMAS.filter(({ name }) => FROZEN_NAME.test(name)).map(
-    ({ schema }) => schema,
-  ),
-);
+function describeSchema(schema: z.ZodType): string {
+  const names = SCHEMA_EXPORT_NAMES.get(schema);
+  if (names !== undefined) return names.join(" / ");
+  const def: unknown = schema.def;
+  const kind =
+    typeof def === "object" && def !== null && "type" in def
+      ? String(def.type)
+      : "schema";
+  try {
+    const shape = JSON.stringify(
+      z.toJSONSchema(schema, { unrepresentable: "any" }),
+    );
+    return `<unexported ${kind}: ${shape.slice(0, 160)}>`;
+  } catch {
+    return `<unexported ${kind}>`;
+  }
+}
+
+function unionOfClosures(roots: readonly z.ZodType[]): Set<z.ZodType> {
+  const all = new Set<z.ZodType>();
+  for (const root of roots) {
+    for (const schema of collectReachableSchemas(root)) all.add(schema);
+  }
+  return all;
+}
 
 /**
- * Exports that are live: not named as a frozen line, and not an ALIAS of one
- * (`PROVIDER_AUTH_SCHEMA` is the same object as `PROVIDER_AUTH_SCHEMA_V20`, so
- * it is frozen despite the name).
+ * Every schema object the LIVE `providers.list` contracts reach - the closure,
+ * not the export list.
+ *
+ * The export list was this guard's first form and it had a hole: "live" meant
+ * "exported", so a PRIVATE live node (`nativeListSuccessResultSchema` is one)
+ * could be wired into a V70 schema and pass. Worse, the JSON-schema equality
+ * tests below would pass too, because both sides would be comparing one shared
+ * object with itself - leaving only the regeneratable catalog snapshot to
+ * notice a later widening.
+ *
+ * A closure has no such hole: reachability does not care whether a node has a
+ * name.
  */
-const LIVE_SCHEMA_EXPORTS = EXPORTED_SCHEMAS.filter(
-  ({ name, schema }) =>
-    !FROZEN_NAME.test(name) && !FROZEN_SCHEMA_OBJECTS.has(schema),
+const LIVE_SCHEMA_CLOSURE = unionOfClosures([
+  providerCliStateSchema,
+  providersListRequestSchema,
+  providersListResponseSchema,
+  providerNativeCapabilitiesSchema,
+]);
+
+/**
+ * The one deliberate sharing between the live and v7.0 trees:
+ * `PROVIDER_AUTH_SCHEMA_V20` is already frozen under its own version name, so
+ * both lines legitimately point at it. Subtracted as a CLOSURE, not a single
+ * node - its children (`PROVIDER_AUTH_STATUS_SCHEMA_V20`) are shared for
+ * exactly the same reason.
+ *
+ * This is the entire allowlist. Anything else in the intersection is a leak,
+ * and the fix is a V70 copy - never another entry here.
+ */
+const PERMITTED_SHARED_CLOSURE = collectReachableSchemas(
+  PROVIDER_AUTH_SCHEMA_V20,
 );
 
 describe("the v7.0 freeze goes all the way down", () => {
@@ -1131,33 +1191,62 @@ describe("the v7.0 freeze goes all the way down", () => {
   ];
 
   it.each(V70_ROOTS)(
-    "$name reaches no live schema at any depth",
+    "$name shares no node with the live contracts at any depth",
     ({ schema }) => {
-      // The whole contract in one assertion. If this fails, the named exports
-      // it reports are live schemas sitting on the v7.0 wire: give each a V70
-      // hand-copy and rewire. Do NOT add them to an allowlist - the reason
-      // they are reachable is the defect.
-      const reachable = collectReachableSchemas(schema);
-      const leaks = LIVE_SCHEMA_EXPORTS.filter((entry) =>
-        reachable.has(entry.schema),
-      ).map((entry) => entry.name);
+      // The whole contract in one assertion: closure ∩ closure, minus the one
+      // deliberately shared frozen subtree. If this fails, the nodes it
+      // reports are live schemas sitting on the v7.0 wire - give each a V70
+      // hand-copy and rewire. Do NOT add them to the allowlist; the reason
+      // they are reachable IS the defect.
+      const leaks = [...collectReachableSchemas(schema)]
+        .filter(
+          (node) =>
+            LIVE_SCHEMA_CLOSURE.has(node) &&
+            !PERMITTED_SHARED_CLOSURE.has(node),
+        )
+        .map(describeSchema);
       expect(leaks).toEqual([]);
     },
   );
 
-  it("actually has live schemas to catch, and a graph deep enough to find them", () => {
-    // Guards the guard. A walker that silently stopped at depth 1, or an
-    // EXPORTED_SCHEMAS that came back empty, would make every assertion above
-    // vacuously green.
-    expect(LIVE_SCHEMA_EXPORTS.length).toBeGreaterThan(20);
+  it("actually has live nodes to catch, and a graph deep enough to find them", () => {
+    // Guards the guard. A walker that silently stopped at depth 1, or a live
+    // closure that came back empty, would make every assertion above vacuously
+    // green.
+    expect(LIVE_SCHEMA_CLOSURE.size).toBeGreaterThan(100);
     expect(
       collectReachableSchemas(providerCliStateSchemaV70).size,
-    ).toBeGreaterThan(40);
+    ).toBeGreaterThan(100);
     expect(
       collectReachableSchemas(providerCliStateSchemaV70).has(
         providerNativeCapabilitiesSchemaV70,
       ),
     ).toBe(true);
+  });
+
+  it("covers UNEXPORTED live nodes, which is the hole the export list had", () => {
+    // The concrete reason this guard is a closure rather than a name list. If
+    // every live node happened to be exported the two would be equivalent and
+    // the rewrite pointless - so assert they are not: the live contracts do
+    // reach nodes no name can address, and those are now in scope.
+    const unexported = [...LIVE_SCHEMA_CLOSURE].filter(
+      (node) => !SCHEMA_EXPORT_NAMES.has(node),
+    );
+    expect(unexported.length).toBeGreaterThan(0);
+  });
+
+  it("permits exactly one shared subtree, and every node in it is frozen", () => {
+    // Pins the allowlist so a future "just add it to the permitted set" fix
+    // cannot pass quietly: every NAMED node in it must carry a version suffix.
+    expect(PERMITTED_SHARED_CLOSURE.has(PROVIDER_AUTH_SCHEMA_V20)).toBe(true);
+    const liveNamed = [...PERMITTED_SHARED_CLOSURE]
+      .map((node) => SCHEMA_EXPORT_NAMES.get(node))
+      .filter((names): names is string[] => names !== undefined)
+      // An object exported under several names is frozen if ANY of them says
+      // so - the alias is a second door onto the same frozen schema.
+      .filter((names) => !names.some((name) => FROZEN_NAME.test(name)))
+      .map((names) => names.join(" / "));
+    expect(liveNamed).toEqual([]);
   });
 
   // Live-vs-frozen equality per subtree. Green today because the copies agree;
