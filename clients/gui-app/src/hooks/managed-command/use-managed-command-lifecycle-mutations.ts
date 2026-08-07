@@ -128,9 +128,10 @@ export interface ManagedCommandStopAllVariables {
  * open in two canvas tiles - a second tile's button must go dead the moment
  * the first tile's batch starts, or it re-submits the same command ids.
  */
-export function useManagedCommandStopAllIsPending(): boolean {
+export function useManagedCommandStopAllIsPending(chatId: string): boolean {
   return (
-    useIsMutating({ mutationKey: managedCommandMutationKeys.stopAll() }) > 0
+    useIsMutating({ mutationKey: managedCommandMutationKeys.stopAll(chatId) }) >
+    0
   );
 }
 
@@ -144,16 +145,14 @@ export function useManagedCommandStopAllIsPending(): boolean {
  * them, and says the outcome once. Its pending flag covers the whole span, so
  * the button a caller disables on it cannot re-send the set mid-flight.
  */
-export function useManagedCommandStopAll(): UseMutationResult<
-  void,
-  Error,
-  ManagedCommandStopAllVariables
-> {
+export function useManagedCommandStopAll(
+  chatId: string,
+): UseMutationResult<void, Error, ManagedCommandStopAllVariables> {
   const defaultClient = useHostClient();
   const directory = useHostDirectory();
 
   return useMutation<void, Error, ManagedCommandStopAllVariables>({
-    mutationKey: managedCommandMutationKeys.stopAll(),
+    mutationKey: managedCommandMutationKeys.stopAll(chatId),
     mutationFn: async (variables) => {
       const entry = directory.findById(variables.hostId);
       const client: HostClient<HostRpcRegistry> | null =

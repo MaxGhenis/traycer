@@ -119,7 +119,7 @@ afterEach(() => {
 describe("useManagedCommandStopAll", () => {
   it("fails once with the real reason when no host client can be built", async () => {
     directoryState.available = false;
-    const { result } = renderHook(() => useManagedCommandStopAll(), {
+    const { result } = renderHook(() => useManagedCommandStopAll("chat-1"), {
       wrapper,
     });
 
@@ -145,7 +145,7 @@ describe("useManagedCommandStopAll", () => {
 
   it("says a partial failure once, naming how many of how many", async () => {
     refusedCommandIds.add("cmd-2");
-    const { result } = renderHook(() => useManagedCommandStopAll(), {
+    const { result } = renderHook(() => useManagedCommandStopAll("chat-1"), {
       wrapper,
     });
 
@@ -172,7 +172,7 @@ describe("useManagedCommandStopAll", () => {
   it("still says it once when the host refuses every one of them", async () => {
     refusedCommandIds.add("cmd-1");
     refusedCommandIds.add("cmd-2");
-    const { result } = renderHook(() => useManagedCommandStopAll(), {
+    const { result } = renderHook(() => useManagedCommandStopAll("chat-1"), {
       wrapper,
     });
 
@@ -202,10 +202,15 @@ describe("useManagedCommandStopAll", () => {
     stopGate = new Promise<void>((resolve) => {
       releaseStopGate = resolve;
     });
-    const first = renderHook(() => useManagedCommandStopAll(), { wrapper });
-    const second = renderHook(() => useManagedCommandStopAllIsPending(), {
+    const first = renderHook(() => useManagedCommandStopAll("chat-1"), {
       wrapper,
     });
+    const second = renderHook(
+      () => useManagedCommandStopAllIsPending("chat-1"),
+      {
+        wrapper,
+      },
+    );
     expect(second.result.current).toBe(false);
 
     act(() => {
@@ -227,7 +232,7 @@ describe("useManagedCommandStopAll", () => {
   });
 
   it("stays quiet when every stop lands", async () => {
-    const { result } = renderHook(() => useManagedCommandStopAll(), {
+    const { result } = renderHook(() => useManagedCommandStopAll("chat-1"), {
       wrapper,
     });
 
