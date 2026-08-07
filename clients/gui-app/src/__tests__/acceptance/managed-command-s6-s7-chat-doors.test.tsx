@@ -1,10 +1,11 @@
 /**
  * Independent acceptance suite — seams S6 and S7: the chat-side surfaces.
  *
- * S6 is the chat's running work: a client-side join of the epic list stream
- * against the open chat (`UI.md` §5, §9a) — running commands owned by THIS
- * chat appear as rows of the chat's Background panel, leave on terminal status
- * frames, and click through to the output window. S7 is the doors: the
+ * S6 is the chat's running work: the running subset of the set the chat's own
+ * stream carries (`UI.md` §5, §9a) — running commands owned by THIS chat
+ * appear as rows of the chat's Background panel, leave as soon as a later set
+ * stops naming them as running, and click through to the output window. S7 is
+ * the doors: the
  * queued-delivery chip and the resume divider open or focus the command's
  * output window, the divider's terminal copy is kind-explicit per the REAL
  * kind (`UI.md` §3, §8), and one command never has two windows (`UI.md` §9).
@@ -34,11 +35,12 @@ import {
 } from "@/stores/epics/open-epic/store";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { findOpenArtifactInTab } from "@/stores/epics/canvas/canvas-selectors";
-import { ManagedCommandListStreamMount } from "@/providers/managed-command-list-stream-mount";
-import { __setManagedCommandListStreamClientFactoryForTests } from "@/providers/managed-command-list-stream-factory-override";
-import { managedCommandListRegistry } from "@/stores/managed-commands/managed-command-list-registry";
-import type { ManagedCommandListStreamCallbacks } from "@traycer-clients/shared/host-transport/managed-command-list-stream-client";
-import { managedCommandSubscribeListServerFrameSchema } from "@traycer/protocol/host/managed-command/subscribe";
+import {
+  disposeManagedCommandChatSessions,
+  installManagedCommandChatSession,
+  type ManagedCommandChatSessionStub,
+} from "@/stores/managed-commands/test-support/managed-command-chat-session";
+import { chatSubscribeServerFrameSchema } from "@traycer/protocol/host/agent/gui/subscribe";
 import { managedCommandSchema } from "@traycer/protocol/host/managed-command/unary-schemas";
 import type { ManagedCommand } from "@traycer/protocol/host/managed-command/unary-schemas";
 import { autonomousResumeTriggerSchema } from "@traycer/protocol/persistence/epic/content-blocks";
@@ -84,14 +86,21 @@ const noopEpicStreamClientFactory: EpicStreamClientFactory = () => ({
   close: () => undefined,
 });
 
-let wire: ManagedCommandListStreamCallbacks | null = null;
 let epicHandle: OpenEpicStoreHandle | null = null;
 
-function connectedWire(): ManagedCommandListStreamCallbacks {
-  if (wire === null) {
-    throw new Error("acceptance: the list stream was never opened");
-  }
-  return wire;
+/**
+ * One live chat session per chat under test: the commands ride each chat's own
+ * `chat.subscribe` stream now, so "another chat's monitor" is a fact about a
+ * different stream rather than a field this one filters on.
+ */
+const chatSessions = new Map<string, ManagedCommandChatSessionStub>();
+
+function chatSession(chatId: string): ManagedCommandChatSessionStub {
+  const existing = chatSessions.get(chatId);
+  if (existing !== undefined) return existing;
+  const created = installManagedCommandChatSession({ epicId: EPIC_ID, chatId });
+  chatSessions.set(chatId, created);
+  return created;
 }
 
 function makeCommand(over: Partial<ManagedCommand>): ManagedCommand {
@@ -107,27 +116,27 @@ function makeCommand(over: Partial<ManagedCommand>): ManagedCommand {
   });
 }
 
-function emitSnapshot(commands: readonly ManagedCommand[]): void {
-  const frame = managedCommandSubscribeListServerFrameSchema.parse({
-    kind: "snapshot",
+/**
+ * A chat's whole set, authored through the wire schema so each fixture is
+ * exactly what the host would deliver. There is no per-command delta on this
+ * stream: every change re-sends the set.
+ */
+function emitCommands(
+  commands: readonly ManagedCommand[],
+  chatId: string,
+): void {
+  const frame = chatSubscribeServerFrameSchema.parse({
+    kind: "managedCommandsChanged",
     hasBinaryPayload: false,
-    commands,
+    epicId: EPIC_ID,
+    chatId,
+    managedCommands: commands,
   });
-  if (frame.kind !== "snapshot") throw new Error("unreachable");
+  if (frame.kind !== "managedCommandsChanged") {
+    throw new Error("unreachable");
+  }
   act(() => {
-    connectedWire().onSnapshot(frame.commands);
-  });
-}
-
-function emitChanged(command: ManagedCommand): void {
-  const frame = managedCommandSubscribeListServerFrameSchema.parse({
-    kind: "changed",
-    hasBinaryPayload: false,
-    command,
-  });
-  if (frame.kind !== "changed") throw new Error("unreachable");
-  act(() => {
-    connectedWire().onChanged(frame.command);
+    chatSession(chatId).setCommands(frame.managedCommands);
   });
 }
 
@@ -174,7 +183,6 @@ function renderInChatContext(children: React.ReactNode): void {
 function renderBackgroundPanelInChat(alongside: React.ReactNode): void {
   renderInChatContext(
     <>
-      <ManagedCommandListStreamMount epicId={EPIC_ID} />
       <BackgroundItemsPanel
         items={[]}
         epicId={EPIC_ID}
@@ -215,19 +223,14 @@ beforeEach(() => {
     activeTabId: TAB_ID,
   });
   mocks.methodSupport.value = "supported";
-  __setManagedCommandListStreamClientFactoryForTests((_epicId, callbacks) => {
-    wire = callbacks;
-    return { close: () => undefined };
-  });
 });
 
 afterEach(() => {
   cleanup();
-  __setManagedCommandListStreamClientFactoryForTests(null);
-  managedCommandListRegistry.disposeAll();
+  chatSessions.clear();
+  disposeManagedCommandChatSessions();
   epicHandle?.dispose();
   epicHandle = null;
-  wire = null;
   useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
   vi.clearAllMocks();
 });
@@ -235,20 +238,33 @@ afterEach(() => {
 describe("S6 · running work in the chat's Background panel", () => {
   it("S6a: shows only THIS chat's running commands, kind-explicit, and none of another chat's or terminal ones", () => {
     renderBackgroundPanelInChat(null);
-    emitSnapshot([
-      makeCommand({ id: "cmd-mine-running", description: "deploy watcher" }),
-      makeCommand({
-        id: "cmd-theirs-running",
-        chatId: CHAT_B,
-        description: "other watcher",
-      }),
-      makeCommand({
-        id: "cmd-mine-done",
-        kind: "shell",
-        description: "db migration",
-        status: { state: "exited", exitCode: 0, signal: null, exitedAtMs: T0 },
-      }),
-    ]);
+    emitCommands(
+      [
+        makeCommand({ id: "cmd-mine-running", description: "deploy watcher" }),
+        makeCommand({
+          id: "cmd-mine-done",
+          kind: "shell",
+          description: "db migration",
+          status: {
+            state: "exited",
+            exitCode: 0,
+            signal: null,
+            exitedAtMs: T0,
+          },
+        }),
+      ],
+      CHAT_A,
+    );
+    emitCommands(
+      [
+        makeCommand({
+          id: "cmd-theirs-running",
+          chatId: CHAT_B,
+          description: "other watcher",
+        }),
+      ],
+      CHAT_B,
+    );
 
     const mine = screen.getByTestId(
       "managed-command-background-row-cmd-mine-running",
@@ -262,30 +278,36 @@ describe("S6 · running work in the chat's Background panel", () => {
     ).toBeNull();
   });
 
-  it("S6b: rows appear and disappear on status frames — removed the moment the command reaches a terminal state", () => {
+  it("S6b: rows appear and disappear as the set is re-sent — removed the moment the command reaches a terminal state", () => {
     renderBackgroundPanelInChat(null);
-    emitSnapshot([]);
+    emitCommands([], CHAT_A);
     expect(
       screen.queryByTestId("managed-command-background-row-cmd-live"),
     ).toBeNull();
 
-    emitChanged(makeCommand({ id: "cmd-live", description: "fresh watcher" }));
+    emitCommands(
+      [makeCommand({ id: "cmd-live", description: "fresh watcher" })],
+      CHAT_A,
+    );
     expect(
       screen.getByTestId("managed-command-background-row-cmd-live"),
     ).toBeTruthy();
 
-    emitChanged(
-      makeCommand({
-        id: "cmd-live",
-        description: "fresh watcher",
-        status: {
-          state: "exited",
-          exitCode: 1,
-          signal: null,
-          exitedAtMs: T0 + 1,
-        },
-        updatedAtMs: T0 + 1,
-      }),
+    emitCommands(
+      [
+        makeCommand({
+          id: "cmd-live",
+          description: "fresh watcher",
+          status: {
+            state: "exited",
+            exitCode: 1,
+            signal: null,
+            exitedAtMs: T0 + 1,
+          },
+          updatedAtMs: T0 + 1,
+        }),
+      ],
+      CHAT_A,
     );
     expect(
       screen.queryByTestId("managed-command-background-row-cmd-live"),
@@ -294,7 +316,7 @@ describe("S6 · running work in the chat's Background panel", () => {
 
   it("S6c: clicking a background row opens the command's output window", () => {
     renderBackgroundPanelInChat(null);
-    emitSnapshot([makeCommand({ id: "cmd-door" })]);
+    emitCommands([makeCommand({ id: "cmd-door" })], CHAT_A);
 
     fireEvent.click(
       screen.getByTestId("managed-command-background-row-cmd-door"),
@@ -403,7 +425,10 @@ describe("S7 · doors", () => {
     renderBackgroundPanelInChat(
       <ManagedCommandBadge commandId="cmd-one" commandKind="monitor" />,
     );
-    emitSnapshot([makeCommand({ id: "cmd-one", description: "solo watcher" })]);
+    emitCommands(
+      [makeCommand({ id: "cmd-one", description: "solo watcher" })],
+      CHAT_A,
+    );
 
     fireEvent.click(screen.getByTestId("queued-managed-command-badge"));
     expect(openWindowCountFor("cmd-one")).toBe(1);

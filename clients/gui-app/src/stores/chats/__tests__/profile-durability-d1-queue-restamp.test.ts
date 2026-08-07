@@ -126,6 +126,7 @@ function emitSnapshot(harness: Harness): void {
       missingWorktreePaths: [],
       pendingFileEditApprovals: [],
       accumulatedFileChanges: [],
+      managedCommands: [],
     },
   });
 }

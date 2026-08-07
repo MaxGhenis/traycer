@@ -30,7 +30,7 @@ import {
   managedCommandTitle,
 } from "@/lib/managed-commands/managed-command-copy";
 import { useManagedCommandDoor } from "@/lib/managed-commands/use-managed-command-door";
-import { useRunningManagedCommandsForChat } from "@/stores/managed-commands/managed-command-list-registry";
+import { useRunningManagedCommandsForChat } from "@/stores/managed-commands/managed-commands-for-chat";
 import type { ManagedCommand } from "@traycer/protocol/host/managed-command/unary-schemas";
 import { cn } from "@/lib/utils";
 import {

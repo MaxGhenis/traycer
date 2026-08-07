@@ -20,7 +20,6 @@ import { DndContext } from "@dnd-kit/core";
 import type { BackgroundItem } from "@traycer/protocol/host/agent/gui/subscribe";
 import type { AutonomousResumeTrigger } from "@traycer/protocol/persistence/epic/content-blocks";
 import type { ManagedCommand } from "@traycer/protocol/host/managed-command/unary-schemas";
-import type { ManagedCommandListStreamCallbacks } from "@traycer-clients/shared/host-transport/managed-command-list-stream-client";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 /**
@@ -68,9 +67,11 @@ import {
   type EpicStreamClientFactory,
   type OpenEpicStoreHandle,
 } from "@/stores/epics/open-epic/store";
-import { ManagedCommandListStreamMount } from "@/providers/managed-command-list-stream-mount";
-import { __setManagedCommandListStreamClientFactoryForTests } from "@/providers/managed-command-list-stream-factory-override";
-import { managedCommandListRegistry } from "@/stores/managed-commands/managed-command-list-registry";
+import {
+  disposeManagedCommandChatSessions,
+  installManagedCommandChatSession,
+  type ManagedCommandChatSessionStub,
+} from "@/stores/managed-commands/test-support/managed-command-chat-session";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { findOpenArtifactInTab } from "@/stores/epics/canvas/canvas-selectors";
 import { ManagedCommandBadge } from "@/components/chat/queued-message-surface";
@@ -123,18 +124,28 @@ function trigger(
   };
 }
 
-function installListStub(): { emit: () => ManagedCommandListStreamCallbacks } {
-  let captured: ManagedCommandListStreamCallbacks | null = null;
-  __setManagedCommandListStreamClientFactoryForTests((_epicId, callbacks) => {
-    captured = callbacks;
-    return { close: () => undefined };
-  });
-  return {
-    emit: () => {
-      if (captured === null) throw new Error("list callbacks not wired");
-      return captured;
-    },
-  };
+/**
+ * The commands ride each chat's own stream now, so a suite that needs two
+ * chats' menus needs two sessions. Created on first use so a test that never
+ * mentions a chat leaves it without one - which is also the "no session yet"
+ * state the surfaces must survive.
+ */
+const chatSessions = new Map<string, ManagedCommandChatSessionStub>();
+
+function chatSession(chatId: string): ManagedCommandChatSessionStub {
+  const existing = chatSessions.get(chatId);
+  if (existing !== undefined) return existing;
+  const created = installManagedCommandChatSession({ epicId: EPIC_ID, chatId });
+  chatSessions.set(chatId, created);
+  return created;
+}
+
+/** This chat's whole set, the way the host sends it - never a delta. */
+function setCommands(
+  commands: readonly ManagedCommand[],
+  chatId: string,
+): void {
+  chatSession(chatId).setCommands(commands);
 }
 
 function chatTileTree(node: ReactNode): ReactNode {
@@ -188,8 +199,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   epicHandle.dispose();
-  __setManagedCommandListStreamClientFactoryForTests(null);
-  managedCommandListRegistry.disposeAll();
+  chatSessions.clear();
+  disposeManagedCommandChatSessions();
   useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
 });
 
@@ -346,7 +357,6 @@ describe("resume divider", () => {
 
 describe("running commands in the Background panel", () => {
   function renderPanel(items: ReadonlyArray<BackgroundItem>): {
-    emit: () => ManagedCommandListStreamCallbacks;
     onStopAll: Mock<() => string | null>;
   } {
     return renderPanelWith(items, true);
@@ -357,31 +367,26 @@ describe("running commands in the Background panel", () => {
     items: ReadonlyArray<BackgroundItem>,
     canAct: boolean,
   ): {
-    emit: () => ManagedCommandListStreamCallbacks;
     onStopAll: Mock<() => string | null>;
   } {
-    const stub = installListStub();
     const onStopAll: Mock<() => string | null> = vi.fn(() => null);
     renderInChatTile(
-      <>
-        <ManagedCommandListStreamMount epicId={EPIC_ID} />
-        <BackgroundItemsPanel
-          items={items}
-          epicId={EPIC_ID}
-          chatId={CHAT_ID}
-          canAct={canAct}
-          readOnly={false}
-          pendingStopTaskIds={new Set()}
-          stopAllPending={false}
-          scrollRegionMaxHeightClass="max-h-96"
-          separated={false}
-          onItemClick={() => undefined}
-          onStopItem={() => null}
-          onStopAll={onStopAll}
-        />
-      </>,
+      <BackgroundItemsPanel
+        items={items}
+        epicId={EPIC_ID}
+        chatId={CHAT_ID}
+        canAct={canAct}
+        readOnly={false}
+        pendingStopTaskIds={new Set()}
+        stopAllPending={false}
+        scrollRegionMaxHeightClass="max-h-96"
+        separated={false}
+        onItemClick={() => undefined}
+        onStopItem={() => null}
+        onStopAll={onStopAll}
+      />,
     );
-    return { emit: stub.emit, onStopAll };
+    return { onStopAll };
   }
 
   function expandPanel(): void {
@@ -389,16 +394,26 @@ describe("running commands in the Background panel", () => {
   }
 
   it("lists only this chat's running commands, kind-explicit", () => {
-    const stub = renderPanel([]);
+    renderPanel([]);
     act(() => {
-      stub.emit().onSnapshot([
-        command({ id: "mine-running" }),
-        command({
-          id: "mine-exited",
-          status: { state: "exited", exitCode: 0, signal: null, exitedAtMs: 5 },
-        }),
-        command({ id: "other-chat", chatId: "chat-2" }),
-      ]);
+      setCommands(
+        [
+          command({ id: "mine-running" }),
+          command({
+            id: "mine-exited",
+            status: {
+              state: "exited",
+              exitCode: 0,
+              signal: null,
+              exitedAtMs: 5,
+            },
+          }),
+        ],
+        CHAT_ID,
+      );
+      // Another chat's monitor rides another chat's stream, so this panel can
+      // never see it however busy that chat is.
+      setCommands([command({ id: "other-chat", chatId: "chat-2" })], "chat-2");
     });
     expandPanel();
 
@@ -410,18 +425,26 @@ describe("running commands in the Background panel", () => {
   });
 
   it("drops a row the moment its command reaches a terminal state", () => {
-    const stub = renderPanel([]);
+    renderPanel([]);
     act(() => {
-      stub.emit().onSnapshot([command({ id: "mine-running" })]);
+      setCommands([command({ id: "mine-running" })], CHAT_ID);
     });
     expandPanel();
 
     act(() => {
-      stub.emit().onChanged(
-        command({
-          id: "mine-running",
-          status: { state: "exited", exitCode: 0, signal: null, exitedAtMs: 5 },
-        }),
+      setCommands(
+        [
+          command({
+            id: "mine-running",
+            status: {
+              state: "exited",
+              exitCode: 0,
+              signal: null,
+              exitedAtMs: 5,
+            },
+          }),
+        ],
+        CHAT_ID,
       );
     });
 
@@ -431,9 +454,9 @@ describe("running commands in the Background panel", () => {
   });
 
   it("opens the output window from a row", () => {
-    const stub = renderPanel([]);
+    renderPanel([]);
     act(() => {
-      stub.emit().onSnapshot([command({ id: "mine-running" })]);
+      setCommands([command({ id: "mine-running" })], CHAT_ID);
     });
     expandPanel();
 
@@ -445,19 +468,22 @@ describe("running commands in the Background panel", () => {
   });
 
   it("reads in the panel's own row grammar: kind glyph, uppercase kind pill, elapsed, hover stop", () => {
-    const stub = renderPanel([]);
+    renderPanel([]);
     act(() => {
-      stub.emit().onSnapshot([
-        command({
-          id: "mine-running",
-          kind: "shell",
-          status: {
-            state: "running",
-            pid: 4410,
-            startedAtMs: Date.now() - 65_000,
-          },
-        }),
-      ]);
+      setCommands(
+        [
+          command({
+            id: "mine-running",
+            kind: "shell",
+            status: {
+              state: "running",
+              pid: 4410,
+              startedAtMs: Date.now() - 65_000,
+            },
+          }),
+        ],
+        CHAT_ID,
+      );
     });
     expandPanel();
 
@@ -481,9 +507,9 @@ describe("running commands in the Background panel", () => {
   });
 
   it("offers stop and nothing destructive: this is a status, not the object", () => {
-    const stub = renderPanel([]);
+    renderPanel([]);
     act(() => {
-      stub.emit().onSnapshot([command({ id: "mine-running" })]);
+      setCommands([command({ id: "mine-running" })], CHAT_ID);
     });
     expandPanel();
 
@@ -502,15 +528,16 @@ describe("running commands in the Background panel", () => {
   });
 
   it("counts managed commands into the one running total the button can keep", () => {
-    const stub = renderPanel([HARNESS_ITEM]);
+    renderPanel([HARNESS_ITEM]);
     act(() => {
-      stub
-        .emit()
-        .onSnapshot([
+      setCommands(
+        [
           command({ id: "m1", kind: "monitor" }),
           command({ id: "m2", kind: "monitor" }),
           command({ id: "s1", kind: "shell" }),
-        ]);
+        ],
+        CHAT_ID,
+      );
     });
 
     // One press of Stop all now reaches all four, so one summed total is a
@@ -521,9 +548,9 @@ describe("running commands in the Background panel", () => {
   });
 
   it("keeps the plain summary when the chat has no managed commands", () => {
-    const stub = renderPanel([HARNESS_ITEM]);
+    renderPanel([HARNESS_ITEM]);
     act(() => {
-      stub.emit().onSnapshot([]);
+      setCommands([], CHAT_ID);
     });
 
     expect(screen.getByTestId("background-header-summary").textContent).toBe(
@@ -532,14 +559,12 @@ describe("running commands in the Background panel", () => {
   });
 
   it("stops the managed rows too when Stop all is pressed, as one action", () => {
-    const stub = renderPanel([HARNESS_ITEM]);
+    const panel = renderPanel([HARNESS_ITEM]);
     act(() => {
-      stub
-        .emit()
-        .onSnapshot([
-          command({ id: "m1" }),
-          command({ id: "m2", kind: "shell" }),
-        ]);
+      setCommands(
+        [command({ id: "m1" }), command({ id: "m2", kind: "shell" })],
+        CHAT_ID,
+      );
     });
     expandPanel();
 
@@ -550,7 +575,7 @@ describe("running commands in the Background panel", () => {
     // managed half is ONE call over the whole set, not one per row: a host
     // that has gone away fails them all for the same reason, and per-row
     // mutations reported that reason once per row.
-    expect(stub.onStopAll).toHaveBeenCalledTimes(1);
+    expect(panel.onStopAll).toHaveBeenCalledTimes(1);
     expect(stopAllMutate).toHaveBeenCalledTimes(1);
     expect(stopAllMutate).toHaveBeenCalledWith({
       hostId: "host-1",
@@ -562,9 +587,9 @@ describe("running commands in the Background panel", () => {
 
   it("stays dead while anything it started is still in flight", () => {
     stopAllFlight.isPending = true;
-    const stub = renderPanel([HARNESS_ITEM]);
+    const panel = renderPanel([HARNESS_ITEM]);
     act(() => {
-      stub.emit().onSnapshot([command({ id: "m1" })]);
+      setCommands([command({ id: "m1" })], CHAT_ID);
     });
     expandPanel();
 
@@ -576,15 +601,15 @@ describe("running commands in the Background panel", () => {
     });
     expect(stopAllButton.disabled).toBe(true);
     fireEvent.click(stopAllButton);
-    expect(stub.onStopAll).not.toHaveBeenCalled();
+    expect(panel.onStopAll).not.toHaveBeenCalled();
     expect(stopAllMutate).not.toHaveBeenCalled();
   });
 
   it("disables Stop all only when neither half can act", () => {
     stopAllFlight.isPending = true;
-    const stub = renderPanelWith([HARNESS_ITEM], false);
+    const panel = renderPanelWith([HARNESS_ITEM], false);
     act(() => {
-      stub.emit().onSnapshot([command({ id: "m1" })]);
+      setCommands([command({ id: "m1" })], CHAT_ID);
     });
 
     // Harness half gated by the closed stream, managed half in flight: with
@@ -594,13 +619,13 @@ describe("running commands in the Background panel", () => {
     });
     expect(stopAllButton.disabled).toBe(true);
     fireEvent.click(stopAllButton);
-    expect(stub.onStopAll).not.toHaveBeenCalled();
+    expect(panel.onStopAll).not.toHaveBeenCalled();
   });
 
   it("keeps a managed row stoppable while the chat stream is reconnecting", () => {
-    const stub = renderPanelWith([HARNESS_ITEM], false);
+    const panel = renderPanelWith([HARNESS_ITEM], false);
     act(() => {
-      stub.emit().onSnapshot([command({ id: "m1" })]);
+      setCommands([command({ id: "m1" })], CHAT_ID);
     });
     expandPanel();
 
@@ -623,7 +648,7 @@ describe("running commands in the Background panel", () => {
     });
     expect(stopAllButton.disabled).toBe(false);
     fireEvent.click(stopAllButton);
-    expect(stub.onStopAll).not.toHaveBeenCalled();
+    expect(panel.onStopAll).not.toHaveBeenCalled();
     expect(stopAllMutate).toHaveBeenCalledTimes(1);
     expect(stopAllMutate).toHaveBeenCalledWith({
       hostId: "host-1",
@@ -633,9 +658,9 @@ describe("running commands in the Background panel", () => {
   });
 
   it("no longer disclaims a subset Stop all cannot reach", () => {
-    const stub = renderPanel([HARNESS_ITEM]);
+    renderPanel([HARNESS_ITEM]);
     act(() => {
-      stub.emit().onSnapshot([command({ id: "m1" })]);
+      setCommands([command({ id: "m1" })], CHAT_ID);
     });
     expandPanel();
 
@@ -645,11 +670,9 @@ describe("running commands in the Background panel", () => {
 });
 
 describe("the chat's monitors menu", () => {
-  function renderMenu(): { emit: () => ManagedCommandListStreamCallbacks } {
-    const stub = installListStub();
+  function renderMenu(): void {
     renderInChatTile(
       <DndContext>
-        <ManagedCommandListStreamMount epicId={EPIC_ID} />
         <ManagedCommandChatMenu
           epicId={EPIC_ID}
           chatId={CHAT_ID}
@@ -658,7 +681,6 @@ describe("the chat's monitors menu", () => {
         />
       </DndContext>,
     );
-    return stub;
   }
 
   function trigger$(): HTMLElement | null {
@@ -678,18 +700,22 @@ describe("the chat's monitors menu", () => {
   }
 
   it("is absent until this chat owns a command, and present for any state", () => {
-    const stub = renderMenu();
+    renderMenu();
     act(() => {
-      stub.emit().onSnapshot([command({ id: "other", chatId: "chat-2" })]);
+      // Only the other chat has anything, and its set never reaches this menu.
+      setCommands([command({ id: "other", chatId: "chat-2" })], "chat-2");
     });
     expect(trigger$()).toBeNull();
 
     act(() => {
-      stub.emit().onChanged(
-        command({
-          id: "mine-done",
-          status: { state: "stopped", stoppedAtMs: 30 },
-        }),
+      setCommands(
+        [
+          command({
+            id: "mine-done",
+            status: { state: "stopped", stoppedAtMs: 30 },
+          }),
+        ],
+        CHAT_ID,
       );
     });
     // A finished command still belongs to the chat, so the door to it stays.
@@ -697,16 +723,19 @@ describe("the chat's monitors menu", () => {
   });
 
   it("counts what is running, and says nothing when nothing is", () => {
-    const stub = renderMenu();
+    renderMenu();
     act(() => {
-      stub.emit().onSnapshot([
-        command({ id: "r1" }),
-        command({ id: "r2", kind: "shell" }),
-        command({
-          id: "done",
-          status: { state: "stopped", stoppedAtMs: 30 },
-        }),
-      ]);
+      setCommands(
+        [
+          command({ id: "r1" }),
+          command({ id: "r2", kind: "shell" }),
+          command({
+            id: "done",
+            status: { state: "stopped", stoppedAtMs: 30 },
+          }),
+        ],
+        CHAT_ID,
+      );
     });
 
     expect(
@@ -714,17 +743,20 @@ describe("the chat's monitors menu", () => {
     ).toBe("2");
 
     act(() => {
-      stub
-        .emit()
-        .onChanged(
+      setCommands(
+        [
           command({ id: "r1", status: { state: "stopped", stoppedAtMs: 31 } }),
-        );
-      stub.emit().onChanged(
-        command({
-          id: "r2",
-          kind: "shell",
-          status: { state: "stopped", stoppedAtMs: 31 },
-        }),
+          command({
+            id: "r2",
+            kind: "shell",
+            status: { state: "stopped", stoppedAtMs: 31 },
+          }),
+          command({
+            id: "done",
+            status: { state: "stopped", stoppedAtMs: 30 },
+          }),
+        ],
+        CHAT_ID,
       );
     });
 
@@ -737,40 +769,43 @@ describe("the chat's monitors menu", () => {
   });
 
   it("lights attention for a failed shell and a monitor that exited on its own, never for a stop", () => {
-    const stub = renderMenu();
+    renderMenu();
     act(() => {
-      stub.emit().onSnapshot([
-        // A shell that failed: its ending is not the one it promised.
-        exited({ id: "shell-failed", kind: "shell" }),
-        // A monitor that exited cleanly is still a watcher that stopped
-        // watching, which is exactly the thing worth being told.
-        exited({
-          id: "monitor-clean-exit",
-          kind: "monitor",
-          status: {
-            state: "exited",
-            exitCode: 0,
-            signal: null,
-            exitedAtMs: 20,
-          },
-        }),
-        // Asked for by a human or an agent: never news.
-        command({
-          id: "stopped-by-someone",
-          status: { state: "stopped", stoppedAtMs: 20 },
-        }),
-        // A clean shell run ended the way it said it would.
-        exited({
-          id: "shell-clean",
-          kind: "shell",
-          status: {
-            state: "exited",
-            exitCode: 0,
-            signal: null,
-            exitedAtMs: 20,
-          },
-        }),
-      ]);
+      setCommands(
+        [
+          // A shell that failed: its ending is not the one it promised.
+          exited({ id: "shell-failed", kind: "shell" }),
+          // A monitor that exited cleanly is still a watcher that stopped
+          // watching, which is exactly the thing worth being told.
+          exited({
+            id: "monitor-clean-exit",
+            kind: "monitor",
+            status: {
+              state: "exited",
+              exitCode: 0,
+              signal: null,
+              exitedAtMs: 20,
+            },
+          }),
+          // Asked for by a human or an agent: never news.
+          command({
+            id: "stopped-by-someone",
+            status: { state: "stopped", stoppedAtMs: 20 },
+          }),
+          // A clean shell run ended the way it said it would.
+          exited({
+            id: "shell-clean",
+            kind: "shell",
+            status: {
+              state: "exited",
+              exitCode: 0,
+              signal: null,
+              exitedAtMs: 20,
+            },
+          }),
+        ],
+        CHAT_ID,
+      );
     });
 
     expect(
@@ -779,14 +814,12 @@ describe("the chat's monitors menu", () => {
   });
 
   it("lets attention beat running, then clears it once the menu has been opened", () => {
-    const stub = renderMenu();
+    renderMenu();
     act(() => {
-      stub
-        .emit()
-        .onSnapshot([
-          command({ id: "live" }),
-          exited({ id: "failed", kind: "shell" }),
-        ]);
+      setCommands(
+        [command({ id: "live" }), exited({ id: "failed", kind: "shell" })],
+        CHAT_ID,
+      );
     });
 
     // Both apply; the failure is the thing to say.
@@ -811,10 +844,8 @@ describe("the chat's monitors menu", () => {
   });
 
   it("does not re-arm another chat's acknowledged failures", () => {
-    const stub = installListStub();
     renderInChatTile(
       <DndContext>
-        <ManagedCommandListStreamMount epicId={EPIC_ID} />
         <ManagedCommandChatMenu
           epicId={EPIC_ID}
           chatId={CHAT_ID}
@@ -830,12 +861,11 @@ describe("the chat's monitors menu", () => {
       </DndContext>,
     );
     act(() => {
-      stub
-        .emit()
-        .onSnapshot([
-          exited({ id: "a-failed", kind: "shell" }),
-          exited({ id: "b-failed", kind: "shell", chatId: "chat-2" }),
-        ]);
+      setCommands([exited({ id: "a-failed", kind: "shell" })], CHAT_ID);
+      setCommands(
+        [exited({ id: "b-failed", kind: "shell", chatId: "chat-2" })],
+        "chat-2",
+      );
     });
 
     const [menuA, menuB] = screen.getAllByTestId(
@@ -855,27 +885,30 @@ describe("the chat's monitors menu", () => {
   });
 
   it("treats an ending that arrives while the menu is open as seen", () => {
-    const stub = renderMenu();
+    renderMenu();
     act(() => {
-      stub.emit().onSnapshot([command({ id: "flaky", kind: "shell" })]);
+      setCommands([command({ id: "flaky", kind: "shell" })], CHAT_ID);
     });
     openMenu();
 
     // The rows are on screen when the exit lands, so the user watched it
     // happen - the badge has nothing left to report, open or closed.
     act(() => {
-      stub.emit().onChanged(
-        exited({
-          id: "flaky",
-          kind: "shell",
-          status: {
-            state: "exited",
-            exitCode: 2,
-            signal: null,
-            exitedAtMs: 99,
-          },
-          updatedAtMs: 99,
-        }),
+      setCommands(
+        [
+          exited({
+            id: "flaky",
+            kind: "shell",
+            status: {
+              state: "exited",
+              exitCode: 2,
+              signal: null,
+              exitedAtMs: 99,
+            },
+            updatedAtMs: 99,
+          }),
+        ],
+        CHAT_ID,
       );
     });
     expect(
@@ -891,9 +924,9 @@ describe("the chat's monitors menu", () => {
   });
 
   it("re-arms when an acknowledged command fails again after the menu closes", () => {
-    const stub = renderMenu();
+    renderMenu();
     act(() => {
-      stub.emit().onSnapshot([exited({ id: "flaky", kind: "shell" })]);
+      setCommands([exited({ id: "flaky", kind: "shell" })], CHAT_ID);
     });
     openMenu();
     expect(
@@ -903,18 +936,21 @@ describe("the chat's monitors menu", () => {
 
     // A failure nobody had on screen is new news.
     act(() => {
-      stub.emit().onChanged(
-        exited({
-          id: "flaky",
-          kind: "shell",
-          status: {
-            state: "exited",
-            exitCode: 2,
-            signal: null,
-            exitedAtMs: 99,
-          },
-          updatedAtMs: 99,
-        }),
+      setCommands(
+        [
+          exited({
+            id: "flaky",
+            kind: "shell",
+            status: {
+              state: "exited",
+              exitCode: 2,
+              signal: null,
+              exitedAtMs: 99,
+            },
+            updatedAtMs: 99,
+          }),
+        ],
+        CHAT_ID,
       );
     });
 
@@ -924,14 +960,14 @@ describe("the chat's monitors menu", () => {
   });
 
   it("stays put with an empty state when its last command is deleted while open", () => {
-    const stub = renderMenu();
+    renderMenu();
     act(() => {
-      stub.emit().onSnapshot([command({ id: "only" })]);
+      setCommands([command({ id: "only" })], CHAT_ID);
     });
     openMenu();
 
     act(() => {
-      stub.emit().onRemoved("only");
+      setCommands([], CHAT_ID);
     });
 
     // Removing the button under the pointer that just pressed Delete would
@@ -943,9 +979,9 @@ describe("the chat's monitors menu", () => {
   });
 
   it("opens the command's output window from a row", () => {
-    const stub = renderMenu();
+    renderMenu();
     act(() => {
-      stub.emit().onSnapshot([command({ id: "door" })]);
+      setCommands([command({ id: "door" })], CHAT_ID);
     });
     openMenu();
 
@@ -955,10 +991,8 @@ describe("the chat's monitors menu", () => {
   });
 
   it("contributes nothing but its trigger, so the composer row can lay it out", () => {
-    const stub = installListStub();
     const { container } = renderInChatTile(
       <DndContext>
-        <ManagedCommandListStreamMount epicId={EPIC_ID} />
         <ManagedCommandChatMenu
           epicId={EPIC_ID}
           chatId={CHAT_ID}
@@ -968,7 +1002,7 @@ describe("the chat's monitors menu", () => {
       </DndContext>,
     );
     act(() => {
-      stub.emit().onSnapshot([command({ id: "only" })]);
+      setCommands([command({ id: "only" })], CHAT_ID);
     });
 
     // The badge used to hang in an absolutely positioned frame over the
@@ -981,14 +1015,15 @@ describe("the chat's monitors menu", () => {
   });
 
   it("flags a lost host while keeping the last known rows", () => {
-    const stub = renderMenu();
+    renderMenu();
     act(() => {
-      stub.emit().onSnapshot([command({ id: "frozen" })]);
+      setCommands([command({ id: "frozen" })], CHAT_ID);
+      chatSession(CHAT_ID).setConnectionStatus("open");
     });
     openMenu();
 
     act(() => {
-      stub.emit().onConnectionStatus("reconnecting", null);
+      chatSession(CHAT_ID).setConnectionStatus("reconnecting");
     });
 
     // A dropped stream freezes the menu on its last snapshot. Without a word
@@ -1001,60 +1036,13 @@ describe("the chat's monitors menu", () => {
     ).not.toBeNull();
   });
 
-  it("reads as unavailable rather than empty on a host too old to answer", () => {
-    const stub = installListStub();
-    const menu = renderInChatTile(
-      <DndContext>
-        <ManagedCommandListStreamMount epicId={EPIC_ID} />
-        <ManagedCommandChatMenu
-          epicId={EPIC_ID}
-          chatId={CHAT_ID}
-          hostId="host-1"
-          viewTabId={TAB_ID}
-        />
-      </DndContext>,
-    );
-    act(() => {
-      stub.emit().onSnapshot([command({ id: "only" })]);
-    });
-    openMenu();
-
-    // Held open across a swap to a host that does not serve the method: the
-    // list goes away with the stream.
-    streamSupport.value = "unsupported";
-    act(() => {
-      menu.rerender(
-        chatTileTree(
-          <DndContext>
-            <ManagedCommandListStreamMount epicId={EPIC_ID} />
-            <ManagedCommandChatMenu
-              epicId={EPIC_ID}
-              chatId={CHAT_ID}
-              hostId="host-1"
-              viewTabId={TAB_ID}
-            />
-          </DndContext>,
-        ),
-      );
-    });
-
-    // "No monitors or shells left" would be a lie about a chat whose monitors
-    // this host simply cannot report.
-    expect(
-      screen.getByTestId("managed-command-chat-menu-unavailable"),
-    ).not.toBeNull();
-    expect(screen.queryByTestId("managed-command-chat-menu-empty")).toBeNull();
-  });
-
   it("offers restart and delete on a finished command, stop on a live one", () => {
-    const stub = renderMenu();
+    renderMenu();
     act(() => {
-      stub
-        .emit()
-        .onSnapshot([
-          command({ id: "live" }),
-          exited({ id: "over", kind: "shell" }),
-        ]);
+      setCommands(
+        [command({ id: "live" }), exited({ id: "over", kind: "shell" })],
+        CHAT_ID,
+      );
     });
     openMenu();
 

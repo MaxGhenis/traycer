@@ -472,6 +472,7 @@ function emitChatSnapshotWithMessages(input: {
       missingWorktreePaths: [],
       pendingFileEditApprovals: [],
       accumulatedFileChanges: [],
+      managedCommands: [],
     },
   });
 }

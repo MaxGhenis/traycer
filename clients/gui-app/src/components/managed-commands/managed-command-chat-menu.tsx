@@ -48,10 +48,9 @@ import {
   useManagedCommandAttentionStore,
 } from "@/stores/managed-commands/managed-command-attention-store";
 import {
-  useManagedCommandListConnectionStatus,
+  useManagedCommandsConnectionStatus,
   useManagedCommandsForChat,
-} from "@/stores/managed-commands/managed-command-list-registry";
-import { useStreamMethodSupport } from "@/lib/host/stream-runtime-context";
+} from "@/stores/managed-commands/managed-commands-for-chat";
 import { useCompactRelativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
 
@@ -70,9 +69,10 @@ export interface ManagedCommandChatMenuProps {
 
 export function ManagedCommandChatMenu(props: ManagedCommandChatMenuProps) {
   const commands = useManagedCommandsForChat(props.epicId, props.chatId);
-  const listUnsupported =
-    useStreamMethodSupport("managedCommand.subscribeList") === "unsupported";
-  const connectionStatus = useManagedCommandListConnectionStatus(props.epicId);
+  const connectionStatus = useManagedCommandsConnectionStatus(
+    props.epicId,
+    props.chatId,
+  );
   const [open, setOpen] = useState(false);
   const [rowDragging, setRowDragging] = useState(false);
   const acknowledge = useManagedCommandAttentionStore(
@@ -169,34 +169,20 @@ export function ManagedCommandChatMenu(props: ManagedCommandChatMenuProps) {
           rowDragging ? "opacity-40" : null,
         )}
       >
-        {listUnsupported ? (
-          // Reachable when the menu is held open across a swap to an older
-          // host: the list goes away, and "no monitors left" would be a lie
-          // about a chat whose monitors this host simply cannot report.
-          <p
-            className="px-2 py-3 text-center text-ui-xs text-muted-foreground"
-            data-testid="managed-command-chat-menu-unavailable"
-          >
-            This host is too old to show monitors and shells
-          </p>
-        ) : (
-          <>
-            {connectionStatus === "open" ? null : (
-              <ManagedCommandConnectionNotice
-                hasContent={commands.length > 0}
-                testId="managed-command-chat-menu-disconnected"
-                className={undefined}
-              />
-            )}
-            <ManagedCommandMenuRows
-              commands={commands}
-              epicId={props.epicId}
-              hostId={props.hostId}
-              viewTabId={props.viewTabId}
-              onRowDraggingChange={rowDraggingChanged}
-            />
-          </>
+        {connectionStatus === "open" ? null : (
+          <ManagedCommandConnectionNotice
+            hasContent={commands.length > 0}
+            testId="managed-command-chat-menu-disconnected"
+            className={undefined}
+          />
         )}
+        <ManagedCommandMenuRows
+          commands={commands}
+          epicId={props.epicId}
+          hostId={props.hostId}
+          viewTabId={props.viewTabId}
+          onRowDraggingChange={rowDraggingChanged}
+        />
       </PopoverContent>
     </Popover>
   );
@@ -265,8 +251,8 @@ function ManagedCommandMenuRows(props: {
     );
   }
   return (
-    // The epic list arrives running-first, then most recent activity, so the
-    // menu inherits its order rather than sorting a second time.
+    // `useManagedCommandsForChat` orders running-first, then most recent
+    // activity, so the menu inherits its order rather than sorting again.
     <ul aria-label="Monitors and shells" className="space-y-0.5">
       {props.commands.map((command) => (
         <ManagedCommandMenuRow

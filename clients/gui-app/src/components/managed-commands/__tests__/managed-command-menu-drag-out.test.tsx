@@ -16,7 +16,6 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import type { ManagedCommand } from "@traycer/protocol/host/managed-command/unary-schemas";
-import type { ManagedCommandListStreamCallbacks } from "@traycer-clients/shared/host-transport/managed-command-list-stream-client";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 /**
@@ -54,9 +53,11 @@ import {
   type EpicStreamClientFactory,
   type OpenEpicStoreHandle,
 } from "@/stores/epics/open-epic/store";
-import { ManagedCommandListStreamMount } from "@/providers/managed-command-list-stream-mount";
-import { __setManagedCommandListStreamClientFactoryForTests } from "@/providers/managed-command-list-stream-factory-override";
-import { managedCommandListRegistry } from "@/stores/managed-commands/managed-command-list-registry";
+import {
+  disposeManagedCommandChatSessions,
+  installManagedCommandChatSession,
+  type ManagedCommandChatSessionStub,
+} from "@/stores/managed-commands/test-support/managed-command-chat-session";
 import { ManagedCommandChatMenu } from "@/components/managed-commands/managed-command-chat-menu";
 import { RootDndProvider } from "@/components/epic-canvas/dnd/root-dnd-provider";
 import { useEpicDndStore } from "@/components/epic-canvas/dnd/dnd-store";
@@ -103,19 +104,7 @@ const noopStreamClientFactory: EpicStreamClientFactory = () => ({
 
 let epicHandle: OpenEpicStoreHandle;
 
-function installListStub(): { emit: () => ManagedCommandListStreamCallbacks } {
-  let captured: ManagedCommandListStreamCallbacks | null = null;
-  __setManagedCommandListStreamClientFactoryForTests((_epicId, callbacks) => {
-    captured = callbacks;
-    return { close: () => undefined };
-  });
-  return {
-    emit: () => {
-      if (captured === null) throw new Error("list callbacks not wired");
-      return captured;
-    },
-  };
-}
+let chatSession: ManagedCommandChatSessionStub;
 
 /**
  * The pane's measured box. dnd-kit measures a droppable the moment it
@@ -141,7 +130,6 @@ function Harness(props: { readonly paneId: string }): ReactNode {
         <TooltipProvider>
           <RootDndProvider>
             <div data-testid="drag-harness" />
-            <ManagedCommandListStreamMount epicId={EPIC_ID} />
             <ManagedCommandChatMenu
               epicId={EPIC_ID}
               chatId={CHAT_ID}
@@ -256,6 +244,10 @@ beforeEach(() => {
     userId: null,
     onAuthError: null,
   });
+  chatSession = installManagedCommandChatSession({
+    epicId: EPIC_ID,
+    chatId: CHAT_ID,
+  });
   useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
 });
 
@@ -269,8 +261,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   cleanup();
   epicHandle.dispose();
-  __setManagedCommandListStreamClientFactoryForTests(null);
-  managedCommandListRegistry.disposeAll();
+  disposeManagedCommandChatSessions();
   useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
   useTabsStore.setState(useTabsStore.getInitialState(), true);
   useEpicDndStore.getState().dragEnded();
@@ -279,10 +270,9 @@ afterEach(async () => {
 describe("dragging a monitors-menu row onto the canvas", () => {
   it("carries the row's payload all the way to the drop and lands its window", async () => {
     const paneId = seedCanvasPane();
-    const stub = installListStub();
     await renderHarness(paneId);
     act(() => {
-      stub.emit().onSnapshot([MONITOR]);
+      chatSession.setCommands([MONITOR]);
     });
     fireEvent.click(screen.getByTestId("managed-command-chat-menu-trigger"));
 
@@ -296,10 +286,9 @@ describe("dragging a monitors-menu row onto the canvas", () => {
 
   it("keeps the source row mounted for the whole gesture, then closes", async () => {
     const paneId = seedCanvasPane();
-    const stub = installListStub();
     await renderHarness(paneId);
     act(() => {
-      stub.emit().onSnapshot([MONITOR]);
+      chatSession.setCommands([MONITOR]);
     });
     fireEvent.click(screen.getByTestId("managed-command-chat-menu-trigger"));
     startRowDrag(screen.getByTestId("managed-command-menu-row-cmd-1"));
@@ -319,10 +308,9 @@ describe("dragging a monitors-menu row onto the canvas", () => {
 
   it("moves an already-open window rather than opening a second one", async () => {
     const paneId = seedCanvasPane();
-    const stub = installListStub();
     await renderHarness(paneId);
     act(() => {
-      stub.emit().onSnapshot([MONITOR]);
+      chatSession.setCommands([MONITOR]);
     });
     fireEvent.click(screen.getByTestId("managed-command-chat-menu-trigger"));
     fireEvent.click(screen.getByTestId("managed-command-menu-row-cmd-1"));
