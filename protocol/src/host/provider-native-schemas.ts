@@ -1591,6 +1591,29 @@ export type ProviderNativeScopeV70 = z.infer<
   typeof providerNativeScopeSchemaV70
 >;
 
+/**
+ * `config_unreadable` IS on this frozen copy, and the reason is worth writing
+ * down because the equality tripwire above fired to force the decision.
+ *
+ * It was added to the live enum on `main` (PR #1050) after this branch cut,
+ * and the reflex answer - "the frozen copy predates it, so project it away on
+ * the v8→v7 bridge" - would have been wrong. No released tag ships
+ * `providers.list@7.0` at all: `host-v1.1.11` and every earlier
+ * `host-v*`/`cli-v*`/`desktop-v*` top out below it. v7.0 is UNRELEASED, so
+ * #1050 grew it legitimately, exactly as `providerManagedInstallStateSchema`
+ * grew v6.0 while no release shipped it, and exactly as
+ * `providersSetEnabledRequestSchemaV21` widens an unreleased minor in place.
+ *
+ * Versions exist to protect peers in the field. There is no peer that
+ * negotiated v7.0 and cannot decode `config_unreadable` - the release that
+ * first ships v7.0 will ship it too. Projecting it away would mint a bridge
+ * protecting nobody, and would leave this snapshot describing a v7.0 that
+ * never existed.
+ *
+ * The freeze still stands: v7.0 is pinned as of the moment v8.0 opened, and
+ * that moment now includes #1050. What does NOT follow is that later growth is
+ * free - once a release ships v7.0, an addition here needs a real projection.
+ */
 export const providerNativeErrorCodeSchemaV70 = z.enum([
   "duplicate_name",
   "unsupported_scope",
@@ -1599,6 +1622,7 @@ export const providerNativeErrorCodeSchemaV70 = z.enum([
   "external_drift",
   "store_version_unsupported",
   "rollback_failed",
+  "config_unreadable",
 ]);
 export type ProviderNativeErrorCodeV70 = z.infer<
   typeof providerNativeErrorCodeSchemaV70
@@ -1951,7 +1975,8 @@ export const DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70: ProviderNativeCapabilitie
   };
 
 /**
- * Project a live capability descriptor onto the frozen v7.0 shape.
+ * The v7.0-shaped input both projections parse. Shared so the strict and
+ * degrading forms below cannot drift into disagreeing about what the cut IS.
  *
  * Two cuts, and they are made in different ways on purpose:
  *
@@ -1965,26 +1990,70 @@ export const DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70: ProviderNativeCapabilitie
  *    would lose MCP, Plugins AND Skills for that provider, not just the tab it
  *    never knew about.
  *
- * Everything else is parsed STRICTLY through the frozen tree, and a value the
- * v7.0 shapes cannot represent throws rather than degrading. That is
- * deliberate: `supportedTabs` is the one field known to grow, and its
- * projection is written down. A future member added to any other frozen enum
- * has no agreed answer for a v7.0 peer, and inventing one here - dropping it,
- * or collapsing to the default - would ship that guess silently. The throw
- * routes the decision back to whoever grew the enum, and
- * `provider-model-providers-compat.test.ts` pins live-vs-frozen agreement so
- * they meet it as a red test rather than a field incident.
+ * Everything else is parsed through the frozen tree unchanged. `supportedTabs`
+ * is the one field known to grow and its projection is written down; a member
+ * added to any other frozen enum has no agreed answer for a v7.0 peer, and
+ * inventing one here - dropping it, or collapsing to the default - would ship
+ * that guess silently. So neither form below invents one: the strict form
+ * throws, the degrading form returns null, and the decision is routed to
+ * whoever grew the enum by a red test rather than a field incident.
  */
-export function projectProviderNativeCapabilitiesToV70(
-  capabilities: ProviderNativeCapabilities,
-): ProviderNativeCapabilitiesV70 {
+function v70CapabilityInput(capabilities: ProviderNativeCapabilities): unknown {
   const { modelProviders: _modelProviders, ...rest } = capabilities;
-  return providerNativeCapabilitiesSchemaV70.parse({
+  return {
     ...rest,
     supportedTabs: capabilities.supportedTabs.filter(
       (tab): tab is ProviderSettingsTabV70 => tab !== "modelProviders",
     ),
-  });
+  };
+}
+
+/**
+ * Strict projection: throws when the descriptor cannot be represented on v7.0.
+ *
+ * The loud form, for callers that have no row to degrade and would rather stop
+ * than guess. The `providers.list` bridge does NOT use it - see
+ * {@link tryProjectProviderNativeCapabilitiesToV70} for why, and for which
+ * contract wins at runtime.
+ */
+export function projectProviderNativeCapabilitiesToV70(
+  capabilities: ProviderNativeCapabilities,
+): ProviderNativeCapabilitiesV70 {
+  return providerNativeCapabilitiesSchemaV70.parse(
+    v70CapabilityInput(capabilities),
+  );
+}
+
+/**
+ * Degrading projection: `null` when the descriptor cannot be represented on
+ * v7.0, so a caller that owns a per-ROW contract can honour it.
+ *
+ * This is what `downgradeProviderCliStateToV70` uses, and the split exists
+ * because the two concerns were quietly in conflict: the projection was
+ * written to fail closed, and the bridge that calls it documents a
+ * `| null`-per-row contract. Calling the strict form inside the row's
+ * `safeParse` argument list let the throw escape PAST that contract, so one
+ * unrepresentable provider took down the entire `providers.list` response for
+ * that peer - every other provider with it.
+ *
+ * At runtime the row contract wins. Losing one provider row is a bounded,
+ * visible failure; losing the whole catalog turns a settings page into an
+ * error for a defect in a single entry.
+ *
+ * Failing closed is NOT abandoned - it moves to build time, where it belongs.
+ * `provider-model-providers-compat.test.ts` pins live-vs-frozen agreement for
+ * every frozen subtree, so a live enum that grows without a projection
+ * decision goes red in CI (it already has, once, for `config_unreadable`).
+ * That is the loudness mechanism; a production throw was never going to reach
+ * the person who grew the enum.
+ */
+export function tryProjectProviderNativeCapabilitiesToV70(
+  capabilities: ProviderNativeCapabilities,
+): ProviderNativeCapabilitiesV70 | null {
+  const parsed = providerNativeCapabilitiesSchemaV70.safeParse(
+    v70CapabilityInput(capabilities),
+  );
+  return parsed.success ? parsed.data : null;
 }
 
 /**

@@ -6828,7 +6828,8 @@ export const FROZEN_CATALOG_LINE_SNAPSHOTS = {
                         "no_change_detected",
                         "external_drift",
                         "store_version_unsupported",
-                        "rollback_failed"
+                        "rollback_failed",
+                        "config_unreadable"
                       ]
                     },
                     "detail": {

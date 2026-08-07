@@ -22,6 +22,7 @@ export {
   modelProviderSourceSchema,
   modelProvidersListResultSchema,
   projectProviderNativeCapabilitiesToV70,
+  tryProjectProviderNativeCapabilitiesToV70,
   providerModelProvidersCapabilitiesSchema,
   providerModelProvidersCapabilityActionSchema,
   providerNativeCapabilitiesSchemaV70,

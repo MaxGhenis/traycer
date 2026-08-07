@@ -25,6 +25,7 @@ import {
 import {
   providersListRequestSchema,
   providersListRequestSchemaBeforeV70,
+  providersListRequestSchemaV70,
   providersListResponseSchema,
   providersListResponseSchemaV60,
 } from "@traycer/protocol/host/provider-schemas";
@@ -99,17 +100,34 @@ describe("epic.createTuiAgent 1.0 <-> 1.1", () => {
 
 const releasedProvidersRequest = { forceAuthRefresh: true };
 
-describe("providers.list request lines 1.0..6.0 <-> latest", () => {
+// v7.0 is now a frozen line of its own, and its request is the FIRST that
+// models `native` - so it cannot share the pre-v7.0 schema or the pre-v7.0
+// expectations. The loops below select both per major rather than stopping at
+// 6, which would have left the newest frozen request line untested.
+const OLDER_REQUEST_MAJORS = [1, 2, 3, 4, 5, 6] as const;
+const ALL_FROZEN_REQUEST_MAJORS = [1, 2, 3, 4, 5, 6, 7] as const;
+
+function frozenRequestSchemaFor(major: number) {
+  return major >= 7
+    ? providersListRequestSchemaV70
+    : providersListRequestSchemaBeforeV70;
+}
+
+describe("providers.list request lines 1.0..7.0 <-> latest", () => {
   it("released callers at every major upgrade to canonical with native:null", () => {
-    for (const major of [1, 2, 3, 4, 5, 6] as const) {
-      const parsed =
-        providersListRequestSchemaBeforeV70.parse(releasedProvidersRequest);
+    for (const major of ALL_FROZEN_REQUEST_MAJORS) {
+      const parsed = frozenRequestSchemaFor(major).parse(
+        releasedProvidersRequest,
+      );
       const canonical = upgradeRequestToVersion(
         providersListRegistry,
         { major, minor: 0 },
         { major: 8, minor: 0 },
         parsed,
       );
+      // Same expectation at every major, reached two different ways: below
+      // v7.0 the v6→v7 bridge FILLS `native: null`; at v7.0 the request
+      // already models it and the field's own default supplies it.
       expect(canonical, `major ${major}`).toEqual({
         forceAuthRefresh: true,
         native: null,
@@ -128,7 +146,7 @@ describe("providers.list request lines 1.0..6.0 <-> latest", () => {
         workspaceRoot: null,
       },
     });
-    for (const major of [1, 2, 3, 4, 5, 6] as const) {
+    for (const major of OLDER_REQUEST_MAJORS) {
       const down = downgradeRequestAcrossMajors(
         providersListRegistry,
         8,
@@ -143,6 +161,37 @@ describe("providers.list request lines 1.0..6.0 <-> latest", () => {
         `major ${major} reparse`,
       ).toBe(true);
     }
+  });
+
+  it("keeps native on the 8.0 -> 7.0 request hop, which is the one line that models it", () => {
+    // The inverse of the assertion above, and the reason the loop stops at 6:
+    // stripping `native` here would silently drop a v7.0 caller's list query.
+    const canonical = providersListRequestSchema.parse({
+      forceAuthRefresh: true,
+      native: {
+        kind: "mcp",
+        providerId: "claude-code",
+        scope: "global",
+        workspaceRoot: null,
+      },
+    });
+    const down = downgradeRequestAcrossMajors(
+      providersListRegistry,
+      8,
+      7,
+      canonical,
+    );
+    expect(down.ok).toBe(true);
+    if (!down.ok) return;
+    expect(down.value.native).toEqual({
+      kind: "mcp",
+      providerId: "claude-code",
+      scope: "global",
+      workspaceRoot: null,
+    });
+    expect(
+      providersListRequestSchemaV70.safeParse(down.value).success,
+    ).toBe(true);
   });
 
   it("response round-trip 8.0 -> 6.0 -> 8.0 still parses at both ends", () => {

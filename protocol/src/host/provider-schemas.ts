@@ -39,7 +39,7 @@ import {
   nativeListResultSchemaV70,
   nativeMutationResultSchema,
   nativeMutationSchema,
-  projectProviderNativeCapabilitiesToV70,
+  tryProjectProviderNativeCapabilitiesToV70,
   providerNativeCapabilitiesSchema,
   providerNativeCapabilitiesSchemaV70,
   upgradeNativeCapabilitiesFromV70,
@@ -2646,11 +2646,21 @@ export function downgradeProviderCliStateListToV50(
 export function downgradeProviderCliStateToV70(
   state: ProviderCliState,
 ): ProviderCliStateV70 | null {
+  // `tryProject...`, not the strict form. The strict projection throws on a
+  // descriptor v7.0 cannot represent, and calling it inside the `safeParse`
+  // argument list below let that throw escape PAST this function's `| null`
+  // contract - one unrepresentable provider failed the entire
+  // `providers.list` response for that peer, taking every healthy provider
+  // with it. Per-row degradation wins at runtime; the build-time equality
+  // guard in `provider-model-providers-compat.test.ts` is what makes an
+  // unprojected enum loud (see `tryProjectProviderNativeCapabilitiesToV70`).
+  const nativeCapabilities = tryProjectProviderNativeCapabilitiesToV70(
+    state.nativeCapabilities,
+  );
+  if (nativeCapabilities === null) return null;
   const parsed = providerCliStateSchemaV70.safeParse({
     ...state,
-    nativeCapabilities: projectProviderNativeCapabilitiesToV70(
-      state.nativeCapabilities,
-    ),
+    nativeCapabilities,
   });
   return parsed.success ? parsed.data : null;
 }

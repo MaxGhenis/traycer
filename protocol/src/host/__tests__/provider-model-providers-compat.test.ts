@@ -24,6 +24,7 @@ import {
   nativeListResultSchema,
   nativeListResultSchemaV70,
   projectProviderNativeCapabilitiesToV70,
+  tryProjectProviderNativeCapabilitiesToV70,
   providerMcpCapabilitiesSchema,
   providerMcpCapabilitiesSchemaV70,
   providerModelProvidersCapabilitiesSchema,
@@ -38,6 +39,7 @@ import {
   providerSkillsCapabilitiesSchema,
   providerSkillsCapabilitiesSchemaV70,
   providerSettingsTabSchemaV70,
+  type ProviderNativeCapabilities,
 } from "@traycer/protocol/host/provider-native-schemas";
 import { providerIdSchema, providerIdSchemaV70 } from "@traycer/protocol/host/provider-ids";
 import {
@@ -1284,6 +1286,56 @@ describe("the v7.0 freeze goes all the way down", () => {
     },
   );
 
+  it("carries config_unreadable on the v7.0 native result - v7.0 is unreleased", () => {
+    // The decision this test exists to RECORD, because the equality guard
+    // above fired to force it (in CI, on the merge preview - the tripwire
+    // proving itself in the wild).
+    //
+    // `config_unreadable` was added to the LIVE native error enum on main
+    // (#1050) after this branch cut. The reflex answer - frozen copy predates
+    // it, so project it away on the v8→v7 bridge - is wrong here: NO released
+    // tag ships `providers.list@7.0`. `host-v1.1.11` and every earlier
+    // host/cli/desktop tag top out below it, so v7.0 is unreleased and #1050
+    // grew it legitimately, exactly as the registry fields grew v6.0 before
+    // `cli-v1.1.9` shipped it.
+    //
+    // Versions protect peers in the FIELD. There is no peer that negotiated
+    // v7.0 and cannot read this code - the release that first ships v7.0 ships
+    // it too. So the bridge needs no projection, and the frozen snapshot is
+    // "v7.0 as of the moment v8.0 opened", which includes #1050.
+    //
+    // This stops being true the day a release ships v7.0. After that, a code
+    // added to the live enum needs a real projection decision, and the
+    // equality guard will ask for one again.
+    expect(
+      nativeListResultSchemaV70.safeParse({
+        ok: false,
+        code: "config_unreadable",
+        detail: "redacted parse error",
+      }).success,
+    ).toBe(true);
+    const downgraded = downgradeResponseAcrossMajors(
+      hostRpcRegistry["providers.list"],
+      8,
+      7,
+      {
+        providers: [],
+        native: {
+          ok: false,
+          code: "config_unreadable",
+          detail: "redacted parse error",
+        },
+      },
+    );
+    expect(downgraded.ok).toBe(true);
+    if (!downgraded.ok) return;
+    expect(downgraded.value.native).toEqual({
+      ok: false,
+      code: "config_unreadable",
+      detail: "redacted parse error",
+    });
+  });
+
   it("keeps the frozen provider-id enum out of the live one's future", () => {
     // The v7.0 native query and the v7.0 state both carry a provider id. A
     // provider added to the live enum reaches a v7.0 peer only through the
@@ -1310,5 +1362,66 @@ describe("the v7.0 freeze goes all the way down", () => {
     expect(
       unwrapSchema(providerNativeCapabilitiesSchemaV70.shape.envOverrideScope),
     ).toBe(providerEnvOverrideScopeSchemaV70);
+  });
+});
+
+describe("an unrepresentable row degrades per row, never per response", () => {
+  // The two contracts were quietly in conflict: the projection fails closed,
+  // and `downgradeProviderCliStateToV70` documents `| null` per row. Calling
+  // the strict form inside the row's `safeParse` argument list let the throw
+  // escape past that contract - one bad provider failed the whole
+  // `providers.list` response for that peer.
+  //
+  // Runtime resolution: the row contract wins. Build-time loudness stays with
+  // the equality guard above, which is the only mechanism that reaches the
+  // person who grew the enum.
+
+  /**
+   * A capability object v7.0 cannot represent: an unknown `mcp` transport.
+   *
+   * Built by MUTATING a genuinely-parsed object rather than by casting one
+   * into existence. Live and frozen agree today, so the value this test needs
+   * is one only a FUTURE live enum can produce - and the point is to prove the
+   * bridge degrades on such a value, not to introduce a type escape for it.
+   * `transports` is a plain array on the parsed result, so pushing an
+   * unrecognized member reproduces exactly what a widened live enum would send.
+   */
+  function unrepresentableCapabilities(): ProviderNativeCapabilities {
+    const capabilities = providerNativeCapabilitiesSchema.parse(
+      structuredClone(OPENCODE_CAPABILITIES),
+    );
+    const mcp = capabilities.mcp;
+    if (mcp === null) throw new Error("fixture must carry mcp capabilities");
+    const transports: string[] = mcp.transports;
+    transports.push("websocket");
+    return capabilities;
+  }
+  const unrepresentable = unrepresentableCapabilities();
+
+  it("the strict projection still throws - the loud form is unchanged", () => {
+    expect(() =>
+      projectProviderNativeCapabilitiesToV70(unrepresentable),
+    ).toThrow();
+  });
+
+  it("the degrading projection answers null instead", () => {
+    expect(tryProjectProviderNativeCapabilitiesToV70(unrepresentable)).toBeNull();
+  });
+
+  it("drops only the offending row and still serves every healthy provider", () => {
+    const bad = { ...opencodeState, nativeCapabilities: unrepresentable };
+    const downgraded = downgradeResponseAcrossMajors(
+      hostRpcRegistry["providers.list"],
+      8,
+      7,
+      { providers: [bad, claudeState], native: null },
+    );
+    // The assertion that matters: `ok`, not a thrown error. Before the split
+    // this call threw and the peer got nothing at all.
+    expect(downgraded.ok).toBe(true);
+    if (!downgraded.ok) return;
+    expect(
+      downgraded.value.providers.map((provider) => provider.providerId),
+    ).toEqual(["claude-code"]);
   });
 });
