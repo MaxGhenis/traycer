@@ -702,6 +702,28 @@ describe("<QueuedMessagePanel />", () => {
     expect(within(managedRow).getByText("Paused")).not.toBeNull();
   });
 
+  it("labels a pending same-turn delivery as aimed at the running turn", () => {
+    renderPanel({
+      queue: queueState([
+        {
+          ...managedCommandQueuedItem("queue-managed", "bun test"),
+          delivery: "same_turn",
+          targetTurnId: "turn-1",
+        },
+      ]),
+      readOnly: false,
+      canAct: true,
+      onReorder: null,
+    });
+
+    const managedRow = screen.getByTestId("queued-message-row");
+    expect(within(managedRow).getByText("Will deliver")).not.toBeNull();
+    // Not yet at the handover: the cancel lever is still open.
+    expect(
+      within(managedRow).queryByRole("button", { name: /cancel/i }),
+    ).not.toBeNull();
+  });
+
   it("labels a steering managed-command item and closes its cancel lever", () => {
     renderPanel({
       queue: queueState([
