@@ -41,6 +41,7 @@ type PositionedTileRef = Exclude<
   | { readonly type: "browser" }
   | { readonly type: "browser-peek" }
   | { readonly type: "agent-browser" }
+  | { readonly type: "browser-session" }
   | { readonly type: "blank" }
   | { readonly type: "comm-graph" }
   | { readonly type: "pr-detail" }
@@ -111,6 +112,7 @@ function identityForTile(
   switch (node.type) {
     case "browser":
     case "browser-peek":
+    case "browser-session":
     case "agent-browser":
     case "blank":
     case "comm-graph":

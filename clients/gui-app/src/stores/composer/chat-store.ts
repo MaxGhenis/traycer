@@ -12,6 +12,7 @@ import type {
   InterviewQuestion,
   TodoItem,
   AgentUserMessage,
+  BrowserContextAttachmentRecord,
 } from "@traycer/protocol/persistence/epic/schemas";
 import type {
   AgentMessageSend,
@@ -548,6 +549,7 @@ export interface ChatMessage {
   segments: ReadonlyArray<MessageSegment>;
   structuredContent: JsonContent | null;
   attachments: ReadonlyArray<Attachment>;
+  browserContextAttachments?: ReadonlyArray<BrowserContextAttachmentRecord>;
   settings: ChatRunSettings | null;
   createdAt: number;
   /**

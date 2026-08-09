@@ -39,6 +39,8 @@ interface ElectronBrowserTabBridge {
 }
 
 export interface ElectronBrowserTabRegistration {
+  readonly epicId: string;
+  readonly hostId: string;
   readonly chatId: string | null;
   readonly registrationId: string;
   readonly sessionId: string;
@@ -47,6 +49,7 @@ export interface ElectronBrowserTabRegistration {
   readonly tileKey: BrowserViewTileKey;
   readonly bridge: ElectronBrowserTabBridge;
   readonly onRegistered: ((tabId: string) => void) | null;
+  readonly onActivatedHeadless?: ((tabId: string) => void) | null;
 }
 
 interface ElectronBrowserTabRecord extends ElectronBrowserTabRegistration {
@@ -57,7 +60,7 @@ interface ElectronBrowserTabRecord extends ElectronBrowserTabRegistration {
 type SendFrame = (frame: BrowserSessionsClientFrame) => void;
 
 const recordsByRegistrationKey = new Map<string, ElectronBrowserTabRecord>();
-const sendFrameByChatId = new Map<string, SendFrame>();
+const sendFrameByEpicHost = new Map<string, SendFrame>();
 
 export function registerElectronBrowserTab(
   input: ElectronBrowserTabRegistration,
@@ -85,21 +88,25 @@ export function registerElectronBrowserTab(
 }
 
 /**
- * Ticket 08 moves this subscription above every tile and makes it epic-wide.
- * Until then registration intentionally waits when no sibling chat dock is
- * mounted; the durable record remains ready to publish when one appears.
+ * One sender belongs to each mounted epic stream. Records route by epic rather
+ * than their optional sibling chat, so artifact-only canvases still register
+ * while simultaneous epics cannot ingest each other's durable tabs.
  */
 export function attachElectronBrowserTabStream(
-  chatId: string,
+  epicId: string,
+  hostId: string,
   sendFrame: SendFrame,
 ): () => void {
-  sendFrameByChatId.set(chatId, sendFrame);
+  const key = epicHostKey(epicId, hostId);
+  sendFrameByEpicHost.set(key, sendFrame);
   for (const record of recordsByRegistrationKey.values()) {
-    if (record.chatId === chatId) publishRegistration(record);
+    if (record.epicId === epicId && record.hostId === hostId) {
+      publishRegistration(record);
+    }
   }
   return () => {
-    if (sendFrameByChatId.get(chatId) === sendFrame) {
-      sendFrameByChatId.delete(chatId);
+    if (sendFrameByEpicHost.get(key) === sendFrame) {
+      sendFrameByEpicHost.delete(key);
     }
   };
 }
@@ -107,6 +114,13 @@ export function attachElectronBrowserTabStream(
 export function handleElectronBrowserTabFrame(
   frame: BrowserSessionsServerFrame,
 ): boolean {
+  if (frame.kind === "electronTabRegistrationFailed") {
+    const record = recordsByRegistrationKey.get(
+      registrationKey(frame.sessionId, frame.registrationId),
+    );
+    record?.onActivatedHeadless?.(frame.tabId);
+    return true;
+  }
   if (frame.kind !== "electronTabRegistered") return false;
   const record = recordsByRegistrationKey.get(
     registrationKey(frame.sessionId, frame.registrationId),
@@ -250,8 +264,17 @@ function sendForRecord(
   record: ElectronBrowserTabRecord,
   frame: BrowserSessionsClientFrame,
 ): void {
-  if (record.chatId === null) return;
-  sendFrameByChatId.get(record.chatId)?.(frame);
+  sendFrameByEpicHost.get(epicHostKey(record.epicId, record.hostId))?.(frame);
+}
+
+export function findElectronBrowserTabBinding(
+  sessionId: string,
+  tabId: string,
+): ElectronBrowserTabRegistration | null {
+  for (const record of recordsByRegistrationKey.values()) {
+    if (record.sessionId === sessionId && record.tabId === tabId) return record;
+  }
+  return null;
 }
 
 function isChangeForTile(
@@ -300,7 +323,11 @@ function registrationKey(sessionId: string, registrationId: string): string {
   return [sessionId, registrationId].join("\u001f");
 }
 
+function epicHostKey(epicId: string, hostId: string): string {
+  return `${epicId}\u0000${hostId}`;
+}
+
 export function resetElectronBrowserTabStoreForTests(): void {
   recordsByRegistrationKey.clear();
-  sendFrameByChatId.clear();
+  sendFrameByEpicHost.clear();
 }

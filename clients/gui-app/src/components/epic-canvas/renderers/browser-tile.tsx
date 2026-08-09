@@ -243,6 +243,8 @@ export function BrowserTile(props: BrowserTileProps) {
   useEffect(() => {
     if (browserView === null) return;
     registerElectronBrowserTab({
+      epicId: props.epicId,
+      hostId,
       chatId: browserAttachmentTargetChatId,
       registrationId: props.node.id,
       sessionId: props.node.id,
@@ -251,10 +253,13 @@ export function BrowserTile(props: BrowserTileProps) {
       tileKey,
       bridge: browserView,
       onRegistered: null,
+      onActivatedHeadless: null,
     });
   }, [
     browserAttachmentTargetChatId,
     browserView,
+    hostId,
+    props.epicId,
     props.node.id,
     props.node.name,
     props.node.url,

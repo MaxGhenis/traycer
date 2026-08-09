@@ -5,8 +5,16 @@
  */
 import { v4 as uuidv4 } from "uuid";
 import type { DesktopJsonValue } from "@/lib/windows/types";
-import { TILE_KIND_BROWSER, TILE_KIND_BROWSER_PEEK } from "../tile-kinds";
-import type { BrowserPeekTileRef, BrowserTileRef } from "../types";
+import {
+  TILE_KIND_BROWSER,
+  TILE_KIND_BROWSER_PEEK,
+  TILE_KIND_BROWSER_SESSION,
+} from "../tile-kinds";
+import type {
+  BrowserPeekTileRef,
+  BrowserSessionTileRef,
+  BrowserTileRef,
+} from "../types";
 import type { TileSchema } from "./index";
 import { readTileInstanceId } from "./instance-id";
 
@@ -157,5 +165,67 @@ function serializeBrowserPeekTileRef(
 export const browserPeekTileSchema: TileSchema<BrowserPeekTileRef> = {
   parse: parseBrowserPeekTileRef,
   serialize: serializeBrowserPeekTileRef,
+  isRecordBacked: false,
+};
+
+export function makeBrowserSessionTileRef(args: {
+  readonly name: string;
+  readonly hostId: string;
+  readonly sessionId: string;
+  readonly tabId: string;
+}): BrowserSessionTileRef {
+  return {
+    id: `browser-session:${args.sessionId}:${args.tabId}`,
+    instanceId: uuidv4(),
+    type: TILE_KIND_BROWSER_SESSION,
+    name: args.name,
+    hostId: args.hostId,
+    sessionId: args.sessionId,
+    tabId: args.tabId,
+  };
+}
+
+function parseBrowserSessionTileRef(
+  value: unknown,
+): BrowserSessionTileRef | null {
+  if (!isRecord(value)) return null;
+  if (
+    value.type !== TILE_KIND_BROWSER_SESSION ||
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    typeof value.hostId !== "string" ||
+    typeof value.sessionId !== "string" ||
+    typeof value.tabId !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    instanceId: readTileInstanceId(value.instanceId),
+    type: TILE_KIND_BROWSER_SESSION,
+    name: value.name,
+    hostId: value.hostId,
+    sessionId: value.sessionId,
+    tabId: value.tabId,
+  };
+}
+
+function serializeBrowserSessionTileRef(
+  ref: BrowserSessionTileRef,
+): DesktopJsonValue {
+  return {
+    id: ref.id,
+    instanceId: ref.instanceId,
+    type: ref.type,
+    name: ref.name,
+    hostId: ref.hostId,
+    sessionId: ref.sessionId,
+    tabId: ref.tabId,
+  };
+}
+
+export const browserSessionTileSchema: TileSchema<BrowserSessionTileRef> = {
+  parse: parseBrowserSessionTileRef,
+  serialize: serializeBrowserSessionTileRef,
   isRecordBacked: false,
 };

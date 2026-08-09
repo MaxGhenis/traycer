@@ -2312,6 +2312,10 @@ function renderUserMessage(
         : [],
     structuredContent: message.message.content,
     attachments: buildAttachmentsFromJSONContent(message.message.content),
+    browserContextAttachments:
+      message.message.kind === "user"
+        ? message.message.browserContextAttachments
+        : [],
     settings: null,
     createdAt: message.timestamp,
     completedAt: null,

@@ -10,7 +10,10 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserPeekTile } from "@/components/epic-canvas/renderers/browser-peek-tile";
-import { BrowserSessionDock } from "@/components/epic-canvas/renderers/browser-session-dock";
+import {
+  BrowserSessionDock,
+  BrowserSessionsProvider,
+} from "@/components/epic-canvas/renderers/browser-session-dock";
 import {
   activateBrowserTileControl,
   readBrowserTileControlSnapshotForTests,
@@ -28,6 +31,7 @@ const splitPaneWithNodeMock = vi.hoisted(() => ({ fn: vi.fn() }));
 const openFreshBrowserTileMock = vi.hoisted(() => ({ fn: vi.fn() }));
 const applyStorageStateMock = vi.hoisted(() => ({ fn: vi.fn() }));
 const captureStorageStateMock = vi.hoisted(() => ({ fn: vi.fn() }));
+const runnerHostMock = vi.hoisted(() => ({ browserView: {} }));
 
 vi.mock("@/components/epic-canvas/hooks/use-tab-host-id", () => ({
   useTabHostId: () => "host-test",
@@ -35,6 +39,10 @@ vi.mock("@/components/epic-canvas/hooks/use-tab-host-id", () => ({
 
 vi.mock("@/components/epic-canvas/hooks/use-tile-body-visible", () => ({
   useTileBodyVisible: () => hookState.visible,
+}));
+
+vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
+  useReactiveActiveHostId: () => "host-test",
 }));
 
 vi.mock("@/hooks/host/use-host-directory-entry", () => ({
@@ -53,7 +61,10 @@ vi.mock("@/lib/host/stream-auth-revalidator", () => ({
 }));
 
 vi.mock("@/providers/use-runner-host", () => ({
-  useRunnerHost: () => ({ browserView: {} }),
+  // Stable identity: a fresh object each render would re-run the sessions
+  // effect (browserView is memoized on runnerHost) and orphan the stream the
+  // test is holding.
+  useRunnerHost: () => runnerHostMock,
 }));
 
 vi.mock("@/hooks/epic/use-epic-nested-focus-navigation", () => ({
@@ -68,7 +79,26 @@ vi.mock("@/lib/browser-view/desktop-browser-view", () => ({
     applyStorageState: applyStorageStateMock.fn,
     captureStorageState: captureStorageStateMock.fn,
   }),
+  canCapturePrimaryProfile: () => false,
 }));
+
+function renderDock(): void {
+  render(
+    <BrowserSessionsProvider epicId="epic-1" routingChatId="chat-1">
+      <BrowserSessionDock chatId="chat-1" viewTabId="tab-1" paneId="pane-1" />
+    </BrowserSessionsProvider>,
+  );
+}
+
+/** Latest stream session (React StrictMode remount may open more than one). */
+function liveStream(): FakeStreamSession {
+  const sessions = hookState.streamClient?.sessions ?? [];
+  const stream = sessions.at(-1);
+  if (stream === undefined) {
+    throw new Error("expected browser.sessions stream");
+  }
+  return stream;
+}
 
 vi.mock(
   "@/lib/browser-view/browser-link-routing-core",
@@ -295,9 +325,7 @@ describe("BrowserSessionDock", () => {
       return undefined;
     });
 
-    render(
-      <BrowserSessionDock chatId="chat-1" viewTabId="tab-1" paneId="pane-1" />,
-    );
+    renderDock();
 
     expect(consoleError).not.toHaveBeenCalledWith(
       expect.stringContaining("Too many re-renders"),
@@ -308,14 +336,11 @@ describe("BrowserSessionDock", () => {
   });
 
   it("opens a read-only peek tile for a headless session", () => {
-    render(
-      <BrowserSessionDock chatId="chat-1" viewTabId="tab-1" paneId="pane-1" />,
-    );
-    const stream = hookState.streamClient?.sessions[0];
-    expect(stream).toBeDefined();
+    renderDock();
+    const stream = liveStream();
 
     act(() => {
-      stream?.emit(
+      stream.emit(
         {
           kind: "snapshot",
           hasBinaryPayload: false,
@@ -342,12 +367,10 @@ describe("BrowserSessionDock", () => {
   });
 
   it("requests promote state before opening a visible handoff", async () => {
-    render(
-      <BrowserSessionDock chatId="chat-1" viewTabId="tab-1" paneId="pane-1" />,
-    );
-    const stream = hookState.streamClient?.sessions[0];
+    renderDock();
+    const stream = liveStream();
     act(() => {
-      stream?.emit(
+      stream.emit(
         {
           kind: "snapshot",
           hasBinaryPayload: false,
@@ -360,7 +383,7 @@ describe("BrowserSessionDock", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Continue at URL (handoff)" }),
     );
-    const request = stream?.sentFrames.find(
+    const request = stream.sentFrames.find(
       (frame) => frame.kind === "getPromoteState",
     );
     expect(request).toMatchObject({
@@ -369,7 +392,7 @@ describe("BrowserSessionDock", () => {
     });
 
     act(() => {
-      stream?.emit(
+      stream.emit(
         {
           kind: "promoteState",
           hasBinaryPayload: false,
@@ -401,12 +424,10 @@ describe("BrowserSessionDock", () => {
       localStorageApplied: false,
       reason: "mock-keychain",
     });
-    render(
-      <BrowserSessionDock chatId="chat-1" viewTabId="tab-1" paneId="pane-1" />,
-    );
-    const stream = hookState.streamClient?.sessions[0];
+    renderDock();
+    const stream = liveStream();
     act(() => {
-      stream?.emit(
+      stream.emit(
         {
           kind: "snapshot",
           hasBinaryPayload: false,
@@ -419,11 +440,11 @@ describe("BrowserSessionDock", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Continue at URL (handoff)" }),
     );
-    const request = stream?.sentFrames.find(
+    const request = stream.sentFrames.find(
       (frame) => frame.kind === "getPromoteState",
     );
     act(() => {
-      stream?.emit(
+      stream.emit(
         {
           kind: "promoteState",
           hasBinaryPayload: false,
@@ -447,12 +468,10 @@ describe("BrowserSessionDock", () => {
   });
 
   it("lends selected visible-origin auth to one headless session", async () => {
-    render(
-      <BrowserSessionDock chatId="chat-1" viewTabId="tab-1" paneId="pane-1" />,
-    );
-    const stream = hookState.streamClient?.sessions[0];
+    renderDock();
+    const stream = liveStream();
     act(() => {
-      stream?.emit(
+      stream.emit(
         {
           kind: "snapshot",
           hasBinaryPayload: false,
@@ -477,11 +496,11 @@ describe("BrowserSessionDock", () => {
       screen.getByText(/Localhost cookies are shared across ports/i),
     ).toBeTruthy();
     expect(
-      stream?.sentFrames.some((frame) => frame.kind === "lendStorage"),
+      stream.sentFrames.some((frame) => frame.kind === "lendStorage"),
     ).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Confirm lend" }));
     const request = await waitFor(() => {
-      const sent = stream?.sentFrames.find(
+      const sent = stream.sentFrames.find(
         (frame) => frame.kind === "lendStorage",
       );
       expect(sent).toBeDefined();
@@ -511,7 +530,7 @@ describe("BrowserSessionDock", () => {
     });
 
     act(() => {
-      stream?.emit(
+      stream.emit(
         {
           kind: "lendResult",
           hasBinaryPayload: false,
@@ -532,12 +551,10 @@ describe("BrowserSessionDock", () => {
     applyStorageStateMock.fn.mockRejectedValue(
       new Error("Browser storageState cookies must be an array"),
     );
-    render(
-      <BrowserSessionDock chatId="chat-1" viewTabId="tab-1" paneId="pane-1" />,
-    );
-    const stream = hookState.streamClient?.sessions[0];
+    renderDock();
+    const stream = liveStream();
     act(() => {
-      stream?.emit(
+      stream.emit(
         {
           kind: "snapshot",
           hasBinaryPayload: false,
@@ -550,11 +567,11 @@ describe("BrowserSessionDock", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Continue at URL (handoff)" }),
     );
-    const request = stream?.sentFrames.find(
+    const request = stream.sentFrames.find(
       (frame) => frame.kind === "getPromoteState",
     );
     act(() => {
-      stream?.emit(
+      stream.emit(
         {
           kind: "promoteState",
           hasBinaryPayload: false,
@@ -572,12 +589,10 @@ describe("BrowserSessionDock", () => {
   });
 
   it("clears an expired queued control prompt by request id and tile id", () => {
-    render(
-      <BrowserSessionDock chatId="chat-1" viewTabId="tab-1" paneId="pane-1" />,
-    );
-    const stream = hookState.streamClient?.sessions[0];
+    renderDock();
+    const stream = liveStream();
     act(() => {
-      stream?.emit(
+      stream.emit(
         {
           kind: "visibleTileControlRequest",
           hasBinaryPayload: false,
@@ -594,7 +609,7 @@ describe("BrowserSessionDock", () => {
         },
         null,
       );
-      stream?.emit(
+      stream.emit(
         {
           kind: "visibleTileControlRequest",
           hasBinaryPayload: false,
@@ -644,7 +659,7 @@ describe("BrowserSessionDock", () => {
     });
 
     act(() => {
-      stream?.emit(
+      stream.emit(
         {
           kind: "visibleTileControlResult",
           hasBinaryPayload: false,
@@ -696,10 +711,10 @@ describe("BrowserPeekTile", () => {
 
   it("renders JPEG frames and acks each frame", () => {
     render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
-    const stream = hookState.streamClient?.sessions[0];
+    const stream = liveStream();
     act(() => {
-      stream?.emitStatus("open");
-      stream?.emit(
+      stream.emitStatus("open");
+      stream.emit(
         {
           kind: "started",
           hasBinaryPayload: false,
@@ -709,7 +724,7 @@ describe("BrowserPeekTile", () => {
         },
         null,
       );
-      stream?.emit(
+      stream.emit(
         {
           kind: "frame",
           hasBinaryPayload: true,
@@ -731,7 +746,7 @@ describe("BrowserPeekTile", () => {
     expect(
       screen.getByAltText("Read-only browser screencast").getAttribute("src"),
     ).toBe("data:image/jpeg;base64,AQID");
-    expect(stream?.sentFrames).toContainEqual({
+    expect(stream.sentFrames).toContainEqual({
       kind: "ack",
       hasBinaryPayload: false,
       sequence: 7,
@@ -742,12 +757,12 @@ describe("BrowserPeekTile", () => {
     const { rerender } = render(
       <BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />,
     );
-    const stream = hookState.streamClient?.sessions[0];
+    const stream = liveStream();
 
     hookState.visible = false;
     rerender(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
 
-    expect(stream?.sentFrames).toContainEqual({
+    expect(stream.sentFrames).toContainEqual({
       kind: "setPaused",
       hasBinaryPayload: false,
       paused: true,

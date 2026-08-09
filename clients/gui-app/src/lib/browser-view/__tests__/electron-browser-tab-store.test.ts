@@ -22,6 +22,11 @@ import {
   resetElectronBrowserTabStoreForTests,
 } from "@/lib/browser-view/electron-browser-tab-store";
 
+const EPIC = "epic-1";
+const HOST = "host-1";
+const OTHER_EPIC = "epic-2";
+const OTHER_HOST = "host-2";
+
 const TILE_KEY: BrowserViewTileKey = {
   viewTabId: "view-1",
   paneId: "pane-1",
@@ -111,28 +116,45 @@ class FakeBridge {
   }
 }
 
-describe("electron-browser-tab-store (ticket 05)", () => {
+function baseRegistration(
+  overrides: Partial<Parameters<typeof registerElectronBrowserTab>[0]> &
+    Pick<
+      Parameters<typeof registerElectronBrowserTab>[0],
+      "registrationId" | "sessionId" | "bridge"
+    >,
+): Parameters<typeof registerElectronBrowserTab>[0] {
+  return {
+    epicId: EPIC,
+    hostId: HOST,
+    chatId: "chat-1",
+    initialUrl: "https://app.example",
+    title: null,
+    tileKey: TILE_KEY,
+    onRegistered: null,
+    ...overrides,
+  };
+}
+
+describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
   afterEach(() => {
     resetElectronBrowserTabStoreForTests();
   });
 
-  it("publishes registerElectronTab when a chat stream is attached", () => {
+  it("publishes registerElectronTab when the epic+host stream is attached", () => {
     const bridge = new FakeBridge();
     const frames: BrowserSessionsClientFrame[] = [];
-    attachElectronBrowserTabStream("chat-1", (frame) => {
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
       frames.push(frame);
     });
 
-    registerElectronBrowserTab({
-      chatId: "chat-1",
-      registrationId: "reg-1",
-      sessionId: "session-1",
-      initialUrl: "https://app.example",
-      title: "App",
-      tileKey: TILE_KEY,
-      bridge,
-      onRegistered: null,
-    });
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-1",
+        sessionId: "session-1",
+        title: "App",
+        bridge,
+      }),
+    );
 
     expect(frames).toEqual([
       expect.objectContaining({
@@ -146,35 +168,119 @@ describe("electron-browser-tab-store (ticket 05)", () => {
     ]);
   });
 
-  it("re-publishes registration when the same registrationId reconnects", () => {
+  it("does not publish records from another epic or host into this stream", () => {
+    const bridge = new FakeBridge();
+    const localFrames: BrowserSessionsClientFrame[] = [];
+    const otherEpicFrames: BrowserSessionsClientFrame[] = [];
+    const otherHostFrames: BrowserSessionsClientFrame[] = [];
+
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      localFrames.push(frame);
+    });
+    attachElectronBrowserTabStream(OTHER_EPIC, HOST, (frame) => {
+      otherEpicFrames.push(frame);
+    });
+    attachElectronBrowserTabStream(EPIC, OTHER_HOST, (frame) => {
+      otherHostFrames.push(frame);
+    });
+
+    registerElectronBrowserTab(
+      baseRegistration({
+        epicId: EPIC,
+        hostId: HOST,
+        registrationId: "reg-local",
+        sessionId: "session-local",
+        bridge,
+      }),
+    );
+    registerElectronBrowserTab(
+      baseRegistration({
+        epicId: OTHER_EPIC,
+        hostId: HOST,
+        registrationId: "reg-other-epic",
+        sessionId: "session-other-epic",
+        bridge,
+      }),
+    );
+    registerElectronBrowserTab(
+      baseRegistration({
+        epicId: EPIC,
+        hostId: OTHER_HOST,
+        registrationId: "reg-other-host",
+        sessionId: "session-other-host",
+        bridge,
+      }),
+    );
+
+    expect(localFrames).toEqual([
+      expect.objectContaining({ registrationId: "reg-local" }),
+    ]);
+    expect(otherEpicFrames).toEqual([
+      expect.objectContaining({ registrationId: "reg-other-epic" }),
+    ]);
+    expect(otherHostFrames).toEqual([
+      expect.objectContaining({ registrationId: "reg-other-host" }),
+    ]);
+  });
+
+  it("re-publishes only matching epic+host registrations on attach", () => {
     const bridge = new FakeBridge();
     const frames: BrowserSessionsClientFrame[] = [];
-    attachElectronBrowserTabStream("chat-1", (frame) => {
+
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-local",
+        sessionId: "session-local",
+        bridge,
+      }),
+    );
+    registerElectronBrowserTab(
+      baseRegistration({
+        epicId: OTHER_EPIC,
+        hostId: HOST,
+        registrationId: "reg-other",
+        sessionId: "session-other",
+        bridge,
+      }),
+    );
+
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
       frames.push(frame);
     });
 
-    registerElectronBrowserTab({
-      chatId: "chat-1",
-      registrationId: "reg-stable",
-      sessionId: "session-1",
-      initialUrl: "https://app.example/a",
-      title: "A",
-      tileKey: TILE_KEY,
-      bridge,
-      onRegistered: null,
+    expect(frames).toEqual([
+      expect.objectContaining({ registrationId: "reg-local" }),
+    ]);
+  });
+
+  it("re-publishes registration when the same registrationId reconnects", () => {
+    const bridge = new FakeBridge();
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
     });
+
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-stable",
+        sessionId: "session-1",
+        initialUrl: "https://app.example/a",
+        title: "A",
+        bridge,
+      }),
+    );
     frames.length = 0;
 
-    registerElectronBrowserTab({
-      chatId: "chat-1",
-      registrationId: "reg-stable",
-      sessionId: "session-1",
-      initialUrl: "https://app.example/b",
-      title: "B",
-      tileKey: { ...TILE_KEY, tileInstanceId: "tile-rebound" },
-      bridge,
-      onRegistered: null,
-    });
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-stable",
+        sessionId: "session-1",
+        initialUrl: "https://app.example/b",
+        title: "B",
+        tileKey: { ...TILE_KEY, tileInstanceId: "tile-rebound" },
+        bridge,
+      }),
+    );
 
     expect(frames).toEqual([
       expect.objectContaining({
@@ -190,18 +296,16 @@ describe("electron-browser-tab-store (ticket 05)", () => {
   it("on electronTabRegistered calls registerDurableTab and onRegistered with host-minted tabId", async () => {
     const bridge = new FakeBridge();
     const onRegistered = vi.fn();
-    attachElectronBrowserTabStream("chat-1", () => {});
+    attachElectronBrowserTabStream(EPIC, HOST, () => {});
 
-    registerElectronBrowserTab({
-      chatId: "chat-1",
-      registrationId: "reg-1",
-      sessionId: "session-1",
-      initialUrl: "https://app.example",
-      title: null,
-      tileKey: TILE_KEY,
-      bridge,
-      onRegistered,
-    });
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-1",
+        sessionId: "session-1",
+        bridge,
+        onRegistered,
+      }),
+    );
 
     const handled = handleElectronBrowserTabFrame({
       kind: "electronTabRegistered",
@@ -227,20 +331,17 @@ describe("electron-browser-tab-store (ticket 05)", () => {
   it("forwards status changes as electronTabState only after host mint is known", async () => {
     const bridge = new FakeBridge();
     const frames: BrowserSessionsClientFrame[] = [];
-    attachElectronBrowserTabStream("chat-1", (frame) => {
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
       frames.push(frame);
     });
 
-    registerElectronBrowserTab({
-      chatId: "chat-1",
-      registrationId: "reg-1",
-      sessionId: "session-1",
-      initialUrl: "https://app.example",
-      title: null,
-      tileKey: TILE_KEY,
-      bridge,
-      onRegistered: null,
-    });
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-1",
+        sessionId: "session-1",
+        bridge,
+      }),
+    );
     frames.length = 0;
 
     bridge.emitStatus({
@@ -290,31 +391,56 @@ describe("electron-browser-tab-store (ticket 05)", () => {
     ]);
   });
 
-  it("does not publish registration frames when no chat stream is attached yet", () => {
+  it("does not publish registration frames when no epic+host stream is attached yet", () => {
     const bridge = new FakeBridge();
     const frames: BrowserSessionsClientFrame[] = [];
 
-    registerElectronBrowserTab({
-      chatId: "chat-pending",
-      registrationId: "reg-pending",
-      sessionId: "session-pending",
-      initialUrl: "https://app.example",
-      title: null,
-      tileKey: TILE_KEY,
-      bridge,
-      onRegistered: null,
-    });
+    registerElectronBrowserTab(
+      baseRegistration({
+        chatId: null,
+        registrationId: "reg-pending",
+        sessionId: "session-pending",
+        bridge,
+      }),
+    );
     expect(frames).toEqual([]);
 
-    attachElectronBrowserTabStream("chat-pending", (frame) => {
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
       frames.push(frame);
     });
-    // attach only re-publishes records already known for that chat
     expect(frames).toEqual([
       expect.objectContaining({
         kind: "registerElectronTab",
         registrationId: "reg-pending",
       }),
     ]);
+  });
+
+  it("invokes onActivatedHeadless for typed BROWSER_TAB_ACTIVATED_HEADLESS failures", () => {
+    const bridge = new FakeBridge();
+    const onActivatedHeadless = vi.fn();
+    attachElectronBrowserTabStream(EPIC, HOST, () => {});
+
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-headless",
+        sessionId: "session-1",
+        bridge,
+        onActivatedHeadless,
+      }),
+    );
+
+    const handled = handleElectronBrowserTabFrame({
+      kind: "electronTabRegistrationFailed",
+      hasBinaryPayload: false,
+      requestId: "req-fail",
+      registrationId: "reg-headless",
+      sessionId: "session-1",
+      tabId: "tab-headless-1",
+      code: "BROWSER_TAB_ACTIVATED_HEADLESS",
+    } satisfies BrowserSessionsServerFrame);
+
+    expect(handled).toBe(true);
+    expect(onActivatedHeadless).toHaveBeenCalledWith("tab-headless-1");
   });
 });

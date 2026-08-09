@@ -6,6 +6,7 @@ import {
   useState,
   type Dispatch,
   type SetStateAction,
+  type ReactNode,
 } from "react";
 import { Eye, ExternalLink, KeyRound, Radio } from "lucide-react";
 import { z } from "zod";
@@ -24,6 +25,7 @@ import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/h
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { Button } from "@/components/ui/button";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
+import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
 import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
@@ -51,6 +53,7 @@ import {
   type BrowserViewTileKey,
 } from "@/lib/browser-view/desktop-browser-view";
 import { cn } from "@/lib/utils";
+import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
@@ -60,6 +63,12 @@ import {
   isBrowserTileRef,
   type EpicCanvasState,
 } from "@/stores/epics/canvas/types";
+import {
+  BrowserSessionsContext,
+  useBrowserSessionsContext,
+  type BrowserSessionsLifecycle,
+  type BrowserSessionsState,
+} from "./browser-sessions-context";
 
 /**
  * Shared-browser-runtime ticket 01: sessions always carry exactly one tab
@@ -88,9 +97,6 @@ type BrowserStorageLendPayload = Extract<
 
 const browserStorageLendPayloadSchema = z.json();
 
-type BrowserSessionsLifecycle =
-  "connecting" | "live" | "reconnecting" | "closed" | "failed";
-
 interface BrowserAuthLendSource {
   readonly id: string;
   readonly label: string;
@@ -112,6 +118,37 @@ interface BrowserSessionsRenderState {
   readonly errorMessage: string | null;
 }
 
+export function BrowserSessionsProvider(props: {
+  readonly epicId: string;
+  readonly routingChatId: string | null;
+  readonly children: ReactNode;
+}) {
+  const hostId = useReactiveActiveHostId();
+  const runnerHost = useRunnerHost();
+  const browserView = useMemo(
+    () => resolveDesktopBrowserViewBridge(runnerHost),
+    [runnerHost],
+  );
+  const primaryProfileCaptureReady = useMemo(
+    () => canCapturePrimaryProfile(runnerHost),
+    [runnerHost],
+  );
+  const sessions = useBrowserSessions({
+    hostId,
+    epicId: props.epicId,
+    chatId: props.routingChatId,
+    browserView,
+    primaryProfileCaptureReady,
+  });
+  return (
+    <BrowserSessionsContext.Provider
+      value={{ ...sessions, routingChatId: props.routingChatId }}
+    >
+      {props.children}
+    </BrowserSessionsContext.Provider>
+  );
+}
+
 export interface BrowserSessionDockProps {
   readonly chatId: string;
   readonly viewTabId: string;
@@ -125,10 +162,6 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
     () => resolveDesktopBrowserViewBridge(runnerHost),
     [runnerHost],
   );
-  const primaryProfileCaptureReady = useMemo(
-    () => canCapturePrimaryProfile(runnerHost),
-    [runnerHost],
-  );
   const navigateNested = useEpicNestedFocusNavigation();
   const prepareSplitPaneWithNodeFocusTarget = useEpicCanvasStore(
     (state) => state.prepareSplitPaneWithNodeFocusTarget,
@@ -136,12 +169,7 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
   const epicId = useEpicCanvasStore(
     (state) => state.tabsById[props.viewTabId]?.epicId ?? null,
   );
-  const sessions = useBrowserSessions(
-    epicId,
-    props.chatId,
-    browserView,
-    primaryProfileCaptureReady,
-  );
+  const sessions = useBrowserSessionsContext();
   const [handoffPendingId, setHandoffPendingId] = useState<string | null>(null);
   const [handoffMessage, setHandoffMessage] = useState<string | null>(null);
   const [lendPendingId, setLendPendingId] = useState<string | null>(null);
@@ -629,26 +657,20 @@ function isLocalhostCookieScopeOrigin(origin: string): boolean {
   }
 }
 
+interface UseBrowserSessionsArgs {
+  readonly hostId: string | null;
+  readonly epicId: string;
+  readonly chatId: string | null;
+  readonly browserView: DesktopBrowserViewBridge | null;
+  readonly primaryProfileCaptureReady: boolean;
+}
+
 function useBrowserSessions(
-  epicId: string | null,
-  chatId: string,
-  browserView: DesktopBrowserViewBridge | null,
-  primaryProfileCaptureReady: boolean,
-): {
-  readonly lifecycle: BrowserSessionsLifecycle;
-  readonly items: readonly BrowserSessionInfo[];
-  readonly errorMessage: string | null;
-  readonly requestPromoteState: (
-    sessionId: string,
-  ) => Promise<PromoteStateFrame>;
-  readonly requestLendStorage: (
-    sessionId: string,
-    origin: string,
-    storage: BrowserStorageLendPayload,
-  ) => Promise<LendResultFrame>;
-} {
-  const hostId = useTabHostId();
-  const hostEntry = useHostDirectoryEntry(hostId);
+  args: UseBrowserSessionsArgs,
+): Omit<BrowserSessionsState, "routingChatId"> {
+  const { hostId, epicId, chatId, browserView, primaryProfileCaptureReady } =
+    args;
+  const hostEntry = useHostDirectoryEntry(hostId ?? UNKNOWN_HOST_PLACEHOLDER);
   const auth = useStreamAuthRevalidator();
   const client = useHostStreamClientFor(hostEntry, auth);
   const sessionRef = useRef<{
@@ -691,7 +713,7 @@ function useBrowserSessions(
   const errorMessage = stateMatchesClient ? streamState.errorMessage : null;
 
   useEffect(() => {
-    if (client === null || epicId === null) {
+    if (client === null || hostId === null || chatId === null) {
       sessionRef.current = null;
       return;
     }
@@ -711,7 +733,8 @@ function useBrowserSessions(
       );
     }
     const detachElectronTabs = attachElectronBrowserTabStream(
-      chatId,
+      epicId,
+      hostId,
       (frame) => {
         stream.sendClientFrame(frame, null);
       },
@@ -768,7 +791,7 @@ function useBrowserSessions(
         new Error("Browser sessions stream closed."),
       );
     };
-  }, [browserView, chatId, client, epicId, primaryProfileCaptureReady]);
+  }, [browserView, chatId, client, epicId, hostId, primaryProfileCaptureReady]);
 
   const requestPromoteState = useCallback((sessionId: string) => {
     const session = sessionRef.current;
@@ -824,10 +847,23 @@ function useBrowserSessions(
     [],
   );
 
+  const closeSession = useCallback((sessionId: string): void => {
+    sessionRef.current?.sendClientFrame(
+      {
+        kind: "closeSession",
+        hasBinaryPayload: false,
+        requestId: crypto.randomUUID(),
+        sessionId,
+      },
+      null,
+    );
+  }, []);
+
   return {
     lifecycle,
     items,
     errorMessage,
+    closeSession,
     requestPromoteState,
     requestLendStorage,
   };

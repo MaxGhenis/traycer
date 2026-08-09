@@ -14,6 +14,7 @@ import {
   TILE_KIND_BLANK,
   TILE_KIND_BROWSER,
   TILE_KIND_BROWSER_PEEK,
+  TILE_KIND_BROWSER_SESSION,
   TILE_KIND_COMM_GRAPH,
   TILE_KIND_GIT_DIFF,
   TILE_KIND_MANAGED_COMMAND_OUTPUT,
@@ -172,6 +173,17 @@ export interface BrowserPeekTileRef {
   readonly sessionId: string;
   readonly tabId: string;
   readonly initialUrl: string;
+}
+
+/** Renderer-local view pointer to one host-owned epic browser tab. */
+export interface BrowserSessionTileRef {
+  readonly id: string;
+  readonly instanceId: string;
+  readonly type: typeof TILE_KIND_BROWSER_SESSION;
+  readonly name: string;
+  readonly hostId: string;
+  readonly sessionId: string;
+  readonly tabId: string;
 }
 
 /**
@@ -453,6 +465,7 @@ export type EpicCanvasTileRef =
   | EpicNodeRef
   | BrowserTileRef
   | BrowserPeekTileRef
+  | BrowserSessionTileRef
   | AgentBrowserTileRef
   | GitDiffTileRef
   | SnapshotDiffTileRef
@@ -496,6 +509,12 @@ export function isBrowserPeekTileRef(
   value: EpicCanvasTileRef,
 ): value is BrowserPeekTileRef {
   return value.type === TILE_KIND_BROWSER_PEEK;
+}
+
+export function isBrowserSessionTileRef(
+  value: EpicCanvasTileRef,
+): value is BrowserSessionTileRef {
+  return value.type === TILE_KIND_BROWSER_SESSION;
 }
 
 export function isAgentBrowserTileRef(

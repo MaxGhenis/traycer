@@ -176,7 +176,6 @@ import { HostWorkspaceSelector } from "@/components/home/host-workspace-selector
 import type { FatalErrorDetails } from "@traycer/protocol/framework/ws-protocol";
 import type { TraycerNextStepOption } from "@/markdown/traycer-next-steps";
 import { ChatLowerInteractionSurfaces } from "./chat-tile-lower-surfaces";
-import { BrowserSessionDock } from "./browser-session-dock";
 import { BrowserComposerContextChip } from "./browser-composer-context-chip";
 import { useBrowserContextAttachmentHandler } from "./browser-context-attachment-handler";
 import { ManagedCommandChatMenu } from "@/components/managed-commands/managed-command-chat-menu";
@@ -940,11 +939,6 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
             ) : null}
           </div>
           <ChatTileErrorNoticeToasts handle={view.handle} />
-          <BrowserSessionDock
-            chatId={view.node.id}
-            viewTabId={view.viewTabId}
-            paneId={view.tileId}
-          />
           <ChatTileRestoreResultToasts handle={view.handle} />
           <RevertOnEditDialog
             open={view.revertOnEdit.open}

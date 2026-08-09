@@ -33,6 +33,7 @@ import {
   isAgentBrowserTileRef,
   isBlankTileRef,
   isBrowserPeekTileRef,
+  isBrowserSessionTileRef,
   isBrowserTileRef,
   isCommGraphTileRef,
   isDiffTileRef,
@@ -43,6 +44,7 @@ import {
   type AgentBrowserTileRef,
   type BlankTileRef,
   type BrowserPeekTileRef,
+  type BrowserSessionTileRef,
   type BrowserTileRef,
   type ManagedCommandOutputTileRef,
   type EpicCanvasTileRef,
@@ -189,7 +191,7 @@ function EpicCanvasNodeDragOverlay(props: {
   if (isBrowserTileRef(props.node)) {
     return <BrowserTileDragOverlay node={props.node} />;
   }
-  if (isBrowserPeekTileRef(props.node)) {
+  if (isBrowserPeekTileRef(props.node) || isBrowserSessionTileRef(props.node)) {
     return <BrowserPeekTileDragOverlay node={props.node} />;
   }
   if (isAgentBrowserTileRef(props.node)) {
@@ -272,7 +274,7 @@ function PrDetailTileDragOverlay(props: { readonly node: PrDetailTileRef }) {
 }
 
 function BrowserPeekTileDragOverlay(props: {
-  readonly node: BrowserPeekTileRef;
+  readonly node: BrowserPeekTileRef | BrowserSessionTileRef;
 }) {
   return (
     <m.div

@@ -570,6 +570,14 @@ export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
     tabId: z.string(),
   }),
   z.object({
+    kind: z.literal("electronTabRegistrationFailed"),
+    ...requestFrameFields,
+    registrationId: z.string(),
+    sessionId: z.string(),
+    tabId: z.string(),
+    code: z.literal("BROWSER_TAB_ACTIVATED_HEADLESS"),
+  }),
+  z.object({
     // Shared-browser-runtime ticket 06. The Electron partition is the
     // canonical primary-profile store, so a fresh headless primary context
     // asks desktop for a point-in-time derived copy before it navigates.

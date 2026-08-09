@@ -60,6 +60,7 @@ import {
   isAgentBrowserTileRef,
   isBlankTileRef,
   isBrowserPeekTileRef,
+  isBrowserSessionTileRef,
   isBrowserTileRef,
   isCommGraphTileRef,
   isDiffTileRef,
@@ -973,7 +974,11 @@ function TabIcon(props: {
   if (isBlankTileRef(props.tab)) {
     return <FilePlus className="size-3.5 shrink-0 text-muted-foreground" />;
   }
-  if (isBrowserTileRef(props.tab) || isBrowserPeekTileRef(props.tab)) {
+  if (
+    isBrowserTileRef(props.tab) ||
+    isBrowserPeekTileRef(props.tab) ||
+    isBrowserSessionTileRef(props.tab)
+  ) {
     return <Globe className="size-3.5 shrink-0 text-muted-foreground" />;
   }
   if (isAgentBrowserTileRef(props.tab)) {

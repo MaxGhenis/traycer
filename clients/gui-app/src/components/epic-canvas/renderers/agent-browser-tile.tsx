@@ -20,6 +20,8 @@ export interface AgentBrowserTileProps {
   readonly node: AgentBrowserTileRef;
   readonly viewTabId: string;
   readonly paneId: string;
+  readonly onActivatedHeadless?: ((tabId: string) => void) | null;
+  readonly activateBeforeNativeView?: boolean;
 }
 
 /**
@@ -50,6 +52,9 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       props.node.instanceId,
     ),
   );
+  const epicId = useEpicCanvasStore(
+    (state) => state.tabsById[props.viewTabId]?.epicId ?? null,
+  );
 
   const tileKey = useMemo<AgentBrowserViewTileKey>(
     () => ({
@@ -76,15 +81,29 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   }, [browserView, tileKey]);
 
   useEffect(() => {
-    if (browserView === null) return;
+    if (
+      browserView === null ||
+      (props.activateBeforeNativeView === true && durableTabId === null)
+    ) {
+      return;
+    }
     void browserView
       .upsertTile({ ...tileKey, url: props.node.url, visible })
       .catch(ignoreAgentBrowserViewError);
-  }, [browserView, tileKey, props.node.url, visible]);
+  }, [
+    browserView,
+    durableTabId,
+    props.activateBeforeNativeView,
+    tileKey,
+    props.node.url,
+    visible,
+  ]);
 
   useEffect(() => {
-    if (browserView === null) return;
+    if (browserView === null || epicId === null) return;
     registerElectronBrowserTab({
+      epicId,
+      hostId,
       chatId: registrationChatId,
       registrationId: props.node.id,
       sessionId: props.node.sessionId,
@@ -93,13 +112,17 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       tileKey,
       bridge: browserView,
       onRegistered: setDurableTabId,
+      onActivatedHeadless: props.onActivatedHeadless,
     });
   }, [
     browserView,
+    epicId,
+    hostId,
     props.node.id,
     props.node.name,
     props.node.sessionId,
     props.node.url,
+    props.onActivatedHeadless,
     registrationChatId,
     tileKey,
   ]);

@@ -69,6 +69,7 @@ import type {
 } from "./chat-message";
 import { ChatUserMessageContent } from "./chat-user-message-content";
 import { UserMessageAttachmentGallery } from "./user-message-attachment-gallery";
+import { BrowserReferenceChips } from "./browser-reference-chips";
 import { ComposerArea } from "@/components/home/composer/composer-shell";
 import { LivePulse } from "@/components/ui/live-pulse";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
@@ -377,6 +378,9 @@ function UserMessageDisplayView({
           <UserMessageAttachmentGallery
             attachments={message.attachments}
             align="start"
+          />
+          <BrowserReferenceChips
+            references={message.browserContextAttachments ?? []}
           />
           <div
             ref={contentRef}

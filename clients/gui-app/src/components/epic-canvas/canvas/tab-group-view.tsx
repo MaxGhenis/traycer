@@ -48,10 +48,7 @@ import type {
 } from "@/stores/epics/canvas/types";
 import { WORKSPACE_FILE_TAB_KIND } from "@/stores/epics/canvas/types";
 import {
-  isAgentBrowserTileRef,
   isBlankTileRef,
-  isBrowserPeekTileRef,
-  isBrowserTileRef,
   isCommGraphTileRef,
   isDiffTileRef,
   isManagedCommandOutputTileRef,
@@ -70,6 +67,7 @@ import {
   TILE_KIND_PR_DIFF,
   TILE_KIND_SNAPSHOT_DIFF,
 } from "@/stores/epics/canvas/tile-kinds";
+
 import { TabStrip } from "@/components/epic-canvas/canvas/tab-strip";
 import { useRenameCanvasTab } from "@/components/epic-canvas/canvas/use-rename-canvas-tab";
 import {
@@ -78,6 +76,27 @@ import {
 } from "@/stores/epics/left-panel-store";
 import { isEditableRole } from "@/lib/epic-permissions";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
+
+const BROWSER_SURFACE_TILE_TYPES = new Set<EpicCanvasTileRef["type"]>([
+  "browser",
+  "browser-peek",
+  "browser-session",
+  "agent-browser",
+]);
+
+type BrowserSurfaceTileRef = Extract<
+  EpicCanvasTileRef,
+  {
+    readonly type:
+      "browser" | "browser-peek" | "browser-session" | "agent-browser";
+  }
+>;
+
+function isBrowserSurfaceTileRef(
+  value: EpicCanvasTileRef,
+): value is BrowserSurfaceTileRef {
+  return BROWSER_SURFACE_TILE_TYPES.has(value.type);
+}
 
 interface TabGroupViewProps {
   readonly epicId: string;
@@ -493,9 +512,7 @@ function ActiveTabBody(props: ActiveTabBodyProps) {
   // each surface owns its own lifecycle instead.
   const isRemoteDeleted =
     activeTab.type === "terminal" ||
-    isBrowserTileRef(activeTab) ||
-    isBrowserPeekTileRef(activeTab) ||
-    isAgentBrowserTileRef(activeTab) ||
+    isBrowserSurfaceTileRef(activeTab) ||
     isDiffTileRef(activeTab) ||
     isPrDetailTileRef(activeTab) ||
     isPrDiffTileRef(activeTab) ||
