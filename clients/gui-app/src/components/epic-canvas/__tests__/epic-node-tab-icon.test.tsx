@@ -1,10 +1,9 @@
-import "../../../../__tests__/test-browser-apis";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   publishAgentActivity,
-  resetAgentActivityPresence,
-} from "@/__tests__/agent-activity-presence-harness";
+  resetAgentActivity,
+} from "@/__tests__/agent-activity-harness";
 import { EpicNodeTabIcon } from "@/components/epic-canvas/epic-node-tab-icon";
 import { NotificationIndicatorsProvider } from "@/components/notifications/notification-indicators-provider";
 import { __getOpenEpicRegistryForTests } from "@/lib/registries/epic-session-registry";
@@ -107,7 +106,7 @@ describe("<EpicNodeTabIcon /> terminal-agent activity", () => {
   afterEach(() => {
     cleanup();
     __getOpenEpicRegistryForTests().disposeAll();
-    resetAgentActivityPresence();
+    resetAgentActivity();
     __resetAppLocalNotificationsStoreForTests();
   });
 
@@ -144,7 +143,7 @@ describe("<EpicNodeTabIcon /> terminal-agent activity", () => {
 
   // The defect this whole signal move fixes: activity for an Epic this window
   // has NEVER opened. There is no session and no per-epic room here, so the
-  // spinner can only come from the per-user notification room.
+  // spinner can only come from the host-selected activity view.
   it("spins for an Epic that was never opened in this window", () => {
     renderTuiAgentTabIcon();
 

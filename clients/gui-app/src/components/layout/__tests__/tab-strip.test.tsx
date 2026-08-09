@@ -18,8 +18,8 @@ import {
 } from "@/lib/commands/actions/open-system-tab";
 import {
   publishAgentActivity,
-  resetAgentActivityPresence,
-} from "@/__tests__/agent-activity-presence-harness";
+  resetAgentActivity,
+} from "@/__tests__/agent-activity-harness";
 import { __getOpenEpicRegistryForTests } from "@/lib/registries/epic-session-registry";
 import { __getChatSessionRegistryForTests } from "@/lib/registries/chat-session-registry";
 import type { PermissionRole } from "@/lib/epic-collaborator-roles";
@@ -55,7 +55,6 @@ import {
   vi,
   type Mock,
 } from "vitest";
-import "../../../../__tests__/test-browser-apis";
 
 import { anyTooltipHasText } from "@/components/ui/__tests__/tooltip-probe";
 vi.mock("@/hooks/notifications/use-host-notification-indicators-query", () => ({
@@ -229,7 +228,7 @@ function publishHeaderActivity(
   activeAgentIds: ReadonlyArray<string>,
 ): void {
   // Accumulate: one host publishes ONE entry carrying every epic it is working
-  // on, so republishing only the latest tab would silently clear the presence
+  // on, so republishing only the latest tab would silently clear the activity
   // an earlier call established.
   headerActivityByEpic.set(tab.id, activeAgentIds);
   const byEpic: Record<
@@ -336,6 +335,7 @@ function buildHeaderEpicHandle(
     dispose: () => undefined,
     requestFreshSnapshot: () => undefined,
     isClean: () => true,
+    hotArtifactRoomIdsForTests: () => [],
   };
 }
 
@@ -531,7 +531,7 @@ describe("<TabStrip />", () => {
     cleanup();
     queryClient.clear();
     headerActivityByEpic.clear();
-    resetAgentActivityPresence();
+    resetAgentActivity();
     resetStores();
   });
 

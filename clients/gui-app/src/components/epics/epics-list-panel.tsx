@@ -87,7 +87,7 @@ import {
   type HistoryFacets,
 } from "@/hooks/home/use-history-query";
 import { useEpicActivityStatus } from "@/hooks/epic/use-epic-activity-status";
-import { useHostNotificationIndicators } from "@/hooks/notifications/use-host-notification-indicators-query";
+import { useNotificationIndicators } from "@/hooks/notifications/use-notification-indicators-query";
 import {
   useAmbientHistorySearchState,
   useRouteHistorySearchState,
@@ -300,7 +300,7 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
     () => items.map((item) => item.epicId),
     [items],
   );
-  const notificationIndicators = useHostNotificationIndicators({
+  const notificationIndicators = useNotificationIndicators({
     epicIds: indicatorEpicIds,
     chatIds: [],
     enabled: indicatorEpicIds.length > 0,
@@ -586,9 +586,7 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
           facets={facets}
           refresh={{ isFetching, hostId, onRefetch: refetch }}
         />
-        <NotificationIndicatorsProvider
-          indicators={notificationIndicators.data}
-        >
+        <NotificationIndicatorsProvider indicators={notificationIndicators}>
           <div className="min-h-0 flex-1 overflow-y-auto pb-10">
             <EpicsListBody
               error={error}
@@ -1120,6 +1118,7 @@ function HistoryRowTrailingMetadata(props: {
           maximumVisible={2}
           className="pointer-events-none col-start-1 row-start-1 max-w-[min(36vw,22rem)] overflow-hidden opacity-0 transition-opacity group-hover/list-row:pointer-events-auto group-hover/list-row:opacity-100 group-focus-within/list-row:pointer-events-auto group-focus-within/list-row:opacity-100 has-data-[state=open]:pointer-events-auto has-data-[state=open]:opacity-100"
           testId={`task-history-prs-${props.epicId}`}
+          openPrInApp={null}
         />
       ) : null}
     </span>

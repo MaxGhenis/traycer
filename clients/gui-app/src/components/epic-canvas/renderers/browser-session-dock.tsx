@@ -19,7 +19,7 @@ import type {
   StreamCloseReason,
   StreamConnectionStatus,
 } from "@traycer-clients/shared/host-transport/i-stream-session";
-import type { WsStreamClient } from "@traycer-clients/shared/host-transport/ws-stream-client";
+import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/host-stream-client";
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { Button } from "@/components/ui/button";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
@@ -93,7 +93,7 @@ interface BrowserAuthLendPreview {
 }
 
 interface BrowserSessionsRenderState {
-  readonly client: WsStreamClient<HostStreamRpcRegistry> | null;
+  readonly client: IHostStreamClient<HostStreamRpcRegistry> | null;
   readonly items: readonly BrowserSessionInfo[];
   readonly lifecycle: BrowserSessionsLifecycle;
   readonly errorMessage: string | null;

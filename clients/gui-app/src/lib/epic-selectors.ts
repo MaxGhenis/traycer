@@ -20,7 +20,7 @@
  * to satisfy `@typescript-eslint/no-unnecessary-condition` while keeping
  * runtime safety.
  */
-import { useMemo, useSyncExternalStore } from "react";
+import { useLayoutEffect, useMemo, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { createSelector, lruMemoize } from "reselect";
@@ -40,6 +40,8 @@ import type { StreamConnectionStatus } from "@traycer-clients/shared/host-transp
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@/lib/host";
 import { displayTitle } from "@/lib/display-title";
+import { managedCommandTitle } from "@/lib/managed-commands/managed-command-copy";
+import { useManagedCommandInEpic } from "@/stores/managed-commands/managed-commands-for-chat";
 import {
   deriveEpicSyncPillState,
   type EpicHostDirtyState,
@@ -48,8 +50,8 @@ import {
 import {
   agentActivityTiers,
   type AgentActivityTier,
-} from "@/lib/notifications/agent-activity-presence";
-import { useEpicAgentActivity } from "@/stores/notifications/notifications-store";
+} from "@/lib/agent-activity";
+import { useEpicAgentActivity } from "@/stores/agent-activity-store";
 import { useEpicStore } from "@/hooks/use-epic-store";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
@@ -74,6 +76,7 @@ import type {
   OpenEpicStoreHandle,
   SnapshotFetchError,
 } from "@/stores/epics/open-epic/store";
+import type { OpenEpicSessionRegistry } from "@/stores/epics/open-epic/session-registry";
 import type {
   ArtifactProjection,
   ArtifactsSlice,
@@ -551,6 +554,39 @@ export function useEpicArchivedNodeIds(): ReadonlyArray<string> {
   );
 }
 
+/**
+ * Ids of every chat + terminal agent this epic's projection currently holds.
+ *
+ * PRESENCE, not liveness or visibility: an archived or idle node is still here;
+ * only a DELETED one is absent. Callers use it to drop references to nodes that
+ * no longer exist - host-side records that outlive their node (a PR's owner set
+ * is one: worktree bindings cascade on epic delete but not on chat delete) name
+ * ids this epic can no longer resolve to a title or a tile.
+ *
+ * Two plain reads plus a memo, NOT one `useShallow` selector that rebuilds the
+ * combined array. `useShallow` bails the subscriber's re-render but not the
+ * selector RUN: zustand executes it once per subscriber on every notification,
+ * and the PR panel mounts one subscriber per row, so combining in there costs
+ * O(rows x agents) on every projection tick - including the title/`updatedAt`
+ * churn this membership list does not care about.
+ *
+ * Memoising on array IDENTITY is safe because the projector guarantees it:
+ * `pickStableIds` hands back the PREVIOUS array whenever the ids are
+ * shallow-equal, so these references change only when a node is really added or
+ * removed. Unordered, because every caller asks it membership questions.
+ */
+export function useEpicAgentNodeIds(): ReadonlyArray<string> {
+  const handle = useOpenEpicHandle();
+  const chatIds = useStore(handle.store, (s) => s.chats.allIds);
+  const terminalAgentIds = useStore(handle.store, (s) => s.tuiAgents.allIds);
+  return useMemo(() => {
+    if (chatIds.length === 0 && terminalAgentIds.length === 0) {
+      return EMPTY_TREE_ID_ARRAY;
+    }
+    return [...chatIds, ...terminalAgentIds];
+  }, [chatIds, terminalAgentIds]);
+}
+
 export function useEpicTerminalAgentRecords(): ReadonlyArray<TuiAgentProjection> {
   const handle = useOpenEpicHandle();
   return useStore(
@@ -626,6 +662,85 @@ export function useRegisteredEpicLiveArtifactTitle(
   );
 }
 
+export interface RegisteredEpicArtifactTitleRef {
+  readonly epicId: string;
+  readonly artifactId: string | null;
+}
+
+/**
+ * Reactive live titles for a dynamic collection of artifacts. Global list
+ * surfaces cannot call the single-artifact hook in a data-dependent loop, so
+ * this subscribes once to the registry and every currently referenced epic.
+ */
+export function useRegisteredEpicLiveArtifactTitles(
+  refs: readonly RegisteredEpicArtifactTitleRef[],
+): readonly (string | null)[] {
+  const registry = getOpenEpicRegistry();
+  const encodedTitles = useSyncExternalStore(
+    (listener) => {
+      const unsubscribeByHandle = new Map<object, () => void>();
+      const reconcileHandleSubscriptions = () => {
+        const currentHandles = new Set<object>();
+        for (const ref of refs) {
+          const handle = registry.peek(ref.epicId);
+          if (handle === null || currentHandles.has(handle)) continue;
+          currentHandles.add(handle);
+          if (!unsubscribeByHandle.has(handle)) {
+            unsubscribeByHandle.set(handle, handle.store.subscribe(listener));
+          }
+        }
+        for (const [handle, unsubscribe] of unsubscribeByHandle) {
+          if (currentHandles.has(handle)) continue;
+          unsubscribe();
+          unsubscribeByHandle.delete(handle);
+        }
+      };
+      reconcileHandleSubscriptions();
+      const unsubscribeRegistry = registry.subscribe(() => {
+        reconcileHandleSubscriptions();
+        listener();
+      });
+      return () => {
+        unsubscribeRegistry();
+        for (const unsubscribe of unsubscribeByHandle.values()) unsubscribe();
+      };
+    },
+    () => registeredArtifactTitlesSnapshot(registry, refs),
+    () => JSON.stringify(refs.map(() => [0, null])),
+  );
+  return useMemo(
+    () => decodeRegisteredArtifactTitles(encodedTitles),
+    [encodedTitles],
+  );
+}
+
+function registeredArtifactTitlesSnapshot(
+  registry: OpenEpicSessionRegistry,
+  refs: readonly RegisteredEpicArtifactTitleRef[],
+): string {
+  return JSON.stringify(
+    refs.map((ref) => {
+      const handle = registry.peek(ref.epicId);
+      return [
+        handle === null ? 0 : 1,
+        liveArtifactTitleFromHandle(handle, ref.artifactId),
+      ];
+    }),
+  );
+}
+
+function decodeRegisteredArtifactTitles(
+  encodedTitles: string,
+): readonly (string | null)[] {
+  const decoded: unknown = JSON.parse(encodedTitles);
+  if (!Array.isArray(decoded)) return [];
+  return decoded.map((entry) => {
+    if (!Array.isArray(entry)) return null;
+    const title: unknown = entry[1];
+    return typeof title === "string" ? title : null;
+  });
+}
+
 function liveArtifactTitleFromHandle(
   handle: OpenEpicStoreHandle | null,
   artifactId: string | null,
@@ -681,7 +796,21 @@ export function useEpicTabDisplayTitle(
     epicId: isTerminal ? epicId : null,
     sessionId: isTerminal ? node.id : null,
   });
-  return liveArtifactTitle ?? liveTerminalTitle ?? node.name;
+  // An output window's tile carries no label at all (its persisted shape is
+  // just the command pointer), so the kind-explicit title comes from the owning
+  // chat's live set - and follows a rename the agent makes.
+  const managedCommand = useManagedCommandInEpic(
+    epicId,
+    node.type === "managed-command-output" ? node.id : "",
+  );
+  const liveManagedCommandTitle =
+    managedCommand === null ? null : managedCommandTitle(managedCommand);
+  return (
+    liveArtifactTitle ??
+    liveTerminalTitle ??
+    liveManagedCommandTitle ??
+    node.name
+  );
 }
 
 export function useEpicLiveArtifactTitleGenerating(
@@ -729,6 +858,13 @@ export function useEpicArtifactFragment(
   artifactId: string | null,
 ): Y.XmlFragment | null {
   const handle = useOpenEpicHandle();
+  // Takes the lease itself. The store's accessor is a pure read - it cannot
+  // materialize a cold room, because it runs inside a selector - so a caller
+  // that read without pinning would sit in a loading state forever. Bundling
+  // the two makes the hook correct by construction; `getArtifactFragment` on
+  // the store stays the escape hatch for non-React callers, which must lease
+  // explicitly (see `useEpicExportArtifacts`).
+  useEpicArtifactBodyLease(artifactId);
   return useStore(handle.store, (s) => {
     if (artifactId === null) return null;
     return s.getArtifactFragment(artifactId);
@@ -750,6 +886,9 @@ export function useEpicArtifactBodyAwareness(
   artifactId: string | null,
 ): Awareness | null {
   const handle = useOpenEpicHandle();
+  // Same reasoning as `useEpicArtifactFragment`; lease counts are refcounted,
+  // so a component using both hooks simply holds two.
+  useEpicArtifactBodyLease(artifactId);
   return useStore(handle.store, (s) => {
     if (artifactId === null) return null;
     return s.getArtifactBodyAwareness(artifactId);
@@ -770,6 +909,36 @@ export function useEpicArtifactBodyAvailability(
     if (artifactId === null) return "unavailable";
     return s.getArtifactBodyAvailability(artifactId);
   });
+}
+
+/**
+ * Materializes `artifactId`'s artifact-room and holds it materialized for as
+ * long as the calling component is mounted.
+ *
+ * Rooms the host opens are cached as encoded update bytes; taking a lease is
+ * what builds the live `Y.Doc`, and holding it is what stops the room cooling
+ * back down underneath a mounted editor. {@link useEpicArtifactFragment} and
+ * {@link useEpicArtifactBodyAwareness} call this for you - use it directly
+ * only to pin a room whose fragment this component does not itself read.
+ *
+ * The lease is re-taken when the resolved room id changes rather than only
+ * when the artifact id does: an artifact reassigned between two rooms that are
+ * both already `ready` produces no availability transition, so keying the
+ * effect on availability alone would leave the lease on the stale room.
+ */
+export function useEpicArtifactBodyLease(artifactId: string | null): void {
+  const handle = useOpenEpicHandle();
+  const artifactRoomId = useStore(handle.store, (s) =>
+    artifactId === null ? null : s.getArtifactRoomId(artifactId),
+  );
+  // Layout, not passive: this is what materializes the room, and a passive
+  // effect runs after paint - the tile would show its skeleton for a frame
+  // before the fragment resolved. A layout effect lands the lease, and the
+  // resulting store update, before the browser paints.
+  useLayoutEffect(() => {
+    if (artifactId === null || artifactRoomId === null) return;
+    return handle.store.getState().acquireArtifactBodyLease(artifactId);
+  }, [handle, artifactId, artifactRoomId]);
 }
 
 // ─── Doc reference for editor binding ─────────────────────────────────────
@@ -1177,6 +1346,47 @@ export function useEpicNodeArchived(nodeId: string): boolean {
     }
     return false;
   });
+}
+
+/**
+ * Provider-optional counterpart to {@link useEpicNodeArchived} for canvas tab
+ * icons. The shared tab icon also renders in provider-less drag previews and
+ * graph surfaces, so it resolves the epic through the session registry and
+ * degrades to active when that epic has no mounted session.
+ *
+ * The selected boolean is narrow on purpose: streaming/title churn elsewhere
+ * in the epic must not repaint every open tab.
+ */
+export function useRegisteredEpicNodeArchived(
+  epicId: string,
+  nodeId: string,
+): boolean {
+  const registry = getOpenEpicRegistry();
+  const handle = useSyncExternalStore(
+    (listener) => registry.subscribe(listener),
+    () => registry.peek(epicId),
+    () => null,
+  );
+  return useSyncExternalStore(
+    (listener) => handle?.store.subscribe(listener) ?? noopSubscribe,
+    () => liveEpicNodeArchivedFromHandle(handle, nodeId),
+    () => false,
+  );
+}
+
+function liveEpicNodeArchivedFromHandle(
+  handle: OpenEpicStoreHandle | null,
+  nodeId: string,
+): boolean {
+  if (handle === null) return false;
+  const state = handle.store.getState();
+  if (Object.hasOwn(state.chats.byId, nodeId)) {
+    return state.chats.byId[nodeId].archivedAt !== null;
+  }
+  if (Object.hasOwn(state.tuiAgents.byId, nodeId)) {
+    return state.tuiAgents.byId[nodeId].archivedAt !== null;
+  }
+  return false;
 }
 
 /**

@@ -17,7 +17,7 @@ import type {
   StreamCloseReason,
   StreamConnectionStatus,
 } from "@traycer-clients/shared/host-transport/i-stream-session";
-import type { WsStreamClient } from "@traycer-clients/shared/host-transport/ws-stream-client";
+import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/host-stream-client";
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
@@ -43,7 +43,7 @@ type PeekLifecycle =
   | "complete";
 
 interface BrowserPeekRenderState {
-  readonly client: WsStreamClient<HostStreamRpcRegistry> | null;
+  readonly client: IHostStreamClient<HostStreamRpcRegistry> | null;
   readonly imageSrc: string | null;
   readonly lifecycle: PeekLifecycle;
   readonly details: string | null;
@@ -286,7 +286,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
 
 function resetPeekStateForClient(
   current: BrowserPeekRenderState,
-  client: WsStreamClient<HostStreamRpcRegistry> | null,
+  client: IHostStreamClient<HostStreamRpcRegistry> | null,
 ): BrowserPeekRenderState {
   if (current.client === client) return current;
   return {
@@ -301,7 +301,7 @@ function resetPeekStateForClient(
 function peekDetailsForRender(
   stateMatchesClient: boolean,
   streamState: BrowserPeekRenderState,
-  client: WsStreamClient<HostStreamRpcRegistry> | null,
+  client: IHostStreamClient<HostStreamRpcRegistry> | null,
 ): string | null {
   if (stateMatchesClient) return streamState.details;
   if (client === null) return "Waiting for the host stream.";

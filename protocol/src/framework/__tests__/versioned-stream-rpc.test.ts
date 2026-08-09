@@ -27,7 +27,7 @@ describe("validateVersionedStreamRpcRegistry", () => {
       validateVersionedStreamRpcRegistry(hostStreamRpcRegistry);
     }).not.toThrow();
     expect(hostStreamRpcRegistry["epic.subscribe"][1].latestMinor).toBe(1);
-    expect(hostStreamRpcRegistry["chat.subscribe"][1].latestMinor).toBe(5);
+    expect(hostStreamRpcRegistry["chat.subscribe"][1].latestMinor).toBe(6);
     expect(
       hostStreamRpcRegistry["notifications.subscribe"][1].latestMinor,
     ).toBe(1);
@@ -370,7 +370,7 @@ describe("stream compatibility", () => {
     expect(openAckManifest["browser.screencast"]).toBeUndefined();
     expect(openAckManifest["terminal.subscribe"]).toEqual({
       major: 1,
-      minor: 4,
+      minor: 5,
     });
 
     const terminalAsHost = checkStreamMethodCompatibility(

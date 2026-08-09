@@ -21,6 +21,10 @@ import { browserPeekTileSchema, browserTileSchema } from "./browser-tile";
 import { agentBrowserTileSchema } from "./agent-browser-tile";
 import { gitDiffTileSchema } from "./git-diff-tile";
 import { snapshotDiffTileSchema } from "./snapshot-diff-tile";
+import { managedCommandOutputTileSchema } from "./managed-command-output-tile";
+import { commGraphTileSchema } from "./comm-graph-tile";
+import { prDetailTileSchema } from "./pr-detail-tile";
+import { prDiffTileSchema } from "./pr-diff-tile";
 import { blankTileSchema } from "./blank-tile";
 
 export interface TileSchema<R extends EpicCanvasTileRef> {
@@ -47,6 +51,10 @@ const TILE_SCHEMAS: TileSchemaRegistry = {
   "workspace-file": workspaceFileTileSchema,
   "git-diff": gitDiffTileSchema,
   "snapshot-diff": snapshotDiffTileSchema,
+  "managed-command-output": managedCommandOutputTileSchema,
+  "comm-graph": commGraphTileSchema,
+  "pr-detail": prDetailTileSchema,
+  "pr-diff": prDiffTileSchema,
   blank: blankTileSchema,
 };
 

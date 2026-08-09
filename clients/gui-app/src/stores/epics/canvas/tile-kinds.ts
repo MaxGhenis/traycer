@@ -16,6 +16,19 @@ export const TILE_KIND_AGENT_BROWSER = "agent-browser";
 const TILE_KIND_WORKSPACE_FILE = "workspace-file";
 export const TILE_KIND_GIT_DIFF = "git-diff";
 export const TILE_KIND_SNAPSHOT_DIFF = "snapshot-diff";
+// A read-only window on one managed command's log timeline ("Monitors &
+// Shells"). Renderer-local like `terminal`: the tile points at a command the
+// host owns, it does not carry one.
+export const TILE_KIND_MANAGED_COMMAND_OUTPUT = "managed-command-output";
+/**
+ * The per-epic communication graph. Epic-scoped rather than host-scoped: the
+ * tile itself fans in one `epic.communicationGraph.subscribe` per host the
+ * epic's agents live on, so it carries no host binding (see
+ * `CommGraphTileRef`).
+ */
+export const TILE_KIND_COMM_GRAPH = "comm-graph";
+export const TILE_KIND_PR_DETAIL = "pr-detail";
+export const TILE_KIND_PR_DIFF = "pr-diff";
 // A "blank" tab: a real strip tab whose body renders the inline opener until
 // content is picked (which replaces it in place).
 export const TILE_KIND_BLANK = "blank";
@@ -34,6 +47,10 @@ export type TileKindId =
   | typeof TILE_KIND_WORKSPACE_FILE
   | typeof TILE_KIND_GIT_DIFF
   | typeof TILE_KIND_SNAPSHOT_DIFF
+  | typeof TILE_KIND_MANAGED_COMMAND_OUTPUT
+  | typeof TILE_KIND_COMM_GRAPH
+  | typeof TILE_KIND_PR_DETAIL
+  | typeof TILE_KIND_PR_DIFF
   | typeof TILE_KIND_BLANK;
 
 export const isTileKind = makeLiteralGuard<TileKindId>({
@@ -50,5 +67,9 @@ export const isTileKind = makeLiteralGuard<TileKindId>({
   [TILE_KIND_WORKSPACE_FILE]: true,
   [TILE_KIND_GIT_DIFF]: true,
   [TILE_KIND_SNAPSHOT_DIFF]: true,
+  [TILE_KIND_MANAGED_COMMAND_OUTPUT]: true,
+  [TILE_KIND_COMM_GRAPH]: true,
+  [TILE_KIND_PR_DETAIL]: true,
+  [TILE_KIND_PR_DIFF]: true,
   [TILE_KIND_BLANK]: true,
 });

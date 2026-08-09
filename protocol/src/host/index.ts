@@ -7,8 +7,11 @@ export * from "./git-contracts";
 export * from "./git-constants";
 export * from "./git-schemas";
 export * from "./lifecycle";
+export * from "./managed-command";
 export * from "./migration";
 export * from "./notifications";
+export * from "./pr-contracts";
+export * from "./pr-schemas";
 export * from "./rate-limit";
 export * from "./released-floor";
 export * from "./runtime-capabilities";
@@ -48,13 +51,17 @@ export {
   worktreeListByWorkspacePathsV11,
   worktreeListByWorkspacePathsV12,
   worktreeListByWorkspacePathsV13,
+  worktreeListByWorkspacePathsV14,
   worktreeListByWorkspacePathsUpgradeV10ToV11,
+  workspacePrepareFoldersUpgradeV10ToV11,
   worktreeListByWorkspacePathsUpgradeV11ToV12,
   worktreeListByWorkspacePathsUpgradeV12ToV13,
+  worktreeListByWorkspacePathsUpgradeV13ToV14,
   worktreeRetrySetupV10,
   workspaceBindingRemoveEntryV10,
   worktreeSetEntryModeV10,
   worktreeSetRepoScriptsV10,
+  worktreeSetRepoBranchPrefixV10,
   worktreeGetBindingV10,
   type HostRpcRegistry,
   type HostStreamRpcRegistry,
@@ -117,6 +124,9 @@ export {
   worktreeListByWorkspacePathsResponseSchemaV12,
   worktreeListByWorkspacePathsRequestSchemaV13,
   worktreeListByWorkspacePathsResponseSchemaV13,
+  worktreeListByWorkspacePathsRequestSchemaV14,
+  worktreeListByWorkspacePathsResponseSchemaV14,
+  repoBranchPrefixStateSchema,
   worktreeScriptRefSchema,
   worktreeScriptsAtRefSchema,
   worktreeBindingSelectorDisabledReasonSchema,
@@ -132,11 +142,14 @@ export {
   worktreeSetEntryModeResponseSchema,
   worktreeSetRepoScriptsRequestSchema,
   worktreeSetRepoScriptsResponseSchema,
+  worktreeSetRepoBranchPrefixRequestSchema,
+  worktreeSetRepoBranchPrefixResponseSchema,
   worktreeGetBindingRequestSchema,
   worktreeGetBindingResponseSchema,
   worktreeSetupStateSchema,
   worktreeWorkspaceSummarySchema,
   worktreeWorkspaceSummarySchemaV13,
+  worktreeWorkspaceSummarySchemaV14,
   type DiskWorktreeEntry,
   type OsScript,
   type WorkspaceScripts,
@@ -193,6 +206,9 @@ export {
   type WorktreeListByWorkspacePathsResponseV12,
   type WorktreeListByWorkspacePathsRequestV13,
   type WorktreeListByWorkspacePathsResponseV13,
+  type WorktreeListByWorkspacePathsRequestV14,
+  type WorktreeListByWorkspacePathsResponseV14,
+  type RepoBranchPrefixState,
   type WorktreeScriptRef,
   type WorktreeScriptsAtRef,
   type WorktreeBindingSelectorDisabledReason,
@@ -208,11 +224,14 @@ export {
   type WorktreeSetEntryModeResponse,
   type WorktreeSetRepoScriptsRequest,
   type WorktreeSetRepoScriptsResponse,
+  type WorktreeSetRepoBranchPrefixRequest,
+  type WorktreeSetRepoBranchPrefixResponse,
   type WorktreeGetBindingRequest,
   type WorktreeGetBindingResponse,
   type WorktreeSetupState,
   type WorktreeWorkspaceSummary,
   type WorktreeWorkspaceSummaryV13,
+  type WorktreeWorkspaceSummaryV14,
 } from "./worktree-schemas";
 
 export {

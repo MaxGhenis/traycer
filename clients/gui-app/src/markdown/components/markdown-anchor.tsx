@@ -33,6 +33,10 @@ interface MarkdownAnchorProps {
  *   the runner host;
  * - file links (bare paths, rooted paths, Windows drives, `file://` URIs) are
  *   handed to the surface's `MarkdownLinkContext` policy.
+ *
+ * A BLANK href never reaches the DOM ({@link navigableHref}): `<a href="">`
+ * resolves to the current document, so a click on one navigates for real and
+ * unloads the app - the same crash, reached without any scheme we could route.
  */
 export function MarkdownAnchor({
   href,
@@ -47,13 +51,21 @@ export function MarkdownAnchor({
   const reportIssueAvailable = useDesktopDialogStore(
     (state) => state.reportIssueAvailable,
   );
+  // `defaultUrlTransform` empties every href it rejects, and an empty href is
+  // not inert - it points at the current document, so the browser treats a
+  // click as a real navigation and the whole renderer reloads. Drop the
+  // attribute instead, the way the sanitize layer already does for a rejected
+  // scheme: an anchor with no href has nothing to navigate to, whatever the
+  // event (click, keyboard, middle-click).
+  const navigableHref =
+    href === undefined || href.trim().length === 0 ? undefined : href;
   const routeLinkClick = useCallback(
     (event: MouseEvent<HTMLAnchorElement>): void => {
       // Same-document anchors should keep native browser hash scrolling.
       // Links that leave the current surface are routed explicitly below.
-      if (href === undefined) return;
+      if (navigableHref === undefined) return;
 
-      const classified = classifyHref(href);
+      const classified = classifyHref(navigableHref);
       if (classified.kind === "default") return;
 
       event.preventDefault();
@@ -100,7 +112,13 @@ export function MarkdownAnchor({
         routeBrowserLink("markdown", classified.url, event);
       }
     },
-    [href, linkPolicy, reportIssueAvailable, routeBrowserLink, runnerHost],
+    [
+      navigableHref,
+      linkPolicy,
+      reportIssueAvailable,
+      routeBrowserLink,
+      runnerHost,
+    ],
   );
 
   // Native `title` ON PURPOSE - see the eslint exemption for this file. This
@@ -109,7 +127,12 @@ export function MarkdownAnchor({
   // app's tooltip surface would restyle author content as UI and strip the
   // attribute off the rendered anchor.
   return (
-    <a href={href} className={className} title={title} onClick={routeLinkClick}>
+    <a
+      href={navigableHref}
+      className={className}
+      title={title}
+      onClick={routeLinkClick}
+    >
       {children}
     </a>
   );

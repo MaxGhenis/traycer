@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useMeasuredElementHeight } from "@/hooks/ui/use-measured-element-height";
 import { useChatMessageActions } from "./use-chat-message-actions";
 import { useChatQueueActions } from "./use-chat-queue-actions";
 import type { ChatForkMode } from "@/components/chat/chat-message";
@@ -23,6 +24,7 @@ import type {
 import type { TokenUsage } from "@traycer/protocol/persistence/epic/foundation";
 import type {
   BackgroundItem,
+  ChatQueuedPromptItem,
   ChatRunSettings,
 } from "@traycer/protocol/host/agent/gui/subscribe";
 import type { WorktreeBinding } from "@traycer/protocol/host/worktree-schemas";
@@ -59,10 +61,6 @@ import { SteerSettingsConflictDialog } from "@/components/chat/segments/steer-se
 import { accumulatedFileChangesFromMessages } from "@/lib/chat/accumulated-file-changes-from-messages";
 import type { ChatRestoreContextValue } from "@/components/chat/chat-restore-context-core";
 import { buildPinnedTodoRenderState } from "@/components/chat/chat-pinned-todos";
-import {
-  buildChatUserMessageMinimapItems,
-  type ChatUserMinimapItem,
-} from "@/components/chat/chat-user-message-minimap-items";
 import type { ChatMessageActions } from "@/components/chat/chat-message";
 import type { NextStepActionHandler } from "@/components/chat/segments/next-steps-action-group";
 import type { ChatComposerSubmitInput } from "@/components/chat/composer/chat-composer";
@@ -88,6 +86,7 @@ import type {
   ChatSessionState,
   ChatSessionStoreHandle,
 } from "@/stores/chats/chat-session-store";
+import { useChatTranscriptJumpStore } from "@/stores/chats/chat-transcript-jump-store";
 import { useSubagentOpenStore } from "@/stores/chats/subagent-open-store";
 import { useToolOpenStore } from "@/stores/chats/tool-open-store";
 import {
@@ -126,7 +125,10 @@ import { useSetupTerminalTabRegisterDriver } from "@/hooks/chats/use-setup-termi
 import { emitChatStreamErrorNotification } from "@/stores/notifications/app-local-notifications-store";
 import { type InitialChatHandoffScope } from "@/stores/epics/initial-chat-handoff-store";
 import { contentBlocksText } from "@/lib/chat/content-block-text";
-import { buildSubmittedChatJSONContent } from "@/lib/composer/tiptap-json-content";
+import {
+  buildSubmittedChatJSONContent,
+  type SlashCommandCatalog,
+} from "@/lib/composer/tiptap-json-content";
 import { buildChatRunSettings } from "@/lib/composer/chat-run-settings";
 import {
   deriveWorktreeBindingWorkspaceAvailability,
@@ -160,7 +162,6 @@ import {
   makeSnapshotSegmentDiffTile,
 } from "@/lib/chat/snapshot-diff-tile";
 import {
-  useActivePaneEffect,
   usePaneFocused,
   usePaneVisible,
 } from "@/components/epic-tabs/pane-visibility-context";
@@ -170,6 +171,7 @@ import {
   useLocalSnapshotClearStore,
 } from "@/stores/settings/local-snapshot-clear-store";
 import { ChatTileErrorNoticeToasts } from "./chat-tile-error-notice-toasts";
+import { ChatTileRestoreResultToasts } from "./chat-tile-restore-result-toasts";
 import { HostWorkspaceSelector } from "@/components/home/host-workspace-selector/host-workspace-selector";
 import type { FatalErrorDetails } from "@traycer/protocol/framework/ws-protocol";
 import type { TraycerNextStepOption } from "@/markdown/traycer-next-steps";
@@ -177,6 +179,7 @@ import { ChatLowerInteractionSurfaces } from "./chat-tile-lower-surfaces";
 import { BrowserSessionDock } from "./browser-session-dock";
 import { BrowserComposerContextChip } from "./browser-composer-context-chip";
 import { useBrowserContextAttachmentHandler } from "./browser-context-attachment-handler";
+import { ManagedCommandChatMenu } from "@/components/managed-commands/managed-command-chat-menu";
 import { composerHasBlockingApprovals } from "./chat-approval-visibility";
 import {
   chatTileUiReducer,
@@ -184,13 +187,13 @@ import {
   normalizeInlineEditForSession,
   canModifyChatMessages,
   shouldGenerateChatTitleForSubmittedMessage,
-  showRestoreResultToast,
   userMessageSenderForProfile,
   plainTextPromptContent,
   composerTurnStatus,
   resolvedTurnStatus,
   chatTileCanAct,
   findPendingInterview,
+  findUnanswerableInterviews,
 } from "./chat-tile-session-state";
 import { ChatTileLoading, ChatTileError } from "./chat-tile-runtime-gate";
 import { SurfaceActivityProvider } from "@/components/home/composer/surface-activity-context";
@@ -519,6 +522,57 @@ function messageIdForBlock(
   return owner?.id ?? null;
 }
 
+/**
+ * Resolves a `sent-message` transcript jump: the message holding this chat's
+ * own "Sent message" card for one A2A exchange. Matched on receiver + the
+ * VERBATIM text because those are the only identifiers the send block and the
+ * comm-event row durably share - the sender's block id never reaches the
+ * host's capture (origin refs are receiver-side). When the same text went to
+ * the same receiver more than once, the send whose start time is nearest the
+ * event's capture time wins; both clocks are the same host's.
+ */
+function sentMessageAnchorId(
+  messages: ReadonlyArray<ChatMessageModel>,
+  target: {
+    readonly receiverAgentId: string;
+    readonly messageText: string;
+    readonly timestamp: number;
+  },
+): string | null {
+  const candidates: Array<{
+    readonly messageId: string;
+    readonly distance: number;
+  }> = [];
+  const visit = (messageId: string, node: BackgroundBlockSearchNode): void => {
+    if (
+      "kind" in node &&
+      node.kind === "tool" &&
+      node.agentMessageSend !== null &&
+      node.agentMessageSend.receiverAgentId === target.receiverAgentId &&
+      node.agentMessageSend.message === target.messageText
+    ) {
+      candidates.push({
+        messageId,
+        distance: Math.abs(node.startedAt - target.timestamp),
+      });
+    }
+    for (const child of backgroundBlockSearchChildren(node)) {
+      visit(messageId, child);
+    }
+  };
+  for (const message of messages) {
+    for (const segment of message.segments) {
+      visit(message.id, segment);
+    }
+  }
+  let best: { readonly messageId: string; readonly distance: number } | null =
+    null;
+  for (const candidate of candidates) {
+    if (best === null || candidate.distance < best.distance) best = candidate;
+  }
+  return best?.messageId ?? null;
+}
+
 interface BackgroundClickTarget {
   readonly blockId: string;
   readonly card: ChatScrollCardKind;
@@ -565,6 +619,28 @@ function resolveBackgroundClickTarget(
   };
 }
 
+/**
+ * How long a parked cross-tile transcript jump waits for its target row to
+ * stream in before it is dropped. Generous enough to cover a cold tile pulling
+ * a large transcript, short enough that a stale request cannot fire minutes
+ * later and yank the reader somewhere they no longer expect.
+ */
+const TRANSCRIPT_JUMP_TTL_MS = 30_000;
+
+/**
+ * Which open-store a cross-tile block jump should expand. A block that names a
+ * live background item follows that item's card kind; anything else (a settled
+ * tool card - the usual shape for a file-write anchor) opens as a tool card.
+ */
+function transcriptJumpCardKind(
+  blockId: string,
+  backgroundItems: ReadonlyArray<BackgroundItem>,
+): ChatScrollCardKind {
+  const item = backgroundItems.find((entry) => entry.blockId === blockId);
+  if (item === undefined) return "tool";
+  return backgroundItemCardKind(item.kind);
+}
+
 function ChatTileSessionView(props: ChatTileSessionViewProps) {
   const view = useChatTileSessionViewModel(props);
   const hostId = useTabHostId();
@@ -573,6 +649,19 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
   const [backgroundScrollRequest, setBackgroundScrollRequest] =
     useState<ChatMessageScrollRequest | null>(null);
   const backgroundScrollRequestIdRef = useRef(0);
+  // The composer + queue/pinned/agents/background dock now overlays the
+  // transcript (decision log #3, #13) instead of pushing it via flex height,
+  // so its reply stream can flow visually behind it. Measuring the whole
+  // overlay as one unit (rather than composer/queued-surface separately) is
+  // a deliberate ticket-3 scope narrowing - see ticket-3 report for the
+  // follow-up split. `useMeasuredElementHeight` (review finding: extracted so
+  // this measurement -> prop contract is directly testable, ticket 18 rider)
+  // owns the ResizeObserver plumbing.
+  const {
+    setElement: setLowerSurfacesElement,
+    element: lowerSurfacesElement,
+    height: lowerSurfacesHeight,
+  } = useMeasuredElementHeight();
   // Shared transcript jump: resolve the owning message, expand the card via its
   // open-store, and bump the scroll request the messages surface watches. Both
   // the Background panel rows and the autonomous-resume marker route through
@@ -609,6 +698,97 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
     },
     [scrollToBlock, view.lower.backgroundItems],
   );
+  // Anchor on a message rather than on a card. The transcript's scroll request
+  // wants a message id either way; `blockId: null` says "there is no card to
+  // expand here", which is the shape a delivered A2A message has.
+  const scrollToMessage = useCallback((messageId: string): void => {
+    backgroundScrollRequestIdRef.current += 1;
+    setBackgroundScrollRequest({
+      messageId,
+      blockId: null,
+      requestId: backgroundScrollRequestIdRef.current,
+    });
+  }, []);
+  // Cross-tile transcript jumps (today: the communication-graph timeline).
+  // Parked in a store rather than called directly because the jump is issued
+  // from another tile, possibly before this one exists - `openTileInEpic`
+  // mounts it and the request is waiting here when it renders.
+  const transcriptJump = useChatTranscriptJumpStore(
+    (s) => s.requestsByChatId[props.node.id],
+  );
+  const consumeTranscriptJump = useChatTranscriptJumpStore(
+    (s) => s.consumeJump,
+  );
+  // HOLD UNTIL THE TARGET RESOLVES, not merely until the snapshot loaded. The
+  // chat transcript streams independently of the graph stream, so a warm tile
+  // routinely learns about a message from the timeline BEFORE its own stream
+  // delivers the row. Installing the scroll request then would burn it: the
+  // transcript marks the request handled and only afterwards discovers it has
+  // no index entry for that message, and the row arrives to find nothing
+  // parked. So the request stays in the store until the row is actually
+  // present; `view.messages` changing re-runs this, which is the retry.
+  useEffect(() => {
+    if (transcriptJump === undefined) return;
+    if (!view.snapshotLoaded) return;
+    const target = transcriptJump.target;
+    const resolveTargetMessageId = (): string | null => {
+      if (target.kind === "message") {
+        return (
+          view.messages.find((message) => message.id === target.messageId)
+            ?.id ?? null
+        );
+      }
+      if (target.kind === "sent-message") {
+        return sentMessageAnchorId(view.messages, target);
+      }
+      if (target.kind === "first-message") {
+        return view.messages[0]?.id ?? null;
+      }
+      return messageIdForBlock(view.messages, target.blockId);
+    };
+    const messageId = resolveTargetMessageId();
+    if (messageId === null) return;
+    if (target.kind === "block") {
+      scrollToBlock(
+        target.blockId,
+        transcriptJumpCardKind(
+          target.blockId,
+          view.lower.backgroundItems ?? [],
+        ),
+      );
+    } else {
+      // Both a delivered-message anchor and a resolved sent-message anchor
+      // land the same way: scroll to the owning row, no card to expand.
+      scrollToMessage(messageId);
+    }
+    consumeTranscriptJump(props.node.id, transcriptJump.requestId);
+  }, [
+    consumeTranscriptJump,
+    props.node.id,
+    scrollToBlock,
+    scrollToMessage,
+    transcriptJump,
+    view.lower.backgroundItems,
+    view.messages,
+    view.snapshotLoaded,
+  ]);
+  // ...but a target that never arrives must not wait forever. One timer per
+  // request id (transcript churn does not restart it): if the row has not shown
+  // up by then the request is dropped QUIETLY. A jump that cannot land is not
+  // an error worth interrupting the user over - the tile is open on the right
+  // agent either way, which is the degrade this feature already accepts for
+  // anchor-less rows.
+  const pendingTranscriptJumpId = transcriptJump?.requestId ?? null;
+  useEffect(() => {
+    if (pendingTranscriptJumpId === null) return;
+    const chatId = props.node.id;
+    const timer = setTimeout(() => {
+      consumeTranscriptJump(chatId, pendingTranscriptJumpId);
+    }, TRANSCRIPT_JUMP_TTL_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [consumeTranscriptJump, pendingTranscriptJumpId, props.node.id]);
   // Canvas-owned implementation of the chat file-change click contract. The
   // chat components receive only inert row handlers; they do not know about
   // canvas stores, tab ids, or tile factories.
@@ -679,62 +859,93 @@ function ChatTileSessionView(props: ChatTileSessionViewProps) {
           data-active={props.isActive ? "true" : "false"}
           className="flex h-full min-h-0 flex-col"
         >
-          <ChatSessionMessagesSurface
-            snapshotLoaded={view.snapshotLoaded}
-            fatalClose={view.fatalClose}
-            onRetry={view.onChatRetry}
-            restoreContext={view.restoreContext}
-            node={view.node}
-            epicId={view.currentEpicId}
-            viewTabId={view.viewTabId}
-            tabHostId={view.tabHostId}
-            workspaceRoots={view.linkResolutionRoots}
-            messages={view.messages}
-            backgroundItems={view.lower.backgroundItems}
-            minimapItems={view.minimapItems}
-            scrollRequest={backgroundScrollRequest}
-            surfaceVisible={view.surfaceVisible}
-            systemOverlayActive={systemOverlayActive}
-            getMessageActions={view.getMessageActions}
-            nextStepActions={view.nextStepActions}
-            planActions={view.planActions}
-          />
+          {/* A flex CONTAINER (not just an item): ChatSessionMessagesSurface's
+           * transcript root relies on `flex-1` from ITS immediate parent to
+           * get a definite height (h-full on LegendList needs a real
+           * containing block all the way up). The overlay dock below is
+           * absolutely positioned, so it does not participate in this flex
+           * layout regardless. */}
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            <ChatSessionMessagesSurface
+              snapshotLoaded={view.snapshotLoaded}
+              fatalClose={view.fatalClose}
+              onRetry={view.onChatRetry}
+              restoreContext={view.restoreContext}
+              node={view.node}
+              epicId={view.currentEpicId}
+              viewTabId={view.viewTabId}
+              tabHostId={view.tabHostId}
+              workspaceRoots={view.linkResolutionRoots}
+              messages={view.messages}
+              backgroundItems={view.lower.backgroundItems}
+              scrollRequest={backgroundScrollRequest}
+              surfaceVisible={view.surfaceVisible}
+              systemOverlayActive={systemOverlayActive}
+              getMessageActions={view.getMessageActions}
+              nextStepActions={view.nextStepActions}
+              planActions={view.planActions}
+              composerOverlayHeight={
+                lowerSurfacesElement === null ? 0 : lowerSurfacesHeight
+              }
+            />
+            {/*
+             * SurfaceActivityProvider narrows catalog/provider query subscriptions
+             * to the one focused pane+tab. A visible split partner keeps rendering
+             * its transcript and scroll state, but releases catalog/provider query
+             * observers and cannot own palette/composer-global work.
+             *
+             * Absolutely overlays the transcript (decision log #3) instead of
+             * pushing its height via flex, so streamed replies flow visually
+             * behind it; `lowerSurfacesHeight` (measured here) feeds the
+             * transcript's bottom content inset. The full-width positioning
+             * layer must remain both pointer- and paint-transparent so it
+             * cannot cover the transcript scrollbar or its edge lanes.
+             * Centered lower surfaces opt back into pointer handling and own
+             * their opaque backplates (including the bottom seam seal), so
+             * transcript content cannot show through the actual chrome.
+             */}
+            {view.snapshotLoaded ? (
+              <div
+                ref={setLowerSurfacesElement}
+                className="pointer-events-none absolute inset-x-0 bottom-0 z-10"
+                data-chat-lower-surfaces-overlay=""
+              >
+                <div className="pointer-events-none">
+                  <SurfaceActivityProvider active={view.surfaceFocused}>
+                    <ChatLowerInteractionSurfaces
+                      epicId={view.currentEpicId}
+                      viewTabId={view.viewTabId}
+                      chatId={view.node.id}
+                      runtime={view.lower.runtime}
+                      access={view.lower.access}
+                      turn={view.lower.turn}
+                      interview={view.lower.interview}
+                      approvals={view.lower.approvals}
+                      queue={view.lower.queue}
+                      composer={view.lower.composer}
+                      todo={view.todo}
+                      restoreContext={view.restoreContext}
+                      backgroundItems={view.lower.backgroundItems}
+                      backgroundStopPendingTaskIds={
+                        view.lower.backgroundStopPendingTaskIds
+                      }
+                      backgroundStopAllPending={
+                        view.lower.backgroundStopAllPending
+                      }
+                      onBackgroundItemClick={scrollToBackgroundItem}
+                    />
+                  </SurfaceActivityProvider>
+                </div>
+              </div>
+            ) : null}
+          </div>
           <ChatTileErrorNoticeToasts handle={view.handle} />
           <BrowserSessionDock
             chatId={view.node.id}
             viewTabId={view.viewTabId}
             paneId={view.tileId}
           />
-          {/*
-           * SurfaceActivityProvider narrows catalog/provider query subscriptions
-           * to the one focused pane+tab. A visible split partner keeps rendering
-           * its transcript and scroll state, but releases catalog/provider query
-           * observers and cannot own palette/composer-global work.
-           */}
-          {view.snapshotLoaded ? (
-            <SurfaceActivityProvider active={view.surfaceFocused}>
-              <ChatLowerInteractionSurfaces
-                epicId={view.currentEpicId}
-                viewTabId={view.viewTabId}
-                chatId={view.node.id}
-                runtime={view.lower.runtime}
-                access={view.lower.access}
-                turn={view.lower.turn}
-                interview={view.lower.interview}
-                approvals={view.lower.approvals}
-                queue={view.lower.queue}
-                composer={view.lower.composer}
-                todo={view.todo}
-                restoreContext={view.restoreContext}
-                backgroundItems={view.lower.backgroundItems}
-                backgroundStopPendingTaskIds={
-                  view.lower.backgroundStopPendingTaskIds
-                }
-                backgroundStopAllPending={view.lower.backgroundStopAllPending}
-                onBackgroundItemClick={scrollToBackgroundItem}
-              />
-            </SurfaceActivityProvider>
-          ) : null}
+          <ChatTileRestoreResultToasts handle={view.handle} />
           <RevertOnEditDialog
             open={view.revertOnEdit.open}
             onOpenChange={view.revertOnEdit.onOpenChange}
@@ -813,7 +1024,6 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
   const defaultServiceTier = useSettingsStore(
     (state) => state.defaultServiceTier,
   );
-  const defaultAgentMode = useSettingsStore((state) => state.defaultAgentMode);
   const defaultRunSettings = useMemo(
     () =>
       buildChatRunSettings({
@@ -821,15 +1031,8 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
         permission: defaultPermission,
         reasoning: defaultReasoning,
         serviceTier: defaultServiceTier,
-        agentMode: defaultAgentMode,
       }),
-    [
-      defaultAgentMode,
-      defaultPermission,
-      defaultReasoning,
-      defaultServiceTier,
-      defaultSelection,
-    ],
+    [defaultPermission, defaultReasoning, defaultServiceTier, defaultSelection],
   );
   const profile = useAuthStore((state) => state.profile);
   const activeHostId = useTabHostId();
@@ -1081,9 +1284,15 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     },
     renderedDisplayContext,
   );
+  // Only a prompt item can be loaded into the composer for editing, so narrow
+  // here rather than at each consumer: this feeds the composer's settings seed
+  // and its remount key, neither of which a content-free managed-command item
+  // could supply.
   const editingQueueItem =
     state.queue.items.find(
-      (item) => item.queueItemId === uiState.editingQueueItemId,
+      (item): item is ChatQueuedPromptItem =>
+        item.kind === "prompt" &&
+        item.queueItemId === uiState.editingQueueItemId,
     ) ?? null;
   const activeEditingQueueItemId = editingQueueItem?.queueItemId ?? null;
   const chatSettingsSeed = state.chat?.settings ?? null;
@@ -1237,6 +1446,47 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
   );
   const nextStepSettings = currentComposerSettings;
   const editSettings = nextStepSettings;
+  // The tile's own send paths - next steps, compact, inline edit - never touch
+  // the composer, so they cannot read the catalog off its picker store. Subscribe
+  // to the same query under the SAME `surfaceFocused` predicate the composer uses
+  // (`chatComposerFocused` → `chatTileCatalogActivity`): identical gating means an
+  // off-screen tile still adds no `agent.gui.listCommands` subscription, and when
+  // both are on, TanStack Query dedupes the two subscribers into one fetch.
+  const tabHostClient = useTabHostClient();
+  const {
+    data: slashCommands,
+    isLoading: slashCommandsLoading,
+    error: slashCommandsError,
+  } = useSlashCommands("", {
+    hostClient: tabHostClient,
+    harnessId: currentComposerSettings.harnessId,
+    // `resolvedComposerMentionRoots`, not the raw roots, for the same reason the
+    // context-usage chip above uses it: on a folder-fallback chat the two differ,
+    // and the raw set opens a SECOND, narrower cache entry - losing the dedupe
+    // and resolving against a catalog the composer never saw.
+    workingDirectories: resolvedComposerMentionRoots,
+    enabled: surfaceFocused,
+  });
+  // Null until loaded, which makes a `$` prompt stay plain text rather than
+  // chip against a catalog we have not seen yet.
+  // `error` is part of the gate, not a detail. A failed `listCommands` leaves
+  // TanStack at `isLoading === false` with `data === []`, which would otherwise
+  // read as a legitimately EMPTY catalog - "loaded, this workspace has no
+  // commands" - and chip nothing while looking resolved. An unanswered query is
+  // unresolved, not empty. The `$` then stays prose, which the host still
+  // resolves lexically; the cost is the pill, never the skill.
+  const slashCatalog = useMemo<SlashCommandCatalog | null>(
+    () =>
+      surfaceFocused && !slashCommandsLoading && slashCommandsError === null
+        ? new Map(
+            slashCommands.map((command) => [
+              command.name.toLowerCase(),
+              command,
+            ]),
+          )
+        : null,
+    [surfaceFocused, slashCommands, slashCommandsLoading, slashCommandsError],
+  );
   const canModifyMessages = canModifyChatMessages({ canAct, state });
   const activeInlineEdit = normalizeInlineEditForSession(
     uiState.inlineEdit,
@@ -1260,13 +1510,6 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
   const pinnedTodoRenderState = useMemo(
     () => buildPinnedTodoRenderState(displayedMessages),
     [displayedMessages],
-  );
-  // Minimap rail entries mirror the user rows Virtuoso renders; ids are the
-  // rendered row ids (including queue-steer rows), so minimap clicks resolve
-  // directly against the list.
-  const minimapItems = useMemo(
-    () => buildChatUserMessageMinimapItems(pinnedTodoRenderState.messages),
-    [pinnedTodoRenderState.messages],
   );
   const hostPendingInterviewIds = useMemo(
     () =>
@@ -1302,11 +1545,16 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
   const interviewBusy =
     pendingInterview !== null &&
     interviewActionBlockIds.has(pendingInterview.blockId);
-  const showCompletedRestoreToast = useCallback(() => {
-    if (state.restore === null || state.restore.kind !== "completed") return;
-    showRestoreResultToast(state.restore.results);
-  }, [state.restore]);
-  useActivePaneEffect(showCompletedRestoreToast);
+  // Host-pending blocks this transcript renders no card for. Yields a stable
+  // empty array whenever nothing is stuck, so the composer memo chain below
+  // does not churn per streaming token.
+  const unanswerableInterviews = useMemo(
+    () => findUnanswerableInterviews(renderedMessages, state.pendingInterviews),
+    [renderedMessages, state.pendingInterviews],
+  );
+  const unanswerableInterviewsBusy = unanswerableInterviews.some((interview) =>
+    interviewActionBlockIds.has(interview.blockId),
+  );
   // All pending approvals route to the composer slot - single or many
   // share one canonical surface. Inline rendering for pending approvals
   // is suppressed; resolved approvals stay inline as turn history.
@@ -1343,6 +1591,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       canAct,
       currentComposerSettings,
       editSettings,
+      slashCatalog,
       mentionRoots: composerMentionRoots,
       fallbackToGlobalMentionRoots: !isFolderlessWorkspace,
       currentEpicId,
@@ -1447,6 +1696,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       if (sender === null) return false;
       const content = buildSubmittedChatJSONContent(
         plainTextPromptContent(option.prompt),
+        slashCatalog,
       );
       return (
         chatActions.sendMessage({
@@ -1458,7 +1708,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
         }) !== null
       );
     },
-    [canSendNextStep, chatActions, nextStepSettings, profile],
+    [canSendNextStep, chatActions, nextStepSettings, profile, slashCatalog],
   );
   // Runs the harness's own compaction from the context-usage chip. Never
   // interrupts: with a turn running (or work already queued) the compact
@@ -1500,6 +1750,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       if (sender === null) return;
       const content = buildSubmittedChatJSONContent(
         plainTextPromptContent(`/${commandName}`),
+        slashCatalog,
       );
       // A cheap re-entrancy guard against a double-click firing two real
       // compactions: the optimistic-queue dedupe only suppresses the second
@@ -1538,6 +1789,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       handle.store,
       nextStepSettings,
       profile,
+      slashCatalog,
     ],
   );
   const nextStepActions = useMemo(
@@ -1553,6 +1805,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     if (sender === null) return false;
     const content = buildSubmittedChatJSONContent(
       plainTextPromptContent("Implement the plan above."),
+      slashCatalog,
     );
     return (
       chatActions.sendMessage({
@@ -1563,7 +1816,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
         deliveryPolicy: "auto",
       }) !== null
     );
-  }, [canAct, chatActions, nextStepSettings, profile]);
+  }, [canAct, chatActions, nextStepSettings, profile, slashCatalog]);
   const planActions = useMemo<ChatPlanActionsContextValue>(
     () => ({
       epicId: currentEpicId,
@@ -1704,15 +1957,40 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
   // the context-usage leaf owning its trailing chip and optional full-width
   // pinned strip. Per-folder Environment config lives inside the selected
   // Workspace panel.
+  //
+  // The monitors menu rides the leading cell rather than becoming a third grid
+  // column: the usage chip's pinned strip spans the row via `col-span-full`,
+  // which only works while it is a direct child of `ComposerWorkspaceRow`'s
+  // two-column grid. `justify-between` parks the menu at that cell's trailing
+  // edge, so it reads as the chip's left-hand neighbour, and the selector -
+  // the only shrinkable thing here - gives up width first.
   const workspaceControls = useMemo(
     () => (
       <>
-        <div className="min-w-0 overflow-hidden">{hostWorkspaceSelector}</div>
-        {browserContextChip}
+        <div className="flex min-w-0 items-center justify-between gap-2 overflow-hidden">
+          {hostWorkspaceSelector}
+          <div className="flex shrink-0 items-center gap-2">
+            {browserContextChip}
+            <ManagedCommandChatMenu
+              epicId={currentEpicId}
+              chatId={node.id}
+              hostId={activeHostId}
+              viewTabId={viewTabId}
+            />
+          </div>
+        </div>
         {usageChip}
       </>
     ),
-    [browserContextChip, hostWorkspaceSelector, usageChip],
+    [
+      hostWorkspaceSelector,
+      usageChip,
+      browserContextChip,
+      currentEpicId,
+      node.id,
+      activeHostId,
+      viewTabId,
+    ],
   );
 
   const lowerRuntime = useMemo(
@@ -1781,6 +2059,8 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     () => ({
       pending: pendingInterview,
       isBusy: interviewBusy,
+      unanswerable: unanswerableInterviews,
+      unanswerableBusy: unanswerableInterviewsBusy,
       onAnswer: handleInterviewAnswer,
       onError: handleInterviewError,
       onFork: forkFromPendingInterview,
@@ -1788,6 +2068,8 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     [
       pendingInterview,
       interviewBusy,
+      unanswerableInterviews,
+      unanswerableInterviewsBusy,
       handleInterviewAnswer,
       handleInterviewError,
       forkFromPendingInterview,
@@ -1896,7 +2178,6 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     onChatRetry: () => handle.store.getState().retry(),
     restoreContext,
     messages: pinnedTodoRenderState.messages,
-    minimapItems,
     surfaceVisible,
     surfaceFocused,
     getMessageActions: messageActionsFor,
@@ -1940,7 +2221,6 @@ interface ChatSessionMessagesSurfaceProps {
   readonly workspaceRoots: ReadonlyArray<string>;
   readonly messages: ReadonlyArray<ChatMessageModel>;
   readonly backgroundItems: ReadonlyArray<BackgroundItem> | undefined;
-  readonly minimapItems: ReadonlyArray<ChatUserMinimapItem>;
   readonly scrollRequest: ChatMessageScrollRequest | null;
   readonly surfaceVisible: boolean;
   readonly systemOverlayActive: boolean;
@@ -1949,6 +2229,8 @@ interface ChatSessionMessagesSurfaceProps {
   ) => ChatMessageActions | null;
   readonly nextStepActions: NextStepActionHandler;
   readonly planActions: ChatPlanActionsContextValue;
+  /** Measured height of the overlaid composer/queue/pinned/agents dock. */
+  readonly composerOverlayHeight: number;
 }
 
 /**
@@ -2054,16 +2336,17 @@ function ChatSessionMessagesSurface(
             <ChatMessages
               taskTitle={props.node.name}
               taskId={props.node.id}
+              epicId={props.epicId}
+              hostId={props.tabHostId}
               messages={props.messages}
               backgroundItems={props.backgroundItems}
-              minimapItems={props.minimapItems}
               scrollRequest={props.scrollRequest}
-              scrollStateKey={props.node.instanceId}
               getMessageActions={props.getMessageActions}
               nextStepActions={props.nextStepActions}
               instanceId={props.node.instanceId}
               visible={props.surfaceVisible}
               systemOverlayActive={props.systemOverlayActive}
+              composerOverlayHeight={props.composerOverlayHeight}
             />
           </ChatMarkdownLinkProvider>
         </WorkingVerbContext.Provider>

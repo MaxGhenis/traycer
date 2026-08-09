@@ -1,5 +1,3 @@
-import "../../../../__tests__/test-browser-apis";
-
 const useHostNotificationIndicatorsMock = vi.hoisted(() =>
   vi.fn(() => ({
     data: { epics: {}, chats: {} },
@@ -19,14 +17,15 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import {
   publishAgentActivity,
-  resetAgentActivityPresence,
-} from "@/__tests__/agent-activity-presence-harness";
+  resetAgentActivity,
+} from "@/__tests__/agent-activity-harness";
 import { TabStrip } from "@/components/epic-canvas/canvas/tab-strip";
 import { __getOpenEpicRegistryForTests } from "@/lib/registries/epic-session-registry";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
@@ -40,6 +39,7 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 vi.mock("@/lib/host", () => ({
+  useHostBinding: () => null,
   useAuthService: () => ({
     revalidateCurrentContext: () => Promise.resolve({ kind: "valid" as const }),
   }),
@@ -56,8 +56,12 @@ vi.mock("@/lib/host/use-durable-stream-transport", () => ({
   useDurableStreamTransportFactory: () => openTransportStub,
 }));
 
+// `null` support is "still negotiating", which keeps the notification feed -
+// and therefore the tab's indicator derivation - on the local host path these
+// tests already stub.
 vi.mock("@/lib/host/stream-runtime-context", () => ({
   useWsStreamClient: () => null,
+  useStreamMethodSupport: () => null,
 }));
 
 vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
@@ -189,6 +193,16 @@ function markChatWorking(): void {
   ]);
 }
 
+function setChatArchived(archivedAt: number | null): void {
+  const handle = __getOpenEpicRegistryForTests().get(EPIC_ID);
+  if (handle === null) throw new Error("expected open epic handle");
+  const chats: unknown = handle.doc.getMap("epic").get("chats");
+  if (!(chats instanceof Y.Map)) throw new Error("expected chats map");
+  const chat: unknown = chats.get(CHAT_ID);
+  if (!(chat instanceof Y.Map)) throw new Error("expected chat map");
+  chat.set("archivedAt", archivedAt);
+}
+
 describe("TabStrip title", () => {
   beforeEach(() => {
     queryClient = new QueryClient({
@@ -210,7 +224,7 @@ describe("TabStrip title", () => {
   afterEach(() => {
     cleanup();
     queryClient.clear();
-    resetAgentActivityPresence();
+    resetAgentActivity();
     harness.teardown();
     useEpicCanvasStore.getState().clearAllTitleGenerationPending();
   });
@@ -245,6 +259,37 @@ describe("TabStrip title", () => {
 
     expect(tab.getAttribute("data-slot")).not.toBe("tooltip-trigger");
     expect(title.getAttribute("data-slot")).toBe("tooltip-trigger");
+  });
+
+  it("keeps an archived chat tab open with a faded icon and archive title prefix", async () => {
+    renderTabStrip(TAB, true);
+    await flushEpicSnapshot();
+
+    const title = screen.getByTestId(`tab-title-${TAB.instanceId}`);
+    expect(within(title).queryByText("Archived")).toBeNull();
+
+    act(() => {
+      setChatArchived(123);
+    });
+
+    await waitFor(() => {
+      expect(within(title).getByText("Archived")).toBeTruthy();
+    });
+    const archivedIcon = screen.getByTestId("archived-tab-icon");
+    expect(archivedIcon.className).toContain("opacity-50");
+    expect(within(title).getByText("Archived").className).toContain(
+      "font-semibold",
+    );
+    expect(screen.getByTestId(`tab-item-${TAB.instanceId}`)).toBeTruthy();
+
+    act(() => {
+      setChatArchived(null);
+    });
+
+    await waitFor(() => {
+      expect(within(title).queryByText("Archived")).toBeNull();
+    });
+    expect(screen.getByTestId(`tab-item-${TAB.instanceId}`)).toBeTruthy();
   });
 
   it("shows a spinner while chat title generation is pending", async () => {

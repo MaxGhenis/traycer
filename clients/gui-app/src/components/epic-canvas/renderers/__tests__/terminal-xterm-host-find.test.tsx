@@ -1,4 +1,3 @@
-import "../../../../../__tests__/test-browser-apis";
 import { act, StrictMode, useState } from "react";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
@@ -30,6 +29,7 @@ import {
   focusTerminalInstance,
   resetTerminalFocusRegistryForTests,
 } from "@/lib/terminals/terminal-focus-registry";
+import { PaneActivationFocusIntentContext } from "@/components/epic-canvas/pane-activation";
 
 type Disposable = {
   readonly dispose: () => void;
@@ -284,6 +284,7 @@ function ScopedTerminalHost(props: ScopedTerminalHostProps) {
         findTargetId={findTargetId}
         keepAlive={props.keepAlive}
         chrome="padded"
+        onTerminalReady={null}
       />
     </TileFindScope>
   );
@@ -387,6 +388,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId={null}
         keepAlive
         chrome="flush"
+        onTerminalReady={null}
       />,
     );
 
@@ -416,6 +418,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
           findTargetId="terminal:test"
           keepAlive={false}
           chrome="padded"
+          onTerminalReady={null}
         />
       </StrictMode>,
     );
@@ -453,6 +456,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId={null}
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
     const entry = __getXtermHostEntryForTests("test-instance");
@@ -483,6 +487,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
       findTargetId: "terminal:test",
       keepAlive: false,
       chrome: "padded",
+      onTerminalReady: null,
     } as const;
 
     const rendered = render(
@@ -535,6 +540,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
               findTargetId="terminal:split-left"
               keepAlive={false}
               chrome="padded"
+              onTerminalReady={null}
             />
           </PaneVisibilityContext>
         </PaneSurfaceActivityContext.Provider>
@@ -556,6 +562,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
               findTargetId="terminal:split-right"
               keepAlive={false}
               chrome="padded"
+              onTerminalReady={null}
             />
           </PaneVisibilityContext>
         </PaneSurfaceActivityContext.Provider>
@@ -594,6 +601,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId="terminal:test"
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 
@@ -632,6 +640,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId="terminal:test"
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 
@@ -1053,6 +1062,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId="terminal:test"
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 
@@ -1082,6 +1092,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId={null}
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 
@@ -1139,6 +1150,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId={null}
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 
@@ -1207,6 +1219,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId={null}
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 
@@ -1266,6 +1279,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
           findTargetId="terminal:test"
           keepAlive={false}
           chrome="padded"
+          onTerminalReady={null}
         />
       </PaneVisibilityContext.Provider>,
     );
@@ -1291,6 +1305,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
           findTargetId="terminal:test"
           keepAlive={false}
           chrome="padded"
+          onTerminalReady={null}
         />
       </PaneVisibilityContext.Provider>,
     );
@@ -1316,6 +1331,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId={null}
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 
@@ -1341,6 +1357,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId={null}
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 
@@ -1364,6 +1381,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId="terminal:test"
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 
@@ -1405,6 +1423,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
             findTargetId={active ? "terminal:test" : null}
             keepAlive={false}
             chrome="padded"
+            onTerminalReady={null}
           />
         </>
       );
@@ -1430,6 +1449,58 @@ describe("<TerminalXtermHost /> terminal find", () => {
     expect(focusOrder).toEqual(["tab", "terminal"]);
   });
 
+  it("does not steal focus from the control that activated the terminal pane", async () => {
+    vi.useFakeTimers();
+    const shouldYieldAutoFocus = vi.fn(() => true);
+
+    function ActivationHarness() {
+      const [active, setActive] = useState(false);
+      return (
+        <PaneActivationFocusIntentContext.Provider
+          value={{
+            mark: () => undefined,
+            shouldYieldAutoFocus,
+          }}
+        >
+          <button type="button" onClick={() => setActive(true)}>
+            Open terminal control
+          </button>
+          <TerminalXtermHost
+            sessionId="test-session"
+            tileKind="terminal"
+            instanceId="test-instance"
+            effectiveCols={80}
+            effectiveRows={24}
+            onUserInput={vi.fn()}
+            onContainerResize={vi.fn()}
+            onWriterReady={vi.fn()}
+            shouldFocusOnActivePane={active}
+            registerImperativeFocus
+            findTargetId={active ? "terminal:test" : null}
+            keepAlive={false}
+            chrome="padded"
+            onTerminalReady={null}
+          />
+        </PaneActivationFocusIntentContext.Provider>
+      );
+    }
+
+    render(<ActivationHarness />);
+    const button = screen.getByRole("button", {
+      name: "Open terminal control",
+    });
+    button.focus();
+    fireEvent.click(button);
+
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+
+    expect(shouldYieldAutoFocus).toHaveBeenCalledTimes(1);
+    expect(xtermMocks.terminals[0].focus).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(button);
+  });
+
   it("pastes dropped file paths through xterm's paste path", async () => {
     const onUserInput = vi.fn();
     const screenshotPath =
@@ -1451,6 +1522,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId={null}
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 
@@ -1508,6 +1580,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
           findTargetId={null}
           keepAlive={false}
           chrome="padded"
+          onTerminalReady={null}
         />,
       );
 
@@ -1557,6 +1630,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId={null}
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 
@@ -1603,6 +1677,7 @@ describe("<TerminalXtermHost /> terminal find", () => {
         findTargetId={null}
         keepAlive={false}
         chrome="padded"
+        onTerminalReady={null}
       />,
     );
 

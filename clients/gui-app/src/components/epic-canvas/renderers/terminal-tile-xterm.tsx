@@ -32,10 +32,7 @@ import {
   inactiveCursorStyleFor,
   type TerminalCursorStyle,
 } from "@/stores/settings/settings-store";
-import {
-  DEFAULT_MONO_FONT_STACK,
-  buildFontFamilyValue,
-} from "@/lib/default-font-stacks";
+import { useEffectiveTerminalFont } from "@/hooks/settings/use-effective-terminal-font";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import {
   dataTransferHasFiles,
@@ -56,6 +53,7 @@ import {
   useVisiblePaneEffect,
 } from "@/components/epic-tabs/pane-visibility-context";
 import { markTerminalLoad } from "@/lib/perf/terminal-load-perf";
+import { usePaneActivationFocusIntent } from "@/components/epic-canvas/pane-activation";
 import { registerTerminalFocus } from "@/lib/terminals/terminal-focus-registry";
 import {
   acquireXtermHost,
@@ -100,23 +98,6 @@ interface XtermInitialOptions extends ITerminalOptions {
 const TERMINAL_PATH_ESCAPE_PATTERN = /([\\\s!"#$&'()*;<>?[\]^`{|}])/g;
 const getEmptyFindTargetId = (): string | null => null;
 const ignoreSearchResults = (): void => {};
-
-// xterm measures glyph cell width on a hidden canvas using the configured
-// `fontFamily`, so CSS variables (which don't resolve in that measurement
-// pass) are not usable here. Instead the effective terminal font is built
-// directly from settings-store values against the same default mono stack
-// `theme-provider.tsx` uses for `--traycer-font-mono` - `letterSpacing` /
-// `lineHeight` are pinned on the constructed Terminal so paint and
-// measurement agree.
-function resolveEffectiveFontFamily(
-  terminalFontFamily: string | null,
-  codeFontFamily: string | null,
-): string {
-  return buildFontFamilyValue(
-    terminalFontFamily ?? codeFontFamily,
-    DEFAULT_MONO_FONT_STACK,
-  );
-}
 
 export interface TerminalXtermHostProps {
   /**
@@ -198,6 +179,17 @@ export interface TerminalXtermHostProps {
    * around a rectangle of terminal background.
    */
   readonly chrome: "padded" | "flush";
+  /**
+   * Hands the pane's live `Terminal` to the owner (and `null` on unmount), for
+   * surfaces that must read the engine's own state rather than the session
+   * store's - today the quote control, which needs xterm's selection and buffer
+   * coordinates. `null` opts out; only the epic terminal tile passes one.
+   *
+   * Deliberately narrower than it looks: the engine is shared and cached, so an
+   * owner may READ it and subscribe to its events, but writing to it here would
+   * race the resize/appearance/find hooks below that already own those knobs.
+   */
+  readonly onTerminalReady: ((term: Terminal | null) => void) | null;
 }
 
 export function TerminalXtermHost(props: TerminalXtermHostProps) {
@@ -226,17 +218,14 @@ export function TerminalXtermHost(props: TerminalXtermHostProps) {
   // effects below. These initial options apply on first create only - a
   // reattached engine keeps its already-synced options.
   const theme = useTerminalTheme();
-  const codeFontSize = useSettingsStore((s) => s.codeFontSize);
-  const terminalFontSize = useSettingsStore((s) => s.terminalFontSize);
-  const codeFontFamily = useSettingsStore((s) => s.codeFontFamily);
-  const terminalFontFamily = useSettingsStore((s) => s.terminalFontFamily);
   const cursorStyle = useSettingsStore((s) => s.terminalCursorStyle);
   const cursorBlink = useSettingsStore((s) => s.terminalCursorBlink);
-  const effectiveFontSize = terminalFontSize ?? codeFontSize;
-  const fontFamily = resolveEffectiveFontFamily(
-    terminalFontFamily,
-    codeFontFamily,
-  );
+  // xterm measures glyph cell width on a hidden canvas where CSS variables do
+  // not resolve, so the font is applied as concrete values here; `letterSpacing`
+  // / `lineHeight` are pinned on the constructed Terminal so paint and
+  // measurement agree.
+  const { fontFamily, fontSize: effectiveFontSize } =
+    useEffectiveTerminalFont();
   const runnerHost = useRunnerHost();
   const routeBrowserLink = useBrowserLinkRouterForRunnerHost(runnerHost);
   // Unfocused panes unregister global find ownership. Both split halves stay
@@ -277,6 +266,16 @@ export function TerminalXtermHost(props: TerminalXtermHostProps) {
     cursorBlink,
     allowProposedApi: true,
     scrollback: 5000,
+    // xterm's own slider defaults to a 14px VS Code-width gutter. The app's
+    // scrollbars are 4px (`index.css`), and a terminal tile is routinely docked
+    // beside a chat pane, so the two bars have to agree. Slider colors come
+    // through the ITheme in `terminal-theme.ts`.
+    //
+    // Setting a width is also the only switch that turns xterm's overview ruler
+    // on, which is what finally gives find-in-terminal's `matchOverviewRuler`
+    // color somewhere to paint. The ruler's own left-edge outline is suppressed
+    // via `overviewRulerBorder` in the theme.
+    scrollbar: { width: 4 },
     fontFamily,
     fontSize: effectiveFontSize,
     letterSpacing: 0,
@@ -311,18 +310,21 @@ export function TerminalXtermHost(props: TerminalXtermHostProps) {
   const onContainerResizeRef = useRef(props.onContainerResize);
   const onWriterReadyRef = useRef(props.onWriterReady);
   const routeBrowserLinkRef = useRef(routeBrowserLink);
+  const onTerminalReadyRef = useRef(props.onTerminalReady);
   const keepAliveRef = useRef(props.keepAlive);
   useEffect(() => {
     onUserInputRef.current = props.onUserInput;
     onContainerResizeRef.current = props.onContainerResize;
     onWriterReadyRef.current = props.onWriterReady;
     routeBrowserLinkRef.current = routeBrowserLink;
+    onTerminalReadyRef.current = props.onTerminalReady;
     findTargetIdRef.current = activeFindTargetId;
     keepAliveRef.current = props.keepAlive;
   }, [
     props.onUserInput,
     props.onContainerResize,
     props.onWriterReady,
+    props.onTerminalReady,
     props.keepAlive,
     activeFindTargetId,
     routeBrowserLink,
@@ -382,12 +384,14 @@ export function TerminalXtermHost(props: TerminalXtermHostProps) {
     // reattach (same proxy, already-drained queue); on a fresh plain-terminal
     // open it triggers the buffered-snapshot flush.
     onWriterReadyRef.current(entry.writerProxy);
+    onTerminalReadyRef.current?.(entry.term);
     markTerminalLoad(sessionId, "writer-ready");
 
     return () => {
       if (entry.containerEl.parentElement === mount) {
         mount.removeChild(entry.containerEl);
       }
+      onTerminalReadyRef.current?.(null);
       termRef.current = null;
       searchAddonRef.current = null;
       tileFindAdapterRef.current.setSearchAddon(null);
@@ -1292,15 +1296,17 @@ function useActiveTerminalFocus(
   termRef: RefObject<Terminal | null>,
   shouldFocusOnActivePane: boolean,
 ): void {
+  const paneActivationFocusIntent = usePaneActivationFocusIntent();
   const focusVisibleTerminal = useCallback(() => {
     if (!shouldFocusOnActivePane) return;
+    if (paneActivationFocusIntent.shouldYieldAutoFocus()) return;
     const focusTimer = window.setTimeout(() => {
       termRef.current?.focus();
     }, 0);
     return () => {
       clearTimeout(focusTimer);
     };
-  }, [shouldFocusOnActivePane, termRef]);
+  }, [paneActivationFocusIntent, shouldFocusOnActivePane, termRef]);
   useActivePaneEffect(focusVisibleTerminal);
 }
 

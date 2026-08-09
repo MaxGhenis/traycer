@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   publishAgentActivity,
-  resetAgentActivityPresence,
-} from "@/__tests__/agent-activity-presence-harness";
+  resetAgentActivity,
+} from "@/__tests__/agent-activity-harness";
 import { OpenEpicSessionRegistry } from "@/stores/epics/open-epic/session-registry";
 import {
   createOpenEpicStore,
@@ -76,6 +76,7 @@ function buildTestHandle(id: string, clean: boolean): TestHandle {
     requestFreshSnapshot: () => base.requestFreshSnapshot(),
     dispose: testDispose,
     isClean: () => isCleanOverride,
+    hotArtifactRoomIdsForTests: () => [],
   };
 
   const testHandle: TestHandle = {
@@ -111,7 +112,7 @@ function h(t: TestHandle): OpenEpicStoreHandle {
 
 afterEach(() => {
   workingByEpic.clear();
-  resetAgentActivityPresence();
+  resetAgentActivity();
 });
 
 describe("OpenEpicSessionRegistry", () => {
@@ -317,8 +318,8 @@ describe("OpenEpicSessionRegistry", () => {
 });
 
 /**
- * Prune eligibility now rides the per-user notification room's presence, not
- * the epic's own collaboration awareness, so these helpers publish one host
+ * Prune eligibility rides the host-selected activity view, not the epic's own
+ * collaboration awareness, so these helpers publish one host
  * entry covering every epic that currently has work. Publishing the whole set
  * each time mirrors the host, which republishes its full entry on every
  * activity boundary.

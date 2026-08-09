@@ -18,6 +18,20 @@ import {
 import { Button } from "@/components/ui/button";
 import { LivePulse } from "@/components/ui/live-pulse";
 import { LiveElapsed } from "@/components/chat/segments/segment-elapsed";
+import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
+import { ManagedCommandKindIcon } from "@/components/managed-commands/managed-command-kind-icon";
+import { ManagedCommandStopAction } from "@/components/managed-commands/managed-command-lifecycle-actions";
+import {
+  useManagedCommandStopAll,
+  useManagedCommandStopAllIsPending,
+} from "@/hooks/managed-command/use-managed-command-lifecycle-mutations";
+import {
+  managedCommandKindLabel,
+  managedCommandTitle,
+} from "@/lib/managed-commands/managed-command-copy";
+import { useManagedCommandDoor } from "@/lib/managed-commands/use-managed-command-door";
+import { useRunningManagedCommandsForChat } from "@/stores/managed-commands/managed-commands-for-chat";
+import type { ManagedCommand } from "@traycer/protocol/host/managed-command/unary-schemas";
 import { cn } from "@/lib/utils";
 import {
   BASE_PAD_LEFT,
@@ -353,13 +367,97 @@ function treeHasRunningTask(node: BackgroundTreeNode): boolean {
   return node.children.some((child) => treeHasRunningTask(child));
 }
 
-function backgroundHeaderSummary(
-  runningGroupCount: number,
-  waitingWakeCount: number,
-): string {
-  if (waitingWakeCount === 0) return `${runningGroupCount} running`;
-  if (runningGroupCount === 0) return `${waitingWakeCount} waiting`;
-  return `${runningGroupCount} running · ${waitingWakeCount} waiting`;
+/**
+ * What "Background" actually holds, counted the way the button beside it
+ * behaves. Managed commands join the running total rather than standing apart:
+ * "Stop all" now reaches them, so one summed count is a promise the panel can
+ * keep, and the rows below say which is which.
+ */
+function backgroundHeaderSummary(input: {
+  readonly runningCount: number;
+  readonly waitingWakeCount: number;
+}): string {
+  const parts: string[] = [];
+  if (input.runningCount > 0) {
+    parts.push(`${input.runningCount} running`);
+  }
+  if (input.waitingWakeCount > 0) {
+    parts.push(`${input.waitingWakeCount} waiting`);
+  }
+  return parts.length === 0 ? "0 running" : parts.join(" · ");
+}
+
+/**
+ * A running monitor or shell as an ordinary row of this list, in the same
+ * grammar as a harness background row beside it - glyph, title, kind pill,
+ * live elapsed, hover stop. To a human these are the same thing: work running
+ * behind the chat. The radar / play glyphs are what keep a supervised monitor
+ * apart from the harness's own "Monitor" kind; no copy carries that load.
+ *
+ * Stop and nothing else. This is a "running right now" surface, so a row here
+ * is a passing status rather than a durable object; deleting a command - which
+ * destroys its whole output history - belongs to the chat's monitors menu and
+ * the output window, where the command itself is the subject.
+ */
+function ManagedCommandRow(props: {
+  readonly command: ManagedCommand;
+  readonly epicId: string;
+  readonly hostId: string;
+  readonly stoppable: boolean;
+  readonly onOpen: ((commandId: string) => void) | null;
+}) {
+  const { command, onOpen } = props;
+  const title = managedCommandTitle(command);
+
+  return (
+    <li className="m-0">
+      <div
+        className="group flex min-w-0 items-center gap-2 rounded-md pr-2 hover:bg-muted/40"
+        style={{ paddingLeft: `${BASE_PAD_LEFT}px` }}
+      >
+        <TooltipWrapper
+          label={title}
+          side="top"
+          sideOffset={undefined}
+          align={undefined}
+        >
+          <button
+            type="button"
+            data-testid={`managed-command-background-row-${command.id}`}
+            disabled={onOpen === null}
+            onClick={() => {
+              onOpen?.(command.id);
+            }}
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md py-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <ManagedCommandKindIcon
+              kind={command.kind}
+              className="size-3.5 text-primary/80"
+            />
+            <span className="block min-w-0 flex-1 truncate text-ui-xs text-foreground/85">
+              {title}
+            </span>
+            {command.status.state === "running" ? (
+              <LiveElapsed startedAt={command.status.startedAtMs} />
+            ) : null}
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-ui-xs uppercase text-muted-foreground">
+              {managedCommandKindLabel(command.kind)}
+            </span>
+          </button>
+        </TooltipWrapper>
+        <span className="inline-flex opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          {props.stoppable ? (
+            <ManagedCommandStopAction
+              command={command}
+              epicId={props.epicId}
+              hostId={props.hostId}
+              className={undefined}
+            />
+          ) : null}
+        </span>
+      </div>
+    </li>
+  );
 }
 
 function BackgroundTreeRows(props: {
@@ -486,6 +584,8 @@ function BackgroundTreeRow(props: {
 
 export function BackgroundItemsPanel(props: {
   readonly items: ReadonlyArray<BackgroundItem>;
+  readonly epicId: string;
+  readonly chatId: string;
   readonly canAct: boolean;
   readonly readOnly: boolean;
   readonly pendingStopTaskIds: ReadonlySet<string>;
@@ -499,7 +599,12 @@ export function BackgroundItemsPanel(props: {
   const [open, setOpen] = useState(false);
   const [committedRememberedByTaskId, setCommittedRememberedByTaskId] =
     useState<ReadonlyMap<string, RememberedBackgroundNode>>(() => new Map());
+  // A harness background item is stopped over the chat's own stream, so it
+  // needs that stream open. A managed command is stopped by an RPC to its
+  // host, which a reconnecting chat has no bearing on - gating it on `canAct`
+  // too left a reconnecting chat with no way to stop a runaway monitor.
   const stoppable = props.canAct && !props.readOnly;
+  const managedStoppable = !props.readOnly;
   const items = useMemo(() => dedupeByTaskId(props.items), [props.items]);
   const rememberedByTaskId = useMemo(
     () => buildRememberedBackgroundNodes(items, committedRememberedByTaskId),
@@ -524,11 +629,48 @@ export function BackgroundItemsPanel(props: {
   const waitingWakeCount = items.filter(
     (item) => item.kind === "wakeup",
   ).length;
-  const headerSummary = backgroundHeaderSummary(
-    runningGroupCount,
-    waitingWakeCount,
+  // Read from the same store the rows below read, so the header can never
+  // claim a count the list does not show.
+  const managedCommands = useRunningManagedCommandsForChat(
+    props.epicId,
+    props.chatId,
   );
-  const stopAllDisabled = !stoppable || props.stopAllPending;
+  const headerSummary = backgroundHeaderSummary({
+    runningCount: runningGroupCount + managedCommands.length,
+    waitingWakeCount,
+  });
+  const hostId = useTabHostId();
+  const openManagedCommand = useManagedCommandDoor();
+  const stopAllManagedCommands = useManagedCommandStopAll(props.chatId);
+  // Cross-instance: the same chat can be open in two tiles, and each panel
+  // owns its own mutation observer - the shared read is what keeps the second
+  // tile's button dead while the first tile's batch runs.
+  const stopAllManagedPending = useManagedCommandStopAllIsPending(props.chatId);
+  // "Stop all" means every row the panel is showing, and its two halves ride
+  // different channels: the harness half needs the chat stream open, the
+  // managed half is an RPC to the host that a reconnecting chat has no bearing
+  // on. Each half is offered and sent on its own capability - gating the
+  // button on the harness half alone left it dead during a reconnect, which is
+  // exactly when a runaway monitor most needs the one-click stop.
+  const harnessStopAllReady = stoppable && !props.stopAllPending;
+  const managedStopAllReady =
+    managedStoppable && managedCommands.length > 0 && !stopAllManagedPending;
+  // One button, one rule: live while there is something it can do, dead while
+  // anything it started is still in flight. Re-enabling as soon as one half
+  // finished let a second press resubmit the finished half mid-flight.
+  const stopAllDisabled =
+    (!harnessStopAllReady && !managedStopAllReady) ||
+    props.stopAllPending ||
+    stopAllManagedPending;
+  const stopAll = () => {
+    if (harnessStopAllReady) props.onStopAll();
+    if (!managedStopAllReady) return;
+    stopAllManagedCommands.mutate({
+      hostId,
+      epicId: props.epicId,
+      commandIds: managedCommands.map((command) => command.id),
+    });
+  };
 
   return (
     <Collapsible
@@ -561,7 +703,10 @@ export function BackgroundItemsPanel(props: {
           <span aria-hidden className="shrink-0 text-muted-foreground/40">
             ·
           </span>
-          <span className="min-w-0 flex-1 truncate text-ui-xs text-muted-foreground">
+          <span
+            data-testid="background-header-summary"
+            className="min-w-0 flex-1 truncate text-ui-xs text-muted-foreground"
+          >
             {headerSummary}
           </span>
         </CollapsibleTrigger>
@@ -571,19 +716,30 @@ export function BackgroundItemsPanel(props: {
             iconOnly={false}
             disabled={stopAllDisabled}
             testId="background-stop-all"
-            onClick={props.onStopAll}
+            onClick={stopAll}
           />
         </div>
       </div>
       <CollapsibleContent>
         <div
           data-testid="background-items-list"
+          data-native-scrollbar="true"
           className={cn(
-            "overflow-y-auto border-t border-border/50 chat-scrollbar-native-thin",
+            "overflow-y-auto border-t border-border/50",
             props.scrollRegionMaxHeightClass,
           )}
         >
           <ul className="m-0 flex list-none flex-col gap-0.5 p-1.5">
+            {managedCommands.map((command) => (
+              <ManagedCommandRow
+                key={command.id}
+                command={command}
+                epicId={props.epicId}
+                hostId={hostId}
+                stoppable={managedStoppable}
+                onOpen={openManagedCommand}
+              />
+            ))}
             <BackgroundTreeRows
               nodes={tree}
               depth={0}

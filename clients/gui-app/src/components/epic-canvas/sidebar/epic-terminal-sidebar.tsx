@@ -67,17 +67,22 @@ import { useHostClient } from "@/lib/host";
 import { isVisibleEpicTerminalSession } from "@/lib/terminals/terminal-session-filters";
 import {
   deriveTitleSourceFromSessionTitle,
-  terminalSessionTitle,
+  terminalSessionLabel,
 } from "@/lib/terminals/terminal-title";
 import { OwnerResourceChip } from "@/components/resources/resource-usage-chip";
 import { cn } from "@/lib/utils";
 import {
   findOpenArtifactInTab,
   useEpicCanvasStore,
-  useIsActiveEpicArtifact,
+  useIsActiveTile,
 } from "@/stores/epics/canvas/store";
+import {
+  useEpicLeftPanelStore,
+  useLeftPanelSectionCollapsed,
+} from "@/stores/epics/left-panel-store";
 import { useSettingsStore } from "@/stores/settings/settings-store";
 import type { EpicTerminalRef } from "@/stores/epics/canvas/types";
+import { providerLoginTerminalProviderId } from "@/stores/providers/provider-login-terminals";
 import {
   SidebarContextMenuItems,
   SidebarDropdownMenuItems,
@@ -191,7 +196,20 @@ function TerminalsPanelBodyLive(props: {
  * every host list update.
  */
 export function TerminalsPanelActions(props: LeftPanelSlotProps) {
-  return <NewTerminalPicker epicId={props.epicId} tabId={props.tabId} />;
+  const collapsed = useLeftPanelSectionCollapsed("terminals");
+  const setPanelSectionCollapsed = useEpicLeftPanelStore(
+    (state) => state.setPanelSectionCollapsed,
+  );
+  const expandBeforeOpen = useCallback(() => {
+    if (collapsed) setPanelSectionCollapsed("terminals", false);
+  }, [collapsed, setPanelSectionCollapsed]);
+  return (
+    <NewTerminalPicker
+      epicId={props.epicId}
+      tabId={props.tabId}
+      onBeforeOpen={expandBeforeOpen}
+    />
+  );
 }
 
 interface TerminalSidebarBodyProps {
@@ -303,7 +321,7 @@ function TerminalRow(props: TerminalRowProps) {
   const { hostId, epicId, tabId, session, onOpen } = props;
   // Per-row boolean subscription so selecting a session re-renders only the two
   // rows whose active state flips, not every row.
-  const isActive = useIsActiveEpicArtifact(tabId, session.sessionId);
+  const isActive = useIsActiveTile(tabId, session.sessionId);
   const kill = useTerminalKill();
   const rename = useTerminalRename();
   const navigateNested = useEpicNestedFocusNavigation();
@@ -314,7 +332,7 @@ function TerminalRow(props: TerminalRowProps) {
     (state) => state.showNavigatorResourceStats,
   );
 
-  const label = deriveTerminalLabel(session);
+  const label = terminalSessionLabel(session);
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -527,6 +545,7 @@ function terminalRowMenuEntries(
       label: "Rename",
       icon: <Pencil className="size-3.5" />,
       disabled: false,
+      disabledTooltip: null,
       variant: "default",
       testIds: {
         dropdown: `epic-terminal-sidebar-rename-${props.sessionId}`,
@@ -541,6 +560,7 @@ function terminalRowMenuEntries(
       label: "Close",
       icon: <Trash2 className="size-3.5" />,
       disabled: props.closePending,
+      disabledTooltip: null,
       variant: "destructive",
       testIds: {
         dropdown: `epic-terminal-sidebar-kill-menu-${props.sessionId}`,
@@ -551,25 +571,33 @@ function terminalRowMenuEntries(
   ];
 }
 
-function deriveTerminalLabel(session: CanonicalTerminalSessionInfo): string {
-  return terminalSessionTitle({
-    title: session.title,
-    activeProcessName: session.activeProcessName,
-  });
-}
-
 function makeTerminalRef(
   session: CanonicalTerminalSessionInfo,
   hostId: string,
   instanceId: string,
 ): EpicTerminalRef {
+  // `terminal.list` cannot say who created a session, so a sign-in terminal
+  // reopened from here would otherwise become an ordinary tile that believes it
+  // owns the PTY - and re-creates the id as a bare shell once the host loses
+  // it. The renderer's own record of host-created sign-in terminals supplies
+  // what the wire does not.
+  const signInProviderId = providerLoginTerminalProviderId(
+    hostId,
+    session.sessionId,
+  );
   return {
     id: session.sessionId,
     instanceId,
     type: "terminal",
-    name: deriveTerminalLabel(session),
+    name: terminalSessionLabel(session),
     titleSource: deriveTitleSourceFromSessionTitle(session.title),
     hostId,
     cwd: session.cwd,
+    ...(signInProviderId === null
+      ? {}
+      : {
+          origin: "provider-login" as const,
+          originProviderId: signInProviderId,
+        }),
   };
 }

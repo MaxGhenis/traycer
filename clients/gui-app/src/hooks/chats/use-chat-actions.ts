@@ -135,7 +135,6 @@ export function useChatActions(handle: ChatSessionStoreHandle): ChatActions {
           () => {
             Analytics.getInstance().track(AnalyticsEvent.ChatMessageSent, {
               harness: input.settings.harnessId,
-              mode: input.settings.agentMode,
             });
           },
         ),
