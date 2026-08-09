@@ -109,6 +109,7 @@ import type {
   BrowserViewDebugSnapshotChange,
   BrowserViewDownloadCancel,
   BrowserViewDownloadChange,
+  BrowserViewDurableTabRegistration,
   BrowserViewElementPickResult,
   BrowserViewFindChange,
   BrowserViewFindRequest,
@@ -446,6 +447,7 @@ export interface DesktopZoomBridge {
 
 export interface DesktopBrowserViewBridge {
   upsertTile(input: BrowserViewTileUpsert): Promise<void>;
+  registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
   updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
   setViewportPreset(input: BrowserViewViewportPresetChange): Promise<void>;
   releaseTile(input: BrowserViewTileKey): Promise<void>;

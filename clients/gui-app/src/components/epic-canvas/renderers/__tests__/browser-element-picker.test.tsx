@@ -93,6 +93,7 @@ function createFakeBridge(
   const disposable = { dispose: () => undefined };
   const bridge: DesktopBrowserViewBridge = {
     upsertTile: () => Promise.resolve(),
+    registerDurableTab: () => Promise.resolve(),
     setViewportPreset: () => Promise.resolve(),
     updateBounds: () => Promise.resolve(),
     releaseTile: () => Promise.resolve(),

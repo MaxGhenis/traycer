@@ -563,6 +563,13 @@ const browserSessionsServerFrameSchemaV13 = z.discriminatedUnion("kind", [
 export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
   ...browserSessionsServerFrameSchemaV13.def.options,
   z.object({
+    kind: z.literal("electronTabRegistered"),
+    ...requestFrameFields,
+    registrationId: z.string(),
+    sessionId: z.string(),
+    tabId: z.string(),
+  }),
+  z.object({
     // Push notification, same shape rules as `cdpSessionEnded` above: a
     // fresh `requestId` per push for envelope consistency, not correlation.
     kind: z.literal("borrowedTileAttached"),
@@ -791,6 +798,25 @@ const browserSessionsClientFrameSchemaV14 = z.discriminatedUnion("kind", [
 
 export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
   ...browserSessionsClientFrameSchemaV14.def.options,
+  z.object({
+    kind: z.literal("registerElectronTab"),
+    ...requestFrameFields,
+    registrationId: z.string(),
+    sessionId: z.string(),
+    tileInstanceId: z.string(),
+    initialUrl: z.string(),
+    title: z.string().nullable(),
+  }),
+  z.object({
+    kind: z.literal("electronTabState"),
+    ...requestFrameFields,
+    registrationId: z.string(),
+    sessionId: z.string(),
+    tabId: z.string(),
+    url: z.string(),
+    title: z.string().nullable(),
+    status: browserSessionStatusSchema,
+  }),
   z.object({
     // Ticket 12 / ticket 10's design. Desktop pushes this once, just before a
     // tile dies, for ANY teardown reason - there is no signal distinguishing

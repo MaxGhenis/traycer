@@ -11,6 +11,11 @@ export interface BrowserViewTileUpsert extends BrowserViewTileKey {
   readonly viewportPreset: BrowserViewViewportPresetId;
 }
 
+export interface BrowserViewDurableTabRegistration extends BrowserViewTileKey {
+  readonly sessionId: string;
+  readonly tabId: string;
+}
+
 export interface BrowserViewBounds {
   readonly x: number;
   readonly y: number;

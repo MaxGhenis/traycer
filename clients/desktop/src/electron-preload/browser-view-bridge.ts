@@ -24,6 +24,7 @@ import type {
   BrowserViewDebugSnapshotChange,
   BrowserViewDownloadCancel,
   BrowserViewDownloadChange,
+  BrowserViewDurableTabRegistration,
   BrowserViewElementPickResult,
   BrowserViewFindChange,
   BrowserViewFindRequest,
@@ -48,6 +49,7 @@ import { subscribe, type Disposable, type Listener } from "./subscribe";
 export interface BrowserViewBridgeSurface {
   browserView: {
     upsertTile(input: BrowserViewTileUpsert): Promise<void>;
+    registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
     updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
     setViewportPreset(input: BrowserViewViewportPresetChange): Promise<void>;
     releaseTile(input: BrowserViewTileKey): Promise<void>;
@@ -112,10 +114,7 @@ export interface BrowserViewBridgeSurface {
     onControlRevoked(
       handler: Listener<BrowserViewControlRevokedChange>,
     ): Disposable;
-    // Ticket 09: borrowed-tile driving over ticket 03's typed CDP bridge.
-    // Same three members the agent's own tile bridge exposes, because a
-    // borrowed tile gets the same curated surface - only its lifetime
-    // differs (see `browser-borrowed-tile.ts` on the host side).
+    // Durable user-tab driving over the same typed CDP bridge as agent tabs.
     dispatchCdp(
       input: AgentBrowserViewCdpDispatch,
     ): Promise<AgentBrowserViewCdpResult>;
@@ -137,6 +136,11 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
       upsertTile: (input) =>
         ipcRenderer.invoke(
           RunnerHostInvoke.browserViewUpsert,
+          input,
+        ) as Promise<void>,
+      registerDurableTab: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewRegisterDurableTab,
           input,
         ) as Promise<void>,
       updateBounds: (input) =>

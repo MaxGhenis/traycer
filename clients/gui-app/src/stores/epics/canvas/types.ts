@@ -183,6 +183,7 @@ export interface BrowserPeekTileRef {
  */
 export interface AgentBrowserTileRef {
   readonly id: string;
+  readonly sessionId: string;
   readonly instanceId: string;
   readonly type: typeof TILE_KIND_AGENT_BROWSER;
   readonly name: string;

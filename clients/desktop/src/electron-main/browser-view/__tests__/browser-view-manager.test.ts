@@ -645,7 +645,7 @@ describe("BrowserViewManager", () => {
     expect(harness.storageStateApplications).toEqual([{ storageState }]);
   });
 
-  it("closes webContents after a released tile is not claimed again", async () => {
+  it("releaseTile unbinds the view without destroying WebContents (ticket 05)", () => {
     const harness = createHarness();
     harness.manager.upsertTile(
       "window-1",
@@ -662,22 +662,15 @@ describe("BrowserViewManager", () => {
 
     harness.manager.releaseTile("window-1", BASE_KEY);
     expect(view.visible).toBe(false);
-    vi.advanceTimersByTime(9);
     expect(view.webContents.closeCalls).toBe(0);
-
-    vi.advanceTimersByTime(1);
-    // Ticket 12: `closeEntry` awaits the tile-teardown handoff capture
-    // (`pushTileHandoff` -> `captureHandoffStorageState` ->
-    // `captureStorageStateFromBrowser`) before tearing the webContents
-    // down, so the timer firing alone no longer settles it synchronously.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(view.webContents.closeCalls).toBe(1);
     expect(harness.windows.get("window-1")?.contentView.children).toEqual([]);
+    // No grace-period destruction: tile close is unbind only.
+    vi.advanceTimersByTime(60_000);
+    expect(view.webContents.closeCalls).toBe(0);
+    expect(harness.tileHandoffNotifications).toEqual([]);
   });
 
-  it("hides released views during grace and shows them again when reclaimed", () => {
+  it("rebinds the same WebContents when a released tile is reopened (ticket 05)", () => {
     const harness = createHarness();
     harness.manager.upsertTile(
       "window-1",
@@ -693,7 +686,6 @@ describe("BrowserViewManager", () => {
     harness.manager.releaseTile("window-1", BASE_KEY);
     expect(view.visible).toBe(false);
 
-    vi.advanceTimersByTime(5);
     harness.manager.upsertTile(
       "window-1",
       upsert(BASE_KEY, "http://localhost:3000", true),
@@ -701,9 +693,10 @@ describe("BrowserViewManager", () => {
 
     expect(view.webContents.closeCalls).toBe(0);
     expect(view.visible).toBe(true);
-    vi.advanceTimersByTime(10);
-    expect(view.webContents.closeCalls).toBe(0);
     expect(harness.views).toHaveLength(1);
+    expect(harness.windows.get("window-1")?.contentView.children).toContain(
+      view,
+    );
   });
 
   it("applies fixed viewport presets within the tile bounds", () => {
@@ -1206,7 +1199,7 @@ describe("BrowserViewManager", () => {
     ).rejects.toThrow("tile is occluded");
   });
 
-  it("detaches the debugger when the tile closes after release grace", async () => {
+  it("keeps the debugger attached after releaseTile so the durable tab stays drivable (ticket 05)", async () => {
     const harness = createHarness();
     harness.manager.upsertTile(
       "window-1",
@@ -1225,96 +1218,37 @@ describe("BrowserViewManager", () => {
     expect(view.webContents.debugger.attached).toBe(true);
 
     harness.manager.releaseTile("window-1", BASE_KEY);
-    vi.advanceTimersByTime(10);
-    // Ticket 12: see the equivalent comment in "closes webContents after a
-    // released tile is not claimed again" above.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    vi.advanceTimersByTime(60_000);
 
-    expect(view.webContents.debugger.detached).toBe(true);
-    expect(view.webContents.closeCalls).toBe(1);
-  });
-
-  it("ends CDP access synchronously on releaseTile, not only once the grace period tears the view down", async () => {
-    const harness = createHarness();
-    harness.manager.upsertTile(
-      "window-1",
-      upsert(BASE_KEY, "http://localhost:3000", true),
-    );
-    const view = harness.views[0];
-    view.webContents.emit(
-      "did-frame-navigate",
-      {},
-      "http://localhost:3000",
-      200,
-      "OK",
-      true,
-    );
-    await Promise.resolve();
     expect(view.webContents.debugger.attached).toBe(true);
-
-    harness.manager.releaseTile("window-1", BASE_KEY);
-
-    // The debugger must already be detached before any part of the grace
-    // period elapses - "released" and "still drivable via CDP" must never
-    // both be true, even for the 10ms this harness's `releaseGraceMs`
-    // configures. The webContents itself is not torn down yet (that is
-    // still deferred to the grace period, so a fast release+reclaim can
-    // reuse it), only the CDP access ends immediately.
-    expect(view.webContents.debugger.detached).toBe(true);
+    expect(view.webContents.debugger.detached).toBe(false);
     expect(view.webContents.closeCalls).toBe(0);
   });
 
-  it("rejects dispatchCdp with not_attached immediately after releaseTile, while the view is still open", async () => {
+  it("allows dispatchCdp after releaseTile while the durable WebContents remains live (ticket 05)", async () => {
     const harness = createHarness();
     const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
     expect(view.webContents.debugger.attached).toBe(true);
 
     harness.manager.releaseTile("window-1", BASE_KEY);
 
-    // Stronger than checking debugger.detached alone: the public dispatch
-    // gate must refuse access the moment release returns, even though the
-    // webContents is still alive for the grace window (closeCalls still 0).
-    // That is the property a caller relying on "released means undrivable"
-    // actually needs.
     const result = await harness.manager.dispatchCdp("window-1", {
       ...BASE_KEY,
       sessionId: null,
       command: { kind: "cdpGetFrameTree" },
     });
 
-    expect(result).toEqual({
-      kind: "cdpGetFrameTree",
-      ok: false,
-      error: {
-        kind: "not_attached",
-        message: "Agent browser tile's debugger is not attached.",
-        code: null,
-      },
-    });
+    expect(result.ok).toBe(true);
     expect(view.webContents.closeCalls).toBe(0);
   });
 
-  it("refuses dispatchCdp after releaseTile even when the debugger was attached by something other than BrowserDebugSession", async () => {
-    // Ticket 15 P1-2: agent-browser-posture.ts's background keepalive
-    // attaches webContents.debugger directly, independently of
-    // BrowserDebugSession, and typically wins the race against it (it runs
-    // at view-creation time, before any navigation commit). When that
-    // happens, BrowserDebugSession.enableAfterCommit() sees the debugger is
-    // already attached and never marks itself the attacher
-    // (`attachedBySession` stays false), so its own dispose() skips
-    // detach() entirely - releaseTile's fix must not depend on
-    // BrowserDebugSession having been the one to attach.
+  it("still dispatches CDP after release when debugger was attached by posture keepalive (ticket 05)", async () => {
     const harness = createHarness();
     harness.manager.upsertTile(
       "window-1",
       upsert(BASE_KEY, "http://localhost:3000", true),
     );
     const view = harness.views[0];
-    // Simulate the posture keepalive's independent attach, ahead of the
-    // navigation commit that would otherwise let BrowserDebugSession attach
-    // it first.
     view.webContents.debugger.attach("1.3");
     view.webContents.emit(
       "did-frame-navigate",
@@ -1327,13 +1261,6 @@ describe("BrowserViewManager", () => {
     await Promise.resolve();
     expect(view.webContents.debugger.attached).toBe(true);
 
-    const beforeRelease = await harness.manager.dispatchCdp("window-1", {
-      ...BASE_KEY,
-      sessionId: null,
-      command: { kind: "cdpGetFrameTree" },
-    });
-    expect(beforeRelease.ok).toBe(true);
-
     harness.manager.releaseTile("window-1", BASE_KEY);
 
     const afterRelease = await harness.manager.dispatchCdp("window-1", {
@@ -1341,23 +1268,11 @@ describe("BrowserViewManager", () => {
       sessionId: null,
       command: { kind: "cdpGetFrameTree" },
     });
-    expect(afterRelease).toEqual({
-      kind: "cdpGetFrameTree",
-      ok: false,
-      error: {
-        kind: "not_attached",
-        message: "Agent browser tile's debugger is not attached.",
-        code: null,
-      },
-    });
-    // The gate is what refuses it; the debugger itself is also expected to
-    // end up detached (the unconditional secondary cleanup), but that is not
-    // what this test is pinning - "rejects dispatchCdp..." above covers the
-    // BrowserDebugSession-attached case, this one covers the other attacher.
-    expect(view.webContents.debugger.detached).toBe(true);
+    expect(afterRelease.ok).toBe(true);
+    expect(view.webContents.debugger.attached).toBe(true);
   });
 
-  it("re-arms the debug session when a released tile is reclaimed within the grace period", async () => {
+  it("rebind after release keeps the same debug session without requiring navigation (ticket 05)", async () => {
     const harness = createHarness();
     harness.manager.upsertTile(
       "window-1",
@@ -1376,12 +1291,8 @@ describe("BrowserViewManager", () => {
     expect(view.webContents.debugger.attached).toBe(true);
 
     harness.manager.releaseTile("window-1", BASE_KEY);
-    expect(view.webContents.debugger.detached).toBe(true);
+    expect(view.webContents.debugger.attached).toBe(true);
 
-    vi.advanceTimersByTime(5);
-    // Reclaimed with the SAME url, so nothing navigates and no commit event
-    // fires - re-arming CDP access can only come from the reclaim path
-    // itself, which is exactly what this pins.
     harness.manager.upsertTile(
       "window-1",
       upsert(BASE_KEY, "http://localhost:3000", true),
@@ -1389,9 +1300,8 @@ describe("BrowserViewManager", () => {
     await Promise.resolve();
 
     expect(view.webContents.debugger.attached).toBe(true);
-
-    vi.advanceTimersByTime(10);
     expect(view.webContents.closeCalls).toBe(0);
+    expect(harness.views).toHaveLength(1);
   });
 
   it("ignores subframe in-page navigations when projecting tile URL", () => {
@@ -1661,24 +1571,30 @@ describe("BrowserViewManager", () => {
     });
   });
 
-  it("does not emit status from a failed load after the tile was released", async () => {
+  it("keeps the durable WebContents after release even when a subsequent load fails (ticket 05)", async () => {
     const harness = createHarness();
 
     harness.manager.upsertTile(
       "window-1",
       upsert(BASE_KEY, "http://127.0.0.1:65535/", true),
     );
-    const beforeReleaseStatusCount = harness.statuses.length;
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
     harness.manager.releaseTile("window-1", BASE_KEY);
-    vi.advanceTimersByTime(10);
-    // Ticket 12: see the equivalent comment in "closes webContents after a
-    // released tile is not claimed again" above.
-    await Promise.resolve();
-    await Promise.resolve();
+
+    view.webContents.emit(
+      "did-fail-load",
+      {},
+      -102,
+      "CONNECTION_REFUSED",
+      "http://127.0.0.1:65535/",
+      true,
+    );
     await Promise.resolve();
 
-    expect(harness.views[0].webContents.closeCalls).toBe(1);
-    expect(harness.statuses).toHaveLength(beforeReleaseStatusCount);
+    // Tile unbind is not a close: failed loads must not destroy the entry.
+    expect(view.webContents.closeCalls).toBe(0);
+    expect(harness.tileHandoffNotifications).toEqual([]);
   });
 
   it("runs in-page find and forwards native match updates", () => {
@@ -1939,7 +1855,7 @@ describe("BrowserViewManager", () => {
     expect(harness.statuses.at(-1)).toMatchObject({ status: "loading" });
   });
 
-  it("marks a crashed renderer dead and reloads on request", () => {
+  it("marks a crashed renderer dead and closes the durable entry (ticket 05)", async () => {
     const harness = createHarness();
     harness.manager.upsertTile(
       "window-1",
@@ -1957,10 +1873,11 @@ describe("BrowserViewManager", () => {
       status: "dead",
       reason: "crashed",
     });
-
+    // Ticket 05: renderer crash is a destructive close of the durable entry.
+    await flushCloseEntry();
+    expect(view.webContents.closeCalls).toBe(1);
     harness.manager.reloadTile("window-1", BASE_KEY);
-    expect(view.webContents.reloadCalls).toBe(1);
-    expect(harness.statuses.at(-1)).toMatchObject({ status: "loading" });
+    expect(view.webContents.reloadCalls).toBe(0);
   });
 
   it("ends an active element pick on same-document navigation", async () => {
@@ -2671,61 +2588,35 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
     return view;
   }
 
-  it("two racing teardown triggers only push one handoff and close webContents once (window-change race)", async () => {
+  it("window destruction only unbinds durable entries; it does not hand off or close them (ticket 05)", async () => {
     const harness = createHarness();
     const view = upsertLiveTile(harness);
     const window = harness.windows.get("window-1");
     if (window === undefined) throw new Error("missing window-1");
     window.destroyed = true;
 
-    // Two reconcileWindowVisibility passes race the same entry: each
-    // fire-and-forgets closeEntry. The synchronous claim must admit only one.
     harness.emitWindowChange();
     harness.emitWindowChange();
     await flushCloseEntry();
 
-    expect(harness.tileHandoffNotifications).toHaveLength(1);
-    expect(harness.tileHandoffNotifications[0]?.reason).toBe("gui-quit");
-    expect(view.webContents.closeCalls).toBe(1);
+    expect(harness.tileHandoffNotifications).toEqual([]);
+    expect(view.webContents.closeCalls).toBe(0);
+    expect(view.visible).toBe(false);
   });
 
-  it("releaseTile grace timer and dispose racing the same entry do not double-process", async () => {
+  it("releaseTile does not hand off; dispose still destroys the durable entry once (ticket 05)", async () => {
     const harness = createHarness();
     const view = upsertLiveTile(harness);
 
     harness.manager.releaseTile("window-1", BASE_KEY);
-    // Fire the grace timer so closeEntry starts, then dispose also tries.
-    // dispose clears remaining timers and iterates entriesByKey - if the
-    // timer already claimed the entry, dispose finds nothing; if dispose
-    // wins first, the timer's re-read of entriesByKey is undefined.
-    vi.advanceTimersByTime(10);
+    expect(harness.tileHandoffNotifications).toEqual([]);
+    expect(view.webContents.closeCalls).toBe(0);
+
     harness.manager.dispose();
     await flushCloseEntry();
 
     expect(harness.tileHandoffNotifications).toHaveLength(1);
-    expect(view.webContents.closeCalls).toBe(1);
-    // Whichever path claimed first: either tile-released (timer) or gui-quit
-    // (dispose). Exactly one reason, not two handoffs.
-    expect(["tile-released", "gui-quit"]).toContain(
-      harness.tileHandoffNotifications[0]?.reason,
-    );
-  });
-
-  it("maps grace-timer teardown to reason tile-released", async () => {
-    const harness = createHarness();
-    const view = upsertLiveTile(harness);
-
-    harness.manager.releaseTile("window-1", BASE_KEY);
-    vi.advanceTimersByTime(10);
-    await flushCloseEntry();
-
-    expect(harness.tileHandoffNotifications).toEqual([
-      expect.objectContaining({
-        ...BASE_KEY,
-        reason: "tile-released",
-        capturedUrl: "http://localhost:3000",
-      }),
-    ]);
+    expect(harness.tileHandoffNotifications[0]?.reason).toBe("gui-quit");
     expect(view.webContents.closeCalls).toBe(1);
   });
 
@@ -2745,15 +2636,12 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
     expect(view.webContents.closeCalls).toBe(1);
   });
 
-  it("crash then releaseTile overrides reason to crash-no-capture (and skips storage capture)", async () => {
+  it("crash closes with crash-no-capture and skips storage capture (ticket 05)", async () => {
     const harness = createHarness();
     const view = upsertLiveTile(harness);
+    const capturesBefore = harness.storageStateCaptures.length;
     view.webContents.emit("render-process-gone", {}, { reason: "crashed" });
     expect(harness.statuses.at(-1)).toMatchObject({ status: "dead" });
-
-    const capturesBefore = harness.storageStateCaptures.length;
-    harness.manager.releaseTile("window-1", BASE_KEY);
-    vi.advanceTimersByTime(10);
     await flushCloseEntry();
 
     expect(harness.tileHandoffNotifications).toHaveLength(1);
@@ -2762,7 +2650,6 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
       reason: "crash-no-capture",
       capturedStorageState: null,
     });
-    // crash-no-capture must not attempt captureStorageStateFromBrowser.
     expect(harness.storageStateCaptures.length).toBe(capturesBefore);
     expect(view.webContents.closeCalls).toBe(1);
   });
@@ -2802,5 +2689,88 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
       }),
     ]);
     expect(view.webContents.closeCalls).toBe(1);
+  });
+});
+
+describe("BrowserViewManager durable runtime registration (ticket 05)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("registerDurableTab rekeys the runtime entry so rebind finds the same WebContents after release", () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    harness.manager.updateBounds("window-1", {
+      ...BASE_KEY,
+      bounds: { x: 0, y: 0, width: 500, height: 300 },
+    });
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
+
+    harness.manager.registerDurableTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-durable",
+      tabId: "tab-durable-1",
+    });
+
+    harness.manager.releaseTile("window-1", BASE_KEY);
+    expect(view.webContents.closeCalls).toBe(0);
+    expect(view.visible).toBe(false);
+
+    // Same pageSessionId transfers the durable entry after host mint.
+    const reboundKey: BrowserViewTileKey = {
+      ...BASE_KEY,
+      tileInstanceId: "tile-rebound",
+    };
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(reboundKey, "http://localhost:3000", true),
+    );
+    harness.manager.updateBounds("window-1", {
+      ...reboundKey,
+      bounds: { x: 0, y: 0, width: 500, height: 300 },
+    });
+
+    expect(harness.views).toHaveLength(1);
+    expect(view.webContents.closeCalls).toBe(0);
+    expect(view.visible).toBe(true);
+    expect(harness.windows.get("window-1")?.contentView.children).toContain(
+      view,
+    );
+  });
+
+  it("target=_blank open requests still surface so same-session popup tabs can register", () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "https://app.test/root", true),
+    );
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
+    const handler = view.webContents.windowOpenHandler;
+    if (handler === null) throw new Error("window open handler missing");
+
+    const result = handler({
+      url: "https://app.test/popup",
+      frameName: "_blank",
+      features: "",
+      disposition: "foreground-tab",
+    });
+
+    expect(result).toEqual({ action: "deny" });
+    expect(harness.openTileRequests).toEqual([
+      expect.objectContaining({
+        ...BASE_KEY,
+        url: "https://app.test/popup",
+        disposition: "foreground-tab",
+      }),
+    ]);
   });
 });

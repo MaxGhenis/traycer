@@ -22,6 +22,7 @@ import type {
   BrowserViewDebugSnapshotChange,
   BrowserViewDebugSnapshotData,
   BrowserViewDownloadChange,
+  BrowserViewDurableTabRegistration,
   BrowserViewElementPickResult,
   BrowserViewFindChange,
   BrowserViewFindRequest,
@@ -47,7 +48,6 @@ import type {
 import { describeLogError, log } from "../app/logger";
 import { BrowserDebugSession } from "./browser-debug-session";
 import { BrowserElementPickerSession } from "./browser-element-picker-session";
-import { setAgentBrowserPostureReleased } from "./agent-browser-posture";
 import type {
   BrowserViewCertificateErrorChange as BrowserSessionCertificateErrorChange,
   BrowserViewDownloadChange as BrowserSessionDownloadChange,
@@ -316,14 +316,8 @@ interface BrowserViewEntry {
   overlayOwnerIds: string[];
   overlaySnapshotStale: boolean;
   control: BrowserViewControlState | null;
-  // Ticket 15 P1-2: the authorization gate `dispatchCdp` checks, set
-  // synchronously by `releaseTile` before it resolves and cleared by
-  // `cancelRelease` on reclaim. Deliberately not inferred from
-  // `webContents.debugger.isAttached()` - `agent-browser-posture.ts` attaches
-  // that debugger independently of `BrowserDebugSession` and keeps
-  // re-attaching it on every navigation, so transport attachment state is not
-  // a reliable proxy for "may the agent drive this tile".
-  agentAccessEnded: boolean;
+  runtimeSessionId: string;
+  runtimeTabId: string | null;
 }
 
 interface BrowserViewControlState {
@@ -459,16 +453,15 @@ export class BrowserViewManager {
     input: BrowserViewStorageStateCapture,
     webContents: ManagedBrowserView["webContents"],
   ) => Promise<BrowserViewStorageStateCaptureResult>;
-  private readonly releaseGraceMs: number;
   private readonly offWindowChange: () => void;
   private readonly offDownloadChange: () => void;
   private readonly offCertificateError: () => void;
   private readonly entriesByKey = new Map<string, BrowserViewEntry>();
+  private readonly entriesByRuntimeKey = new Map<string, BrowserViewEntry>();
   private readonly popupEntriesByWebContentsId = new Map<
     number,
     BrowserViewPopupEntry
   >();
-  private readonly releaseTimersByKey = new Map<string, NodeJS.Timeout>();
   private readonly overlayEntryKeysByOwnerId = new Map<
     string,
     readonly string[]
@@ -498,7 +491,6 @@ export class BrowserViewManager {
     this.scheduleDebugSnapshot = options.scheduleDebugSnapshot;
     this.applyStorageStateToBrowser = options.applyStorageState;
     this.captureStorageStateFromBrowser = options.captureStorageState;
-    this.releaseGraceMs = options.releaseGraceMs;
     this.offWindowChange = options.onWindowChange(() => {
       this.reconcileWindowVisibility();
     });
@@ -520,9 +512,10 @@ export class BrowserViewManager {
         ? this.createEntry(key, input.url, input.viewportPreset)
         : existing;
 
-    this.cancelRelease(entry);
     if (entryKeyId(entry.key) !== keyId) {
       this.rekeyEntry(entry, key);
+    } else {
+      this.entriesByKey.set(keyId, entry);
     }
 
     entry.desiredVisible = input.visible;
@@ -535,6 +528,20 @@ export class BrowserViewManager {
     }
     this.attachToCurrentWindow(entry);
     this.applyEntryVisibility(entry);
+  }
+
+  registerDurableTab(
+    windowId: string,
+    input: BrowserViewDurableTabRegistration,
+  ): void {
+    const key = { ...input, windowId };
+    const entry =
+      this.entriesByKey.get(entryKeyId(key)) ?? this.findTransferableEntry(key);
+    if (entry === null) return;
+    this.entriesByRuntimeKey.delete(runtimeEntryKey(entry));
+    entry.runtimeSessionId = input.sessionId;
+    entry.runtimeTabId = input.tabId;
+    this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
   }
 
   applyStorageState(
@@ -580,52 +587,18 @@ export class BrowserViewManager {
     if (entry === undefined) {
       return;
     }
+    this.entriesByKey.delete(keyId);
     this.endPickerSession(entry);
     entry.desiredVisible = false;
     entry.view.setVisible(false);
-    // "Released" and "still drivable via CDP" must never both be true (v3's
-    // detach-ends-access property; this method is one of its own two
-    // documented revocation paths alongside `revokeControl`). The primary
-    // enforcement is this synchronous gate, checked first thing by
-    // `dispatchCdp` - not `webContents.debugger.isAttached()`.
-    // `agent-browser-posture.ts` attaches that same debugger independently of
-    // `BrowserDebugSession` to keep an agent tile unthrottled in the
-    // background, and re-attaches it on every navigation, so transport
-    // attachment state can flip back to "attached" on its own and is not a
-    // reliable authorization signal. Set before anything below, including the
-    // dispose calls, so there is no window where this method has done
-    // teardown work but not yet closed the gate.
-    entry.agentAccessEnded = true;
-    setAgentBrowserPostureReleased(entry.view.webContents, true);
-    // Best-effort cleanup, not the enforcement mechanism: detach whatever is
-    // actually attached, regardless of which of the two attachers above
-    // holds it. `BrowserDebugSession.dispose()` only detaches when it was
-    // itself the attacher (`attachedBySession`), which correctly protects an
-    // external DevTools session on a *borrowed* tile from being kicked by an
-    // unrelated dispose() elsewhere (`closeEntry`) - but for an agent-owned
-    // tile there is no legitimate external attacher to protect, so this
-    // release path detaches unconditionally as well.
-    entry.debugSession?.dispose();
-    entry.debugSession = null;
-    const browserDebugger = entry.view.webContents.debugger;
-    if (browserDebugger.isAttached()) {
-      try {
-        browserDebugger.detach();
-      } catch (err) {
-        log.warn("[browser-view] debugger detach on release failed", {
-          error: describeLogError(err),
-        });
-      }
+    const window =
+      entry.parentWindowId === null
+        ? null
+        : this.getWindow(entry.parentWindowId);
+    if (window !== null && !window.isDestroyed()) {
+      window.contentView.removeChildView(entry.view);
     }
-    if (this.releaseTimersByKey.has(keyId)) return;
-    const timer = setTimeout(() => {
-      this.releaseTimersByKey.delete(keyId);
-      const releasedEntry = this.entriesByKey.get(keyId);
-      if (releasedEntry !== undefined) {
-        void this.closeEntry(releasedEntry, "tile-released");
-      }
-    }, this.releaseGraceMs);
-    this.releaseTimersByKey.set(keyId, timer);
+    entry.parentWindowId = null;
   }
 
   reloadTile(windowId: string, input: BrowserViewTileKey): void {
@@ -1044,44 +1017,24 @@ export class BrowserViewManager {
   }
 
   /**
-   * Ticket 03's typed CDP bridge, for the agent's own tile. Unlike
-   * `executeControlAction` there is no control-grant lock to check - the
-   * agent tile has no borrowed-tile concept - but a detached debugger (see
-   * `handleDebugSessionDetached`) must still fail fast rather than hang or
-   * attempt a doomed `sendCommand`.
-   *
-   * Ticket 15 P1-2: `entry.agentAccessEnded` is checked before transport
-   * state, not instead of it - and it is the gate that actually decides
-   * whether the agent may drive this tile. `webContents.debugger.isAttached()`
-   * alone is not authorization: `agent-browser-posture.ts` attaches that same
-   * debugger independently of `releaseTile`/`BrowserDebugSession` to keep an
-   * agent tile unthrottled in the background, and re-attaches it on every
-   * navigation, so a released tile whose posture keepalive fires again would
-   * still read as attached without this gate.
+   * The typed CDP bridge for a registered Electron tab, whether currently
+   * bound to a tile or hidden. A detached debugger still fails fast rather
+   * than attempting a doomed `sendCommand`.
    */
   async dispatchCdp(
     windowId: string,
     input: AgentBrowserViewCdpDispatch,
   ): Promise<AgentBrowserViewCdpResult> {
-    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
-    if (entry === undefined) {
+    const key = { ...input, windowId };
+    const entry =
+      this.entriesByKey.get(entryKeyId(key)) ?? this.findTransferableEntry(key);
+    if (entry === null) {
       return {
         kind: input.command.kind,
         ok: false,
         error: {
           kind: "tile_not_found",
           message: "Agent browser tile is not available.",
-          code: null,
-        },
-      };
-    }
-    if (entry.agentAccessEnded) {
-      return {
-        kind: input.command.kind,
-        ok: false,
-        error: {
-          kind: "not_attached",
-          message: "Agent browser tile's debugger is not attached.",
           code: null,
         },
       };
@@ -1124,11 +1077,7 @@ export class BrowserViewManager {
     this.offWindowChange();
     this.offDownloadChange();
     this.offCertificateError();
-    for (const timer of this.releaseTimersByKey.values()) {
-      clearTimeout(timer);
-    }
-    this.releaseTimersByKey.clear();
-    for (const entry of Array.from(this.entriesByKey.values())) {
+    for (const entry of Array.from(this.entriesByRuntimeKey.values())) {
       void this.closeEntry(entry, "gui-quit");
     }
     for (const popup of Array.from(this.popupEntriesByWebContentsId.values())) {
@@ -1247,7 +1196,8 @@ export class BrowserViewManager {
       overlayOwnerIds: [],
       overlaySnapshotStale: false,
       control: null,
-      agentAccessEnded: false,
+      runtimeSessionId: key.pageSessionId,
+      runtimeTabId: null,
     };
     const webContents = view.webContents;
     webContents.setWindowOpenHandler((details) =>
@@ -1268,6 +1218,7 @@ export class BrowserViewManager {
     webContents.on("paint", entry.listeners.paint);
     webContents.on("render-process-gone", entry.listeners.renderProcessGone);
     this.entriesByKey.set(entryKeyId(key), entry);
+    this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
     this.navigate(entry, requestedUrl);
     return entry;
   }
@@ -1275,11 +1226,8 @@ export class BrowserViewManager {
   private findTransferableEntry(
     key: BrowserViewEntryKey,
   ): BrowserViewEntry | null {
-    for (const entry of this.entriesByKey.values()) {
-      if (
-        entry.key.tileInstanceId === key.tileInstanceId &&
-        entry.key.pageSessionId === key.pageSessionId
-      ) {
+    for (const entry of this.entriesByRuntimeKey.values()) {
+      if (entry.key.pageSessionId === key.pageSessionId) {
         return entry;
       }
     }
@@ -1294,32 +1242,6 @@ export class BrowserViewManager {
     this.attachToCurrentWindow(entry);
     this.emitStatus(entry);
     this.queueDebugSnapshot(entry);
-  }
-
-  private cancelRelease(entry: BrowserViewEntry): void {
-    const candidates = Array.from(this.releaseTimersByKey.entries()).filter(
-      ([keyId]) => {
-        const released = this.entriesByKey.get(keyId);
-        return released === entry;
-      },
-    );
-    if (candidates.length > 0) {
-      // The entry was mid-release: `releaseTile` already closed the
-      // `agentAccessEnded` gate, told the background-posture keepalive to
-      // stop re-attaching, and detached its CDP access (see there), ahead of
-      // the grace-period `closeEntry()` this cancels. Re-open the gate and
-      // re-arm the debugger the same way a first commit does - nothing else
-      // will if `upsertTile` reuses the same URL, since that path only
-      // navigates (and so only re-triggers `enableDebugAfterCommit` via a
-      // commit event) when the URL changes.
-      entry.agentAccessEnded = false;
-      setAgentBrowserPostureReleased(entry.view.webContents, false);
-      this.enableDebugAfterCommit(entry);
-    }
-    for (const [keyId, timer] of candidates) {
-      clearTimeout(timer);
-      this.releaseTimersByKey.delete(keyId);
-    }
   }
 
   private navigate(entry: BrowserViewEntry, url: string): void {
@@ -1387,6 +1309,7 @@ export class BrowserViewManager {
     this.invalidateOverlaySnapshot(entry, "render-process-gone");
     this.setStatus(entry, "dead", detail);
     this.applyEntryVisibility(entry);
+    void this.closeEntry(entry, "crash-no-capture");
   }
 
   private handleFoundInPage(
@@ -1785,7 +1708,7 @@ export class BrowserViewManager {
   }
 
   private isEntryCurrent(entry: BrowserViewEntry): boolean {
-    return this.entriesByKey.get(entryKeyId(entry.key)) === entry;
+    return this.entriesByRuntimeKey.get(runtimeEntryKey(entry)) === entry;
   }
 
   private readLiveWebContents(
@@ -1926,10 +1849,18 @@ export class BrowserViewManager {
   }
 
   private reconcileWindowVisibility(): void {
-    for (const entry of Array.from(this.entriesByKey.values())) {
+    for (const entry of Array.from(this.entriesByRuntimeKey.values())) {
+      if (this.entriesByKey.get(entryKeyId(entry.key)) !== entry) {
+        entry.desiredVisible = false;
+        entry.parentWindowId = null;
+        entry.view.setVisible(false);
+        continue;
+      }
       const window = this.getWindow(entry.key.windowId);
       if (window === null || window.isDestroyed()) {
-        void this.closeEntry(entry, "gui-quit");
+        entry.desiredVisible = false;
+        entry.parentWindowId = null;
+        entry.view.setVisible(false);
         continue;
       }
       this.attachToCurrentWindow(entry);
@@ -1948,13 +1879,9 @@ export class BrowserViewManager {
     // forgets rather than awaiting, so a second teardown trigger racing the
     // first (e.g. two window-change events) must not find this entry again
     // via `entriesByKey` and process it a second time.
-    if (this.entriesByKey.get(keyId) !== entry) return;
+    if (this.entriesByRuntimeKey.get(runtimeEntryKey(entry)) !== entry) return;
     this.entriesByKey.delete(keyId);
-    const timer = this.releaseTimersByKey.get(keyId);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      this.releaseTimersByKey.delete(keyId);
-    }
+    this.entriesByRuntimeKey.delete(runtimeEntryKey(entry));
     this.destroyDevToolsWindow(entry);
     this.cancelControl(entry, "browser tile closed", null);
     // Ticket 12 item 2: capture and push before anything below tears the
@@ -2285,6 +2212,13 @@ function entryKeyId(key: BrowserViewEntryKey): string {
   return [key.windowId, key.viewTabId, key.paneId, key.tileInstanceId].join(
     "\u001f",
   );
+}
+
+function runtimeEntryKey(entry: BrowserViewEntry): string {
+  return [
+    entry.runtimeSessionId,
+    entry.runtimeTabId ?? entry.key.pageSessionId,
+  ].join("\u001f");
 }
 
 function normalizeBounds(bounds: BrowserViewBounds): BrowserViewBounds {

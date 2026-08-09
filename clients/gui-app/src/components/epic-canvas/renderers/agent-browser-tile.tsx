@@ -7,15 +7,13 @@ import {
   type DesktopAgentBrowserViewBridge,
 } from "@/lib/browser-view/desktop-agent-browser-view";
 import type { BrowserViewStatus } from "@/lib/browser-view/desktop-browser-view";
-import {
-  buildCdpResultFrame,
-  notifyAgentBrowserCdpSessionEnded,
-  notifyAgentBrowserCdpTargetAttached,
-  notifyAgentBrowserTileHandoff,
-  registerAgentBrowserCdpHandler,
-} from "@/lib/browser-view/agent-browser-cdp-store";
+import { selectSiblingChatIdForBrowserTile } from "@/lib/browser-view/browser-tile-chat-routing";
+import { registerElectronBrowserTab } from "@/lib/browser-view/electron-browser-tab-store";
+import { openFreshAgentBrowserTileFromBrowserPage } from "@/lib/browser-view/browser-link-routing-core";
 import { PANEL_RESIZING_CLASS_NAME } from "@/lib/layout/panel-resizing-class";
+import { appLogger } from "@/lib/logger";
 import { useRunnerHost } from "@/providers/use-runner-host";
+import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import type { AgentBrowserTileRef } from "@/stores/epics/canvas/types";
 
 export interface AgentBrowserTileProps {
@@ -45,6 +43,13 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<BrowserViewStatus>("loading");
   const [statusReason, setStatusReason] = useState<string | null>(null);
+  const [durableTabId, setDurableTabId] = useState<string | null>(null);
+  const registrationChatId = useEpicCanvasStore((state) =>
+    selectSiblingChatIdForBrowserTile(
+      state.canvasByTabId[props.viewTabId] ?? null,
+      props.node.instanceId,
+    ),
+  );
 
   const tileKey = useMemo<AgentBrowserViewTileKey>(
     () => ({
@@ -79,6 +84,28 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
 
   useEffect(() => {
     if (browserView === null) return;
+    registerElectronBrowserTab({
+      chatId: registrationChatId,
+      registrationId: props.node.id,
+      sessionId: props.node.sessionId,
+      initialUrl: props.node.url,
+      title: props.node.name,
+      tileKey,
+      bridge: browserView,
+      onRegistered: setDurableTabId,
+    });
+  }, [
+    browserView,
+    props.node.id,
+    props.node.name,
+    props.node.sessionId,
+    props.node.url,
+    registrationChatId,
+    tileKey,
+  ]);
+
+  useEffect(() => {
+    if (browserView === null) return;
     const subscription = browserView.onStatusChange((change) => {
       if (!isChangeForTile(change, tileKey)) return;
       setStatus(change.status);
@@ -91,74 +118,35 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
 
   useEffect(() => {
     if (browserView === null) return;
-    return registerAgentBrowserCdpHandler(tileKey.tileInstanceId, (request) => {
-      browserView
-        .dispatchCdp({
-          ...tileKey,
-          sessionId: request.sessionId,
-          command: request.command,
-        })
-        .then((result) => {
-          request.sendFrame(
-            buildCdpResultFrame(
-              request.requestId,
-              request.tileInstanceId,
-              result,
-            ),
-          );
-        })
-        .catch((error: unknown) => {
-          request.sendFrame(
-            buildCdpResultFrame(request.requestId, request.tileInstanceId, {
-              kind: request.command.kind,
-              ok: false,
-              error: {
-                kind: "cdp_error",
-                message: error instanceof Error ? error.message : String(error),
-                code: null,
-              },
-            }),
-          );
-        });
-    });
-  }, [browserView, tileKey]);
-
-  useEffect(() => {
-    if (browserView === null) return;
-    const subscription = browserView.onCdpSessionEnded((change) => {
+    const subscription = browserView.onOpenTileRequest((change) => {
       if (!isChangeForTile(change, tileKey)) return;
-      notifyAgentBrowserCdpSessionEnded(change.tileInstanceId, change.reason);
-    });
-    return () => {
-      subscription.dispose();
-    };
-  }, [browserView, tileKey]);
-
-  useEffect(() => {
-    if (browserView === null) return;
-    const subscription = browserView.onCdpTargetAttached((change) => {
-      if (!isChangeForTile(change, tileKey)) return;
-      notifyAgentBrowserCdpTargetAttached(change.tileInstanceId, change);
-    });
-    return () => {
-      subscription.dispose();
-    };
-  }, [browserView, tileKey]);
-
-  useEffect(() => {
-    if (browserView === null) return;
-    const subscription = browserView.onTileHandoff((change) => {
-      if (!isChangeForTile(change, tileKey)) return;
-      notifyAgentBrowserTileHandoff(change.tileInstanceId, {
-        capturedUrl: change.capturedUrl,
-        capturedStorageState: change.capturedStorageState,
-        reason: change.reason,
+      if (durableTabId === null) {
+        appLogger.warn(
+          "[agent-browser] popup dropped before durable tab registration",
+          { url: change.url },
+        );
+        return;
+      }
+      openFreshAgentBrowserTileFromBrowserPage({
+        viewTabId: props.viewTabId,
+        paneId: props.paneId,
+        hostId: props.node.hostId,
+        sessionId: props.node.sessionId,
+        url: change.url,
       });
     });
     return () => {
       subscription.dispose();
     };
-  }, [browserView, tileKey]);
+  }, [
+    browserView,
+    durableTabId,
+    props.node.hostId,
+    props.node.sessionId,
+    props.paneId,
+    props.viewTabId,
+    tileKey,
+  ]);
 
   useAgentBrowserViewBoundsBridge({
     browserView,

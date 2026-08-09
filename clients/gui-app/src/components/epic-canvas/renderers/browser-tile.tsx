@@ -13,7 +13,6 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  Bot,
   Bug,
   Monitor,
   RotateCw,
@@ -21,14 +20,11 @@ import {
   Smartphone,
   Square,
   Tablet,
-  Unplug,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { toast } from "sonner";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
-import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -47,6 +43,8 @@ import {
   type BrowserViewSnapshotState,
 } from "@/lib/browser-view/browser-overlay-coordinator";
 import { browserCookieDegradedMessage } from "@/lib/browser-view/browser-cookie-degraded-message";
+import { selectSiblingChatIdForBrowserTile } from "@/lib/browser-view/browser-tile-chat-routing";
+import { registerElectronBrowserTab } from "@/lib/browser-view/electron-browser-tab-store";
 import {
   type BrowserViewBounds,
   type BrowserViewCertificateErrorChange,
@@ -64,7 +62,6 @@ import {
   openFreshBrowserTileFromBrowserPage,
 } from "@/lib/browser-view/browser-link-routing-core";
 import { useBrowserCookieCryptoState } from "@/lib/browser-view/use-browser-cookie-crypto-state";
-import { useStopBrowserAgentActivity } from "@/hooks/browser/use-stop-browser-agent-activity-mutation";
 import {
   activateBrowserTileControl,
   clearBrowserTileActiveControl,
@@ -75,29 +72,11 @@ import {
   type BrowserTileActiveControl,
   type BrowserTileControlActionRequest,
 } from "@/lib/browser-view/browser-tile-control-store";
-import {
-  registerAgentBrowserCdpHandler,
-  buildCdpResultFrame,
-  notifyAgentBrowserCdpTargetAttached,
-} from "@/lib/browser-view/agent-browser-cdp-store";
-import {
-  releaseBorrowedTileAttachment,
-  useBorrowedTileAttachment,
-  type BrowserBorrowedTileAttachment,
-} from "@/lib/browser-view/browser-borrowed-tile-store";
 import { PANEL_RESIZING_CLASS_NAME } from "@/lib/layout/panel-resizing-class";
 import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
-import type {
-  BrowserTileRef,
-  EpicCanvasState,
-} from "@/stores/epics/canvas/types";
-import {
-  collectPanes,
-  type TileLayoutNode,
-  type TilePane,
-} from "@/stores/epics/canvas/tile-tree";
+import type { BrowserTileRef } from "@/stores/epics/canvas/types";
 import { BrowserDebugPanels } from "@/components/epic-canvas/renderers/browser-debug-panels";
 import {
   BrowserElementPickerResultPanel,
@@ -114,7 +93,6 @@ export interface BrowserTileProps {
   readonly node: BrowserTileRef;
   readonly viewTabId: string;
   readonly paneId: string;
-  /** Ticket 12: needed to construct `browser.stopAgentActivity`'s params for the passive indicator's Stop button. */
   readonly epicId: string;
 }
 
@@ -264,6 +242,27 @@ export function BrowserTile(props: BrowserTileProps) {
 
   useEffect(() => {
     if (browserView === null) return;
+    registerElectronBrowserTab({
+      chatId: browserAttachmentTargetChatId,
+      registrationId: props.node.id,
+      sessionId: props.node.id,
+      initialUrl: props.node.url,
+      title: props.node.name,
+      tileKey,
+      bridge: browserView,
+      onRegistered: null,
+    });
+  }, [
+    browserAttachmentTargetChatId,
+    browserView,
+    props.node.id,
+    props.node.name,
+    props.node.url,
+    tileKey,
+  ]);
+
+  useEffect(() => {
+    if (browserView === null) return;
     const subscription = browserView.onStatusChange((change) => {
       if (!isStatusForTile(change, tileKey)) return;
       setBrowserStatus(change.status);
@@ -352,7 +351,6 @@ export function BrowserTile(props: BrowserTileProps) {
     targetChatId: browserAttachmentTargetChatId,
   });
   const controlState = useBrowserTileControlState(props.node.instanceId);
-  const borrowedAttachment = useBorrowedTileAttachment(props.node.instanceId);
 
   useEffect(() => {
     if (browserView === null) return;
@@ -384,101 +382,6 @@ export function BrowserTile(props: BrowserTileProps) {
       subscription.dispose();
     };
   }, [browserView, controlState.active, sensitiveActionPrompt, tileKey]);
-
-  /**
-   * Ticket 09: while - and only while - this tile is borrowed, answer the
-   * host's CDP dispatches for it.
-   *
-   * This registration IS the containment. The transport that can drive a
-   * user-partition tile now exists in this renderer, so what keeps the agent
-   * off a tile the user never named is that no handler is registered for it:
-   * `publishAgentBrowserCdpRequest` falls through to a `tile_not_found`
-   * reply, which is the same answer an unmounted tile gives, so an unattached
-   * tile is not distinguishable from one that does not exist.
-   *
-   * The handler is deliberately a thin forwarder to the same
-   * `AgentBrowserViewCdpCommand` surface the agent's own tile uses - v3's
-   * capability-parity ruling means a borrowed tile is not a reduced surface,
-   * and a filter here would be a policy boundary this design does not have.
-   */
-  useEffect(() => {
-    if (browserView === null || borrowedAttachment === null) return;
-    return registerAgentBrowserCdpHandler(props.node.instanceId, (request) => {
-      void browserView
-        .dispatchCdp({
-          ...tileKey,
-          sessionId: request.sessionId,
-          command: request.command,
-        })
-        .then((result) => {
-          request.sendFrame(
-            buildCdpResultFrame(
-              request.requestId,
-              request.tileInstanceId,
-              result,
-            ),
-          );
-        })
-        .catch((error: unknown) => {
-          request.sendFrame(
-            buildCdpResultFrame(request.requestId, request.tileInstanceId, {
-              kind: request.command.kind,
-              ok: false,
-              error: {
-                kind: "cdp_error",
-                message: error instanceof Error ? error.message : String(error),
-                code: null,
-              },
-            }),
-          );
-        });
-    });
-  }, [borrowedAttachment, browserView, props.node.instanceId, tileKey]);
-
-  /**
-   * Ticket 29 (review round 1, P1): the borrowed path wired CDP request/
-   * dispatch above but never forwarded `Target.attachedToTarget` (a genuine
-   * cross-origin OOPIF) the way `AgentBrowserTile` already does for the
-   * agent's own tile - so a borrowed tab's OOPIF was never discoverable by
-   * `ElectronTileRuntimeAdapter` at all, only the ancestor session, which
-   * cannot address it. Same capability-parity reasoning as the CDP dispatch
-   * registration above: a borrowed tile is not a reduced surface.
-   */
-  useEffect(() => {
-    if (browserView === null || borrowedAttachment === null) return;
-    const subscription = browserView.onCdpTargetAttached((change) => {
-      if (!isStatusForTile(change, tileKey)) return;
-      notifyAgentBrowserCdpTargetAttached(change.tileInstanceId, change);
-    });
-    return () => {
-      subscription.dispose();
-    };
-  }, [borrowedAttachment, browserView, tileKey]);
-
-  /**
-   * Ticket 03's rule - a detached debugger ends agent access rather than
-   * being logged - applied to a tile holding the user's real logins, where
-   * it matters more than anywhere else. The debugger can detach for reasons
-   * outside our control (target destroyed, renderer crash, explicit
-   * detach); the attachment ends rather than silently going stale, and the
-   * indicator goes with it. Opening DevTools is NOT one of those causes on
-   * Electron 42.7.1/Chromium 148 - it coexists with the attached debugger
-   * there (verified 2026-07-28), so a user can watch the agent drive
-   * without ending its access.
-   */
-  useEffect(() => {
-    if (browserView === null || borrowedAttachment === null) return;
-    const subscription = browserView.onCdpSessionEnded((change) => {
-      if (!isStatusForTile(change, tileKey)) return;
-      releaseBorrowedTileAttachment({
-        attachment: borrowedAttachment,
-        reason: `Browser debugger detached: ${change.reason}`,
-      });
-    });
-    return () => {
-      subscription.dispose();
-    };
-  }, [borrowedAttachment, browserView, tileKey]);
 
   useEffect(() => {
     return registerBrowserTileControlActionHandler(
@@ -762,15 +665,6 @@ export function BrowserTile(props: BrowserTileProps) {
     });
   };
 
-  const detachBorrowedTile = (
-    attachment: BrowserBorrowedTileAttachment,
-  ): void => {
-    releaseBorrowedTileAttachment({
-      attachment,
-      reason: "User detached the agent from this browser tab.",
-    });
-  };
-
   const approveSensitiveAction = (
     prompt: BrowserTileSensitiveActionPrompt,
   ): void => {
@@ -966,19 +860,6 @@ export function BrowserTile(props: BrowserTileProps) {
         onApprove={approveSensitiveAction}
         onDeny={denySensitiveAction}
       />
-      {borrowedAttachment === null ? null : (
-        // Mounted only while an attachment exists (rather than always-
-        // mounted-and-early-returning-null, the previous shape): the
-        // banner's own `useStopBrowserAgentActivity()` needs a
-        // `HostRuntimeProvider` in the tree, which every OTHER path
-        // through this tile does not - see the ticket 12 comment on
-        // `BrowserTileBorrowedBanner` for why that constraint shaped this.
-        <BrowserTileBorrowedBanner
-          attachment={borrowedAttachment}
-          epicId={props.epicId}
-          onDetach={detachBorrowedTile}
-        />
-      )}
       <BrowserTileControlBanner
         pending={controlState.pending}
         active={controlState.active}
@@ -1082,54 +963,6 @@ function sendBrowserTileControlActionFailure(
   });
 }
 
-function selectSiblingChatIdForBrowserTile(
-  canvas: EpicCanvasState | null,
-  browserInstanceId: string,
-): string | null {
-  if (canvas === null || canvas.root === null) return null;
-  const panes = panesSharingGroupWithTile(canvas.root, browserInstanceId);
-  const chatIds = panes.flatMap((pane) => activeChatIdInPane(canvas, pane));
-  return chatIds[0] ?? null;
-}
-
-function panesSharingGroupWithTile(
-  node: TileLayoutNode,
-  tileInstanceId: string,
-): readonly TilePane[] {
-  if (node.kind === "pane") return [];
-  const childWithTile = node.children.find((child) =>
-    layoutContainsTile(child, tileInstanceId),
-  );
-  if (childWithTile === undefined) {
-    return node.children.flatMap((child) =>
-      panesSharingGroupWithTile(child, tileInstanceId),
-    );
-  }
-  return node.children
-    .flatMap((child) => collectPanes(child))
-    .filter((pane) => !pane.tabInstanceIds.includes(tileInstanceId));
-}
-
-function layoutContainsTile(
-  node: TileLayoutNode,
-  tileInstanceId: string,
-): boolean {
-  if (node.kind === "pane") return node.tabInstanceIds.includes(tileInstanceId);
-  return node.children.some((child) =>
-    layoutContainsTile(child, tileInstanceId),
-  );
-}
-
-function activeChatIdInPane(
-  canvas: EpicCanvasState,
-  pane: TilePane,
-): readonly string[] {
-  if (pane.activeTabId === null) return [];
-  const tile = canvas.tilesByInstanceId[pane.activeTabId];
-  if (tile === undefined || tile.type !== "chat") return [];
-  return [tile.id];
-}
-
 function BrowserCookieDegradedBanner(props: {
   readonly cryptoState: BrowserCookieCryptoState;
 }) {
@@ -1180,109 +1013,6 @@ function BrowserTileSensitiveActionBanner(props: {
         onClick={() => props.onApprove(prompt)}
       >
         Approve
-      </Button>
-    </div>
-  );
-}
-
-/**
- * Ticket 09's passive indicator, and our one deliberate divergence from
- * Aside, which marks borrowed tabs not at all.
- *
- * It is an **indicator, not a prompt**: nothing is blocked behind it, it
- * asks no question, and ignoring it entirely is a valid thing for the user
- * to do - the consent was the request they already made in chat. What it
- * owes them is that the state is never a surprise: who is driving, until
- * when, and a way out that works immediately.
- *
- * Visually distinct from `BrowserTileControlBanner` below on purpose. That
- * one is T18's ask-then-grant flow and is green-for-approved; this is amber,
- * because a page the agent reads here can steer it and it is acting inside
- * the user's own logged-in session (v3's accepted blast radius). Same tile,
- * two different things, and they must not be mistaken for each other.
- *
- * Ticket 12 adds the one-click Stop beside Detach, calling
- * `browser.stopAgentActivity` (host-side composition ticket 08 built,
- * ticket 12 gives it this caller). The result's honest "stopped" versus
- * "outcome unknown" distinction surfaces as a toast rather than inline UI -
- * a Stop that claims "stopped" when a dispatched command may already have
- * landed is the exact lie this ticket exists to prevent, so the toast text
- * differs by outcome rather than defaulting to a reassuring "Stopped".
- */
-function BrowserTileBorrowedBanner(props: {
-  readonly attachment: BrowserBorrowedTileAttachment;
-  readonly epicId: string;
-  readonly onDetach: (attachment: BrowserBorrowedTileAttachment) => void;
-}) {
-  const attachment = props.attachment;
-  // Owns its own mutation hook (rather than receiving it via props from
-  // `BrowserTile`) specifically so the parent only mounts this component
-  // while an attachment exists - `useStopBrowserAgentActivity` needs a
-  // `HostRuntimeProvider` in the tree, which no other path through the
-  // tile requires, and every other `<BrowserTile>` render (no borrowed
-  // tab) should not need one just because this feature exists.
-  const stopBrowserAgentActivity = useStopBrowserAgentActivity();
-  const stopBorrowedTileActivity = (): void => {
-    stopBrowserAgentActivity.mutate(
-      {
-        epicId: props.epicId,
-        chatId: attachment.chatId,
-        agentRunId: attachment.agentRunId,
-      },
-      {
-        onSuccess: (data) => {
-          if (data.outcomeUnknownTargetCount > 0) {
-            toast.warning(
-              "Stop sent. A command already in flight may have landed before it took effect.",
-            );
-            return;
-          }
-          toast.success("Stopped the agent's browser activity.");
-        },
-      },
-    );
-  };
-  return (
-    <div className="flex min-w-0 items-center gap-2 border-b border-amber-500/35 bg-amber-500/10 px-3 py-1.5 text-ui-xs">
-      <Bot className="size-3.5 shrink-0 text-amber-600" />
-      <div className="min-w-0 flex-1 truncate text-amber-950 dark:text-amber-100">
-        {/* States the fact rather than warning about it: the load-bearing
-            part is "your browser session", i.e. this is the user's own
-            partition and whatever it is signed into, not the agent's
-            credential-free one. Deliberately does not assert the user IS
-            signed in on this site - that would be a guess, and a banner that
-            is sometimes wrong is a banner people learn to ignore. The
-            up-front risk copy belongs at the labs toggle (ticket 11). */}
-        {attachment.agentLabel} is driving this tab in your browser session
-      </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="h-7 shrink-0 gap-1.5 px-2 text-ui-xs"
-        disabled={stopBrowserAgentActivity.isPending}
-        onClick={stopBorrowedTileActivity}
-      >
-        {stopBrowserAgentActivity.isPending ? (
-          <AgentSpinningDots
-            className={undefined}
-            testId={undefined}
-            variant={undefined}
-          />
-        ) : (
-          <Square className="size-3" />
-        )}
-        Stop
-      </Button>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="h-7 shrink-0 gap-1.5 px-2 text-ui-xs"
-        onClick={() => props.onDetach(attachment)}
-      >
-        <Unplug className="size-3" />
-        Detach
       </Button>
     </div>
   );

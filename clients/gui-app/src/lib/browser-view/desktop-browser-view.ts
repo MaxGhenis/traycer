@@ -25,6 +25,11 @@ export interface BrowserViewTileUpsert extends BrowserViewTileKey {
   readonly viewportPreset: BrowserViewViewportPresetId;
 }
 
+export interface BrowserViewDurableTabRegistration extends BrowserViewTileKey {
+  readonly sessionId: string;
+  readonly tabId: string;
+}
+
 export interface BrowserViewBounds {
   readonly x: number;
   readonly y: number;
@@ -376,6 +381,7 @@ export interface BrowserLabsStateUpdate {
 
 export interface DesktopBrowserViewBridge {
   upsertTile(input: BrowserViewTileUpsert): Promise<void>;
+  registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
   updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
   setViewportPreset(input: BrowserViewViewportPresetChange): Promise<void>;
   releaseTile(input: BrowserViewTileKey): Promise<void>;
@@ -445,14 +451,7 @@ export interface DesktopBrowserViewBridge {
   ): {
     dispose: () => void;
   };
-  /**
-   * Ticket 09: drive a *borrowed* tile - one the user already had open, in
-   * the credentialed `persist:traycer-browser` partition - over ticket 03's
-   * typed CDP bridge. Deliberately the same three members
-   * `DesktopAgentBrowserViewBridge` exposes for the agent's own tile, since
-   * a borrowed tile gets the same curated surface; what differs is the
-   * attachment lifetime, which lives on the host.
-   */
+  /** Typed CDP bridge shared by every host-registered Electron tab. */
   dispatchCdp(
     input: AgentBrowserViewCdpDispatch,
   ): Promise<AgentBrowserViewCdpResult>;
@@ -486,6 +485,7 @@ type BrowserViewBridgeMethodSet = {
 
 const REQUIRED_BROWSER_VIEW_BRIDGE_METHODS = [
   "upsertTile",
+  "registerDurableTab",
   "updateBounds",
   "setViewportPreset",
   "releaseTile",
@@ -522,14 +522,14 @@ const REQUIRED_BROWSER_VIEW_BRIDGE_METHODS = [
   "onSnapshotInvalidated",
   "onDebugSnapshotChange",
   "onControlRevoked",
-  // Ticket 09's borrowed-tile CDP members are deliberately NOT required.
+  // Electron-tab CDP members are deliberately NOT required.
   //
   // This list is a gate: a preload missing any entry makes
   // `resolveDesktopBrowserViewBridge` return null and every browser tile in
   // the app render as unavailable. That is the right answer for members the
   // bridge is useless without - but a browser tab is not useless without
-  // agent driving. Requiring these would turn "this build cannot lend a tile
-  // to the agent" into "the user has no browser at all", which is a far
+  // agent driving. Requiring these would turn "this build cannot drive a tab"
+  // into "the user has no browser at all", which is a far
   // worse failure than the capability it guards.
   //
   // A renderer newer than its preload is not hypothetical here: the desktop
@@ -574,6 +574,7 @@ function readBrowserViewBridgeMethods(
 ): BrowserViewBridgeMethodSet {
   return {
     upsertTile: readBridgeMethod(value, "upsertTile"),
+    registerDurableTab: readBridgeMethod(value, "registerDurableTab"),
     updateBounds: readBridgeMethod(value, "updateBounds"),
     setViewportPreset: readBridgeMethod(value, "setViewportPreset"),
     releaseTile: readBridgeMethod(value, "releaseTile"),
@@ -623,13 +624,19 @@ function createBrowserViewLifecycleBridge(
 ) {
   return {
     upsertTile: (input) => callBridgeVoid(value, methods.upsertTile, input),
+    registerDurableTab: (input) =>
+      callBridgeVoid(value, methods.registerDurableTab, input),
     updateBounds: (input) => callBridgeVoid(value, methods.updateBounds, input),
     setViewportPreset: (input) =>
       callBridgeVoid(value, methods.setViewportPreset, input),
     releaseTile: (input) => callBridgeVoid(value, methods.releaseTile, input),
   } satisfies Pick<
     DesktopBrowserViewBridge,
-    "upsertTile" | "updateBounds" | "setViewportPreset" | "releaseTile"
+    | "upsertTile"
+    | "registerDurableTab"
+    | "updateBounds"
+    | "setViewportPreset"
+    | "releaseTile"
   >;
 }
 

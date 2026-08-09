@@ -10,6 +10,8 @@ import type {
   AgentBrowserViewCdpTargetAttachedChange,
   AgentBrowserViewTileHandoffChange,
   BrowserViewBoundsUpdate,
+  BrowserViewDurableTabRegistration,
+  BrowserViewOpenTileRequest,
   BrowserViewStatusChange,
   BrowserViewTileKey,
   BrowserViewTileUpsert,
@@ -19,9 +21,13 @@ import { subscribe, type Disposable, type Listener } from "./subscribe";
 export interface AgentBrowserViewBridgeSurface {
   agentBrowserView: {
     upsertTile(input: BrowserViewTileUpsert): Promise<void>;
+    registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
     updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
     releaseTile(input: BrowserViewTileKey): Promise<void>;
     onStatusChange(handler: Listener<BrowserViewStatusChange>): Disposable;
+    onOpenTileRequest(
+      handler: Listener<BrowserViewOpenTileRequest>,
+    ): Disposable;
     dispatchCdp(
       input: AgentBrowserViewCdpDispatch,
     ): Promise<AgentBrowserViewCdpResult>;
@@ -45,6 +51,11 @@ export function buildAgentBrowserViewBridge(): AgentBrowserViewBridgeSurface {
           RunnerHostInvoke.agentBrowserViewUpsert,
           input,
         ) as Promise<void>,
+      registerDurableTab: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.agentBrowserViewRegisterDurableTab,
+          input,
+        ) as Promise<void>,
       updateBounds: (input) =>
         ipcRenderer.invoke(
           RunnerHostInvoke.agentBrowserViewUpdateBounds,
@@ -58,6 +69,11 @@ export function buildAgentBrowserViewBridge(): AgentBrowserViewBridgeSurface {
       onStatusChange: (handler) =>
         subscribe<BrowserViewStatusChange>(
           RunnerHostEvent.agentBrowserViewStatusChange,
+          handler,
+        ),
+      onOpenTileRequest: (handler) =>
+        subscribe<BrowserViewOpenTileRequest>(
+          RunnerHostEvent.agentBrowserViewOpenTileRequest,
           handler,
         ),
       dispatchCdp: (input) =>

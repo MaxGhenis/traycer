@@ -11,6 +11,7 @@ import {
   DEFAULT_BROWSER_VIEWPORT_PRESET,
   makeBrowserTileRef,
 } from "@/stores/epics/canvas/tile-schema/browser-tile";
+import { makeAgentBrowserTileRef } from "@/stores/epics/canvas/tile-schema/agent-browser-tile";
 import {
   useSettingsStore,
   type BrowserLinkOpenMode,
@@ -134,6 +135,37 @@ export function openFreshBrowserTileFromBrowserPage(
     return true;
   }
   store.openTileInPane(request.viewTabId, request.paneId, browserTile);
+  return true;
+}
+
+export function openFreshAgentBrowserTileFromBrowserPage(request: {
+  readonly viewTabId: string;
+  readonly paneId: string;
+  readonly hostId: string;
+  readonly sessionId: string;
+  readonly url: string;
+}): boolean {
+  const store = useEpicCanvasStore.getState();
+  const canvas = store.canvasByTabId[request.viewTabId];
+  if (canvas === undefined || canvas.root === null) return false;
+  const targetPane = findPaneById(canvas.root, request.paneId);
+  if (targetPane === null) return false;
+  const tile = makeAgentBrowserTileRef({
+    name: browserTileNameForUrl(request.url),
+    hostId: request.hostId,
+    url: request.url,
+    sessionId: request.sessionId,
+  });
+  store.splitPaneWithNode(request.viewTabId, request.paneId, "right", tile);
+  const nextCanvas =
+    useEpicCanvasStore.getState().canvasByTabId[request.viewTabId];
+  if (
+    nextCanvas !== undefined &&
+    nextCanvas.tilesByInstanceId[tile.instanceId] !== undefined
+  ) {
+    return true;
+  }
+  store.openTileInPane(request.viewTabId, request.paneId, tile);
   return true;
 }
 

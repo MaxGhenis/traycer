@@ -22,6 +22,7 @@ import type {
   BrowserViewControlGrant,
   BrowserViewControlRevoke,
   BrowserViewDownloadCancel,
+  BrowserViewDurableTabRegistration,
   BrowserViewFindRequest,
   BrowserViewFindStop,
   BrowserViewOverlayOcclusion,
@@ -177,6 +178,17 @@ export function registerBrowserViewIpc(bridge: RunnerIpcBridge): void {
     const windowId = readSenderWindowId(bridge, event);
     manager.upsertTile(windowId, parseTileUpsert(payload));
   });
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.browserViewRegisterDurableTab,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.registerDurableTab(
+        windowId,
+        parseDurableTabRegistration(payload),
+      );
+    },
+  );
 
   bridge.handleInvoke(
     RunnerHostInvoke.browserViewUpdateBounds,
@@ -391,29 +403,9 @@ export function registerBrowserViewIpc(bridge: RunnerIpcBridge): void {
     },
   );
 
-  /**
-   * Ticket 09: drive a borrowed tile - one the user already had open, in
-   * `persist:traycer-browser` with their real logins - over ticket 03's
-   * typed CDP bridge.
-   *
-   * There is no attachment check here, and that is deliberate rather than an
-   * omission. This IPC channel is reachable only from the renderer, and the
-   * renderer only forwards a dispatch to a tile it is currently holding a
-   * live attachment for (`browser-borrowed-tile-store.ts`), which in turn
-   * only exists because the host broadcast one. Adding a second, weaker copy
-   * of that rule here - electron-main has no notion of chats, agents or
-   * attachments - would read as a security boundary while checking nothing
-   * the renderer had not already decided.
-   *
-   * What this layer does own is the guarantee ticket 03 established and
-   * which matters far more on a credentialed tile: `dispatchCdp` fails fast
-   * with `not_attached` the moment the debugger detaches for a reason
-   * outside our control (target destroyed, renderer crash, explicit
-   * detach), rather than silently going stale. Verified 2026-07-28, live:
-   * opening DevTools is NOT one of those triggers on Electron
-   * 42.7.1/Chromium 148 - the debugger and DevTools coexist there, so a
-   * user can watch a borrowed tile without ending the agent's access to it.
-   */
+  // Host registration is the routing boundary: only a registered durable
+  // tab can cause browser.sessions to send a CDP frame for this tile. This
+  // IPC layer owns transport validation and debugger-detach failure only.
   bridge.handleInvoke(
     RunnerHostInvoke.browserViewCdpDispatch,
     (event, payload) => {
@@ -541,6 +533,17 @@ function parseTileKey(value: unknown): BrowserViewTileKey {
     paneId: readString(record.paneId, "paneId"),
     tileInstanceId: readString(record.tileInstanceId, "tileInstanceId"),
     pageSessionId: readString(record.pageSessionId, "pageSessionId"),
+  };
+}
+
+function parseDurableTabRegistration(
+  value: unknown,
+): BrowserViewDurableTabRegistration {
+  const record = assertRecord(value, "Browser durable tab registration");
+  return {
+    ...parseTileKey(record),
+    sessionId: readString(record.sessionId, "sessionId"),
+    tabId: readString(record.tabId, "tabId"),
   };
 }
 

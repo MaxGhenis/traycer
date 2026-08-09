@@ -487,6 +487,7 @@ function buildFakeBridge(
     },
     browserView: {
       upsertTile: async () => undefined,
+      registerDurableTab: async () => undefined,
       setViewportPreset: async () => undefined,
       updateBounds: async () => undefined,
       releaseTile: async () => undefined,

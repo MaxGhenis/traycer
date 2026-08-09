@@ -21,9 +21,12 @@ export function makeAgentBrowserTileRef(args: {
   readonly name: string;
   readonly hostId: string;
   readonly url: string;
+  readonly sessionId: string | null;
 }): AgentBrowserTileRef {
+  const id = agentBrowserTilePageSessionId();
   return {
-    id: agentBrowserTilePageSessionId(),
+    id,
+    sessionId: args.sessionId ?? id,
     instanceId: uuidv4(),
     type: TILE_KIND_AGENT_BROWSER,
     name: args.name,
@@ -49,6 +52,7 @@ function parseAgentBrowserTileRef(value: unknown): AgentBrowserTileRef | null {
   }
   return {
     id: value.id,
+    sessionId: typeof value.sessionId === "string" ? value.sessionId : value.id,
     instanceId: readTileInstanceId(value.instanceId),
     type: TILE_KIND_AGENT_BROWSER,
     name: value.name,
@@ -62,6 +66,7 @@ function serializeAgentBrowserTileRef(
 ): DesktopJsonValue {
   return {
     id: ref.id,
+    sessionId: ref.sessionId,
     instanceId: ref.instanceId,
     type: ref.type,
     name: ref.name,

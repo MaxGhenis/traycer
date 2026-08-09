@@ -12,6 +12,8 @@ import type {
   AgentBrowserViewCdpDispatch,
   BrowserViewBounds,
   BrowserViewBoundsUpdate,
+  BrowserViewDurableTabRegistration,
+  BrowserViewOpenTileRequest,
   BrowserViewTileKey,
   BrowserViewTileUpsert,
 } from "../../ipc-contracts/browser-view-types";
@@ -31,7 +33,6 @@ import {
 } from "../browser-view/browser-session";
 import { applyAgentBrowserBackgroundPosture } from "../browser-view/agent-browser-posture";
 import { parseBrowserViewCdpCommand } from "./browser-view-cdp-payload";
-import { log } from "../app/logger";
 import type { RunnerIpcBridge } from "./runner-ipc-bridge";
 
 const AGENT_BROWSER_VIEW_RELEASE_GRACE_MS = 500;
@@ -78,15 +79,11 @@ export function registerAgentBrowserViewIpc(bridge: RunnerIpcBridge): void {
     notifyDownload: () => {},
     notifyCertificateError: () => {},
     notifyOpenTileRequest: (windowId, change) => {
-      // Not surfaced to the GUI yet: a page in the agent's browser opening a
-      // target=_blank / window.open tab is swallowed rather than followed.
-      // Containment still holds either way (see createAgentBrowserPopupWindowOptions
-      // for the real-popup case) - this only means such links currently do
-      // nothing visible instead of opening a second agent-owned tile.
-      log.info("[agent-browser-view] open-tile request dropped (not wired)", {
+      bridge.safeSendToWindow(
         windowId,
-        url: change.url,
-      });
+        RunnerHostEvent.agentBrowserViewOpenTileRequest,
+        change satisfies BrowserViewOpenTileRequest,
+      );
     },
     notifySnapshotInvalidated: () => {},
     notifyDebugSnapshot: () => {},
@@ -133,6 +130,17 @@ export function registerAgentBrowserViewIpc(bridge: RunnerIpcBridge): void {
     (event, payload) => {
       const windowId = readSenderWindowId(bridge, event);
       manager.upsertTile(windowId, parseTileUpsert(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewRegisterDurableTab,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.registerDurableTab(
+        windowId,
+        parseDurableTabRegistration(payload),
+      );
     },
   );
 
@@ -255,6 +263,17 @@ function parseTileKey(value: unknown): BrowserViewTileKey {
     paneId: readString(record.paneId, "paneId"),
     tileInstanceId: readString(record.tileInstanceId, "tileInstanceId"),
     pageSessionId: readString(record.pageSessionId, "pageSessionId"),
+  };
+}
+
+function parseDurableTabRegistration(
+  value: unknown,
+): BrowserViewDurableTabRegistration {
+  const record = assertRecord(value, "Agent browser durable tab registration");
+  return {
+    ...parseTileKey(record),
+    sessionId: readString(record.sessionId, "sessionId"),
+    tabId: readString(record.tabId, "tabId"),
   };
 }
 

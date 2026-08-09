@@ -244,6 +244,10 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
     return Promise.resolve();
   }
 
+  registerDurableTab(): Promise<void> {
+    return Promise.resolve();
+  }
+
   updateBounds(): Promise<void> {
     return Promise.resolve();
   }

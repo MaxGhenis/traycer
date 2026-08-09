@@ -26,11 +26,13 @@ describe("makeAgentBrowserTileRef", () => {
       name: "Agent browser",
       hostId: HOST,
       url,
+      sessionId: null,
     });
     const second = makeAgentBrowserTileRef({
       name: "Agent browser",
       hostId: HOST,
       url,
+      sessionId: "shared-session",
     });
 
     expect(first.type).toBe(TILE_KIND_AGENT_BROWSER);
@@ -38,6 +40,8 @@ describe("makeAgentBrowserTileRef", () => {
     expect(second.id).toMatch(/^agent-browser-/);
     expect(first.id).not.toBe(second.id);
     expect(first.instanceId).not.toBe(second.instanceId);
+    expect(first.sessionId).toBe(first.id);
+    expect(second.sessionId).toBe("shared-session");
     expect(first.url).toBe(url);
     expect(first).not.toHaveProperty("viewportPreset");
   });
@@ -52,6 +56,7 @@ describe("agentBrowserTileSchema / parseTileRef", () => {
   it("round-trips an agent browser ref", () => {
     const ref: AgentBrowserTileRef = {
       id: "agent-browser-session-1",
+      sessionId: "agent-browser-session-1",
       instanceId: "inst-agent-browser-1",
       type: TILE_KIND_AGENT_BROWSER,
       name: "Agent browser",
@@ -116,6 +121,7 @@ describe("isAgentBrowserTileRef", () => {
   it("narrows only agent-browser tiles", () => {
     const agent: AgentBrowserTileRef = {
       id: "agent-browser-1",
+      sessionId: "agent-browser-1",
       instanceId: "inst-1",
       type: TILE_KIND_AGENT_BROWSER,
       name: "Agent browser",

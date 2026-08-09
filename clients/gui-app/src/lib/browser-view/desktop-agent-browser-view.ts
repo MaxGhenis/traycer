@@ -1,12 +1,15 @@
 import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
 import type {
   BrowserViewBoundsUpdate,
+  BrowserViewDurableTabRegistration,
+  BrowserViewOpenTileRequest,
   BrowserViewStatusChange,
   BrowserViewTileKey,
 } from "./desktop-browser-view";
 
 export type {
   BrowserViewBoundsUpdate as AgentBrowserViewBoundsUpdate,
+  BrowserViewDurableTabRegistration as AgentBrowserViewDurableTabRegistration,
   BrowserViewStatusChange as AgentBrowserViewStatusChange,
   BrowserViewTileKey as AgentBrowserViewTileKey,
 };
@@ -194,9 +197,13 @@ export interface AgentBrowserViewTileHandoffChange extends BrowserViewTileKey {
 
 export interface DesktopAgentBrowserViewBridge {
   upsertTile(input: AgentBrowserViewTileUpsert): Promise<void>;
+  registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
   updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
   releaseTile(input: BrowserViewTileKey): Promise<void>;
   onStatusChange(handler: (change: BrowserViewStatusChange) => void): {
+    dispose: () => void;
+  };
+  onOpenTileRequest(handler: (change: BrowserViewOpenTileRequest) => void): {
     dispose: () => void;
   };
   dispatchCdp(
@@ -230,9 +237,11 @@ type AgentBrowserViewBridgeMethodSet = {
 
 const REQUIRED_AGENT_BROWSER_VIEW_BRIDGE_METHODS = [
   "upsertTile",
+  "registerDurableTab",
   "updateBounds",
   "releaseTile",
   "onStatusChange",
+  "onOpenTileRequest",
   "dispatchCdp",
   "onCdpSessionEnded",
   "onCdpTargetAttached",
@@ -247,10 +256,14 @@ export function resolveDesktopAgentBrowserViewBridge(
   const methods = readAgentBrowserViewBridgeMethods(value);
   return {
     upsertTile: (input) => callBridgeVoid(value, methods.upsertTile, input),
+    registerDurableTab: (input) =>
+      callBridgeVoid(value, methods.registerDurableTab, input),
     updateBounds: (input) => callBridgeVoid(value, methods.updateBounds, input),
     releaseTile: (input) => callBridgeVoid(value, methods.releaseTile, input),
     onStatusChange: (handler) =>
       readDisposable(methods.onStatusChange.call(value, handler)),
+    onOpenTileRequest: (handler) =>
+      readDisposable(methods.onOpenTileRequest.call(value, handler)),
     dispatchCdp: (input) =>
       Promise.resolve(
         methods.dispatchCdp.call(value, input),
@@ -279,9 +292,11 @@ function readAgentBrowserViewBridgeMethods(
 ): AgentBrowserViewBridgeMethodSet {
   return {
     upsertTile: readBridgeMethod(value, "upsertTile"),
+    registerDurableTab: readBridgeMethod(value, "registerDurableTab"),
     updateBounds: readBridgeMethod(value, "updateBounds"),
     releaseTile: readBridgeMethod(value, "releaseTile"),
     onStatusChange: readBridgeMethod(value, "onStatusChange"),
+    onOpenTileRequest: readBridgeMethod(value, "onOpenTileRequest"),
     dispatchCdp: readBridgeMethod(value, "dispatchCdp"),
     onCdpSessionEnded: readBridgeMethod(value, "onCdpSessionEnded"),
     onCdpTargetAttached: readBridgeMethod(value, "onCdpTargetAttached"),
