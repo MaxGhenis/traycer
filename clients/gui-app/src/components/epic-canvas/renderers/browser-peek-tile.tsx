@@ -54,6 +54,7 @@ interface BrowserPeekRenderState {
 }
 
 export interface BrowserPeekTileProps {
+  readonly epicId: string;
   readonly node: BrowserPeekTileRef;
 }
 
@@ -137,6 +138,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     }
 
     const session = client.subscribe("browser.screencast", {
+      epicId: props.epicId,
       sessionId: props.node.sessionId,
       tabId: props.node.tabId,
       maxWidth: DEFAULT_MAX_WIDTH,
@@ -171,6 +173,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     };
   }, [
     client,
+    props.epicId,
     props.node.sessionId,
     props.node.tabId,
     setDetails,

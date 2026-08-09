@@ -185,16 +185,12 @@ export type BrowserVisibleTileAction = z.infer<
 >;
 
 /**
- * Shared-browser-runtime ticket 01: `epicId` is new and drives session-list
- * visibility (plan settled decision 1) - what the sidebar and discovery see.
- * `chatId` is unchanged and stays required: this stream is also the
- * transport for every existing chat-scoped, client-authorized action
+ * `epicId` authorizes session visibility and actions (settled decision 1).
+ * `chatId` stays required because this stream is also the transport for
+ * existing chat-routed actions
  * (`tileHandoff`, the visible-tile-control and borrowed-tile flows, the CDP
- * bridge, `promoteState`/`lendStorage`), all of which trust the connection's
- * own `chatId` as their authorization anchor for frames that carry no
- * chatId of their own. Migrating that anchor to `epicId` is a deliberate
- * ownership-lift audit (host-runtime-and-discovery plan, "Ownership lift and
- * leases") - out of scope for this behavior-preserving baseline ticket.
+ * bridge), whose responses must return to the originating chat dock. It is a
+ * routing key only, never a session-authorization boundary.
  */
 export const browserSessionsOpenRequestSchema = z.object({
   epicId: z.string(),
@@ -851,13 +847,12 @@ export type BrowserScreencastFormat = z.infer<
 >;
 
 /**
- * Shared-browser-runtime ticket 01: tab-addressed, not session-only - a
- * session can carry more than one tab (settled decision 5), so screencast
- * must name which one it mirrors. This ticket's consumers always pass
- * `tabId === sessionId` (one tab per session); a later ticket makes the two
- * genuinely independent.
+ * Epic-authorized and tab-addressed: a session can carry more than one tab
+ * (settled decision 5), so screencast names both the epic boundary and the
+ * page it mirrors.
  */
 export const browserScreencastOpenRequestSchema = z.object({
+  epicId: z.string(),
   sessionId: z.string(),
   tabId: z.string(),
   maxWidth: z.number().int().positive(),

@@ -228,6 +228,27 @@ const PEEK_NODE: BrowserPeekTileRef = {
   initialUrl: "http://localhost:3000",
 };
 
+const HEADLESS_SESSION = {
+  sessionId: "headless-1",
+  epicId: "epic-1",
+  hostId: "host-test",
+  profile: "primary" as const,
+  name: "Agent browser",
+  createdBy: { chatId: "chat-1", agentRunId: "agent-1" },
+  createdAt: 1,
+  lastActivityAt: 2,
+  tabs: [
+    {
+      tabId: "headless-tab-1",
+      url: "http://localhost:3000",
+      originTier: "dev" as const,
+      status: "ready" as const,
+      title: "Local app",
+      drivenBy: [],
+    },
+  ],
+};
+
 describe("BrowserSessionDock", () => {
   beforeEach(() => {
     hookState.visible = true;
@@ -298,19 +319,7 @@ describe("BrowserSessionDock", () => {
         {
           kind: "snapshot",
           hasBinaryPayload: false,
-          sessions: [
-            {
-              sessionId: "headless-1",
-              chatId: "chat-1",
-              hostId: "host-test",
-              url: "http://localhost:3000",
-              originTier: "dev",
-              status: "ready",
-              createdAt: 1,
-              lastActivityAt: 2,
-              title: "Local app",
-            },
-          ],
+          sessions: [HEADLESS_SESSION],
         },
         null,
       );
@@ -326,6 +335,7 @@ describe("BrowserSessionDock", () => {
         type: "browser-peek",
         chatId: "chat-1",
         sessionId: "headless-1",
+        tabId: "headless-tab-1",
         initialUrl: "http://localhost:3000",
       }),
     );
@@ -341,19 +351,7 @@ describe("BrowserSessionDock", () => {
         {
           kind: "snapshot",
           hasBinaryPayload: false,
-          sessions: [
-            {
-              sessionId: "headless-1",
-              chatId: "chat-1",
-              hostId: "host-test",
-              url: "http://localhost:3000",
-              originTier: "dev",
-              status: "ready",
-              createdAt: 1,
-              lastActivityAt: 2,
-              title: "Local app",
-            },
-          ],
+          sessions: [HEADLESS_SESSION],
         },
         null,
       );
@@ -412,19 +410,7 @@ describe("BrowserSessionDock", () => {
         {
           kind: "snapshot",
           hasBinaryPayload: false,
-          sessions: [
-            {
-              sessionId: "headless-1",
-              chatId: "chat-1",
-              hostId: "host-test",
-              url: "http://localhost:3000",
-              originTier: "dev",
-              status: "ready",
-              createdAt: 1,
-              lastActivityAt: 2,
-              title: "Local app",
-            },
-          ],
+          sessions: [HEADLESS_SESSION],
         },
         null,
       );
@@ -470,19 +456,7 @@ describe("BrowserSessionDock", () => {
         {
           kind: "snapshot",
           hasBinaryPayload: false,
-          sessions: [
-            {
-              sessionId: "headless-1",
-              chatId: "chat-1",
-              hostId: "host-test",
-              url: "http://localhost:3000",
-              originTier: "dev",
-              status: "ready",
-              createdAt: 1,
-              lastActivityAt: 2,
-              title: "Local app",
-            },
-          ],
+          sessions: [HEADLESS_SESSION],
         },
         null,
       );
@@ -567,19 +541,7 @@ describe("BrowserSessionDock", () => {
         {
           kind: "snapshot",
           hasBinaryPayload: false,
-          sessions: [
-            {
-              sessionId: "headless-1",
-              chatId: "chat-1",
-              hostId: "host-test",
-              url: "http://localhost:3000",
-              originTier: "dev",
-              status: "ready",
-              createdAt: 1,
-              lastActivityAt: 2,
-              title: "Local app",
-            },
-          ],
+          sessions: [HEADLESS_SESSION],
         },
         null,
       );
@@ -722,7 +684,7 @@ describe("BrowserPeekTile", () => {
       return undefined;
     });
 
-    render(<BrowserPeekTile node={PEEK_NODE} />);
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
 
     expect(consoleError).not.toHaveBeenCalledWith(
       expect.stringContaining("Too many re-renders"),
@@ -733,7 +695,7 @@ describe("BrowserPeekTile", () => {
   });
 
   it("renders JPEG frames and acks each frame", () => {
-    render(<BrowserPeekTile node={PEEK_NODE} />);
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
     const stream = hookState.streamClient?.sessions[0];
     act(() => {
       stream?.emitStatus("open");
@@ -777,11 +739,13 @@ describe("BrowserPeekTile", () => {
   });
 
   it("pauses the stream when the tile is hidden", () => {
-    const { rerender } = render(<BrowserPeekTile node={PEEK_NODE} />);
+    const { rerender } = render(
+      <BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />,
+    );
     const stream = hookState.streamClient?.sessions[0];
 
     hookState.visible = false;
-    rerender(<BrowserPeekTile node={PEEK_NODE} />);
+    rerender(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
 
     expect(stream?.sentFrames).toContainEqual({
       kind: "setPaused",

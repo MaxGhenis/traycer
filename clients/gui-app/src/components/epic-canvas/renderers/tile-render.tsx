@@ -115,7 +115,9 @@ const TILE_RENDERERS: TileRendererRegistry = {
       epicId={epicId}
     />
   ),
-  "browser-peek": ({ node }) => <BrowserPeekTile node={node} />,
+  "browser-peek": ({ node, epicId }) => (
+    <BrowserPeekTile epicId={epicId} node={node} />
+  ),
   "agent-browser": ({ node, viewTabId, tileId }) => (
     <AgentBrowserTile node={node} viewTabId={viewTabId} paneId={tileId} />
   ),

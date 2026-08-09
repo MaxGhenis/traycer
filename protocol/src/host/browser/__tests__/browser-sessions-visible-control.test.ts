@@ -150,9 +150,10 @@ describe("browser.sessions@1.0 dual-key open + tab-shaped session info", () => {
     ).toBe(false);
   });
 
-  it("requires tabId on screencast open requests", () => {
+  it("requires epicId and tabId on screencast open requests", () => {
     expect(
       browserScreencastOpenRequestSchema.safeParse({
+        epicId: "epic-1",
         sessionId: "session-1",
         tabId: "session-1",
         maxWidth: 1280,
@@ -163,6 +164,17 @@ describe("browser.sessions@1.0 dual-key open + tab-shaped session info", () => {
     ).toBe(true);
     expect(
       browserScreencastOpenRequestSchema.safeParse({
+        sessionId: "session-1",
+        tabId: "session-1",
+        maxWidth: 1280,
+        maxHeight: 720,
+        quality: 80,
+        format: "jpeg",
+      }).success,
+    ).toBe(false);
+    expect(
+      browserScreencastOpenRequestSchema.safeParse({
+        epicId: "epic-1",
         sessionId: "session-1",
         maxWidth: 1280,
         maxHeight: 720,
