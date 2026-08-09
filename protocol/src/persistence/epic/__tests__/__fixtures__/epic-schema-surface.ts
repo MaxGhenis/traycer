@@ -444,7 +444,10 @@ export const epicSchemaSurfaceBaseline = {
                                     "composerText": {
                                       "type": "string"
                                     },
-                                    "handle": {
+                                    "sessionId": {
+                                      "type": "string"
+                                    },
+                                    "tabId": {
                                       "type": "string"
                                     }
                                   },
@@ -453,7 +456,8 @@ export const epicSchemaSurfaceBaseline = {
                                     "origin",
                                     "pageUrl",
                                     "composerText",
-                                    "handle"
+                                    "sessionId",
+                                    "tabId"
                                   ]
                                 }
                               }
@@ -7396,7 +7400,10 @@ export const epicSchemaSurfaceBaseline = {
                                     "composerText": {
                                       "type": "string"
                                     },
-                                    "handle": {
+                                    "sessionId": {
+                                      "type": "string"
+                                    },
+                                    "tabId": {
                                       "type": "string"
                                     }
                                   },
@@ -7405,7 +7412,8 @@ export const epicSchemaSurfaceBaseline = {
                                     "origin",
                                     "pageUrl",
                                     "composerText",
-                                    "handle"
+                                    "sessionId",
+                                    "tabId"
                                   ],
                                   "additionalProperties": false
                                 }
