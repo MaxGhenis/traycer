@@ -189,6 +189,7 @@ interface PreloadBridge {
     setLabsState(input: unknown): Promise<void>;
     applyStorageState(input: unknown): Promise<unknown>;
     captureStorageState(input: unknown): Promise<unknown>;
+    capturePrimaryProfile(): Promise<unknown>;
   };
   service: {
     install(): Promise<void>;
@@ -977,5 +978,48 @@ describe("preload new-capability wiring", () => {
         origin: "http://localhost:3000",
       },
     );
+  });
+
+  it("exposes capturePrimaryProfile as a zero-arg invoke (ticket 06)", async () => {
+    const primaryResult = {
+      status: "captured",
+      storageState: {
+        cookies: [
+          {
+            name: "sid",
+            value: "abc",
+            domain: "example.com",
+            path: "/",
+            expires: -1,
+            httpOnly: true,
+            secure: true,
+            sameSite: "Lax",
+          },
+        ],
+        origins: [],
+      },
+      reason: null,
+    };
+    const invokeFn = vi.fn(async (channel: string) => {
+      if (channel === RunnerHostInvoke.browserViewPrimaryProfileCapture) {
+        return primaryResult;
+      }
+      return undefined;
+    });
+    const bridge = await loadPreload({
+      authnApiUrl: undefined,
+      desktopDev: undefined,
+      initialRouteArg: undefined,
+      invokeFn,
+      sendSyncFn: undefined,
+    });
+
+    await expect(bridge.browserView.capturePrimaryProfile()).resolves.toEqual(
+      primaryResult,
+    );
+    expect(invokeFn).toHaveBeenCalledWith(
+      RunnerHostInvoke.browserViewPrimaryProfileCapture,
+    );
+    expect(invokeFn).toHaveBeenCalledTimes(1);
   });
 });

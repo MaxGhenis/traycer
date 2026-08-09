@@ -102,6 +102,7 @@ import type {
 import type {
   BrowserCookieCryptoState,
   BrowserLabsStateUpdate,
+  BrowserPrimaryProfileCaptureResult,
   BrowserViewBoundsUpdate,
   BrowserViewCapturePageResult,
   BrowserViewCertificateErrorChange,
@@ -483,6 +484,7 @@ export interface DesktopBrowserViewBridge {
   captureStorageState(
     input: BrowserViewStorageStateCapture,
   ): Promise<BrowserViewStorageStateCaptureResult>;
+  capturePrimaryProfile?: () => Promise<BrowserPrimaryProfileCaptureResult>;
   onStatusChange(handler: (change: BrowserViewStatusChange) => void): {
     dispose: () => void;
   };

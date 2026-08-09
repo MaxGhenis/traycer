@@ -33,6 +33,7 @@ import type {
   BrowserViewOverlayRelease,
   BrowserViewOverlayReleaseResult,
   BrowserViewOverlaySnapshot,
+  BrowserPrimaryProfileCaptureResult,
   BrowserViewSnapshotInvalidatedChange,
   BrowserViewStatus,
   BrowserViewStatusChange,
@@ -45,6 +46,10 @@ import type {
   BrowserViewViewportPresetChange,
   BrowserViewViewportPresetId,
 } from "../../ipc-contracts/browser-view-types";
+import type {
+  BrowserPrimaryProfileOriginSnapshot,
+  BrowserStorageCaptureWebContents,
+} from "./browser-storage-state";
 import { describeLogError, log } from "../app/logger";
 import { BrowserDebugSession } from "./browser-debug-session";
 import { BrowserElementPickerSession } from "./browser-element-picker-session";
@@ -54,6 +59,11 @@ import type {
 } from "./browser-session";
 
 const DEBUG_SNAPSHOT_COALESCE_MS = 16;
+export const PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT = 8;
+
+type BrowserPrimaryProfileRecentOrigin = BrowserPrimaryProfileOriginSnapshot & {
+  readonly visitSequence: number;
+};
 const DEVTOOLS_TITLE = "Traycer Browser DevTools";
 const VIEWPORT_PRESETS: Readonly<
   Record<
@@ -277,6 +287,13 @@ export interface BrowserViewManagerOptions {
     input: BrowserViewStorageStateCapture,
     webContents: ManagedBrowserView["webContents"],
   ) => Promise<BrowserViewStorageStateCaptureResult>;
+  readonly capturePrimaryProfile: (
+    origins: readonly BrowserPrimaryProfileOriginSnapshot[],
+  ) => Promise<BrowserPrimaryProfileCaptureResult>;
+  readonly capturePrimaryProfileLocalStorage: (
+    origin: string,
+    webContents: BrowserStorageCaptureWebContents,
+  ) => Promise<BrowserPrimaryProfileOriginSnapshot | null>;
   readonly releaseGraceMs: number;
 }
 
@@ -453,6 +470,13 @@ export class BrowserViewManager {
     input: BrowserViewStorageStateCapture,
     webContents: ManagedBrowserView["webContents"],
   ) => Promise<BrowserViewStorageStateCaptureResult>;
+  private readonly capturePrimaryProfileFromBrowser: (
+    origins: readonly BrowserPrimaryProfileOriginSnapshot[],
+  ) => Promise<BrowserPrimaryProfileCaptureResult>;
+  private readonly capturePrimaryProfileLocalStorageFromBrowser: (
+    origin: string,
+    webContents: BrowserStorageCaptureWebContents,
+  ) => Promise<BrowserPrimaryProfileOriginSnapshot | null>;
   private readonly offWindowChange: () => void;
   private readonly offDownloadChange: () => void;
   private readonly offCertificateError: () => void;
@@ -470,6 +494,9 @@ export class BrowserViewManager {
     string,
     BrowserViewScheduledTask
   >();
+  private readonly recentPrimaryProfileOrigins: BrowserPrimaryProfileRecentOrigin[] =
+    [];
+  private primaryProfileVisitSequence = 0;
 
   constructor(options: BrowserViewManagerOptions) {
     this.createView = options.createView;
@@ -491,6 +518,9 @@ export class BrowserViewManager {
     this.scheduleDebugSnapshot = options.scheduleDebugSnapshot;
     this.applyStorageStateToBrowser = options.applyStorageState;
     this.captureStorageStateFromBrowser = options.captureStorageState;
+    this.capturePrimaryProfileFromBrowser = options.capturePrimaryProfile;
+    this.capturePrimaryProfileLocalStorageFromBrowser =
+      options.capturePrimaryProfileLocalStorage;
     this.offWindowChange = options.onWindowChange(() => {
       this.reconcileWindowVisibility();
     });
@@ -559,6 +589,15 @@ export class BrowserViewManager {
       throw new Error("Browser view tile is not available for storage capture");
     }
     return this.captureStorageStateFromBrowser(input, entry.view.webContents);
+  }
+
+  capturePrimaryProfile(): Promise<BrowserPrimaryProfileCaptureResult> {
+    return this.capturePrimaryProfileFromBrowser(
+      this.recentPrimaryProfileOrigins.map((origin) => ({
+        origin: origin.origin,
+        localStorage: origin.localStorage,
+      })),
+    );
   }
 
   updateBounds(windowId: string, input: BrowserViewBoundsUpdate): void {
@@ -1152,6 +1191,7 @@ export class BrowserViewManager {
         },
         didFinishLoad: () => {
           this.invalidateOverlaySnapshot(entry, "finish-load");
+          this.rememberPrimaryProfileOrigin(entry);
         },
         didNavigate: (...args) => {
           this.handleCommittedNavigation(entry, args);
@@ -1273,6 +1313,7 @@ export class BrowserViewManager {
     entry.currentUrl = url;
     entry.requestedUrl = url;
     entry.currentTitle = entry.view.webContents.getTitle();
+    this.rememberPrimaryProfileOrigin(entry);
     entry.certificateError = null;
     this.cancelControl(entry, "navigation committed", null);
     this.invalidateOverlaySnapshot(entry, "navigation-committed");
@@ -1290,6 +1331,7 @@ export class BrowserViewManager {
     entry.currentUrl = url;
     entry.requestedUrl = url;
     entry.currentTitle = entry.view.webContents.getTitle();
+    this.rememberPrimaryProfileOrigin(entry);
     // Same-document navigation (SPA pushState) keeps status "ready", so the
     // setStatus choke point never fires. End the picker here too - its captured
     // pageUrl is now stale and the shield should not survive the route change.
@@ -1310,6 +1352,41 @@ export class BrowserViewManager {
     this.setStatus(entry, "dead", detail);
     this.applyEntryVisibility(entry);
     void this.closeEntry(entry, "crash-no-capture");
+  }
+
+  private rememberPrimaryProfileOrigin(entry: BrowserViewEntry): void {
+    const origin = httpOrigin(entry.currentUrl);
+    if (origin === null) return;
+    this.primaryProfileVisitSequence += 1;
+    const visitSequence = this.primaryProfileVisitSequence;
+    void this.capturePrimaryProfileLocalStorageFromBrowser(
+      origin,
+      entry.view.webContents,
+    )
+      .then((snapshot) => {
+        if (snapshot === null) return;
+        const newer = this.recentPrimaryProfileOrigins.find(
+          (candidate) =>
+            candidate.origin === origin &&
+            candidate.visitSequence > visitSequence,
+        );
+        if (newer !== undefined) return;
+        const withoutOrigin = this.recentPrimaryProfileOrigins.filter(
+          (candidate) => candidate.origin !== origin,
+        );
+        withoutOrigin.push({ ...snapshot, visitSequence });
+        withoutOrigin.sort(
+          (left, right) => right.visitSequence - left.visitSequence,
+        );
+        this.recentPrimaryProfileOrigins.splice(
+          0,
+          this.recentPrimaryProfileOrigins.length,
+          ...withoutOrigin.slice(0, PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT),
+        );
+      })
+      .catch(() => {
+        // localStorage capture is best-effort; cookies remain authoritative.
+      });
   }
 
   private handleFoundInPage(
@@ -2258,6 +2335,17 @@ function toTileKey(key: BrowserViewEntryKey): BrowserViewTileKey {
 function readNavigationUrl(args: readonly unknown[]): string | null {
   const value = args[1];
   return typeof value === "string" ? value : null;
+}
+
+function httpOrigin(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? parsed.origin
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function readMainFrameFlag(args: readonly unknown[]): boolean {

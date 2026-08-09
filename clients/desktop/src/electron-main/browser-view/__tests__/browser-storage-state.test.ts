@@ -4,7 +4,9 @@ import type { BrowserCookieCryptoState } from "../../../ipc-contracts/browser-vi
 import { BROWSER_VIEW_PARTITION } from "../browser-session";
 import {
   applyBrowserViewStorageStateWithDependencies,
+  captureBrowserPrimaryProfileWithDependencies,
   captureBrowserViewStorageStateWithDependencies,
+  type BrowserPrimaryProfileCaptureDependencies,
   type BrowserStorageStateApplyDependencies,
   type BrowserStorageStateCaptureDependencies,
 } from "../browser-storage-state";
@@ -475,6 +477,108 @@ function captureDependencies(
         cookies: {
           get: (filter) => {
             expect(filter).toEqual({ url: expectedUrl });
+            return Promise.resolve(cookies);
+          },
+          flushStore: () => Promise.resolve(),
+          set: () => Promise.resolve(),
+        },
+      };
+    },
+  };
+}
+
+describe("captureBrowserPrimaryProfileWithDependencies", () => {
+  it("uses cookies.get({}) and attaches plain origin localStorage snapshots", async () => {
+    const cookieGetFilters: Array<{ readonly url?: string }> = [];
+    const origins = [
+      {
+        origin: "https://a.example",
+        localStorage: [{ name: "a", value: "1" }],
+      },
+      {
+        origin: "https://b.example",
+        localStorage: [],
+      },
+    ];
+
+    const result = await captureBrowserPrimaryProfileWithDependencies(
+      origins,
+      primaryCaptureDependencies(realState, cookieGetFilters, [
+        {
+          name: "sid",
+          value: "cookie",
+          domain: "example.com",
+          hostOnly: true,
+          path: "/",
+          secure: true,
+          httpOnly: true,
+          session: true,
+          sameSite: "lax",
+        },
+      ]),
+    );
+
+    expect(cookieGetFilters).toEqual([{}]);
+    expect(result).toEqual({
+      status: "captured",
+      storageState: {
+        cookies: [
+          {
+            name: "sid",
+            value: "cookie",
+            domain: "example.com",
+            canonicalDomain: "example.com",
+            path: "/",
+            expires: -1,
+            httpOnly: true,
+            secure: true,
+            sameSite: "Lax",
+          },
+        ],
+        origins,
+      },
+      reason: null,
+    });
+  });
+
+  it("short-circuits unavailable on degraded crypto without reading the partition", async () => {
+    const fromPartition = vi.fn();
+    const result = await captureBrowserPrimaryProfileWithDependencies(
+      [
+        {
+          origin: "https://a.example",
+          localStorage: [{ name: "a", value: "1" }],
+        },
+      ],
+      {
+        readCryptoState: () => degradedState,
+        fromPartition,
+      },
+    );
+
+    expect(result).toEqual({
+      status: "unavailable",
+      storageState: null,
+      reason: "mock-keychain",
+    });
+    expect(fromPartition).not.toHaveBeenCalled();
+  });
+});
+
+function primaryCaptureDependencies(
+  cryptoState: BrowserCookieCryptoState,
+  cookieGetFilters: Array<{ readonly url?: string }>,
+  cookies: Cookie[],
+): BrowserPrimaryProfileCaptureDependencies {
+  return {
+    readCryptoState: () => cryptoState,
+    fromPartition: (partition, options) => {
+      expect(partition).toBe(BROWSER_VIEW_PARTITION);
+      expect(options).toEqual({ cache: true });
+      return {
+        cookies: {
+          get: (filter) => {
+            cookieGetFilters.push(filter);
             return Promise.resolve(cookies);
           },
           flushStore: () => Promise.resolve(),

@@ -570,6 +570,13 @@ export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
     tabId: z.string(),
   }),
   z.object({
+    // Shared-browser-runtime ticket 06. The Electron partition is the
+    // canonical primary-profile store, so a fresh headless primary context
+    // asks desktop for a point-in-time derived copy before it navigates.
+    kind: z.literal("capturePrimaryProfile"),
+    ...requestFrameFields,
+  }),
+  z.object({
     // Push notification, same shape rules as `cdpSessionEnded` above: a
     // fresh `requestId` per push for envelope consistency, not correlation.
     kind: z.literal("borrowedTileAttached"),
@@ -808,6 +815,13 @@ export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
     title: z.string().nullable(),
   }),
   z.object({
+    // One-shot capability readiness for ticket 06's canonical Electron
+    // profile capture. This stays on the existing stream; it is not a
+    // general capability-negotiation subsystem.
+    kind: z.literal("primaryProfileCaptureReady"),
+    ...requestFrameFields,
+  }),
+  z.object({
     kind: z.literal("electronTabState"),
     ...requestFrameFields,
     registrationId: z.string(),
@@ -818,6 +832,15 @@ export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
     status: browserSessionStatusSchema,
   }),
   z.object({
+    kind: z.literal("primaryProfileCaptured"),
+    ...requestFrameFields,
+    // Same opaque Playwright storage-state convention as promote/lend and
+    // tileHandoff. The host validates the concrete cookies+origins shape.
+    storageState: z.json().nullable(),
+    status: z.enum(["captured", "unavailable", "failed"]),
+    reason: z.string().nullable(),
+  }),
+  z.object({
     // Ticket 12 / ticket 10's design. Desktop pushes this once, just before a
     // tile dies, for ANY teardown reason - there is no signal distinguishing
     // "the whole GUI quit" from "one subscriber detached" (see ticket 10's
@@ -826,11 +849,10 @@ export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
     //
     // The host resolves `tileInstanceId` to a session via
     // `getSessionIdForTile` (the same lookup every other CDP frame on this
-    // bridge uses) and replays `capturedStorageState` origin-by-origin
-    // through the existing `lendStorage()` driver method, so lent storage
-    // keeps landing in an in-memory browser context only, never a persisted
-    // profile dir (decision #33) - this frame does not open a new write path
-    // for that invariant.
+    // bridge uses) and seeds `capturedStorageState` into the fresh in-memory
+    // context before its first navigation. This single-origin live-page
+    // capture remains a tile-handoff mechanism; ticket 06's canonical-primary
+    // request is partition-wide and deliberately separate.
     //
     // `capturedStorageState` is an opaque JSON blob (Playwright storageState
     // shape), same convention as `promoteState`/`lendStorage` above: the

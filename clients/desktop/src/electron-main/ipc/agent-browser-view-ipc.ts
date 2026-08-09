@@ -122,6 +122,14 @@ export function registerAgentBrowserViewIpc(bridge: RunnerIpcBridge): void {
           "Storage-state capture is not supported on the agent browser partition",
         ),
       ),
+    capturePrimaryProfile: () =>
+      Promise.resolve({
+        status: "unavailable",
+        storageState: null,
+        reason:
+          "Primary-profile capture is not supported on the agent partition",
+      }),
+    capturePrimaryProfileLocalStorage: () => Promise.resolve(null),
     releaseGraceMs: AGENT_BROWSER_VIEW_RELEASE_GRACE_MS,
   });
 

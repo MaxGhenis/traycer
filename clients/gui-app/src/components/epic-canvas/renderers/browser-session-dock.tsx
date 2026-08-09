@@ -43,7 +43,9 @@ import {
 } from "@/lib/browser-view/electron-browser-tab-store";
 import type { AgentBrowserViewCdpCommand } from "@/lib/browser-view/desktop-agent-browser-view";
 import {
+  canCapturePrimaryProfile,
   resolveDesktopBrowserViewBridge,
+  type DesktopBrowserViewBridge,
   type BrowserViewStorageStateCaptureResult,
   type BrowserViewStorageStateApplyResult,
   type BrowserViewTileKey,
@@ -123,6 +125,10 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
     () => resolveDesktopBrowserViewBridge(runnerHost),
     [runnerHost],
   );
+  const primaryProfileCaptureReady = useMemo(
+    () => canCapturePrimaryProfile(runnerHost),
+    [runnerHost],
+  );
   const navigateNested = useEpicNestedFocusNavigation();
   const prepareSplitPaneWithNodeFocusTarget = useEpicCanvasStore(
     (state) => state.prepareSplitPaneWithNodeFocusTarget,
@@ -130,7 +136,12 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
   const epicId = useEpicCanvasStore(
     (state) => state.tabsById[props.viewTabId]?.epicId ?? null,
   );
-  const sessions = useBrowserSessions(epicId, props.chatId);
+  const sessions = useBrowserSessions(
+    epicId,
+    props.chatId,
+    browserView,
+    primaryProfileCaptureReady,
+  );
   const [handoffPendingId, setHandoffPendingId] = useState<string | null>(null);
   const [handoffMessage, setHandoffMessage] = useState<string | null>(null);
   const [lendPendingId, setLendPendingId] = useState<string | null>(null);
@@ -621,6 +632,8 @@ function isLocalhostCookieScopeOrigin(origin: string): boolean {
 function useBrowserSessions(
   epicId: string | null,
   chatId: string,
+  browserView: DesktopBrowserViewBridge | null,
+  primaryProfileCaptureReady: boolean,
 ): {
   readonly lifecycle: BrowserSessionsLifecycle;
   readonly items: readonly BrowserSessionInfo[];
@@ -687,6 +700,16 @@ function useBrowserSessions(
     if (pendingPromotes === null || pendingLends === null) return;
     const stream = client.subscribe("browser.sessions", { epicId, chatId });
     sessionRef.current = stream;
+    if (primaryProfileCaptureReady) {
+      stream.sendClientFrame(
+        {
+          kind: "primaryProfileCaptureReady",
+          hasBinaryPayload: false,
+          requestId: crypto.randomUUID(),
+        },
+        null,
+      );
+    }
     const detachElectronTabs = attachElectronBrowserTabStream(
       chatId,
       (frame) => {
@@ -724,6 +747,7 @@ function useBrowserSessions(
         },
         pendingPromotes,
         pendingLends,
+        browserView,
         sendClientFrame: (frame) => {
           stream.sendClientFrame(frame, null);
         },
@@ -744,7 +768,7 @@ function useBrowserSessions(
         new Error("Browser sessions stream closed."),
       );
     };
-  }, [chatId, client, epicId]);
+  }, [browserView, chatId, client, epicId, primaryProfileCaptureReady]);
 
   const requestPromoteState = useCallback((sessionId: string) => {
     const session = sessionRef.current;
@@ -826,9 +850,19 @@ function handleBrowserSessionsFrame(args: {
       readonly reject: (error: Error) => void;
     }
   >;
+  readonly browserView: DesktopBrowserViewBridge | null;
   readonly sendClientFrame: (frame: BrowserSessionsClientFrame) => void;
 }): void {
   if (handleElectronBrowserTabFrame(args.frame)) return;
+  if (
+    handlePrimaryProfileCaptureFrame({
+      frame: args.frame,
+      browserView: args.browserView,
+      sendClientFrame: args.sendClientFrame,
+    })
+  ) {
+    return;
+  }
   if (
     handleBrowserSessionLifecycleFrame({
       frame: args.frame,
@@ -882,6 +916,63 @@ function handleBrowserSessionsFrame(args: {
   ) {
     return;
   }
+}
+
+function handlePrimaryProfileCaptureFrame(args: {
+  readonly frame: BrowserSessionsServerFrame;
+  readonly browserView: DesktopBrowserViewBridge | null;
+  readonly sendClientFrame: (frame: BrowserSessionsClientFrame) => void;
+}): boolean {
+  if (args.frame.kind !== "capturePrimaryProfile") return false;
+  const requestId = args.frame.requestId;
+  const capturePrimaryProfile = args.browserView?.capturePrimaryProfile;
+  if (capturePrimaryProfile === undefined) {
+    args.sendClientFrame({
+      kind: "primaryProfileCaptured",
+      hasBinaryPayload: false,
+      requestId,
+      storageState: null,
+      status: "unavailable",
+      reason: "Desktop browser bridge is unavailable.",
+    });
+    return true;
+  }
+  void capturePrimaryProfile()
+    .then((result) => {
+      if (result.status === "unavailable") {
+        args.sendClientFrame({
+          kind: "primaryProfileCaptured",
+          hasBinaryPayload: false,
+          requestId,
+          storageState: null,
+          status: "unavailable",
+          reason: result.reason,
+        });
+        return;
+      }
+      const parsed = z.json().safeParse(result.storageState);
+      args.sendClientFrame({
+        kind: "primaryProfileCaptured",
+        hasBinaryPayload: false,
+        requestId,
+        storageState: parsed.success ? parsed.data : null,
+        status: parsed.success ? "captured" : "failed",
+        reason: parsed.success
+          ? null
+          : "Desktop returned invalid storage state.",
+      });
+    })
+    .catch((error: unknown) => {
+      args.sendClientFrame({
+        kind: "primaryProfileCaptured",
+        hasBinaryPayload: false,
+        requestId,
+        storageState: null,
+        status: "failed",
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    });
+  return true;
 }
 
 function handleBrowserSessionLifecycleFrame(args: {

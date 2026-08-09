@@ -55,6 +55,8 @@ import {
 import { getBrowserCookieCryptoState } from "../browser-view/browser-cookie-crypto";
 import {
   applyBrowserViewStorageState,
+  captureBrowserOriginLocalStorage,
+  captureBrowserPrimaryProfile,
   captureBrowserViewStorageState,
 } from "../browser-view/browser-storage-state";
 import { trustBrowserCertificate } from "../app/cert-trust";
@@ -171,6 +173,8 @@ export function registerBrowserViewIpc(bridge: RunnerIpcBridge): void {
     scheduleDebugSnapshot: scheduleBrowserViewDebugSnapshot,
     applyStorageState: applyBrowserViewStorageState,
     captureStorageState: captureBrowserViewStorageState,
+    capturePrimaryProfile: captureBrowserPrimaryProfile,
+    capturePrimaryProfileLocalStorage: captureBrowserOriginLocalStorage,
     releaseGraceMs: BROWSER_VIEW_RELEASE_GRACE_MS,
   });
 
@@ -350,6 +354,10 @@ export function registerBrowserViewIpc(bridge: RunnerIpcBridge): void {
         parseStorageStateCapture(payload),
       );
     },
+  );
+
+  bridge.handleInvoke(RunnerHostInvoke.browserViewPrimaryProfileCapture, () =>
+    manager.capturePrimaryProfile(),
   );
 
   bridge.handleInvoke(

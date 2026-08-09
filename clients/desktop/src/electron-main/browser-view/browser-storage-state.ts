@@ -1,6 +1,7 @@
 import { session, type Cookie } from "electron";
 import type {
   BrowserCookieCryptoState,
+  BrowserPrimaryProfileCaptureResult,
   BrowserViewStorageStateApply,
   BrowserViewStorageStateApplyResult,
   BrowserViewStorageStateCapture,
@@ -33,7 +34,7 @@ interface BrowserStorageOrigin {
   readonly localStorage: readonly BrowserStorageLocalStorageEntry[];
 }
 
-interface BrowserStorageLocalStorageEntry {
+export interface BrowserStorageLocalStorageEntry {
   readonly name: string;
   readonly value: string;
 }
@@ -52,7 +53,7 @@ interface BrowserCookieSetDetails {
 
 interface BrowserCookieStore {
   set(details: BrowserCookieSetDetails): Promise<void>;
-  get(filter: { readonly url: string }): Promise<Cookie[]>;
+  get(filter: { readonly url?: string }): Promise<Cookie[]>;
   flushStore(): Promise<void>;
 }
 
@@ -60,9 +61,14 @@ interface BrowserStorageSession {
   readonly cookies: BrowserCookieStore;
 }
 
-interface BrowserStorageCaptureWebContents {
+export interface BrowserStorageCaptureWebContents {
   getURL(): string;
   executeJavaScript(script: string, userGesture: boolean): Promise<unknown>;
+}
+
+export interface BrowserPrimaryProfileOriginSnapshot {
+  readonly origin: string;
+  readonly localStorage: readonly BrowserStorageLocalStorageEntry[];
 }
 
 export interface BrowserStorageStateApplyDependencies {
@@ -78,6 +84,52 @@ export interface BrowserStorageStateCaptureDependencies {
     partition: string,
     options: { readonly cache: boolean },
   ) => BrowserStorageSession;
+}
+
+export interface BrowserPrimaryProfileCaptureDependencies extends BrowserStorageStateCaptureDependencies {
+  readonly readCryptoState: () => BrowserCookieCryptoState;
+}
+
+export async function captureBrowserPrimaryProfile(
+  origins: readonly BrowserPrimaryProfileOriginSnapshot[],
+): Promise<BrowserPrimaryProfileCaptureResult> {
+  return captureBrowserPrimaryProfileWithDependencies(origins, {
+    readCryptoState: getBrowserCookieCryptoState,
+    fromPartition: (partition, options) =>
+      session.fromPartition(partition, options),
+  });
+}
+
+export async function captureBrowserPrimaryProfileWithDependencies(
+  origins: readonly BrowserPrimaryProfileOriginSnapshot[],
+  dependencies: BrowserPrimaryProfileCaptureDependencies,
+): Promise<BrowserPrimaryProfileCaptureResult> {
+  const cryptoState = dependencies.readCryptoState();
+  if (cryptoState.mode === "degraded") {
+    return {
+      status: "unavailable",
+      storageState: null,
+      reason: cryptoState.reason,
+    };
+  }
+  const browserSession = dependencies.fromPartition(BROWSER_VIEW_PARTITION, {
+    cache: true,
+  });
+  await browserSession.cookies.flushStore();
+  const cookies = (await browserSession.cookies.get({})).map(toStorageCookie);
+  return {
+    status: "captured",
+    storageState: { cookies, origins },
+    reason: null,
+  };
+}
+
+export async function captureBrowserOriginLocalStorage(
+  origin: string,
+  webContents: BrowserStorageCaptureWebContents,
+): Promise<BrowserPrimaryProfileOriginSnapshot | null> {
+  const captured = await captureLocalStorageForOrigin(origin, webContents);
+  return captured.available ? { origin, localStorage: captured.entries } : null;
 }
 
 export async function applyBrowserViewStorageState(

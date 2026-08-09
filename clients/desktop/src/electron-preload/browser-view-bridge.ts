@@ -11,6 +11,7 @@ import type {
   AgentBrowserViewTileHandoffChange,
   BrowserCookieCryptoState,
   BrowserLabsStateUpdate,
+  BrowserPrimaryProfileCaptureResult,
   BrowserViewBoundsUpdate,
   BrowserViewCapturePageResult,
   BrowserViewCertificateErrorChange,
@@ -89,6 +90,7 @@ export interface BrowserViewBridgeSurface {
     captureStorageState(
       input: BrowserViewStorageStateCapture,
     ): Promise<BrowserViewStorageStateCaptureResult>;
+    capturePrimaryProfile(): Promise<BrowserPrimaryProfileCaptureResult>;
     grantControl(
       input: BrowserViewControlGrant,
     ): Promise<BrowserViewControlGrantResult>;
@@ -267,6 +269,10 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
           RunnerHostInvoke.browserViewStorageStateCapture,
           input,
         ) as Promise<BrowserViewStorageStateCaptureResult>,
+      capturePrimaryProfile: () =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewPrimaryProfileCapture,
+        ) as Promise<BrowserPrimaryProfileCaptureResult>,
       grantControl: (input) =>
         ipcRenderer.invoke(
           RunnerHostInvoke.browserViewControlGrant,

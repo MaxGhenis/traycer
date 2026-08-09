@@ -154,6 +154,12 @@ export interface BrowserViewStorageStateCaptureResult {
   readonly localStorageReason: string | null;
 }
 
+export interface BrowserPrimaryProfileCaptureResult {
+  readonly status: "captured" | "unavailable";
+  readonly storageState: unknown | null;
+  readonly reason: string | null;
+}
+
 export interface BrowserViewControlGrant extends BrowserViewTileKey {
   readonly controlId: string;
   readonly chatId: string;

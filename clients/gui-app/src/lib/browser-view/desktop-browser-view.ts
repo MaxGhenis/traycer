@@ -168,6 +168,12 @@ export interface BrowserViewStorageStateCaptureResult {
   readonly localStorageReason: string | null;
 }
 
+export interface BrowserPrimaryProfileCaptureResult {
+  readonly status: "captured" | "unavailable";
+  readonly storageState: unknown;
+  readonly reason: string | null;
+}
+
 export interface BrowserViewControlGrant extends BrowserViewTileKey {
   readonly controlId: string;
   readonly chatId: string;
@@ -417,6 +423,7 @@ export interface DesktopBrowserViewBridge {
   captureStorageState(
     input: BrowserViewStorageStateCapture,
   ): Promise<BrowserViewStorageStateCaptureResult>;
+  capturePrimaryProfile?: () => Promise<BrowserPrimaryProfileCaptureResult>;
   grantControl(
     input: BrowserViewControlGrant,
   ): Promise<BrowserViewControlGrantResult>;
@@ -479,8 +486,13 @@ type BrowserViewBridgeMethod = (this: unknown, ...args: unknown[]) => unknown;
 type BrowserViewBridgeSource = Record<string, unknown>;
 type BrowserViewBridgeMethodSet = {
   readonly [
-    MethodName in keyof DesktopBrowserViewBridge
+    MethodName in Exclude<
+      keyof DesktopBrowserViewBridge,
+      "capturePrimaryProfile"
+    >
   ]: BrowserViewBridgeMethod;
+} & {
+  readonly capturePrimaryProfile: BrowserViewBridgeMethod | undefined;
 };
 
 const REQUIRED_BROWSER_VIEW_BRIDGE_METHODS = [
@@ -559,6 +571,11 @@ export function resolveDesktopBrowserViewBridge(
   };
 }
 
+export function canCapturePrimaryProfile(runnerHost: IRunnerHost): boolean {
+  const value = readBrowserViewSource(runnerHost);
+  return value !== null && isBridgeMethod(value.capturePrimaryProfile);
+}
+
 function readBrowserViewSource(
   runnerHost: IRunnerHost,
 ): BrowserViewBridgeSource | null {
@@ -600,6 +617,7 @@ function readBrowserViewBridgeMethods(
     setLabsState: readBridgeMethod(value, "setLabsState"),
     applyStorageState: readBridgeMethod(value, "applyStorageState"),
     captureStorageState: readBridgeMethod(value, "captureStorageState"),
+    capturePrimaryProfile: readBridgeMethod(value, "capturePrimaryProfile"),
     grantControl: readBridgeMethod(value, "grantControl"),
     revokeControl: readBridgeMethod(value, "revokeControl"),
     executeControlAction: readBridgeMethod(value, "executeControlAction"),
@@ -744,6 +762,7 @@ function createBrowserViewStorageBridge(
   value: BrowserViewBridgeSource,
   methods: BrowserViewBridgeMethodSet,
 ) {
+  const capturePrimaryProfileMethod = methods.capturePrimaryProfile;
   return {
     getCookieCryptoState: () =>
       callBridgeResultWithoutInput(
@@ -766,12 +785,23 @@ function createBrowserViewStorageBridge(
         input,
         readStorageStateCaptureResult,
       ),
+    ...(capturePrimaryProfileMethod === undefined
+      ? {}
+      : {
+          capturePrimaryProfile: () =>
+            callBridgeResultWithoutInput(
+              value,
+              capturePrimaryProfileMethod,
+              readPrimaryProfileCaptureResult,
+            ),
+        }),
   } satisfies Pick<
     DesktopBrowserViewBridge,
     | "getCookieCryptoState"
     | "setLabsState"
     | "applyStorageState"
     | "captureStorageState"
+    | "capturePrimaryProfile"
   >;
 }
 
@@ -1054,6 +1084,25 @@ function readStorageStateCaptureResult(
         ? value.localStorageReason
         : null,
   };
+}
+
+function readPrimaryProfileCaptureResult(
+  value: unknown,
+): BrowserPrimaryProfileCaptureResult {
+  if (!isRecord(value)) {
+    throw new Error("Invalid primary profile capture result.");
+  }
+  if (value.status === "unavailable") {
+    return {
+      status: "unavailable",
+      storageState: null,
+      reason: typeof value.reason === "string" ? value.reason : null,
+    };
+  }
+  if (value.status !== "captured" || !("storageState" in value)) {
+    throw new Error("Invalid primary profile capture result.");
+  }
+  return { status: "captured", storageState: value.storageState, reason: null };
 }
 
 function readStringArray(value: unknown): readonly string[] {

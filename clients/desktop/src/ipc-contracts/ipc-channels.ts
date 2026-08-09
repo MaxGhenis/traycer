@@ -275,6 +275,8 @@ export const RunnerHostInvoke = {
   browserViewClearDebugEvents: "runnerHost:browserView:clearDebugEvents",
   browserViewStorageStateApply: "runnerHost:browserView:storageState:apply",
   browserViewStorageStateCapture: "runnerHost:browserView:storageState:capture",
+  browserViewPrimaryProfileCapture:
+    "runnerHost:browserView:primaryProfile:capture",
   browserViewControlGrant: "runnerHost:browserView:control:grant",
   browserViewControlRevoke: "runnerHost:browserView:control:revoke",
   browserViewControlAction: "runnerHost:browserView:control:action",

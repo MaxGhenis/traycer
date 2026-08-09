@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BrowserViewManager,
+  PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT,
   type BrowserViewDebugger,
   type BrowserViewManagerOptions,
   type BrowserViewPopupWebContents,
@@ -445,6 +446,7 @@ interface Harness {
   readonly snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[];
   readonly storageStateApplications: BrowserViewStorageStateApply[];
   readonly storageStateCaptures: BrowserViewStorageStateCapture[];
+  readonly primaryProfileCaptureSourceOrigins: string[][];
   readonly registeredPopupWebContents: BrowserViewPopupWebContents[];
   emitDownload(change: BrowserSessionDownloadChange): void;
   emitCertificateError(change: BrowserSessionCertificateErrorChange): void;
@@ -472,6 +474,7 @@ function createHarness(): Harness {
   const snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[] = [];
   const storageStateApplications: BrowserViewStorageStateApply[] = [];
   const storageStateCaptures: BrowserViewStorageStateCapture[] = [];
+  const primaryProfileCaptureSourceOrigins: string[][] = [];
   const registeredPopupWebContents: BrowserViewPopupWebContents[] = [];
   const windowListeners = new Set<() => void>();
   const downloadListeners = new Set<
@@ -577,6 +580,27 @@ function createHarness(): Harness {
         localStorageReason: null,
       });
     },
+    capturePrimaryProfile: (origins) => {
+      primaryProfileCaptureSourceOrigins.push(
+        origins.map((origin) => origin.origin),
+      );
+      return Promise.resolve({
+        status: "captured",
+        storageState: {
+          cookies: [],
+          origins: origins.map((origin) => ({
+            origin: origin.origin,
+            localStorage: origin.localStorage,
+          })),
+        },
+        reason: null,
+      });
+    },
+    capturePrimaryProfileLocalStorage: (origin, _webContents) =>
+      Promise.resolve({
+        origin,
+        localStorage: [{ name: "k", value: origin }],
+      }),
     releaseGraceMs: 10,
   };
   return {
@@ -596,6 +620,7 @@ function createHarness(): Harness {
     snapshotInvalidations,
     storageStateApplications,
     storageStateCaptures,
+    primaryProfileCaptureSourceOrigins,
     registeredPopupWebContents,
     emitDownload: (change) => {
       for (const listener of downloadListeners) listener(change);
@@ -2689,6 +2714,57 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
       }),
     ]);
     expect(view.webContents.closeCalls).toBe(1);
+  });
+});
+
+describe("BrowserViewManager primary profile capture (ticket 06)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("snapshots plain localStorage at navigation time and keeps an MRU of 8 origins", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "https://origin-0.example/", true),
+    );
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("missing view");
+
+    for (
+      let i = 0;
+      i < PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT + 3;
+      i += 1
+    ) {
+      const url = `https://origin-${i}.example/path`;
+      view.webContents.emit("did-navigate", {}, url, 0, true);
+      // rememberPrimaryProfileOrigin captures localStorage asynchronously.
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    const result = await harness.manager.capturePrimaryProfile();
+
+    expect(result.status).toBe("captured");
+    expect(harness.primaryProfileCaptureSourceOrigins).toHaveLength(1);
+    const origins = harness.primaryProfileCaptureSourceOrigins[0] ?? [];
+    expect(origins).toHaveLength(PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT);
+    expect(origins[0]).toBe(
+      `https://origin-${PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT + 2}.example`,
+    );
+    expect(origins.at(-1)).toBe("https://origin-3.example");
+    // Capture path receives plain snapshots, not live WebContents handles.
+    expect(result.storageState).toEqual({
+      cookies: [],
+      origins: origins.map((origin) => ({
+        origin,
+        localStorage: [{ name: "k", value: origin }],
+      })),
+    });
   });
 });
 
