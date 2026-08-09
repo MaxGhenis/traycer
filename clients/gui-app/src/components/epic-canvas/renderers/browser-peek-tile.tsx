@@ -138,7 +138,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
 
     const session = client.subscribe("browser.screencast", {
       sessionId: props.node.sessionId,
-      tabId: props.node.sessionId,
+      tabId: props.node.tabId,
       maxWidth: DEFAULT_MAX_WIDTH,
       maxHeight: DEFAULT_MAX_HEIGHT,
       quality: DEFAULT_QUALITY,
@@ -172,6 +172,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   }, [
     client,
     props.node.sessionId,
+    props.node.tabId,
     setDetails,
     setFrameSize,
     setImageSrc,

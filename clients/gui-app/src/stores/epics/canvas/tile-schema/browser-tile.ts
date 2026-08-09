@@ -51,6 +51,7 @@ export function makeBrowserPeekTileRef(args: {
   readonly hostId: string;
   readonly chatId: string;
   readonly sessionId: string;
+  readonly tabId: string;
   readonly initialUrl: string;
 }): BrowserPeekTileRef {
   return {
@@ -61,6 +62,7 @@ export function makeBrowserPeekTileRef(args: {
     hostId: args.hostId,
     chatId: args.chatId,
     sessionId: args.sessionId,
+    tabId: args.tabId,
     initialUrl: args.initialUrl,
   };
 }
@@ -131,6 +133,7 @@ function parseBrowserPeekTileRef(value: unknown): BrowserPeekTileRef | null {
     hostId: value.hostId,
     chatId: value.chatId,
     sessionId: value.sessionId,
+    tabId: typeof value.tabId === "string" ? value.tabId : value.sessionId,
     initialUrl: value.initialUrl,
   };
 }
@@ -146,6 +149,7 @@ function serializeBrowserPeekTileRef(
     hostId: ref.hostId,
     chatId: ref.chatId,
     sessionId: ref.sessionId,
+    tabId: ref.tabId,
     initialUrl: ref.initialUrl,
   };
 }

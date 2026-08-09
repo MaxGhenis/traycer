@@ -224,6 +224,7 @@ const PEEK_NODE: BrowserPeekTileRef = {
   hostId: "host-test",
   chatId: "chat-1",
   sessionId: "headless-1",
+  tabId: "headless-tab-1",
   initialUrl: "http://localhost:3000",
 };
 

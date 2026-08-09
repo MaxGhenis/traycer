@@ -170,6 +170,7 @@ export interface BrowserPeekTileRef {
   readonly hostId: string;
   readonly chatId: string;
   readonly sessionId: string;
+  readonly tabId: string;
   readonly initialUrl: string;
 }
 

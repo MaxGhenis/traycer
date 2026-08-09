@@ -155,12 +155,15 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
 
   const openPeek = useCallback(
     (session: BrowserSessionInfo) => {
-      const url = primaryTab(session)?.url ?? "";
+      const tab = primaryTab(session);
+      if (tab === null) return;
+      const url = tab.url;
       const tile = makeBrowserPeekTileRef({
         name: `Peek ${browserTileNameForUrl(url)}`,
         hostId,
         chatId: props.chatId,
         sessionId: session.sessionId,
+        tabId: tab.tabId,
         initialUrl: url,
       });
       const prepare = () =>

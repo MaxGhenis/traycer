@@ -123,6 +123,7 @@ describe("parseTileRef / serializeTileRef", () => {
       hostId: HOST,
       chatId: "chat-1",
       sessionId: "headless-1",
+      tabId: "headless-tab-1",
       initialUrl: "https://example.com/docs",
     };
     expect(parseTileRef(serializeTileRef(ref))).toEqual(ref);
@@ -134,6 +135,7 @@ describe("parseTileRef / serializeTileRef", () => {
       hostId: HOST,
       chatId: "chat-1",
       sessionId: "headless-1",
+      tabId: "headless-tab-1",
       initialUrl: "https://example.com/app",
     });
     expect(ref.id).toBe("browser-peek-headless-1");
