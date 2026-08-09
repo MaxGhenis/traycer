@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   browserSessionsServerFrameSchema,
   browserSessionsClientFrameSchema,
-  browserSessionsV12,
+  browserSessionsV1,
 } from "@traycer/protocol/host/browser/contracts";
 
 const ENVELOPE = {
@@ -20,7 +20,7 @@ const RESULT_ENVELOPE = {
   error: null,
 };
 
-describe("browser.sessions@1.3 typed CDP bridge frames", () => {
+describe("browser.sessions@1.0 typed CDP bridge frames", () => {
   it("parses every enumerated request frame kind (real parsing, not type-checking)", () => {
     const frames = [
       { kind: "cdpNavigate", ...ENVELOPE, url: "https://example.com" },
@@ -219,8 +219,8 @@ describe("browser.sessions@1.3 typed CDP bridge frames", () => {
     );
   });
 
-  it("keeps every enumerated CDP frame kind out of the frozen 1.2 contract - additivity is real, not assumed", () => {
-    const newKinds = [
+  it("carries every enumerated CDP frame kind on the collapsed browserSessionsV1 baseline", () => {
+    const requiredKinds = [
       "cdpNavigate",
       "cdpCaptureScreenshot",
       "cdpGetFrameTree",
@@ -236,30 +236,28 @@ describe("browser.sessions@1.3 typed CDP bridge frames", () => {
       "cdpDescribeNode",
       "cdpGetFullAXTree",
     ];
-    const v12Kinds: ReadonlySet<string> = new Set(
-      browserSessionsV12.serverFrameSchema.def.options.map(
+    const v1Kinds: ReadonlySet<string> = new Set(
+      browserSessionsV1.serverFrameSchema.def.options.map(
         (option): string => String(option.shape.kind.def.values[0]),
       ),
     );
-    for (const kind of newKinds) {
-      expect(v12Kinds.has(kind), `${kind} must not be in the frozen 1.2 schema`).toBe(
-        false,
-      );
+    for (const kind of requiredKinds) {
+      expect(
+        v1Kinds.has(kind),
+        `${kind} must be on the browserSessionsV1 baseline`,
+      ).toBe(true);
     }
 
-    // And the reverse: every frame the frozen 1.2 contract already shipped
-    // still parses under the new minor - additive means old subscribers'
-    // shapes remain valid, not just that new ones were added.
-    const frozenSample = {
+    const snapshotSample = {
       kind: "snapshot",
       hasBinaryPayload: false,
       sessions: [],
     };
     expect(
-      browserSessionsV12.serverFrameSchema.safeParse(frozenSample).success,
+      browserSessionsV1.serverFrameSchema.safeParse(snapshotSample).success,
     ).toBe(true);
     expect(
-      browserSessionsServerFrameSchema.safeParse(frozenSample).success,
+      browserSessionsServerFrameSchema.safeParse(snapshotSample).success,
     ).toBe(true);
   });
 });

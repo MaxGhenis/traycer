@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   browserSessionsClientFrameSchema,
   browserSessionsServerFrameSchema,
-  browserSessionsV13,
+  browserSessionsV1,
 } from "@traycer/protocol/host/browser/contracts";
 import { hostStreamRpcRegistry } from "@traycer/protocol/host/index";
 
@@ -28,13 +28,16 @@ const DETACHED_FRAME = {
   reason: "User detached the agent from this tab.",
 };
 
-describe("browser.sessions@1.4 borrowed-tile attachment frames", () => {
+describe("browser.sessions@1.0 borrowed-tile attachment frames", () => {
   it("parses the attach and detach push frames (real parsing, not type-checking)", () => {
     expect(
       browserSessionsServerFrameSchema.safeParse(ATTACHED_FRAME).success,
     ).toBe(true);
     expect(
       browserSessionsServerFrameSchema.safeParse(DETACHED_FRAME).success,
+    ).toBe(true);
+    expect(
+      browserSessionsV1.serverFrameSchema.safeParse(ATTACHED_FRAME).success,
     ).toBe(true);
   });
 
@@ -46,47 +49,11 @@ describe("browser.sessions@1.4 borrowed-tile attachment frames", () => {
     ).toBe(false);
   });
 
-  it("keeps the borrowed-tile kinds out of the frozen 1.3 contract - additivity is real, not assumed", () => {
-    const newServerKinds = ["borrowedTileAttached", "borrowedTileDetached"];
-    const v13ServerKinds: ReadonlySet<string> = new Set(
-      browserSessionsV13.serverFrameSchema.def.options.map(
-        (option): string => String(option.shape.kind.def.values[0]),
-      ),
-    );
-    for (const kind of newServerKinds) {
-      expect(
-        v13ServerKinds.has(kind),
-        `${kind} must not be in the frozen 1.3 schema`,
-      ).toBe(false);
-    }
-    // The reverse direction, which is what "additive" actually promises: a
-    // frame the frozen 1.3 contract already shipped still parses under 1.4.
-    const frozenCdpSample = {
-      kind: "cdpGetFrameTree",
-      hasBinaryPayload: false,
-      requestId: "request-1",
-      tileInstanceId: "tile-1",
-      sessionId: null,
-    };
-    expect(
-      browserSessionsV13.serverFrameSchema.safeParse(frozenCdpSample).success,
-    ).toBe(true);
-    expect(
-      browserSessionsServerFrameSchema.safeParse(frozenCdpSample).success,
-    ).toBe(true);
-  });
-
-  it("advertises 1.5 as the negotiated latest minor with 1.0-1.4 still installed", () => {
+  it("advertises 1.0 as the negotiated latest minor of the collapsed baseline", () => {
     const line = hostStreamRpcRegistry["browser.sessions"][1];
-    expect(line.latestMinor).toBe(5);
-    expect(Object.keys(line.versions).sort()).toEqual([
-      "0",
-      "1",
-      "2",
-      "3",
-      "4",
-      "5",
-    ]);
+    expect(line.latestMinor).toBe(0);
+    expect(Object.keys(line.versions).sort()).toEqual(["0"]);
+    expect(line.versions[0]?.contract).toBe(browserSessionsV1);
   });
 
   it("adds no tile enumeration frame - the agent reaches the tile the user named and nothing else", () => {

@@ -510,10 +510,12 @@ function originFromUrl(url: string): string {
 }
 
 /**
- * Ticket 13. The wire shape a `send` frame carries for this attachment: the
- * `tileInstanceId` here is the RAW id (the host mints an opaque handle from
- * it and never persists or forwards the raw value itself), never something
- * this composer path exposes back to the user or the model.
+ * Shared-browser-runtime ticket 01. The wire shape a `send` frame carries for
+ * this attachment: `tabId` is the tile's own durable id
+ * (`BrowserViewTileKey.tileInstanceId`) - the host resolves it to an owning
+ * session (if any) and persists `{sessionId, tabId}` directly. The chip is
+ * disambiguation ("I mean this tab"), not authorization, so unlike ticket
+ * 13's retired opaque handle there is no secrecy requirement here.
  */
 export function browserContextAttachmentToWire(
   payload: BrowserContextAttachmentPayload,
@@ -523,6 +525,6 @@ export function browserContextAttachmentToWire(
     origin: payload.source.origin,
     pageUrl: payload.source.pageUrl,
     composerText: payload.composerText,
-    tileInstanceId: payload.source.tile.tileInstanceId,
+    tabId: payload.source.tile.tileInstanceId,
   };
 }

@@ -1,16 +1,41 @@
 import { describe, expect, it } from "vitest";
 import {
-  browserSessionsV10,
-  browserSessionsV11,
-  browserSessionsV12,
+  browserSessionsClientFrameSchema,
+  browserSessionsOpenRequestSchema,
+  browserSessionsServerFrameSchema,
+  browserSessionsV1,
+  browserSessionInfoSchema,
+  browserScreencastOpenRequestSchema,
 } from "@traycer/protocol/host/browser/contracts";
 
-describe("browser.sessions visible tile control frames", () => {
-  it("keeps visible tile control frames out of the frozen 1.0 contract", () => {
+const SAMPLE_SESSION = {
+  sessionId: "session-1",
+  epicId: "epic-1",
+  hostId: "host-1",
+  profile: "primary" as const,
+  name: "Browser",
+  createdBy: { chatId: "chat-1", agentRunId: null },
+  createdAt: 10,
+  lastActivityAt: 20,
+  tabs: [
+    {
+      tabId: "session-1",
+      url: "http://localhost:3000",
+      originTier: "dev" as const,
+      status: "ready" as const,
+      title: "App",
+      drivenBy: [],
+    },
+  ],
+};
+
+describe("browser.sessions@1.0 visible tile control frames", () => {
+  it("parses visible tile control request frames on the baseline contract", () => {
     const frame = {
       kind: "visibleTileControlRequest",
       hasBinaryPayload: false,
       requestId: "request-1",
+      grantId: "grant-1",
       chatId: "chat-1",
       agentRunId: "agent-1",
       agentLabel: "agent-1",
@@ -21,15 +46,15 @@ describe("browser.sessions visible tile control frames", () => {
       expiresAt: 20,
     };
 
-    expect(browserSessionsV10.serverFrameSchema.safeParse(frame).success).toBe(
-      false,
+    expect(browserSessionsServerFrameSchema.safeParse(frame).success).toBe(
+      true,
     );
-    expect(browserSessionsV11.serverFrameSchema.safeParse(frame).success).toBe(
+    expect(browserSessionsV1.serverFrameSchema.safeParse(frame).success).toBe(
       true,
     );
   });
 
-  it("accepts host-issued grant ids on the additive 1.2 control grant", () => {
+  it("accepts host-issued grant ids on the control grant decision frame", () => {
     const frame = {
       kind: "visibleTileControlDecision",
       hasBinaryPayload: false,
@@ -46,15 +71,15 @@ describe("browser.sessions visible tile control frames", () => {
       reason: null,
     };
 
-    expect(browserSessionsV10.clientFrameSchema.safeParse(frame).success).toBe(
-      false,
+    expect(browserSessionsClientFrameSchema.safeParse(frame).success).toBe(
+      true,
     );
-    expect(browserSessionsV12.clientFrameSchema.safeParse(frame).success).toBe(
+    expect(browserSessionsV1.clientFrameSchema.safeParse(frame).success).toBe(
       true,
     );
   });
 
-  it("accepts semantic visible tile actions only on the additive 1.2 server frame", () => {
+  it("accepts semantic visible tile actions on the baseline server frame", () => {
     const frame = {
       kind: "visibleTileControlAction",
       hasBinaryPayload: false,
@@ -68,18 +93,12 @@ describe("browser.sessions visible tile control frames", () => {
       requestedAt: 30,
     };
 
-    expect(browserSessionsV10.serverFrameSchema.safeParse(frame).success).toBe(
-      false,
-    );
-    expect(browserSessionsV11.serverFrameSchema.safeParse(frame).success).toBe(
-      false,
-    );
-    expect(browserSessionsV12.serverFrameSchema.safeParse(frame).success).toBe(
+    expect(browserSessionsServerFrameSchema.safeParse(frame).success).toBe(
       true,
     );
   });
 
-  it("accepts tile-addressed visible tile control failures on the additive 1.2 server frame", () => {
+  it("accepts tile-addressed visible tile control failures on the baseline server frame", () => {
     const frame = {
       kind: "visibleTileControlResult",
       hasBinaryPayload: false,
@@ -90,11 +109,66 @@ describe("browser.sessions visible tile control frames", () => {
       grant: null,
     };
 
-    expect(browserSessionsV10.serverFrameSchema.safeParse(frame).success).toBe(
-      false,
-    );
-    expect(browserSessionsV12.serverFrameSchema.safeParse(frame).success).toBe(
+    expect(browserSessionsServerFrameSchema.safeParse(frame).success).toBe(
       true,
     );
+  });
+});
+
+describe("browser.sessions@1.0 dual-key open + tab-shaped session info", () => {
+  it("requires both epicId and chatId on the open request", () => {
+    expect(
+      browserSessionsOpenRequestSchema.safeParse({
+        epicId: "epic-1",
+        chatId: "chat-1",
+      }).success,
+    ).toBe(true);
+    expect(
+      browserSessionsOpenRequestSchema.safeParse({ chatId: "chat-1" }).success,
+    ).toBe(false);
+    expect(
+      browserSessionsOpenRequestSchema.safeParse({ epicId: "epic-1" }).success,
+    ).toBe(false);
+  });
+
+  it("parses the tab-shaped session info (url/status live on tabs, not the session root)", () => {
+    expect(browserSessionInfoSchema.safeParse(SAMPLE_SESSION).success).toBe(
+      true,
+    );
+    expect(
+      browserSessionInfoSchema.safeParse({
+        sessionId: "session-1",
+        hostId: "host-1",
+        chatId: "chat-1",
+        url: "http://localhost:3000",
+        originTier: "dev",
+        status: "ready",
+        title: "App",
+        createdAt: 10,
+        lastActivityAt: 20,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires tabId on screencast open requests", () => {
+    expect(
+      browserScreencastOpenRequestSchema.safeParse({
+        sessionId: "session-1",
+        tabId: "session-1",
+        maxWidth: 1280,
+        maxHeight: 720,
+        quality: 80,
+        format: "jpeg",
+      }).success,
+    ).toBe(true);
+    expect(
+      browserScreencastOpenRequestSchema.safeParse({
+        sessionId: "session-1",
+        maxWidth: 1280,
+        maxHeight: 720,
+        quality: 80,
+        format: "jpeg",
+      }).success,
+    ).toBe(false);
   });
 });

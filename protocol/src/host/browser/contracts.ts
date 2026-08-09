@@ -35,6 +35,12 @@ export const browserSessionStatusSchema = z.enum([
   "navigating",
   "closing",
   "crashed",
+  // Shared-browser-runtime ticket 01: a tab whose backing page has been
+  // suspended (host restart, capacity reclaim) but whose record persists for
+  // on-demand restore - see the persistence-and-lifecycle plan. No driver
+  // reports this today; it is carried on the wire ahead of the ticket that
+  // produces it so consumers can match on it now.
+  "dormant",
 ]);
 export type BrowserSessionStatus = z.infer<typeof browserSessionStatusSchema>;
 
@@ -48,16 +54,79 @@ export type BrowserSessionClosedReason = z.infer<
   typeof browserSessionClosedReasonSchema
 >;
 
-export const browserSessionInfoSchema = z.object({
-  sessionId: z.string(),
+/**
+ * Shared-browser-runtime ticket 01. The identity boundary a session's tabs
+ * share: `"primary"` is the one shared, signed-in profile per host;
+ * `"isolated"` is a throwaway profile with no carried-over identity. Every
+ * session this ticket's consumers construct is `"primary"` - real isolated
+ * profiles are the host-runtime-and-discovery plan's job.
+ */
+export const browserSessionProfileKindSchema = z.enum(["primary", "isolated"]);
+export type BrowserSessionProfileKind = z.infer<
+  typeof browserSessionProfileKindSchema
+>;
+
+/**
+ * Shared-browser-runtime ticket 01. One attributed driver of a tab -
+ * `requestId` names a single in-flight action, `agentRunId` is `null` for a
+ * user-driven action. The concurrency model (settled decision 7) is
+ * last-writer-wins with no locks; this list is purely attribution, built by
+ * reference-counting action start/finish, not a queue or a lock.
+ */
+export const browserTabDriverSchema = z.object({
   chatId: z.string(),
-  hostId: z.string(),
+  agentRunId: z.string().nullable(),
+  requestId: z.string(),
+});
+export type BrowserTabDriver = z.infer<typeof browserTabDriverSchema>;
+
+/**
+ * Shared-browser-runtime ticket 01. One page within a session, addressed by
+ * a durable, host-minted `tabId` - never a Chromium target id (settled
+ * decision 5). This ticket's consumers mint exactly one tab per session
+ * (multi-tab mechanics are a later ticket), so `tabId` is currently always
+ * equal to the owning session's `sessionId`.
+ */
+export const browserTabInfoSchema = z.object({
+  tabId: z.string(),
   url: z.string(),
   originTier: browserOriginTierSchema,
   status: browserSessionStatusSchema,
+  title: z.string().nullable(),
+  drivenBy: z.array(browserTabDriverSchema),
+});
+export type BrowserTabInfo = z.infer<typeof browserTabInfoSchema>;
+
+/**
+ * Shared-browser-runtime ticket 01. Non-authorizing provenance: which chat
+ * (and, if an agent, which run) created the session. `BrowserSessionInfo`'s
+ * `epicId` is the authorizing scope now (settled decision 1); this field is
+ * metadata only, kept for sidebar attribution ("Agent: checkout test").
+ */
+export const browserSessionCreatedBySchema = z.object({
+  chatId: z.string(),
+  agentRunId: z.string().nullable(),
+});
+export type BrowserSessionCreatedBy = z.infer<
+  typeof browserSessionCreatedBySchema
+>;
+
+/**
+ * Shared-browser-runtime ticket 01 baseline. A session is an epic-scoped
+ * group of tabs bound to one profile (the three-layer model's middle layer,
+ * plan settled decision 5) - `url`/`title`/`status`/`originTier` moved onto
+ * `BrowserTabInfo` since those describe a page, not the session grouping it.
+ */
+export const browserSessionInfoSchema = z.object({
+  sessionId: z.string(),
+  epicId: z.string(),
+  hostId: z.string(),
+  profile: browserSessionProfileKindSchema,
+  name: z.string(),
+  createdBy: browserSessionCreatedBySchema,
   createdAt: z.number(),
   lastActivityAt: z.number(),
-  title: z.string().nullable(),
+  tabs: z.array(browserTabInfoSchema),
 });
 export type BrowserSessionInfo = z.infer<typeof browserSessionInfoSchema>;
 
@@ -115,7 +184,20 @@ export type BrowserVisibleTileAction = z.infer<
   typeof browserVisibleTileActionSchema
 >;
 
+/**
+ * Shared-browser-runtime ticket 01: `epicId` is new and drives session-list
+ * visibility (plan settled decision 1) - what the sidebar and discovery see.
+ * `chatId` is unchanged and stays required: this stream is also the
+ * transport for every existing chat-scoped, client-authorized action
+ * (`tileHandoff`, the visible-tile-control and borrowed-tile flows, the CDP
+ * bridge, `promoteState`/`lendStorage`), all of which trust the connection's
+ * own `chatId` as their authorization anchor for frames that carry no
+ * chatId of their own. Migrating that anchor to `epicId` is a deliberate
+ * ownership-lift audit (host-runtime-and-discovery plan, "Ownership lift and
+ * leases") - out of scope for this behavior-preserving baseline ticket.
+ */
 export const browserSessionsOpenRequestSchema = z.object({
+  epicId: z.string(),
   chatId: z.string(),
 });
 export type BrowserSessionsOpenRequest = z.infer<
@@ -176,29 +258,6 @@ const browserSessionsServerFrameSchemaV10 = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("pong"),
     ...textFrameFields,
-  }),
-]);
-
-const browserSessionsServerFrameSchemaV11 = z.discriminatedUnion("kind", [
-  ...browserSessionsServerFrameSchemaV10.def.options,
-  z.object({
-    kind: z.literal("visibleTileControlRequest"),
-    ...requestFrameFields,
-    chatId: z.string(),
-    agentRunId: z.string().nullable(),
-    agentLabel: z.string(),
-    tileInstanceId: z.string(),
-    origin: z.string(),
-    url: z.string().nullable(),
-    requestedAt: z.number(),
-    expiresAt: z.number(),
-  }),
-  z.object({
-    kind: z.literal("visibleTileControlResult"),
-    ...requestFrameFields,
-    ok: z.boolean(),
-    reason: z.string().nullable(),
-    grant: browserVisibleTileGrantSchemaV11.nullable(),
   }),
 ]);
 
@@ -564,23 +623,6 @@ const browserSessionsClientFrameSchemaV10 = z.discriminatedUnion("kind", [
   }),
 ]);
 
-const browserSessionsClientFrameSchemaV11 = z.discriminatedUnion("kind", [
-  ...browserSessionsClientFrameSchemaV10.def.options,
-  z.object({
-    kind: z.literal("visibleTileControlDecision"),
-    ...requestFrameFields,
-    approved: z.boolean(),
-    grant: browserVisibleTileGrantSchemaV11.nullable(),
-    reason: z.string().nullable(),
-  }),
-  z.object({
-    kind: z.literal("visibleTileControlRevoked"),
-    ...requestFrameFields,
-    tileInstanceId: z.string(),
-    reason: z.string(),
-  }),
-]);
-
 const browserSessionsClientFrameSchemaV12 = z.discriminatedUnion("kind", [
   ...browserSessionsClientFrameSchemaV10.def.options,
   z.object({
@@ -787,52 +829,20 @@ export type BrowserSessionsClientFrame = z.infer<
   typeof browserSessionsClientFrameSchema
 >;
 
-export const browserSessionsV15 = defineStreamRpcContract({
-  method: "browser.sessions",
-  schemaVersion: { major: 1, minor: 5 } as const,
-  openRequestSchema: browserSessionsOpenRequestSchema,
-  serverFrameSchema: browserSessionsServerFrameSchema,
-  clientFrameSchema: browserSessionsClientFrameSchema,
-});
-
-export const browserSessionsV14 = defineStreamRpcContract({
-  method: "browser.sessions",
-  schemaVersion: { major: 1, minor: 4 } as const,
-  openRequestSchema: browserSessionsOpenRequestSchema,
-  serverFrameSchema: browserSessionsServerFrameSchema,
-  clientFrameSchema: browserSessionsClientFrameSchemaV14,
-});
-
-export const browserSessionsV13 = defineStreamRpcContract({
-  method: "browser.sessions",
-  schemaVersion: { major: 1, minor: 3 } as const,
-  openRequestSchema: browserSessionsOpenRequestSchema,
-  serverFrameSchema: browserSessionsServerFrameSchemaV13,
-  clientFrameSchema: browserSessionsClientFrameSchemaV13,
-});
-
-export const browserSessionsV12 = defineStreamRpcContract({
-  method: "browser.sessions",
-  schemaVersion: { major: 1, minor: 2 } as const,
-  openRequestSchema: browserSessionsOpenRequestSchema,
-  serverFrameSchema: browserSessionsServerFrameSchemaV12,
-  clientFrameSchema: browserSessionsClientFrameSchemaV12,
-});
-
-export const browserSessionsV11 = defineStreamRpcContract({
-  method: "browser.sessions",
-  schemaVersion: { major: 1, minor: 1 } as const,
-  openRequestSchema: browserSessionsOpenRequestSchema,
-  serverFrameSchema: browserSessionsServerFrameSchemaV11,
-  clientFrameSchema: browserSessionsClientFrameSchemaV11,
-});
-
-export const browserSessionsV10 = defineStreamRpcContract({
+/**
+ * Shared-browser-runtime ticket 01: baseline rewrite. `browser.sessions` had
+ * never shipped, so its prior minor history (@1.0 through @1.4, tracked as
+ * separate frozen contracts) is collapsed into one fresh `@1.0` carrying
+ * every frame kind this file defines - no projection machinery and no
+ * frozen-minor exports to preserve, since nothing has shipped for them to
+ * stay compatible with.
+ */
+export const browserSessionsV1 = defineStreamRpcContract({
   method: "browser.sessions",
   schemaVersion: { major: 1, minor: 0 } as const,
   openRequestSchema: browserSessionsOpenRequestSchema,
-  serverFrameSchema: browserSessionsServerFrameSchemaV10,
-  clientFrameSchema: browserSessionsClientFrameSchemaV10,
+  serverFrameSchema: browserSessionsServerFrameSchema,
+  clientFrameSchema: browserSessionsClientFrameSchema,
 });
 
 export const browserScreencastFormatSchema = z.enum(["jpeg"]);
@@ -840,8 +850,16 @@ export type BrowserScreencastFormat = z.infer<
   typeof browserScreencastFormatSchema
 >;
 
+/**
+ * Shared-browser-runtime ticket 01: tab-addressed, not session-only - a
+ * session can carry more than one tab (settled decision 5), so screencast
+ * must name which one it mirrors. This ticket's consumers always pass
+ * `tabId === sessionId` (one tab per session); a later ticket makes the two
+ * genuinely independent.
+ */
 export const browserScreencastOpenRequestSchema = z.object({
   sessionId: z.string(),
+  tabId: z.string(),
   maxWidth: z.number().int().positive(),
   maxHeight: z.number().int().positive(),
   quality: z.number().int().min(0).max(100),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  browserContextAttachmentToWire,
   createBrowserConsoleAttachment,
   createBrowserDebugContextAttachment,
   createBrowserElementAttachment,
@@ -334,5 +335,25 @@ describe("browser debug context attachment (ticket 22)", () => {
     expect(payload.composerText).toContain(`Content hash: ${CAPTURE.sha256}`);
     expect(payload.composerText).not.toContain("Console errors:");
     expect(payload.composerText).not.toContain("Network errors:");
+  });
+});
+
+describe("browserContextAttachmentToWire (ticket 01)", () => {
+  it("emits tabId from the tile key, not the retired tileInstanceId wire field", () => {
+    const payload = createBrowserScreenshotAttachment({
+      tile: TILE,
+      pageUrl: "http://localhost:3000/page",
+      capture: CAPTURE,
+    });
+    const wire = browserContextAttachmentToWire(payload);
+    expect(wire).toEqual({
+      kind: "browser-screenshot",
+      origin: "http://localhost:3000",
+      pageUrl: "http://localhost:3000/page",
+      composerText: payload.composerText,
+      tabId: "tile",
+    });
+    expect(wire).not.toHaveProperty("tileInstanceId");
+    expect(wire).not.toHaveProperty("handle");
   });
 });

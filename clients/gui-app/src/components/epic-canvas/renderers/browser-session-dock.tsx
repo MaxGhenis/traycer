@@ -14,6 +14,7 @@ import {
   type BrowserSessionInfo,
   type BrowserSessionsClientFrame,
   type BrowserSessionsServerFrame,
+  type BrowserTabInfo,
 } from "@traycer/protocol/host/browser/contracts";
 import type {
   StreamCloseReason,
@@ -57,6 +58,16 @@ import {
   isBrowserTileRef,
   type EpicCanvasState,
 } from "@/stores/epics/canvas/types";
+
+/**
+ * Shared-browser-runtime ticket 01: sessions always carry exactly one tab
+ * this ticket's consumers mint (multi-tab mechanics are a later ticket).
+ * `null` only if a session somehow arrives with no tabs at all - display
+ * code degrades gracefully rather than throwing.
+ */
+function primaryTab(session: BrowserSessionInfo): BrowserTabInfo | null {
+  return session.tabs[0] ?? null;
+}
 
 type PromoteStateFrame = Extract<
   BrowserSessionsServerFrame,
@@ -112,7 +123,6 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
     () => resolveDesktopBrowserViewBridge(runnerHost),
     [runnerHost],
   );
-  const sessions = useBrowserSessions(props.chatId);
   const navigateNested = useEpicNestedFocusNavigation();
   const prepareSplitPaneWithNodeFocusTarget = useEpicCanvasStore(
     (state) => state.prepareSplitPaneWithNodeFocusTarget,
@@ -120,6 +130,7 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
   const epicId = useEpicCanvasStore(
     (state) => state.tabsById[props.viewTabId]?.epicId ?? null,
   );
+  const sessions = useBrowserSessions(epicId, props.chatId);
   const [handoffPendingId, setHandoffPendingId] = useState<string | null>(null);
   const [handoffMessage, setHandoffMessage] = useState<string | null>(null);
   const [lendPendingId, setLendPendingId] = useState<string | null>(null);
@@ -144,12 +155,13 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
 
   const openPeek = useCallback(
     (session: BrowserSessionInfo) => {
+      const url = primaryTab(session)?.url ?? "";
       const tile = makeBrowserPeekTileRef({
-        name: `Peek ${browserTileNameForUrl(session.url)}`,
+        name: `Peek ${browserTileNameForUrl(url)}`,
         hostId,
         chatId: props.chatId,
         sessionId: session.sessionId,
-        initialUrl: session.url,
+        initialUrl: url,
       });
       const prepare = () =>
         prepareSplitPaneWithNodeFocusTarget(
@@ -322,10 +334,11 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
           >
             <div className="min-w-0 flex-1">
               <div className="truncate text-ui-sm font-medium">
-                {session.title ?? browserTileNameForUrl(session.url)}
+                {primaryTab(session)?.title ??
+                  browserTileNameForUrl(primaryTab(session)?.url ?? "")}
               </div>
               <div className="truncate font-mono text-ui-xs text-muted-foreground">
-                {session.url}
+                {primaryTab(session)?.url ?? ""}
               </div>
             </div>
             <Button
@@ -602,7 +615,10 @@ function isLocalhostCookieScopeOrigin(origin: string): boolean {
   }
 }
 
-function useBrowserSessions(chatId: string): {
+function useBrowserSessions(
+  epicId: string | null,
+  chatId: string,
+): {
   readonly lifecycle: BrowserSessionsLifecycle;
   readonly items: readonly BrowserSessionInfo[];
   readonly errorMessage: string | null;
@@ -659,14 +675,14 @@ function useBrowserSessions(chatId: string): {
   const errorMessage = stateMatchesClient ? streamState.errorMessage : null;
 
   useEffect(() => {
-    if (client === null) {
+    if (client === null || epicId === null) {
       sessionRef.current = null;
       return;
     }
     const pendingPromotes = pendingPromotesRef.current;
     const pendingLends = pendingLendsRef.current;
     if (pendingPromotes === null || pendingLends === null) return;
-    const stream = client.subscribe("browser.sessions", { chatId });
+    const stream = client.subscribe("browser.sessions", { epicId, chatId });
     sessionRef.current = stream;
     stream.onStatusChange((status, reason) => {
       setStreamState((current) => ({
@@ -718,7 +734,7 @@ function useBrowserSessions(chatId: string): {
         new Error("Browser sessions stream closed."),
       );
     };
-  }, [chatId, client]);
+  }, [chatId, client, epicId]);
 
   const requestPromoteState = useCallback((sessionId: string) => {
     const session = sessionRef.current;

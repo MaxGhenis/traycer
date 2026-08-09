@@ -327,12 +327,7 @@ import {
 } from "@traycer/protocol/host/terminal/contracts";
 import {
   browserScreencastV10,
-  browserSessionsV10,
-  browserSessionsV11,
-  browserSessionsV12,
-  browserSessionsV13,
-  browserSessionsV14,
-  browserSessionsV15,
+  browserSessionsV1,
 } from "@traycer/protocol/host/browser/contracts";
 import { browserStopAgentActivityV10 } from "@traycer/protocol/host/browser/stop-contract";
 import {
@@ -6102,7 +6097,7 @@ export type HostRpcRegistry = typeof hostRpcRegistry;
  * One manifest per `/stream` WS: `epic.subscribe@1.1`,
  * `chat.subscribe@1.6`, `notifications.subscribe@1.1`,
  * `terminal.subscribe@1.5`, `git.subscribeStatus@1.3`,
- * `browser.sessions@1.5`, `browser.screencast@1.0`,
+ * `browser.sessions@1.0`, `browser.screencast@1.0`,
  * `resources.subscribe@1.4`, `agent.inbox.subscribe@1.2`,
  * `epic.communicationGraph.subscribe@1.0`, `speech.dictate@1.0`,
  * `pr.subscribeListForEpic@1.0`, `pr.subscribeDetail@1.0`, and
@@ -6256,40 +6251,14 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   },
   "browser.sessions": {
     1: {
-      // @1.3 (ticket 03) adds the typed CDP bridge for the agent's own tile:
-      // one request/result frame pair per enumerated CDP method, plus a
-      // `cdpSessionEnded` push when the tile's debugger detaches.
-      // @1.4 (ticket 09) adds borrowed-tile attachment lifetime frames
-      // (`borrowedTileAttached` / `borrowedTileDetached` on the server side,
-      // `borrowedTileReleased` on the client side) so the same CDP bridge can
-      // address a tile the user already had open.
-      // @1.5 (ticket 12, ticket 24) adds one client push: `tileHandoff`
-      // (captured `{url, storageState}` pushed just before a tile dies, for
-      // the headless handoff). Ticket 12 also added `cdpInteractionObserved`
-      // (the input-provenance interaction-epoch signal, ticket 08); ticket 24
-      // retired it before this line ever shipped - Electron's
-      // `before-input-event` never fires for mouse, so the guard it fed was
-      // blind to the commonest interference mode. @1.0-@1.4 stay installed
-      // and FROZEN.
-      latestMinor: 5,
+      // Shared-browser-runtime ticket 01: `browser.sessions` never shipped,
+      // so its prior in-repo minor history (@1.0-@1.4) is collapsed into one
+      // fresh @1.0 baseline carrying every frame kind - see the doc comment
+      // on `browserSessionsV1` in `contracts.ts`.
+      latestMinor: 0,
       versions: {
         0: {
-          contract: browserSessionsV10,
-        },
-        1: {
-          contract: browserSessionsV11,
-        },
-        2: {
-          contract: browserSessionsV12,
-        },
-        3: {
-          contract: browserSessionsV13,
-        },
-        4: {
-          contract: browserSessionsV14,
-        },
-        5: {
-          contract: browserSessionsV15,
+          contract: browserSessionsV1,
         },
       },
     },

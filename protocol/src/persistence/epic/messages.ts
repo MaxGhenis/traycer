@@ -23,14 +23,14 @@ const jsonContentSchema = getRecordSchema(
 );
 
 /**
- * Ticket 13. A browser tile's context the user attached to a chat message
- * (composer attach, console row, screenshot, element - see
- * `browser-context-attachments.ts` in gui-app), carried alongside `content`
- * rather than embedded in it. `handle` is the opaque, chat-scoped token the
- * host minted from the tile's real `tileInstanceId` when the message was
- * accepted (`browser-tile-handle.ts`) - the raw id itself never reaches
- * persistence or the model; only this record does, matching what the model
- * is shown (origin, page URL, handle) via the prompt.
+ * Shared-browser-runtime ticket 01. A browser tile's context the user
+ * attached to a chat message (composer attach, console row, screenshot,
+ * element - see `browser-context-attachments.ts` in gui-app), carried
+ * alongside `content` rather than embedded in it. `sessionId`/`tabId` name
+ * the tab directly - the chip is disambiguation ("I mean this tab"), not
+ * authorization, since the model reaches any epic tab through discovery
+ * regardless; the opaque `handle` ticket 13 minted (`browser-tile-handle.ts`,
+ * retired by this ticket) no longer serves a purpose.
  */
 export const browserContextAttachmentKindSchema = z.enum([
   "browser-console-entry",
@@ -48,7 +48,8 @@ export const browserContextAttachmentRecordSchema = z.object({
   origin: z.string(),
   pageUrl: z.string(),
   composerText: z.string(),
-  handle: z.string(),
+  sessionId: z.string(),
+  tabId: z.string(),
 });
 export type BrowserContextAttachmentRecord = z.infer<
   typeof browserContextAttachmentRecordSchema
