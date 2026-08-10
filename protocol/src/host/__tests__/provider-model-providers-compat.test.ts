@@ -1927,18 +1927,18 @@ describe("the v7.0 freeze goes all the way down", () => {
     // above fired to force it (in CI, on the merge preview - the tripwire
     // proving itself in the wild).
     //
-    // `config_unreadable` was added to the LIVE native error enum on main
-    // (#1050) after this branch cut. The reflex answer - frozen copy predates
-    // it, so project it away on the v8→v7 bridge - is wrong here: NO released
-    // tag ships `providers.list@7.0`. `host-v1.1.11` and every earlier
-    // host/cli/desktop tag top out below it, so v7.0 is unreleased and #1050
-    // grew it legitimately, exactly as the registry fields grew v6.0 before
-    // `cli-v1.1.9` shipped it.
+    // `config_unreadable` reached the LIVE native error enum after this line
+    // was cut. The reflex answer - frozen copy predates it, so project it away
+    // on the v8→v7 bridge - is wrong here: NO released tag ships
+    // `providers.list@7.0`. Every non-RC host/cli/desktop tag tops out below
+    // it, so v7.0 is unreleased and growing it in place was legitimate,
+    // exactly as the registry fields grew v6.0 before `cli-v1.1.9` shipped
+    // it.
     //
     // Versions protect peers in the FIELD. There is no peer that negotiated
     // v7.0 and cannot read this code - the release that first ships v7.0 ships
     // it too. So the bridge needs no projection, and the frozen snapshot is
-    // "v7.0 as of the moment v8.0 opened", which includes #1050.
+    // "v7.0 as of the moment v8.0 opened", which includes this member.
     //
     // This stops being true the day a release ships v7.0. After that, a code
     // added to the live enum needs a real projection decision, and the

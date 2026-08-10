@@ -1842,8 +1842,8 @@ export type ModelProviderAuthResult = z.infer<
 // Two consequences follow, and they pull in opposite directions:
 //
 //  - Until the first non-RC release ships 7.0, there is no peer in the field
-//    decoding these shapes, so a genuine v7.0-line addition on `main` may be
-//    mirrored here rather than projected away. `config_unreadable` is the
+//    decoding these shapes, so a genuine v7.0-line addition may be mirrored
+//    here rather than projected away. `config_unreadable` is the
 //    worked example - see `providerNativeErrorCodeSchemaV70`.
 //  - From that release onward, the rule hardens: an addition to a live
 //    counterpart must NOT be mirrored here, and the v8→v7 projection has to
@@ -1872,16 +1872,16 @@ export type ProviderNativeScopeV70 = z.infer<
 
 /**
  * `config_unreadable` IS on this frozen copy, and the reason is worth writing
- * down because the equality tripwire above fired to force the decision.
+ * down because it reads like a mistake.
  *
- * It was added to the live enum on `main` (PR #1050) after this branch cut,
- * and the reflex answer - "the frozen copy predates it, so project it away on
- * the v8→v7 bridge" - would have been wrong. No released tag ships
- * `providers.list@7.0` at all: `host-v1.1.11` and every earlier
- * `host-v*`/`cli-v*`/`desktop-v*` top out below it. v7.0 is UNRELEASED, so
- * #1050 grew it legitimately, exactly as `providerManagedInstallStateSchema`
- * grew v6.0 while no release shipped it, and exactly as
- * `providersSetEnabledRequestSchemaV21` widens an unreleased minor in place.
+ * It reached the live enum after this line was cut, and the reflex answer -
+ * "the frozen copy predates it, so project it away on the v8→v7 bridge" - is
+ * wrong here. No released tag ships `providers.list@7.0` at all: every non-RC
+ * `host-v*`/`cli-v*`/`desktop-v*` tag tops out below it. v7.0 is UNRELEASED,
+ * so growing it in place was legitimate - exactly as
+ * `providerManagedInstallStateSchema` grew v6.0 while no release shipped it,
+ * and exactly as `providersSetEnabledRequestSchemaV21` widens an unreleased
+ * minor rather than minting a new one.
  *
  * Versions exist to protect peers in the field. There is no peer that
  * negotiated v7.0 and cannot decode `config_unreadable` - the release that
@@ -1890,11 +1890,11 @@ export type ProviderNativeScopeV70 = z.infer<
  * never existed.
  *
  * The freeze still stands: v7.0 is pinned as of the moment v8.0 opened, and
- * that moment now includes #1050. What does NOT follow is that later growth is
- * free - once a NON-RC release ships a major-7 contract, this line has peers
- * in the field and an addition to the live enum must be projected on the v8→v7
- * bridge instead of mirrored here. Same activation point the section header
- * above describes.
+ * that moment includes this member. What does NOT follow is that later growth
+ * is free - once a NON-RC release ships a major-7 contract, this line has
+ * peers in the field and an addition to the live enum must be projected on the
+ * v8→v7 bridge instead of mirrored here. Same activation point the section
+ * header above describes.
  */
 export const providerNativeErrorCodeSchemaV70 = z.enum([
   "duplicate_name",
