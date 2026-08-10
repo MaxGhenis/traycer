@@ -1,14 +1,11 @@
-import type { ZodType } from "zod";
-
 import type { PermissionRole } from "@traycer/protocol/host/epic/unary-schemas";
 import {
-  epicDurabilityPauseReasonSchema,
-  epicDurabilityStatusSchema,
   epicSubscribeServerFrameSchema,
   type EpicArtifactRoomAvailability,
   type EpicCloudSyncStatus,
-  type EpicDurabilityPauseReason,
-  type EpicDurabilityStatus,
+  type EpicDurabilityPauseReasonV14,
+  type EpicDurabilityStatusV14,
+  type EpicLocalProtection,
   type EpicMigrationPhase,
   type EpicPromotionState,
   type EpicSubscribeClientFrame,
@@ -172,9 +169,7 @@ export interface EpicStreamCallbacks {
    */
   readonly onCloudSyncStatus: (
     status: EpicCloudSyncStatus,
-    durability: EpicDurabilityStatus | undefined,
-    pauseReason: EpicDurabilityPauseReason | undefined,
-    promotionState: EpicPromotionState | undefined,
+    durability: EpicCloudSyncDurability,
   ) => void;
   /**
    * Fires once when the host decides this epic needs a major migration -
@@ -241,18 +236,37 @@ export interface EpicStreamClientOptions {
  * never sees the wire envelope directly.
  */
 /**
- * Read a status value only if it belongs to the closed union this client's
- * callbacks speak. A later minor may carry a wider value (see the
- * `cloudSyncStatus` case), and the safe reading of one this client cannot name
- * is "absent", not a value the renderer would misinterpret.
+ * The durability half of a `cloudSyncStatus` frame, as ONE value.
+ *
+ * Grouped rather than passed as four positional arguments: `@1.4` made this
+ * four legs that are read TOGETHER (see the absence rule below), and four
+ * trailing `undefined`s at a call site is exactly how a leg ends up in the
+ * wrong slot.
+ *
+ * ABSENT MEANS UNKNOWN on every field, never "synced" and never "protected".
+ * These used to be projected down onto the frozen `@1.3` unions, so a host
+ * saying `unknown` reached the renderer as `undefined` and rendered as the
+ * calm value - the ambiguity `epic.subscribe@1.4` exists to remove.
  */
-function frozenStatusValue<Output>(
-  schema: ZodType<Output>,
-  value: unknown,
-): Output | undefined {
-  const parsed = schema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
-}
+export type EpicCloudSyncDurability = {
+  readonly durability: EpicDurabilityStatusV14 | undefined;
+  readonly pauseReason: EpicDurabilityPauseReasonV14 | undefined;
+  readonly promotionState: EpicPromotionState | undefined;
+  /** Whether this session has local WAL protection. */
+  readonly localProtection: EpicLocalProtection | undefined;
+};
+
+/**
+ * "The host told us nothing about durability." Exported so a test fixture
+ * states that intent once instead of spelling four `undefined`s, which is
+ * indistinguishable from having forgotten one.
+ */
+export const NO_CLOUD_SYNC_DURABILITY: EpicCloudSyncDurability = {
+  durability: undefined,
+  pauseReason: undefined,
+  promotionState: undefined,
+  localProtection: undefined,
+};
 
 export class EpicStreamClient {
   private readonly session: IStreamSession;
@@ -422,15 +436,21 @@ export class EpicStreamClient {
       case "cloudSyncStatus": {
         this.callbacks.onCloudSyncStatus(
           frame.status,
-          // `epic.subscribe@1.4` widened both of these enums and added
-          // `localProtection` / `freshness` (the s5 status pass). The renderer
-          // half of that pass lands with the host half, so until then this
-          // client speaks the @1.3 unions and projects a wider value onto them
-          // rather than casting it through: an unrecognised value reads as
-          // absent here, and absence is the renderer's UNKNOWN state.
-          frozenStatusValue(epicDurabilityStatusSchema, frame.durability),
-          frozenStatusValue(epicDurabilityPauseReasonSchema, frame.pauseReason),
-          "promotionState" in frame ? frame.promotionState : undefined,
+          // Passed through at their `@1.4` width now that the renderer half of
+          // the s5 status pass exists. The projection that used to sit here
+          // narrowed `durability: "unknown"` to `undefined`, which handed the
+          // renderer exactly the ambiguity this minor was added to remove.
+          //
+          // The frame is already validated against the negotiated contract
+          // upstream, so a value that reaches here is one this line speaks.
+          {
+            durability: frame.durability,
+            pauseReason: frame.pauseReason,
+            promotionState:
+              "promotionState" in frame ? frame.promotionState : undefined,
+            localProtection:
+              "localProtection" in frame ? frame.localProtection : undefined,
+          },
         );
         return;
       }

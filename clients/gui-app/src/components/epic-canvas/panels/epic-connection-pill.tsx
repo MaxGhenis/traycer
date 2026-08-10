@@ -241,6 +241,39 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
         ariaLabel:
           "Offline. Changes are saved on this device and sync when the connection is back.",
       };
+    // The epic is not in the cloud at all. This used to render as `synced`
+    // — "All changes synced", beside the durability badge's "Stored
+    // locally", about an epic no cloud has ever seen. The copy is now the
+    // true statement, and it agrees with the badge instead of contradicting
+    // it inches away.
+    case "storedLocally":
+      return {
+        containerClassName: QUIET_CONTAINER_CLASS,
+        dotClassName: "",
+        label: null,
+        showAgentSpinner: false,
+        pulse: "active",
+        tooltip: "Saved on this device. This epic is not in the cloud yet.",
+        ariaLabel: "Saved on this device. This epic is not in the cloud yet.",
+      };
+    // The one alerting state that is about RISK rather than progress: no
+    // local WAL and no cloud link, so an edit made now exists only in memory
+    // and does not survive a quit — graceful included. Red rather than
+    // amber, because unlike every other offline state nothing here is
+    // "pending"; there is nothing holding the work at all.
+    case "unprotected":
+      return {
+        containerClassName:
+          "rounded-md bg-destructive/10 px-2 py-0.5 text-destructive",
+        dotClassName: "bg-destructive",
+        label: "Offline — changes not saved",
+        showAgentSpinner: false,
+        pulse: null,
+        tooltip:
+          "The cloud connection is down and this session has no local backup, so recent changes are only in this window. Reconnect, or copy anything you cannot lose.",
+        ariaLabel:
+          "Offline and unprotected. Recent changes are only in this window and will be lost if it closes.",
+      };
     // The stream is up but this cycle has not supplied enough evidence for a
     // cloud/durability claim. Keep the copy factual and intentionally avoid
     // guessing why (old host, reconnect, or pending first status are all

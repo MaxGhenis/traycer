@@ -9,8 +9,9 @@ import {
 import type { PermissionRole } from "@traycer/protocol/host/epic/unary-schemas";
 import type {
   EpicCloudSyncStatus,
-  EpicDurabilityPauseReason,
-  EpicDurabilityStatus,
+  EpicDurabilityPauseReasonV14,
+  EpicDurabilityStatusV14,
+  EpicLocalProtection,
   EpicMigrationPhase,
   EpicPromotionState,
 } from "@traycer/protocol/host/epic/subscribe";
@@ -372,12 +373,27 @@ export interface OpenEpicState {
    * proof.
    */
   readonly cloudSyncStatus: EpicCloudSyncStatus;
-  /** Optional @1.2 routing truth; null preserves the legacy sync pill. */
-  readonly durabilityStatus?: EpicDurabilityStatus | null;
-  /** Present only for the two recognised paused reasons. */
-  readonly durabilityPauseReason?: EpicDurabilityPauseReason | null;
+  /**
+   * Where the epic is durable, at `@1.4` width.
+   *
+   * `null` here means the host said NOTHING, and at `@1.4` that reads as
+   * unknown - never as synced. It is not a licence for the calm rendering;
+   * see `selectEpicDurabilityView`, which requires a POSITIVE statement
+   * before it will resolve a missing durability claim as fine.
+   */
+  readonly durabilityStatus?: EpicDurabilityStatusV14 | null;
+  /** Present for a recognised paused reason, at `@1.4` width. */
+  readonly durabilityPauseReason?: EpicDurabilityPauseReasonV14 | null;
   /** Optional @1.3 distinction behind a durable promotion reservation. */
   readonly durabilityPromotionState?: EpicPromotionState | null;
+  /**
+   * Whether this session has local (WAL) protection - `@1.4`.
+   *
+   * `null` means the host did not say, which is `unknown`: an unarmed session
+   * used to be indistinguishable from an armed one, so the ONLY reading that
+   * closes that hole is that silence is not protection.
+   */
+  readonly localProtection?: EpicLocalProtection | null;
   /** `true` only after a cloud-status frame for this exact open cycle. */
   readonly hasFreshCloudSyncStatus: boolean;
   /**
@@ -771,9 +787,10 @@ export function createOpenEpicStore(
   // connection status. The sync pill must instead consult
   // `hasFreshCloudSyncStatus`, which is the per-cycle acknowledgement proof.
   let cloudSyncStatus: EpicCloudSyncStatus = "connected";
-  let durabilityStatus: EpicDurabilityStatus | null = null;
-  let durabilityPauseReason: EpicDurabilityPauseReason | null = null;
+  let durabilityStatus: EpicDurabilityStatusV14 | null = null;
+  let durabilityPauseReason: EpicDurabilityPauseReasonV14 | null = null;
   let durabilityPromotionState: EpicPromotionState | null = null;
+  let localProtection: EpicLocalProtection | null = null;
   let hasFreshCloudSyncStatus = false;
   let currentStatus: StreamConnectionStatus = "connecting";
   // Flips true on the first successful connect so a later drop reads as
@@ -1611,6 +1628,7 @@ export function createOpenEpicStore(
           | "durabilityStatus"
           | "durabilityPauseReason"
           | "durabilityPromotionState"
+          | "localProtection"
           | "hasFreshCloudSyncStatus"
           | "hasConnectedOnce"
         > => ({
@@ -1620,6 +1638,7 @@ export function createOpenEpicStore(
           durabilityStatus,
           durabilityPauseReason,
           durabilityPromotionState,
+          localProtection,
           hasFreshCloudSyncStatus,
           hasConnectedOnce,
         });
@@ -2170,19 +2189,17 @@ export function createOpenEpicStore(
                 migration: NOT_ALLOWED_MIGRATION_SLICE,
               });
             },
-            onCloudSyncStatus: (
-              status,
-              durability,
-              pauseReason,
-              promotionState,
-            ) => {
+            onCloudSyncStatus: (status, durable) => {
               if (disposed || generation !== streamGeneration) return;
               const previousCloudSyncStatus = cloudSyncStatus;
               cloudSyncStatus = status;
-              durabilityStatus = durability ?? null;
+              durabilityStatus = durable.durability ?? null;
               durabilityPauseReason =
-                durability === "paused" ? (pauseReason ?? null) : null;
-              durabilityPromotionState = promotionState ?? null;
+                durable.durability === "paused"
+                  ? (durable.pauseReason ?? null)
+                  : null;
+              durabilityPromotionState = durable.promotionState ?? null;
+              localProtection = durable.localProtection ?? null;
               hasFreshCloudSyncStatus = true;
               if (
                 hasConnectedOnce &&
@@ -2240,6 +2257,7 @@ export function createOpenEpicStore(
                 durabilityStatus = null;
                 durabilityPauseReason = null;
                 durabilityPromotionState = null;
+                localProtection = null;
               }
               const nextStatus = syncCurrentConnectionStatus();
               hasFreshRootSnapshotForOpenCycle = false;
@@ -2311,6 +2329,7 @@ export function createOpenEpicStore(
           durabilityStatus = null;
           durabilityPauseReason = null;
           durabilityPromotionState = null;
+          localProtection = null;
           const cycleDurabilityState = resetDurabilityProofForOpenCycle();
           // A fresh re-subscribe bootstraps from scratch, so the next connect is
           // "connecting", not "reconnecting": clear the latch and let only a

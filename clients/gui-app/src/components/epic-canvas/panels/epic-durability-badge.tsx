@@ -4,16 +4,17 @@ import {
   useEpicArtifactRecords,
   useEpicDurabilityPauseReason,
   useEpicDurabilityPromotionState,
-  useEpicDurabilityStatus,
+  useEpicDurabilityView,
   useEpicSnapshotMeta,
+  type EpicDurabilityView,
 } from "@/lib/epic-selectors";
 import { isEpicArtifactKind } from "@/lib/artifacts/node-display";
 import { resolveManageSubscriptionUrl } from "@/lib/auth/manage-subscription-url";
 import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import type {
-  EpicDurabilityPauseReason,
-  EpicDurabilityStatus,
+  EpicDurabilityPauseReasonV14,
+  EpicLocalProtection,
   EpicPromotionState,
 } from "@traycer/protocol/host/epic/subscribe";
 
@@ -23,13 +24,25 @@ import type {
  * locally served cloud mirror.
  */
 export function EpicDurabilityBadge() {
-  const status = useEpicDurabilityStatus();
+  const view = useEpicDurabilityView();
   const pauseReason = useEpicDurabilityPauseReason();
   const promotionState = useEpicDurabilityPromotionState();
-  if (status === null) return null;
+  // Two silences, and only ONE of them is nothing to say.
+  //
+  // `cloudDurable` is the host positively stating that the epic is in the
+  // cloud and this session is locally protected, so there is genuinely no
+  // badge to draw - that is the ordinary online case and it stays silent.
+  // `legacy` is a pre-`@1.4` peer with no durability answer, which is exactly
+  // the rendering it had before this minor.
+  //
+  // What used to join them is `indeterminate`, and it does not any more: an
+  // unknown or unprotected session drew no badge at all, so it looked
+  // identical to a protected one. It now draws.
+  if (view.kind === "cloudDurable") return null;
+  if (view.kind === "legacy" && view.status === null) return null;
   return (
     <EpicDurabilityBadgeContent
-      status={status}
+      view={view}
       pauseReason={pauseReason}
       promotionState={promotionState}
     />
@@ -37,8 +50,8 @@ export function EpicDurabilityBadge() {
 }
 
 function EpicDurabilityBadgeContent(props: {
-  readonly status: EpicDurabilityStatus;
-  readonly pauseReason: EpicDurabilityPauseReason | null;
+  readonly view: EpicDurabilityView;
+  readonly pauseReason: EpicDurabilityPauseReasonV14 | null;
   readonly promotionState: EpicPromotionState | null;
 }) {
   const runnerHost = useRunnerHost();
@@ -59,15 +72,14 @@ function EpicDurabilityBadgeContent(props: {
       archiveTitle: meta?.epicLight?.title ?? "Traycer",
     });
   };
-  const badge = badgeCopy(
-    props.status,
-    props.pauseReason,
-    props.promotionState,
-  );
+  const status = viewStatus(props.view);
+  const protection = viewProtection(props.view);
+  const badge = badgeCopy(props.view, props.pauseReason, props.promotionState);
   return (
     <span
       data-testid="epic-durability-badge"
-      data-durability-status={props.status}
+      data-durability-status={status ?? "unknown"}
+      data-local-protection={protection ?? undefined}
       data-pause-reason={props.pauseReason ?? undefined}
       data-promotion-state={props.promotionState ?? undefined}
       className={cn(
@@ -76,8 +88,7 @@ function EpicDurabilityBadgeContent(props: {
       )}
     >
       <span>{badge.label}</span>
-      {props.status === "paused" &&
-      props.pauseReason === "entitlement-lapsed" ? (
+      {status === "paused" && props.pauseReason === "entitlement-lapsed" ? (
         <button
           type="button"
           className="underline underline-offset-2"
@@ -91,7 +102,7 @@ function EpicDurabilityBadgeContent(props: {
           Upgrade
         </button>
       ) : null}
-      {props.status === "paused" && props.pauseReason === "access-revoked" ? (
+      {status === "paused" && props.pauseReason === "access-revoked" ? (
         <Button
           type="button"
           size="xs"
@@ -108,11 +119,66 @@ function EpicDurabilityBadgeContent(props: {
   );
 }
 
+/** The concrete durability value to render, or `null` for indeterminate. */
+function viewStatus(
+  view: EpicDurabilityView,
+): "local" | "promoting" | "paused" | "offline" | null {
+  if (view.kind === "stated") return view.status;
+  if (
+    view.kind === "legacy" &&
+    view.status !== null &&
+    view.status !== "unknown"
+  ) {
+    return view.status;
+  }
+  return null;
+}
+
+function viewProtection(view: EpicDurabilityView): EpicLocalProtection | null {
+  if (view.kind === "stated" || view.kind === "indeterminate") {
+    return view.protection;
+  }
+  return null;
+}
+
+/**
+ * What the badge says, TOTAL over the view - `s5-status-truthfulness`.
+ *
+ * The `indeterminate` arms are the new ones and they are the reason this
+ * function exists in this shape. A `switch` over the raw status enum returned
+ * `undefined` for anything it did not name, and the caller dereferenced
+ * `.label` straight off it - so `@1.4`'s `unknown` member would not have
+ * degraded, it would have thrown. More importantly, the states that reached
+ * here as `null` drew NOTHING, which is how an unprotected session came to
+ * look exactly like a protected one.
+ */
 function badgeCopy(
-  status: EpicDurabilityStatus,
-  pauseReason: EpicDurabilityPauseReason | null,
+  view: EpicDurabilityView,
+  pauseReason: EpicDurabilityPauseReasonV14 | null,
   promotionState: EpicPromotionState | null,
 ): { readonly label: string; readonly className: string } {
+  if (view.kind === "indeterminate") {
+    // `unavailable` is a stated FACT about risk, not an absence, so it gets
+    // the stronger treatment and names the consequence rather than the
+    // mechanism - "no local backup" is what a person can act on; "the WAL is
+    // unarmed" is not.
+    return view.protection === "unavailable"
+      ? {
+          label: "No local backup",
+          className: "bg-destructive/10 text-destructive",
+        }
+      : {
+          label: "Storage status unknown",
+          className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+        };
+  }
+  const status = viewStatus(view);
+  if (status === null) {
+    return {
+      label: "Storage status unknown",
+      className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    };
+  }
   if (status === "promoting" && promotionState === "pending") {
     return {
       label: "Promotion pending",
@@ -132,18 +198,54 @@ function badgeCopy(
       };
     case "offline":
       return {
-        label: "Cloud mirror — offline",
+        label: "Cloud mirror \u2014 offline",
         className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
       };
     case "paused":
-      return pauseReason === "access-revoked"
-        ? {
-            label: "Sync blocked — access revoked",
-            className: "bg-destructive/10 text-destructive",
-          }
-        : {
-            label: "Sync paused",
-            className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
-          };
+      return pausedCopy(pauseReason);
+  }
+}
+
+/**
+ * The paused arm, widened for `@1.4`'s three delete-path reasons -
+ * `s5-status-truthfulness` instance 2.
+ *
+ * All three used to arrive as a bare `paused` and render "Sync paused", which
+ * is true and useless. `orphaned-local-edits-after-cloud-delete` is the
+ * actionable one: the epic holds local edits the deleted cloud copy never
+ * received, so it is the only member here that is a warning rather than a
+ * status.
+ */
+function pausedCopy(pauseReason: EpicDurabilityPauseReasonV14 | null): {
+  readonly label: string;
+  readonly className: string;
+} {
+  switch (pauseReason) {
+    case "access-revoked":
+      return {
+        label: "Sync blocked \u2014 access revoked",
+        className: "bg-destructive/10 text-destructive",
+      };
+    case "orphaned-local-edits-after-cloud-delete":
+      return {
+        label: "Deleted in cloud \u2014 local edits kept here",
+        className: "bg-destructive/10 text-destructive",
+      };
+    case "delete-pending-acknowledgement":
+      return {
+        label: "Delete pending",
+        className: "bg-muted text-muted-foreground",
+      };
+    case "delete-tombstone-unscoped-cleared":
+      return {
+        label: "Delete recorded \u2014 tidying up",
+        className: "bg-muted text-muted-foreground",
+      };
+    case "entitlement-lapsed":
+    case null:
+      return {
+        label: "Sync paused",
+        className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+      };
   }
 }

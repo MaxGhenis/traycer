@@ -335,7 +335,8 @@ function comparePartitionedAttentionOrder(
   if (left.tier !== right.tier) {
     return left.tier === "blocking" ? -1 : 1;
   }
-  const planeDelta = notificationPlaneOrder(left.row) - notificationPlaneOrder(right.row);
+  const planeDelta =
+    notificationPlaneOrder(left.row) - notificationPlaneOrder(right.row);
   if (planeDelta !== 0) return planeDelta;
   return compareFeedCandidates(left.row, right.row);
 }
@@ -459,12 +460,21 @@ export type NotificationBellState =
  * number, per the "never present a stale/understated count as exact"
  * invariant.
  *
- * `unknown` renders identically to `clear` (no dot, plain bell) - a bare gray
- * dot with no path forward was confusing whether the cause was "still
- * connecting" or "this host will never support notifications". It stays a
- * distinct kind rather than folding into `clear` outright because analytics
- * still needs to bucket "confirmed zero" separately from "we don't know" (see
- * the open-lifecycle tracking in `notifications-bell.tsx`).
+ * `unknown` RENDERS DISTINGUISHABLY from `clear` - `s5-parity-gaps` gap 3,
+ * and `s5-status-truthfulness`'s class rule.
+ *
+ * It used to render identically: no dot, plain bell. The reasoning was that a
+ * bare gray dot with no path forward was confusing about whether the cause was
+ * "still connecting" or "this host will never support notifications" - a real
+ * objection, and the wrong conclusion. The modern free tier selects
+ * mixed/cloud mode, where an unavailable cloud summary drives this straight to
+ * `unknown`, so the case is the STEADY STATE for those users rather than a
+ * connecting blip. Rendered as `clear` it is a positive claim that nothing is
+ * waiting, made by a UI that does not know.
+ *
+ * The confusion objection is answered where it actually belongs - in the
+ * indicator's own affordance (a muted outline dot with an explanatory label)
+ * rather than by suppressing the state.
  */
 export function useNotificationBellState(): NotificationBellState {
   const feedMode = useNotificationFeedMode();
@@ -500,13 +510,15 @@ export function useNotificationBellState(): NotificationBellState {
 }
 
 /** Screen-reader label matching the visual bell state exactly - never a bare
- * count with no state context. `unknown` shares `clear`'s label since both
- * render the same plain bell with no indicator. */
+ * count with no state context. `unknown` has its OWN label now: it renders its
+ * own indicator, and a screen-reader user hearing "Notifications" for a state
+ * that visibly differs is the same false-clear one layer down. */
 export function notificationBellAccessibleLabel(
   state: NotificationBellState,
 ): string {
   switch (state.kind) {
     case "unknown":
+      return "Notifications, status unavailable";
     case "clear":
       return "Notifications";
     case "quietDot":

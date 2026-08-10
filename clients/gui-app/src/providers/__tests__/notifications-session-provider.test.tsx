@@ -722,9 +722,9 @@ describe("<NotificationsSessionProvider />", () => {
     });
     // Pre-mixed local-only inventory may still sit in their stores; mixed
     // mode no longer wipes them (the host feed survives the capability edge).
-    expect(useAppLocalNotificationsStore.getState().orderedIds.length).toBeGreaterThan(
-      0,
-    );
+    expect(
+      useAppLocalNotificationsStore.getState().orderedIds.length,
+    ).toBeGreaterThan(0);
     expect(useNotificationsStore.getState().entryIds.length).toBeGreaterThan(0);
 
     act(() => {
@@ -1700,8 +1700,11 @@ describe("<NotificationsSessionProvider />", () => {
     expect(screen.queryByTestId("notifications-unknown-indicator")).toBeNull();
     expect(screen.queryByTestId("notifications-attention-badge")).toBeNull();
 
-    // (2) Disconnect → summary unknown, rows preserved; unknown renders like clear
-    // (no indicator) so the bell stays quiet while status is unresolved.
+    // (2) Disconnect → summary unknown, rows preserved. The bell SAYS so now:
+    // a sibling of the flipped `notifications-bell.test.tsx` assertion, this
+    // one also encoded "unknown renders like clear (no indicator)" -
+    // `s5-parity-gaps` gap 3. The rows-preserved half of the case is
+    // unchanged; only the false-clear expectation moves.
     act(() => {
       streamClient.session.emitStatus("reconnecting");
     });
@@ -1709,11 +1712,13 @@ describe("<NotificationsSessionProvider />", () => {
     expect(
       useHostNotificationsStore.getState().byId["connected-host-row"],
     ).toBeDefined();
-    expect(screen.queryByTestId("notifications-unknown-indicator")).toBeNull();
+    expect(
+      screen.getByTestId("notifications-unknown-indicator"),
+    ).not.toBeNull();
     expect(screen.queryByTestId("notifications-quiet-dot")).toBeNull();
     expect(screen.queryByTestId("notifications-attention-badge")).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Notifications" }),
+      screen.getByRole("button", { name: "Notifications, status unavailable" }),
     ).not.toBeNull();
 
     // (3) Reconnect open + fresh atomic snapshot → exact summary + badge.

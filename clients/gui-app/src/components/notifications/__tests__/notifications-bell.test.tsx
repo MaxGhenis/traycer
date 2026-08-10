@@ -369,13 +369,17 @@ describe("NotificationsBell", () => {
     ).toBe("Notifications, 150 notifications need attention");
   });
 
-  it("renders the quiet-dot for quietDot state and no indicator for unknown/clear", () => {
+  it("renders unknown DISTINGUISHABLY from clear, and the quiet-dot for quietDot", () => {
     const runnerHost = createRunnerHost();
     const { factory, handle } = fakeFactory();
     openNotificationsStream(factory, null);
     mountBell(runnerHost, undefined);
 
-    // Host summary null → unknown kind, but renders like clear (no dot).
+    // `s5-parity-gaps` gap 3. This block used to assert the OPPOSITE - the
+    // comment read "unknown kind, but renders like clear (no dot)" and the
+    // assertion was `expectNoBellIndicators()`. That encoded a false "nothing
+    // waiting" as the expected behaviour, so the suite being green was not
+    // evidence about this surface at all. Flipping it is part of the fix.
     act(() => {
       handle().callbacks.onSnapshot(
         { schemaVersion: "2" },
@@ -383,9 +387,14 @@ describe("NotificationsBell", () => {
       );
     });
 
-    expectNoBellIndicators();
     expect(
-      screen.getByRole("button", { name: "Notifications" }),
+      screen.getByTestId("notifications-unknown-indicator"),
+    ).not.toBeNull();
+    // And it is not wearing either of the two states that DO make a claim.
+    expect(screen.queryByTestId("notifications-attention-badge")).toBeNull();
+    expect(screen.queryByTestId("notifications-quiet-dot")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Notifications, status unavailable" }),
     ).not.toBeNull();
 
     act(() => {
@@ -442,7 +451,11 @@ describe("NotificationsBell", () => {
     const runnerHost = createRunnerHost();
     mountBell(runnerHost, { wsStreamClient: streamClient });
 
-    fireEvent.click(screen.getByRole("button", { name: "Notifications" }));
+    // By testid, not by accessible name: these three cases are about the
+    // SUBTITLE, and their fixtures leave the host summary absent - which is
+    // now an `unknown` bell whose label says so. Selecting on a label that
+    // encodes bell state would couple them to a state they do not assert.
+    fireEvent.click(screen.getByTestId("notifications-bell"));
     expect(
       (await screen.findByTestId("notifications-subtitle")).textContent,
     ).toBe("Task activity isn't available on this host version");
@@ -458,7 +471,11 @@ describe("NotificationsBell", () => {
     const runnerHost = createRunnerHost();
     mountBell(runnerHost, { wsStreamClient: streamClient });
 
-    fireEvent.click(screen.getByRole("button", { name: "Notifications" }));
+    // By testid, not by accessible name: these three cases are about the
+    // SUBTITLE, and their fixtures leave the host summary absent - which is
+    // now an `unknown` bell whose label says so. Selecting on a label that
+    // encodes bell state would couple them to a state they do not assert.
+    fireEvent.click(screen.getByTestId("notifications-bell"));
     expect(
       (await screen.findByTestId("notifications-subtitle")).textContent,
     ).toBe("Task activity is unavailable right now");
@@ -488,7 +505,11 @@ describe("NotificationsBell", () => {
     const runnerHost = createRunnerHost();
     mountBell(runnerHost, { wsStreamClient: streamClient });
 
-    fireEvent.click(screen.getByRole("button", { name: "Notifications" }));
+    // By testid, not by accessible name: these three cases are about the
+    // SUBTITLE, and their fixtures leave the host summary absent - which is
+    // now an `unknown` bell whose label says so. Selecting on a label that
+    // encodes bell state would couple them to a state they do not assert.
+    fireEvent.click(screen.getByTestId("notifications-bell"));
     expect(await screen.findByTestId("notifications-popover")).not.toBeNull();
     expect(screen.queryByTestId("notifications-subtitle")).toBeNull();
   });
@@ -573,13 +594,19 @@ describe("NotificationsBell", () => {
       const trackSpy = vi.spyOn(Analytics.getInstance(), "track");
       const runnerHost = createRunnerHost();
       // No host summary applied → isPartial / unknown bell state.
-      // Unknown still buckets as "unknown" for analytics, but renders no dot.
+      // A SIBLING of the same shape as the flipped assertion above: it too
+      // asserted that an unknown bell renders no indicator. The analytics
+      // bucketing this test is actually about is unchanged.
       activeHostIdRef.value = mockLocalHostEntry.hostId;
       mountBell(runnerHost, undefined);
 
-      expectNoBellIndicators();
       expect(
-        screen.getByRole("button", { name: "Notifications" }),
+        screen.getByTestId("notifications-unknown-indicator"),
+      ).not.toBeNull();
+      expect(
+        screen.getByRole("button", {
+          name: "Notifications, status unavailable",
+        }),
       ).not.toBeNull();
 
       act(() => {

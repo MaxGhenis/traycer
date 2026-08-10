@@ -36,6 +36,10 @@ import type {
 } from "@traycer/protocol/persistence/epic/schemas";
 import type { WorktreeBindingOwnerKind } from "@traycer/protocol/host/worktree-schemas";
 import type { SnapshotMetaEpic } from "@traycer/protocol/host/epic/snapshot-meta";
+import type {
+  EpicDurabilityStatusV14,
+  EpicLocalProtection,
+} from "@traycer/protocol/host/epic/subscribe";
 import type { StreamConnectionStatus } from "@traycer-clients/shared/host-transport/i-stream-session";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@/lib/host";
@@ -205,8 +209,82 @@ export function useEpicSyncPillState(): EpicSyncPillState {
       hostDirtyState: selectHostDirtyState(s),
       hasUnsyncedLocalChanges: s.isDirty,
       hasConnectedOnce: s.hasConnectedOnce,
+      // The two legs the pill used to ignore entirely. Without them the pill
+      // could derive `synced` from a `LocalRoomConnection` and render "All
+      // changes synced" beside the badge's "Stored locally" -
+      // `s5-status-truthfulness` instance 1.
+      durability: s.durabilityStatus ?? undefined,
+      localProtection: s.localProtection ?? undefined,
     }),
   );
+}
+
+/**
+ * The ONE reading of the `@1.4` durability pair, for every surface that
+ * renders it - `s5-status-truthfulness`.
+ *
+ * The class this closes is that the host derives honest state, the protocol
+ * used to drop it, and each renderer null-rendered into the calm value
+ * independently. Five instances of that were found; fixing them one at a time
+ * leaves the sixth for a user to find, so the reading lives here and the
+ * components render what it says.
+ *
+ * The `indeterminate` arm is the whole point: `unknown`, and an absence from a
+ * peer that CAN speak `@1.4`, both land there, and no surface may resolve
+ * either one as protected or synced.
+ */
+export type EpicDurabilityView =
+  /** A pre-`@1.4` peer. Renders exactly as it did before this minor. */
+  | { readonly kind: "legacy"; readonly status: EpicDurabilityStatusV14 | null }
+  /** The host stated where the epic is durable. */
+  | {
+      readonly kind: "stated";
+      readonly status: Exclude<EpicDurabilityStatusV14, "unknown">;
+      readonly protection: EpicLocalProtection;
+    }
+  /** Durable in the cloud, and locally protected. The only calm arm. */
+  | { readonly kind: "cloudDurable" }
+  /** The host cannot say, or said it has no local protection. */
+  | {
+      readonly kind: "indeterminate";
+      readonly protection: EpicLocalProtection;
+    };
+
+export function deriveEpicDurabilityView(
+  status: EpicDurabilityStatusV14 | null,
+  protection: EpicLocalProtection | null,
+): EpicDurabilityView {
+  // A `@1.4` host emits `localProtection` on EVERY cloud-status frame, so its
+  // absence identifies an older peer rather than a bad state. That peer keeps
+  // its current rendering; anything else would turn an additive minor into a
+  // visible regression for every host that has not shipped it.
+  if (protection === null) return { kind: "legacy", status };
+  if (status === null) {
+    // Absence from a `@1.4` peer means "no local-durability claim" - the epic
+    // is durable in the cloud, which the frozen enum has no member for. Calm
+    // is licensed only alongside the POSITIVE `armed`; anything else is
+    // indeterminate, which is the absence rule stated as code.
+    return protection === "armed"
+      ? { kind: "cloudDurable" }
+      : { kind: "indeterminate", protection };
+  }
+  if (status === "unknown") return { kind: "indeterminate", protection };
+  return { kind: "stated", status, protection };
+}
+
+/** The composed durability reading for the open epic. */
+export function useEpicDurabilityView(): EpicDurabilityView {
+  return useEpicStore((s) =>
+    deriveEpicDurabilityView(
+      s.durabilityStatus ?? null,
+      s.localProtection ?? null,
+    ),
+  );
+}
+
+/** Raw `localProtection`, for surfaces that gate on protection alone. */
+export function useEpicLocalProtection(): EpicLocalProtection | null {
+  return useEpicStore((s) => s.localProtection ?? null);
 }
 
 export function useEpicPermissionRole(): PermissionRole | null {

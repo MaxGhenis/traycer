@@ -1488,11 +1488,22 @@ function HistoryPinControl(props: {
   if (props.selectionMode || props.item.taskType === "phase") return null;
   const displayTitle = historyItemDisplayTitle(props.item);
   const cloudOnly = props.item.isLocalHome === true;
+  // "…is available after cloud sync" promised a sync that, for a free-tier
+  // account, never comes - and `s5-status-truthfulness` folds
+  // `s4-promotion-task-list-invalidation` in here for the sharper version of
+  // the same problem: a STALE `home: "local"` row keeps making that promise
+  // about an epic that is already in the cloud, and pin is one of the three
+  // mutations that would have cleared the cache, so it cannot self-heal by
+  // being used. The copy now states the CONDITION (this epic is on this
+  // device) rather than predicting an event, so it is true in both cases.
+  //
+  // The staleness itself is the list-invalidation fix and is not repaired
+  // here; this stops the copy from lying while it lasts.
   const label = cloudOnly
-    ? `Pinning ${displayTitle} is available after cloud sync`
+    ? `Pinning ${displayTitle} needs cloud sync; it is stored on this device`
     : props.item.isPinned
-    ? `Unpin ${displayTitle} from top`
-    : `Pin ${displayTitle} to top`;
+      ? `Unpin ${displayTitle} from top`
+      : `Pin ${displayTitle} to top`;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -1508,8 +1519,8 @@ function HistoryPinControl(props: {
             cloudOnly
               ? "text-muted-foreground opacity-40"
               : props.item.isPinned
-              ? "text-primary opacity-100"
-              : "text-muted-foreground opacity-0 group-hover/list-row:opacity-100 group-focus-within/list-row:opacity-100",
+                ? "text-primary opacity-100"
+                : "text-muted-foreground opacity-0 group-hover/list-row:opacity-100 group-focus-within/list-row:opacity-100",
           )}
           onClick={() => {
             if (cloudOnly) return;
@@ -1525,7 +1536,9 @@ function HistoryPinControl(props: {
         </button>
       </TooltipTrigger>
       <TooltipContent>
-        {cloudOnly ? "Pinning is available after cloud sync." : label}
+        {cloudOnly
+          ? "This epic is stored on this device. Pinning needs cloud sync."
+          : label}
       </TooltipContent>
     </Tooltip>
   );

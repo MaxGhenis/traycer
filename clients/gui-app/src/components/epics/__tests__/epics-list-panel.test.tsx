@@ -606,13 +606,18 @@ describe("<EpicsListPanel />", () => {
     renderPanel("embedded", "/");
 
     const pin = await screen.findByRole("button", {
-      name: "Pinning Local only epic is available after cloud sync",
+      name: "Pinning Local only epic needs cloud sync; it is stored on this device",
     });
     expect(pin.hasAttribute("disabled")).toBe(true);
     expect(pin.getAttribute("data-local-home-pin-unavailable")).toBe("true");
     fireEvent.click(pin);
     expect(testState.setPinnedMutate).not.toHaveBeenCalled();
-    expect(tooltipTextNear(pin)).toBe("Pinning is available after cloud sync.");
+    // Copy states the condition instead of promising a sync that a free-tier
+    // account never gets and a stale row has already had - see
+    // `HistoryPinControl`.
+    expect(tooltipTextNear(pin)).toBe(
+      "This epic is stored on this device. Pinning needs cloud sync.",
+    );
   });
 
   // The Sweep control keeps its slot in every task row rather than appearing

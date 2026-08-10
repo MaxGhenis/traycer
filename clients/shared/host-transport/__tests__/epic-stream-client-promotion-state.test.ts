@@ -12,10 +12,7 @@ import {
   type EpicStreamCallbacks,
 } from "../epic-stream-client";
 import type { IStreamClient } from "../i-stream-client";
-import type {
-  IStreamSession,
-  StreamFrameEnvelope,
-} from "../i-stream-session";
+import type { IStreamSession, StreamFrameEnvelope } from "../i-stream-session";
 
 /** The `epic.subscribe` minor this suite's frames are shaped for. */
 const NEGOTIATED_SCHEMA_VERSION: SchemaVersion = { major: 1, minor: 3 };
@@ -95,7 +92,7 @@ function noopCallbacks(
 }
 
 describe("EpicStreamClient cloudSyncStatus promotionState wire field", () => {
-  it("forwards promotionState as the fourth onCloudSyncStatus argument", () => {
+  it("forwards the durability legs as one onCloudSyncStatus value", () => {
     const { session, inject } = makeSessionWithInjector();
     const wsStreamClient = makeTypedStreamClient(session);
 
@@ -104,23 +101,20 @@ describe("EpicStreamClient cloudSyncStatus promotionState wire field", () => {
       readonly durability: string | undefined;
       readonly pauseReason: string | undefined;
       readonly promotionState: EpicPromotionState | undefined;
+      readonly localProtection: string | undefined;
     }> = [];
 
     const client = new EpicStreamClient({
       wsStreamClient,
       epicId: "epic-1",
       callbacks: noopCallbacks({
-        onCloudSyncStatus: (
-          status,
-          durability,
-          pauseReason,
-          promotionState,
-        ) => {
+        onCloudSyncStatus: (status, durable) => {
           received.push({
             status,
-            durability,
-            pauseReason,
-            promotionState,
+            durability: durable.durability,
+            pauseReason: durable.pauseReason,
+            promotionState: durable.promotionState,
+            localProtection: durable.localProtection,
           });
         },
       }),

@@ -596,7 +596,9 @@ describe("cloud feed projection authority", () => {
     const { result } = renderHook(() => ({
       ids: useMergedNotificationIds(),
       hostRow: useMergedNotificationRow(hostFeedId("local-host")),
-      cloudRow: useMergedNotificationRow(cloudNotificationFeedId(cloud.entryId)),
+      cloudRow: useMergedNotificationRow(
+        cloudNotificationFeedId(cloud.entryId),
+      ),
       unreadCount: useMergedNotificationUnreadCount(),
       bell: useNotificationBellState(),
       hostState: useNotificationCenterHostState(),
@@ -615,7 +617,10 @@ describe("cloud feed projection authority", () => {
 
   it("sums exact mixed unread and attention from both partition summaries without double counting", () => {
     applyHostSnapshot(
-      [hostPrompt("local-prompt", 200, null), hostDone("local-done", 150, null)],
+      [
+        hostPrompt("local-prompt", 200, null),
+        hostDone("local-done", 150, null),
+      ],
       { unreadCount: 2, attentionCount: 1 },
     );
     useCloudNotificationsStore.getState().applySnapshot({
@@ -932,8 +937,14 @@ describe("useNotificationBellState", () => {
       readonly state: NotificationBellState;
       readonly expected: string;
     }> = [
-      // unknown shares clear's label — both render a plain bell with no indicator.
-      { state: { kind: "unknown" }, expected: "Notifications" },
+      // A THIRD sibling of the flipped false-clear assertion (`s5-parity-gaps`
+      // gap 3): unknown used to share clear's label because both rendered a
+      // plain bell with no indicator. It renders its own indicator now, so a
+      // shared label would be the same false-clear for a screen-reader user.
+      {
+        state: { kind: "unknown" },
+        expected: "Notifications, status unavailable",
+      },
       { state: { kind: "clear" }, expected: "Notifications" },
       {
         state: { kind: "quietDot" },
