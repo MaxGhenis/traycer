@@ -573,6 +573,13 @@ export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
     tabId: z.string(),
   }),
   z.object({
+    kind: z.literal("createElectronTab"),
+    ...requestFrameFields,
+    sessionId: z.string(),
+    sourceTabId: z.string(),
+    url: z.string(),
+  }),
+  z.object({
     kind: z.literal("electronTabRegistrationFailed"),
     ...requestFrameFields,
     registrationId: z.string(),
@@ -825,6 +832,13 @@ export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
     tileInstanceId: z.string(),
     initialUrl: z.string(),
     title: z.string().nullable(),
+  }),
+  z.object({
+    kind: z.literal("electronTabCreated"),
+    ...requestFrameFields,
+    sessionId: z.string(),
+    tabId: z.string().nullable(),
+    reason: z.string().nullable(),
   }),
   z.object({
     // One-shot capability readiness for ticket 06's canonical Electron

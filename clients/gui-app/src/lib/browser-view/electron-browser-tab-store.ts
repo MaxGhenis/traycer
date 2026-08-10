@@ -6,6 +6,7 @@ import {
   buildCdpResultFrame,
   registerAgentBrowserCdpHandler,
 } from "./agent-browser-cdp-store";
+import { openFreshAgentBrowserTileFromBrowserPage } from "./browser-link-routing-core";
 import type {
   AgentBrowserViewCdpDispatch,
   AgentBrowserViewCdpResult,
@@ -65,6 +66,7 @@ type SendFrame = (frame: BrowserSessionsClientFrame) => void;
 
 const recordsByRegistrationKey = new Map<string, ElectronBrowserTabRecord>();
 const sendFrameByEpicHost = new Map<string, SendFrame>();
+const createRequestIdByRegistrationKey = new Map<string, string>();
 let focusOrder = 0;
 
 export function registerElectronBrowserTab(
@@ -161,6 +163,36 @@ export function replayElectronBrowserTabRegistrations(
 export function handleElectronBrowserTabFrame(
   frame: BrowserSessionsServerFrame,
 ): boolean {
+  if (frame.kind === "createElectronTab") {
+    const source = findElectronBrowserTabBinding(
+      frame.sessionId,
+      frame.sourceTabId,
+    );
+    if (source === null) return false;
+    const tile = openFreshAgentBrowserTileFromBrowserPage({
+      viewTabId: source.tileKey.viewTabId,
+      paneId: source.tileKey.paneId,
+      hostId: source.hostId,
+      sessionId: frame.sessionId,
+      url: frame.url,
+    });
+    if (tile === null) {
+      sendForRecord(source, {
+        kind: "electronTabCreated",
+        hasBinaryPayload: false,
+        requestId: frame.requestId,
+        sessionId: frame.sessionId,
+        tabId: null,
+        reason: "The source browser tile is no longer available.",
+      });
+      return true;
+    }
+    createRequestIdByRegistrationKey.set(
+      registrationKey(frame.sessionId, tile.id),
+      frame.requestId,
+    );
+    return true;
+  }
   if (frame.kind === "electronTabRegistrationFailed") {
     const record = recordsByRegistrationKey.get(
       registrationKey(frame.sessionId, frame.registrationId),
@@ -183,6 +215,19 @@ export function handleElectronBrowserTabFrame(
     .catch(ignoreRegistrationError);
   record.onRegistered?.(frame.tabId);
   publishState(record);
+  const key = registrationKey(frame.sessionId, frame.registrationId);
+  const createRequestId = createRequestIdByRegistrationKey.get(key);
+  if (createRequestId !== undefined) {
+    createRequestIdByRegistrationKey.delete(key);
+    sendForRecord(record, {
+      kind: "electronTabCreated",
+      hasBinaryPayload: false,
+      requestId: createRequestId,
+      sessionId: frame.sessionId,
+      tabId: frame.tabId,
+      reason: null,
+    });
+  }
   return true;
 }
 
@@ -340,7 +385,7 @@ function mostRecentlyFocusedVisibleRecord(
 }
 
 function sendForRecord(
-  record: ElectronBrowserTabRecord,
+  record: ElectronBrowserTabRegistration,
   frame: BrowserSessionsClientFrame,
 ): void {
   sendFrameByEpicHost.get(epicHostKey(record.epicId, record.hostId))?.(frame);
@@ -409,5 +454,6 @@ function epicHostKey(epicId: string, hostId: string): string {
 export function resetElectronBrowserTabStoreForTests(): void {
   recordsByRegistrationKey.clear();
   sendFrameByEpicHost.clear();
+  createRequestIdByRegistrationKey.clear();
   focusOrder = 0;
 }

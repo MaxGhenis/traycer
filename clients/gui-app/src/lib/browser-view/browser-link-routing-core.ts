@@ -3,6 +3,7 @@ import { collectPanes, findPaneById } from "@/stores/epics/canvas/tile-tree";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import {
   isBrowserTileRef,
+  type AgentBrowserTileRef,
   type BrowserTileRef,
   type EpicCanvasState,
 } from "@/stores/epics/canvas/types";
@@ -144,12 +145,12 @@ export function openFreshAgentBrowserTileFromBrowserPage(request: {
   readonly hostId: string;
   readonly sessionId: string;
   readonly url: string;
-}): boolean {
+}): AgentBrowserTileRef | null {
   const store = useEpicCanvasStore.getState();
   const canvas = store.canvasByTabId[request.viewTabId];
-  if (canvas === undefined || canvas.root === null) return false;
+  if (canvas === undefined || canvas.root === null) return null;
   const targetPane = findPaneById(canvas.root, request.paneId);
-  if (targetPane === null) return false;
+  if (targetPane === null) return null;
   const tile = makeAgentBrowserTileRef({
     name: browserTileNameForUrl(request.url),
     hostId: request.hostId,
@@ -163,10 +164,10 @@ export function openFreshAgentBrowserTileFromBrowserPage(request: {
     nextCanvas !== undefined &&
     nextCanvas.tilesByInstanceId[tile.instanceId] !== undefined
   ) {
-    return true;
+    return tile;
   }
   store.openTileInPane(request.viewTabId, request.paneId, tile);
-  return true;
+  return tile;
 }
 
 function browserLinkOpenModeForKind(

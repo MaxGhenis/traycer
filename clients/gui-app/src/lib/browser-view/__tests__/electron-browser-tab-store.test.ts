@@ -17,11 +17,22 @@ import type {
 } from "@/lib/browser-view/desktop-browser-view";
 import {
   attachElectronBrowserTabStream,
+  findElectronBrowserTabBinding,
   handleElectronBrowserTabFrame,
   registerElectronBrowserTab,
   resetElectronBrowserTabStoreForTests,
   updateElectronBrowserTabView,
 } from "@/lib/browser-view/electron-browser-tab-store";
+import { createSingleTileCanvas } from "@/stores/epics/canvas/actions";
+import { collectPanes } from "@/stores/epics/canvas/tile-tree";
+import { makeBrowserTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
+import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import {
+  isAgentBrowserTileRef,
+  type AgentBrowserTileRef,
+  type BrowserTileRef,
+  type EpicCanvasState,
+} from "@/stores/epics/canvas/types";
 
 const EPIC = "epic-1";
 const HOST = "host-1";
@@ -758,5 +769,254 @@ describe("electron-browser-tab-store focus/MRU viewed (ticket 13)", () => {
         );
       }
     }
+  });
+});
+
+describe("electron-browser-tab-store createElectronTab (ticket 14)", () => {
+  const VIEW_TAB_ID = "view-create-electron";
+  const SOURCE_BROWSER: BrowserTileRef = makeBrowserTileRef({
+    name: "Source browser",
+    hostId: HOST,
+    url: "https://app.example/source",
+    viewportPreset: "responsive",
+  });
+
+  function resetCanvas(): void {
+    useEpicCanvasStore.setState({
+      canvasByTabId: {},
+      tabsById: {},
+    });
+  }
+
+  function seedSourcePane(): {
+    readonly paneId: string;
+    readonly tileKey: BrowserViewTileKey;
+  } {
+    const canvas = createSingleTileCanvas(SOURCE_BROWSER);
+    const pane = collectPanes(canvas.root).at(0);
+    if (pane === undefined) throw new Error("expected a pane");
+    useEpicCanvasStore.setState({
+      tabsById: {
+        [VIEW_TAB_ID]: {
+          tabId: VIEW_TAB_ID,
+          epicId: EPIC,
+          name: "Create electron",
+        },
+      },
+      canvasByTabId: {
+        [VIEW_TAB_ID]: canvas,
+      },
+    });
+    return {
+      paneId: pane.id,
+      tileKey: {
+        viewTabId: VIEW_TAB_ID,
+        paneId: pane.id,
+        tileInstanceId: SOURCE_BROWSER.instanceId,
+        pageSessionId: SOURCE_BROWSER.id,
+      },
+    };
+  }
+
+  function agentBrowserTiles(
+    canvas: EpicCanvasState | undefined,
+  ): AgentBrowserTileRef[] {
+    if (canvas === undefined) return [];
+    return Object.values(canvas.tilesByInstanceId).filter(
+      (tile): tile is AgentBrowserTileRef =>
+        tile !== undefined && isAgentBrowserTileRef(tile),
+    );
+  }
+
+  afterEach(() => {
+    resetElectronBrowserTabStoreForTests();
+    resetCanvas();
+  });
+
+  it("resolves sourceTabId, splits an agent tile beside the pane, and acks only after electronTabRegistered", async () => {
+    const { paneId: sourcePaneId, tileKey } = seedSourcePane();
+    const sourceBridge = new FakeBridge();
+    const agentBridge = new FakeBridge();
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-source",
+        sessionId: "session-shared",
+        bridge: sourceBridge,
+        tileKey,
+        initialUrl: "https://app.example/source",
+      }),
+    );
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-source-mint",
+      registrationId: "reg-source",
+      sessionId: "session-shared",
+      tabId: "tab-source-1",
+    });
+    await Promise.resolve();
+    expect(
+      findElectronBrowserTabBinding("session-shared", "tab-source-1"),
+    ).not.toBeNull();
+    frames.length = 0;
+
+    const handled = handleElectronBrowserTabFrame({
+      kind: "createElectronTab",
+      hasBinaryPayload: false,
+      requestId: "req-create-1",
+      sessionId: "session-shared",
+      sourceTabId: "tab-source-1",
+      url: "https://example.com/agent",
+    } satisfies BrowserSessionsServerFrame);
+    expect(handled).toBe(true);
+
+    // No ack until host registration completes.
+    expect(frames.some((frame) => frame.kind === "electronTabCreated")).toBe(
+      false,
+    );
+
+    const canvas = useEpicCanvasStore.getState().canvasByTabId[VIEW_TAB_ID];
+    if (canvas === undefined || canvas.root === null) {
+      throw new Error("expected canvas after createElectronTab");
+    }
+    // Pin right-adjacent split beside the seeded source pane: not replace,
+    // not open-elsewhere. Root is a horizontal group; collectPanes order is
+    // source first, then a distinct pane holding the agent tile.
+    expect(canvas.root.kind).toBe("group");
+    if (canvas.root.kind !== "group") {
+      throw new Error("expected horizontal group root after right split");
+    }
+    expect(canvas.root.direction).toBe("horizontal");
+    const panes = collectPanes(canvas.root);
+    expect(panes).toHaveLength(2);
+    const [sourcePane, agentPane] = panes;
+    expect(sourcePane.id).toBe(sourcePaneId);
+    expect(sourcePane.tabInstanceIds).toContain(SOURCE_BROWSER.instanceId);
+    expect(agentPane.id).not.toBe(sourcePaneId);
+
+    const agents = agentBrowserTiles(canvas);
+    expect(agents).toHaveLength(1);
+    const [agentTile] = agents;
+    expect(agentTile.sessionId).toBe("session-shared");
+    expect(agentTile.url).toBe("https://example.com/agent");
+    expect(agentTile.id).not.toBe("reg-source");
+    expect(agentTile.instanceId).not.toBe(tileKey.tileInstanceId);
+    expect(agentPane.tabInstanceIds).toContain(agentTile.instanceId);
+    expect(sourcePane.tabInstanceIds).not.toContain(agentTile.instanceId);
+
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: agentTile.id,
+        sessionId: "session-shared",
+        bridge: agentBridge,
+        tileKey: {
+          viewTabId: VIEW_TAB_ID,
+          paneId: agentPane.id,
+          tileInstanceId: agentTile.instanceId,
+          pageSessionId: agentTile.id,
+        },
+        initialUrl: agentTile.url,
+      }),
+    );
+    frames.length = 0;
+
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-agent-mint",
+      registrationId: agentTile.id,
+      sessionId: "session-shared",
+      tabId: "tab-agent-minted-9",
+    });
+    await Promise.resolve();
+
+    expect(frames).toContainEqual(
+      expect.objectContaining({
+        kind: "electronTabCreated",
+        requestId: "req-create-1",
+        sessionId: "session-shared",
+        tabId: "tab-agent-minted-9",
+        reason: null,
+      }),
+    );
+    expect(
+      findElectronBrowserTabBinding("session-shared", "tab-agent-minted-9"),
+    ).not.toBeNull();
+  });
+
+  it("sends electronTabCreated null/reason when placement fails", () => {
+    // Source binding exists, but the canvas/pane is gone so placement returns null.
+    const bridge = new FakeBridge();
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-orphan-source",
+        sessionId: "session-orphan",
+        bridge,
+        tileKey: {
+          viewTabId: "missing-view",
+          paneId: "missing-pane",
+          tileInstanceId: "tile-orphan",
+          pageSessionId: "page-orphan",
+        },
+      }),
+    );
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-orphan-mint",
+      registrationId: "reg-orphan-source",
+      sessionId: "session-orphan",
+      tabId: "tab-orphan-source",
+    });
+    frames.length = 0;
+
+    const handled = handleElectronBrowserTabFrame({
+      kind: "createElectronTab",
+      hasBinaryPayload: false,
+      requestId: "req-create-fail",
+      sessionId: "session-orphan",
+      sourceTabId: "tab-orphan-source",
+      url: "https://example.com/fail",
+    } satisfies BrowserSessionsServerFrame);
+
+    expect(handled).toBe(true);
+    expect(frames).toEqual([
+      expect.objectContaining({
+        kind: "electronTabCreated",
+        requestId: "req-create-fail",
+        sessionId: "session-orphan",
+        tabId: null,
+        reason: "The source browser tile is no longer available.",
+      }),
+    ]);
+  });
+
+  it("returns false when sourceTabId has no local binding", () => {
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+
+    const handled = handleElectronBrowserTabFrame({
+      kind: "createElectronTab",
+      hasBinaryPayload: false,
+      requestId: "req-unbound",
+      sessionId: "session-missing",
+      sourceTabId: "tab-missing",
+      url: "https://example.com",
+    } satisfies BrowserSessionsServerFrame);
+
+    expect(handled).toBe(false);
+    expect(frames).toEqual([]);
   });
 });
