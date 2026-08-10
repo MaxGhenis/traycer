@@ -96,7 +96,7 @@ const PROVIDER_TAB_LABELS: Record<ProviderTabKey, string> = {
   mcp: "MCP",
   plugins: "Plugins",
   skills: "Skills",
-  // The wire id exists (`providers.list@8.0`); the tab itself does not render
+  // The wire id exists (`providers.list@7.0`); the tab itself does not render
   // yet - it is absent from `PROVIDER_TAB_ORDER`, so `supportedTabsFor` never
   // returns it and no host advertises it. The label lands here now because
   // this map is exhaustive over the wire enum, and a tab id cannot be added to

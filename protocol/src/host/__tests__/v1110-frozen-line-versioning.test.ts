@@ -107,7 +107,7 @@ const frozenProvidersRequest = { forceAuthRefresh: true };
 // 6, which would have left the newest frozen request line untested.
 //
 // "Frozen", not "released": majors 1-6 are both, but v7.0 is frozen at the
-// v8.0 integration cut and has not shipped in a non-RC release yet. The bridge
+// integration cut and has not shipped in a non-RC release yet. The bridge
 // coverage is identical either way - a frozen line's bridges have to be right
 // before the release that makes them load-bearing, not after.
 const OLDER_REQUEST_MAJORS = [1, 2, 3, 4, 5, 6] as const;
@@ -128,7 +128,7 @@ describe("providers.list request lines 1.0..7.0 <-> latest", () => {
       const canonical = upgradeRequestToVersion(
         providersListRegistry,
         { major, minor: 0 },
-        { major: 8, minor: 0 },
+        { major: 7, minor: 0 },
         parsed,
       );
       // Same expectation at every major, reached two different ways: below
@@ -155,7 +155,7 @@ describe("providers.list request lines 1.0..7.0 <-> latest", () => {
     for (const major of OLDER_REQUEST_MAJORS) {
       const down = downgradeRequestAcrossMajors(
         providersListRegistry,
-        8,
+        7,
         major,
         canonical,
       );
@@ -236,7 +236,7 @@ describe("providers.list request lines 1.0..7.0 <-> latest", () => {
       });
       const down = downgradeRequestAcrossMajors(
         providersListRegistry,
-        8,
+        7,
         7,
         canonical,
       );
@@ -261,7 +261,7 @@ describe("providers.list request lines 1.0..7.0 <-> latest", () => {
     });
     const down = downgradeResponseAcrossMajors(
       providersListRegistry,
-      8,
+      7,
       6,
       canonicalResponse,
     );
@@ -274,7 +274,7 @@ describe("providers.list request lines 1.0..7.0 <-> latest", () => {
     const back = upgradeResponseToVersion(
       providersListRegistry,
       { major: 6, minor: 0 },
-      { major: 8, minor: 0 },
+      { major: 7, minor: 0 },
       providersListResponseSchemaV60.parse(down.value),
     );
     expect(back.native).toBeNull();
