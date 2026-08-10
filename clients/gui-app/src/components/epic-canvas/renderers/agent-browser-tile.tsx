@@ -20,6 +20,7 @@ export interface AgentBrowserTileProps {
   readonly node: AgentBrowserTileRef;
   readonly viewTabId: string;
   readonly paneId: string;
+  readonly requestedTabId?: string | null;
   readonly onActivatedHeadless?: ((tabId: string) => void) | null;
   readonly activateBeforeNativeView?: boolean;
 }
@@ -107,6 +108,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       chatId: registrationChatId,
       registrationId: props.node.id,
       sessionId: props.node.sessionId,
+      requestedTabId: props.requestedTabId ?? null,
       initialUrl: props.node.url,
       title: props.node.name,
       tileKey,
@@ -122,6 +124,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     props.node.name,
     props.node.sessionId,
     props.node.url,
+    props.requestedTabId,
     props.onActivatedHeadless,
     registrationChatId,
     tileKey,

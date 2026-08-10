@@ -818,6 +818,7 @@ export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
     ...requestFrameFields,
     registrationId: z.string(),
     sessionId: z.string(),
+    requestedTabId: z.string().nullable().optional(),
     tileInstanceId: z.string(),
     initialUrl: z.string(),
     title: z.string().nullable(),

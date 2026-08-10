@@ -1,12 +1,16 @@
 import "../../../../../__tests__/test-browser-apis";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BrowserSessionInfo } from "@traycer/protocol/host/browser/contracts";
+import type {
+  BrowserSessionInfo,
+  BrowserSessionsClientFrame,
+} from "@traycer/protocol/host/browser/contracts";
 import { BrowserSessionTile } from "@/components/epic-canvas/renderers/browser-session-tile";
 import type { BrowserSessionsState } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import type { BrowserSessionTileRef } from "@/stores/epics/canvas/types";
 import { TILE_KIND_BROWSER_SESSION } from "@/stores/epics/canvas/tile-kinds";
 import {
+  attachElectronBrowserTabStream,
   handleElectronBrowserTabFrame,
   resetElectronBrowserTabStoreForTests,
 } from "@/lib/browser-view/electron-browser-tab-store";
@@ -45,8 +49,16 @@ const sessionsState = vi.hoisted<{
 }));
 
 const bridgeHarness = vi.hoisted<{
-  current: DesktopAgentBrowserViewBridge | null;
-}>(() => ({ current: null }));
+  current: FakeAgentBrowserViewBridge | null;
+  // Stable host object so AgentBrowserTile's useMemo(browserView) does not
+  // churn identity on every render (which would re-fire registration).
+  readonly runnerHost: {
+    agentBrowserView: DesktopAgentBrowserViewBridge | null;
+  };
+}>(() => ({
+  current: null,
+  runnerHost: { agentBrowserView: null },
+}));
 
 vi.mock("@/components/epic-canvas/renderers/browser-sessions-context", () => ({
   useBrowserSessionsContext: () => sessionsState.value,
@@ -61,9 +73,8 @@ vi.mock("@/components/epic-canvas/hooks/use-tile-body-visible", () => ({
 }));
 
 vi.mock("@/providers/use-runner-host", () => ({
-  useRunnerHost: () => ({ agentBrowserView: bridgeHarness.current }),
+  useRunnerHost: () => bridgeHarness.runnerHost,
 }));
-
 vi.mock("@/components/epic-canvas/renderers/browser-peek-tile", () => ({
   BrowserPeekTile: (props: {
     readonly node: { readonly sessionId: string; readonly tabId: string };
@@ -235,7 +246,9 @@ function renderTile(
 describe("BrowserSessionTile (ticket 08 pointer view)", () => {
   beforeEach(() => {
     resetElectronBrowserTabStoreForTests();
-    bridgeHarness.current = new FakeAgentBrowserViewBridge();
+    const bridge = new FakeAgentBrowserViewBridge();
+    bridgeHarness.current = bridge;
+    bridgeHarness.runnerHost.agentBrowserView = bridge;
   });
 
   afterEach(() => {
@@ -243,6 +256,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
     resetElectronBrowserTabStoreForTests();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     bridgeHarness.current = null;
+    bridgeHarness.runnerHost.agentBrowserView = null;
   });
 
   it("renders unavailable when the tab is gone from the epic sessions stream", () => {
@@ -308,5 +322,111 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
     });
     // Still a single peek surface; no second native mount path after fallback.
     expect(screen.getAllByTestId("browser-peek-tile")).toHaveLength(1);
+  });
+
+  /**
+   * Ticket 09 scenario-7: stream-driven re-renders of a stable dormant pointer
+   * must not re-enter registerElectronBrowserTab. That path republishes
+   * `registerElectronTab` whenever the effect deps change; an unstable
+   * `onActivatedHeadless` callback identity is the regression that causes it.
+   */
+  it("does not republish registerElectronTab when a dormant pointer only receives a stream refresh", async () => {
+    const bridge = bridgeHarness.current;
+    expect(bridge).not.toBeNull();
+    if (bridge === null) {
+      throw new Error("expected agent browser bridge");
+    }
+    const published: BrowserSessionsClientFrame[] = [];
+    const detachStream = attachElectronBrowserTabStream(
+      "epic-1",
+      "host-test",
+      (frame) => {
+        published.push(frame);
+      },
+    );
+
+    const dormantSession = sessionFor("dormant");
+    sessionsState.value = {
+      lifecycle: "live",
+      items: [dormantSession],
+      errorMessage: null,
+      routingChatId: "chat-route",
+      closeSession: vi.fn(),
+      requestPromoteState: vi.fn(),
+      requestLendStorage: vi.fn(),
+    };
+    const ids = seedCanvas(NODE);
+    const { rerender } = render(
+      <BrowserSessionTile
+        node={NODE}
+        viewTabId={ids.viewTabId}
+        paneId={ids.paneId}
+        epicId="epic-1"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        published.filter((frame) => frame.kind === "registerElectronTab"),
+      ).toHaveLength(1);
+    });
+    expect(
+      published.find((frame) => frame.kind === "registerElectronTab"),
+    ).toMatchObject({ requestedTabId: NODE.tabId });
+    const registrationFramesAfterMount = published.filter(
+      (frame) => frame.kind === "registerElectronTab",
+    ).length;
+    const durableCallsAfterMount = bridge.registerDurableTabCalls.length;
+
+    // Ack once so a second registration path would also call registerDurableTab.
+    act(() => {
+      handleElectronBrowserTabFrame({
+        kind: "electronTabRegistered",
+        hasBinaryPayload: false,
+        requestId: "req-reg-stable",
+        registrationId: NODE.id,
+        sessionId: NODE.sessionId,
+        tabId: NODE.tabId,
+      });
+    });
+    await waitFor(() => {
+      expect(bridge.registerDurableTabCalls.length).toBe(
+        durableCallsAfterMount + 1,
+      );
+    });
+    const durableCallsAfterAck = bridge.registerDurableTabCalls.length;
+    const registrationFramesAfterAck = published.filter(
+      (frame) => frame.kind === "registerElectronTab",
+    ).length;
+    // Ack must not itself re-enter registration publication.
+    expect(registrationFramesAfterAck).toBe(registrationFramesAfterMount);
+
+    // Stream-only refresh: lastActivityAt moves, pointer identity is unchanged.
+    act(() => {
+      sessionsState.value = {
+        ...sessionsState.value,
+        items: [
+          {
+            ...dormantSession,
+            lastActivityAt: dormantSession.lastActivityAt + 1000,
+          },
+        ],
+      };
+      rerender(
+        <BrowserSessionTile
+          node={NODE}
+          viewTabId={ids.viewTabId}
+          paneId={ids.paneId}
+          epicId="epic-1"
+        />,
+      );
+    });
+
+    expect(
+      published.filter((frame) => frame.kind === "registerElectronTab"),
+    ).toHaveLength(registrationFramesAfterMount);
+    expect(bridge.registerDurableTabCalls.length).toBe(durableCallsAfterAck);
+
+    detachStream();
   });
 });

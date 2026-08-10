@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { AgentBrowserTile } from "./agent-browser-tile";
 import { BrowserPeekTile } from "./browser-peek-tile";
 import { useBrowserSessionsContext } from "./browser-sessions-context";
@@ -27,6 +27,9 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
     props.node.tabId,
   );
   const [activatedHeadless, setActivatedHeadless] = useState(false);
+  const handleActivatedHeadless = useCallback(() => {
+    setActivatedHeadless(true);
+  }, []);
 
   if (session === undefined || tab === undefined) {
     return (
@@ -67,8 +70,9 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
       node={native}
       viewTabId={props.viewTabId}
       paneId={props.paneId}
+      requestedTabId={props.node.tabId}
       activateBeforeNativeView
-      onActivatedHeadless={() => setActivatedHeadless(true)}
+      onActivatedHeadless={handleActivatedHeadless}
     />
   );
 }

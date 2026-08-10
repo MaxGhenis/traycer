@@ -44,6 +44,7 @@ export interface ElectronBrowserTabRegistration {
   readonly chatId: string | null;
   readonly registrationId: string;
   readonly sessionId: string;
+  readonly requestedTabId?: string | null;
   readonly initialUrl: string;
   readonly title: string | null;
   readonly tileKey: BrowserViewTileKey;
@@ -246,6 +247,7 @@ function publishRegistration(record: ElectronBrowserTabRecord): void {
     requestId: crypto.randomUUID(),
     registrationId: record.registrationId,
     sessionId: record.sessionId,
+    requestedTabId: record.requestedTabId ?? null,
     tileInstanceId: record.tileKey.tileInstanceId,
     initialUrl: record.initialUrl,
     title: record.title,
