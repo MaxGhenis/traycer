@@ -10,7 +10,12 @@ import { EpicViewTabContext } from "@/components/epic-canvas/view-tab-context";
 import { useTabSurfaceActivity } from "@/components/layout/tab-surface-activity-hooks";
 import { EpicSessionProvider } from "@/providers/epic-session-provider";
 import { BrowserSessionsProvider } from "@/components/epic-canvas/renderers/browser-session-dock";
+import {
+  BrowserSessionsContext,
+  type BrowserSessionsState,
+} from "@/components/epic-canvas/renderers/browser-sessions-context";
 import { useEpicChatRecords } from "@/lib/epic-selectors";
+import { useMaybeOpenEpicHandle } from "@/providers/use-open-epic-handle";
 
 export interface EpicSurfaceProps {
   readonly epicId: string;
@@ -70,7 +75,34 @@ export function EpicSurface(props: EpicSurfaceProps) {
   );
 }
 
+const COLD_BROWSER_SESSIONS: BrowserSessionsState = {
+  lifecycle: "connecting",
+  items: [],
+  errorMessage: null,
+  routingChatId: null,
+  closeSession: () => undefined,
+  requestPromoteState: () =>
+    Promise.reject(new Error("Browser sessions are not ready.")),
+  requestLendStorage: () =>
+    Promise.reject(new Error("Browser sessions are not ready.")),
+};
+
 function EpicBrowserSessionsScope(props: {
+  readonly epicId: string;
+  readonly children: ReactNode;
+}) {
+  const epicHandle = useMaybeOpenEpicHandle();
+  if (epicHandle === null) {
+    return (
+      <BrowserSessionsContext.Provider value={COLD_BROWSER_SESSIONS}>
+        {props.children}
+      </BrowserSessionsContext.Provider>
+    );
+  }
+  return <ReadyEpicBrowserSessionsScope {...props} />;
+}
+
+function ReadyEpicBrowserSessionsScope(props: {
   readonly epicId: string;
   readonly children: ReactNode;
 }) {
