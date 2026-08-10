@@ -148,7 +148,11 @@ function hostErrorToastMessage(error: HostRpcError, fallback: string) {
     return "Keep at least one workspace folder linked — add another before removing this one.";
   }
   if (error.code === "PROVIDER_DISABLED") {
-    return "This provider is disabled. Enable it in Settings → Providers.";
+    // "Isn't enabled", not "is disabled": the code covers both off states and
+    // this toast has no `disabledBy` to tell them apart. Providers ship off, so
+    // the likelier reader never disabled anything - the sentence has to be true
+    // for them too, and the action is the same either way.
+    return "This provider isn't enabled. Enable it in Settings → Providers.";
   }
   return fallback;
 }

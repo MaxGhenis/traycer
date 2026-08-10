@@ -149,6 +149,15 @@ export function providerPackPreparingByHarnessId(
 ): ReadonlyMap<GuiHarnessId, ProviderPackPreparing> {
   const entries = new Map<GuiHarnessId, ProviderPackPreparing>();
   for (const provider of providers) {
+    // A disabled provider is filtered out of the picker by availability alone
+    // (the host reports it unavailable and, deliberately, `requiresApiKey:
+    // false`) - EXCEPT through this map, which the rail treats as its own
+    // reason to keep a row visible. `managedInstallState` is not cleared when a
+    // provider goes off, so a pack left mid-download or in `error` when it was
+    // disabled would re-materialize that provider in the picker as a row the
+    // user cannot select and did not ask for. Enablement decides visibility;
+    // pack state only decorates a provider that is already visible.
+    if (!provider.enabled) continue;
     const preparing = providerPackPreparingForProvider(provider);
     if (preparing === null) continue;
     entries.set(providerIdToGuiHarnessId(provider.providerId), preparing);

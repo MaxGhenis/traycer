@@ -166,7 +166,7 @@ describe("<ProviderRailControls />", () => {
     });
 
     openFilterMenu();
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "Disabled" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Not enabled" }));
 
     expect(onViewChange).toHaveBeenCalledWith({
       query: "",
@@ -198,7 +198,7 @@ describe("<ProviderRailControls />", () => {
     // screen reader gets from a filtered rail is the word "Filter".
     expect(
       screen.getByRole("button", {
-        name: "Filter providers, showing disabled",
+        name: "Filter providers, showing not enabled",
       }),
     ).toBeDefined();
   });

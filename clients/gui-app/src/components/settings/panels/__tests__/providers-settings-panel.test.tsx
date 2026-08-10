@@ -2089,6 +2089,178 @@ describe("<ProvidersSettingsPanel />", () => {
     expect(providerMocks.setEnabledMutate).not.toHaveBeenCalled();
   });
 
+  // Providers ship OFF, so `enabled: false` is the resting state of most of
+  // the catalog rather than evidence of a decision. `disabledBy` is the only
+  // thing that distinguishes the two, and these three tests pin each arm to the
+  // words it may use.
+  it("calls a never-enabled provider 'Not enabled' and invites turning it on", () => {
+    providerMocks.listResult.data = {
+      providers: [
+        providerState({
+          providerId: "traycer",
+          selected: { kind: "bundled" },
+          candidates: [],
+          envOverrides: [],
+        }),
+        {
+          ...providerState({
+            providerId: "codex",
+            selected: { kind: "bundled" },
+            candidates: [],
+            envOverrides: [],
+          }),
+          enabled: false,
+          disabledBy: null,
+        },
+      ],
+    };
+
+    render(
+      <TooltipProvider>
+        <ProvidersSettingsPanel />
+      </TooltipProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Codex/i }));
+
+    // Through the switch's accessible name, which the `<label htmlFor>` beside
+    // it supplies - a bare text query also matches the rail filter's
+    // "Not enabled" menu item, which Radix keeps mounted while shut.
+    expect(screen.getByRole("switch", { name: "Not enabled" })).toBeDefined();
+    expect(tooltipTextNear(screen.getByRole("switch"))).toBe(
+      "Turn on to use Codex when creating an agent.",
+    );
+  });
+
+  it("still says 'Disabled' for a provider a person turned off", () => {
+    providerMocks.listResult.data = {
+      providers: [
+        providerState({
+          providerId: "traycer",
+          selected: { kind: "bundled" },
+          candidates: [],
+          envOverrides: [],
+        }),
+        {
+          ...providerState({
+            providerId: "codex",
+            selected: { kind: "bundled" },
+            candidates: [],
+            envOverrides: [],
+          }),
+          enabled: false,
+          disabledBy: {
+            userId: "4b1b3f3b-1d55-4a1c-9a2a-d0c6ab6e6c33",
+            handle: "pranshu",
+            at: 1,
+          },
+        },
+      ],
+    };
+
+    render(
+      <TooltipProvider>
+        <ProvidersSettingsPanel />
+      </TooltipProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Codex/i }));
+
+    expect(screen.getByRole("switch", { name: "Disabled" })).toBeDefined();
+    // No invitation: a deliberate disable is a decision, not a gap to fill.
+    expect(tooltipTextNear(screen.getByRole("switch"))).toBeNull();
+  });
+
+  // The floor the host seeds is four providers, not one, so the client rule has
+  // to keep working well clear of its own edge - a fresh install must still be
+  // able to turn any of the four off.
+  it("lets a provider be disabled while the seeded floor is enabled", () => {
+    providerMocks.listResult.data = {
+      providers: [
+        ...(["claude-code", "codex", "opencode", "traycer"] as const).map(
+          (providerId) =>
+            providerState({
+              providerId,
+              selected: { kind: "bundled" },
+              candidates: [],
+              envOverrides: [],
+            }),
+        ),
+        {
+          ...providerState({
+            providerId: "grok",
+            selected: { kind: "bundled" },
+            candidates: [],
+            envOverrides: [],
+          }),
+          enabled: false,
+          disabledBy: null,
+        },
+      ],
+    };
+
+    render(
+      <TooltipProvider>
+        <ProvidersSettingsPanel />
+      </TooltipProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Codex/i }));
+    const switchElement = screen.getByRole("switch");
+    if (!(switchElement instanceof HTMLButtonElement)) {
+      throw new Error("Expected provider switch to render as a button.");
+    }
+
+    expect(switchElement.disabled).toBe(false);
+    fireEvent.click(switchElement);
+
+    expect(providerMocks.setEnabledMutate).toHaveBeenCalledWith({
+      providerId: "codex",
+      enabled: false,
+      profileAction: null,
+    });
+  });
+
+  it("enables a never-enabled provider through the same setEnabled flow", () => {
+    providerMocks.listResult.data = {
+      providers: [
+        providerState({
+          providerId: "traycer",
+          selected: { kind: "bundled" },
+          candidates: [],
+          envOverrides: [],
+        }),
+        {
+          ...providerState({
+            providerId: "grok",
+            selected: { kind: "bundled" },
+            candidates: [],
+            envOverrides: [],
+          }),
+          enabled: false,
+          disabledBy: null,
+        },
+      ],
+    };
+
+    render(
+      <TooltipProvider>
+        <ProvidersSettingsPanel />
+      </TooltipProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Grok/i }));
+    fireEvent.click(screen.getByRole("switch"));
+
+    // The pack download rides this mutation host-side, so "invite to enable"
+    // must not have become a different (or no) call.
+    expect(providerMocks.setEnabledMutate).toHaveBeenCalledWith({
+      providerId: "grok",
+      enabled: true,
+      profileAction: null,
+    });
+  });
+
   it("renders capability-driven tabs and hides unsupported ones", () => {
     providerMocks.listResult.data = {
       providers: [

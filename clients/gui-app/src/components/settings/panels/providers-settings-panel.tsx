@@ -39,6 +39,10 @@ import {
   providerIdToGuiHarnessId,
   sortProviderStatesByProviderOrder,
 } from "@/lib/provider-ordering";
+import {
+  providerEnableInvitation,
+  providerEnablementLabel,
+} from "@/lib/providers/provider-enablement";
 import { ProviderAuthBadge, ProviderAuthLine } from "./provider-auth-display";
 import { TraycerSubscriptionSection } from "./traycer-subscription-section";
 import { ProviderRateLimitForProvider } from "./provider-rate-limit-section";
@@ -349,7 +353,10 @@ function ProvidersSettingsPanelInner({
   return (
     <SettingsPanelShell
       title="Providers"
-      description="Choose the CLI binary Traycer runs for each coding agent. Pick the bundled binary, one found on your PATH, or a custom install. Disable a provider to hide it when creating an agent."
+      // Providers ship off by default, so the enablement sentence leads with
+      // turning one ON. The old copy ("Disable a provider to hide it…") read as
+      // if everything were already on and the only move left were subtraction.
+      description="Choose the CLI binary Traycer runs for each coding agent. Pick the bundled binary, one found on your PATH, or a custom install. Enable a provider to offer it when creating an agent."
       fillHeight
       bodyClassName="max-h-[min(85vh,52rem)]"
       // No host readout here — the sidebar states the scoped host one row
@@ -695,8 +702,7 @@ function TraycerSubscriptionForProvider({
 
 function ProviderEnableSwitch(props: {
   readonly id: string;
-  readonly providerId: ProviderCliState["providerId"];
-  readonly enabled: boolean;
+  readonly state: ProviderCliState;
   readonly isPending: boolean;
   readonly enabledProviderCount: number;
   readonly onSetEnabled: (
@@ -704,24 +710,33 @@ function ProviderEnableSwitch(props: {
     enabled: boolean,
   ) => void;
 }) {
-  const { id, providerId, enabled, isPending, onSetEnabled } = props;
+  const { id, state, isPending, onSetEnabled } = props;
+  const enabled = state.enabled;
   const disablingLast = enabled && props.enabledProviderCount <= 1;
+  // The last-enabled guard wins when both apply - it is the only one that
+  // explains why the control below refuses to move. The invitation is the
+  // resting case: a provider that has never been enabled says what turning it
+  // on buys, and one a person deliberately turned off says nothing at all.
+  const tooltip = disablingLast
+    ? "At least one provider must stay enabled."
+    : providerEnableInvitation(state, PROVIDER_DISPLAY_NAMES[state.providerId]);
   return (
     <TooltipWrapper
-      label={disablingLast ? "At least one provider must stay enabled." : null}
+      label={tooltip}
       side="top"
       sideOffset={undefined}
       align={undefined}
     >
-      {/* Guard span: the Switch is `disabled` in exactly the state this
-          explains, and a disabled control emits no pointer events. */}
+      {/* Guard span: the Switch is `disabled` in exactly the last-enabled state
+          the tooltip explains, and a disabled control emits no pointer
+          events. */}
       <span className="inline-flex">
         <Switch
           id={id}
           checked={enabled}
           onCheckedChange={(next) => {
             if (isPending || (!next && disablingLast)) return;
-            onSetEnabled(providerId, next);
+            onSetEnabled(state.providerId, next);
           }}
           disabled={isPending || disablingLast}
         />
@@ -837,12 +852,11 @@ function ProviderDetail({
         </div>
         <div className="flex shrink-0 items-center gap-2 text-ui-sm">
           <label htmlFor={switchId} className="text-muted-foreground">
-            {state.enabled ? "Enabled" : "Disabled"}
+            {providerEnablementLabel(state)}
           </label>
           <ProviderEnableSwitch
             id={switchId}
-            providerId={providerId}
-            enabled={state.enabled}
+            state={state}
             isPending={setEnabled.isPending}
             enabledProviderCount={enabledProviderCount}
             onSetEnabled={(id, enabled) =>

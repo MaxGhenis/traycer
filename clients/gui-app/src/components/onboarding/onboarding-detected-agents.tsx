@@ -12,6 +12,7 @@ import {
   ORDERED_PROVIDERS,
   providerDisplayName,
 } from "@/lib/provider-ordering";
+import { providerEnablement } from "@/lib/providers/provider-enablement";
 import { cn } from "@/lib/utils";
 
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
@@ -49,7 +50,18 @@ function accountLineFor(state: ProviderCliState): AccountLine {
       title: null,
     };
   }
-  if (!state.enabled) return { text: "Disabled", tone: "muted", title: null };
+  // Onboarding is where the seeded set is CONFIRMED, so the two off states have
+  // to read differently here more than anywhere else. Everything the host did
+  // not seed arrives `enabled: false` with no `disabledBy`, and this row is the
+  // user's first sight of it: the line offers it, and the switch beside it
+  // accepts. Only a provider a person actually turned off says "Disabled".
+  const enablement = providerEnablement(state);
+  if (enablement === "never-enabled") {
+    return { text: "Not enabled - turn on to use", tone: "muted", title: null };
+  }
+  if (enablement === "disabled") {
+    return { text: "Disabled", tone: "muted", title: null };
+  }
   const { auth } = state;
   if (state.authPending) {
     return { text: "Checking account…", tone: "muted", title: null };

@@ -276,6 +276,35 @@ describe("providerPackPreparingByHarnessId", () => {
     expect([...map.keys()]).toEqual(["claude"]);
     expect(map.get("claude")?.percent).toBe(10);
   });
+
+  // Providers default off, so the catalog is mostly disabled rows. The picker
+  // rail treats a map entry as its own reason to keep a provider visible, and
+  // `managedInstallState` is NOT cleared when a provider is switched off - so
+  // without this gate a pack left downloading or failed at disable time would
+  // put an unselectable row back in the picker.
+  it("omits disabled providers, whatever their pack state says", () => {
+    const disabled = (
+      providerId: ProviderCliState["providerId"],
+      managedInstallState: ProviderManagedInstallState,
+    ): ProviderCliState => ({
+      ...providerState(providerId, managedInstallState),
+      enabled: false,
+      disabledBy: null,
+    });
+
+    const map = providerPackPreparingByHarnessId([
+      disabled("claude-code", { status: "downloading", percent: 10 }),
+      disabled("codex", {
+        status: "error",
+        reason: "disk-full",
+        message: "ENOSPC",
+        retryAtMs: null,
+      }),
+      providerState("amp", { status: "downloading", percent: 20 }),
+    ]);
+
+    expect([...map.keys()]).toEqual(["amp"]);
+  });
 });
 
 describe("preparing labels", () => {

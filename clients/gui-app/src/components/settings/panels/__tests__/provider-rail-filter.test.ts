@@ -166,8 +166,10 @@ describe("providerRailStatusLabel", () => {
     expect(providerRailStatusLabel(PROVIDER_RAIL_STATUS.Enabled)).toBe(
       "Enabled",
     );
+    // Not "Disabled": the bucket is every provider that is off, and providers
+    // ship off by default, so most of it was never disabled by anyone.
     expect(providerRailStatusLabel(PROVIDER_RAIL_STATUS.Disabled)).toBe(
-      "Disabled",
+      "Not enabled",
     );
   });
 });

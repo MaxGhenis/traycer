@@ -27,7 +27,12 @@ export const PROVIDER_RAIL_STATUS_OPTIONS: ReadonlyArray<{
 }> = [
   { value: PROVIDER_RAIL_STATUS.All, label: "All" },
   { value: PROVIDER_RAIL_STATUS.Enabled, label: "Enabled" },
-  { value: PROVIDER_RAIL_STATUS.Disabled, label: "Disabled" },
+  // The value stays `disabled` (it is the `enabled === false` bucket, and the
+  // filter has no third axis), but the LABEL cannot: providers ship off by
+  // default, so this bucket is mostly providers nobody has ever touched. A
+  // menu item reading "Disabled" over a list of never-enabled providers claims
+  // a decision that was never made. "Not enabled" is true of both members.
+  { value: PROVIDER_RAIL_STATUS.Disabled, label: "Not enabled" },
 ];
 
 export interface ProviderRailView {
