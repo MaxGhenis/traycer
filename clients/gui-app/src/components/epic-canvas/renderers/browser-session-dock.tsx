@@ -722,16 +722,10 @@ function useBrowserSessions(
     if (pendingPromotes === null || pendingLends === null) return;
     const stream = client.subscribe("browser.sessions", { epicId, chatId });
     sessionRef.current = stream;
-    if (primaryProfileCaptureReady) {
-      stream.sendClientFrame(
-        {
-          kind: "primaryProfileCaptureReady",
-          hasBinaryPayload: false,
-          requestId: crypto.randomUUID(),
-        },
-        null,
-      );
-    }
+    // The shared stream transport deliberately drops client frames until the
+    // subscription is open and during reconnects. Re-advertise this durable
+    // capability once per live connection so the host always has an endpoint.
+    let captureReadySentForConnection = false;
     const detachElectronTabs = attachElectronBrowserTabStream(
       epicId,
       hostId,
@@ -740,6 +734,19 @@ function useBrowserSessions(
       },
     );
     stream.onStatusChange((status, reason) => {
+      if (status !== "open") {
+        captureReadySentForConnection = false;
+      } else if (primaryProfileCaptureReady && !captureReadySentForConnection) {
+        captureReadySentForConnection = true;
+        stream.sendClientFrame(
+          {
+            kind: "primaryProfileCaptureReady",
+            hasBinaryPayload: false,
+            requestId: crypto.randomUUID(),
+          },
+          null,
+        );
+      }
       setStreamState((current) => ({
         client,
         items: current.client === client ? current.items : [],

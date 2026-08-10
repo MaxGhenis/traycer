@@ -21,10 +21,21 @@ import type {
   AgentBrowserViewTileHandoffChange,
 } from "@/lib/browser-view/desktop-agent-browser-view";
 
+type StreamConnectionStatus = "connecting" | "open" | "reconnecting" | "closed";
+
+type CaptureBridge = {
+  readonly capturePrimaryProfile: () => Promise<{
+    readonly status: "captured" | "unavailable";
+    readonly storageState: unknown;
+    readonly reason: string | null;
+  }>;
+};
+
 const hookState = vi.hoisted(() => ({
   streamClient: null as FakeStreamClient | null,
   streamClientFactory: null as (() => FakeStreamClient | null) | null,
   primaryProfileCaptureReady: true,
+  browserViewBridge: null as CaptureBridge | null,
 }));
 
 vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
@@ -61,13 +72,21 @@ vi.mock("@/lib/browser-view/desktop-browser-view", async (importOriginal) => {
     >();
   return {
     ...actual,
-    resolveDesktopBrowserViewBridge: () => null,
+    resolveDesktopBrowserViewBridge: () => hookState.browserViewBridge,
     canCapturePrimaryProfile: () => hookState.primaryProfileCaptureReady,
   };
 });
 
+/**
+ * Fake browser.sessions transport. When `dropUntilLive` is true, every client
+ * frame is discarded until the stream reports `open` (provider lifecycle
+ * `live`) - matching host behavior that drops pre-live readiness frames.
+ */
 class FakeStreamSession {
   readonly sentFrames: Array<Record<string, unknown>> = [];
+  readonly droppedFrames: Array<Record<string, unknown>> = [];
+  private readonly dropUntilLive: boolean;
+  private transportLive = false;
   private serverHandler:
     | ((
         envelope: Record<string, unknown>,
@@ -75,14 +94,21 @@ class FakeStreamSession {
       ) => void)
     | null = null;
   private statusHandler:
-    | ((
-        status: "connecting" | "open" | "reconnecting" | "closed",
-        reason: null,
-      ) => void)
-    | null = null;
+    ((status: StreamConnectionStatus, reason: null) => void) | null = null;
   closed = false;
 
-  sendClientFrame(frame: Record<string, unknown>): void {
+  constructor(options: { readonly dropUntilLive: boolean }) {
+    this.dropUntilLive = options.dropUntilLive;
+  }
+
+  sendClientFrame(
+    frame: Record<string, unknown>,
+    _binaryPayload: Uint8Array | null,
+  ): void {
+    if (this.dropUntilLive && !this.transportLive) {
+      this.droppedFrames.push(frame);
+      return;
+    }
     this.sentFrames.push(frame);
   }
 
@@ -96,10 +122,7 @@ class FakeStreamSession {
   }
 
   onStatusChange(
-    handler: (
-      status: "connecting" | "open" | "reconnecting" | "closed",
-      reason: null,
-    ) => void,
+    handler: (status: StreamConnectionStatus, reason: null) => void,
   ): void {
     this.statusHandler = handler;
   }
@@ -108,7 +131,10 @@ class FakeStreamSession {
     this.closed = true;
   }
 
-  emitStatus(status: "connecting" | "open" | "reconnecting" | "closed"): void {
+  emitStatus(status: StreamConnectionStatus): void {
+    if (this.dropUntilLive) {
+      this.transportLive = status === "open";
+    }
     this.statusHandler?.(status, null);
   }
 
@@ -126,9 +152,16 @@ class FakeStreamClient {
     readonly method: string;
     readonly params: unknown;
   }> = [];
+  private readonly dropUntilLive: boolean;
+
+  constructor(options: { readonly dropUntilLive: boolean }) {
+    this.dropUntilLive = options.dropUntilLive;
+  }
 
   subscribe(method: string, params: unknown): FakeStreamSession {
-    const session = new FakeStreamSession();
+    const session = new FakeStreamSession({
+      dropUntilLive: this.dropUntilLive,
+    });
     this.sessions.push(session);
     this.subscribes.push({ method, params });
     return session;
@@ -216,17 +249,63 @@ function selectRoutingChatId(chatIds: readonly string[]): string | null {
   );
 }
 
+function readinessFrames(
+  frames: ReadonlyArray<Record<string, unknown>>,
+): ReadonlyArray<Record<string, unknown>> {
+  return frames.filter((frame) => frame.kind === "primaryProfileCaptureReady");
+}
+
+function installCaptureBridge(): void {
+  const capturePrimaryProfile = vi.fn(() =>
+    Promise.resolve({
+      status: "captured" as const,
+      storageState: {
+        cookies: [{ name: "t09_auth", value: "signed-in" }],
+      },
+      reason: null,
+    }),
+  );
+  hookState.browserViewBridge = { capturePrimaryProfile };
+}
+
+async function expectCaptureServiced(
+  stream: FakeStreamSession,
+  requestId: string,
+): Promise<void> {
+  act(() => {
+    stream.emit(
+      {
+        kind: "capturePrimaryProfile",
+        hasBinaryPayload: false,
+        requestId,
+      },
+      null,
+    );
+  });
+  await waitFor(() => {
+    expect(stream.sentFrames).toContainEqual(
+      expect.objectContaining({
+        kind: "primaryProfileCaptured",
+        requestId,
+        status: "captured",
+      }),
+    );
+  });
+}
+
 describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
   beforeEach(() => {
-    hookState.streamClient = new FakeStreamClient();
+    hookState.streamClient = new FakeStreamClient({ dropUntilLive: false });
     hookState.streamClientFactory = null;
     hookState.primaryProfileCaptureReady = true;
+    hookState.browserViewBridge = null;
     resetElectronBrowserTabStoreForTests();
   });
 
   afterEach(() => {
     cleanup();
     hookState.streamClientFactory = null;
+    hookState.browserViewBridge = null;
     resetElectronBrowserTabStoreForTests();
   });
 
@@ -256,20 +335,36 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
   it("emits primaryProfileCaptureReady once when capture is available", () => {
     renderProvider("chat-alpha");
     const stream = hookState.streamClient?.sessions[0];
-    expect(stream?.sentFrames).toContainEqual(
+    expect(stream).toBeDefined();
+    if (stream === undefined) {
+      throw new Error("expected browser.sessions stream session");
+    }
+    // Readiness is advertised on the live transition, not post-subscribe.
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(stream.sentFrames).toContainEqual(
       expect.objectContaining({
         kind: "primaryProfileCaptureReady",
         hasBinaryPayload: false,
       }),
     );
+    expect(readinessFrames(stream.sentFrames)).toHaveLength(1);
   });
 
   it("skips primaryProfileCaptureReady when capture is unavailable", () => {
     hookState.primaryProfileCaptureReady = false;
     renderProvider("chat-alpha");
     const stream = hookState.streamClient?.sessions[0];
+    expect(stream).toBeDefined();
+    if (stream === undefined) {
+      throw new Error("expected browser.sessions stream session");
+    }
+    act(() => {
+      stream.emitStatus("open");
+    });
     expect(
-      stream?.sentFrames.some(
+      stream.sentFrames.some(
         (frame) => frame.kind === "primaryProfileCaptureReady",
       ),
     ).toBe(false);
@@ -302,8 +397,8 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
   });
 
   it("preserves capture-ready + re-registration across stream client reconnect", async () => {
-    const first = new FakeStreamClient();
-    const second = new FakeStreamClient();
+    const first = new FakeStreamClient({ dropUntilLive: false });
+    const second = new FakeStreamClient({ dropUntilLive: false });
     hookState.streamClientFactory = () => first;
 
     const bridge = new FakeBridge();
@@ -327,14 +422,19 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
     );
 
     expect(first.subscribes).toHaveLength(1);
-    expect(first.sessions[0]?.sentFrames).toContainEqual(
-      expect.objectContaining({ kind: "primaryProfileCaptureReady" }),
-    );
-    expect(first.sessions[0]?.sentFrames).toContainEqual(
+    const firstStream = first.sessions[0];
+    // Registration re-publishes on attach; readiness waits for live.
+    expect(firstStream.sentFrames).toContainEqual(
       expect.objectContaining({
         kind: "registerElectronTab",
         registrationId: "reg-1",
       }),
+    );
+    act(() => {
+      firstStream.emitStatus("open");
+    });
+    expect(firstStream.sentFrames).toContainEqual(
+      expect.objectContaining({ kind: "primaryProfileCaptureReady" }),
     );
 
     hookState.streamClientFactory = () => second;
@@ -345,7 +445,7 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
     );
 
     await waitFor(() => {
-      expect(first.sessions[0]?.closed).toBe(true);
+      expect(firstStream.closed).toBe(true);
       expect(second.subscribes).toEqual([
         {
           method: "browser.sessions",
@@ -353,14 +453,18 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
         },
       ]);
     });
-    expect(second.sessions[0]?.sentFrames).toContainEqual(
-      expect.objectContaining({ kind: "primaryProfileCaptureReady" }),
-    );
-    expect(second.sessions[0]?.sentFrames).toContainEqual(
+    const secondStream = second.sessions[0];
+    expect(secondStream.sentFrames).toContainEqual(
       expect.objectContaining({
         kind: "registerElectronTab",
         registrationId: "reg-1",
       }),
+    );
+    act(() => {
+      secondStream.emitStatus("open");
+    });
+    expect(secondStream.sentFrames).toContainEqual(
+      expect.objectContaining({ kind: "primaryProfileCaptureReady" }),
     );
   });
 
@@ -411,5 +515,95 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
         sessionId: "sess-1",
       }),
     );
+  });
+});
+
+/**
+ * Ticket-08-lift: real transport drops client frames until the stream is
+ * live (`open`). Synchronous post-subscribe readiness is therefore lost;
+ * readiness must be emitted on the live transition (and again after
+ * reconnect), idempotently per connection.
+ */
+describe("BrowserSessionsProvider (ticket 08-lift live readiness)", () => {
+  beforeEach(() => {
+    hookState.streamClient = new FakeStreamClient({ dropUntilLive: true });
+    hookState.streamClientFactory = null;
+    hookState.primaryProfileCaptureReady = true;
+    hookState.browserViewBridge = null;
+    resetElectronBrowserTabStoreForTests();
+  });
+
+  afterEach(() => {
+    cleanup();
+    hookState.streamClientFactory = null;
+    hookState.browserViewBridge = null;
+    resetElectronBrowserTabStoreForTests();
+  });
+
+  it("emits no capture-ready pre-live, then exactly one after first live so a fresh primary capture is serviced", async () => {
+    installCaptureBridge();
+    renderProvider("chat-alpha");
+    const stream = hookState.streamClient?.sessions[0];
+    expect(stream).toBeDefined();
+    if (stream === undefined) {
+      throw new Error("expected browser.sessions stream session");
+    }
+
+    // Pre-live: production may attempt sync readiness, but the gate drops it.
+    expect(readinessFrames(stream.sentFrames)).toHaveLength(0);
+    expect(screen.getByTestId("lifecycle").textContent).toBe("connecting");
+
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(screen.getByTestId("lifecycle").textContent).toBe("live");
+    // Desired behavior: re-publish readiness on the live transition.
+    expect(readinessFrames(stream.sentFrames)).toHaveLength(1);
+
+    await expectCaptureServiced(stream, "req-fresh-primary-1");
+
+    // Idempotent: repeated live notification on the same connection must not
+    // duplicate readiness frames.
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(readinessFrames(stream.sentFrames)).toHaveLength(1);
+  });
+
+  it("emits exactly one readiness on the next live after reconnect and services a fresh capture", async () => {
+    installCaptureBridge();
+    renderProvider("chat-alpha");
+    const stream = hookState.streamClient?.sessions[0];
+    expect(stream).toBeDefined();
+    if (stream === undefined) {
+      throw new Error("expected browser.sessions stream session");
+    }
+
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(readinessFrames(stream.sentFrames)).toHaveLength(1);
+    await expectCaptureServiced(stream, "req-primary-before-reconnect");
+
+    act(() => {
+      stream.emitStatus("reconnecting");
+    });
+    expect(screen.getByTestId("lifecycle").textContent).toBe("reconnecting");
+    // Frames during reconnect are dropped; readiness count stays at one.
+    expect(readinessFrames(stream.sentFrames)).toHaveLength(1);
+
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(screen.getByTestId("lifecycle").textContent).toBe("live");
+    // Next live transition: exactly one additional readiness frame.
+    expect(readinessFrames(stream.sentFrames)).toHaveLength(2);
+
+    await expectCaptureServiced(stream, "req-primary-after-reconnect");
+
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(readinessFrames(stream.sentFrames)).toHaveLength(2);
   });
 });
