@@ -551,6 +551,31 @@ function buildFakeBridge(
       onSnapshotInvalidated: (_handler) => ({ dispose: () => undefined }),
       onDebugSnapshotChange: (_handler) => ({ dispose: () => undefined }),
     },
+    // Ticket 09 scenario-7: agent browser tile seam must be present on the
+    // preload bridge so DesktopRunnerHost can forward it without re-wrapping.
+    agentBrowserView: {
+      upsertTile: async () => undefined,
+      registerDurableTab: async () => undefined,
+      updateBounds: async () => undefined,
+      releaseTile: async () => undefined,
+      onStatusChange: (_handler) => ({ dispose: () => undefined }),
+      onOpenTileRequest: (_handler) => ({ dispose: () => undefined }),
+      dispatchCdp: async () => ({
+        kind: "cdpGetFrameTree" as const,
+        ok: true as const,
+        frames: [
+          {
+            frameId: "frame-root",
+            parentFrameId: null,
+            url: "https://agent.example",
+            securityOrigin: "https://agent.example",
+          },
+        ],
+      }),
+      onCdpSessionEnded: (_handler) => ({ dispose: () => undefined }),
+      onCdpTargetAttached: (_handler) => ({ dispose: () => undefined }),
+      onTileHandoff: (_handler) => ({ dispose: () => undefined }),
+    },
     hostManagement: {
       getHostControllerStatus: async () => {
         throw new Error("getHostControllerStatus not used in test");
@@ -1044,6 +1069,40 @@ describe("DesktopRunnerHost.onLocalHostChange", () => {
       intent: { enabled: false, chord: null },
       effectiveChord: "mod+shift+space",
       status: "registered",
+    });
+  });
+
+  it("forwards agentBrowserView from the bridge - ticket 09 scenario-7 adapter seam", async () => {
+    const fake = buildFakeBridge(null);
+    const host = new DesktopRunnerHost({
+      bridge: fake.bridge,
+      signInUrl: "https://auth.example.invalid/sign-in",
+    });
+
+    // Production adapter must assign the exact preload property. A missing
+    // constructor line leaves this undefined; a re-wrap would break identity.
+    expect(host.agentBrowserView).toBe(fake.bridge.agentBrowserView);
+
+    await expect(
+      host.agentBrowserView.dispatchCdp({
+        viewTabId: "view-1",
+        paneId: "pane-1",
+        tileInstanceId: "tile-1",
+        pageSessionId: "page-1",
+        sessionId: null,
+        command: { kind: "cdpGetFrameTree" },
+      }),
+    ).resolves.toEqual({
+      kind: "cdpGetFrameTree",
+      ok: true,
+      frames: [
+        {
+          frameId: "frame-root",
+          parentFrameId: null,
+          url: "https://agent.example",
+          securityOrigin: "https://agent.example",
+        },
+      ],
     });
   });
 

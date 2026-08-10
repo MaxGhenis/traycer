@@ -155,6 +155,7 @@ import type {
   WindowSummary,
 } from "../ipc-contracts/window-types";
 import type { ZoomPercent } from "../ipc-contracts/zoom-types";
+import type { AgentBrowserViewBridgeSurface } from "../electron-preload/agent-browser-view-bridge";
 
 /**
  * Shape of the `window.runnerHost` object installed by the Electron preload
@@ -260,6 +261,7 @@ export interface DesktopPreloadBridge {
   power: DesktopPowerBridge;
   zoom: DesktopZoomBridge;
   browserView: DesktopBrowserViewBridge;
+  agentBrowserView: AgentBrowserViewBridgeSurface["agentBrowserView"];
   hostManagement: DesktopHostManagementBridge;
   hostTray: DesktopHostTrayBridge;
   hostControllerStatus: DesktopHostControllerStatusBridge;
@@ -679,6 +681,7 @@ export class DesktopRunnerHost implements IRunnerHost {
   readonly power: DesktopPowerBridge;
   readonly zoom: IZoomHost;
   readonly browserView: DesktopBrowserViewBridge;
+  readonly agentBrowserView: AgentBrowserViewBridgeSurface["agentBrowserView"];
   readonly hostManagement: IHostManagement;
   readonly hostTray: IHostTray;
   readonly hostControllerStatus: DesktopHostControllerStatusBridge;
@@ -704,6 +707,7 @@ export class DesktopRunnerHost implements IRunnerHost {
     this.platform = options.bridge.platform;
     this.power = options.bridge.power;
     this.browserView = options.bridge.browserView;
+    this.agentBrowserView = options.bridge.agentBrowserView;
     this.zoom = {
       ladder: options.bridge.zoom.ladder,
       get: () => options.bridge.zoom.get(),
