@@ -1871,24 +1871,28 @@ export type ModelProviderAuthResult = z.infer<
 // ── Frozen v7.0 native payloads ────────────────────────────────────────────
 //
 // Everything `providers.list@7.0` carries in its `native` request/response and
-// its `nativeCapabilities` descriptor, hand-copied as that line stood when
-// the freeze was cut. `provider-schemas.ts` wires the v7.0 request/response and the
-// v7.0 state to THESE and nothing above them.
+// its `nativeCapabilities` descriptor, hand-copied as that line stands today.
 //
-// WHEN this line was frozen matters, because v7.0 is NOT yet released - no
-// non-RC `host-v*`/`cli-v*`/`desktop-v*` tag carries a major-7 contract. The
-// cut point is an integration boundary, not a release, and it is early on
-// purpose: v5.0 and v6.0 were each still pointing at the live schemas on the
-// day a release shipped them, and both grew a released line before anyone
-// noticed. Freezing at the integration cut costs nothing and removes that
-// window.
+// An INACTIVE pin. `providersListV70` serves the LIVE schemas, because v7.0 is
+// the newest line and that is what every other method's newest contract does.
+// These copies are what it will be repointed to the day v7.0 is released or a
+// newer major opens above it; until then an equality guard in
+// `provider-model-providers-compat.test.ts` holds them identical.
+//
+// Cut early on purpose, and the early cut is the whole value: v5.0 and v6.0
+// were each still pointing at the live schemas on the day a release shipped
+// them, and both grew a released line before anyone noticed. A snapshot
+// written in advance makes the eventual pin a one-line change against a copy
+// that is already correct, instead of an archaeology exercise at release time.
+// It does not stop growth - growth on an unreleased line is legal - it only
+// requires writing that growth in both places.
 //
 // Two consequences follow, and they pull in opposite directions:
 //
 //  - Until the first non-RC release ships 7.0, there is no peer in the field
-//    decoding these shapes, so a genuine v7.0-line addition may be mirrored
-//    here rather than projected away. `config_unreadable` is the
-//    worked example - see `providerNativeErrorCodeSchemaV70`.
+//    decoding these shapes, so a genuine v7.0-line addition is mirrored here
+//    rather than projected away. `config_unreadable`, `huggingface` and the
+//    `modelProviders` tab member are the worked examples.
 //  - From that release onward, the rule hardens: an addition to a live
 //    counterpart must NOT be mirrored here, and the bridge down from the next
 //    major has to say explicitly what a v7.0 peer sees instead.

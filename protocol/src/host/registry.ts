@@ -5546,7 +5546,7 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
  * The `providers.*` family, split out of the base definition purely to keep
  * declaration emit under `tsc`'s serialization ceiling (TS7056) - the same
  * reason `HOST_RPC_EDITING_REGISTRY_DEFINITION` exists. `providers.list`
- * alone carries eight majors and their bridges, and the inferred type of one
+ * alone carries seven majors and their bridges, and the inferred type of one
  * object literal holding every method crossed the limit as this family grew.
  *
  * Purely a compile-time seam: the three definitions are intersected into one

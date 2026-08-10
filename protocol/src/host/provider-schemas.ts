@@ -2507,8 +2507,8 @@ export type DowngradableToV10ProviderState = (
   profiles?: ProviderCliState["profiles"];
   // Widened to the frozen v7.0 capability shape as well as the live one for
   // the same reason `loginCapability` below is widened across its own frozen
-  // snapshots: the v8→v1 and v7→v1 bridges feed this function from two
-  // different lines, and the strict v1.0 parse strips the field either way.
+  // snapshots: callers reach this function holding either shape, and the
+  // strict v1.0 parse strips the field either way.
   nativeCapabilities?: ProviderNativeCapabilities | ProviderNativeCapabilitiesV70;
   managedInstallState?: ProviderCliState["managedInstallState"];
   versionVisibility?: ProviderCliState["versionVisibility"];

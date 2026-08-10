@@ -77,12 +77,22 @@ import {
  * Model Providers protocol ticket coverage (T1).
  *
  * The load-bearing claim this file exists to hold: the `modelProviders` tab id
- * can never reach a client that negotiated `providers.list@7.0` or lower. It is
- * not an additive value there. `supportedTabs` is an array of a CLOSED enum
- * nested inside `nativeCapabilities`, and `providerCliStateSchema` decodes that
- * whole object through one `.catch(DEFAULT)` - so an unknown member does not
- * degrade to "tab ignored", it takes MCP, Plugins and Skills down with it for
- * that provider.
+ * can only reach a decoder that knows it.
+ *
+ * Two facts make that true, and both are asserted below rather than assumed.
+ * v7.0 is the LIVE line and is unreleased, so the member is mirrored onto it -
+ * there is no peer in the field that negotiated v7.0 without it. And no
+ * `providers.list` line below v7.0 models `nativeCapabilities` in any form, so
+ * every older major drops the whole capability object rather than meeting a
+ * tab id it cannot parse.
+ *
+ * The second fact is what makes the first safe, and it is worth stating why:
+ * `supportedTabs` is an array of a CLOSED enum nested inside
+ * `nativeCapabilities`, which `providerCliStateSchema` decodes through one
+ * `.catch(DEFAULT)`. A member an older decoder could not read would not
+ * degrade to "tab ignored" - it would take MCP, Plugins and Skills down with
+ * it. No such decoder exists today; the day one does, a projection is owed,
+ * and the enum-equality test below is what asks for it.
  */
 
 /**

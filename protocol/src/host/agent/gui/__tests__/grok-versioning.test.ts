@@ -794,9 +794,8 @@ describe("post-v5.0 omp/Hugging Face non-breaking downgrade bridges", () => {
 
   it("drops Hugging Face from providers.list for every released caller down to v1.0", () => {
     // `cli-v1.1.9` shipped v6.0, so `huggingface` could not join it and every
-    // v6.0-and-older caller must have it filtered out. Driven from the LATEST
-    // major; v7.0 carries the id,
-    // which is why the 8.0 -> 7.0 hop below keeps it.
+    // v6.0-and-older caller must have it filtered out. Driven from v7.0, the
+    // newest line, which carries the id because it is still unreleased.
     const v7Response = providersListResponseSchema.parse({
       providers: [
         providerState("cursor", "unknown"),
