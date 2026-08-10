@@ -204,15 +204,14 @@ function handlePickerEnter(pickerStore: ComposerPickerStore | null): boolean {
   if (pickerStore === null) return false;
   const state = pickerStore.getState();
   if (!state.open) return false;
-  // An OPEN picker owns Enter outright - whether it can commit (a highlighted,
-  // enabled row) or not (empty results, still loading, or the active row legally
-  // refusing). `commitActiveItem()` commits when it can and no-ops (returns
-  // false) otherwise; either way we absorb the keypress so a half-typed trigger
-  // is never submitted with the picker still on screen. Returning
-  // `commitActiveItem()` directly, or short-circuiting on `items.length === 0`,
-  // would fall through to `onSubmit` in exactly those can't-commit states. This
-  // binding wins over the suggestion plugin's own key handling, so the absorb has
-  // to happen here rather than there.
+  // An open picker owns Enter outright - whether it can commit (a highlighted,
+  // enabled row) or not (empty results, still loading, or the active row
+  // legally refusing). `commitActiveItem()` commits when it can and no-ops
+  // (returns false) otherwise; either way we absorb the keypress so a
+  // half-typed trigger is never submitted with the picker still on screen.
+  // Returning `commitActiveItem()` directly would fall through to `onSubmit`
+  // in exactly those can't-commit states. This binding wins over the
+  // suggestion plugin's own key handling, so the absorb must happen here too.
   state.commitActiveItem();
   return true;
 }

@@ -17,6 +17,9 @@ import type {
   StreamFrameEnvelope,
 } from "../i-stream-session";
 
+/** The `epic.subscribe` minor this suite's frames are shaped for. */
+const NEGOTIATED_SCHEMA_VERSION: SchemaVersion = { major: 1, minor: 3 };
+
 function makeSessionWithInjector(): {
   readonly session: IStreamSession;
   readonly inject: (
@@ -34,6 +37,10 @@ function makeSessionWithInjector(): {
     onStatusChange() {},
     sendClientFrame() {},
     requestReconnect() {},
+    // Matches the version `makeTypedStreamClient` negotiates below: this
+    // suite drives frames through a session that has already handshaken, so
+    // the per-session version is known rather than the pre-handshake `null`.
+    getNegotiatedSchemaVersion: () => NEGOTIATED_SCHEMA_VERSION,
     close() {},
   };
   return {
@@ -54,10 +61,9 @@ function makeSessionWithInjector(): {
 function makeTypedStreamClient(
   session: IStreamSession,
 ): IStreamClient<HostStreamRpcRegistry> {
-  const negotiated: SchemaVersion = { major: 1, minor: 3 };
   return {
     subscribe: () => session,
-    getMethodSchemaVersion: () => negotiated,
+    getMethodSchemaVersion: () => NEGOTIATED_SCHEMA_VERSION,
   };
 }
 

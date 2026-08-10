@@ -1,5 +1,3 @@
-import "../../../../../__tests__/test-browser-apis";
-
 const reactFlowMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 
 vi.mock("@xyflow/react", async (importOriginal) => {
@@ -44,6 +42,7 @@ function renderCanvas(view: CommGraphTileViewState): void {
       agentIds={new Set([AGENT.id])}
       events={[]}
       hosts={[]}
+      initialHistoryCaughtUp={false}
       pulse={null}
       view={view}
       onViewChange={vi.fn()}

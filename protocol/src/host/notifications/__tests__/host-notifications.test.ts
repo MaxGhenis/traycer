@@ -29,7 +29,9 @@ import {
   hostNotificationsCloudFeedEntryRequestSchema,
   hostNotificationsCloudFeedClearAllRequestSchema,
   hostNotificationsCloudFeedMutationResponseSchema,
+  hostNotificationsCloudFeedMarkAllReadResponseSchema,
   hostNotificationsCloudFeedMarkRead,
+  hostNotificationsCloudFeedMarkAllRead,
   hostNotificationsCloudFeedResolve,
   hostNotificationsCloudFeedClear,
   hostNotificationsCloudFeedClearAll,
@@ -839,7 +841,7 @@ describe("host.notifications.cloudFeed@1.0 immutable-entry surface", () => {
     ).toBe(false);
   });
 
-  it("answers a mutation with a status and a version that is null exactly when unavailable", () => {
+  it("answers released per-entry mutations with a status and a version that is null exactly when unavailable", () => {
     expect(
       hostNotificationsCloudFeedMutationResponseSchema.parse({
         status: "applied",
@@ -854,6 +856,12 @@ describe("host.notifications.cloudFeed@1.0 immutable-entry surface", () => {
     ).toEqual({ status: "unavailable", version: null });
     expect(
       hostNotificationsCloudFeedMutationResponseSchema.safeParse({
+        status: "unsupported",
+        version: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      hostNotificationsCloudFeedMutationResponseSchema.safeParse({
         status: "applied",
         version: null,
       }).success,
@@ -866,11 +874,24 @@ describe("host.notifications.cloudFeed@1.0 immutable-entry surface", () => {
     ).toBe(false);
   });
 
+  it("answers the additive cloud mark-all-read operation as unsupported", () => {
+    expect(
+      hostNotificationsCloudFeedMarkAllReadResponseSchema.parse({
+        status: "unsupported",
+        version: null,
+      }),
+    ).toEqual({ status: "unsupported", version: null });
+  });
+
   it("registers the whole family on the unary registry as optional methods", () => {
     expect(
       hostRpcRegistry["host.notifications.cloudFeed.markRead"][1].versions[0]
         .contract,
     ).toBe(hostNotificationsCloudFeedMarkRead);
+    expect(
+      hostRpcRegistry["host.notifications.cloudFeed.markAllRead"][1].versions[0]
+        .contract,
+    ).toBe(hostNotificationsCloudFeedMarkAllRead);
     expect(
       hostRpcRegistry["host.notifications.cloudFeed.resolve"][1].versions[0]
         .contract,
@@ -885,6 +906,7 @@ describe("host.notifications.cloudFeed@1.0 immutable-entry surface", () => {
     ).toBe(hostNotificationsCloudFeedClearAll);
     for (const method of [
       "host.notifications.cloudFeed.markRead",
+      "host.notifications.cloudFeed.markAllRead",
       "host.notifications.cloudFeed.resolve",
       "host.notifications.cloudFeed.clear",
       "host.notifications.cloudFeed.clearAll",

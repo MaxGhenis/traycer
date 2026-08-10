@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
+import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
 import { useHostBinding, type HostRpcRegistry } from "@/lib/host";
 import {
   Analytics,
@@ -75,6 +76,7 @@ import {
   type HostNotificationsResolveRequest,
   type HostNotificationsCloudFeedRow,
   type HostNotificationsCloudFeedEntryRequest,
+  type HostNotificationsCloudFeedMarkAllReadRequest,
   type HostNotificationsCloudFeedClearAllRequest,
   type HostNotificationsEntityRef,
 } from "@traycer/protocol/host/notifications/contracts";
@@ -113,6 +115,10 @@ export interface MergedNotificationRow {
   /** Product-vocabulary category, mapped from `source` at the projection
    * boundary so consumers never branch on the internal source seam. */
   readonly category: NotificationCategory;
+}
+
+function isHostUnsupportedError(error: unknown): boolean {
+  return error instanceof HostRpcError && error.code === "E_HOST_UNSUPPORTED";
 }
 
 export interface MergedNotificationsActions {
@@ -587,13 +593,20 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
   }): void => {
     if (data.status === "unavailable") markCloudUnavailable();
   };
-  const captureCloudMutationContext = (): CloudFeedMutationContext => ({
-    hostId: client?.getActiveHostId() ?? null,
-    sessionEpoch: useCloudNotificationsStore.getState().sessionEpoch,
-  });
-  const isCurrentCloudMutation = (context: CloudFeedMutationContext): boolean =>
-    client?.getActiveHostId() === context.hostId &&
-    useCloudNotificationsStore.getState().sessionEpoch === context.sessionEpoch;
+  const captureCloudMutationContext = useCallback(
+    (): CloudFeedMutationContext => ({
+      hostId: client?.getActiveHostId() ?? null,
+      sessionEpoch: useCloudNotificationsStore.getState().sessionEpoch,
+    }),
+    [client],
+  );
+  const isCurrentCloudMutation = useCallback(
+    (context: CloudFeedMutationContext): boolean =>
+      client?.getActiveHostId() === context.hostId &&
+      useCloudNotificationsStore.getState().sessionEpoch ===
+        context.sessionEpoch,
+    [client],
+  );
   const cloudMarkRead = useHostMutation<
     HostRpcRegistry,
     "host.notifications.cloudFeed.markRead",
@@ -612,6 +625,36 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
         }
       },
       onError: (_error, _variables, context) => {
+        if (context !== undefined && isCurrentCloudMutation(context)) {
+          markCloudUnavailable();
+        }
+      },
+    },
+  });
+  const cloudMarkAllRead = useHostMutation<
+    HostRpcRegistry,
+    "host.notifications.cloudFeed.markAllRead",
+    CloudFeedMutationContext,
+    HostNotificationsCloudFeedMarkAllReadRequest
+  >({
+    client,
+    method: "host.notifications.cloudFeed.markAllRead",
+    mapVariables: (variables) => variables,
+    options: {
+      mutationKey: notificationsMutationKeys.cloudMarkAllRead(),
+      onMutate: captureCloudMutationContext,
+      onSuccess: (data, _variables, context) => {
+        if (!isCurrentCloudMutation(context)) return;
+        if (data.status === "applied") {
+          handleCloudMutationResult({ status: "applied" });
+        } else if (data.status === "unavailable") {
+          handleCloudMutationResult({ status: "unavailable" });
+        }
+      },
+      onError: (error, _variables, context) => {
+        // This is an optional RPC. Older cloud relays still support the
+        // established per-entry write used by the compatibility fallback.
+        if (isHostUnsupportedError(error)) return;
         if (context !== undefined && isCurrentCloudMutation(context)) {
           markCloudUnavailable();
         }
@@ -1052,32 +1095,53 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
         });
       },
       markAllAsRead: () => {
-        if (feedMode === "cloud") {
-          const readAt = Date.now();
-          const unreadEntryIds: string[] = [];
-          for (const row of Object.values(
-            useCloudNotificationsStore.getState().rows,
-          )) {
-            if (row !== undefined && row.entry.readAt === null) {
-              unreadEntryIds.push(row.entryId);
-              useCloudNotificationsStore
-                .getState()
-                .markReadLocally(row.entryId, readAt);
-            }
-          }
-          // Optimistic set-once markers land as one immediate UI update, then
-          // the wire work is serialized so a large cross-device feed cannot
-          // burst hundreds of unary requests through one host connection.
-          void (async (): Promise<void> => {
-            for (const entryId of unreadEntryIds) {
+        if (feedMode === "cloud" && cloudVersion !== null) {
+          // `cloudVersion` belongs to the rendered action closure, whereas a
+          // frame can update the store before the click reaches this handler.
+          // Do not locally consume rows that the versioned bulk command will
+          // deliberately leave unread.
+          const cloudState = useCloudNotificationsStore.getState();
+          if (cloudState.version !== cloudVersion) return;
+          const fallbackEntryIds = Object.values(cloudState.rows)
+            .filter(
+              (row): row is HostNotificationsCloudFeedRow =>
+                row !== undefined && row.entry.readAt === null,
+            )
+            .map((row) => row.entryId);
+          const fallbackContext = captureCloudMutationContext();
+          cloudState.markAllReadLocally(Date.now());
+          const fallBackToEntryMutations = async (): Promise<void> => {
+            // An older cloud server cannot atomically include rows it did not
+            // render, but it can preserve the released per-entry behavior for
+            // every renderable row.
+            for (const entryId of fallbackEntryIds) {
+              if (!isCurrentCloudMutation(fallbackContext)) return;
               try {
                 await cloudMarkRead.mutateAsync({ entryId });
               } catch {
-                // The mutation's onError owns availability state. Continue so
-                // one failed entry does not prevent later entries being sent.
+                // Each per-entry marker is independent and idempotent. A
+                // transient failure must not prevent later entries from being
+                // persisted on the older relay.
+                continue;
               }
             }
-          })();
+          };
+          void cloudMarkAllRead
+            .mutateAsync({ observedVersion: cloudVersion })
+            .then(async (result) => {
+              if (result.status === "unsupported") {
+                await fallBackToEntryMutations();
+              }
+            })
+            .catch(async (error: unknown) => {
+              if (!isHostUnsupportedError(error)) return;
+              await fallBackToEntryMutations();
+            });
+          // The cloud call above settles the CLOUD plane only. The host plane
+          // is a separate origin store with its own read state, so a
+          // mark-all issued while the cloud feed is rendered still has to
+          // clear the host side (and its blocking attention occurrences), or
+          // a feed-mode switch resurrects rows the user just cleared.
           if (client !== null && client.getActiveHostId() !== null) {
             markHostAllRead.mutate({ beforeUpdatedAt: Date.now() });
             const occurrences = loadedBlockingAttentionOccurrences();
@@ -1221,7 +1285,10 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
       client,
       feedMode,
       cloudVersion,
+      captureCloudMutationContext,
+      isCurrentCloudMutation,
       cloudMarkRead,
+      cloudMarkAllRead,
       cloudResolve,
       cloudClear,
       cloudClearAll,

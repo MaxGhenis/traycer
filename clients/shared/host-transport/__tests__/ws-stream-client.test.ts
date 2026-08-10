@@ -327,11 +327,12 @@ describe("WsStreamClient", () => {
     expect(subscribeFrame).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      // `@1.2` is the newest installed minor (it adds the optional durability
-      // keys to `cloudSyncStatus`). This literal is the point of the fixture:
-      // it pins the version the client *declares*, which is a distinct fact
-      // from the manifest it advertises, so a bump has to be stated here too.
-      schemaVersion: { major: 1, minor: 2 },
+      // `@1.3` is the newest installed minor (it adds the optional
+      // promotion state to `cloudSyncStatus`, over @1.2's durability keys).
+      // This literal is the point of the fixture: it pins the version the
+      // client *declares*, which is a distinct fact from the manifest it
+      // advertises, so a bump has to be stated here too.
+      schemaVersion: { major: 1, minor: 3 },
       params: { epicId: "epic-1" },
     });
 
@@ -369,7 +370,7 @@ describe("WsStreamClient", () => {
     expect(parseText(stub.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 2 },
+      schemaVersion: { major: 1, minor: 3 },
       params: { epicId: "epic-1" },
     });
 
@@ -441,7 +442,7 @@ describe("WsStreamClient", () => {
     expect(parseText(stub.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 2 },
+      schemaVersion: { major: 1, minor: 3 },
       params: { epicId: "epic-1" },
     });
 
@@ -1138,7 +1139,7 @@ describe("WsStreamClient", () => {
     expect(firstSubscribe).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 2 },
+      schemaVersion: { major: 1, minor: 3 },
       params: { epicId: "epic-42" },
     });
 
@@ -1158,7 +1159,7 @@ describe("WsStreamClient", () => {
     expect(secondSubscribe).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 2 },
+      schemaVersion: { major: 1, minor: 3 },
       params: { epicId: "epic-42" },
     });
 
@@ -1340,7 +1341,7 @@ describe("WsStreamClient", () => {
     expect(parseText(sockets[1].socket.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 2 },
+      schemaVersion: { major: 1, minor: 3 },
       params: { epicId: "epic-42" },
     });
     expect(statuses.at(-1)).toBe("open");
@@ -2404,9 +2405,10 @@ describe("WsStreamClient UNAUTHORIZED auth recovery", () => {
     expect(parseText(sockets[0].socket.textSent[1])).toEqual({
       kind: "subscribe",
       method: "host.notifications.feed.subscribe",
-      // `@1.1` is the newest installed minor of the feed (the arm carrying
-      // `host.operation.finished`); the mirrored handshake negotiates it.
-      schemaVersion: { major: 1, minor: 1 },
+      // `@1.2` is the newest installed minor of the feed (it selects the
+      // local durable-home partition, over @1.1's `host.operation.finished`
+      // arm); the mirrored handshake negotiates it.
+      schemaVersion: { major: 1, minor: 2 },
       params: {
         initialAttentionLimit: 50,
         initialRecentLimit: 50,
@@ -2439,9 +2441,10 @@ describe("WsStreamClient UNAUTHORIZED auth recovery", () => {
     expect(parseText(sockets[1].socket.textSent[1])).toEqual({
       kind: "subscribe",
       method: "host.notifications.feed.subscribe",
-      // `@1.1` is the newest installed minor of the feed (the arm carrying
-      // `host.operation.finished`); the mirrored handshake negotiates it.
-      schemaVersion: { major: 1, minor: 1 },
+      // `@1.2` is the newest installed minor of the feed (it selects the
+      // local durable-home partition, over @1.1's `host.operation.finished`
+      // arm); the mirrored handshake negotiates it.
+      schemaVersion: { major: 1, minor: 2 },
       params: {
         initialAttentionLimit: 50,
         initialRecentLimit: 50,

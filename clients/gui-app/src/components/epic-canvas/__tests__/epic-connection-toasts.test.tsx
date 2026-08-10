@@ -1,4 +1,3 @@
-import "../../../../__tests__/test-browser-apis";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import * as Y from "yjs";
@@ -244,7 +243,7 @@ describe("<EpicConnectionToasts />", () => {
     // Transport open + cloud caught up is what latches "connected once".
     act(() => {
       streams[0].callbacks.onConnectionStatus("open", null);
-      streams[0].callbacks.onCloudSyncStatus("connected", undefined, undefined);
+      streams[0].callbacks.onCloudSyncStatus("connected", undefined, undefined, undefined);
     });
 
     act(() => {

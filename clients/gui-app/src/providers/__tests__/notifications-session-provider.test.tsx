@@ -1,5 +1,4 @@
 import type { SchemaVersion } from "@traycer/protocol/framework/versioned-stream-rpc";
-import "../../../__tests__/test-browser-apis";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -47,6 +46,7 @@ import {
   HOST_STREAM_REOPEN_MAX_BACKOFF_MS,
 } from "@/lib/host/stream-reopen";
 import type { NotificationShow } from "@/hooks/notifications/use-notifications";
+import type { NotificationShowOutcome } from "@traycer-clients/shared/platform/runner-host";
 
 interface HostState {
   id: string | null;
@@ -125,7 +125,9 @@ vi.mock("@/hooks/host/use-host-directory-entry", () => ({
 }));
 
 const showNotificationMock = vi.hoisted(() =>
-  vi.fn<NotificationShow>(() => Promise.resolve()),
+  vi.fn<NotificationShow>(() =>
+    Promise.resolve<NotificationShowOutcome>("presented"),
+  ),
 );
 
 vi.mock("@/hooks/notifications/use-notifications", () => ({
