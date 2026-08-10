@@ -23,6 +23,12 @@
  *                    the root Epic doc.
  * - `permissionChanged` - permission change for the subscribing user.
  * - `cloudSyncStatus`  - host-observed Tiptap/cloud room connection state.
+ *                    Also the carrier for the optional status keys added by
+ *                    later minors: `durability` / `pauseReason` (**@1.2**),
+ *                    `promotionState` (**@1.3**), and the s5 status pass's
+ *                    widened `pauseReason` + `localProtection` + `freshness`
+ *                    (**@1.4**). No new frame kind - it is the same
+ *                    host-observed tick.
  * - `pong`         - heartbeat response.
  * - `artifactRoomSnapshot`  - initial state for a healthy artifact-room doc keyed by
  *                    `artifactRoomId`. Binary payload is `Y.encodeStateAsUpdate`
@@ -165,6 +171,171 @@ export const epicDurabilityPauseReasonSchema = z.enum([
 export type EpicDurabilityPauseReason = z.infer<
   typeof epicDurabilityPauseReasonSchema
 >;
+
+/**
+ * `@1.4` widening of {@link epicDurabilityPauseReasonSchema} for
+ * **`s5-orphaned-epic-recovery`** (which supersedes
+ * `s4-tombstone-pause-reason-surfacing` and absorbs its enum widening).
+ *
+ * The three added reasons are delete-path states the host already records
+ * durably and had no way to say on the wire:
+ *
+ * - `delete-pending-acknowledgement` - informational; the delete is recorded
+ *   locally and is waiting for the cloud to acknowledge it.
+ * - `delete-tombstone-unscoped-cleared` - informational; an unscoped tombstone
+ *   was cleared, so the pause is bookkeeping rather than a user decision.
+ * - `orphaned-local-edits-after-cloud-delete` - the ACTIONABLE one: completion
+ *   was refused to protect never-uploaded bytes, so the epic holds local edits
+ *   the deleted cloud copy never received. Making such an epic reachable at all
+ *   is the other half of that ticket; this value is what that recovery surface
+ *   renders and acts on.
+ *
+ * Value growth, so it is emission-gated rather than backfilled: the `@1.2` /
+ * `@1.3` enum above stays FROZEN and a peer that negotiated those minors must
+ * never be sent one of the new values - its schema REFUSES them, where an
+ * unrecognised reason is meant to degrade to a neutral paused state. The host
+ * maps the wider persisted registry value onto whichever closed union the
+ * negotiated minor speaks, and omits the key when that minor has no member for
+ * it.
+ */
+export const epicDurabilityPauseReasonSchemaV14 = z.enum([
+  "entitlement-lapsed",
+  "access-revoked",
+  "delete-pending-acknowledgement",
+  "delete-tombstone-unscoped-cleared",
+  "orphaned-local-edits-after-cloud-delete",
+]);
+export type EpicDurabilityPauseReasonV14 = z.infer<
+  typeof epicDurabilityPauseReasonSchemaV14
+>;
+
+/**
+ * `@1.4` widening of {@link epicDurabilityStatusSchema} for
+ * **`s5-unarmed-session`** and the status-truthfulness class rule it cites.
+ *
+ * Through `@1.3` the durability datum is optional and has no indeterminate
+ * member, so "the host cannot answer" and "there is nothing to worry about"
+ * are the SAME wire state - an absent key - and the renderer resolves that
+ * ambiguity in the reassuring direction. That is precisely the defect: a
+ * session with no local protection renders identically to a protected one.
+ *
+ * `unknown` makes the indeterminate state expressible POSITIVELY. Together
+ * with the `@1.4` reading of absence (see the frame below), a negotiated peer
+ * can always tell "unknown" from "fine": at `@1.4` an absent `durability` key
+ * means unknown, never synced.
+ *
+ * Value growth on the same emission-gated terms as the pause-reason widening:
+ * `@1.2` / `@1.3` stay frozen and are never sent `unknown`.
+ */
+export const epicDurabilityStatusSchemaV14 = z.enum([
+  "local",
+  "promoting",
+  "paused",
+  "offline",
+  "unknown",
+]);
+export type EpicDurabilityStatusV14 = z.infer<
+  typeof epicDurabilityStatusSchemaV14
+>;
+
+/**
+ * Whether this session has local (WAL) protection at all -
+ * **`s5-unarmed-session`**.
+ *
+ * A DIFFERENT question from {@link epicDurabilityStatusSchemaV14}, which says
+ * where the epic is durable given a working local store. When the local store
+ * is refused - fence lost, topology refused, a mid-migration throw, a
+ * split-device layout - the session serves cloud-only with no WAL behind it,
+ * and today that fact never reaches the wire at all. While disconnected such a
+ * session is strictly LESS durable than pre-WAL builds, so silence is not an
+ * acceptable rendering of it.
+ *
+ * - `armed`       - a local store is armed for this session; edits are
+ *                   WAL-durable before the cloud acknowledges them.
+ * - `unavailable` - no local store is armed. Offline edits live only in the
+ *                   doc and do not survive process exit, graceful quit
+ *                   included.
+ * - `unknown`     - the host cannot currently determine it. Rendered as
+ *                   unknown, never as protected.
+ *
+ * Optional on the frame, and its absence at `@1.4` means `unknown` - the same
+ * conservative reading as `durability`, for the same reason.
+ */
+export const epicLocalProtectionSchema = z.enum([
+  "armed",
+  "unavailable",
+  "unknown",
+]);
+export type EpicLocalProtection = z.infer<typeof epicLocalProtectionSchema>;
+
+/**
+ * How the served document stands relative to the cloud -
+ * **`s5-mirror-first-serving`**.
+ *
+ * Mirror-first serving paints a WAL-backed root before cloud revalidation, so
+ * availability and freshness stop being the same fact and the renderer needs a
+ * datum that can say "this is a local copy" while the document is already
+ * usable. The first snapshot of a mirror must read `local-copy`, `syncing` or
+ * `stale` - never `current`.
+ *
+ * A NEW datum, not a relabelling. `snapshot-meta.lastSyncedAt` is
+ * repo/workspace freshness and `local_room_confirmation.updated_at` is an
+ * upload-frontier confirmation; neither answers "when was this DOCUMENT last
+ * reconciled against the cloud", so neither may be reused here without an
+ * equivalence proof.
+ */
+export const epicCloudFreshnessStateSchema = z.enum([
+  /** Served from the local mirror; no cloud contact has been made yet. */
+  "local-copy",
+  /** Cloud is attached to the same Y.Doc and reconciliation is in flight. */
+  "syncing",
+  /** Known to be behind the cloud, or too old to claim otherwise. */
+  "stale",
+  /** A full root cloud reconciliation succeeded and recorded its timestamp. */
+  "current",
+]);
+export type EpicCloudFreshnessState = z.infer<
+  typeof epicCloudFreshnessStateSchema
+>;
+
+/**
+ * The states expressible WITHOUT a recorded reconciliation timestamp.
+ * `current` is deliberately absent: a closed mirror does not refresh in the
+ * background, so a transition label alone cannot survive a restart, and only a
+ * successful full root cloud reconciliation may record the timestamp that
+ * licenses the `current` claim.
+ */
+export const epicCloudFreshnessUnknownStateSchema = z.enum([
+  "local-copy",
+  "syncing",
+  "stale",
+]);
+export type EpicCloudFreshnessUnknownState = z.infer<
+  typeof epicCloudFreshnessUnknownStateSchema
+>;
+
+/**
+ * The conservative freshness datum: a recorded last-cloud-sync timestamp, or
+ * an explicit statement that there is none. Structural rather than a nullable
+ * number, so `current` is UNREACHABLE without the timestamp that licenses it -
+ * the safety contract holds by construction instead of by convention.
+ */
+export const epicCloudFreshnessSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("lastCloudSyncAt"),
+    /**
+     * Epoch milliseconds of the last SUCCESSFUL full root cloud reconciliation
+     * for this epic. Persisted, so it survives a restart of a closed mirror.
+     */
+    reconciledAtEpochMs: z.number().int().nonnegative(),
+    state: epicCloudFreshnessStateSchema,
+  }),
+  z.object({
+    kind: z.literal("freshnessUnknown"),
+    state: epicCloudFreshnessUnknownStateSchema,
+  }),
+]);
+export type EpicCloudFreshness = z.infer<typeof epicCloudFreshnessSchema>;
 
 // ─── Frozen `epic.subscribe@1.0` server-frame set (as shipped) ────────────
 //
@@ -490,8 +661,54 @@ export const epicSubscribeServerFrameSchemaV13 = z.discriminatedUnion("kind", [
   epicSubscribeRootDirtyServerFrameSchema,
 ]);
 
+// ─── `epic.subscribe@1.4` - one additive minor for the s5 status pass ─────
+//
+// THREE tickets land on this one frame because they are three readings of the
+// same host-observed connection tick, and splitting them across three minors
+// would make a peer's rendering depend on which subset it happened to
+// negotiate:
+//
+// - `s5-orphaned-epic-recovery` widens `pauseReason` (three delete-path
+//   reasons, one of them actionable).
+// - `s5-unarmed-session` adds `localProtection`, and widens `durability` with
+//   `unknown` so an indeterminate answer is expressible rather than silent.
+// - `s5-mirror-first-serving` adds `freshness`, the conservative
+//   last-cloud-sync datum a mirror-first open must paint with.
+//
+// Every key stays optional, so an older GUI negotiates down to @1.3 (or lower)
+// and keeps exactly its current rendering. @1.0 through @1.3 remain FROZEN:
+// the two widened enums carry values those minors' schemas REFUSE, so the host
+// gates emission on the negotiated version rather than assuming the peer will
+// tolerate them.
+//
+// ABSENCE RULE for a negotiated @1.4 peer: an absent `durability` or
+// `localProtection` key means UNKNOWN, never "synced" and never "protected".
+// Optionality here is a wire-compat affordance (an older host on this line may
+// omit them), not permission to render silence as reassurance - that reading
+// is the class of status defect this minor exists to correct.
+const epicSubscribeCloudSyncStatusServerFrameSchemaV14 = z.object({
+  kind: z.literal("cloudSyncStatus"),
+  epicId: z.string(),
+  status: epicCloudSyncStatusSchema,
+  durability: epicDurabilityStatusSchemaV14.optional(),
+  pauseReason: epicDurabilityPauseReasonSchemaV14.optional(),
+  promotionState: epicPromotionStateSchema.optional(),
+  localProtection: epicLocalProtectionSchema.optional(),
+  freshness: epicCloudFreshnessSchema.optional(),
+  hasBinaryPayload: z.literal(false),
+});
+
+export const epicSubscribeServerFrameSchemaV14 = z.discriminatedUnion("kind", [
+  ...epicSubscribeServerFrameSchemasBeforeCloudSyncStatus,
+  epicSubscribeCloudSyncStatusServerFrameSchemaV14,
+  ...epicSubscribeServerFrameSchemasAfterCloudSyncStatus,
+  epicSubscribeDirtySnapshotServerFrameSchema,
+  epicSubscribeArtifactRoomDirtyServerFrameSchema,
+  epicSubscribeRootDirtyServerFrameSchema,
+]);
+
 /** The latest installed shape. Host code builds frames against this. */
-export const epicSubscribeServerFrameSchema = epicSubscribeServerFrameSchemaV13;
+export const epicSubscribeServerFrameSchema = epicSubscribeServerFrameSchemaV14;
 export type EpicSubscribeServerFrame = z.infer<
   typeof epicSubscribeServerFrameSchema
 >;
@@ -568,5 +785,13 @@ export const epicSubscribeV13 = defineStreamRpcContract({
   schemaVersion: { major: 1, minor: 3 } as const,
   openRequestSchema: epicSubscribeOpenRequestSchema,
   serverFrameSchema: epicSubscribeServerFrameSchemaV13,
+  clientFrameSchema: epicSubscribeClientFrameSchema,
+});
+
+export const epicSubscribeV14 = defineStreamRpcContract({
+  method: "epic.subscribe",
+  schemaVersion: { major: 1, minor: 4 } as const,
+  openRequestSchema: epicSubscribeOpenRequestSchema,
+  serverFrameSchema: epicSubscribeServerFrameSchemaV14,
   clientFrameSchema: epicSubscribeClientFrameSchema,
 });

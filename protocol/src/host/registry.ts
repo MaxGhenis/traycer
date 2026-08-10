@@ -286,6 +286,7 @@ import {
   epicSubscribeV11,
   epicSubscribeV12,
   epicSubscribeV13,
+  epicSubscribeV14,
   epicUpdateArtifactStatusV10,
   epicUpdateTitleV10,
 } from "@traycer/protocol/host/epic/contracts";
@@ -6316,12 +6317,17 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
     1: {
       // @1.1 adds additive `dirtySnapshot`, `artifactRoomDirty`, and
       // `rootDirty`; @1.2 adds optional durability keys to cloudSyncStatus;
-      // @1.3 adds the optional live-vs-pending promotion state.
+      // @1.3 adds the optional live-vs-pending promotion state; @1.4 is the s5
+      // status pass - a widened `pauseReason` (s5-orphaned-epic-recovery), the
+      // `localProtection` datum plus a `durability: "unknown"` member
+      // (s5-unarmed-session), and the conservative `freshness` datum
+      // (s5-mirror-first-serving), all on that same cloudSyncStatus frame.
       // @1.0 stays installed and FROZEN: a renderer that
       // negotiated it never receives the new kinds, and the resolver gates
       // emission on the negotiated version rather than assuming the peer will
-      // tolerate an unknown frame.
-      latestMinor: 3,
+      // tolerate an unknown frame. The same gating applies to @1.4's two
+      // widened enums, whose new VALUES an older minor's schema refuses.
+      latestMinor: 4,
       versions: {
         0: {
           contract: epicSubscribeV10,
@@ -6334,6 +6340,9 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
         },
         3: {
           contract: epicSubscribeV13,
+        },
+        4: {
+          contract: epicSubscribeV14,
         },
       },
     },

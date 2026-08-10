@@ -3,3 +3,4 @@ export * from "./communication-graph";
 export * from "./contracts";
 export * from "./subscribe";
 export * from "./snapshot-meta";
+export * from "./share-refusal";

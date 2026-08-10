@@ -327,12 +327,13 @@ describe("WsStreamClient", () => {
     expect(subscribeFrame).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      // `@1.3` is the newest installed minor (it adds the optional
-      // promotion state to `cloudSyncStatus`, over @1.2's durability keys).
+      // `@1.4` is the newest installed minor (the s5 status pass: a widened
+      // pause-reason enum plus the `localProtection` and `freshness` keys on
+      // `cloudSyncStatus`, over @1.3's promotion state and @1.2's durability).
       // This literal is the point of the fixture: it pins the version the
       // client *declares*, which is a distinct fact from the manifest it
       // advertises, so a bump has to be stated here too.
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 4 },
       params: { epicId: "epic-1" },
     });
 
@@ -370,7 +371,7 @@ describe("WsStreamClient", () => {
     expect(parseText(stub.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 4 },
       params: { epicId: "epic-1" },
     });
 
@@ -442,7 +443,7 @@ describe("WsStreamClient", () => {
     expect(parseText(stub.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 4 },
       params: { epicId: "epic-1" },
     });
 
@@ -1139,7 +1140,7 @@ describe("WsStreamClient", () => {
     expect(firstSubscribe).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 4 },
       params: { epicId: "epic-42" },
     });
 
@@ -1159,7 +1160,7 @@ describe("WsStreamClient", () => {
     expect(secondSubscribe).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 4 },
       params: { epicId: "epic-42" },
     });
 
@@ -1341,7 +1342,7 @@ describe("WsStreamClient", () => {
     expect(parseText(sockets[1].socket.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 4 },
       params: { epicId: "epic-42" },
     });
     expect(statuses.at(-1)).toBe("open");

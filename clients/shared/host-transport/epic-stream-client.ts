@@ -1,5 +1,9 @@
+import type { ZodType } from "zod";
+
 import type { PermissionRole } from "@traycer/protocol/host/epic/unary-schemas";
 import {
+  epicDurabilityPauseReasonSchema,
+  epicDurabilityStatusSchema,
   epicSubscribeServerFrameSchema,
   type EpicArtifactRoomAvailability,
   type EpicCloudSyncStatus,
@@ -236,6 +240,20 @@ export interface EpicStreamClientOptions {
  * becomes a typed variant of `EpicSubscribeServerFrame` - downstream code
  * never sees the wire envelope directly.
  */
+/**
+ * Read a status value only if it belongs to the closed union this client's
+ * callbacks speak. A later minor may carry a wider value (see the
+ * `cloudSyncStatus` case), and the safe reading of one this client cannot name
+ * is "absent", not a value the renderer would misinterpret.
+ */
+function frozenStatusValue<Output>(
+  schema: ZodType<Output>,
+  value: unknown,
+): Output | undefined {
+  const parsed = schema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
 export class EpicStreamClient {
   private readonly session: IStreamSession;
   private readonly epicId: string;
@@ -404,8 +422,14 @@ export class EpicStreamClient {
       case "cloudSyncStatus": {
         this.callbacks.onCloudSyncStatus(
           frame.status,
-          "durability" in frame ? frame.durability : undefined,
-          "pauseReason" in frame ? frame.pauseReason : undefined,
+          // `epic.subscribe@1.4` widened both of these enums and added
+          // `localProtection` / `freshness` (the s5 status pass). The renderer
+          // half of that pass lands with the host half, so until then this
+          // client speaks the @1.3 unions and projects a wider value onto them
+          // rather than casting it through: an unrecognised value reads as
+          // absent here, and absence is the renderer's UNKNOWN state.
+          frozenStatusValue(epicDurabilityStatusSchema, frame.durability),
+          frozenStatusValue(epicDurabilityPauseReasonSchema, frame.pauseReason),
           "promotionState" in frame ? frame.promotionState : undefined,
         );
         return;

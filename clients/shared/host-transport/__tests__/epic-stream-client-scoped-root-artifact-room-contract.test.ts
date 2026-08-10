@@ -323,12 +323,13 @@ describe("EpicStreamClient scoped root/artifact-room contract (B6)", () => {
     });
     completeHandshake(sockets[0]);
 
-    // Durability routing extends the existing frame at @1.2, while an older
-    // peer still negotiates and receives its frozen @1.1 frame set.
+    // Durability routing extends the existing frame at @1.2, and the s5 status
+    // pass extends it again at @1.4, while an older peer still negotiates and
+    // receives its frozen @1.1 frame set.
     expect(parseText(sockets[0].textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 4 },
       params: { epicId: "epic-1" },
     });
     client.close();
