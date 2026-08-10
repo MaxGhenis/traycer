@@ -1045,9 +1045,11 @@ describe("providers.modelProviderAuth actions", () => {
     expect(parsed.key).toBeNull();
   });
 
-  it("takes the same shape for create and update", () => {
-    // Upstream's dialog is one form either way, so the two arms are built from
-    // one shared shape; this pins that they cannot drift apart.
+  it("takes the same declarable fields for create and update", () => {
+    // Upstream's dialog is one form either way, so the block's own fields come
+    // from one shared shape; this pins that they cannot drift apart. The id is
+    // the one field the arms differ on - see the naming/addressing split
+    // below.
     const fields = {
       modelProviderId: "my-endpoint",
       name: "My Endpoint",
@@ -1142,7 +1144,10 @@ describe("providers.modelProviderAuth actions", () => {
     ).toBe(true);
   });
 
-  it("constrains a NEW provider id but not an existing one", () => {
+  it("constrains a NEW provider id but never an existing one", () => {
+    // The rule is about NAMING, so it binds exactly where a name is chosen.
+    // Everywhere else the id is a fact already on disk - and a rule applied
+    // there does not prevent a bad name, it strands a real provider.
     const base = {
       name: "My Endpoint",
       baseUrl: "https://api.example.com/v1",
@@ -1169,13 +1174,79 @@ describe("providers.modelProviderAuth actions", () => {
         id,
       ).toBe(false);
     }
-    // ...and NOT on the verbs that address a provider that already exists. The
-    // catalog carries `wafer.ai`; enforcing a creation rule there would make a
-    // real provider unaddressable to punish a name Traycer never chose.
+  });
+
+  it("lets updateCustom address a block the naming rule would reject", () => {
+    // The regression: the naming rule reached `updateCustom` through the
+    // shared shape, so `wafer.ai` could be neither created NOR updated - and
+    // update is the one verb that could have renamed it. `My.Gateway` is the
+    // hand-written `opencode.json` case; the catalog's `wafer.ai` is the case
+    // nobody chose at all.
+    const base = {
+      name: "My Endpoint",
+      baseUrl: "https://api.example.com/v1",
+      models: [{ id: "gpt-4o", name: "GPT-4o" }],
+    };
+    for (const id of ["wafer.ai", "My.Gateway", "-leading", "has space"]) {
+      expect(
+        modelProviderAuthActionSchema.safeParse({
+          action: "updateCustom",
+          modelProviderId: id,
+          ...base,
+        }).success,
+        `update ${id}`,
+      ).toBe(true);
+      expect(
+        modelProviderAuthActionSchema.safeParse({
+          action: "createCustom",
+          modelProviderId: id,
+          ...base,
+        }).success,
+        `create ${id}`,
+      ).toBe(false);
+    }
+    // Still non-empty - an id is the one thing update cannot do without.
+    expect(
+      modelProviderAuthActionSchema.safeParse({
+        action: "updateCustom",
+        modelProviderId: "",
+        ...base,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps every id-addressing verb free of the naming rule", () => {
+    // The same leak in its other possible homes. `connect`/`startOauth`/
+    // `submitCode`/`disconnect` all address providers that already exist.
     expect(
       modelProviderAuthActionSchema.safeParse({
         action: "disconnect",
         modelProviderId: "wafer.ai",
+      }).success,
+    ).toBe(true);
+    expect(
+      modelProviderAuthActionSchema.safeParse({
+        action: "connect",
+        modelProviderId: "wafer.ai",
+        methodIndex: null,
+        key: "sk-secret",
+        inputs: {},
+      }).success,
+    ).toBe(true);
+    expect(
+      modelProviderAuthActionSchema.safeParse({
+        action: "startOauth",
+        modelProviderId: "wafer.ai",
+        methodIndex: 0,
+        inputs: {},
+      }).success,
+    ).toBe(true);
+    expect(
+      modelProviderAuthActionSchema.safeParse({
+        action: "submitCode",
+        modelProviderId: "wafer.ai",
+        attemptId: "attempt-1",
+        code: "abc123",
       }).success,
     ).toBe(true);
   });

@@ -1595,21 +1595,35 @@ export type ModelProviderAuthInputs = z.infer<
  * whatever attempt happens to be pending.
  */
 /**
- * Config key for a custom provider block. Lowercase alphanumeric first
+ * Config key for a NEW custom provider block. Lowercase alphanumeric first
  * character, then alphanumerics, hyphens and underscores - the rule OpenCode's
  * own connect dialog validates against, mirrored so a name their app accepts
  * is a name this one accepts.
  *
- * CREATION only. It is deliberately not applied to `modelProviderId` on
- * `connect` / `disconnect` / `startOauth`, which address providers that
- * already exist: the catalog carries `wafer.ai`, whose dot this rule rejects,
- * so enforcing it there would make a real provider unaddressable to punish a
- * name Traycer never chose.
+ * A rule about NAMING, which is why it applies only where a name is being
+ * chosen. Every other verb - `updateCustom`, `connect`, `disconnect`,
+ * `startOauth` - addresses a provider that already exists, and its id is a
+ * fact rather than a choice: the catalog carries `wafer.ai`, and a
+ * hand-written `opencode.json` can declare `My.Gateway`. Enforcing a naming
+ * rule on those makes a real provider unreachable to punish a name Traycer
+ * never chose - and unreachable by the one verb that could rename it.
  */
-const customProviderIdSchema = z
+const newCustomProviderIdSchema = z
   .string()
   .min(1)
   .regex(/^[a-z0-9][a-z0-9-_]*$/);
+
+/**
+ * Config key of an EXISTING provider block. Non-empty and nothing more: the
+ * id is whatever is already on disk, and this verb's job includes rescuing a
+ * block whose name predates - or ignores - the creation rule.
+ *
+ * Persistability is the host's to refuse. It owns the config file, so it is
+ * the side that knows which keys cannot survive a write; a charset list here
+ * would be a second, weaker copy of that judgement, and the weaker copy is
+ * the one that would drift.
+ */
+const existingCustomProviderIdSchema = z.string().min(1);
 
 /**
  * One model in a custom provider's map: the id the API is called with, and the
@@ -1637,10 +1651,15 @@ const customProviderHeaderSchema = z.object({
 });
 
 /**
- * The declarable half of a custom provider. Shared by `createCustom` and
- * `updateCustom` because the two differ only in whether the block already
- * exists - upstream's own dialog is the same form either way, and letting the
- * shapes drift would be a bug the type system could not see.
+ * The declarable half of a custom provider - everything the form collects
+ * about the block itself. Shared by `createCustom` and `updateCustom` because
+ * upstream's own dialog is the same form either way, and letting these fields
+ * drift between the two would be a bug the type system could not see.
+ *
+ * `modelProviderId` is NOT here either, and that is the one field the two
+ * arms genuinely differ on: creating picks a name and is held to the naming
+ * rule, updating addresses a block that already exists and must accept
+ * whatever its key happens to be. Each arm supplies its own.
  *
  * `npm` is NOT here. Every provider this surface can declare is an
  * OpenAI-compatible endpoint (`@ai-sdk/openai-compatible`), the host writes
@@ -1649,8 +1668,6 @@ const customProviderHeaderSchema = z.object({
  * value, so any other would produce a block this tab could never edit again.
  */
 const customProviderShape = {
-  /** Config key for the block, and the id every other action addresses it by. */
-  modelProviderId: customProviderIdSchema,
   /** Display name for the provider itself. */
   name: z.string().min(1),
   /**
@@ -1731,10 +1748,12 @@ export const modelProviderAuthActionSchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("createCustom"),
+    modelProviderId: newCustomProviderIdSchema,
     ...customProviderShape,
   }),
   z.object({
     action: z.literal("updateCustom"),
+    modelProviderId: existingCustomProviderIdSchema,
     ...customProviderShape,
   }),
 ]);
