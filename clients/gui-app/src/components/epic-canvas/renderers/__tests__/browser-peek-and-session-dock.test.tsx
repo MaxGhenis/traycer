@@ -274,6 +274,7 @@ const HEADLESS_SESSION = {
       originTier: "dev" as const,
       status: "ready" as const,
       title: "Local app",
+      viewed: false,
       drivenBy: [],
     },
   ],

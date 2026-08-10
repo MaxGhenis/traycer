@@ -6,6 +6,7 @@ import {
   browserSessionsV1,
   browserSessionInfoSchema,
   browserScreencastOpenRequestSchema,
+  browserTabInfoSchema,
 } from "@traycer/protocol/host/browser/contracts";
 
 const SAMPLE_SESSION = {
@@ -24,6 +25,7 @@ const SAMPLE_SESSION = {
       originTier: "dev" as const,
       status: "ready" as const,
       title: "App",
+      viewed: false,
       drivenBy: [],
     },
   ],
@@ -146,6 +148,58 @@ describe("browser.sessions@1.0 dual-key open + tab-shaped session info", () => {
         title: "App",
         createdAt: 10,
         lastActivityAt: 20,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires viewed boolean on BrowserTabInfo and electronTabState frames (ticket 13)", () => {
+    expect(
+      browserTabInfoSchema.safeParse({
+        tabId: "tab-1",
+        url: "https://example.com",
+        originTier: "external",
+        status: "ready",
+        title: "Example",
+        viewed: true,
+        drivenBy: [],
+      }).success,
+    ).toBe(true);
+    expect(
+      browserTabInfoSchema.safeParse({
+        tabId: "tab-1",
+        url: "https://example.com",
+        originTier: "external",
+        status: "ready",
+        title: "Example",
+        drivenBy: [],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      browserSessionsClientFrameSchema.safeParse({
+        kind: "electronTabState",
+        hasBinaryPayload: false,
+        requestId: "req-1",
+        registrationId: "reg-1",
+        sessionId: "session-1",
+        tabId: "tab-1",
+        url: "https://example.com",
+        title: "Example",
+        status: "ready",
+        viewed: true,
+      }).success,
+    ).toBe(true);
+    expect(
+      browserSessionsClientFrameSchema.safeParse({
+        kind: "electronTabState",
+        hasBinaryPayload: false,
+        requestId: "req-1",
+        registrationId: "reg-1",
+        sessionId: "session-1",
+        tabId: "tab-1",
+        url: "https://example.com",
+        title: "Example",
+        status: "ready",
       }).success,
     ).toBe(false);
   });

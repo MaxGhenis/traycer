@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
+import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
 import {
   resolveDesktopAgentBrowserViewBridge,
   type AgentBrowserViewTileKey,
@@ -8,7 +9,10 @@ import {
 } from "@/lib/browser-view/desktop-agent-browser-view";
 import type { BrowserViewStatus } from "@/lib/browser-view/desktop-browser-view";
 import { selectSiblingChatIdForBrowserTile } from "@/lib/browser-view/browser-tile-chat-routing";
-import { registerElectronBrowserTab } from "@/lib/browser-view/electron-browser-tab-store";
+import {
+  registerElectronBrowserTab,
+  updateElectronBrowserTabView,
+} from "@/lib/browser-view/electron-browser-tab-store";
 import { openFreshAgentBrowserTileFromBrowserPage } from "@/lib/browser-view/browser-link-routing-core";
 import { PANEL_RESIZING_CLASS_NAME } from "@/lib/layout/panel-resizing-class";
 import { appLogger } from "@/lib/logger";
@@ -39,6 +43,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const hostId = useTabHostId();
   const runnerHost = useRunnerHost();
   const visible = useTileBodyVisible();
+  const paneFocused = usePaneFocused();
   const browserView = useMemo(
     () => resolveDesktopAgentBrowserViewBridge(runnerHost),
     [runnerHost],
@@ -129,6 +134,35 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     registrationChatId,
     tileKey,
   ]);
+
+  useEffect(() => {
+    if (browserView === null || epicId === null) return;
+    updateElectronBrowserTabView({
+      sessionId: props.node.sessionId,
+      registrationId: props.node.id,
+      visible,
+      focused: paneFocused,
+    });
+  }, [
+    browserView,
+    epicId,
+    paneFocused,
+    props.node.id,
+    props.node.sessionId,
+    visible,
+  ]);
+
+  useEffect(() => {
+    if (browserView === null || epicId === null) return;
+    return () => {
+      updateElectronBrowserTabView({
+        sessionId: props.node.sessionId,
+        registrationId: props.node.id,
+        visible: false,
+        focused: false,
+      });
+    };
+  }, [browserView, epicId, props.node.id, props.node.sessionId]);
 
   useEffect(() => {
     if (browserView === null) return;

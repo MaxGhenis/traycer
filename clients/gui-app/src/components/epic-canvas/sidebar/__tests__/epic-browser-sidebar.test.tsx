@@ -129,6 +129,7 @@ function tab(
     originTier: "dev",
     status: "ready",
     title: null,
+    viewed: false,
     drivenBy: [],
     ...overrides,
   };

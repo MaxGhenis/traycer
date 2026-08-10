@@ -93,6 +93,9 @@ export const browserTabInfoSchema = z.object({
   originTier: browserOriginTierSchema,
   status: browserSessionStatusSchema,
   title: z.string().nullable(),
+  // Live discovery hint only: the currently viewed/MRU visible tile, or an
+  // active headless screencast peek. It grants no control capability.
+  viewed: z.boolean(),
   drivenBy: z.array(browserTabDriverSchema),
 });
 export type BrowserTabInfo = z.infer<typeof browserTabInfoSchema>;
@@ -839,6 +842,7 @@ export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
     url: z.string(),
     title: z.string().nullable(),
     status: browserSessionStatusSchema,
+    viewed: z.boolean(),
   }),
   z.object({
     kind: z.literal("primaryProfileCaptured"),

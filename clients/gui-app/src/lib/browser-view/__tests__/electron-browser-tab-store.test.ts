@@ -20,6 +20,7 @@ import {
   handleElectronBrowserTabFrame,
   registerElectronBrowserTab,
   resetElectronBrowserTabStoreForTests,
+  updateElectronBrowserTabView,
 } from "@/lib/browser-view/electron-browser-tab-store";
 
 const EPIC = "epic-1";
@@ -442,5 +443,320 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
 
     expect(handled).toBe(true);
     expect(onActivatedHeadless).toHaveBeenCalledWith("tab-headless-1");
+  });
+});
+
+describe("electron-browser-tab-store focus/MRU viewed (ticket 13)", () => {
+  afterEach(() => {
+    resetElectronBrowserTabStoreForTests();
+  });
+
+  async function registerMintedTab(input: {
+    readonly bridge: FakeBridge;
+    readonly registrationId: string;
+    readonly sessionId: string;
+    readonly tabId: string;
+    readonly tileKey?: BrowserViewTileKey;
+  }): Promise<void> {
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: input.registrationId,
+        sessionId: input.sessionId,
+        bridge: input.bridge,
+        tileKey: input.tileKey ?? {
+          ...TILE_KEY,
+          tileInstanceId: input.registrationId,
+          pageSessionId: input.sessionId,
+        },
+      }),
+    );
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: `req-${input.registrationId}`,
+      registrationId: input.registrationId,
+      sessionId: input.sessionId,
+      tabId: input.tabId,
+    });
+    await Promise.resolve();
+    input.bridge.emitStatus({
+      ...(input.tileKey ?? {
+        ...TILE_KEY,
+        tileInstanceId: input.registrationId,
+        pageSessionId: input.sessionId,
+      }),
+      url: `https://app.example/${input.registrationId}`,
+      title: input.registrationId,
+      status: "ready",
+      reason: null,
+      canGoBack: false,
+      canGoForward: false,
+      zoomPercent: 100,
+    });
+  }
+
+  function electronTabStateFrames(
+    frames: readonly BrowserSessionsClientFrame[],
+  ): BrowserSessionsClientFrame[] {
+    return frames.filter((frame) => frame.kind === "electronTabState");
+  }
+
+  it("keeps at most one viewed tab per epic+host across regular and agent registrations", async () => {
+    const regularBridge = new FakeBridge();
+    const agentBridge = new FakeBridge();
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+
+    await registerMintedTab({
+      bridge: regularBridge,
+      registrationId: "reg-regular",
+      sessionId: "session-regular",
+      tabId: "tab-regular",
+    });
+    await registerMintedTab({
+      bridge: agentBridge,
+      registrationId: "reg-agent",
+      sessionId: "session-agent",
+      tabId: "tab-agent",
+    });
+    frames.length = 0;
+
+    updateElectronBrowserTabView({
+      sessionId: "session-regular",
+      registrationId: "reg-regular",
+      visible: true,
+      focused: false,
+    });
+    expect(electronTabStateFrames(frames)).toEqual([
+      expect.objectContaining({
+        sessionId: "session-regular",
+        tabId: "tab-regular",
+        viewed: true,
+      }),
+    ]);
+    frames.length = 0;
+
+    updateElectronBrowserTabView({
+      sessionId: "session-regular",
+      registrationId: "reg-regular",
+      visible: true,
+      focused: true,
+    });
+    frames.length = 0;
+
+    updateElectronBrowserTabView({
+      sessionId: "session-agent",
+      registrationId: "reg-agent",
+      visible: true,
+      focused: true,
+    });
+
+    const states = electronTabStateFrames(frames);
+    expect(states).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "electronTabState",
+          sessionId: "session-regular",
+          tabId: "tab-regular",
+          viewed: false,
+        }),
+        expect.objectContaining({
+          kind: "electronTabState",
+          sessionId: "session-agent",
+          tabId: "tab-agent",
+          viewed: true,
+        }),
+      ]),
+    );
+    expect(
+      states.filter(
+        (frame) => frame.kind === "electronTabState" && frame.viewed,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("preserves MRU viewed when focus leaves browser tiles (non-browser focus)", async () => {
+    const bridge = new FakeBridge();
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+
+    await registerMintedTab({
+      bridge,
+      registrationId: "reg-1",
+      sessionId: "session-1",
+      tabId: "tab-1",
+    });
+    frames.length = 0;
+
+    updateElectronBrowserTabView({
+      sessionId: "session-1",
+      registrationId: "reg-1",
+      visible: true,
+      focused: true,
+    });
+    expect(electronTabStateFrames(frames)).toEqual([
+      expect.objectContaining({
+        kind: "electronTabState",
+        tabId: "tab-1",
+        viewed: true,
+      }),
+    ]);
+    frames.length = 0;
+
+    // Pane loses focus to a chat/editor surface while the tile stays mounted.
+    updateElectronBrowserTabView({
+      sessionId: "session-1",
+      registrationId: "reg-1",
+      visible: true,
+      focused: false,
+    });
+    expect(electronTabStateFrames(frames)).toEqual([]);
+
+    // A later status publish still reports the MRU tile as viewed.
+    bridge.emitStatus({
+      ...TILE_KEY,
+      tileInstanceId: "reg-1",
+      pageSessionId: "session-1",
+      url: "https://app.example/still-viewed",
+      title: "Still viewed",
+      status: "ready",
+      reason: null,
+      canGoBack: false,
+      canGoForward: false,
+      zoomPercent: 100,
+    });
+    expect(electronTabStateFrames(frames)).toEqual([
+      expect.objectContaining({
+        kind: "electronTabState",
+        tabId: "tab-1",
+        url: "https://app.example/still-viewed",
+        viewed: true,
+      }),
+    ]);
+  });
+
+  it("hands viewed to the next MRU tile on close/unbind, or clears when none remain", async () => {
+    const bridgeA = new FakeBridge();
+    const bridgeB = new FakeBridge();
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+
+    await registerMintedTab({
+      bridge: bridgeA,
+      registrationId: "reg-a",
+      sessionId: "session-a",
+      tabId: "tab-a",
+    });
+    await registerMintedTab({
+      bridge: bridgeB,
+      registrationId: "reg-b",
+      sessionId: "session-b",
+      tabId: "tab-b",
+    });
+
+    updateElectronBrowserTabView({
+      sessionId: "session-a",
+      registrationId: "reg-a",
+      visible: true,
+      focused: true,
+    });
+    updateElectronBrowserTabView({
+      sessionId: "session-b",
+      registrationId: "reg-b",
+      visible: true,
+      focused: true,
+    });
+    frames.length = 0;
+
+    // Unbind the currently viewed tile (effect cleanup / tile close).
+    updateElectronBrowserTabView({
+      sessionId: "session-b",
+      registrationId: "reg-b",
+      visible: false,
+      focused: false,
+    });
+    expect(electronTabStateFrames(frames)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "electronTabState",
+          sessionId: "session-b",
+          tabId: "tab-b",
+          viewed: false,
+        }),
+        expect.objectContaining({
+          kind: "electronTabState",
+          sessionId: "session-a",
+          tabId: "tab-a",
+          viewed: true,
+        }),
+      ]),
+    );
+    expect(
+      electronTabStateFrames(frames).filter(
+        (frame) => frame.kind === "electronTabState" && frame.viewed,
+      ),
+    ).toHaveLength(1);
+    frames.length = 0;
+
+    // Unbind the last remaining MRU tile - previous clears viewed; none remain.
+    updateElectronBrowserTabView({
+      sessionId: "session-a",
+      registrationId: "reg-a",
+      visible: false,
+      focused: false,
+    });
+    expect(electronTabStateFrames(frames)).toEqual([
+      expect.objectContaining({
+        kind: "electronTabState",
+        sessionId: "session-a",
+        tabId: "tab-a",
+        viewed: false,
+      }),
+    ]);
+  });
+
+  it("publishes viewed transitions only on the existing electronTabState path", async () => {
+    const bridge = new FakeBridge();
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+
+    await registerMintedTab({
+      bridge,
+      registrationId: "reg-1",
+      sessionId: "session-1",
+      tabId: "tab-1",
+    });
+    frames.length = 0;
+
+    updateElectronBrowserTabView({
+      sessionId: "session-1",
+      registrationId: "reg-1",
+      visible: true,
+      focused: true,
+    });
+
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(frame.kind).toBe("electronTabState");
+      if (frame.kind === "electronTabState") {
+        expect(frame).toEqual(
+          expect.objectContaining({
+            registrationId: "reg-1",
+            sessionId: "session-1",
+            tabId: "tab-1",
+            status: "ready",
+            viewed: true,
+          }),
+        );
+      }
+    }
   });
 });

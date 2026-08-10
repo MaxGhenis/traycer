@@ -499,6 +499,7 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
                   originTier: "dev",
                   status: "ready",
                   title: "Example",
+                  viewed: false,
                   drivenBy: [],
                 },
               ],

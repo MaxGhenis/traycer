@@ -56,12 +56,16 @@ export interface ElectronBrowserTabRegistration {
 interface ElectronBrowserTabRecord extends ElectronBrowserTabRegistration {
   tabId: string | null;
   lastState: BrowserViewStatusChange | null;
+  visible: boolean;
+  focused: boolean;
+  focusOrder: number;
 }
 
 type SendFrame = (frame: BrowserSessionsClientFrame) => void;
 
 const recordsByRegistrationKey = new Map<string, ElectronBrowserTabRecord>();
 const sendFrameByEpicHost = new Map<string, SendFrame>();
+let focusOrder = 0;
 
 export function registerElectronBrowserTab(
   input: ElectronBrowserTabRegistration,
@@ -82,10 +86,45 @@ export function registerElectronBrowserTab(
     ...input,
     tabId: null,
     lastState: null,
+    visible: false,
+    focused: false,
+    focusOrder: 0,
   };
   recordsByRegistrationKey.set(key, record);
   installDesktopForwarding(record);
   publishRegistration(record);
+}
+
+export function updateElectronBrowserTabView(input: {
+  readonly sessionId: string;
+  readonly registrationId: string;
+  readonly visible: boolean;
+  readonly focused: boolean;
+}): void {
+  const record = recordsByRegistrationKey.get(
+    registrationKey(input.sessionId, input.registrationId),
+  );
+  if (record === undefined) return;
+  const records = recordsForEpicHost(record.epicId, record.hostId);
+  const previousViewed = mostRecentlyFocusedVisibleRecord(records);
+  const focused = input.visible && input.focused;
+  if (focused && !record.focused) {
+    focusOrder += 1;
+    record.focusOrder = focusOrder;
+  } else if (
+    input.visible &&
+    previousViewed === null &&
+    record.focusOrder === 0
+  ) {
+    focusOrder += 1;
+    record.focusOrder = focusOrder;
+  }
+  record.visible = input.visible;
+  record.focused = focused;
+  const nextViewed = mostRecentlyFocusedVisibleRecord(records);
+  if (previousViewed === nextViewed) return;
+  if (previousViewed !== null) publishState(previousViewed);
+  if (nextViewed !== null) publishState(nextViewed);
 }
 
 /**
@@ -266,7 +305,38 @@ function publishState(record: ElectronBrowserTabRecord): void {
     url: record.lastState.url,
     title: record.lastState.title.length > 0 ? record.lastState.title : null,
     status: sessionStatus(record.lastState),
+    viewed: isViewed(record),
   });
+}
+
+function recordsForEpicHost(
+  epicId: string,
+  hostId: string,
+): ElectronBrowserTabRecord[] {
+  return [...recordsByRegistrationKey.values()].filter(
+    (record) => record.epicId === epicId && record.hostId === hostId,
+  );
+}
+
+function isViewed(record: ElectronBrowserTabRecord): boolean {
+  return (
+    mostRecentlyFocusedVisibleRecord(
+      recordsForEpicHost(record.epicId, record.hostId),
+    ) === record
+  );
+}
+
+function mostRecentlyFocusedVisibleRecord(
+  records: readonly ElectronBrowserTabRecord[],
+): ElectronBrowserTabRecord | null {
+  let mostRecent: ElectronBrowserTabRecord | null = null;
+  for (const candidate of records) {
+    if (!candidate.visible || candidate.focusOrder === 0) continue;
+    if (mostRecent === null || candidate.focusOrder > mostRecent.focusOrder) {
+      mostRecent = candidate;
+    }
+  }
+  return mostRecent;
 }
 
 function sendForRecord(
@@ -339,4 +409,5 @@ function epicHostKey(epicId: string, hostId: string): string {
 export function resetElectronBrowserTabStoreForTests(): void {
   recordsByRegistrationKey.clear();
   sendFrameByEpicHost.clear();
+  focusOrder = 0;
 }

@@ -44,7 +44,10 @@ import {
 } from "@/lib/browser-view/browser-overlay-coordinator";
 import { browserCookieDegradedMessage } from "@/lib/browser-view/browser-cookie-degraded-message";
 import { selectSiblingChatIdForBrowserTile } from "@/lib/browser-view/browser-tile-chat-routing";
-import { registerElectronBrowserTab } from "@/lib/browser-view/electron-browser-tab-store";
+import {
+  registerElectronBrowserTab,
+  updateElectronBrowserTabView,
+} from "@/lib/browser-view/electron-browser-tab-store";
 import {
   type BrowserViewBounds,
   type BrowserViewCertificateErrorChange,
@@ -84,6 +87,7 @@ import {
 } from "@/components/epic-canvas/renderers/browser-element-picker";
 import { useBrowserElementPicker } from "@/components/epic-canvas/renderers/use-browser-element-picker";
 import { BrowserTileFindAdapterBridge } from "@/components/epic-canvas/renderers/browser-tile-find-adapter";
+import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
 import {
   BrowserTileCertificateInterstitial,
   BrowserTileDownloadStrip,
@@ -156,6 +160,7 @@ export function BrowserTile(props: BrowserTileProps) {
   const hostId = useTabHostId();
   const runnerHost = useRunnerHost();
   const visible = useTileBodyVisible();
+  const paneFocused = usePaneFocused();
   const browserView = useMemo(
     () => resolveDesktopBrowserViewBridge(runnerHost),
     [runnerHost],
@@ -265,6 +270,28 @@ export function BrowserTile(props: BrowserTileProps) {
     props.node.url,
     tileKey,
   ]);
+
+  useEffect(() => {
+    if (browserView === null) return;
+    updateElectronBrowserTabView({
+      sessionId: props.node.id,
+      registrationId: props.node.id,
+      visible,
+      focused: paneFocused,
+    });
+  }, [browserView, paneFocused, props.node.id, visible]);
+
+  useEffect(() => {
+    if (browserView === null) return;
+    return () => {
+      updateElectronBrowserTabView({
+        sessionId: props.node.id,
+        registrationId: props.node.id,
+        visible: false,
+        focused: false,
+      });
+    };
+  }, [browserView, props.node.id]);
 
   useEffect(() => {
     if (browserView === null) return;

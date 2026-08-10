@@ -191,6 +191,7 @@ function sessionFor(
         originTier: "dev",
         status,
         title: "Example",
+        viewed: false,
         drivenBy: [],
       },
     ],
