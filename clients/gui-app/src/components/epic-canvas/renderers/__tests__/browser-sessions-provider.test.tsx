@@ -255,6 +255,12 @@ function readinessFrames(
   return frames.filter((frame) => frame.kind === "primaryProfileCaptureReady");
 }
 
+function registrationFrames(
+  frames: ReadonlyArray<Record<string, unknown>>,
+): ReadonlyArray<Record<string, unknown>> {
+  return frames.filter((frame) => frame.kind === "registerElectronTab");
+}
+
 function installCaptureBridge(): void {
   const capturePrimaryProfile = vi.fn(() =>
     Promise.resolve({
@@ -538,6 +544,83 @@ describe("BrowserSessionsProvider (ticket 08-lift live readiness)", () => {
     hookState.streamClientFactory = null;
     hookState.browserViewBridge = null;
     resetElectronBrowserTabStoreForTests();
+  });
+
+  it("replays a cold electron registration only after the stream becomes live", () => {
+    registerElectronBrowserTab({
+      epicId: "epic-1",
+      hostId: "host-test",
+      chatId: "chat-alpha",
+      registrationId: "reg-cold",
+      sessionId: "session-cold",
+      initialUrl: "https://app.example/cold",
+      title: "Cold",
+      tileKey: TILE_KEY,
+      bridge: new FakeBridge(),
+      onRegistered: null,
+    });
+    renderProvider("chat-alpha");
+    const stream = hookState.streamClient?.sessions[0];
+    expect(stream).toBeDefined();
+    if (stream === undefined) {
+      throw new Error("expected browser.sessions stream session");
+    }
+
+    expect(registrationFrames(stream.sentFrames)).toHaveLength(0);
+    expect(registrationFrames(stream.droppedFrames)).toHaveLength(1);
+
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(registrationFrames(stream.sentFrames)).toHaveLength(1);
+    expect(stream.sentFrames).toContainEqual(
+      expect.objectContaining({
+        kind: "registerElectronTab",
+        registrationId: "reg-cold",
+      }),
+    );
+
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(registrationFrames(stream.sentFrames)).toHaveLength(1);
+  });
+
+  it("replays electron registrations once on the next live after reconnect", () => {
+    registerElectronBrowserTab({
+      epicId: "epic-1",
+      hostId: "host-test",
+      chatId: "chat-alpha",
+      registrationId: "reg-reconnect",
+      sessionId: "session-reconnect",
+      initialUrl: "https://app.example/reconnect",
+      title: "Reconnect",
+      tileKey: TILE_KEY,
+      bridge: new FakeBridge(),
+      onRegistered: null,
+    });
+    renderProvider("chat-alpha");
+    const stream = hookState.streamClient?.sessions[0];
+    expect(stream).toBeDefined();
+    if (stream === undefined) {
+      throw new Error("expected browser.sessions stream session");
+    }
+
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(registrationFrames(stream.sentFrames)).toHaveLength(1);
+
+    act(() => {
+      stream.emitStatus("reconnecting");
+      stream.emitStatus("open");
+    });
+    expect(registrationFrames(stream.sentFrames)).toHaveLength(2);
+
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(registrationFrames(stream.sentFrames)).toHaveLength(2);
   });
 
   it("emits no capture-ready pre-live, then exactly one after first live so a fresh primary capture is serviced", async () => {

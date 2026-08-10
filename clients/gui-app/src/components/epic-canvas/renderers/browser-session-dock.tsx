@@ -42,6 +42,7 @@ import { publishAgentBrowserCdpRequest } from "@/lib/browser-view/agent-browser-
 import {
   attachElectronBrowserTabStream,
   handleElectronBrowserTabFrame,
+  replayElectronBrowserTabRegistrations,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import type { AgentBrowserViewCdpCommand } from "@/lib/browser-view/desktop-agent-browser-view";
 import {
@@ -726,6 +727,7 @@ function useBrowserSessions(
     // subscription is open and during reconnects. Re-advertise this durable
     // capability once per live connection so the host always has an endpoint.
     let captureReadySentForConnection = false;
+    let electronTabsReplayedForConnection = false;
     const detachElectronTabs = attachElectronBrowserTabStream(
       epicId,
       hostId,
@@ -736,16 +738,23 @@ function useBrowserSessions(
     stream.onStatusChange((status, reason) => {
       if (status !== "open") {
         captureReadySentForConnection = false;
-      } else if (primaryProfileCaptureReady && !captureReadySentForConnection) {
-        captureReadySentForConnection = true;
-        stream.sendClientFrame(
-          {
-            kind: "primaryProfileCaptureReady",
-            hasBinaryPayload: false,
-            requestId: crypto.randomUUID(),
-          },
-          null,
-        );
+        electronTabsReplayedForConnection = false;
+      } else {
+        if (!electronTabsReplayedForConnection) {
+          electronTabsReplayedForConnection = true;
+          replayElectronBrowserTabRegistrations(epicId, hostId);
+        }
+        if (primaryProfileCaptureReady && !captureReadySentForConnection) {
+          captureReadySentForConnection = true;
+          stream.sendClientFrame(
+            {
+              kind: "primaryProfileCaptureReady",
+              hasBinaryPayload: false,
+              requestId: crypto.randomUUID(),
+            },
+            null,
+          );
+        }
       }
       setStreamState((current) => ({
         client,

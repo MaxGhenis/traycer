@@ -99,16 +99,23 @@ export function attachElectronBrowserTabStream(
 ): () => void {
   const key = epicHostKey(epicId, hostId);
   sendFrameByEpicHost.set(key, sendFrame);
-  for (const record of recordsByRegistrationKey.values()) {
-    if (record.epicId === epicId && record.hostId === hostId) {
-      publishRegistration(record);
-    }
-  }
+  replayElectronBrowserTabRegistrations(epicId, hostId);
   return () => {
     if (sendFrameByEpicHost.get(key) === sendFrame) {
       sendFrameByEpicHost.delete(key);
     }
   };
+}
+
+export function replayElectronBrowserTabRegistrations(
+  epicId: string,
+  hostId: string,
+): void {
+  for (const record of recordsByRegistrationKey.values()) {
+    if (record.epicId === epicId && record.hostId === hostId) {
+      publishRegistration(record);
+    }
+  }
 }
 
 export function handleElectronBrowserTabFrame(
