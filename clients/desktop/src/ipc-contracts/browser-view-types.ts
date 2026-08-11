@@ -409,6 +409,20 @@ export interface AgentBrowserViewCdpTargetAttachedChange extends BrowserViewTile
 }
 
 /**
+ * Ticket 02 (multi-tab handoff): the session's other live tiles, captured
+ * best-effort at the same moment as the triggering tile, so one
+ * `AgentBrowserViewTileHandoffChange` hands off the whole session instead of
+ * racing one push per tile against the runtime flip. `tabId` is the durable
+ * tab id the tile already registered under - siblings are recreated at their
+ * existing tabId, never minted fresh.
+ */
+export interface BrowserViewTileHandoffSiblingTab {
+  readonly tabId: string;
+  readonly url: string;
+  readonly capturedStorageState: unknown;
+}
+
+/**
  * Ticket 12 / ticket 10's design. Push notification (electron-main ->
  * renderer -> host), fired once just before a tile dies, for any teardown
  * reason. `capturedStorageState` stays `unknown` on this leg too - same
@@ -419,6 +433,7 @@ export interface AgentBrowserViewCdpTargetAttachedChange extends BrowserViewTile
 export interface AgentBrowserViewTileHandoffChange extends BrowserViewTileKey {
   readonly capturedUrl: string;
   readonly capturedStorageState: unknown;
+  readonly siblingTabs: readonly BrowserViewTileHandoffSiblingTab[];
   readonly reason: "gui-quit" | "tile-released" | "crash-no-capture";
 }
 

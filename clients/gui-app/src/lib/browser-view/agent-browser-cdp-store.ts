@@ -166,6 +166,11 @@ export function notifyAgentBrowserTileHandoff(
   handoff: {
     readonly capturedUrl: string;
     readonly capturedStorageState: unknown;
+    readonly siblingTabs: readonly {
+      readonly tabId: string;
+      readonly url: string;
+      readonly capturedStorageState: unknown;
+    }[];
     readonly reason: "gui-quit" | "tile-released" | "crash-no-capture";
   },
 ): void {
@@ -179,6 +184,12 @@ export function notifyAgentBrowserTileHandoff(
     capturedUrl: handoff.capturedUrl,
     capturedStorageState:
       handoff.capturedStorageState as BrowserCdpResultJsonValue,
+    siblingTabs: handoff.siblingTabs.map((sibling) => ({
+      tabId: sibling.tabId,
+      url: sibling.url,
+      capturedStorageState:
+        sibling.capturedStorageState as BrowserCdpResultJsonValue,
+    })),
     reason: handoff.reason,
   });
 }

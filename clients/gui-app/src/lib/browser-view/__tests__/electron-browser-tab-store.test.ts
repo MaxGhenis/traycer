@@ -126,6 +126,10 @@ class FakeBridge {
   emitStatus(change: BrowserViewStatusChange): void {
     for (const handler of this.statusHandlers) handler(change);
   }
+
+  emitTileHandoff(change: AgentBrowserViewTileHandoffChange): void {
+    for (const handler of this.tileHandoffHandlers) handler(change);
+  }
 }
 
 function baseRegistration(
@@ -399,6 +403,63 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
         url: "https://app.example/ready",
         title: "Ready",
         status: "ready",
+      }),
+    ]);
+  });
+
+  it("forwards aggregated sibling tabs in a tileHandoff frame", () => {
+    const bridge = new FakeBridge();
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-handoff",
+        sessionId: "session-handoff",
+        bridge,
+      }),
+    );
+    frames.length = 0;
+
+    const primaryStorage = { cookies: [], origins: [] };
+    const siblingStorage = {
+      cookies: [],
+      origins: [
+        {
+          origin: "https://sibling.example",
+          localStorage: [{ name: "token", value: "carried" }],
+        },
+      ],
+    };
+    bridge.emitTileHandoff({
+      ...TILE_KEY,
+      capturedUrl: "https://app.example/after",
+      capturedStorageState: primaryStorage,
+      siblingTabs: [
+        {
+          tabId: "tab-sibling",
+          url: "https://sibling.example/after",
+          capturedStorageState: siblingStorage,
+        },
+      ],
+      reason: "gui-quit",
+    });
+
+    expect(frames).toEqual([
+      expect.objectContaining({
+        kind: "tileHandoff",
+        tileInstanceId: TILE_KEY.tileInstanceId,
+        capturedUrl: "https://app.example/after",
+        capturedStorageState: primaryStorage,
+        siblingTabs: [
+          {
+            tabId: "tab-sibling",
+            url: "https://sibling.example/after",
+            capturedStorageState: siblingStorage,
+          },
+        ],
+        reason: "gui-quit",
       }),
     ]);
   });

@@ -189,9 +189,16 @@ export interface AgentBrowserViewCdpTargetAttachedChange extends BrowserViewTile
   readonly waitingForDebugger: boolean;
 }
 
+export interface AgentBrowserViewTileHandoffSiblingTab {
+  readonly tabId: string;
+  readonly url: string;
+  readonly capturedStorageState: unknown;
+}
+
 export interface AgentBrowserViewTileHandoffChange extends BrowserViewTileKey {
   readonly capturedUrl: string;
   readonly capturedStorageState: unknown;
+  readonly siblingTabs: readonly AgentBrowserViewTileHandoffSiblingTab[];
   readonly reason: "gui-quit" | "tile-released" | "crash-no-capture";
 }
 

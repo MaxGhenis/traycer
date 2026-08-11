@@ -375,7 +375,7 @@ describe("captureBrowserViewStorageStateWithDependencies", () => {
     ).resolves.toMatchObject({
       storageState: {
         cookies: [],
-        origins: [{ origin: "https://example.test", localStorage: [] }],
+        origins: [],
       },
       cookieCount: 0,
       cookieDomains: [],

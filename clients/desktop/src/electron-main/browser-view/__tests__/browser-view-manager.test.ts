@@ -641,6 +641,11 @@ async function flushCloseEntry(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe("BrowserViewManager", () => {
@@ -2655,10 +2660,81 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
     expect(harness.tileHandoffNotifications).toEqual([
       expect.objectContaining({
         ...BASE_KEY,
+        siblingTabs: [],
         reason: "gui-quit",
       }),
     ]);
     expect(view.webContents.closeCalls).toBe(1);
+  });
+
+  it("aggregates every live durable tab into one handoff during group dispose", async () => {
+    const harness = createHarness();
+    const tabs = [
+      {
+        key: BASE_KEY,
+        url: "https://app.example/primary",
+        tabId: "tab-primary",
+      },
+      {
+        key: {
+          ...BASE_KEY,
+          viewTabId: "view-tab-2",
+          paneId: "pane-2",
+          tileInstanceId: "tile-2",
+          pageSessionId: "page-2",
+        },
+        url: "https://app.example/sibling-a",
+        tabId: "tab-sibling-a",
+      },
+      {
+        key: {
+          ...BASE_KEY,
+          viewTabId: "view-tab-3",
+          paneId: "pane-3",
+          tileInstanceId: "tile-3",
+          pageSessionId: "page-3",
+        },
+        url: "https://app.example/sibling-b",
+        tabId: "tab-sibling-b",
+      },
+    ] as const;
+
+    for (const tab of tabs) {
+      harness.manager.upsertTile("window-1", upsert(tab.key, tab.url, true));
+      harness.manager.registerDurableTab("window-1", {
+        ...tab.key,
+        sessionId: "session-multi-tab",
+        tabId: tab.tabId,
+      });
+    }
+
+    harness.manager.dispose();
+    await flushCloseEntry();
+
+    expect(harness.tileHandoffNotifications).toHaveLength(1);
+    expect(harness.tileHandoffNotifications[0]).toEqual({
+      ...tabs[0].key,
+      capturedUrl: tabs[0].url,
+      capturedStorageState: { cookies: [], origins: [] },
+      siblingTabs: [
+        {
+          tabId: tabs[1].tabId,
+          url: tabs[1].url,
+          capturedStorageState: { cookies: [], origins: [] },
+        },
+        {
+          tabId: tabs[2].tabId,
+          url: tabs[2].url,
+          capturedStorageState: { cookies: [], origins: [] },
+        },
+      ],
+      reason: "gui-quit",
+    });
+    expect(harness.views.map((view) => view.webContents.closeCalls)).toEqual([
+      1,
+      1,
+      1,
+    ]);
   });
 
   it("crash closes with crash-no-capture and skips storage capture (ticket 05)", async () => {

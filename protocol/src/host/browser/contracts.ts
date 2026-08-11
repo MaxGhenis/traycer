@@ -888,11 +888,26 @@ export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
     // majors. `null` means desktop could not safely capture state for this
     // teardown (see `reason: "crash-no-capture"`) - the host still hands the
     // session off headless at `capturedUrl`, just without carried storage.
+    //
+    // Ticket 02 (multi-tab handoff): `siblingTabs` carries the session's
+    // OTHER live tiles (same session, everything but the triggering tile)
+    // captured best-effort at the same moment, so one frame hands off the
+    // whole session atomically instead of racing one frame per tile against
+    // the runtime flip. Each entry's `capturedStorageState` follows the same
+    // opaque/nullable convention as the primary capture above. Empty for a
+    // single-tab session, byte-identical to today.
     kind: z.literal("tileHandoff"),
     ...requestFrameFields,
     tileInstanceId: z.string(),
     capturedUrl: z.string(),
     capturedStorageState: z.json().nullable(),
+    siblingTabs: z.array(
+      z.object({
+        tabId: z.string(),
+        url: z.string(),
+        capturedStorageState: z.json().nullable(),
+      }),
+    ),
     reason: z.enum(["gui-quit", "tile-released", "crash-no-capture"]),
   }),
 ]);

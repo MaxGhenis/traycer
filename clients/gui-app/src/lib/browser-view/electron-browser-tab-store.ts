@@ -284,6 +284,11 @@ function installDesktopForwarding(record: ElectronBrowserTabRecord): void {
       tileInstanceId: change.tileInstanceId,
       capturedUrl: change.capturedUrl,
       capturedStorageState: jsonPayload(change.capturedStorageState),
+      siblingTabs: change.siblingTabs.map((sibling) => ({
+        tabId: sibling.tabId,
+        url: sibling.url,
+        capturedStorageState: jsonPayload(sibling.capturedStorageState),
+      })),
       reason: change.reason,
     });
   });

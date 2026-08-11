@@ -196,12 +196,14 @@ export async function captureBrowserViewStorageStateWithDependencies(
     toStorageCookie,
   );
   const localStorage = await captureLocalStorageForOrigin(origin, webContents);
-  const origins = [
-    {
-      origin,
-      localStorage: localStorage.entries,
-    },
-  ];
+  // Omit the origin entirely when its localStorage capture was unavailable
+  // (e.g. the tile navigated away from `origin` mid-capture) rather than
+  // reporting `{origin, localStorage: []}` - an absent entry means "unknown",
+  // so a merge downstream cannot mistake it for a genuinely empty origin and
+  // erase a good cached value.
+  const origins = localStorage.available
+    ? [{ origin, localStorage: localStorage.entries }]
+    : [];
   return {
     storageState: {
       cookies,

@@ -335,6 +335,13 @@ interface BrowserViewEntry {
   control: BrowserViewControlState | null;
   runtimeSessionId: string;
   runtimeTabId: string | null;
+  /**
+   * Ticket 02 (multi-tab handoff): set once this entry's captured state has
+   * been folded into ANOTHER (still-live) tile's `tileHandoff` push as a
+   * sibling, so this entry's own `closeEntry` - moments later, in the same
+   * group teardown - does not push a second, now-redundant frame for it.
+   */
+  handedOff: boolean;
 }
 
 interface BrowserViewControlState {
@@ -1236,6 +1243,7 @@ export class BrowserViewManager {
       overlayOwnerIds: [],
       overlaySnapshotStale: false,
       control: null,
+      handedOff: false,
       runtimeSessionId: key.pageSessionId,
       runtimeTabId: null,
     };
@@ -2032,26 +2040,58 @@ export class BrowserViewManager {
   }
 
   /**
-   * Ticket 12 / ticket 10's design. Captures `{url, storageState}` and
-   * pushes it to the host just before a tile dies, for whatever `reason`
-   * the caller names. Best-effort by construction, same posture already
-   * accepted for `cdpSessionEnded`: a push that is delayed, dropped, or
-   * fails to capture storage still lets the host continue the session
-   * headless at `capturedUrl`, and `reclaimUnreachableTileSession`'s TTL
-   * path is the fallback if the push never arrives at all.
+   * Ticket 12 / ticket 10's design, extended by ticket 02 for multi-tab
+   * sessions. Captures `{url, storageState}` and pushes it to the host just
+   * before a tile dies, for whatever `reason` the caller names. Best-effort
+   * by construction, same posture already accepted for `cdpSessionEnded`: a
+   * push that is delayed, dropped, or fails to capture storage still lets
+   * the host continue the session headless at `capturedUrl`, and
+   * `reclaimUnreachableTileSession`'s TTL path is the fallback if the push
+   * never arrives at all.
+   *
+   * Ticket 02: before capturing anything, this synchronously claims every
+   * OTHER still-live tile of the same session as a sibling and marks it
+   * `handedOff`, so one frame carries the whole session atomically. This
+   * must happen before the first `await` below: `dispose()`'s group
+   * teardown fires one `closeEntry` per tile back-to-back with no `await`
+   * between them, so a later iteration's own `pushTileHandoff` call must
+   * already see `handedOff` set by an earlier iteration rather than racing
+   * it to also claim the same siblings.
    */
   private async pushTileHandoff(
     entry: BrowserViewEntry,
     reason: AgentBrowserViewTileHandoffChange["reason"],
   ): Promise<void> {
+    if (entry.handedOff) return;
+    const siblings = Array.from(this.entriesByRuntimeKey.values()).filter(
+      (candidate) =>
+        candidate !== entry &&
+        candidate.runtimeTabId !== null &&
+        candidate.runtimeSessionId === entry.runtimeSessionId &&
+        !candidate.handedOff,
+    );
+    for (const sibling of siblings) {
+      sibling.handedOff = true;
+    }
     const capturedStorageState = await this.captureHandoffStorageState(
       entry,
       reason,
+    );
+    const siblingTabs = await Promise.all(
+      siblings.map(async (sibling) => ({
+        tabId: sibling.runtimeTabId ?? sibling.key.pageSessionId,
+        url: sibling.currentUrl,
+        capturedStorageState: await this.captureHandoffStorageState(
+          sibling,
+          sibling.status === "dead" ? "crash-no-capture" : reason,
+        ),
+      })),
     );
     this.notifyTileHandoff(entry.key.windowId, {
       ...toTileKey(entry.key),
       capturedUrl: entry.currentUrl,
       capturedStorageState,
+      siblingTabs,
       reason,
     });
   }
