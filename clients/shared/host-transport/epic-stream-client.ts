@@ -5,6 +5,7 @@ import {
   type EpicCloudSyncStatus,
   type EpicDurabilityPauseReasonV14,
   type EpicDurabilityStatusV14,
+  type EpicCloudFreshness,
   type EpicLocalProtection,
   type EpicMigrationPhase,
   type EpicPromotionState,
@@ -254,6 +255,19 @@ export type EpicCloudSyncDurability = {
   readonly promotionState: EpicPromotionState | undefined;
   /** Whether this session has local WAL protection. */
   readonly localProtection: EpicLocalProtection | undefined;
+  /**
+   * How the served document stands relative to the cloud - `@1.4`,
+   * `s5-mirror-first-serving`.
+   *
+   * Carried in the same value as the durability legs because it is read WITH
+   * them and against them: mirror-first serving is exactly the state where
+   * "the bytes are safe here" and "this is what the cloud has" disagree, so a
+   * surface that saw one without the other would be back to guessing.
+   *
+   * `undefined` is unknown. A host that says nothing about freshness has not
+   * said the document is current.
+   */
+  readonly freshness: EpicCloudFreshness | undefined;
 };
 
 /**
@@ -266,6 +280,7 @@ export const NO_CLOUD_SYNC_DURABILITY: EpicCloudSyncDurability = {
   pauseReason: undefined,
   promotionState: undefined,
   localProtection: undefined,
+  freshness: undefined,
 };
 
 export class EpicStreamClient {
@@ -450,6 +465,7 @@ export class EpicStreamClient {
               "promotionState" in frame ? frame.promotionState : undefined,
             localProtection:
               "localProtection" in frame ? frame.localProtection : undefined,
+            freshness: "freshness" in frame ? frame.freshness : undefined,
           },
         );
         return;

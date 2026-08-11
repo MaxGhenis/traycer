@@ -20,6 +20,7 @@ const HEALTHY_INPUTS: EpicSyncPillInputs = {
   // one, so these keep asserting exactly the behaviour they always did.
   durability: undefined,
   localProtection: undefined,
+  cloudFreshness: undefined,
 };
 
 const HOST_TRANSPORT_STATUSES: readonly StreamConnectionStatus[] = [
@@ -55,6 +56,7 @@ function allCombinations(): readonly EpicSyncPillInputs[] {
               hasConnectedOnce,
               durability: undefined,
               localProtection: undefined,
+              cloudFreshness: undefined,
             })),
           ),
         ),
@@ -228,6 +230,7 @@ describe("deriveEpicSyncPillState", () => {
         hasConnectedOnce: true,
         durability: undefined,
         localProtection: undefined,
+        cloudFreshness: undefined,
       });
       expect(result).toBe("connected");
     });
@@ -242,6 +245,7 @@ describe("deriveEpicSyncPillState", () => {
         hasConnectedOnce: true,
         durability: undefined,
         localProtection: undefined,
+        cloudFreshness: undefined,
       });
       expect(result).toBe("offlineWithUnsavedChanges");
     });
@@ -341,5 +345,84 @@ describe("deriveEpicSyncPillState", () => {
         }),
       ).toBe("connected");
     });
+  });
+});
+
+/**
+ * The ninth leg - `s5-mirror-first-serving`.
+ *
+ * Every other case in this file is about where WORK is going. These are about
+ * what the reader is LOOKING at, which mirror-first serving made a separate
+ * question: the host paints a WAL-backed document before reconciling it, so
+ * "nothing outstanding, cloud link up" stopped implying "this is the cloud's
+ * document".
+ */
+describe("cloud freshness gates the synced claim", () => {
+  /**
+   * The `@1.4` shape of {@link HEALTHY_INPUTS}: a positively-armed session
+   * with no local-durability claim, i.e. durable in the cloud. Without a
+   * freshness statement this is the one combination that legitimately reads
+   * `synced`, which is what makes it the right baseline to perturb.
+   */
+  const CLOUD_DURABLE_ARMED: EpicSyncPillInputs = {
+    ...HEALTHY_INPUTS,
+    durability: undefined,
+    localProtection: "armed",
+    cloudFreshness: undefined,
+  };
+
+  it("still claims synced when the host states the document is current", () => {
+    expect(
+      deriveEpicSyncPillState({
+        ...CLOUD_DURABLE_ARMED,
+        cloudFreshness: {
+          kind: "lastCloudSyncAt",
+          reconciledAtEpochMs: 1_700_000_000_000,
+          state: "current",
+        },
+      }),
+    ).toBe("synced");
+  });
+
+  it("keeps its exact pre-@1.4 answer when the host says nothing about freshness", () => {
+    // The additive property, asserted rather than assumed: the host omits this
+    // key wherever the question does not apply, and a peer below @1.4 cannot
+    // send it at all. Neither may lose its current rendering.
+    expect(deriveEpicSyncPillState(CLOUD_DURABLE_ARMED)).toBe("synced");
+  });
+
+  it.each([
+    { state: "local-copy" as const },
+    { state: "syncing" as const },
+    { state: "stale" as const },
+  ])(
+    "refuses the synced claim over a document the host calls $state",
+    ({ state }) => {
+      const result = deriveEpicSyncPillState({
+        ...CLOUD_DURABLE_ARMED,
+        cloudFreshness: { kind: "freshnessUnknown", state },
+      });
+      // Neutral, not alarming: the WORK really is safe in the cloud, so the
+      // pill claims nothing rather than warning about durability it has no
+      // reason to doubt. The document's own staleness is the badge's line.
+      expect(result).toBe("connected");
+      expect(result).not.toBe("synced");
+    },
+  );
+
+  it("refuses it for a TIMESTAMPED non-current document too, so the stamp is not mistaken for currency", () => {
+    // A recorded reconciliation is evidence about the PAST. Reading the mere
+    // presence of a timestamp as currency would be the absence-as-reassurance
+    // inference one level down.
+    expect(
+      deriveEpicSyncPillState({
+        ...CLOUD_DURABLE_ARMED,
+        cloudFreshness: {
+          kind: "lastCloudSyncAt",
+          reconciledAtEpochMs: 1_700_000_000_000,
+          state: "stale",
+        },
+      }),
+    ).toBe("connected");
   });
 });

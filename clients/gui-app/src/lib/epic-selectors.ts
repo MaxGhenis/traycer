@@ -37,6 +37,8 @@ import type {
 import type { WorktreeBindingOwnerKind } from "@traycer/protocol/host/worktree-schemas";
 import type { SnapshotMetaEpic } from "@traycer/protocol/host/epic/snapshot-meta";
 import type {
+  EpicCloudFreshness,
+  EpicCloudFreshnessState,
   EpicDurabilityStatusV14,
   EpicLocalProtection,
 } from "@traycer/protocol/host/epic/subscribe";
@@ -245,6 +247,9 @@ export function useEpicSyncPillState(): EpicSyncPillState {
       // `s5-status-truthfulness` instance 1.
       durability: s.durabilityStatus ?? undefined,
       localProtection: s.localProtection ?? undefined,
+      // The ninth leg, and the one that is about the DOCUMENT rather than
+      // about where the work is going - `s5-mirror-first-serving`.
+      cloudFreshness: s.cloudFreshness ?? undefined,
     }),
   );
 }
@@ -315,6 +320,56 @@ export function useEpicDurabilityView(): EpicDurabilityView {
 /** Raw `localProtection`, for surfaces that gate on protection alone. */
 export function useEpicLocalProtection(): EpicLocalProtection | null {
   return useEpicStore((s) => s.localProtection ?? null);
+}
+
+/**
+ * The ONE reading of `@1.4`'s `freshness` datum - `s5-mirror-first-serving`.
+ *
+ * Deliberately the same shape of answer as {@link EpicDurabilityView}, and for
+ * the same reason: the host derives an honest state, every renderer used to
+ * null-render it into the calm value independently, and the fix is one reading
+ * that the components then render.
+ *
+ * `unknown` covers BOTH an absent key and a peer that cannot speak `@1.4`, and
+ * it is deliberately calm - the host omits `freshness` for a local-homed epic
+ * (there is no cloud copy for it to be behind) and for a cloud row it has no
+ * record of. Absence here therefore means "no freshness question applies",
+ * which is why it renders exactly as it did before this minor. The one
+ * inference this type refuses to let a caller make is the opposite one: there
+ * is no arm that turns silence into `current`.
+ */
+export type EpicCloudFreshnessView =
+  | { readonly kind: "unknown" }
+  | {
+      readonly kind: "stated";
+      readonly state: EpicCloudFreshnessState;
+      /**
+       * The last SUCCESSFUL full root reconciliation, or `null` when this host
+       * has never recorded one. `null` beside `current` is structurally
+       * impossible on the wire, which is why the union carries the two
+       * together rather than as independent optionals.
+       */
+      readonly reconciledAtEpochMs: number | null;
+    };
+
+export function deriveEpicCloudFreshnessView(
+  freshness: EpicCloudFreshness | null,
+): EpicCloudFreshnessView {
+  if (freshness === null) return { kind: "unknown" };
+  return freshness.kind === "lastCloudSyncAt"
+    ? {
+        kind: "stated",
+        state: freshness.state,
+        reconciledAtEpochMs: freshness.reconciledAtEpochMs,
+      }
+    : { kind: "stated", state: freshness.state, reconciledAtEpochMs: null };
+}
+
+/** The composed freshness reading for the open epic. */
+export function useEpicCloudFreshnessView(): EpicCloudFreshnessView {
+  return useEpicStore((s) =>
+    deriveEpicCloudFreshnessView(s.cloudFreshness ?? null),
+  );
 }
 
 export function useEpicPermissionRole(): PermissionRole | null {

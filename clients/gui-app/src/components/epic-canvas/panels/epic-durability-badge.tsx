@@ -2,12 +2,15 @@ import { Button } from "@/components/ui/button";
 import { useEpicExportArtifacts } from "@/hooks/epic/use-epic-export-artifacts-mutation";
 import {
   useEpicArtifactRecords,
+  useEpicCloudFreshnessView,
   useEpicDurabilityPauseReason,
   useEpicDurabilityPromotionState,
   useEpicDurabilityView,
   useEpicSnapshotMeta,
+  type EpicCloudFreshnessView,
   type EpicDurabilityView,
 } from "@/lib/epic-selectors";
+import { useCompactRelativeTime } from "@/lib/relative-time";
 import { isEpicArtifactKind } from "@/lib/artifacts/node-display";
 import { resolveManageSubscriptionUrl } from "@/lib/auth/manage-subscription-url";
 import { cn } from "@/lib/utils";
@@ -25,8 +28,15 @@ import type {
  */
 export function EpicDurabilityBadge() {
   const view = useEpicDurabilityView();
+  const freshness = useEpicCloudFreshnessView();
   const pauseReason = useEpicDurabilityPauseReason();
   const promotionState = useEpicDurabilityPromotionState();
+  // `s5-mirror-first-serving`. Mirror-first paints a usable document before it
+  // is known to be up to date, so the two calm arms below can now be reached by
+  // an epic that is genuinely durable AND genuinely behind. Freshness is
+  // consulted BEFORE they return null, or the one state this ticket exists to
+  // make visible would be the one state the badge stays silent about.
+  const freshnessCopy = cloudFreshnessCopy(freshness);
   // Two silences, and only ONE of them is nothing to say.
   //
   // `cloudDurable` is the host positively stating that the epic is in the
@@ -38,13 +48,21 @@ export function EpicDurabilityBadge() {
   // What used to join them is `indeterminate`, and it does not any more: an
   // unknown or unprotected session drew no badge at all, so it looked
   // identical to a protected one. It now draws.
-  if (view.kind === "cloudDurable") return null;
-  if (view.kind === "legacy" && view.status === null) return null;
+  if (view.kind === "cloudDurable" && freshnessCopy === null) return null;
+  if (
+    view.kind === "legacy" &&
+    view.status === null &&
+    freshnessCopy === null
+  ) {
+    return null;
+  }
   return (
     <EpicDurabilityBadgeContent
       view={view}
       pauseReason={pauseReason}
       promotionState={promotionState}
+      freshness={freshness}
+      freshnessCopy={freshnessCopy}
     />
   );
 }
@@ -53,6 +71,8 @@ function EpicDurabilityBadgeContent(props: {
   readonly view: EpicDurabilityView;
   readonly pauseReason: EpicDurabilityPauseReasonV14 | null;
   readonly promotionState: EpicPromotionState | null;
+  readonly freshness: EpicCloudFreshnessView;
+  readonly freshnessCopy: CloudFreshnessCopy | null;
 }) {
   const runnerHost = useRunnerHost();
   const exportArtifacts = useEpicExportArtifacts();
@@ -75,6 +95,8 @@ function EpicDurabilityBadgeContent(props: {
   const status = viewStatus(props.view);
   const protection = viewProtection(props.view);
   const badge = badgeCopy(props.view, props.pauseReason, props.promotionState);
+  const freshnessState =
+    props.freshness.kind === "stated" ? props.freshness.state : null;
   return (
     <span
       data-testid="epic-durability-badge"
@@ -82,12 +104,19 @@ function EpicDurabilityBadgeContent(props: {
       data-local-protection={protection ?? undefined}
       data-pause-reason={props.pauseReason ?? undefined}
       data-promotion-state={props.promotionState ?? undefined}
+      data-cloud-freshness={freshnessState ?? undefined}
       className={cn(
         "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-ui-xs font-medium",
-        badge.className,
+        (badge ?? props.freshnessCopy)?.className,
       )}
     >
-      <span>{badge.label}</span>
+      {badge === null ? null : <span>{badge.label}</span>}
+      {props.freshnessCopy === null ? null : (
+        <EpicCloudFreshnessLabel
+          copy={props.freshnessCopy}
+          separated={badge !== null}
+        />
+      )}
       {status === "paused" && props.pauseReason === "entitlement-lapsed" ? (
         <button
           type="button"
@@ -116,6 +145,138 @@ function EpicDurabilityBadgeContent(props: {
         </Button>
       ) : null}
     </span>
+  );
+}
+
+/**
+ * What the badge says about freshness, or `null` when there is nothing to say.
+ *
+ * ## The two silent arms, and why they are not the same silence
+ *
+ * `unknown` is silent because the host omits `freshness` for the cases where
+ * the question does not apply - a local-homed epic has no cloud copy to be
+ * behind, and a cloud row this host has no record of has no evidence either
+ * way. Rendering "freshness unknown" for those would be a warning about
+ * nothing, on every epic, forever. This is the one place in the s5 status pass
+ * where absence is calm, and it is calm because the host's absence is a
+ * STATEMENT of inapplicability rather than a failure to answer - the protocol
+ * doc is explicit that a `@1.4` host emits the key wherever it applies.
+ *
+ * `current` is silent because it is the reassuring answer and the badge's
+ * whole design is that it draws only when there is something to say.
+ *
+ * Everything else draws, including `syncing`: an epic whose document is being
+ * checked against the cloud is one whose contents may still change under the
+ * reader, and that is worth a word.
+ */
+type CloudFreshnessCopy = {
+  readonly label: string;
+  readonly className: string;
+  /** Rendered after the label when a reconciliation was ever recorded. */
+  readonly reconciledAtEpochMs: number | null;
+  /** Shown in place of a timestamp when none was ever recorded. */
+  readonly noTimestampLabel: string | null;
+};
+
+function cloudFreshnessCopy(
+  view: EpicCloudFreshnessView,
+): CloudFreshnessCopy | null {
+  if (view.kind === "unknown") return null;
+  const reconciledAtEpochMs = view.reconciledAtEpochMs;
+  switch (view.state) {
+    case "current":
+      return null;
+    case "local-copy":
+      return {
+        label: "Local copy",
+        className: "bg-muted text-muted-foreground",
+        reconciledAtEpochMs,
+        noTimestampLabel: null,
+      };
+    case "syncing":
+      return {
+        label: "Checking for updates",
+        className: "bg-muted text-muted-foreground",
+        reconciledAtEpochMs,
+        noTimestampLabel: null,
+      };
+    case "stale":
+      return {
+        // Names the consequence rather than the mechanism, and does not
+        // pretend to know HOW far behind: the host knows when it last
+        // reconciled, not what changed since.
+        label: "Local copy \u2014 may be out of date",
+        className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+        reconciledAtEpochMs,
+        // A closed mirror with no recorded reconciliation is the
+        // `freshnessUnknown` arm, and saying so is the point: "never" is a
+        // fact a person can act on, an empty space is not.
+        noTimestampLabel: "never synced",
+      };
+  }
+}
+
+/**
+ * The freshness half of the badge, in its own leaf component.
+ *
+ * A leaf because {@link useCompactRelativeTime} subscribes to the shared 60s
+ * clock, and that module's own guidance is that the subscriber should be the
+ * smallest thing that repaints - otherwise every tick re-renders the whole
+ * badge and whatever it sits inside.
+ */
+function EpicCloudFreshnessLabel(props: {
+  readonly copy: CloudFreshnessCopy;
+  readonly separated: boolean;
+}) {
+  return (
+    <span data-testid="epic-cloud-freshness">
+      {props.separated ? "\u00b7 " : null}
+      {props.copy.label}
+      <EpicCloudFreshnessSuffix copy={props.copy} />
+    </span>
+  );
+}
+
+/**
+ * The "· synced 3d" / "· never synced" tail, or nothing.
+ *
+ * Its own component rather than a nested conditional in the label above:
+ * `reconciledAtEpochMs` decides which of two DIFFERENT renderings applies (one
+ * of which subscribes to a clock), and the three-way choice reads as three
+ * named arms here instead of as a ternary inside a ternary.
+ */
+function EpicCloudFreshnessSuffix(props: {
+  readonly copy: CloudFreshnessCopy;
+}) {
+  if (props.copy.reconciledAtEpochMs !== null) {
+    return (
+      <EpicCloudFreshnessTimestamp
+        reconciledAtEpochMs={props.copy.reconciledAtEpochMs}
+      />
+    );
+  }
+  if (props.copy.noTimestampLabel === null) return null;
+  return (
+    <span data-testid="epic-cloud-freshness-at">
+      {` \u00b7 ${props.copy.noTimestampLabel}`}
+    </span>
+  );
+}
+
+/**
+ * The persisted last-reconciliation stamp, which is the datum that survives a
+ * restart of a CLOSED mirror.
+ *
+ * The transition label alone cannot cross that boundary - nothing was running
+ * to keep one - so this is what makes "may be out of date" actionable instead
+ * of merely worrying.
+ */
+function EpicCloudFreshnessTimestamp(props: {
+  readonly reconciledAtEpochMs: number;
+}) {
+  const relative = useCompactRelativeTime(props.reconciledAtEpochMs);
+  return (
+    <span data-testid="epic-cloud-freshness-at">{` \u00b7 synced ${relative}`}</span>
   );
 }
 
@@ -180,7 +341,13 @@ function badgeCopy(
   view: EpicDurabilityView,
   pauseReason: EpicDurabilityPauseReasonV14 | null,
   promotionState: EpicPromotionState | null,
-): { readonly label: string; readonly className: string } {
+): { readonly label: string; readonly className: string } | null {
+  // `null`, not "Storage status unknown". This arm is only REACHED now that a
+  // freshness statement can force the badge to draw over a cloud-durable epic,
+  // and the durability half genuinely has nothing to say there - falling
+  // through to the unknown copy would answer a question nobody asked and
+  // contradict the positive `armed` the host sent alongside it.
+  if (view.kind === "cloudDurable") return null;
   if (view.kind === "indeterminate") {
     // `unavailable` is a stated FACT about risk, not an absence, so it gets
     // the stronger treatment and names the consequence rather than the

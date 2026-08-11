@@ -11,6 +11,7 @@ import {
   EpicSessionContext,
 } from "@/lib/registries/epic-session-registry";
 import {
+  deriveEpicCloudFreshnessView,
   useEpicChatHarnessId,
   useEpicAgentRoleClaims,
   useEpicAgentRoleClaimsByAgentId,
@@ -454,3 +455,48 @@ function tuiAgent(id: string, harnessId: TuiHarnessId): TuiAgentProjection {
     terminalShellArgs: null,
   };
 }
+
+/**
+ * `deriveEpicCloudFreshnessView` - `s5-mirror-first-serving`.
+ *
+ * The ONE reading of the wire datum, and the place the class-level correction
+ * lives: the host derives an honest state, and before the s5 pass each
+ * renderer resolved a missing one into the calm value independently. There is
+ * deliberately no arm below that turns an absence into `current`.
+ */
+describe("deriveEpicCloudFreshnessView", () => {
+  it("reads an absent datum as unknown, never as current", () => {
+    const view = deriveEpicCloudFreshnessView(null);
+    expect(view).toEqual({ kind: "unknown" });
+    // Stated as its own assertion because it is the inference the whole s5
+    // status pass exists to break, and `toEqual` above would still pass if
+    // `unknown` were ever redefined to mean "fine".
+    expect(view.kind === "stated" ? view.state : null).not.toBe("current");
+  });
+
+  it("carries the persisted stamp through, which is what licenses a current claim", () => {
+    expect(
+      deriveEpicCloudFreshnessView({
+        kind: "lastCloudSyncAt",
+        reconciledAtEpochMs: 1_700_000_000_000,
+        state: "current",
+      }),
+    ).toEqual({
+      kind: "stated",
+      state: "current",
+      reconciledAtEpochMs: 1_700_000_000_000,
+    });
+  });
+
+  it("flattens the timestamp-less arm to a null stamp while keeping its state", () => {
+    // `current` is not a member of that arm's enum on the wire, so a renderer
+    // reading this view can never be handed a currency claim with nothing
+    // behind it - the impossibility is structural, not conventional.
+    expect(
+      deriveEpicCloudFreshnessView({
+        kind: "freshnessUnknown",
+        state: "stale",
+      }),
+    ).toEqual({ kind: "stated", state: "stale", reconciledAtEpochMs: null });
+  });
+});

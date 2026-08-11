@@ -1,4 +1,5 @@
 import type {
+  EpicCloudFreshness,
   EpicCloudSyncStatus,
   EpicDurabilityStatusV14,
   EpicLocalProtection,
@@ -135,6 +136,21 @@ export interface EpicSyncPillInputs {
    * degraded to unknown, which is what makes the whole minor additive.
    */
   readonly localProtection: EpicLocalProtection | undefined;
+  /**
+   * Input 9 - how the served document stands relative to the cloud (`@1.4`,
+   * `s5-mirror-first-serving`).
+   *
+   * The pill's other eight legs are all about where WORK is going. This one is
+   * about what the reader is LOOKING at, and mirror-first serving is what made
+   * the two separable: the host now paints a WAL-backed document before it has
+   * reconciled, so an epic can have a live cloud link and nothing outstanding
+   * while what is on screen is still a local copy.
+   *
+   * `undefined` keeps today's behaviour exactly. The host omits this key where
+   * the question does not apply - a local-homed epic, a cloud row it has no
+   * record of - and a pre-`@1.4` peer cannot send it at all.
+   */
+  readonly cloudFreshness: EpicCloudFreshness | undefined;
 }
 
 /**
@@ -214,8 +230,19 @@ export function deriveEpicSyncPillState(
  *   positive `armed`, so silence alone never buys reassurance.
  * - Any STATED durability value says the epic is not simply sitting durable in
  *   the cloud, `unknown` included.
+ * - A STATED freshness other than `current` says the DOCUMENT is not known to
+ *   match the cloud's, whatever the durability legs say about the bytes going
+ *   the other way. "All changes synced" over a document the host is still
+ *   revalidating is the same false calm as the original defect, arriving
+ *   through the axis `s5-mirror-first-serving` opened up.
  */
 function syncedClaimIsHonest(inputs: EpicSyncPillInputs): boolean {
+  if (
+    inputs.cloudFreshness !== undefined &&
+    inputs.cloudFreshness.state !== "current"
+  ) {
+    return false;
+  }
   if (inputs.localProtection === undefined) return true;
   if (inputs.durability === undefined)
     return inputs.localProtection === "armed";

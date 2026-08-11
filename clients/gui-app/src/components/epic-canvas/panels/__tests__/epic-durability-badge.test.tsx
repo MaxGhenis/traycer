@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { EpicDurabilityBadge } from "../epic-durability-badge";
 import type {
+  EpicCloudFreshness,
   EpicDurabilityPauseReasonV14,
   EpicDurabilityStatusV14,
   EpicLocalProtection,
@@ -25,11 +26,19 @@ const durability = vi.hoisted<{
    * set a real value, because at `@1.4` this key is always present.
    */
   localProtection: EpicLocalProtection | null;
+  /**
+   * `null` is a host that said NOTHING about freshness, which is every case
+   * written before `s5-mirror-first-serving` - and, at `@1.4`, every epic for
+   * which the question does not apply. Those cases keep their exact
+   * rendering, which is what makes the freshness half additive.
+   */
+  cloudFreshness: EpicCloudFreshness | null;
 }>(() => ({
   status: "paused",
   pauseReason: "access-revoked",
   promotionState: null,
   localProtection: null,
+  cloudFreshness: null,
 }));
 
 // `deriveEpicDurabilityView` is the real implementation, deliberately: it IS
@@ -46,6 +55,12 @@ vi.mock("@/lib/epic-selectors", async (importOriginal) => {
       ),
     useEpicDurabilityPauseReason: () => durability.pauseReason,
     useEpicDurabilityPromotionState: () => durability.promotionState,
+    // The REAL derivation again, for the same reason: turning the wire's
+    // structural union into a view is where "absent is not current" is
+    // actually decided, so stubbing it would leave that untested.
+    deriveEpicCloudFreshnessView: actual.deriveEpicCloudFreshnessView,
+    useEpicCloudFreshnessView: () =>
+      actual.deriveEpicCloudFreshnessView(durability.cloudFreshness),
     useEpicArtifactRecords: () => [],
     useEpicSnapshotMeta: () => null,
   };
@@ -65,6 +80,7 @@ vi.mock("@/providers/use-runner-host", () => ({
 describe("<EpicDurabilityBadge />", () => {
   afterEach(() => {
     cleanup();
+    durability.cloudFreshness = null;
   });
 
   it("renders the revoked-access export surface, not the upgrade story", () => {
@@ -235,5 +251,136 @@ describe("<EpicDurabilityBadge />", () => {
       screen.getByText("Deleted in cloud — local edits kept here"),
     ).toBeTruthy();
     expect(screen.queryByText("Sync paused")).toBeNull();
+  });
+});
+
+/**
+ * The freshness half - `s5-mirror-first-serving`.
+ *
+ * Mirror-first serving paints a usable document before it is known to match
+ * the cloud's, so these cases are all about the state the badge previously had
+ * no way to reach: an epic that is FINE by every durability measure and is
+ * still not what the cloud has.
+ */
+describe("<EpicDurabilityBadge /> - cloud freshness", () => {
+  afterEach(() => {
+    cleanup();
+    durability.cloudFreshness = null;
+  });
+
+  /** The calm baseline every case below is measured against. */
+  function cloudDurableAndArmed(): void {
+    durability.status = null;
+    durability.pauseReason = null;
+    durability.promotionState = null;
+    durability.localProtection = "armed";
+  }
+
+  it("stays silent for a cloud-durable epic whose document IS current", () => {
+    cloudDurableAndArmed();
+    durability.cloudFreshness = {
+      kind: "lastCloudSyncAt",
+      reconciledAtEpochMs: Date.now() - 30_000,
+      state: "current",
+    };
+
+    const { container } = render(<EpicDurabilityBadge />);
+
+    // `current` is the reassuring answer, and the badge draws only when there
+    // is something to say. This is also the case that proves the freshness
+    // half did not simply make the badge permanent.
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("stays silent when the host says NOTHING about freshness, so a pre-@1.4 peer is untouched", () => {
+    cloudDurableAndArmed();
+    durability.cloudFreshness = null;
+
+    const { container } = render(<EpicDurabilityBadge />);
+
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("draws over a cloud-durable epic that is only a local copy, which the badge could not previously say", () => {
+    cloudDurableAndArmed();
+    durability.cloudFreshness = {
+      kind: "lastCloudSyncAt",
+      reconciledAtEpochMs: Date.now() - 5 * 60_000,
+      state: "local-copy",
+    };
+
+    render(<EpicDurabilityBadge />);
+
+    const badge = screen.getByTestId("epic-durability-badge");
+    expect(badge.getAttribute("data-cloud-freshness")).toBe("local-copy");
+    expect(screen.getByTestId("epic-cloud-freshness").textContent).toContain(
+      "Local copy",
+    );
+    // The durability half genuinely has nothing to say here, and must not fill
+    // the silence with the unknown copy - that would contradict the positive
+    // `armed` the host sent alongside it.
+    expect(screen.queryByText("Storage status unknown")).toBeNull();
+  });
+
+  it("says a stale mirror may be out of date, and shows the timestamp it persisted", () => {
+    cloudDurableAndArmed();
+    durability.cloudFreshness = {
+      kind: "lastCloudSyncAt",
+      // Three and a HALF days, not three. `useCompactRelativeTime` reads a
+      // 60s-sampled clock captured at module load, so a timestamp sitting on a
+      // bucket boundary rounds down whenever that sample lags `Date.now()` -
+      // which is a flake, not a finding. Half a bucket of slack removes it
+      // without weakening what is asserted.
+      reconciledAtEpochMs: Date.now() - (3 * 24 + 12) * 60 * 60 * 1000,
+      state: "stale",
+    };
+
+    render(<EpicDurabilityBadge />);
+
+    expect(
+      screen
+        .getByTestId("epic-durability-badge")
+        .getAttribute("data-cloud-freshness"),
+    ).toBe("stale");
+    expect(screen.getByTestId("epic-cloud-freshness").textContent).toContain(
+      "may be out of date",
+    );
+    // The persisted stamp is what survives a restart of a CLOSED mirror, and
+    // it is the difference between a worry and something a person can act on.
+    expect(screen.getByTestId("epic-cloud-freshness-at").textContent).toContain(
+      "3d",
+    );
+  });
+
+  it("says NEVER SYNCED for a stale mirror with no recorded reconciliation, rather than leaving a blank", () => {
+    cloudDurableAndArmed();
+    // The `freshnessUnknown` arm. `current` is not even expressible on it, so
+    // this is as reassuring as a mirror with no recorded reconciliation can
+    // ever get.
+    durability.cloudFreshness = { kind: "freshnessUnknown", state: "stale" };
+
+    render(<EpicDurabilityBadge />);
+
+    expect(screen.getByTestId("epic-cloud-freshness-at").textContent).toContain(
+      "never synced",
+    );
+  });
+
+  it("carries the freshness beside a stated durability instead of replacing it", () => {
+    // The mirror-first paint itself: the host reports `offline` durability
+    // (a LocalRoomConnection is serving) AND a stale document. Both are true
+    // and they answer different questions, so the badge says both.
+    durability.status = "offline";
+    durability.pauseReason = null;
+    durability.promotionState = null;
+    durability.localProtection = "armed";
+    durability.cloudFreshness = { kind: "freshnessUnknown", state: "syncing" };
+
+    render(<EpicDurabilityBadge />);
+
+    expect(screen.getByText("Cloud mirror — offline")).toBeTruthy();
+    expect(screen.getByTestId("epic-cloud-freshness").textContent).toContain(
+      "Checking for updates",
+    );
   });
 });

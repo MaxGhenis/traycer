@@ -487,6 +487,7 @@ describe("createOpenEpicStore", () => {
       pauseReason: undefined,
       promotionState: undefined,
       localProtection: undefined,
+      freshness: undefined,
     });
     expect(opened.store.getState()).toMatchObject({
       durabilityStatus: "paused",
@@ -509,6 +510,7 @@ describe("createOpenEpicStore", () => {
       pauseReason: undefined,
       promotionState: "active",
       localProtection: undefined,
+      freshness: undefined,
     });
     expect(opened.store.getState()).toMatchObject({
       durabilityStatus: "promoting",
@@ -520,6 +522,7 @@ describe("createOpenEpicStore", () => {
       pauseReason: undefined,
       promotionState: "pending",
       localProtection: undefined,
+      freshness: undefined,
     });
     expect(opened.store.getState()).toMatchObject({
       durabilityStatus: "promoting",

@@ -8,6 +8,7 @@ import {
 } from "y-protocols/awareness";
 import type { PermissionRole } from "@traycer/protocol/host/epic/unary-schemas";
 import type {
+  EpicCloudFreshness,
   EpicCloudSyncStatus,
   EpicDurabilityPauseReasonV14,
   EpicDurabilityStatusV14,
@@ -394,6 +395,17 @@ export interface OpenEpicState {
    * closes that hole is that silence is not protection.
    */
   readonly localProtection?: EpicLocalProtection | null;
+  /**
+   * How the served document stands relative to the cloud - `@1.4`,
+   * `s5-mirror-first-serving`.
+   *
+   * `null` means the host did not say, and the rule that already governs
+   * `durabilityStatus` and `localProtection` governs this too: silence is
+   * UNKNOWN, and unknown is not `current`. Mirror-first serving makes an epic
+   * usable before it is up to date, so "the document rendered" stopped being
+   * evidence that it is the cloud's document.
+   */
+  readonly cloudFreshness?: EpicCloudFreshness | null;
   /** `true` only after a cloud-status frame for this exact open cycle. */
   readonly hasFreshCloudSyncStatus: boolean;
   /**
@@ -791,6 +803,7 @@ export function createOpenEpicStore(
   let durabilityPauseReason: EpicDurabilityPauseReasonV14 | null = null;
   let durabilityPromotionState: EpicPromotionState | null = null;
   let localProtection: EpicLocalProtection | null = null;
+  let cloudFreshness: EpicCloudFreshness | null = null;
   let hasFreshCloudSyncStatus = false;
   let currentStatus: StreamConnectionStatus = "connecting";
   // Flips true on the first successful connect so a later drop reads as
@@ -1629,6 +1642,7 @@ export function createOpenEpicStore(
           | "durabilityPauseReason"
           | "durabilityPromotionState"
           | "localProtection"
+          | "cloudFreshness"
           | "hasFreshCloudSyncStatus"
           | "hasConnectedOnce"
         > => ({
@@ -1639,6 +1653,7 @@ export function createOpenEpicStore(
           durabilityPauseReason,
           durabilityPromotionState,
           localProtection,
+          cloudFreshness,
           hasFreshCloudSyncStatus,
           hasConnectedOnce,
         });
@@ -2200,6 +2215,7 @@ export function createOpenEpicStore(
                   : null;
               durabilityPromotionState = durable.promotionState ?? null;
               localProtection = durable.localProtection ?? null;
+              cloudFreshness = durable.freshness ?? null;
               hasFreshCloudSyncStatus = true;
               if (
                 hasConnectedOnce &&
@@ -2258,6 +2274,11 @@ export function createOpenEpicStore(
                 durabilityPauseReason = null;
                 durabilityPromotionState = null;
                 localProtection = null;
+                // Cleared with the rest of the cycle's durability proof. A
+                // `current` retained across a re-subscribe would be this
+                // window claiming the new cycle's document is up to date on
+                // the strength of the previous one's reconciliation.
+                cloudFreshness = null;
               }
               const nextStatus = syncCurrentConnectionStatus();
               hasFreshRootSnapshotForOpenCycle = false;
@@ -2330,6 +2351,7 @@ export function createOpenEpicStore(
           durabilityPauseReason = null;
           durabilityPromotionState = null;
           localProtection = null;
+          cloudFreshness = null;
           const cycleDurabilityState = resetDurabilityProofForOpenCycle();
           // A fresh re-subscribe bootstraps from scratch, so the next connect is
           // "connecting", not "reconnecting": clear the latch and let only a
