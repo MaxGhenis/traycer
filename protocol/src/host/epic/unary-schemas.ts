@@ -627,8 +627,8 @@ export type ListTasksResponseV13 = z.infer<typeof listTasksResponseSchemaV13>;
  *   beside them or the cloud page is missing, because the counts then describe
  *   a different set than the rows do.
  * - `localRows` - whether host-synthesized rows are present, absent because
- *   there were none, TRUNCATED because the page-injection cap trimmed
- *   admissible mirror rows, or SUPPRESSED because the request carried a
+ *   there were none, TRUNCATED because rows that may have belonged on this
+ *   page were dropped from it, or SUPPRESSED because the request carried a
  *   filter term this host cannot prove against durable state. The last two
  *   are the ones worth naming: `truncated` is the difference between "these
  *   are your offline tasks" and "these are the first N of them" (a silent cap
@@ -637,6 +637,15 @@ export type ListTasksResponseV13 = z.infer<typeof listTasksResponseSchemaV13>;
  *   local epics matching" and "this filter cannot be answered locally" -
  *   collapsing that one is how a filtered offline History came to look
  *   empty-but-authoritative.
+ *
+ *   `truncated` has TWO producers and a client must not read it as the cap
+ *   alone. The first is the page-injection cap trimming admissible mirror
+ *   rows. The second is a repo/workspace filter meeting a row that carries no
+ *   association evidence to be judged against - an ordinary cloud mirror, or a
+ *   local epic created before those associations were retained. Both leave the
+ *   page missing rows for a reason the client cannot see, which is the only
+ *   distinction this member is asked to carry; the difference between them is
+ *   diagnostic and lives in the host log.
  * - `sort` - `server` when the returned order is the server's evaluation of
  *   the requested sort; `loaded-union` when host rows were merged in, so the
  *   order holds over the rows present and is not a global ranking.
