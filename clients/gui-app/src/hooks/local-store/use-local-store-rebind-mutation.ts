@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { UseMutationResult } from "@tanstack/react-query";
+import { useQueryClient, type UseMutationResult } from "@tanstack/react-query";
 import type {
   RequestOfMethod,
   ResponseOfMethod,
@@ -11,7 +11,12 @@ import { useEpicSessionHostId } from "@/hooks/epic/use-epic-session-host-id";
 import { useHostMutation } from "@/hooks/host/use-host-query";
 import { toastFromHostError } from "@/lib/host-error-toast";
 import type { HostRpcRegistry } from "@/lib/host";
+import { hostQueryKeys } from "@/lib/query-keys";
 import { localStoreMutationKeys } from "@/lib/query-keys/local-store-mutation-keys";
+
+interface LocalStoreRebindContext {
+  readonly hostId: string | null;
+}
 
 /**
  * The GUI repair route for a fail-closed local store refusal.
@@ -26,7 +31,8 @@ import { localStoreMutationKeys } from "@/lib/query-keys/local-store-mutation-ke
 export function useLocalStoreRebindMutation(): UseMutationResult<
   ResponseOfMethod<HostRpcRegistry, "host.rebindLocalStore">,
   HostRpcError,
-  RequestOfMethod<HostRpcRegistry, "host.rebindLocalStore">
+  RequestOfMethod<HostRpcRegistry, "host.rebindLocalStore">,
+  LocalStoreRebindContext
 > {
   const sessionHostId = useEpicSessionHostId();
   const directory = useHostDirectoryList();
@@ -39,12 +45,31 @@ export function useLocalStoreRebindMutation(): UseMutationResult<
     [directory.data, sessionHostId],
   );
   const client = useHostClientFor(entry);
-  return useHostMutation<HostRpcRegistry, "host.rebindLocalStore">({
+  const queryClient = useQueryClient();
+  return useHostMutation<
+    HostRpcRegistry,
+    "host.rebindLocalStore",
+    LocalStoreRebindContext
+  >({
     client,
     method: "host.rebindLocalStore",
     mapVariables: (variables) => variables,
     options: {
       mutationKey: localStoreMutationKeys.rebind(),
+      // A rebind republishes the host's durability store, so EVERY read served
+      // from it - task lists, task contexts, notification indicators - was
+      // answered by a store this host no longer uses. The whole host scope is
+      // the honest blast radius; a narrower list would silently go stale the
+      // next time a resolver starts consulting the local store.
+      // `capturedHostId` rather than a re-read: a host swap between mutate and
+      // settle must not invalidate the incoming host's fresh data.
+      onMutate: () => ({ hostId: sessionHostId }),
+      onSuccess: (response, _variables, context) => {
+        if (response.status !== "rebound") return;
+        void queryClient.invalidateQueries({
+          queryKey: hostQueryKeys.scope(context.hostId),
+        });
+      },
       // A refusal is a successful response arm with its own inline surface. A
       // rejected RPC - host gone, method unavailable - has none, and without
       // this the confirmation just stops looking busy and says nothing.
