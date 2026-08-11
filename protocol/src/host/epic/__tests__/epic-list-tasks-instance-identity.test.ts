@@ -5,6 +5,7 @@ import {
   listTasksRequestSchema,
   listTasksRequestSchemaV11,
   listTasksResponseSchema,
+  listTasksResponseSchemaV13,
 } from "@traycer/protocol/host/epic/unary-schemas";
 
 /**
@@ -25,8 +26,12 @@ import {
  * protocol package.
  */
 describe("epic.listTasks instance identity", () => {
+  // The LATEST installed minor, which `@1.4` now is. The index is spelled
+  // rather than derived because the invariant is about the canonical contract
+  // specifically; a derived lookup would keep passing while silently pointing
+  // at whatever happened to be last.
   const hostContract =
-    hostRpcRegistry["epic.listTasks"][1].versions[3].contract;
+    hostRpcRegistry["epic.listTasks"][1].versions[4].contract;
 
   it("host request schema is the canonical listTasksRequestSchema instance", () => {
     expect(hostContract.requestSchema).toBe(listTasksRequestSchema);
@@ -34,6 +39,31 @@ describe("epic.listTasks instance identity", () => {
 
   it("host response schema is the canonical listTasksResponseSchema instance", () => {
     expect(hostContract.responseSchema).toBe(listTasksResponseSchema);
+  });
+
+  it("keeps the released `@1.3` response frozen against the `@1.4` growth", () => {
+    const v13 = hostRpcRegistry["epic.listTasks"][1].versions[3].contract;
+    expect(v13.responseSchema).toBe(listTasksResponseSchemaV13);
+    // `completeness` and the per-row `preservation` marker are `@1.4` only;
+    // a `@1.3` peer's schema strips both, which is what makes the minor
+    // additive rather than a redefinition of a released shape.
+    const page = {
+      tasks: [],
+      hasMore: false,
+      completeness: {
+        cloudPage: "unavailable",
+        facets: "partial",
+        localRows: "present",
+        sort: "loaded-union",
+      },
+    };
+    expect(listTasksResponseSchemaV13.parse(page)).toEqual({
+      tasks: [],
+      hasMore: false,
+    });
+    expect(listTasksResponseSchema.parse(page).completeness).toEqual(
+      page.completeness,
+    );
   });
 
   it("keeps released requests frozen while the latest schema accepts last-viewed", () => {

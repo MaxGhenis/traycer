@@ -49,7 +49,10 @@ import {
   useEpicSetPinned,
   usePendingSetPinnedEpicIds,
 } from "@/hooks/epic/use-epic-set-pinned-mutation";
-import { useEpicTaskPinnedStates } from "@/hooks/epic/use-epic-task-pinned-states-query";
+import {
+  useEpicTaskPinnedStates,
+  type TaskPinnedState,
+} from "@/hooks/epic/use-epic-task-pinned-states-query";
 
 export function TabStrip() {
   const hasHydrated = useWindowsBridgeHydrated();
@@ -324,7 +327,7 @@ interface HeaderStripItemRendererProps {
   readonly onOpenInNewWindow: (tab: HeaderTab) => void;
   readonly canOpenInNewWindow: boolean;
   readonly onSplitCommand: (id: TabSplitCommandId, tab: HeaderTab) => void;
-  readonly taskPinnedStates: ReadonlyMap<string, boolean>;
+  readonly taskPinnedStates: ReadonlyMap<string, TaskPinnedState>;
   readonly pendingSetPinnedEpicIds: ReadonlySet<string>;
   readonly onSetTaskPinned: (
     epicId: string,
@@ -416,7 +419,7 @@ const HeaderStripTabItem = memo(function HeaderStripTabItem(props: {
   readonly onOpenInNewWindow: (tab: HeaderTab) => void;
   readonly canOpenInNewWindow: boolean;
   readonly onSplitCommand: (id: TabSplitCommandId, tab: HeaderTab) => void;
-  readonly taskPinnedStates: ReadonlyMap<string, boolean>;
+  readonly taskPinnedStates: ReadonlyMap<string, TaskPinnedState>;
   readonly pendingSetPinnedEpicIds: ReadonlySet<string>;
   readonly onSetTaskPinned: (
     epicId: string,
@@ -450,7 +453,7 @@ const HeaderStripTabItem = memo(function HeaderStripTabItem(props: {
       onOpenInNewWindow={props.onOpenInNewWindow}
       canOpenInNewWindow={props.canOpenInNewWindow}
       onSplitCommand={props.onSplitCommand}
-      taskPinned={
+      taskPinnedState={
         props.tab.kind === "epic"
           ? (props.taskPinnedStates.get(props.tab.epicId) ?? null)
           : null

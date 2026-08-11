@@ -249,6 +249,8 @@ import {
   epicDeleteTuiAgentV10,
   epicEditCommentV10,
   epicGetTaskContextsV10,
+  epicGetTaskContextsV11,
+  epicGetTaskContextsUpgradeV10ToV11,
   epicGrantAccessV10,
   epicListCollaboratorsV10,
   epicListCommentThreadsV10,
@@ -256,9 +258,11 @@ import {
   epicListTasksV11,
   epicListTasksV12,
   epicListTasksV13,
+  epicListTasksV14,
   epicListTasksUpgradeV10ToV11,
   epicListTasksUpgradeV11ToV12,
   epicListTasksUpgradeV12ToV13,
+  epicListTasksUpgradeV13ToV14,
   epicMentionEpicsV10,
   epicMentionReviewsV10,
   epicMentionSpecsV10,
@@ -4085,7 +4089,7 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
   },
   "epic.listTasks": {
     1: {
-      latestMinor: 3,
+      latestMinor: 4,
       versions: {
         0: {
           contract: epicListTasksV10,
@@ -4102,6 +4106,10 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
         3: {
           contract: epicListTasksV13,
           upgradeFromPreviousVersion: epicListTasksUpgradeV12ToV13,
+        },
+        4: {
+          contract: epicListTasksV14,
+          upgradeFromPreviousVersion: epicListTasksUpgradeV13ToV14,
         },
       },
       downgradePathsFromLatest: {},
@@ -4138,11 +4146,15 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
   // E_HOST_UNSUPPORTED for this call only and degrade to cache-only titles.
   "epic.getTaskContexts": {
     1: {
-      latestMinor: 0,
+      latestMinor: 1,
       versions: {
         0: {
           contract: epicGetTaskContextsV10,
           upgradeFromPreviousVersion: null,
+        },
+        1: {
+          contract: epicGetTaskContextsV11,
+          upgradeFromPreviousVersion: epicGetTaskContextsUpgradeV10ToV11,
         },
       },
       downgradePathsFromLatest: {},

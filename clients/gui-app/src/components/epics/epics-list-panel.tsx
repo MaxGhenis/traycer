@@ -72,6 +72,7 @@ import type {
   HistoryWorkspaceRef,
   HistorySortOption,
 } from "@/components/home/data/home-page.data";
+import type { ListTasksCompleteness } from "@traycer/protocol/host/epic/unary-schemas";
 import {
   canDeleteHistoryItem,
   canEditHistoryItemTitle,
@@ -612,6 +613,7 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
               openInNewWindowAvailable={openInNewWindowFlow.isAvailable}
               worktreesByEpicId={worktreesByEpicId}
               openEpicIds={openEpicIdSet}
+              completeness={data?.completeness ?? null}
             />
           </div>
         </NotificationIndicatorsProvider>
@@ -946,6 +948,7 @@ interface EpicsListBodyProps {
     readonly WorktreeHostEntryV12[]
   >;
   readonly openEpicIds: ReadonlySet<string>;
+  readonly completeness: ListTasksCompleteness | null;
 }
 
 function EpicsListBody(props: EpicsListBodyProps): ReactNode {
@@ -973,7 +976,21 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
     openInNewWindowAvailable,
     worktreesByEpicId,
     openEpicIds,
+    completeness,
   } = props;
+
+  // Partitioned, not sorted into place. A preserved orphan is not a task with
+  // an unusual status - the server has deleted it and only this device's
+  // never-uploaded edits remain - so mixing it into the ordinary list under
+  // whatever sort happens to be active is how it stayed effectively invisible
+  // even once it was listable.
+  const preservedItems = items.filter(
+    (item) => item.isPreservedOrphan === true,
+  );
+  const ordinaryItems =
+    preservedItems.length === 0
+      ? items
+      : items.filter((item) => item.isPreservedOrphan !== true);
 
   if (error !== null) {
     return <EpicsListError error={error} onRetry={onRetry} />;
@@ -982,23 +999,77 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
     return <EpicsListLoading />;
   }
   if (items.length === 0 && !hasActiveFilters) {
+    // The notice renders HERE too, and this is the case it matters most for:
+    // an empty History with no explanation is the strongest possible claim of
+    // completeness, and it is the one a suppressed local projection or an
+    // unreachable cloud page produces.
     return (
-      <div
-        className="flex flex-col items-center justify-center gap-2 py-16 text-center text-ui-sm text-muted-foreground"
-        data-testid="epics-list-empty"
-      >
-        <p className="font-medium text-foreground">No tasks yet</p>
-      </div>
+      <>
+        <HistoryCompletenessNotice completeness={completeness} />
+        <div
+          className="flex flex-col items-center justify-center gap-2 py-16 text-center text-ui-sm text-muted-foreground"
+          data-testid="epics-list-empty"
+        >
+          <p className="font-medium text-foreground">No tasks yet</p>
+        </div>
+      </>
     );
   }
   if (items.length === 0 && hasActiveFilters && isFetching) {
-    return <EpicsListFilteringLoading />;
+    return (
+      <>
+        <HistoryCompletenessNotice completeness={completeness} />
+        <EpicsListFilteringLoading />
+      </>
+    );
   }
+  const rowProps = {
+    selectionMode,
+    selectionEnabled,
+    selectedIds,
+    onToggleSelection,
+    onRequestDelete,
+    onRequestSweep,
+    onSetPinned,
+    pendingSetPinnedEpicIds,
+    onSelectEpic,
+    onOpenItem,
+    onOpenInNewWindow,
+    openInNewWindowAvailable,
+    worktreesByEpicId,
+    openEpicIds,
+  };
   return (
     <>
-      {items.length > 0 ? (
+      <HistoryCompletenessNotice completeness={completeness} />
+      {preservedItems.length > 0 ? (
+        <section
+          className="mb-3 flex flex-col gap-2"
+          data-testid="epics-list-preserved-section"
+        >
+          <h2 className="text-ui-xs font-medium text-destructive">
+            Deleted in cloud &mdash; local edits kept on this device
+          </h2>
+          <ul className="flex flex-col gap-2">
+            {preservedItems.map((item) => (
+              <EpicsListRow
+                key={item.id}
+                item={item}
+                {...rowProps}
+                isSelected={selectedIds.has(item.epicId)}
+                isPinPending={pendingSetPinnedEpicIds.has(item.epicId)}
+                worktrees={
+                  worktreesByEpicId.get(item.epicId) ?? EMPTY_WORKTREES
+                }
+                isOpen={openEpicIds.has(item.epicId)}
+              />
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {ordinaryItems.length > 0 ? (
         <ul className="flex flex-col gap-2" data-testid="epics-list-rows">
-          {items.map((item) => (
+          {ordinaryItems.map((item) => (
             <EpicsListRow
               key={item.id}
               item={item}
@@ -1019,7 +1090,14 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
             />
           ))}
         </ul>
-      ) : (
+      ) : null}
+      {/*
+        Only when there is genuinely nothing to show. A page whose only rows
+        are preserved orphans is not an empty filter result, and telling the
+        person "no tasks match" over a section they can see would be the same
+        untruth from the other direction.
+      */}
+      {ordinaryItems.length === 0 && preservedItems.length === 0 ? (
         <div
           className="flex flex-col items-center justify-center gap-2 py-16 text-center text-ui-sm text-muted-foreground"
           data-testid="epics-list-filtered-empty"
@@ -1028,7 +1106,7 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
             No tasks match these filters.
           </p>
         </div>
-      )}
+      ) : null}
       {hasNextPage ? (
         <div className="mt-3 flex justify-center">
           <Button
@@ -1051,6 +1129,64 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
         </div>
       ) : null}
     </>
+  );
+}
+
+/**
+ * What this page is NOT, stated once, above the rows.
+ *
+ * Through `@1.3` a History page that had lost its cloud leg was
+ * indistinguishable from a complete one: the host swallowed the failure, fell
+ * back to an empty body, prepended local rows, and the user read the result
+ * under whatever filter chips and sort they had picked. There was nothing on
+ * the wire that could say otherwise, so this is new information rather than a
+ * new opinion.
+ *
+ * Renders NOTHING for a fully server-owned page, and nothing at all when the
+ * host did not make a statement - absence is "unknown", and the honest
+ * rendering of unknown here is the one we already had, not a warning we cannot
+ * substantiate.
+ */
+function HistoryCompletenessNotice(props: {
+  readonly completeness: ListTasksCompleteness | null;
+}): ReactNode {
+  const completeness = props.completeness;
+  if (completeness === null) return null;
+  const lines: string[] = [];
+  if (completeness.cloudPage === "unavailable") {
+    lines.push(
+      "Cloud tasks couldn't be reached. Showing what this device holds.",
+    );
+  }
+  if (completeness.localRows === "suppressed-unprovable-filter") {
+    // The difference between "you have no local epics matching" and "this
+    // filter cannot be answered from this device". Collapsing them is how a
+    // filtered offline History came to look empty and authoritative.
+    lines.push(
+      "This filter can't be checked against tasks stored on this device, so they aren't listed.",
+    );
+  }
+  if (completeness.sort === "loaded-union") {
+    lines.push(
+      "Order and counts cover the tasks listed here, not everything you have.",
+    );
+  } else if (completeness.facets === "partial") {
+    lines.push("Filter counts cover the tasks listed here.");
+  }
+  if (lines.length === 0) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-testid="epics-list-completeness"
+      data-cloud-page={completeness.cloudPage}
+      data-local-rows={completeness.localRows}
+      className="mb-3 flex flex-col gap-1 rounded-md border border-dashed border-border/60 bg-muted/20 px-3 py-2 text-ui-xs text-muted-foreground"
+    >
+      {lines.map((line) => (
+        <p key={line}>{line}</p>
+      ))}
+    </div>
   );
 }
 

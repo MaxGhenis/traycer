@@ -102,7 +102,7 @@ function EpicDurabilityBadgeContent(props: {
           Upgrade
         </button>
       ) : null}
-      {status === "paused" && props.pauseReason === "access-revoked" ? (
+      {status === "paused" && exportIsTheRemedy(props.pauseReason) ? (
         <Button
           type="button"
           size="xs"
@@ -116,6 +116,30 @@ function EpicDurabilityBadgeContent(props: {
         </Button>
       ) : null}
     </span>
+  );
+}
+
+/**
+ * The pause reasons whose remedy is getting the bytes out.
+ *
+ * `access-revoked` is the original: the cloud will not take another byte, so
+ * the local copy is all there is. `orphaned-local-edits-after-cloud-delete` is
+ * the same shape from the other direction and is the ACTIONABLE half of
+ * `s5-orphaned-epic-recovery` - the cloud object is gone, this host refused to
+ * destroy the never-uploaded edits, and the epic is reachable again precisely
+ * so the person can take them somewhere. Reaching a preserved epic and finding
+ * nothing to do with it would be the dark archive with a nicer label.
+ *
+ * The other three paused reasons are deliberately absent: an entitlement lapse
+ * has an Upgrade path, and the two delete-bookkeeping reasons are transient
+ * states of an epic that is not going anywhere.
+ */
+function exportIsTheRemedy(
+  pauseReason: EpicDurabilityPauseReasonV14 | null,
+): boolean {
+  return (
+    pauseReason === "access-revoked" ||
+    pauseReason === "orphaned-local-edits-after-cloud-delete"
   );
 }
 

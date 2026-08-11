@@ -29,6 +29,7 @@ import {
   useEpicArtifactBodyAvailability,
   useEpicArtifactBodyAwareness,
   useEpicArtifactFragment,
+  commentsHaveNoCloudRoom,
   useEpicDurabilityStatus,
   useEpicPermissionRole,
   useEpicSnapshotLoaded,
@@ -196,8 +197,11 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
   // Local artifact rooms deliberately have no comment-thread provider. Do not
   // let a person invest a draft in an action that the host can only reject as
   // `no_active_session`; the comments panel explains this boundary directly.
-  const commentsSupported =
-    commentArtifactKind !== null && durabilityStatus !== "local";
+  //
+  // `commentsHaveNoCloudRoom`, not `!== "local"`: the reserved-but-pre-cutover
+  // `promoting` window has the same null provider and used to slip through.
+  const noCloudRoom = commentsHaveNoCloudRoom(durabilityStatus);
+  const commentsSupported = commentArtifactKind !== null && !noCloudRoom;
   const setDraft = useCommentThreadsStore((s) => s.setDraft);
   const setActiveThread = useCommentThreadsStore((s) => s.setActiveThread);
   const activeThreadId = useActiveThreadId(epicId);
@@ -217,8 +221,8 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
   const setFlashThread = useCommentThreadsStore((s) => s.setFlashThread);
   const clearFlashThread = useCommentThreadsStore((s) => s.clearFlashThread);
   useEffect(() => {
-    if (durabilityStatus === "local") setDraft(epicId, null);
-  }, [durabilityStatus, epicId, setDraft]);
+    if (noCloudRoom) setDraft(epicId, null);
+  }, [noCloudRoom, epicId, setDraft]);
   const resolvedThreadIds = useMemo(
     () =>
       (threadsQuery.data?.threads ?? []).reduce(

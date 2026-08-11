@@ -1,3 +1,4 @@
+import type { ListTasksCompleteness } from "@traycer/protocol/host/epic/unary-schemas";
 vi.mock("@/hooks/notifications/use-host-notification-indicators-query", () => ({
   useHostNotificationIndicators: () => ({
     data: { epics: {}, chats: {} },
@@ -159,6 +160,7 @@ const testState = vi.hoisted(() => ({
     ownershipScopes: [] as HistoryFacets["ownershipScopes"],
   },
   isFetching: false,
+  completeness: null as ListTasksCompleteness | null,
   bridge: null as DesktopWindowsBridge | null,
   worktreeCandidates: [] as WorktreeCleanupCandidateStub[],
   worktreesByEpicId: new Map<string, readonly WorktreeHostEntryV12[]>(),
@@ -185,6 +187,7 @@ vi.mock("@/hooks/home/use-history-query", () => ({
       totalCount: testState.items.length,
       facets: testState.facets,
       worktreesByEpicId: testState.worktreesByEpicId,
+      completeness: testState.completeness,
     },
     isPending: false,
     isFetching: testState.isFetching,
@@ -376,6 +379,7 @@ describe("<EpicsListPanel />", () => {
       ownershipScopes: [],
     };
     testState.isFetching = false;
+    testState.completeness = null;
     testState.bridge = null;
     testState.worktreeCandidates = [];
     testState.worktreesByEpicId = new Map();
@@ -593,6 +597,85 @@ describe("<EpicsListPanel />", () => {
 
     expect(await screen.findByText("Phase somehow pinned")).not.toBeNull();
     expect(screen.queryByTestId("epics-list-row-pin")).toBeNull();
+  });
+
+  it("lists a preserved orphan in its own section rather than mixed into the list", async () => {
+    // Reachability is the claim (`s5-orphaned-epic-recovery`). Mixing the row
+    // into the ordinary list under whatever sort is active is how an epic that
+    // is technically listable stays effectively invisible - the one fact the
+    // person needs is that the cloud copy is gone.
+    testState.items = [
+      historyItem({ id: "history-normal", epicId: "normal", title: "Normal" }),
+      historyItem({
+        id: "history-orphan",
+        epicId: "orphan",
+        title: "Preserved orphan",
+        isPreservedOrphan: true,
+      }),
+    ];
+    renderPanel("embedded", "/");
+
+    const section = await screen.findByTestId("epics-list-preserved-section");
+    expect(section.textContent).toContain("Deleted in cloud");
+    expect(section.textContent).toContain("Preserved orphan");
+    // Arrangement fidelity: the ordinary list still rendered, and the orphan
+    // is not in it - so this is a partition, not "everything moved".
+    const rows = screen.getByTestId("epics-list-rows");
+    expect(rows.textContent).toContain("Normal");
+    expect(rows.textContent).not.toContain("Preserved orphan");
+  });
+
+  it("states what an offline page is missing instead of presenting it as complete", async () => {
+    testState.items = [
+      historyItem({ id: "history-local", epicId: "local", title: "Local" }),
+    ];
+    testState.completeness = {
+      cloudPage: "unavailable",
+      facets: "partial",
+      localRows: "present",
+      sort: "loaded-union",
+    };
+    renderPanel("embedded", "/");
+
+    const notice = await screen.findByTestId("epics-list-completeness");
+    expect(notice.getAttribute("data-cloud-page")).toBe("unavailable");
+    expect(notice.textContent).toContain("Cloud tasks couldn't be reached");
+    expect(notice.textContent).toContain("not everything you have");
+  });
+
+  it("names a filter this device cannot check rather than showing an empty list", async () => {
+    testState.items = [];
+    testState.completeness = {
+      cloudPage: "unavailable",
+      facets: "partial",
+      localRows: "suppressed-unprovable-filter",
+      sort: "server",
+    };
+    renderPanel("embedded", "/");
+
+    const notice = await screen.findByTestId("epics-list-completeness");
+    expect(notice.getAttribute("data-local-rows")).toBe(
+      "suppressed-unprovable-filter",
+    );
+    expect(notice.textContent).toContain("can't be checked against tasks");
+  });
+
+  it("says nothing at all for a fully server-owned page", async () => {
+    testState.items = [
+      historyItem({ id: "history-cloud", epicId: "cloud", title: "Cloud" }),
+    ];
+    testState.completeness = {
+      cloudPage: "settled",
+      facets: "server",
+      localRows: "none",
+      sort: "server",
+    };
+    renderPanel("embedded", "/");
+
+    expect(await screen.findByText("Cloud")).not.toBeNull();
+    // A caveat that appears on a complete page is the same defect wearing the
+    // other sign.
+    expect(screen.queryByTestId("epics-list-completeness")).toBeNull();
   });
 
   it("disables pin mutation for a local-home epic and names the cloud-sync boundary", async () => {

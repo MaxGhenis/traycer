@@ -14,11 +14,14 @@ import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/h
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
 import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
+import { EpicHostActivityStreams } from "./epic-host-activity-streams";
 import {
   openNotificationsStream,
   useNotificationsStore,
 } from "@/stores/notifications/notifications-store";
 import {
+  agentActivityHasLocalPlane,
+  markAgentActivityReconnecting,
   openAgentActivityStream,
   useAgentActivityStore,
 } from "@/stores/agent-activity-store";
@@ -107,6 +110,12 @@ export function NotificationsSessionProvider(
   const localHostId = localHostEntry?.hostId ?? null;
   const queryClient = useQueryClient();
   const authService = useAuthService();
+  // Same cascade as the local streams' `onAuthError`, hoisted to a stable
+  // identity so a remote activity stream is not torn down and reopened on
+  // every render of this provider.
+  const onRemoteActivityAuthError = useCallback((): void => {
+    void authService.revalidateCurrentContext();
+  }, [authService]);
   const hostClient = useHostClient();
   const showNotification = useNotificationShow();
   const { activate } = useNotificationActivationWithNavigate(props.navigate);
@@ -320,7 +329,7 @@ export function NotificationsSessionProvider(
     useHostNotificationsStore.getState().reset();
     // A local activity view belongs solely to the departed host. Cloud
     // activity is a per-user union and remains valid across host switches.
-    if (useAgentActivityStore.getState().servedBy === "local") {
+    if (agentActivityHasLocalPlane()) {
       useAgentActivityStore.getState().reset();
     }
     resetCloudRelaySession();
@@ -342,7 +351,7 @@ export function NotificationsSessionProvider(
     activeEntityRef.current = null;
     useHostNotificationsStore.getState().setConnectionStatus("connecting");
     useCloudNotificationsStore.getState().setConnectionState("reconnecting");
-    useAgentActivityStore.setState({ connectionStatus: "reconnecting" });
+    markAgentActivityReconnecting();
   }, []);
 
   // StrictMode mounts, cleans up, then re-mounts effects. Returning Zustand's
@@ -462,6 +471,7 @@ export function NotificationsSessionProvider(
     // read from the LOCAL host's stream, never a remote one.
     if (localStreamClient !== null) {
       activityDisposerRef.current = openAgentActivityStream(
+        streamHostId,
         localStreamClient,
         onAuthError,
       );
@@ -667,7 +677,18 @@ export function NotificationsSessionProvider(
     };
   }, [tearDown]);
 
-  return <>{props.children}</>;
+  // Rendered, not opened inline: each remote host's stream client comes from
+  // a hook, and hooks cannot be called per item of a changing list. The local
+  // host's activity stream stays above, on the G8 local-host pin.
+  return (
+    <>
+      <EpicHostActivityStreams
+        localHostId={localHostId}
+        onAuthError={onRemoteActivityAuthError}
+      />
+      {props.children}
+    </>
+  );
 }
 
 /**

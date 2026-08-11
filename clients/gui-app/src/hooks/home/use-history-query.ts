@@ -28,7 +28,10 @@ import {
   listCloudTasksRequestForHistorySearch,
   type ListCloudTasksRequest,
 } from "@/lib/cloud-epic-tasks-query";
-import type { ListTasksResponse } from "@traycer/protocol/host/epic/unary-schemas";
+import type {
+  ListTasksCompleteness,
+  ListTasksResponse,
+} from "@traycer/protocol/host/epic/unary-schemas";
 import type { WorktreeHostEntryV12 } from "@traycer/protocol/host/worktree-schemas";
 import type { HistorySearchState } from "@/lib/history-search";
 import { patchHistorySearch } from "@/lib/history-search";
@@ -206,6 +209,13 @@ export function useHistoryQuery(
       totalCount: items.length,
       facets,
       worktreesByEpicId,
+      // Only from a SETTLED page. While the query is debouncing or serving
+      // placeholder data the statement describes a different request than the
+      // rows on screen, which is the same reason the server facets are
+      // suppressed three lines up.
+      completeness: canUseServerFacets
+        ? (tasksQuery.data.completeness ?? null)
+        : null,
     };
   }, [
     allItems,
@@ -253,6 +263,15 @@ export interface HistoryFetchResult {
   totalCount: number;
   facets: HistoryFacets;
   worktreesByEpicId: ReadonlyMap<string, readonly WorktreeHostEntryV12[]>;
+  /**
+   * The host's own statement about what this page is (`epic.listTasks@1.4`).
+   *
+   * `null` when the host did not say - an older host, or a pre-`@1.4`
+   * negotiation - and that must be read as "unknown", never as complete. The
+   * render sites only ever ADD a caveat from this, so an absent statement
+   * leaves exactly today's rendering.
+   */
+  completeness: ListTasksCompleteness | null;
 }
 
 export interface HistoryFacets {

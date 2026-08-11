@@ -4,6 +4,7 @@ import {
   GET_TASK_CONTEXTS_MAX_IDS,
   getTaskContextsRequestSchema,
   getTaskContextsResponseSchema,
+  getTaskContextsResponseSchemaV10,
   listTaskLightSchema,
 } from "@traycer/protocol/host/epic/unary-schemas";
 
@@ -25,7 +26,36 @@ describe("epic.getTaskContexts@1.0", () => {
 
   it("wires the canonical request/response schema instances", () => {
     expect(contract.requestSchema).toBe(getTaskContextsRequestSchema);
-    expect(contract.responseSchema).toBe(getTaskContextsResponseSchema);
+    // FROZEN at the pre-`localHomedTaskIds` shape. `@1.1` added the key that
+    // lets the tab strip tell a local-homed epic from a cloud one, and the
+    // whole point of freezing `@1.0` is that a released client keeps the exact
+    // payload it was built against - so this assertion must name the V10
+    // instance rather than following the latest export.
+    expect(contract.responseSchema).toBe(getTaskContextsResponseSchemaV10);
+  });
+
+  it("adds `localHomedTaskIds` at `@1.1` and nothing else", () => {
+    const v11 = hostRpcRegistry["epic.getTaskContexts"][1].versions[1].contract;
+    expect(v11.schemaVersion).toEqual({ major: 1, minor: 1 });
+    expect(v11.requestSchema).toBe(getTaskContextsRequestSchema);
+    expect(v11.responseSchema).toBe(getTaskContextsResponseSchema);
+    // Optional, so a host that cannot answer omits it - and the client must
+    // read that absence as "unknown", never as "not local".
+    const parsed = getTaskContextsResponseSchema.parse({ tasks: {} });
+    expect(parsed.localHomedTaskIds).toBeUndefined();
+    expect(
+      getTaskContextsResponseSchema.parse({
+        tasks: {},
+        localHomedTaskIds: ["epic-1"],
+      }).localHomedTaskIds,
+    ).toEqual(["epic-1"]);
+    // The `@1.0` schema strips it, which is what keeps the minor additive.
+    expect(
+      getTaskContextsResponseSchemaV10.parse({
+        tasks: {},
+        localHomedTaskIds: ["epic-1"],
+      }),
+    ).toEqual({ tasks: {} });
   });
 
   it("round-trips a request within the id cap", () => {

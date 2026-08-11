@@ -163,6 +163,36 @@ export function useEpicDurabilityPauseReason(): NonNullable<
   return useEpicStore((s) => s.durabilityPauseReason ?? null);
 }
 
+/**
+ * Whether this epic has no cloud comment room, and therefore no comments.
+ *
+ * ## Why a shared predicate and not `status === "local"` at each gate
+ *
+ * Two gates - the sidebar and the collab tile - each compared to the literal
+ * `"local"`, and both missed `promoting`. `promoting` is the reserved-but-
+ * pre-cutover window: the promotion is recorded, the upload is in flight, and
+ * the artifact room's collab provider is STILL null. So comments re-enabled
+ * themselves partway through promotion, the core threw a typed
+ * `no_active_session`, and the user was shown "Comments couldn't be loaded" /
+ * "Couldn't post comment" - a generic failure standing in for a boundary the
+ * host knows exactly.
+ *
+ * `unknown` is deliberately NOT here. It means the host could not answer, and
+ * the honest response to that is the ordinary read path plus whatever it
+ * reports - not a confident claim that comments do not exist. Guessing in
+ * either direction on `unknown` is the class of defect `s5-status-truthfulness`
+ * exists to correct.
+ */
+export function commentsHaveNoCloudRoom(
+  status: NonNullable<OpenEpicState["durabilityStatus"]> | null,
+): boolean {
+  return status === "local" || status === "promoting";
+}
+
+export function useEpicCommentsHaveNoCloudRoom(): boolean {
+  return commentsHaveNoCloudRoom(useEpicDurabilityStatus());
+}
+
 export function useEpicDurabilityPromotionState(): NonNullable<
   OpenEpicState["durabilityPromotionState"]
 > | null {

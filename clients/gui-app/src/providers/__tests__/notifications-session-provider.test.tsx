@@ -255,6 +255,7 @@ import { useNotificationsPopoverStore } from "@/stores/notifications/notificatio
 import {
   __resetAgentActivityStoreForTests,
   __setAgentActivityStateForTests,
+  getEpicAgentActivity,
   useAgentActivityStore,
 } from "@/stores/agent-activity-store";
 
@@ -738,19 +739,17 @@ describe("<NotificationsSessionProvider />", () => {
       });
     });
 
-    expect([
-      ...(useAgentActivityStore.getState().byEpic.get("epic-1")?.working ?? []),
-    ]).toEqual(["agent-1"]);
+    expect([...getEpicAgentActivity("epic-1").working]).toEqual(["agent-1"]);
 
     act(() => {
       streamClient.sessionFor("agent.activity.subscribe").emitStatus("closed");
     });
 
-    expect(useAgentActivityStore.getState()).toMatchObject({
-      connectionStatus: "closed",
-      servedBy: null,
-    });
-    expect(useAgentActivityStore.getState().byEpic).toEqual(new Map());
+    // Scoped to the host that closed, and there is only one here.
+    expect([...useAgentActivityStore.getState().byHost.values()]).toMatchObject(
+      [{ connectionStatus: "closed", servedBy: null }],
+    );
+    expect(getEpicAgentActivity("epic-1").working.size).toBe(0);
   });
 
   it("reopens cloud notifications and activity on a replacement local-host client", async () => {
@@ -1519,8 +1518,12 @@ describe("<NotificationsSessionProvider />", () => {
       expect(useNotificationsStore.getState().entries).toHaveLength(1);
       expect(useHostNotificationsStore.getState().byId).toEqual({});
       expect(useHostNotificationsStore.getState().summary).toBeNull();
-      expect(useAgentActivityStore.getState().servedBy).toBeNull();
-      expect(useAgentActivityStore.getState().byEpic).toEqual(new Map());
+      expect(
+        [...useAgentActivityStore.getState().byHost.values()].every(
+          (host) => host.servedBy === null,
+        ),
+      ).toBe(true);
+      expect(getEpicAgentActivity("epic-1").working.size).toBe(0);
       expect(
         Object.keys(useAppLocalNotificationsStore.getState().byId),
       ).not.toHaveLength(0);

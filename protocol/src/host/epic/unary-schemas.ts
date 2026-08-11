@@ -521,6 +521,30 @@ export const listTaskLightSchemaV13 = listTaskLightSchema.extend({
 });
 export type ListTaskLightV13 = z.infer<typeof listTaskLightSchemaV13>;
 
+/**
+ * Why a row survived a deletion, on a row the client would otherwise never
+ * see - `s5-orphaned-epic-recovery`.
+ *
+ * `orphaned-local-edits` is the listable half of
+ * `orphaned-local-edits-after-cloud-delete`: completion was refused to protect
+ * never-uploaded bytes, so the epic is cloud-homed, absent from the server's
+ * own list, and 404s on a known-id cloud open. Before this marker there was no
+ * surface a pause badge could render on - the epic was durably recorded and
+ * permanently unreachable.
+ *
+ * A closed enum with one member on purpose. The other two `@1.4` delete-path
+ * pause reasons are informational states of an epic the user can already see;
+ * only this one describes an epic that has to be RE-ADMITTED to discovery.
+ */
+export const epicListPreservationSchema = z.enum(["orphaned-local-edits"]);
+export type EpicListPreservation = z.infer<typeof epicListPreservationSchema>;
+
+// `epic.listTasks@1.4` list row: adds the preservation marker.
+export const listTaskLightSchemaV14 = listTaskLightSchemaV13.extend({
+  preservation: epicListPreservationSchema.optional(),
+});
+export type ListTaskLightV14 = z.infer<typeof listTaskLightSchemaV14>;
+
 export const listTasksRequestSchemaV11 = z.object({
   limit: z.number(),
   cursor: z.string().optional(),
@@ -573,12 +597,63 @@ export const listTasksResponseSchemaV12 = z.object({
 });
 export type ListTasksResponseV12 = z.infer<typeof listTasksResponseSchemaV12>;
 
-// Latest listTasks response: pin-aware rows plus optional host-side home.
-export const listTasksResponseSchema = z.object({
+// `epic.listTasks@1.3` response: pin-aware rows plus the optional host-side
+// home marker. FROZEN - `@1.4` adds keys this schema would strip.
+export const listTasksResponseSchemaV13 = z.object({
   tasks: z.array(listTaskLightSchemaV13),
   nextCursor: z.string().optional(),
   hasMore: z.boolean(),
   facets: listTasksFacetsSchema.optional(),
+});
+export type ListTasksResponseV13 = z.infer<typeof listTasksResponseSchemaV13>;
+
+/**
+ * How complete this page actually is - `s5-offline-history` C6.
+ *
+ * Through `@1.3` a page that had lost its cloud leg was indistinguishable from
+ * a complete one: the host swallowed the failure, fell back to an empty body,
+ * prepended the local rows, and the client rendered the result under whatever
+ * filter chips and sort the user had picked. There was no key on the wire that
+ * could say otherwise, so the renderer's only honest option was one it had no
+ * evidence for.
+ *
+ * Each member is a POSITIVE statement, not a flag:
+ *
+ * - `cloudPage` - whether the server's own page was read. `unavailable` means
+ *   the cloud leg failed or ran out of budget, so anything the server alone
+ *   knows (other devices' epics, cursors, totals) is missing from this answer.
+ * - `facets` - `server` when the counts came from the server's own faceting
+ *   over its own result set; `partial` the moment host rows were injected
+ *   beside them or the cloud page is missing, because the counts then describe
+ *   a different set than the rows do.
+ * - `localRows` - whether host-synthesized rows are present, absent because
+ *   there were none, or SUPPRESSED because the request carried a filter term
+ *   this host cannot prove against durable state. The third is the one worth
+ *   naming: it is the difference between "you have no local epics matching"
+ *   and "this filter cannot be answered locally", and collapsing them is how a
+ *   filtered offline History came to look empty-but-authoritative.
+ * - `sort` - `server` when the returned order is the server's evaluation of
+ *   the requested sort; `loaded-union` when host rows were merged in, so the
+ *   order holds over the rows present and is not a global ranking.
+ */
+export const listTasksCompletenessSchema = z.object({
+  cloudPage: z.enum(["settled", "unavailable"]),
+  facets: z.enum(["server", "partial"]),
+  localRows: z.enum(["present", "none", "suppressed-unprovable-filter"]),
+  sort: z.enum(["server", "loaded-union"]),
+});
+export type ListTasksCompleteness = z.infer<typeof listTasksCompletenessSchema>;
+
+// Latest listTasks response: `@1.4` preservation-marked rows plus the
+// completeness statement. Both keys stay optional so an older HOST on this
+// line simply omits them; a `@1.4` client reads absence as "this host cannot
+// say", never as "complete".
+export const listTasksResponseSchema = z.object({
+  tasks: z.array(listTaskLightSchemaV14),
+  nextCursor: z.string().optional(),
+  hasMore: z.boolean(),
+  facets: listTasksFacetsSchema.optional(),
+  completeness: listTasksCompletenessSchema.optional(),
 });
 export type ListTasksResponse = z.infer<typeof listTasksResponseSchema>;
 
@@ -629,11 +704,42 @@ export type GetTaskContextsRequest = z.infer<
   typeof getTaskContextsRequestSchema
 >;
 
-export const getTaskContextsResponseSchema = z.object({
+// `epic.getTaskContexts@1.0` response. FROZEN at the pre-`home` row shape.
+export const getTaskContextsResponseSchemaV10 = z.object({
   // Per-id: ListTaskLight when readable, null when deleted or not permitted
   // (indistinguishable by design).
   tasks: z.record(z.string(), listTaskLightSchema.nullable()),
 });
+export type GetTaskContextsResponseV10 = z.infer<
+  typeof getTaskContextsResponseSchemaV10
+>;
+
+/**
+ * `epic.getTaskContexts@1.1` - which of the returned ids are local-homed.
+ *
+ * The host has always KNOWN this here: the resolver overlays owned local-home
+ * rows precisely so a released GUI reconciling its open tabs does not read an
+ * unpromoted epic as deleted. It just had nowhere on the wire to say so, and
+ * the consequence is `s5-parity-gaps` gap 4 - the tab strip learns about its
+ * epics through this method ALONE, so it offered a CLOUD-ONLY pin action on a
+ * local epic, fired the mutation, and toasted that it had pinned it.
+ *
+ * ## A sibling id list rather than `home` on the row
+ *
+ * `epic.listTasks@1.3` puts `home` on the row and this would ideally match it.
+ * It cannot: `tasks` is a `z.record`, which the additivity gate compares
+ * structurally as an opaque node, so growing its VALUE schema is a hard
+ * compatibility violation even when the added key is optional. Adding an
+ * optional sibling property to the response object is the additive shape the
+ * gate is built around, and it carries the same fact.
+ *
+ * Absence means the host did not say - an older host, or a `@1.0`
+ * negotiation - and must be read as cloud-or-unknown, never as local.
+ */
+export const getTaskContextsResponseSchema =
+  getTaskContextsResponseSchemaV10.extend({
+    localHomedTaskIds: z.array(z.string()).optional(),
+  });
 export type GetTaskContextsResponse = z.infer<
   typeof getTaskContextsResponseSchema
 >;

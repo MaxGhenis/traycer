@@ -54,6 +54,27 @@ registry.setReleaseListener((epicId) => {
 });
 
 /**
+ * The distinct hosts the user's OPEN epics are bound to, sorted for a stable
+ * identity.
+ *
+ * This is the producer set for agent activity (`s5-parity-gaps` gap 1).
+ * Production used to read activity from the local host and nothing else, so a
+ * cloud-homed epic being worked from a remote host rendered as idle. Fanning
+ * out over every host in the directory would be the other extreme - a relay
+ * connection per machine the account has ever registered - and it is not what
+ * the defect asks for. The hosts a person can actually observe activity on are
+ * the ones their open epics are bound to, and those hosts are already dialed.
+ */
+export function openEpicHostIds(): readonly string[] {
+  const hostIds = new Set<string>();
+  for (const handle of registry.liveHandles()) {
+    const hostId = getEpicSessionHandleHostId(handle);
+    if (hostId !== null) hostIds.add(hostId);
+  }
+  return [...hostIds].sort((left, right) => left.localeCompare(right));
+}
+
+/**
  * Test / production seam. Defaults to real `EpicStreamClient`; tests swap
  * via `__setEpicStreamClientFactoryForTests(...)` so the provider can be
  * mounted in jsdom without a live host.

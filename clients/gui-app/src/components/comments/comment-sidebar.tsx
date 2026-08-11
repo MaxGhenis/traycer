@@ -6,7 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { useEpicCommentThreads } from "@/hooks/comments/use-epic-comment-threads";
-import { useEpicDurabilityStatus } from "@/lib/epic-selectors";
+import {
+  commentsHaveNoCloudRoom,
+  useEpicDurabilityStatus,
+} from "@/lib/epic-selectors";
+import type { EpicDurabilityStatusV14 } from "@traycer/protocol/host/epic/subscribe";
 import {
   useActiveThreadId,
   useCommentThreadsStore,
@@ -61,7 +65,11 @@ export function CommentSidebar(props: CommentSidebarProps) {
   const setActiveThread = useCommentThreadsStore((s) => s.setActiveThread);
   const setDraft = useCommentThreadsStore((s) => s.setDraft);
   const durabilityStatus = useEpicDurabilityStatus();
-  const localCommentsUnavailable = durabilityStatus === "local";
+  // Covers the `promoting` window too - see `commentsHaveNoCloudRoom`. Keyed
+  // on exactly `"local"`, this gate re-enabled comments mid-promotion against
+  // a null provider and the user got a generic RPC failure for a state the
+  // host can name.
+  const localCommentsUnavailable = commentsHaveNoCloudRoom(durabilityStatus);
 
   const query = useEpicCommentThreads(epicId, artifactType, artifactId, {
     enabled: !localCommentsUnavailable,
@@ -126,6 +134,7 @@ export function CommentSidebar(props: CommentSidebarProps) {
           isLoading={query.isLoading}
           isUnavailable={isUnavailable}
           localCommentsUnavailable={localCommentsUnavailable}
+          durabilityStatus={durabilityStatus}
           sorted={sorted}
           filter={filter}
           epicId={epicId}
@@ -150,6 +159,7 @@ interface SidebarBodyProps {
    *  {@link CommentSidebar}. */
   readonly isUnavailable: boolean;
   readonly localCommentsUnavailable: boolean;
+  readonly durabilityStatus: EpicDurabilityStatusV14 | null;
   readonly sorted: ReadonlyArray<SortedThread>;
   readonly filter: CommentThreadStatusFilter;
   readonly epicId: string;
@@ -184,6 +194,7 @@ function SidebarBody(props: SidebarBodyProps) {
     return (
       <UnavailableState
         localCommentsUnavailable={props.localCommentsUnavailable}
+        durabilityStatus={props.durabilityStatus}
       />
     );
   }
@@ -253,6 +264,7 @@ function EmptyState({ filter, onPromptDraft }: EmptyStateProps) {
  */
 function UnavailableState(props: {
   readonly localCommentsUnavailable: boolean;
+  readonly durabilityStatus: EpicDurabilityStatusV14 | null;
 }) {
   return (
     <div
@@ -269,17 +281,30 @@ function UnavailableState(props: {
       <div className="flex flex-col gap-1">
         <p className="text-ui-sm text-muted-foreground">
           {props.localCommentsUnavailable
-            ? "Comments are available after cloud sync."
+            ? "Comments need a cloud room, and this epic has none."
             : "Comments couldn't be loaded."}
         </p>
         <p className="text-ui-xs text-muted-foreground/80">
           {props.localCommentsUnavailable
-            ? "This epic is currently stored locally."
+            ? localBoundaryDetail(props.durabilityStatus)
             : "This doesn't mean there are none."}
         </p>
       </div>
     </div>
   );
+}
+
+/**
+ * The condition, not a prediction.
+ *
+ * The old copy said "Comments are available after cloud sync", which promises
+ * an event that for a free-tier account never comes - the same doctrine the
+ * History pin control already adopted. These state what is true right now.
+ */
+function localBoundaryDetail(status: EpicDurabilityStatusV14 | null): string {
+  return status === "promoting"
+    ? "This epic is still uploading to the cloud."
+    : "This epic is stored on this device.";
 }
 
 function emptyMessageFor(filter: CommentThreadStatusFilter): string {

@@ -45,11 +45,13 @@ import {
   listEpicCollaboratorsResponseSchema,
   getTaskContextsRequestSchema,
   getTaskContextsResponseSchema,
+  getTaskContextsResponseSchemaV10,
   listTasksRequestSchema,
   listTasksRequestSchemaV11,
   listTasksResponseSchema,
   listTasksResponseSchemaV10,
   listTasksResponseSchemaV12,
+  listTasksResponseSchemaV13,
   removeEpicRepoRequestSchema,
   removeEpicRepoResponseSchema,
   resolveArtifactByPathRequestSchema,
@@ -155,7 +157,7 @@ export const epicListTasksV13 = defineRpcContract({
   method: "epic.listTasks",
   schemaVersion: { major: 1, minor: 3 } as const,
   requestSchema: listTasksRequestSchema,
-  responseSchema: listTasksResponseSchema,
+  responseSchema: listTasksResponseSchemaV13,
 });
 
 export const epicListTasksUpgradeV12ToV13 = defineUpgradePath<
@@ -165,6 +167,45 @@ export const epicListTasksUpgradeV12ToV13 = defineUpgradePath<
   from: epicListTasksV12.schemaVersion,
   to: epicListTasksV13.schemaVersion,
   upgradeRequest: (request) => request,
+  upgradeResponse: (response) => ({
+    ...response,
+    tasks: response.tasks.map((task) => ({ ...task })),
+  }),
+});
+
+// `epic.listTasks@1.4` - the s5 discovery-honesty minor. TWO tickets land on
+// it because they are two halves of one answer and a client that negotiated
+// only half would render the other half's rows without its caveats:
+//
+// - `s5-offline-history` (C5/C6) adds `completeness`, the positive statement
+//   of whether the cloud leg settled, whether the facets still describe the
+//   rows, whether host rows are present or were suppressed as unprovable, and
+//   whether the order is the server's or a loaded-union.
+// - `s5-orphaned-epic-recovery` adds the per-row `preservation` marker, which
+//   is what makes an epic preserved through a refused delete listable at all.
+//
+// Both keys are additive and optional, so `@1.0`-`@1.3` peers keep byte-
+// identical payloads: the older response schemas strip them, and the host
+// gates emission on the negotiated minor rather than trusting the strip.
+// Request is unchanged from 1.2.
+export const epicListTasksV14 = defineRpcContract({
+  method: "epic.listTasks",
+  schemaVersion: { major: 1, minor: 4 } as const,
+  requestSchema: listTasksRequestSchema,
+  responseSchema: listTasksResponseSchema,
+});
+
+export const epicListTasksUpgradeV13ToV14 = defineUpgradePath<
+  typeof epicListTasksV13,
+  typeof epicListTasksV14
+>({
+  from: epicListTasksV13.schemaVersion,
+  to: epicListTasksV14.schemaVersion,
+  upgradeRequest: (request) => request,
+  // No synthesized `completeness`. An upgraded `@1.3` payload came from a host
+  // that cannot make this statement, and absence is exactly the right reading:
+  // manufacturing `cloudPage: "settled"` here would be the reassuring default
+  // this minor exists to remove.
   upgradeResponse: (response) => ({
     ...response,
     tasks: response.tasks.map((task) => ({ ...task })),
@@ -197,7 +238,32 @@ export const epicGetTaskContextsV10 = defineRpcContract({
   method: "epic.getTaskContexts",
   schemaVersion: { major: 1, minor: 0 } as const,
   requestSchema: getTaskContextsRequestSchema,
+  responseSchema: getTaskContextsResponseSchemaV10,
+});
+
+// `epic.getTaskContexts@1.1` adds the same optional per-row `home` marker
+// `epic.listTasks@1.3` already carries, so the tab strip can tell a local epic
+// from a cloud one on the only method it uses (`s5-parity-gaps` gap 4).
+// Request unchanged; `@1.0` stays frozen and simply strips the key.
+export const epicGetTaskContextsV11 = defineRpcContract({
+  method: "epic.getTaskContexts",
+  schemaVersion: { major: 1, minor: 1 } as const,
+  requestSchema: getTaskContextsRequestSchema,
   responseSchema: getTaskContextsResponseSchema,
+});
+
+export const epicGetTaskContextsUpgradeV10ToV11 = defineUpgradePath<
+  typeof epicGetTaskContextsV10,
+  typeof epicGetTaskContextsV11
+>({
+  from: epicGetTaskContextsV10.schemaVersion,
+  to: epicGetTaskContextsV11.schemaVersion,
+  upgradeRequest: (request) => request,
+  // No synthesized `home`. An older host did not answer the question, and
+  // absence already means "cloud or unknown" - which is the reading that keeps
+  // the pin action enabled, so inventing `"cloud"` here would be indis-
+  // tinguishable from the defect.
+  upgradeResponse: (response) => response,
 });
 
 // `epic.create@1.0` - host-side entry point for the CloudData epic create

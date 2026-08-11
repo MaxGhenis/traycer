@@ -2,6 +2,7 @@ import type {
   PermissionRole,
   ListTaskLight,
   ListTaskLightV13,
+  ListTaskLightV14,
   TaskOwnershipScope,
   TaskWorkspaceIdentifier,
 } from "@traycer/protocol/host/epic/unary-schemas";
@@ -53,6 +54,15 @@ export interface HistoryItem {
   /** True only for a host-synthesized local-home task row. Missing legacy
    *  fixtures and callers are cloud-backed. */
   isLocalHome?: boolean;
+  /**
+   * True for a cloud-homed epic the host re-admitted to discovery because its
+   * delete was refused to protect never-uploaded bytes
+   * (`s5-orphaned-epic-recovery`). The server no longer lists this epic at
+   * all, so without the marker the row would read as an ordinary task and the
+   * one thing the user needs to know about it - that the cloud copy is gone
+   * and only this device's edits remain - would be invisible again.
+   */
+  isPreservedOrphan?: boolean;
 }
 
 export interface HistoryFilters {
@@ -76,7 +86,7 @@ const HISTORY_GROUP_LABELS: Record<HistoryRecencyBucket, string> = {
 };
 
 export function buildHistoryItemsFromTasks(
-  tasks: ReadonlyArray<ListTaskLight | ListTaskLightV13>,
+  tasks: ReadonlyArray<ListTaskLight | ListTaskLightV13 | ListTaskLightV14>,
   nowMs: number,
   userId: string | null,
 ): ReadonlyArray<HistoryItem> {
@@ -95,6 +105,9 @@ export function buildHistoryItemsFromTasks(
           role: task.epic?.permission?.role ?? null,
           isPinned: task.pinned ?? false,
           isLocalHome: "home" in task && task.home === "local",
+          isPreservedOrphan:
+            "preservation" in task &&
+            task.preservation === "orphaned-local-edits",
         }),
       ];
     }
@@ -117,6 +130,7 @@ export function buildHistoryItemsFromTasks(
         role: task.phase?.permission?.role ?? null,
         isPinned: false,
         isLocalHome: false,
+        isPreservedOrphan: false,
       }),
     ];
   });
@@ -133,6 +147,7 @@ function buildHistoryItem(args: {
   role: PermissionRole | null;
   isPinned: boolean;
   isLocalHome: boolean;
+  isPreservedOrphan: boolean;
 }): HistoryItem {
   const {
     light,
@@ -145,6 +160,7 @@ function buildHistoryItem(args: {
     role,
     isPinned,
     isLocalHome,
+    isPreservedOrphan,
   } = args;
   const ownership = light.createdBy === userId ? "mine" : "shared";
   return {
@@ -171,6 +187,7 @@ function buildHistoryItem(args: {
     permissionRole: historyPermissionRole(ownership, role),
     isPinned,
     isLocalHome,
+    isPreservedOrphan,
   };
 }
 

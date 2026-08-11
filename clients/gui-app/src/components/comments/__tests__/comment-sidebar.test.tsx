@@ -322,10 +322,12 @@ describe("<CommentSidebar /> local durability honesty", () => {
     renderSidebar(epicHandle);
 
     expect(
-      await screen.findByText("Comments are available after cloud sync."),
+      await screen.findByText(
+        "Comments need a cloud room, and this epic has none.",
+      ),
     ).not.toBeNull();
     expect(
-      screen.getByText("This epic is currently stored locally."),
+      screen.getByText("This epic is stored on this device."),
     ).not.toBeNull();
     // Must not fall into the generic RPC-failure copy.
     expect(screen.queryByText("Comments couldn't be loaded.")).toBeNull();
@@ -348,7 +350,39 @@ describe("<CommentSidebar /> local durability honesty", () => {
     expect(await screen.findByText(QUOTED_TEXT)).not.toBeNull();
     expect(listThreadsCalls).toBeGreaterThan(0);
     expect(
-      screen.queryByText("Comments are available after cloud sync."),
+      screen.queryByText("Comments need a cloud room, and this epic has none."),
     ).toBeNull();
+  });
+
+  it("keeps comments gated through the promoting window, against the same null provider", async () => {
+    if (epicHandle === null) {
+      throw new Error("expected open epic handle");
+    }
+    // The reserved-but-pre-cutover state. The promotion is recorded and the
+    // upload is in flight, but the artifact room's collab provider is still
+    // null - so the host answers `no_active_session` and the old gate, keyed
+    // on exactly "local", let the request through to collect it.
+    epicHandle.store.setState({
+      durabilityStatus: "promoting",
+      durabilityPromotionState: "active",
+    });
+
+    renderSidebar(epicHandle);
+
+    expect(
+      await screen.findByText(
+        "Comments need a cloud room, and this epic has none.",
+      ),
+    ).not.toBeNull();
+    // The copy states the condition rather than predicting cloud sync.
+    expect(
+      screen.getByText("This epic is still uploading to the cloud."),
+    ).not.toBeNull();
+    // The defect was a generic failure standing in for a known boundary.
+    expect(screen.queryByText("Comments couldn't be loaded.")).toBeNull();
+    // Arrangement fidelity: the RPC was never issued, so the panel is not
+    // merely the error state wearing better copy.
+    expect(listThreadsCalls).toBe(0);
+    expect(queryStatuses()).not.toContain("error");
   });
 });

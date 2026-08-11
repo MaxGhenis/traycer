@@ -81,6 +81,27 @@ describe("<EpicDurabilityBadge />", () => {
     expect(screen.queryByText("Upgrade")).toBeNull();
   });
 
+  it("offers the export remedy on a preserved orphan, not just the warning copy", () => {
+    // The other half of `s5-orphaned-epic-recovery`. Making the epic listable
+    // again is pointless if the only thing waiting at the end of the click is
+    // a label: the cloud object is gone, so getting the never-uploaded bytes
+    // out IS the recovery.
+    durability.status = "paused";
+    durability.pauseReason = "orphaned-local-edits-after-cloud-delete";
+    durability.promotionState = null;
+
+    render(<EpicDurabilityBadge />);
+
+    expect(
+      screen.getByText("Deleted in cloud — local edits kept here"),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Export artifacts" }),
+    ).toBeTruthy();
+    // Upgrading buys nothing here - the cloud copy does not come back.
+    expect(screen.queryByText("Upgrade")).toBeNull();
+  });
+
   it("renders upgrade only for the entitlement-lapsed reason", () => {
     durability.status = "paused";
     durability.pauseReason = "entitlement-lapsed";
