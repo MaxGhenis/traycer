@@ -2120,10 +2120,10 @@ export class BrowserViewManager {
         candidate.runtimeSessionId === entry.runtimeSessionId &&
         !candidate.handedOff,
     );
-    let resolveAggregation: (() => void) | undefined;
-    const aggregationPromise = new Promise<void>((resolve) => {
-      resolveAggregation = resolve;
-    });
+    const {
+      promise: aggregationPromise,
+      resolve: resolveAggregation,
+    } = Promise.withResolvers<void>();
     for (const sibling of siblings) {
       sibling.handedOff = true;
       sibling.pendingHandoffCapture = aggregationPromise;
@@ -2156,7 +2156,7 @@ export class BrowserViewManager {
           sibling.pendingHandoffCapture = null;
         }
       }
-      resolveAggregation?.();
+      resolveAggregation();
     }
   }
 

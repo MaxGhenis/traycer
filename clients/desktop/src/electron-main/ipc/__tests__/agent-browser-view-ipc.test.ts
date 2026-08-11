@@ -167,7 +167,7 @@ describe("registerAgentBrowserViewIpc", () => {
     );
   });
 
-  it("registers only the four agent browser invoke channels", async () => {
+  it("registers only the five agent browser invoke channels", async () => {
     const { registerAgentBrowserViewIpc } =
       await import("../agent-browser-view-ipc");
     const { RunnerHostInvoke } =
@@ -181,6 +181,7 @@ describe("registerAgentBrowserViewIpc", () => {
     );
     expect(channelNames).toEqual([
       RunnerHostInvoke.agentBrowserViewUpsert,
+      RunnerHostInvoke.agentBrowserViewRegisterDurableTab,
       RunnerHostInvoke.agentBrowserViewUpdateBounds,
       RunnerHostInvoke.agentBrowserViewRelease,
       // Ticket 03's typed CDP bridge. This assertion is an allowlist, not a

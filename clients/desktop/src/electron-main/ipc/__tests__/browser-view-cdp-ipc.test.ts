@@ -132,6 +132,14 @@ vi.mock("../../browser-view/browser-cookie-crypto", () => ({
 }));
 
 vi.mock("../../browser-view/browser-storage-state", () => ({
+  captureBrowserOriginLocalStorage: vi.fn(() => Promise.resolve(null)),
+  captureBrowserPrimaryProfile: vi.fn(() =>
+    Promise.resolve({
+      status: "captured",
+      storageState: { cookies: [], origins: [] },
+      reason: null,
+    }),
+  ),
   applyBrowserViewStorageState: vi.fn(() =>
     Promise.resolve({
       status: "applied",
