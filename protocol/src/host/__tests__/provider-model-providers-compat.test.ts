@@ -980,9 +980,11 @@ describe("providers.modelProviderAuth actions", () => {
       "gpt-4o-mini",
       "gpt-4o",
     ]);
-    // Defaulted, so "none" has one spelling rather than absent-or-empty.
+    // `headers` defaults to `[]` - two states, so "none" gets one spelling.
     expect(parsed.headers).toEqual([]);
-    expect(parsed.env).toEqual([]);
+    // `env` defaults to NULL, not `[]`. Omitting it must mean "leave the env
+    // declaration alone", never "clear it" - see the three-state test below.
+    expect(parsed.env).toBeNull();
     expect(parsed.key).toBeNull();
   });
 
@@ -1219,6 +1221,69 @@ describe("providers.modelProviderAuth actions", () => {
         baseUrl,
       ).toBe(false);
     }
+  });
+
+  /** Parse and narrow to the `createCustom` arm, so field reads type-check. */
+  function parseCreateCustom(input: unknown) {
+    const parsed = modelProviderAuthActionSchema.parse(input);
+    if (parsed.action !== "createCustom") {
+      throw new Error(`expected createCustom, got ${parsed.action}`);
+    }
+    return parsed;
+  }
+
+  it("keeps omitted, cleared and replaced env declarations distinct", () => {
+    // Three states, and the gap between the first two is the reason this field
+    // is nullable while `headers` is defaulted. Deleting the block's `env` key
+    // server-side needs an explicit null, so "clear" has to be sendable - but
+    // if ABSENT also meant clear, every client that simply does not populate
+    // the field would submit a silent wipe. An update changing the display
+    // name would delete how the provider reads its key.
+    const base = {
+      action: "createCustom" as const,
+      modelProviderId: "my-endpoint",
+      name: "My Endpoint",
+      baseUrl: "https://api.example.com/v1",
+      models: [{ id: "gpt-4o", name: "GPT-4o" }],
+    };
+    // Absent and explicit null are the SAME state after parsing - one spelling
+    // of "untouched" downstream - and both differ from `[]`.
+    expect(parseCreateCustom(base).env).toBeNull();
+    expect(
+      parseCreateCustom({ ...base, env: null }).env,
+    ).toBeNull();
+    expect(parseCreateCustom({ ...base, env: [] }).env).toEqual([]);
+    expect(
+      parseCreateCustom({
+        ...base,
+        env: ["MY_ENDPOINT_KEY", "FALLBACK_KEY"],
+      }).env,
+    ).toEqual(["MY_ENDPOINT_KEY", "FALLBACK_KEY"]);
+    // The assertion the wipe hazard turns on: omission must not arrive as the
+    // clear signal.
+    expect(parseCreateCustom(base).env).not.toEqual([]);
+  });
+
+  it("still gives headers one spelling of none, because it has no clear state", () => {
+    // A header set is fully described by what the form submits, so omitted and
+    // empty mean the same thing and nothing is destroyed by treating them
+    // alike. Removal is refused rather than expressed, which is why the
+    // three-state shape would buy nothing here.
+    const base = {
+      action: "createCustom" as const,
+      modelProviderId: "my-endpoint",
+      name: "My Endpoint",
+      baseUrl: "https://api.example.com/v1",
+      models: [{ id: "gpt-4o", name: "GPT-4o" }],
+    };
+    expect(parseCreateCustom(base).headers).toEqual([]);
+    expect(
+      parseCreateCustom({ ...base, headers: [] }).headers,
+    ).toEqual([]);
+    expect(
+      modelProviderAuthActionSchema.safeParse({ ...base, headers: null })
+        .success,
+    ).toBe(false);
   });
 
   it("carries headers, an in-form key and parsed env names", () => {

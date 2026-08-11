@@ -1717,10 +1717,16 @@ const customProviderShape = {
    */
   models: z.array(customProviderModelSchema).min(1),
   /**
-   * Literal headers for `options.headers`. Defaulted rather than optional so
-   * "no headers" has exactly one spelling on the wire; the host omits the
-   * config key entirely when this is empty, which is where absence belongs -
-   * in the file it writes, not in two possible payloads.
+   * Literal headers for `options.headers`. Defaulted rather than nullable
+   * because this field has only TWO states to express - some headers, or none
+   * - and a default gives "none" exactly one spelling. The host omits the
+   * config key when the list is empty, which is where absence belongs: in the
+   * file it writes, not in two possible payloads.
+   *
+   * Contrast `env` below, which needs three. The difference is not style: a
+   * header set is always fully described by what the form submits, so an
+   * omitted field and an empty one mean the same thing. Nothing is destroyed
+   * by treating them alike.
    */
   headers: z.array(customProviderHeaderSchema).default([]),
   /**
@@ -1738,10 +1744,25 @@ const customProviderShape = {
    * Upstream's form accepts `{env:VAR}` in its key field and resolves it
    * client-side; this wire carries the parsed result, so the syntax stays a
    * presentation detail of whichever client offers it and the host is handed
-   * names rather than a template to re-parse. A client that does not offer the
-   * syntax simply sends none.
+   * names rather than a template to re-parse.
+   *
+   * THREE states, which is why this one is nullable where `headers` is
+   * defaulted:
+   *
+   * - `null` (or absent) — leave whatever the block already declares alone.
+   * - `[]` — clear the declaration. Deleting the key server-side needs an
+   *   explicit `env: null` at the block level, so "clear" has to be a value a
+   *   client can actually send.
+   * - non-empty — replace the declaration with these names.
+   *
+   * Absent must NOT mean clear, and that is the whole reason for the shape. A
+   * defaulted `[]` would make every client that simply does not populate this
+   * field submit a silent wipe of the user's env declaration - an update that
+   * asked to change the display name would delete how the provider reads its
+   * key. Clearing is a thing someone has to ask for; not mentioning it is not
+   * asking.
    */
-  env: z.array(z.string().min(1)).default([]),
+  env: z.array(z.string().min(1)).nullable().default(null),
 };
 
 export const modelProviderAuthActionSchema = z.discriminatedUnion("action", [
