@@ -128,8 +128,12 @@ export function NotificationsBell() {
     // The path forward the hollow `unknown` dot needs. Without it this is the
     // bare gray dot with no explanation that got `unknown` suppressed into
     // `clear` in the first place - see `useNotificationBellState`.
+    //
+    // Names the CONSEQUENCE, not a cause: `unknown` is reached by an
+    // unreachable stream AND by a reachable one whose summary is not exact
+    // yet, so naming the transport was a diagnosis this state cannot support.
     state.kind === "unknown"
-      ? "Notifications — can't reach the notification service, so this may be out of date"
+      ? "Notifications — status unavailable, so this may be out of date"
       : "Notifications";
   return (
     <Popover open={open} onOpenChange={setOpen}>

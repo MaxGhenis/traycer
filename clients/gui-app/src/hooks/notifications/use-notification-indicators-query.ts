@@ -1,5 +1,8 @@
 import { useMemo } from "react";
-import type { HostNotificationsIndicatorStateResponse } from "@traycer/protocol/host/notifications/contracts";
+import type {
+  HostNotificationsIndicatorState,
+  HostNotificationsIndicatorStateResponse,
+} from "@traycer/protocol/host/notifications/contracts";
 import { useNotificationFeedMode } from "@/lib/notifications/notification-feed-mode";
 import {
   useHostNotificationIndicators,
@@ -77,18 +80,38 @@ function mergeIndicatorRecord(
 ): HostNotificationsIndicatorStateResponse["epics"] {
   const merged = { ...local };
   for (const [id, cloudState] of Object.entries(cloud)) {
-    const localState = merged[id];
-    merged[id] =
-      localState === undefined
-        ? cloudState
-        : {
-            pendingApproval:
-              localState.pendingApproval || cloudState.pendingApproval,
-            pendingInterview:
-              localState.pendingInterview || cloudState.pendingInterview,
-            unreadFailure: localState.unreadFailure || cloudState.unreadFailure,
-            unreadDone: localState.unreadDone || cloudState.unreadDone,
-          };
+    merged[id] = orIndicatorState(readIndicatorState(merged, id), cloudState);
   }
   return merged;
+}
+
+/**
+ * A record read that admits the id may be absent.
+ *
+ * The wire type is a `z.record`, which TypeScript widens to a TOTAL
+ * `Record<string, T>` - so an inline `record[id] === undefined` check reads as
+ * dead code to the type checker while being the only thing standing between a
+ * partition that lacks the id and a `.pendingApproval` on `undefined`.
+ */
+function readIndicatorState(
+  record: HostNotificationsIndicatorStateResponse["epics"],
+  id: string,
+): HostNotificationsIndicatorState | undefined {
+  return Object.hasOwn(record, id) ? record[id] : undefined;
+}
+
+/** Per-flag OR of two exact durable-home partitions. Neither drops the other:
+ * a foreign cloud row never enters the local origin, and a local-homed row is
+ * absent from the cloud partition. */
+function orIndicatorState(
+  local: HostNotificationsIndicatorState | undefined,
+  cloud: HostNotificationsIndicatorState,
+): HostNotificationsIndicatorState {
+  if (local === undefined) return cloud;
+  return {
+    pendingApproval: local.pendingApproval || cloud.pendingApproval,
+    pendingInterview: local.pendingInterview || cloud.pendingInterview,
+    unreadFailure: local.unreadFailure || cloud.unreadFailure,
+    unreadDone: local.unreadDone || cloud.unreadDone,
+  };
 }

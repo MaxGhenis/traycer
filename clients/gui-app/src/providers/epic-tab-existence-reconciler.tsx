@@ -200,17 +200,28 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileRun }) {
     options: { enabled: true },
   });
 
+  const listedEpicIds = useMemo((): ReadonlySet<string> | null => {
+    if (!localHomeListQuery.isSuccess) return null;
+    return listedEpicIdsFromListTasks(localHomeListQuery.data);
+  }, [localHomeListQuery.data, localHomeListQuery.isSuccess]);
+
   const localHomedEpicIds = useMemo((): ReadonlySet<string> | null => {
     if (!localHomeListQuery.isSuccess) return null;
     return localHomedEpicIdsFromListTasks(localHomeListQuery.data);
   }, [localHomeListQuery.data, localHomeListQuery.isSuccess]);
 
+  // EVERY listed epic is positive existence evidence; only the `home: "local"`
+  // subset earns the separate force-close exemption. Conflating the two made
+  // existence conditional on an OPTIONAL marker, so a promotion completing
+  // between the two RPCs - `getTaskContexts` answering from before it,
+  // `listTasks` from after - dropped the now-cloud-homed row from the union
+  // and force-closed a tab whose epic demonstrably exists.
   const existingEpicIds = useMemo((): ReadonlySet<string> | null => {
     if (existingFromContexts === null) return null;
-    if (localHomedEpicIds === null) return null;
-    if (localHomedEpicIds.size === 0) return existingFromContexts;
-    return new Set([...existingFromContexts, ...localHomedEpicIds]);
-  }, [existingFromContexts, localHomedEpicIds]);
+    if (listedEpicIds === null) return null;
+    if (listedEpicIds.size === 0) return existingFromContexts;
+    return new Set([...existingFromContexts, ...listedEpicIds]);
+  }, [existingFromContexts, listedEpicIds]);
 
   useEffect(() => {
     if (existingEpicIds === null) return;
@@ -277,6 +288,26 @@ function combineExistingEpicIds(
   return existingEpicIds;
 }
 
+/**
+ * Every epic row on the page, home marker or not.
+ *
+ * The host answered the request, so each row it returned is an epic that
+ * exists - which is a strictly stronger statement than "carries `home:
+ * local`", and the only one existence reconciliation is entitled to act on.
+ */
+function listedEpicIdsFromListTasks(
+  page: ListTasksResponse,
+): ReadonlySet<string> {
+  const listed = new Set<string>();
+  for (const task of page.tasks) {
+    const epicId = task.epic?.light?.id;
+    if (typeof epicId !== "string" || epicId.length === 0) continue;
+    listed.add(epicId);
+  }
+  return listed;
+}
+
+/** The durable force-close exemption, which IS marker-conditional. */
 function localHomedEpicIdsFromListTasks(
   page: ListTasksResponse,
 ): ReadonlySet<string> {

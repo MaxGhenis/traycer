@@ -39,12 +39,20 @@ const durability = vi.hoisted<{
    * rendering, which is what makes the freshness half additive.
    */
   cloudFreshness: EpicCloudFreshness | null;
+  /**
+   * Whether the fixture's peer negotiated `epic.subscribe@1.4`. Defaults to
+   * TRUE because that is what every case in this suite is describing - a host
+   * that speaks the durability legs. The pre-`@1.4` peer is its own case and
+   * sets it false explicitly.
+   */
+  peerSpeaksDurabilityLegs: boolean;
 }>(() => ({
   status: "paused",
   pauseReason: "access-revoked",
   promotionState: null,
   localProtection: null,
   cloudFreshness: null,
+  peerSpeaksDurabilityLegs: true,
 }));
 
 // `deriveEpicDurabilityView` is the real implementation, deliberately: it IS
@@ -58,6 +66,7 @@ vi.mock("@/lib/epic-selectors", async (importOriginal) => {
       actual.deriveEpicDurabilityView(
         durability.status,
         durability.localProtection,
+        durability.peerSpeaksDurabilityLegs,
       ),
     useEpicDurabilityPauseReason: () => durability.pauseReason,
     useEpicDurabilityPromotionState: () => durability.promotionState,
@@ -245,14 +254,54 @@ describe("<EpicDurabilityBadge />", () => {
 
   it("stays silent for a pre-@1.4 peer with no durability answer", () => {
     // Old hosts keep exactly their current rendering; the minor is additive.
+    // The peer is identified by its NEGOTIATED version, not by the absence of
+    // the key - see the next case for why those are not the same test.
     durability.status = null;
     durability.pauseReason = null;
     durability.promotionState = null;
     durability.localProtection = null;
+    durability.peerSpeaksDurabilityLegs = false;
 
     renderBadge();
 
     expect(screen.queryByTestId("epic-durability-badge")).toBeNull();
+  });
+
+  it("treats an OMITTED localProtection from a @1.4 peer as unknown, not as an old peer", () => {
+    // Every `@1.4` leg is optional on the wire and the schema's absence rule
+    // says an omitted one means UNKNOWN. A presence probe cannot honour that:
+    // it reads the permitted omission as "pre-@1.4" and falls back to the
+    // silent rendering, which is silence-as-reassurance - the exact inference
+    // this minor exists to break. Identical inputs to the case above except
+    // for who is speaking.
+    durability.status = null;
+    durability.pauseReason = null;
+    durability.promotionState = null;
+    durability.localProtection = null;
+    durability.peerSpeaksDurabilityLegs = true;
+
+    renderBadge();
+
+    expect(screen.getByText("Storage status unknown")).toBeTruthy();
+  });
+
+  it("shows the local-backup risk BESIDE a concrete status, not instead of it", () => {
+    // `durability` and `localProtection` are separate axes. A frame carrying
+    // both took the `stated` arm, which read only the status - so an offline
+    // mirror with no WAL rendered as an ordinary "Cloud mirror - offline" and
+    // the risk was invisible. Collapsing to `indeterminate` instead would have
+    // dropped the status, and with it the paused-only remedies.
+    durability.status = "offline";
+    durability.pauseReason = null;
+    durability.promotionState = null;
+    durability.localProtection = "unavailable";
+
+    renderBadge();
+
+    expect(screen.getByText("Cloud mirror — offline")).toBeTruthy();
+    expect(screen.getByTestId("epic-durability-risk").textContent).toContain(
+      "No local backup",
+    );
   });
 
   it("names the actionable delete-path pause reason instead of a bare paused", () => {

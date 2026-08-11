@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
-import { useHostBinding, type HostRpcRegistry } from "@/lib/host";
+import type { HostRpcRegistry } from "@/lib/host";
 import {
   Analytics,
   AnalyticsEvent,
@@ -10,7 +10,7 @@ import {
 } from "@/lib/analytics";
 import { useHostMutation } from "@/hooks/host/use-host-query";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { useNotificationHost } from "@/hooks/notifications/use-notification-host";
 import { notificationsMutationKeys } from "@/lib/query-keys";
 import { toastFromHostError } from "@/lib/host-error-toast";
 import {
@@ -212,7 +212,10 @@ export function mergedUnreadCount(input: {
  * their own source subscriptions. */
 function useMergedNotificationRows(): ReadonlyArray<MergedNotificationRow> {
   const feedMode = useNotificationFeedMode();
-  const activeHostId = useReactiveActiveHostId();
+  // The host that SERVED these rows, not whichever host is app-wide active -
+  // `originHostId` routes activation and names the machine in the row, so the
+  // active host's id here sent a local row's click to a different machine.
+  const notificationHostId = useNotificationHost().hostId;
   const hostIds = useHostNotificationIds();
   const appLocalIds = useAppLocalNotificationIds();
   const globalIds = useNotificationEntryIds();
@@ -226,7 +229,9 @@ function useMergedNotificationRows(): ReadonlyArray<MergedNotificationRow> {
       // `updatedAt` has distinct semantics in each plane, so only compare
       // timestamps inside one lane and concatenate them in protocol order.
       const localRows = hostIds
-        .map((id) => rowFromHostEntryForOrigin(hostById[id], activeHostId))
+        .map((id) =>
+          rowFromHostEntryForOrigin(hostById[id], notificationHostId),
+        )
         .sort(compareFeedCandidates);
       const remoteRows = Object.values(cloudRows)
         .filter(
@@ -245,7 +250,7 @@ function useMergedNotificationRows(): ReadonlyArray<MergedNotificationRow> {
       .filter((entry): entry is NotificationEntry => entry !== undefined);
     const rows: MergedNotificationRow[] = [
       ...hostIds.map((id) =>
-        rowFromHostEntryForOrigin(hostById[id], activeHostId),
+        rowFromHostEntryForOrigin(hostById[id], notificationHostId),
       ),
       ...appLocalIds.map((id) => rowFromAppLocalEntry(appLocalById[id])),
       ...orderedGlobalEntries.map((entry) => rowFromGlobalEntry(entry)),
@@ -261,7 +266,7 @@ function useMergedNotificationRows(): ReadonlyArray<MergedNotificationRow> {
     appLocalById,
     globalIds,
     globalEntries,
-    activeHostId,
+    notificationHostId,
   ]);
 }
 
@@ -410,7 +415,7 @@ export function useMergedNotificationRow(
   feedId: string,
 ): MergedNotificationRow | null {
   const feedMode = useNotificationFeedMode();
-  const activeHostId = useReactiveActiveHostId();
+  const notificationHostId = useNotificationHost().hostId;
   const parsed = parseFeedId(feedId);
   const hostEntry = useHostNotificationById(
     parsed?.source === "host" ? parsed.sourceId : "",
@@ -432,7 +437,7 @@ export function useMergedNotificationRow(
     hostEntry,
     appLocalEntry,
     globalEntry,
-    hostOriginId: activeHostId,
+    hostOriginId: notificationHostId,
   });
 }
 
@@ -549,8 +554,8 @@ export interface NotificationCenterHostState {
 
 /** Active-host subtitle/partial-state selector for the center header. */
 export function useNotificationCenterHostState(): NotificationCenterHostState {
-  const activeHostId = useReactiveActiveHostId();
-  const hostEntry = useHostDirectoryEntry(activeHostId ?? "");
+  const notificationHostId = useNotificationHost().hostId;
+  const hostEntry = useHostDirectoryEntry(notificationHostId ?? "");
   const feedMode = useNotificationFeedMode();
   const localSummary = useHostNotificationsStore(selectHostNotificationSummary);
   const cloudSummary = useCloudNotificationsStore((state) => state.summary);
@@ -561,7 +566,7 @@ export function useNotificationCenterHostState(): NotificationCenterHostState {
   return {
     hostLabel: hostEntry?.label ?? null,
     isPartial:
-      activeHostId === null ||
+      notificationHostId === null ||
       summary === null ||
       (feedMode === "cloud" && localSummary === null),
   };
@@ -569,8 +574,13 @@ export function useNotificationCenterHostState(): NotificationCenterHostState {
 
 export function useMergedNotificationsActions(): MergedNotificationsActions {
   const feedMode = useNotificationFeedMode();
-  const binding = useHostBinding();
-  const client = binding?.hostClient ?? null;
+  // Bound to the host that OWNS the notification streams, not the app-wide
+  // active host. Every mutation below addresses a row that came from that
+  // host's origin store (or its relayed cloud lane), so routing them anywhere
+  // else marks the wrong store read and pages the wrong cursor.
+  const notificationHost = useNotificationHost();
+  const notificationHostId = notificationHost.hostId;
+  const client = notificationHost.client;
   const queryClient = useQueryClient();
   const globalMarkAsRead = useNotificationsStore((state) => state.markAsRead);
   const globalMarkAllAsRead = useNotificationsStore(
@@ -1101,12 +1111,13 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
         // host entry's `updatedAt` - the occurrence token the host guards on.
         if (row.source !== "host") return;
         if (feedMode === "upgrade-required") return;
-        // A retained-but-disconnected host keeps `client !== null` while its
-        // active host id drops to null; firing resolve then only yields an
-        // unbound-rejection toast while the row cannot change. Gate on the same
-        // authoritative active-host signal `markAllAsRead`'s dismiss-all half
-        // uses, NOT `client !== null`.
-        if (client === null || client.getActiveHostId() === null) return;
+        // A retained-but-disconnected host keeps its rendered rows while the
+        // host itself is gone; firing resolve then only yields an
+        // unbound-rejection toast while the row cannot change. Gate on the
+        // notification host's own liveness - the reactive local-host entry
+        // disappears exactly when the host does - and on the SAME signal
+        // `markAllAsRead`'s dismiss-all half uses, not on `client !== null`.
+        if (client === null || notificationHostId === null) return;
         resolveHost.mutate({
           feedId: row.feedId,
           sourceId: row.sourceId,
@@ -1162,7 +1173,7 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
           // mark-all issued while the cloud feed is rendered still has to
           // clear the host side (and its blocking attention occurrences), or
           // a feed-mode switch resurrects rows the user just cleared.
-          if (client !== null && client.getActiveHostId() !== null) {
+          if (client !== null && notificationHostId !== null) {
             markHostAllRead.mutate({ beforeUpdatedAt: Date.now() });
             const occurrences = loadedBlockingAttentionOccurrences();
             if (occurrences.length > 0) {
@@ -1175,15 +1186,15 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
         globalMarkAllAsRead();
         appLocalMarkAllAsRead(Date.now());
         // Both host halves - mark-all-read AND dismiss-all - apply only against
-        // an ACTIVE host. A disconnect keeps the runtime binding
-        // (`client !== null`) and the retained host replica, but drops the
-        // active host id to null and degrades the exact summary to unknown;
+        // a LIVE notification host. A disconnect keeps the runtime binding
+        // (`client !== null`) and the retained host replica, but the reactive
+        // local-host entry goes away and the exact summary degrades to unknown;
         // firing host mutations then only yields unbound-rejection error toasts
-        // while the rendered rows cannot change. Gate BOTH on the same
-        // authoritative active-host signal (read fresh at click time, the same
-        // value `useReactiveActiveHostId` projects), NOT `client !== null`. The
-        // local global/app-local mark-all above always run.
-        if (client !== null && client.getActiveHostId() !== null) {
+        // while the rendered rows cannot change. Gate BOTH on that same
+        // liveness signal - the one that also picked the client these rows came
+        // from - NOT on `client !== null`. The local global/app-local mark-all
+        // above always run.
+        if (client !== null && notificationHostId !== null) {
           // Fire mark-all-read and dismiss-all CONCURRENTLY. mark-all-read is
           // unchanged (released `markAllRead` semantics - a released client's
           // plain mark-all must never start resolving prompts host-side). The
@@ -1303,6 +1314,7 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
       unreadRecentHasLoadedOnce,
       hasUnreadRecentLoadError,
       client,
+      notificationHostId,
       feedMode,
       cloudVersion,
       captureCloudMutationContext,

@@ -6,7 +6,8 @@ import type {
   HostNotificationsIndicatorStateResponse,
 } from "@traycer/protocol/host/notifications/contracts";
 import { HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP } from "@traycer/protocol/host/notifications/contracts";
-import { useHostClient, type HostRpcRegistry } from "@/lib/host";
+import type { HostRpcRegistry } from "@/lib/host";
+import { useNotificationHost } from "@/hooks/notifications/use-notification-host";
 import { useHostQueries } from "@/hooks/host/use-host-queries";
 import { notificationsQueryKeys } from "@/lib/query-keys";
 import { useAuthStore } from "@/stores/auth/auth-store";
@@ -42,7 +43,12 @@ export interface HostNotificationIndicatorsQuery {
 export function useHostNotificationIndicators(
   args: UseHostNotificationIndicatorsArgs,
 ): HostNotificationIndicatorsQuery {
-  const client = useHostClient();
+  // The notification host, never the app-wide active one: this answers a
+  // `home: local` partition question ABOUT the machine whose feed the centre
+  // is rendering. Asked of a different host it describes that host's local
+  // partition instead, so indicators light for rows the feed does not hold and
+  // stay dark for rows it does.
+  const client = useNotificationHost().client;
   const userId = useAuthStore((state) => state.contextMetadata?.userId ?? null);
   const requests = useMemo(
     () =>
@@ -91,8 +97,8 @@ export function useHostNotificationIndicators(
 export function indicatorRequests(
   epicIds: ReadonlyArray<string>,
   chatIds: ReadonlyArray<string>,
-  chatEpicIds: Readonly<Record<string, string>> = {},
-  home: "local" | undefined = undefined,
+  chatEpicIds: Readonly<Record<string, string>>,
+  home: "local" | undefined,
 ): ReadonlyArray<HostNotificationsIndicatorStateRequestV11> {
   const epicChunks = chunkIds(epicIds);
   const chatChunks = chunkIds(chatIds);
@@ -101,8 +107,13 @@ export function indicatorRequests(
     const chatIdsForRequest = [...(chatChunks[index] ?? [])];
     const chatEpicIdsForRequest = Object.fromEntries(
       chatIdsForRequest.flatMap((chatId) => {
+        // `Object.hasOwn` rather than an `=== undefined` compare: the map is a
+        // plain `Record`, which TypeScript treats as TOTAL, so the compare
+        // reads as dead code while being the only thing that keeps a chat
+        // with no known parent epic out of the request.
+        if (!Object.hasOwn(chatEpicIds, chatId)) return [];
         const epicId = chatEpicIds[chatId];
-        return epicId === undefined ? [] : [[chatId, epicId]];
+        return [[chatId, epicId]];
       }),
     );
     return {

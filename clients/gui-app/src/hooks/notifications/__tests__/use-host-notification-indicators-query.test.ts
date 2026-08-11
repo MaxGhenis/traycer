@@ -37,6 +37,16 @@ vi.mock("@/lib/host", async (importOriginal) => {
   };
 });
 
+// The indicator query addresses the NOTIFICATION host - the machine whose feed
+// the centre renders - rather than the app-wide active host, so a `home:
+// local` partition question is not asked of some other host's local partition.
+vi.mock("@/hooks/notifications/use-notification-host", () => ({
+  useNotificationHost: () => ({
+    hostId: hostClient.getActiveHostId(),
+    client: hostClient,
+  }),
+}));
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -52,6 +62,8 @@ describe("indicatorRequests", () => {
     const requests = indicatorRequests(
       [...epicIds, "epic-000"],
       ["chat-b", "chat-a"],
+      {},
+      undefined,
     );
 
     expect(requests).toHaveLength(2);

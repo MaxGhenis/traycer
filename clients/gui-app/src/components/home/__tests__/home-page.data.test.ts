@@ -6,6 +6,7 @@ import type {
 import type { WorktreeHostEntryV12 } from "@traycer/protocol/host/worktree-schemas";
 import {
   buildHistoryItemsFromTasks,
+  EMPTY_LOCAL_HOMED_TASK_IDS,
   collectHistoryRepos,
   filterHistoryItems,
   groupHistoryItems,
@@ -328,6 +329,7 @@ describe("home-page history helpers", () => {
       tasks,
       Date.parse("2026-04-22T12:00:00.000Z"),
       "user-1",
+      EMPTY_LOCAL_HOMED_TASK_IDS,
     );
 
     expect(items).toHaveLength(2);
@@ -402,6 +404,7 @@ describe("home-page history helpers", () => {
       tasks,
       Date.parse("2026-04-22T12:00:00.000Z"),
       "user-1",
+      EMPTY_LOCAL_HOMED_TASK_IDS,
     );
 
     expect(items).toHaveLength(1);

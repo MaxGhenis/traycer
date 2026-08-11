@@ -76,11 +76,59 @@ function EpicDurabilityBadgeContent(props: {
   readonly freshness: EpicCloudFreshnessView;
   readonly freshnessCopy: CloudFreshnessCopy | null;
 }) {
+  const status = viewStatus(props.view);
+  const protection = viewProtection(props.view);
+  const badge = badgeCopy(props.view, props.pauseReason, props.promotionState);
+  const riskLabel = durabilityRiskCopy(props.view);
+  const freshnessState =
+    props.freshness.kind === "stated" ? props.freshness.state : null;
+  return (
+    <span
+      data-testid="epic-durability-badge"
+      data-durability-status={status ?? "unknown"}
+      data-local-protection={protection ?? undefined}
+      data-pause-reason={props.pauseReason ?? undefined}
+      data-promotion-state={props.promotionState ?? undefined}
+      data-cloud-freshness={freshnessState ?? undefined}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-ui-xs font-medium",
+        // The risk outranks the status for COLOUR even though it does not
+        // replace it for text: a pill that says "No local backup" in the calm
+        // muted treatment is the same understatement in a different medium.
+        riskLabel !== null
+          ? "bg-destructive/10 text-destructive"
+          : (badge ?? props.freshnessCopy)?.className,
+      )}
+    >
+      {badge === null ? null : <span>{badge.label}</span>}
+      <EpicDurabilityRiskLabel label={riskLabel} separated={badge !== null} />
+      {props.freshnessCopy === null ? null : (
+        <EpicCloudFreshnessLabel
+          copy={props.freshnessCopy}
+          separated={badge !== null || riskLabel !== null}
+        />
+      )}
+      <EpicDurabilityRemedies status={status} pauseReason={props.pauseReason} />
+    </span>
+  );
+}
+
+/**
+ * The two paused-only remedies, lifted out of the badge body.
+ *
+ * They own four hooks and a derived artifact list between them, and none of
+ * that has anything to say about the badge's LABEL - keeping them inline made
+ * one component responsible for both the statement and the actions.
+ */
+function EpicDurabilityRemedies(props: {
+  readonly status: "local" | "promoting" | "paused" | "offline" | null;
+  readonly pauseReason: EpicDurabilityPauseReasonV14 | null;
+}) {
   const runnerHost = useRunnerHost();
   const exportArtifacts = useEpicExportArtifacts();
   const records = useEpicArtifactRecords();
   const meta = useEpicSnapshotMeta();
-
+  if (props.status !== "paused") return null;
   const artifacts = records.flatMap((record) =>
     isEpicArtifactKind(record.type)
       ? [{ id: record.id, title: record.name }]
@@ -94,41 +142,32 @@ function EpicDurabilityBadgeContent(props: {
       archiveTitle: meta?.epicLight?.title ?? "Traycer",
     });
   };
-  const status = viewStatus(props.view);
-  const protection = viewProtection(props.view);
-  const badge = badgeCopy(props.view, props.pauseReason, props.promotionState);
-  const freshnessState =
-    props.freshness.kind === "stated" ? props.freshness.state : null;
   return (
-    <span
-      data-testid="epic-durability-badge"
-      data-durability-status={status ?? "unknown"}
-      data-local-protection={protection ?? undefined}
-      data-pause-reason={props.pauseReason ?? undefined}
-      data-promotion-state={props.promotionState ?? undefined}
-      data-cloud-freshness={freshnessState ?? undefined}
-      className={cn(
-        "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-ui-xs font-medium",
-        (badge ?? props.freshnessCopy)?.className,
-      )}
-    >
-      {badge === null ? null : <span>{badge.label}</span>}
-      {props.freshnessCopy === null ? null : (
-        <EpicCloudFreshnessLabel
-          copy={props.freshnessCopy}
-          separated={badge !== null}
-        />
-      )}
-      {status === "paused" && props.pauseReason === "entitlement-lapsed" ? (
+    <>
+      {props.pauseReason === "entitlement-lapsed" ? (
         <UpgradeAction authnBaseUrl={runnerHost.authnBaseUrl} />
       ) : null}
-      {status === "paused" && exportIsTheRemedy(props.pauseReason) ? (
+      {exportIsTheRemedy(props.pauseReason) ? (
         <ExportArtifactsAction
           disabled={artifacts.length === 0 || exportArtifacts.isPending}
           pending={exportArtifacts.isPending}
           onExport={exportLocalArtifacts}
         />
       ) : null}
+    </>
+  );
+}
+
+/** The protection-risk segment, composed after the status label. */
+function EpicDurabilityRiskLabel(props: {
+  readonly label: string | null;
+  readonly separated: boolean;
+}) {
+  if (props.label === null) return null;
+  return (
+    <span data-testid="epic-durability-risk">
+      {props.separated ? "\u00b7 " : null}
+      {props.label}
     </span>
   );
 }
@@ -366,6 +405,27 @@ function viewProtection(view: EpicDurabilityView): EpicLocalProtection | null {
     return view.protection;
   }
   return null;
+}
+
+/**
+ * The protection axis rendered BESIDE a stated status, not instead of it.
+ *
+ * `localProtection` and `durability` are separate axes in the wire contract,
+ * and `unavailable` is the one value on either that describes a RISK: edits in
+ * an unprotected session do not survive process exit. The `indeterminate` arm
+ * of {@link badgeCopy} already says so, because there is no status competing
+ * for the label there - but a frame carrying `offline` or `paused` ALONGSIDE
+ * `unavailable` took the `stated` arm, which reads only the status and drew
+ * "Cloud mirror - offline" with the risk invisible.
+ *
+ * Composed the way freshness already is rather than given priority over the
+ * status: dropping the status would take the paused-only Upgrade / Export
+ * remedies down with it, and "which of these two true things matters more" is
+ * not a question the badge has to answer.
+ */
+function durabilityRiskCopy(view: EpicDurabilityView): string | null {
+  if (view.kind !== "stated") return null;
+  return view.protection === "unavailable" ? "No local backup" : null;
 }
 
 /**

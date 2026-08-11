@@ -73,6 +73,17 @@ const mockAuth = {
   revalidateCurrentContext: vi.fn(() => Promise.resolve(null)),
 };
 
+// The merged-notification actions this provider mounts address the LOCAL
+// notification host. The real hook resolves that through `useHostClientFor`,
+// which reaches the host runtime provider this suite does not mount - so it is
+// stubbed to the same client the streams here are opened on.
+vi.mock("@/hooks/notifications/use-notification-host", () => ({
+  useNotificationHost: () => ({
+    hostId: hostState.id,
+    client: hostState.client,
+  }),
+}));
+
 vi.mock("@/lib/host", () => ({
   useHostBinding: () => null,
   useHostClient: () => hostState.client,

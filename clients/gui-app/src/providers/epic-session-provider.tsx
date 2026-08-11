@@ -20,7 +20,11 @@ import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useAuthService, useHostBinding } from "@/lib/host";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import { useReactiveOwnerIdentityKey } from "@/hooks/host/use-reactive-owner-identity-key";
-import { updateEpicTitleInCloudTaskCaches } from "@/lib/cloud-epic-tasks-query/cache";
+import {
+  setEpicLocalHomeInCloudTaskCaches,
+  updateEpicTitleInCloudTaskCaches,
+} from "@/lib/cloud-epic-tasks-query/cache";
+import { hostQueryKeys } from "@/lib/query-keys";
 import {
   claimDesktopEpicOwnership,
   getDesktopEpicOwnershipBridge,
@@ -218,14 +222,27 @@ export function EpicSessionProvider(
         close: result.close,
       };
     };
-    const nextHandle = registry.acquireMounted(epicId, (id) =>
-      createOpenEpicStore({
+    const nextHandle = registry.acquireMounted(epicId, (id) => {
+      const created = createOpenEpicStore({
         epicId: id,
         streamClientFactory,
         userId: sessionUserId,
         onAuthError: handleSessionAuthError,
-      }),
-    );
+      });
+      // Bound INSIDE the factory, before `acquireWithMountRefs` emits.
+      // Subscribers read the host off this WeakMap during that emit, and the
+      // WeakMap write does not itself notify anyone - so assigning only after
+      // the call returned handed `EpicHostActivityStreams` a handle with a
+      // null host, and it cached that empty producer set until some unrelated
+      // eligibility change happened to emit again. A clean, untouched epic
+      // produces no such change, so a remote host's activity stream could stay
+      // unmounted for the life of the tab.
+      handleHostIds.set(created, activeHostId);
+      handleOwnerIdentityKeys.set(created, ownerIdentityKey);
+      return created;
+    });
+    // Re-stated for the CACHE-HIT path, where the factory never ran: an epic
+    // re-acquired under a different active host must not keep the old binding.
     handleHostIds.set(nextHandle, activeHostId);
     handleOwnerIdentityKeys.set(nextHandle, ownerIdentityKey);
     queueMicrotask(() => {
@@ -250,6 +267,13 @@ export function EpicSessionProvider(
   const handle =
     ownershipClaimed && session?.key === sessionKey ? session.handle : null;
   useCloudTaskTitleCacheSync({
+    activeHostId,
+    epicId,
+    handle,
+    queryClient,
+    userId: cloudTasksUserId,
+  });
+  useEpicHomeCacheSync({
     activeHostId,
     epicId,
     handle,
@@ -305,4 +329,60 @@ function useCloudTaskTitleCacheSync(args: CloudTaskTitleCacheSyncArgs): void {
 function normalizeGeneratedTitle(title: string): string | null {
   const trimmed = title.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Keeps the History list's `home` marker in step with the OPEN epic's own
+ * durability - `s4-promotion-task-list-invalidation`, folded into
+ * `s5-status-truthfulness`.
+ *
+ * Sibling of {@link useCloudTaskTitleCacheSync}, and here for the same reason:
+ * `epic.listTasks` is manual-refresh-only, the open epic's stream is the only
+ * live source of the fact, and a Zustand store has no query client to push it
+ * from. The two writes this repairs are a local-first `epic.create` (whose
+ * `TaskLight` cache patch cannot carry `home` at all) and a promotion
+ * completing (which previously updated only the open-epic store).
+ *
+ * `getTaskContexts` is INVALIDATED rather than patched: its `localHomedTaskIds`
+ * is a response-level sibling list, so there is no per-row edit to make, and
+ * that query is the tab strip's only source of the marker.
+ */
+function useEpicHomeCacheSync(args: CloudTaskTitleCacheSyncArgs): void {
+  const { activeHostId, epicId, handle, queryClient, userId } = args;
+  useEffect(() => {
+    if (activeHostId === null) return;
+    if (handle === null) return;
+    if (queryClient === undefined) return;
+    if (userId === null) return;
+
+    let lastSyncedLocalHome: boolean | null = null;
+    const syncHome = (): void => {
+      const state = handle.store.getState();
+      // Only a FRESH cloud-status frame for this open cycle is evidence. The
+      // pre-connect default is not a statement about home, and writing it into
+      // the cache would be this window inventing the very fact it is here to
+      // relay.
+      if (!state.hasFreshCloudSyncStatus) return;
+      const status = state.durabilityStatus ?? null;
+      if (status === null || status === "unknown") return;
+      const localHome = status === "local" || status === "promoting";
+      if (localHome === lastSyncedLocalHome) return;
+      lastSyncedLocalHome = localHome;
+      setEpicLocalHomeInCloudTaskCaches(
+        queryClient,
+        { hostId: activeHostId, userId },
+        epicId,
+        localHome,
+      );
+      void queryClient.invalidateQueries({
+        queryKey: hostQueryKeys.methodScope(
+          activeHostId,
+          "epic.getTaskContexts",
+        ),
+      });
+    };
+
+    syncHome();
+    return handle.store.subscribe(syncHome);
+  }, [activeHostId, epicId, handle, queryClient, userId]);
 }

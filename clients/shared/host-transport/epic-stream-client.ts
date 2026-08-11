@@ -237,6 +237,14 @@ export interface EpicStreamClientOptions {
  * never sees the wire envelope directly.
  */
 /**
+ * The `epic.subscribe` minor that introduced `durability: "unknown"`,
+ * `localProtection`, and `freshness`. Named once here because it is the ONE
+ * fact that makes an absent leg readable, and a literal `1.4` spelled at the
+ * comparison site is a literal nobody updates when the next minor lands.
+ */
+const EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION = { major: 1, minor: 4 } as const;
+
+/**
  * The durability half of a `cloudSyncStatus` frame, as ONE value.
  *
  * Grouped rather than passed as four positional arguments: `@1.4` made this
@@ -268,12 +276,34 @@ export type EpicCloudSyncDurability = {
    * said the document is current.
    */
   readonly freshness: EpicCloudFreshness | undefined;
+  /**
+   * Whether the peer that sent this frame speaks the `@1.4` durability legs
+   * at all - carried WITH them because it is the only thing that makes their
+   * absence readable.
+   *
+   * Every `@1.4` key above is optional on the wire, and the schema's absence
+   * rule says an absent one means UNKNOWN. A renderer with only the values in
+   * hand cannot honour that: absence looks identical whether it came from a
+   * `@1.3` peer that has no opinion (render as before) or a `@1.4` peer that
+   * declined to state one (render conservatively). Probing presence to tell
+   * them apart resolves the permitted omission as "old peer", which is the
+   * silence-reads-as-reassurance inference this minor exists to break.
+   *
+   * Read off the SESSION's negotiated version, not the client-wide one: two
+   * epic streams on one client can sit on different minors after a reconnect.
+   * `false` while the handshake has not settled, which is the same
+   * conservative default a pre-handshake caller already had.
+   */
+  readonly peerSpeaksDurabilityLegs: boolean;
 };
 
 /**
  * "The host told us nothing about durability." Exported so a test fixture
- * states that intent once instead of spelling four `undefined`s, which is
+ * states that intent once instead of spelling five `undefined`s, which is
  * indistinguishable from having forgotten one.
+ *
+ * `peerSpeaksDurabilityLegs: false` belongs to that same statement: a peer we
+ * heard nothing from is a peer we cannot hold to the absence rule.
  */
 export const NO_CLOUD_SYNC_DURABILITY: EpicCloudSyncDurability = {
   durability: undefined,
@@ -281,6 +311,7 @@ export const NO_CLOUD_SYNC_DURABILITY: EpicCloudSyncDurability = {
   promotionState: undefined,
   localProtection: undefined,
   freshness: undefined,
+  peerSpeaksDurabilityLegs: false,
 };
 
 export class EpicStreamClient {
@@ -409,6 +440,25 @@ export class EpicStreamClient {
     this.session.close();
   }
 
+  /**
+   * Whether THIS session negotiated the minor that added the durability legs.
+   *
+   * `getNegotiatedSchemaVersion()` rather than the client-wide
+   * `getMethodSchemaVersion("epic.subscribe")`: the client-wide reader reports
+   * whichever live session it reaches first, so with two epics open it can
+   * describe the other one's handshake. A `null` (handshake not settled, or
+   * dropped by a disconnect) reads as `false` - the same conservative answer a
+   * caller had before any handshake, never a floor to assume.
+   */
+  private peerSpeaksDurabilityLegs(): boolean {
+    const negotiated = this.session.getNegotiatedSchemaVersion();
+    if (negotiated === null) return false;
+    if (negotiated.major !== EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION.major) {
+      return negotiated.major > EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION.major;
+    }
+    return negotiated.minor >= EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION.minor;
+  }
+
   private handleServerFrame(
     envelope: StreamFrameEnvelope,
     binaryPayload: Uint8Array | null,
@@ -466,6 +516,7 @@ export class EpicStreamClient {
             localProtection:
               "localProtection" in frame ? frame.localProtection : undefined,
             freshness: "freshness" in frame ? frame.freshness : undefined,
+            peerSpeaksDurabilityLegs: this.peerSpeaksDurabilityLegs(),
           },
         );
         return;

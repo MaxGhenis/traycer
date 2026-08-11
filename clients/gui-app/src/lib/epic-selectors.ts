@@ -288,23 +288,45 @@ export type EpicDurabilityView =
 export function deriveEpicDurabilityView(
   status: EpicDurabilityStatusV14 | null,
   protection: EpicLocalProtection | null,
+  peerSpeaksDurabilityLegs: boolean,
 ): EpicDurabilityView {
-  // A `@1.4` host emits `localProtection` on EVERY cloud-status frame, so its
-  // absence identifies an older peer rather than a bad state. That peer keeps
-  // its current rendering; anything else would turn an additive minor into a
-  // visible regression for every host that has not shipped it.
-  if (protection === null) return { kind: "legacy", status };
+  // Which SILENCE this is, decided by the handshake rather than by the shape
+  // of the frame.
+  //
+  // The shipping host emits `localProtection` on every `@1.4` frame, so a
+  // presence probe agrees with the negotiated minor against it - but the
+  // schema marks every `@1.4` leg optional and states that an absent one means
+  // UNKNOWN, so a peer omitting one is speaking the contract, not failing it.
+  // Reading that omission as "old peer" resolves a stated unknown into the
+  // pre-`@1.4` silent rendering, which is the silence-as-reassurance inference
+  // this minor exists to break. `peerSpeaksDurabilityLegs` is `false` until the
+  // session's handshake settles, so an unheard peer still keeps its prior
+  // rendering and the additive minor stays additive.
+  //
+  // Presence is still honoured as the other direction: a peer that SENT the
+  // key demonstrably speaks it, whatever the negotiated version reader says.
+  if (protection === null && !peerSpeaksDurabilityLegs) {
+    return { kind: "legacy", status };
+  }
+  // Absence from a peer that speaks the legs is the wire contract's UNKNOWN.
+  const stated: EpicLocalProtection = protection ?? "unknown";
   if (status === null) {
     // Absence from a `@1.4` peer means "no local-durability claim" - the epic
     // is durable in the cloud, which the frozen enum has no member for. Calm
     // is licensed only alongside the POSITIVE `armed`; anything else is
     // indeterminate, which is the absence rule stated as code.
-    return protection === "armed"
+    return stated === "armed"
       ? { kind: "cloudDurable" }
-      : { kind: "indeterminate", protection };
+      : { kind: "indeterminate", protection: stated };
   }
-  if (status === "unknown") return { kind: "indeterminate", protection };
-  return { kind: "stated", status, protection };
+  if (status === "unknown") {
+    return { kind: "indeterminate", protection: stated };
+  }
+  // `stated` KEEPS its protection leg rather than collapsing to
+  // `indeterminate` when that leg is `unavailable`: the two are separate axes,
+  // and the concrete status is what gates the badge's paused-only remedies
+  // (Upgrade, Export). Rendering both is `epicDurabilityRiskCopy`'s job.
+  return { kind: "stated", status, protection: stated };
 }
 
 /** The composed durability reading for the open epic. */
@@ -313,6 +335,7 @@ export function useEpicDurabilityView(): EpicDurabilityView {
     deriveEpicDurabilityView(
       s.durabilityStatus ?? null,
       s.localProtection ?? null,
+      s.durabilityLegsNegotiated,
     ),
   );
 }

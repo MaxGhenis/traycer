@@ -47,8 +47,12 @@ describe("epic.listTasks instance identity", () => {
     // `completeness` and the per-row `preservation` marker are `@1.4` only;
     // a `@1.3` peer's schema strips both, which is what makes the minor
     // additive rather than a redefinition of a released shape.
+    // A ROW is carried, not just the top-level key: with `tasks: []` the
+    // per-row half of the claim above was asserted by the comment alone, and
+    // nothing would have failed if `@1.3`'s row schema had grown
+    // `preservation` too.
     const page = {
-      tasks: [],
+      tasks: [{ epic: null, phase: null, preservation: "orphaned-local-edits" }],
       hasMore: false,
       completeness: {
         cloudPage: "unavailable",
@@ -58,12 +62,12 @@ describe("epic.listTasks instance identity", () => {
       },
     };
     expect(listTasksResponseSchemaV13.parse(page)).toEqual({
-      tasks: [],
+      tasks: [{ epic: null, phase: null }],
       hasMore: false,
     });
-    expect(listTasksResponseSchema.parse(page).completeness).toEqual(
-      page.completeness,
-    );
+    const parsed = listTasksResponseSchema.parse(page);
+    expect(parsed.completeness).toEqual(page.completeness);
+    expect(parsed.tasks[0]?.preservation).toBe("orphaned-local-edits");
   });
 
   it("keeps released requests frozen while the latest schema accepts last-viewed", () => {

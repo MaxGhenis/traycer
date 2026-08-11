@@ -85,10 +85,51 @@ const HISTORY_GROUP_LABELS: Record<HistoryRecencyBucket, string> = {
   earlier: "Earlier",
 };
 
+/** "No host-supplied home markers" - stated once so a call site cannot be
+ * read as having forgotten the argument. */
+export const EMPTY_LOCAL_HOMED_TASK_IDS: ReadonlySet<string> = new Set();
+
+/**
+ * `localHomedTaskIds` is a REQUIRED argument, not an optional one: the two
+ * response shapes that feed this projection carry the home marker in two
+ * different places. `epic.listTasks@1.3` puts `home` on the row; a `z.record`
+ * forced `epic.getTaskContexts@1.1` to put it in a sibling id list instead.
+ * A caller with the sibling in hand and no parameter to pass it through
+ * silently projects every context row as cloud-backed, which is exactly what
+ * happened to worktree/branch/PR search hits. Callers with no id list pass
+ * `EMPTY_LOCAL_HOMED_TASK_IDS` and say so.
+ */
+/**
+ * Local home, from EITHER carrier.
+ *
+ * `epic.listTasks@1.3` puts `home` on the row; `epic.getTaskContexts@1.1` had
+ * to put it in a response-level sibling list, because its `tasks` is a
+ * `z.record` whose value schema the additivity gate treats as opaque. A row
+ * reached through the second path carries no `home` at all, so checking only
+ * the row would read every context-only search hit as cloud-backed.
+ */
+function isLocalHomedRow(
+  task: ListTaskLight | ListTaskLightV13 | ListTaskLightV14,
+  epicId: string,
+  localHomedTaskIds: ReadonlySet<string>,
+): boolean {
+  if ("home" in task && task.home === "local") return true;
+  return localHomedTaskIds.has(epicId);
+}
+
+/** `@1.4`'s row-level preservation marker: the cloud task is already deleted
+ * and the row exists only so this device's edits stay reachable. */
+function isPreservedOrphanRow(
+  task: ListTaskLight | ListTaskLightV13 | ListTaskLightV14,
+): boolean {
+  return "preservation" in task && task.preservation === "orphaned-local-edits";
+}
+
 export function buildHistoryItemsFromTasks(
   tasks: ReadonlyArray<ListTaskLight | ListTaskLightV13 | ListTaskLightV14>,
   nowMs: number,
   userId: string | null,
+  localHomedTaskIds: ReadonlySet<string>,
 ): ReadonlyArray<HistoryItem> {
   return tasks.flatMap((task, index): HistoryItem[] => {
     const epic = task.epic?.light;
@@ -104,10 +145,8 @@ export function buildHistoryItemsFromTasks(
           nowMs,
           role: task.epic?.permission?.role ?? null,
           isPinned: task.pinned ?? false,
-          isLocalHome: "home" in task && task.home === "local",
-          isPreservedOrphan:
-            "preservation" in task &&
-            task.preservation === "orphaned-local-edits",
+          isLocalHome: isLocalHomedRow(task, epic.id, localHomedTaskIds),
+          isPreservedOrphan: isPreservedOrphanRow(task),
         }),
       ];
     }

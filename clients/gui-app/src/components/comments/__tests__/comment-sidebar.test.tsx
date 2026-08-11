@@ -137,7 +137,7 @@ const noopEpicStreamClientFactory: EpicStreamClientFactory = () => ({
   close: () => undefined,
 });
 
-function renderSidebar(epicHandle: OpenEpicStoreHandle = defaultEpicHandle) {
+function renderSidebar(epicHandle: OpenEpicStoreHandle) {
   return render(
     <QueryClientProvider client={queryClient}>
       <EpicSessionContext.Provider value={epicHandle}>
@@ -193,7 +193,7 @@ describe("<CommentSidebar /> read failures", () => {
         resolveResponse = resolve;
       });
 
-    renderSidebar();
+    renderSidebar(defaultEpicHandle);
 
     await waitFor(() => {
       expect(loadingPanel()).not.toBeNull();
@@ -215,7 +215,7 @@ describe("<CommentSidebar /> read failures", () => {
   it("says comments could not be loaded when the cold query is disabled without a host client", async () => {
     hostClientRef.current = null;
 
-    renderSidebar();
+    renderSidebar(defaultEpicHandle);
 
     expect(
       await screen.findByText("Comments couldn't be loaded."),
@@ -229,7 +229,7 @@ describe("<CommentSidebar /> read failures", () => {
   it("says comments could not be LOADED - never that there are none - when the cold read fails", async () => {
     respondToListThreads = unavailableHost;
 
-    renderSidebar();
+    renderSidebar(defaultEpicHandle);
 
     expect(
       await screen.findByText(
@@ -252,7 +252,7 @@ describe("<CommentSidebar /> read failures", () => {
   it("still renders the empty state when the read SUCCEEDS with no threads", async () => {
     respondToListThreads = () => ({ threads: [] });
 
-    renderSidebar();
+    renderSidebar(defaultEpicHandle);
 
     expect(await screen.findByText(/No open comments/)).not.toBeNull();
     expect(unavailablePanel()).toBeNull();
@@ -262,7 +262,7 @@ describe("<CommentSidebar /> read failures", () => {
   it("keeps the last successful threads on screen when a REFETCH fails", async () => {
     respondToListThreads = () => ({ threads: [threadFixture()] });
 
-    renderSidebar();
+    renderSidebar(defaultEpicHandle);
     expect(await screen.findByText(QUOTED_TEXT)).not.toBeNull();
 
     respondToListThreads = unavailableHost;

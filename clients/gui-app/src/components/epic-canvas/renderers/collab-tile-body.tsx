@@ -509,7 +509,7 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
           />
         ) : null}
       </div>
-      {editor !== null && commentsSupported && commentArtifactKind !== null ? (
+      {editor !== null && commentsSupported ? (
         <>
           <FloatingDraftPopover
             epicId={epicId}

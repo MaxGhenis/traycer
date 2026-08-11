@@ -406,6 +406,17 @@ export interface OpenEpicState {
    * evidence that it is the cloud's document.
    */
   readonly cloudFreshness?: EpicCloudFreshness | null;
+  /**
+   * Whether the peer serving this stream negotiated the `@1.4` minor that
+   * carries the three legs above - `s5-status-truthfulness`.
+   *
+   * Recorded because every one of those legs is optional on the wire, so
+   * `null` alone cannot say WHICH silence it is. A pre-`@1.4` peer has no
+   * durability opinion and keeps its prior rendering; a `@1.4` peer that omits
+   * a leg has stated UNKNOWN, and unknown may not render as reassurance. Both
+   * arrive here as `null`, and this bit is what separates them.
+   */
+  readonly durabilityLegsNegotiated: boolean;
   /** `true` only after a cloud-status frame for this exact open cycle. */
   readonly hasFreshCloudSyncStatus: boolean;
   /**
@@ -804,6 +815,7 @@ export function createOpenEpicStore(
   let durabilityPromotionState: EpicPromotionState | null = null;
   let localProtection: EpicLocalProtection | null = null;
   let cloudFreshness: EpicCloudFreshness | null = null;
+  let durabilityLegsNegotiated = false;
   let hasFreshCloudSyncStatus = false;
   let currentStatus: StreamConnectionStatus = "connecting";
   // Flips true on the first successful connect so a later drop reads as
@@ -1643,6 +1655,7 @@ export function createOpenEpicStore(
           | "durabilityPromotionState"
           | "localProtection"
           | "cloudFreshness"
+          | "durabilityLegsNegotiated"
           | "hasFreshCloudSyncStatus"
           | "hasConnectedOnce"
         > => ({
@@ -1654,6 +1667,7 @@ export function createOpenEpicStore(
           durabilityPromotionState,
           localProtection,
           cloudFreshness,
+          durabilityLegsNegotiated,
           hasFreshCloudSyncStatus,
           hasConnectedOnce,
         });
@@ -2216,6 +2230,11 @@ export function createOpenEpicStore(
               durabilityPromotionState = durable.promotionState ?? null;
               localProtection = durable.localProtection ?? null;
               cloudFreshness = durable.freshness ?? null;
+              // Recorded from the SAME frame the legs came on, so the reading
+              // "this peer omitted a leg it speaks" is made against the peer
+              // that actually omitted it rather than against whatever the
+              // handshake looks like by the time a selector runs.
+              durabilityLegsNegotiated = durable.peerSpeaksDurabilityLegs;
               hasFreshCloudSyncStatus = true;
               if (
                 hasConnectedOnce &&
@@ -2279,6 +2298,10 @@ export function createOpenEpicStore(
                 // window claiming the new cycle's document is up to date on
                 // the strength of the previous one's reconciliation.
                 cloudFreshness = null;
+                // A re-subscribe can renegotiate onto a different host
+                // incarnation, so the previous cycle's answer is not evidence
+                // about this one's peer.
+                durabilityLegsNegotiated = false;
               }
               const nextStatus = syncCurrentConnectionStatus();
               hasFreshRootSnapshotForOpenCycle = false;
@@ -2352,6 +2375,7 @@ export function createOpenEpicStore(
           durabilityPromotionState = null;
           localProtection = null;
           cloudFreshness = null;
+          durabilityLegsNegotiated = false;
           const cycleDurabilityState = resetDurabilityProofForOpenCycle();
           // A fresh re-subscribe bootstraps from scratch, so the next connect is
           // "connecting", not "reconnecting": clear the latch and let only a

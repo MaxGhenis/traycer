@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import type { ReactNode } from "react";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
@@ -96,10 +102,16 @@ function EpicHostActivityStream(props: {
  * guard keys on the joined ids, which is what actually decides the streams.
  */
 function useOpenEpicHostIds(): readonly string[] {
-  const cache = useMemo(
-    () => ({ key: "", value: [] as readonly string[] }),
-    [],
-  );
+  // A REF, not a `useMemo` object. `useSyncExternalStore` requires
+  // `getSnapshot` to be cached-and-stable, so this memo cell is written on
+  // every call - and writing to a value that was itself passed to a hook is
+  // what `react-hooks/immutability` forbids. A ref is the sanctioned mutable
+  // cell for exactly this, and `useCallback` no longer has to depend on it
+  // (a ref object is stable for the component's life).
+  const cacheRef = useRef<{ key: string; value: readonly string[] }>({
+    key: "",
+    value: [],
+  });
   const subscribe = useCallback(
     (callback: () => void) => registry.subscribe(callback),
     [],
@@ -107,10 +119,10 @@ function useOpenEpicHostIds(): readonly string[] {
   const getSnapshot = useCallback(() => {
     const next = openEpicHostIds();
     const key = next.join(" ");
+    const cache = cacheRef.current;
     if (key === cache.key) return cache.value;
-    cache.key = key;
-    cache.value = next;
+    cacheRef.current = { key, value: next };
     return next;
-  }, [cache]);
+  }, []);
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

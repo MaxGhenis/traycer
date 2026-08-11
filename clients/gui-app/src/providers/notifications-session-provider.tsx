@@ -377,6 +377,17 @@ function NotificationsSessionBody(
     [queryClient, resetCloudRelaySession],
   );
 
+  // The host replica alone, for a change of PROJECTION rather than of host.
+  // Deliberately narrower than `resetHostReplica`: the agent-activity slice is
+  // keyed by host and says nothing about notification home partitions, so
+  // wiping it here would blank running agents for a feed-mode flip. The
+  // indicator caches DO go, because their `home` selector moves with the mode.
+  const resetHostProjection = useCallback((): void => {
+    activeEntityRef.current = null;
+    useHostNotificationsStore.getState().reset();
+    clearNotificationIndicatorCaches(queryClient);
+  }, [queryClient]);
+
   // Cloud rows are a relay-session snapshot, not a durable replica. A lost
   // binding or replacement stream client starts a new ownership epoch and
   // stays non-authoritative while the new relay connects and delivers its own
@@ -665,11 +676,28 @@ function NotificationsSessionBody(
       resetHostReplica(priorLocalHostId ?? localHostId);
     }
     if (previousFeedModeRef.current !== notificationFeedMode) {
+      // A CHANGE of projection, not the first read of one. The ref starts
+      // `null` so the initial pass always lands here, but there is no prior
+      // question for those rows to have been answered under - and a replica
+      // retained across a remount (an offline client whose capability is still
+      // pending) is exactly what must survive.
+      const projectionChanged = previousFeedModeRef.current !== null;
       previousFeedModeRef.current = notificationFeedMode;
       tearDown();
       // The cloud relay is session-owned and must restart across a capability
-      // change. The local durable-home feed remains open in BOTH modes, so it
-      // deliberately survives the mixed-plane transition.
+      // change. The local feed is re-subscribed in both modes, so the STREAM
+      // survives the transition - but its accumulated rows and cursors do not.
+      //
+      // What changes across this boundary is what those rows MEAN. Local mode
+      // asks the host for its whole origin; mixed mode asks for the exact
+      // `home: local` partition. The retained replica was filled under the old
+      // question and is read under the new one, so a local->mixed flip
+      // reinterprets whole-origin rows as the local partition and the arriving
+      // cloud snapshot double-counts every cloud-homed replica among them
+      // until a fresh partition snapshot lands - indefinitely, if that stream
+      // is slow or offline. Dropping the replica makes the window a brief
+      // empty rather than a confidently wrong merge.
+      if (projectionChanged) resetHostProjection();
       resetCloudRelaySession();
     }
     // A replaced stream client under the SAME host + user (the app-wide
@@ -702,6 +730,7 @@ function NotificationsSessionBody(
     localStreamClient,
     tearDown,
     resetHostReplica,
+    resetHostProjection,
     resetCloudRelayOwnership,
     resetCloudRelaySession,
     markHostReplicaDisconnected,

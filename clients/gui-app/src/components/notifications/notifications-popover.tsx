@@ -15,7 +15,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { NotificationFilterMenu } from "@/components/notifications/notification-filter-menu";
 import { NotificationRow } from "@/components/notifications/notification-row";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { useNotificationHost } from "@/hooks/notifications/use-notification-host";
 import { useNotificationActivation } from "@/hooks/notifications/use-notification-activation";
 import { useNotificationCenterArrivals } from "@/hooks/notifications/use-notification-center-arrivals";
 import { useNotificationCenterScrollAnchor } from "@/hooks/notifications/use-notification-center-scroll-anchor";
@@ -111,14 +111,21 @@ function isMarkAllReadDisabled(input: {
   readonly hasActiveHost: boolean;
   readonly cloudConnectionState: CloudNotificationsConnectionState | null;
 }): boolean {
-  if (input.cloudConnectionState !== null) {
-    return (
-      input.unreadCount === 0 || input.cloudConnectionState !== "connected"
-    );
-  }
   const actionableHostAttention = input.hasActiveHost
     ? input.loadedHostAttentionCount
     : 0;
+  if (input.cloudConnectionState !== null) {
+    // Mixed mode fans the action out over BOTH planes - the cloud call plus
+    // the host mark-all and its blocking-attention resolve - so the local
+    // Attention rows count here exactly as they do in local mode. Reading
+    // `unreadCount` alone disabled the control in precisely the case the
+    // fan-out was added for: a local `needs_action` row already read via
+    // navigation, still dismissable, and the only thing left to act on.
+    if (input.unreadCount === 0 && actionableHostAttention === 0) return true;
+    // The cloud LEG still needs its connection; the host leg's own liveness is
+    // already carried by `hasActiveHost` above.
+    return input.unreadCount > 0 && input.cloudConnectionState !== "connected";
+  }
   return input.unreadCount === 0 && actionableHostAttention === 0;
 }
 
@@ -181,6 +188,11 @@ export function NotificationsPopover(
   const cloudHasSnapshot = useCloudNotificationsStore(
     (state) => state.hasSnapshot,
   );
+  // Cloud-lane row count, kept separate from the merged occurrence order so the
+  // cloud-only "Clear all" can be gated on the rows it would actually clear.
+  const cloudRowCount = useCloudNotificationsStore(
+    (state) => Object.keys(state.rows).length,
+  );
   const cloudPresentationState = cloudStateForFeedMode(
     feedMode,
     cloudConnectionState,
@@ -198,9 +210,10 @@ export function NotificationsPopover(
   const notificationsSupport = useStreamMethodSupport(
     "host.notifications.feed.subscribe",
   );
-  // Authoritative active-host signal for the "Mark all read" enablement gate -
-  // `null` during a disconnect even though the runtime binding is retained.
-  const activeHostId = useReactiveActiveHostId();
+  // Authoritative liveness signal for the "Mark all read" enablement gate -
+  // the SAME notification host the mutations behind that button are bound to,
+  // and `null` during a disconnect even though the runtime binding is retained.
+  const notificationHostId = useNotificationHost().hostId;
   // Loaded HOST Attention rows (feed ids are `host:<id>`); app-local/global
   // attention is locally actionable and already reflected in `unreadCount`.
   const loadedHostAttentionCount = attentionIds.filter((feedId) =>
@@ -395,8 +408,12 @@ export function NotificationsPopover(
   const isRecentFilteredEmpty =
     !isEmpty && recentIds.length === 0 && isFiltered;
 
+  // The LOCAL partition paginates in both modes: mixed mode keeps the host feed
+  // open and `canLoadMoreHost` / `canLoadMoreUnreadRecent` report its remaining
+  // cursor there, so gating the footer on `local` stranded every local row past
+  // the first page - visible in the store, unreachable from the UI.
   const canLoadOlder =
-    feedMode === "local" &&
+    feedMode !== "upgrade-required" &&
     (unreadOnly ? actions.canLoadMoreUnreadRecent : actions.canLoadMoreHost);
   const isLoadingOlder = unreadOnly
     ? actions.isLoadingMoreUnreadRecent
@@ -428,14 +445,19 @@ export function NotificationsPopover(
           isMarkAllReadDisabled={isMarkAllReadDisabled({
             unreadCount,
             loadedHostAttentionCount,
-            hasActiveHost: activeHostId !== null,
+            hasActiveHost: notificationHostId !== null,
             cloudConnectionState: cloudPresentationState,
           })}
           showClearAll={feedMode === "cloud"}
           isClearAllDisabled={
             !cloudHasSnapshot ||
             cloudConnectionState !== "connected" ||
-            fullOccurrenceOrder.length === 0
+            // The CLOUD lane, not the merged order. `fullOccurrenceOrder` now
+            // carries the local-home rows too, so a connected-but-empty cloud
+            // snapshot beside any local row enabled a destructive control
+            // whose confirmation sends only `cloudFeed.clearAll` - nothing the
+            // user could see would disappear.
+            cloudRowCount === 0
           }
           onClearAll={handleClearAll}
           onOpenSettings={handleOpenSettings}

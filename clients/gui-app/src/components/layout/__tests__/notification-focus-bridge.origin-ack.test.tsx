@@ -51,6 +51,17 @@ vi.mock("sonner", () => ({ toast: toastSpy }));
 
 vi.mock("@/lib/host-error-toast", () => ({ toastFromHostError }));
 
+// The notification centre's host is the LOCAL one that owns its streams. The
+// real hook resolves it via `useHostClientFor`, which needs the host runtime
+// provider this suite does not mount - so it is projected from the same
+// binding ref the rest of these mocks use.
+vi.mock("@/hooks/notifications/use-notification-host", () => ({
+  useNotificationHost: () => ({
+    hostId: bindingRef.current?.hostClient.getActiveHostId() ?? null,
+    client: bindingRef.current?.hostClient ?? null,
+  }),
+}));
+
 vi.mock("@/lib/host", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/host")>();
   return {

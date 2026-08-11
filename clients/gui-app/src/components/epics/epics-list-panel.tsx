@@ -86,6 +86,7 @@ import { NotificationIndicatorsProvider } from "@/components/notifications/notif
 import {
   useHistoryQuery,
   type HistoryFacets,
+  type HistoryFetchResult,
 } from "@/hooks/home/use-history-query";
 import { useEpicActivityStatus } from "@/hooks/epic/use-epic-activity-status";
 import { useNotificationIndicators } from "@/hooks/notifications/use-notification-indicators-query";
@@ -259,6 +260,48 @@ function AmbientEpicsListPanel(props: AmbientEpicsListPanelProps): ReactNode {
   );
 }
 
+interface HistoryPanelView {
+  readonly items: ReadonlyArray<HistoryItem>;
+  readonly worktreesByEpicId: ReadonlyMap<
+    string,
+    readonly WorktreeHostEntryV12[]
+  >;
+  readonly availableRepos: ReadonlyArray<string>;
+  readonly availableWorkspaces: ReadonlyArray<HistoryWorkspaceRef>;
+  readonly facets: HistoryFacets | undefined;
+  readonly completeness: ListTasksCompleteness | null;
+}
+
+/** The panel's read of a possibly-absent fetch result, with the no-settled-page
+ * defaults stated once. */
+function historyPanelView(
+  data: HistoryFetchResult | undefined,
+): HistoryPanelView {
+  if (data === undefined) {
+    return {
+      items: EMPTY_ITEMS,
+      worktreesByEpicId: EMPTY_WORKTREES_BY_EPIC,
+      availableRepos: EMPTY_REPOS,
+      availableWorkspaces: EMPTY_WORKSPACES,
+      facets: undefined,
+      completeness: null,
+    };
+  }
+  return {
+    items: data.items,
+    worktreesByEpicId: data.worktreesByEpicId,
+    availableRepos: data.availableRepos,
+    availableWorkspaces: data.availableWorkspaces,
+    facets: data.facets,
+    // `?? null` rather than a straight read: `completeness` is declared
+    // non-optional but arrives absent from partial fixtures, and the notice
+    // below dereferences it. The previous `data?.completeness ?? null` carried
+    // that same coercion, so dropping it turned an omitted field into a render
+    // crash rather than a missing notice.
+    completeness: data.completeness ?? null,
+  };
+}
+
 function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
   const { variant, onSelectEpic, onOpenItem, historySearch } = props;
   // Destructure the stable `update`/`clear` functions (the hook returns a fresh
@@ -295,8 +338,13 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
     nowMs: props.historyNowMs,
   });
 
-  const items = data?.items ?? EMPTY_ITEMS;
-  const worktreesByEpicId = data?.worktreesByEpicId ?? EMPTY_WORKTREES_BY_EPIC;
+  // One read of the fetch result rather than six independent `data?.x ?? d`
+  // sites: the empty-state defaults belong together (they all describe "no
+  // settled page yet"), and spreading them through the body made the panel
+  // body's branch count grow with every field the query gained.
+  const view = historyPanelView(data);
+  const items = view.items;
+  const worktreesByEpicId = view.worktreesByEpicId;
   const indicatorEpicIds = useMemo(
     () => items.map((item) => item.epicId),
     [items],
@@ -306,9 +354,9 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
     chatIds: [],
     enabled: indicatorEpicIds.length > 0,
   });
-  const availableRepos = data?.availableRepos ?? EMPTY_REPOS;
-  const availableWorkspaces = data?.availableWorkspaces ?? EMPTY_WORKSPACES;
-  const facets = data?.facets;
+  const availableRepos = view.availableRepos;
+  const availableWorkspaces = view.availableWorkspaces;
+  const facets = view.facets;
 
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -613,7 +661,7 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
               openInNewWindowAvailable={openInNewWindowFlow.isAvailable}
               worktreesByEpicId={worktreesByEpicId}
               openEpicIds={openEpicIdSet}
-              completeness={data?.completeness ?? null}
+              completeness={view.completeness}
             />
           </div>
         </NotificationIndicatorsProvider>
@@ -1172,12 +1220,19 @@ function HistoryCompletenessNotice(props: {
       "This filter can't be checked against tasks stored on this device, so they aren't listed.",
     );
   }
+  // `facets: "partial"` is the protocol saying the counts describe a DIFFERENT
+  // set from the rows - host rows were injected beside them, or the cloud page
+  // is missing. Both lines used to assert the opposite ("counts cover the tasks
+  // listed here"), so the one state where the numbers provably disagree with
+  // the list was reported as the state where they agree.
   if (completeness.sort === "loaded-union") {
     lines.push(
-      "Order and counts cover the tasks listed here, not everything you have.",
+      completeness.facets === "partial"
+        ? "Order covers the tasks listed here, and filter counts may leave some of them out."
+        : "Order and counts cover the tasks listed here, not everything you have.",
     );
   } else if (completeness.facets === "partial") {
-    lines.push("Filter counts cover the tasks listed here.");
+    lines.push("Filter counts may not include every task listed here.");
   }
   if (lines.length === 0) return null;
   return (
@@ -1621,6 +1676,38 @@ const EpicsListRow = memo(function EpicsListRow(props: EpicsListRowProps) {
   );
 });
 
+/** Three visual states: permanently unavailable, pinned, and the
+ * hover-revealed default. */
+function historyPinClassName(cloudOnly: boolean, isPinned: boolean): string {
+  if (cloudOnly) return "cursor-default text-muted-foreground opacity-40";
+  if (isPinned) return "text-primary opacity-100";
+  return "text-muted-foreground opacity-0 group-hover/list-row:opacity-100 group-focus-within/list-row:opacity-100";
+}
+
+/**
+ * The pin control's accessible name, which doubles as the ENABLED tooltip.
+ *
+ * Two different reasons the cloud-only action is unavailable, so the copy
+ * names the one that applies: an unpromoted epic can still be pinned later,
+ * while a preserved orphan's cloud task is gone for good.
+ */
+function historyPinLabel(input: {
+  readonly displayTitle: string;
+  readonly cloudOnly: boolean;
+  readonly preservedOrphan: boolean;
+  readonly isPinned: boolean;
+}): string {
+  if (input.preservedOrphan) {
+    return `Pinning ${input.displayTitle} is unavailable; its cloud copy was deleted and only this device's edits remain`;
+  }
+  if (input.cloudOnly) {
+    return `Pinning ${input.displayTitle} needs cloud sync; it is stored on this device`;
+  }
+  return input.isPinned
+    ? `Unpin ${input.displayTitle} from top`
+    : `Pin ${input.displayTitle} to top`;
+}
+
 function HistoryPinControl(props: {
   readonly item: HistoryItem;
   readonly isPending: boolean;
@@ -1629,7 +1716,14 @@ function HistoryPinControl(props: {
 }): ReactNode {
   if (props.selectionMode || props.item.taskType === "phase") return null;
   const displayTitle = historyItemDisplayTitle(props.item);
-  const cloudOnly = props.item.isLocalHome === true;
+  // Two different reasons the cloud-only pin has nothing to act on, and the
+  // row-level `preservation` marker is the one that was missing: an
+  // `orphaned-local-edits` row is cloud-HOMED (so `isLocalHome` is false) but
+  // its cloud task has already been deleted - the row exists only to recover
+  // this device's edits. Pinning it optimistically flipped the icon and fired
+  // `epic.setPinned` against a task the server no longer has.
+  const preservedOrphan = props.item.isPreservedOrphan === true;
+  const cloudOnly = props.item.isLocalHome === true || preservedOrphan;
   // "…is available after cloud sync" promised a sync that, for a free-tier
   // account, never comes - and `s5-status-truthfulness` folds
   // `s4-promotion-task-list-invalidation` in here for the sharper version of
@@ -1641,11 +1735,15 @@ function HistoryPinControl(props: {
   //
   // The staleness itself is the list-invalidation fix and is not repaired
   // here; this stops the copy from lying while it lasts.
-  const label = cloudOnly
-    ? `Pinning ${displayTitle} needs cloud sync; it is stored on this device`
-    : props.item.isPinned
-      ? `Unpin ${displayTitle} from top`
-      : `Pin ${displayTitle} to top`;
+  const label = historyPinLabel({
+    displayTitle,
+    cloudOnly,
+    preservedOrphan,
+    isPinned: props.item.isPinned,
+  });
+  const unavailableTooltip = preservedOrphan
+    ? "This epic's cloud copy was deleted. Only this device's edits remain, so it can't be pinned."
+    : "This epic is stored on this device. Pinning needs cloud sync.";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -1655,14 +1753,19 @@ function HistoryPinControl(props: {
           aria-pressed={props.item.isPinned}
           data-testid="epics-list-row-pin"
           data-local-home-pin-unavailable={cloudOnly || undefined}
-          disabled={props.isPending || cloudOnly}
+          // `aria-disabled`, NOT `disabled`, for the PERMANENT unavailability:
+          // a natively disabled control is unfocusable and fires no pointer
+          // events, so the tooltip that carries the only explanation of why
+          // pinning is off could be reached with a mouse hover and by nothing
+          // else. `disabled` is kept for the transient in-flight window, where
+          // there is nothing to explain. The mutation stays blocked by the
+          // `cloudOnly` guard in `onClick`, which keyboard activation also
+          // routes through.
+          aria-disabled={cloudOnly || undefined}
+          disabled={props.isPending}
           className={cn(
             "pointer-events-auto flex size-5 shrink-0 items-center justify-center rounded-sm outline-none transition-[color,opacity] hover:bg-muted focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-wait",
-            cloudOnly
-              ? "text-muted-foreground opacity-40"
-              : props.item.isPinned
-                ? "text-primary opacity-100"
-                : "text-muted-foreground opacity-0 group-hover/list-row:opacity-100 group-focus-within/list-row:opacity-100",
+            historyPinClassName(cloudOnly, props.item.isPinned),
           )}
           onClick={() => {
             if (cloudOnly) return;
@@ -1677,11 +1780,7 @@ function HistoryPinControl(props: {
           />
         </button>
       </TooltipTrigger>
-      <TooltipContent>
-        {cloudOnly
-          ? "This epic is stored on this device. Pinning needs cloud sync."
-          : label}
-      </TooltipContent>
+      <TooltipContent>{cloudOnly ? unavailableTooltip : label}</TooltipContent>
     </Tooltip>
   );
 }

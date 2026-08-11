@@ -72,6 +72,17 @@ vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
   useReactiveActiveHostId: () => mockLocalHostEntry.hostId,
 }));
 
+// The notification centre reads its host from `useNotificationHost` (the local
+// host that owns the streams), not from the app-wide active host. Projected
+// from this suite's existing host ref so the scenario it was already
+// describing is unchanged.
+vi.mock("@/hooks/notifications/use-notification-host", () => ({
+  useNotificationHost: () => ({
+    hostId: mockLocalHostEntry.hostId,
+    client: requireHostClient(),
+  }),
+}));
+
 vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn() },
 }));

@@ -1097,7 +1097,18 @@ export const hostNotificationsListDowngradeV21ToV10 = defineDowngradePath<
   }),
 });
 
-/** A released v1 client has no durable-home selector, so discard it on bridge. */
+/**
+ * A released v1 host has no durable-home selector, so the exact local
+ * partition has no representation below `@2.2`.
+ *
+ * REFUSED rather than discarded, exactly as the `attention` projection is one
+ * path up. Stripping `home` answers a request for ONE partition with the
+ * whole-origin rows and the whole-origin cursor, and the caller that asked for
+ * a partition is by construction merging it with a cloud lane - so the
+ * cloud-homed rows come back twice, and every subsequent page or mutation is
+ * scoped to a set the caller never asked for. A short-circuit the caller can
+ * see beats a plausible answer it cannot distinguish from the real one.
+ */
 export const hostNotificationsListDowngradeV22ToV10 = defineDowngradePath<
   typeof hostNotificationsListV22,
   typeof hostNotificationsListV10
@@ -1106,10 +1117,14 @@ export const hostNotificationsListDowngradeV22ToV10 = defineDowngradePath<
   to: hostNotificationsListV10.schemaVersion,
   downgradeRequest: (request) => {
     if ("home" in request) {
-      const { home: _home, ...withoutHome } = request;
-      return hostNotificationsListDowngradeV21ToV10.downgradeRequest(
-        withoutHome,
-      );
+      return {
+        ok: false,
+        error: {
+          code: "DOWNGRADE_UNSUPPORTED",
+          message:
+            "The local durable-home projection has no representation in host.notifications.list@1.0",
+        },
+      };
     }
     return hostNotificationsListDowngradeV21ToV10.downgradeRequest(request);
   },

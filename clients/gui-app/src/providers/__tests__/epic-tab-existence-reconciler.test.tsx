@@ -392,6 +392,23 @@ describe("EpicTabExistenceReconciler fail-closed paths", () => {
  * not to a session marker that a relaunch would have already cleared.
  */
 const LOCAL_HOME_EPIC_ID = "epic-local-homed-across-relaunch";
+/**
+ * A genuinely-stale persisted tab: absent from `getTaskContexts`, absent from
+ * the list page, and carrying no session-scoped exemption. Its CLOSURE is what
+ * proves reconciliation actually ran, which the local-home assertion below
+ * needs and cannot establish for itself - `OPEN_EPIC_ID` is open before the
+ * reconciler mounts, so waiting for it passes on the first tick either way.
+ */
+const STALE_EPIC_ID = "epic-stale-persisted";
+
+/** A LISTED row with no `home` marker - a cloud-homed epic, which is what a
+ * promotion that lands between the two reconciliation RPCs produces. */
+function cloudHomedListTasksRow(
+  epicId: string,
+): ListTasksResponse["tasks"][number] {
+  const { home: _home, ...row } = localHomedListTasksRow(epicId);
+  return row;
+}
 
 function localHomedListTasksRow(
   epicId: string,
@@ -434,7 +451,7 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
     useAuthStore.getState().setSignedOut();
     useEpicCanvasStore
       .getState()
-      .closeTabsForEpics([OPEN_EPIC_ID, LOCAL_HOME_EPIC_ID]);
+      .closeTabsForEpics([OPEN_EPIC_ID, LOCAL_HOME_EPIC_ID, STALE_EPIC_ID]);
     useInitialChatHandoffStore.getState().resetForTests();
     clearSessionCreatedEpics();
     resetNegotiatedManifests();
@@ -452,6 +469,7 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
     // this-session marker, open-epic registry entry, initial-chat handoff)
     // could exist for it.
     useEpicCanvasStore.getState().openEpicTab(LOCAL_HOME_EPIC_ID, "Local Epic");
+    useEpicCanvasStore.getState().openEpicTab(STALE_EPIC_ID, "Stale Epic");
 
     const getTaskContexts = vi.fn(
       (params: GetTaskContextsRequest): GetTaskContextsResponse => {
@@ -461,7 +479,7 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
           // open id (OPEN_EPIC_ID) resolves confirmed so the test isolates
           // the local-homed exemption rather than the "missing" default.
           tasks[taskId] =
-            taskId === LOCAL_HOME_EPIC_ID
+            taskId === LOCAL_HOME_EPIC_ID || taskId === STALE_EPIC_ID
               ? null
               : {
                   epic: {
@@ -504,10 +522,76 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
       expect(listTasks).toHaveBeenCalledTimes(1);
     });
 
-    // Give the reconciliation effect a tick to run to completion (or to
-    // wrongly close the tab) before asserting the durable outcome.
+    // Wait on the reconciler's own OUTPUT - the stale tab closing - so the
+    // local-home assertion below runs against a completed sweep. Waiting for
+    // `OPEN_EPIC_ID` instead was vacuous: that tab is open before the
+    // reconciler mounts, so the condition held before it had done anything.
     await waitFor(() => {
-      expect(collectOpenEpicIds()).toContain(OPEN_EPIC_ID);
+      expect(collectOpenEpicIds()).not.toContain(STALE_EPIC_ID);
+    });
+    expect(collectOpenEpicIds()).toContain(LOCAL_HOME_EPIC_ID);
+    expect(collectOpenEpicIds()).toContain(OPEN_EPIC_ID);
+    queryClient.clear();
+  });
+
+  it("keeps a LISTED epic open even without a home marker, so a promotion racing the two RPCs cannot force-close it", async () => {
+    recordNegotiatedHostMethods(localSnapshot.hostId, [
+      "host.status",
+      "epic.getTaskContexts",
+    ]);
+    useEpicCanvasStore.getState().openEpicTab(LOCAL_HOME_EPIC_ID, "Promoted");
+    useEpicCanvasStore.getState().openEpicTab(STALE_EPIC_ID, "Stale Epic");
+
+    // The race this closes: `getTaskContexts` answered from BEFORE the
+    // promotion (no row yet on the cloud side it consults), `listTasks` from
+    // after it (row present, now cloud-homed so `home` is gone). Existence is
+    // what the list proves; the home marker only decides the separate
+    // force-close exemption, and conflating them made a demonstrably-existing
+    // epic closable.
+    const getTaskContexts = vi.fn(
+      (params: GetTaskContextsRequest): GetTaskContextsResponse => {
+        const tasks: GetTaskContextsResponse["tasks"] = {};
+        for (const taskId of params.taskIds) {
+          tasks[taskId] =
+            taskId === LOCAL_HOME_EPIC_ID || taskId === STALE_EPIC_ID
+              ? null
+              : {
+                  epic: {
+                    light: {
+                      id: taskId,
+                      title: "Confirmed",
+                      initialUserPrompt: "",
+                      ticketCount: 0,
+                      specCount: 0,
+                      storyCount: 0,
+                      reviewCount: 0,
+                      status: "active",
+                      createdAt: 1,
+                      updatedAt: 2,
+                      createdBy: "user-1",
+                      version: "1",
+                    },
+                    permission: null,
+                    repos: [],
+                    workspaces: [],
+                    roomInfo: null,
+                  },
+                };
+        }
+        return { tasks };
+      },
+    );
+    const listTasks = vi.fn(
+      (_params: ListTasksRequest): ListTasksResponse => ({
+        tasks: [cloudHomedListTasksRow(LOCAL_HOME_EPIC_ID)],
+        hasMore: false,
+      }),
+    );
+
+    const queryClient = mountReconciler({ getTaskContexts, listTasks });
+
+    await waitFor(() => {
+      expect(collectOpenEpicIds()).not.toContain(STALE_EPIC_ID);
     });
     expect(collectOpenEpicIds()).toContain(LOCAL_HOME_EPIC_ID);
     queryClient.clear();

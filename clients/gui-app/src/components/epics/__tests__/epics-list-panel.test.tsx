@@ -640,7 +640,28 @@ describe("<EpicsListPanel />", () => {
     const notice = await screen.findByTestId("epics-list-completeness");
     expect(notice.getAttribute("data-cloud-page")).toBe("unavailable");
     expect(notice.textContent).toContain("Cloud tasks couldn't be reached");
+    // `facets: "partial"` means the counts describe a DIFFERENT set from the
+    // rows, so the notice may not claim they cover the listed tasks - the
+    // fixture sets exactly that, and the older wording asserted the opposite.
+    expect(notice.textContent).toContain("Order covers the tasks listed here");
+    expect(notice.textContent).toContain("filter counts may leave some");
+  });
+
+  it("keeps the complete-counts wording when only the ORDER is a loaded union", async () => {
+    testState.items = [
+      historyItem({ id: "history-local", epicId: "local", title: "Local" }),
+    ];
+    testState.completeness = {
+      cloudPage: "settled",
+      facets: "server",
+      localRows: "present",
+      sort: "loaded-union",
+    };
+    renderPanel("embedded", "/");
+
+    const notice = await screen.findByTestId("epics-list-completeness");
     expect(notice.textContent).toContain("not everything you have");
+    expect(notice.textContent).not.toContain("filter counts may leave some");
   });
 
   it("says a capped page shows the first tasks, not all of them", async () => {
@@ -709,7 +730,12 @@ describe("<EpicsListPanel />", () => {
     const pin = await screen.findByRole("button", {
       name: "Pinning Local only epic needs cloud sync; it is stored on this device",
     });
-    expect(pin.hasAttribute("disabled")).toBe(true);
+    // `aria-disabled`, not the native attribute: a natively disabled button is
+    // unfocusable and swallows pointer events, so the tooltip below - the only
+    // place the reason is stated - was reachable by mouse hover and by nothing
+    // else. The mutation is still blocked, which the click asserts.
+    expect(pin.getAttribute("aria-disabled")).toBe("true");
+    expect(pin.hasAttribute("disabled")).toBe(false);
     expect(pin.getAttribute("data-local-home-pin-unavailable")).toBe("true");
     fireEvent.click(pin);
     expect(testState.setPinnedMutate).not.toHaveBeenCalled();
@@ -718,6 +744,32 @@ describe("<EpicsListPanel />", () => {
     // `HistoryPinControl`.
     expect(tooltipTextNear(pin)).toBe(
       "This epic is stored on this device. Pinning needs cloud sync.",
+    );
+  });
+
+  it("disables pinning for a preserved orphan, whose cloud task no longer exists", async () => {
+    // `preservation: "orphaned-local-edits"` is a CLOUD-homed row - so
+    // `isLocalHome` is false and the cloud-only gate let it through. The
+    // server has already deleted the task, so the optimistic flip fired
+    // `epic.setPinned` at nothing.
+    testState.items = [
+      historyItem({
+        title: "Orphaned epic",
+        isLocalHome: false,
+        isPreservedOrphan: true,
+        isPinned: false,
+      }),
+    ];
+    renderPanel("embedded", "/");
+
+    const pin = await screen.findByRole("button", {
+      name: "Pinning Orphaned epic is unavailable; its cloud copy was deleted and only this device's edits remain",
+    });
+    expect(pin.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(pin);
+    expect(testState.setPinnedMutate).not.toHaveBeenCalled();
+    expect(tooltipTextNear(pin)).toBe(
+      "This epic's cloud copy was deleted. Only this device's edits remain, so it can't be pinned.",
     );
   });
 
