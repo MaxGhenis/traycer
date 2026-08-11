@@ -581,12 +581,10 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
         return { tasks };
       },
     );
-    const listTasks = vi.fn(
-      (_params: ListTasksRequest): ListTasksResponse => ({
-        tasks: [cloudHomedListTasksRow(LOCAL_HOME_EPIC_ID)],
-        hasMore: false,
-      }),
-    );
+    const listTasks = vi.fn((_params: ListTasksRequest): ListTasksResponse => ({
+      tasks: [cloudHomedListTasksRow(LOCAL_HOME_EPIC_ID)],
+      hasMore: false,
+    }));
 
     const queryClient = mountReconciler({ getTaskContexts, listTasks });
 
