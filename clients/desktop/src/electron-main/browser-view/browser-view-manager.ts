@@ -60,6 +60,10 @@ import type {
 
 const DEBUG_SNAPSHOT_COALESCE_MS = 16;
 export const PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT = 8;
+// Ticket 02 fixup: bounds how long a claimed sibling's `closeEntry` waits on
+// another tile's in-flight handoff capture before tearing down its own
+// `webContents` regardless - a hung capture must not block quit.
+const SIBLING_HANDOFF_CAPTURE_TIMEOUT_MS = 1500;
 
 type BrowserPrimaryProfileRecentOrigin = BrowserPrimaryProfileOriginSnapshot & {
   readonly visitSequence: number;
@@ -342,6 +346,17 @@ interface BrowserViewEntry {
    * group teardown - does not push a second, now-redundant frame for it.
    */
   handedOff: boolean;
+  /**
+   * Ticket 02 fixup: set (synchronously, alongside `handedOff`) to the
+   * in-flight aggregation capture this entry was claimed by, if any.
+   * `dispose()`'s group teardown calls `closeEntry` on every tile with no
+   * `await` between them, so a claimed sibling's own `closeEntry` runs -
+   * and would otherwise close this entry's `webContents` - before the
+   * aggregator ever gets to `executeJavaScript` against it. `closeEntry`
+   * awaits this (bounded) before tearing down, so the capture sees a live
+   * page instead of racing it to death.
+   */
+  pendingHandoffCapture: Promise<void> | null;
 }
 
 interface BrowserViewControlState {
@@ -1244,6 +1259,7 @@ export class BrowserViewManager {
       overlaySnapshotStale: false,
       control: null,
       handedOff: false,
+      pendingHandoffCapture: null,
       runtimeSessionId: key.pageSessionId,
       runtimeTabId: null,
     };
@@ -1980,6 +1996,18 @@ export class BrowserViewManager {
       entry,
       entry.status === "dead" ? "crash-no-capture" : handoffReason,
     );
+    // Ticket 02 fixup: `pushTileHandoff` above returns immediately for a
+    // claimed sibling (its `handedOff` guard), so on its own this `await`
+    // does nothing to protect it from the teardown below - it is whichever
+    // OTHER tile's `pushTileHandoff` claimed this one that is still busy
+    // capturing it. Wait for that (bounded, so a hung capture cannot block
+    // quit) before closing `webContents` out from under it.
+    if (entry.pendingHandoffCapture !== null) {
+      await Promise.race([
+        entry.pendingHandoffCapture,
+        delay(SIBLING_HANDOFF_CAPTURE_TIMEOUT_MS),
+      ]);
+    }
     const window =
       entry.parentWindowId === null
         ? null
@@ -2057,6 +2085,15 @@ export class BrowserViewManager {
    * between them, so a later iteration's own `pushTileHandoff` call must
    * already see `handedOff` set by an earlier iteration rather than racing
    * it to also claim the same siblings.
+   *
+   * Ticket 02 fixup: that same no-await teardown loop means a claimed
+   * sibling's own `closeEntry` (and the `webContents.close()` at the end of
+   * it) runs before this function ever reaches the sibling's capture below -
+   * `handedOff` alone stops it from pushing a duplicate frame, but does
+   * nothing to keep its `webContents` alive long enough to be captured. So
+   * this also hands each claimed sibling a shared `pendingHandoffCapture`
+   * promise, synchronously, in the same pass - `closeEntry` awaits it
+   * (bounded) before tearing down.
    */
   private async pushTileHandoff(
     entry: BrowserViewEntry,
@@ -2070,30 +2107,44 @@ export class BrowserViewManager {
         candidate.runtimeSessionId === entry.runtimeSessionId &&
         !candidate.handedOff,
     );
+    let resolveAggregation: (() => void) | undefined;
+    const aggregationPromise = new Promise<void>((resolve) => {
+      resolveAggregation = resolve;
+    });
     for (const sibling of siblings) {
       sibling.handedOff = true;
+      sibling.pendingHandoffCapture = aggregationPromise;
     }
-    const capturedStorageState = await this.captureHandoffStorageState(
-      entry,
-      reason,
-    );
-    const siblingTabs = await Promise.all(
-      siblings.map(async (sibling) => ({
-        tabId: sibling.runtimeTabId ?? sibling.key.pageSessionId,
-        url: sibling.currentUrl,
-        capturedStorageState: await this.captureHandoffStorageState(
-          sibling,
-          sibling.status === "dead" ? "crash-no-capture" : reason,
-        ),
-      })),
-    );
-    this.notifyTileHandoff(entry.key.windowId, {
-      ...toTileKey(entry.key),
-      capturedUrl: entry.currentUrl,
-      capturedStorageState,
-      siblingTabs,
-      reason,
-    });
+    try {
+      const capturedStorageState = await this.captureHandoffStorageState(
+        entry,
+        reason,
+      );
+      const siblingTabs = await Promise.all(
+        siblings.map(async (sibling) => ({
+          tabId: sibling.runtimeTabId ?? sibling.key.pageSessionId,
+          url: sibling.currentUrl,
+          capturedStorageState: await this.captureHandoffStorageState(
+            sibling,
+            sibling.status === "dead" ? "crash-no-capture" : reason,
+          ),
+        })),
+      );
+      this.notifyTileHandoff(entry.key.windowId, {
+        ...toTileKey(entry.key),
+        capturedUrl: entry.currentUrl,
+        capturedStorageState,
+        siblingTabs,
+        reason,
+      });
+    } finally {
+      for (const sibling of siblings) {
+        if (sibling.pendingHandoffCapture === aggregationPromise) {
+          sibling.pendingHandoffCapture = null;
+        }
+      }
+      resolveAggregation?.();
+    }
   }
 
   private async captureHandoffStorageState(
@@ -2323,6 +2374,12 @@ export class BrowserViewManager {
     }
     return { sensitive };
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function entryKeyId(key: BrowserViewEntryKey): string {

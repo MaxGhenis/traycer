@@ -153,47 +153,6 @@ export function notifyAgentBrowserCdpTargetAttached(
   });
 }
 
-/**
- * Ticket 12 / ticket 10's design. Same best-effort caveat as the other two
- * notifiers above: pushed just before the tile dies, so a tile that never
- * had a request published (never dispatched anything) has no captured
- * `sendFrame` to push the handoff through either. The host's
- * `reclaimUnreachableTileSession` TTL path is the fallback for exactly this
- * case - a session with nothing to hand off is reaped, not left orphaned.
- */
-export function notifyAgentBrowserTileHandoff(
-  tileInstanceId: string,
-  handoff: {
-    readonly capturedUrl: string;
-    readonly capturedStorageState: unknown;
-    readonly siblingTabs: readonly {
-      readonly tabId: string;
-      readonly url: string;
-      readonly capturedStorageState: unknown;
-    }[];
-    readonly reason: "gui-quit" | "tile-released" | "crash-no-capture";
-  },
-): void {
-  const sendFrame = sendFrameByTileInstanceId.get(tileInstanceId);
-  if (sendFrame === undefined) return;
-  sendFrame({
-    kind: "tileHandoff",
-    hasBinaryPayload: false,
-    requestId: crypto.randomUUID(),
-    tileInstanceId,
-    capturedUrl: handoff.capturedUrl,
-    capturedStorageState:
-      handoff.capturedStorageState as BrowserCdpResultJsonValue,
-    siblingTabs: handoff.siblingTabs.map((sibling) => ({
-      tabId: sibling.tabId,
-      url: sibling.url,
-      capturedStorageState:
-        sibling.capturedStorageState as BrowserCdpResultJsonValue,
-    })),
-    reason: handoff.reason,
-  });
-}
-
 export function resetAgentBrowserCdpStoreForTests(): void {
   handlerByTileInstanceId.clear();
   sendFrameByTileInstanceId.clear();
