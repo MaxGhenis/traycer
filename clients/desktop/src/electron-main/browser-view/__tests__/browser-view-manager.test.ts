@@ -26,6 +26,7 @@ import type {
   BrowserViewStorageStateApply,
   BrowserViewStorageStateApplyResult,
   BrowserViewStorageStateCapture,
+  BrowserViewStorageStateCaptureResult,
   BrowserViewTileKey,
   BrowserViewTileUpsert,
 } from "../../../ipc-contracts/browser-view-types";
@@ -453,7 +454,28 @@ interface Harness {
   emitWindowChange(): void;
 }
 
+type HarnessOptions = {
+  readonly captureStorageState: BrowserViewManagerOptions["captureStorageState"];
+};
+
+const DEFAULT_CAPTURE_STORAGE_STATE: BrowserViewManagerOptions["captureStorageState"] =
+  (_input, _webContents): Promise<BrowserViewStorageStateCaptureResult> =>
+    Promise.resolve({
+      storageState: { cookies: [], origins: [] },
+      cookieCount: 0,
+      cookieDomains: [],
+      localStorageCount: 0,
+      localStorageAvailable: true,
+      localStorageReason: null,
+    });
+
 function createHarness(): Harness {
+  return createHarnessWithOptions(undefined);
+}
+
+function createHarnessWithOptions(
+  harnessOptions: HarnessOptions | undefined,
+): Harness {
   const windows = new Map<string, FakeWindow>([
     ["window-1", new FakeWindow()],
     ["window-2", new FakeWindow()],
@@ -569,16 +591,14 @@ function createHarness(): Harness {
         reason: "cookies-only",
       } satisfies BrowserViewStorageStateApplyResult);
     },
-    captureStorageState: (input) => {
+    captureStorageState: (input, webContents) => {
       storageStateCaptures.push(input);
-      return Promise.resolve({
-        storageState: { cookies: [], origins: [] },
-        cookieCount: 0,
-        cookieDomains: [],
-        localStorageCount: 0,
-        localStorageAvailable: true,
-        localStorageReason: null,
-      });
+      return (
+        harnessOptions?.captureStorageState ?? DEFAULT_CAPTURE_STORAGE_STATE
+      )(
+        input,
+        webContents,
+      );
     },
     capturePrimaryProfile: (origins) => {
       primaryProfileCaptureSourceOrigins.push(
@@ -2732,6 +2752,94 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
     });
     expect(harness.views.map((view) => view.webContents.closeCalls)).toEqual([
       1,
+      1,
+      1,
+    ]);
+  });
+
+  it("waits for a delayed sibling capture before closing its WebContents", async () => {
+    const captureResolvers: Array<() => void> = [];
+    const captureCalls: Array<{
+      readonly webContentsId: number;
+      readonly destroyed: boolean;
+    }> = [];
+    const harness = createHarnessWithOptions({
+      captureStorageState: (_input, webContents) => {
+        captureCalls.push({
+          webContentsId: webContents.id,
+          destroyed: webContents.isDestroyed(),
+        });
+        return new Promise<BrowserViewStorageStateCaptureResult>((resolve) => {
+          captureResolvers.push(() => {
+            resolve({
+              storageState: { cookies: [], origins: [] },
+              cookieCount: 0,
+              cookieDomains: [],
+              localStorageCount: 0,
+              localStorageAvailable: true,
+              localStorageReason: null,
+            });
+          });
+        });
+      },
+    });
+    const siblingKey: BrowserViewTileKey = {
+      ...BASE_KEY,
+      viewTabId: "view-tab-2",
+      paneId: "pane-2",
+      tileInstanceId: "tile-2",
+      pageSessionId: "page-2",
+    };
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "https://app.example/primary", true),
+    );
+    harness.manager.registerDurableTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-delayed-handoff",
+      tabId: "tab-primary",
+    });
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(siblingKey, "https://app.example/sibling", true),
+    );
+    harness.manager.registerDurableTab("window-1", {
+      ...siblingKey,
+      sessionId: "session-delayed-handoff",
+      tabId: "tab-sibling",
+    });
+
+    harness.manager.dispose();
+    await flushCloseEntry();
+
+    expect(captureCalls).toHaveLength(1);
+    expect(captureCalls[0]).toEqual({
+      webContentsId: harness.views[0]?.webContents.id,
+      destroyed: false,
+    });
+    expect(harness.views[1]?.webContents.closeCalls).toBe(0);
+    const releasePrimary = captureResolvers[0];
+    if (releasePrimary === undefined) throw new Error("primary capture missing");
+    releasePrimary();
+    await flushCloseEntry();
+
+    expect(captureCalls).toHaveLength(2);
+    expect(captureCalls[1]).toEqual({
+      webContentsId: harness.views[1]?.webContents.id,
+      destroyed: false,
+    });
+    // This is the regression guard: the sibling is already claimed and its
+    // own closeEntry is running, but it must remain live until aggregation
+    // captures it.
+    expect(harness.views[1]?.webContents.closeCalls).toBe(0);
+
+    const releaseSibling = captureResolvers[1];
+    if (releaseSibling === undefined) throw new Error("sibling capture missing");
+    releaseSibling();
+    await flushCloseEntry();
+
+    expect(harness.tileHandoffNotifications).toHaveLength(1);
+    expect(harness.views.map((view) => view.webContents.closeCalls)).toEqual([
       1,
       1,
     ]);
