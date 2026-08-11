@@ -220,6 +220,7 @@ describe("PublishedChatTile - doc-replica fallback", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -239,6 +240,7 @@ describe("PublishedChatTile - doc-replica fallback", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -259,6 +261,7 @@ describe("PublishedChatTile - doc-replica fallback", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -279,6 +282,7 @@ describe("PublishedChatTile - doc-replica fallback", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -299,6 +303,7 @@ describe("PublishedChatTile - doc-replica fallback", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -316,6 +321,7 @@ describe("PublishedChatTile - doc-replica fallback", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -334,6 +340,7 @@ describe("PublishedChatTile - doc-replica fallback", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -352,6 +359,7 @@ describe("PublishedChatTile - doc-replica fallback", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -376,6 +384,7 @@ describe("PublishedChatTile - doc-replica fallback", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -398,6 +407,7 @@ describe("PublishedChatTile - doc-replica fallback", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,

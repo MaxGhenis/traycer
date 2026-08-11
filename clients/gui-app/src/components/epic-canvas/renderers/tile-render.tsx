@@ -167,11 +167,12 @@ const TILE_RENDERERS: TileRendererRegistry = {
   // The ordinary chat surface fed from a published copy - see the tile's own
   // note. Bound, like every tile, to the tab's host: that host SERVES the cloud
   // read, and the chat's owning host is metadata the locked composer names.
-  "published-chat": ({ node, epicId, viewTabId, isActive }) => (
+  "published-chat": ({ node, epicId, viewTabId, tileId, isActive }) => (
     <PublishedChatTile
       node={node}
       epicId={epicId}
       viewTabId={viewTabId}
+      tileId={tileId}
       isActive={isActive}
     />
   ),
