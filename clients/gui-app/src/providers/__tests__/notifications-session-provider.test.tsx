@@ -79,9 +79,10 @@ vi.mock("@/lib/host", () => ({
   useAuthService: () => mockAuth,
 }));
 
-// Feed-mode capability still reads the app-wide stream binding, so this mock
-// stays pointed at `stream-runtime-context` even though the provider no longer
-// takes its CLIENT from there (see the two hooks mocked below).
+// Feed-mode capability now reads the EXPLICIT client the provider opened its
+// streams on, so the `For` variants take that client as an argument instead of
+// reaching for the app-wide binding. The app-wide pair is still exported for
+// the surfaces that legitimately use it, so both stay mocked here.
 vi.mock("@/lib/host/stream-runtime-context", () => ({
   useStreamMethodSupport: (method: keyof HostStreamRpcRegistry & string) =>
     streamState.useClientSupport
@@ -92,6 +93,24 @@ vi.mock("@/lib/host/stream-runtime-context", () => ({
   ) => {
     if (streamState.useClientSupport) {
       return streamState.client?.getMethodSchemaVersion(method) ?? null;
+    }
+    return method === "host.notifications.cloudFeed.subscribe"
+      ? { major: 1, minor: 1 }
+      : { major: 1, minor: 2 };
+  },
+  useStreamMethodSupportFor: (
+    client: WsStreamClient<HostStreamRpcRegistry> | null,
+    method: keyof HostStreamRpcRegistry & string,
+  ) =>
+    streamState.useClientSupport
+      ? (client?.getMethodSupport(method) ?? null)
+      : streamState.cloudFeedSupport,
+  useStreamMethodSchemaVersionFor: (
+    client: WsStreamClient<HostStreamRpcRegistry> | null,
+    method: keyof HostStreamRpcRegistry & string,
+  ) => {
+    if (streamState.useClientSupport) {
+      return client?.getMethodSchemaVersion(method) ?? null;
     }
     return method === "host.notifications.cloudFeed.subscribe"
       ? { major: 1, minor: 1 }

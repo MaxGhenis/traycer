@@ -2,8 +2,10 @@ import { useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDestructiveDialog } from "@/components/ui/confirm-destructive-dialog";
-import { useRebindLocalStoreMutation } from "@/hooks/local-store/use-rebind-local-store-mutation";
+import { useLocalStoreRebindMutation } from "@/hooks/local-store/use-local-store-rebind-mutation";
 import { ReportIssueAction } from "@/components/report-issue/report-issue-action";
+import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
+import { useRunnerOpenExternalLink } from "@/hooks/runner/use-open-external-link-mutation";
 import { useEpicRequestFreshSnapshot } from "@/lib/epic-selectors";
 import { resolveManageSubscriptionUrl } from "@/lib/auth/manage-subscription-url";
 import { getClientAppVersion } from "@/lib/app-version";
@@ -84,7 +86,7 @@ export function SnapshotErrorBanner(props: SnapshotErrorBannerProps) {
 
 function LocalStoreRepair(props: { readonly error: SnapshotFetchError }) {
   const requestFreshSnapshot = useEpicRequestFreshSnapshot();
-  const rebindLocalStore = useRebindLocalStoreMutation();
+  const rebindLocalStore = useLocalStoreRebindMutation();
   const [confirmRepairOpen, setConfirmRepairOpen] = useState(false);
   const [repairRefusal, setRepairRefusal] = useState<{
     readonly message: string;
@@ -125,17 +127,28 @@ function LocalStoreRepair(props: { readonly error: SnapshotFetchError }) {
             { confirmOldHostStopped: true },
             {
               onSuccess: (response) => {
-                if (response.status === "rebound") {
+                // `not-needed` is a SUCCESS: a healthy process-held store the
+                // stale panel asked to tear down. Treat it exactly like a
+                // completed repair - leaving the destructive confirmation
+                // open over an error that no longer exists is the one
+                // outcome the honest no-op was added to avoid.
+                if (
+                  response.status === "rebound" ||
+                  response.status === "not-needed"
+                ) {
                   setConfirmRepairOpen(false);
+                  setRepairRefusal(null);
                   requestFreshSnapshot();
                   return;
                 }
-                if (response.status === "refused") {
-                  setRepairRefusal({
-                    message: response.message,
-                    remedy: response.remedy,
-                  });
-                }
+                // Close FIRST: the remedy renders in the banner behind this
+                // dialog, so leaving it open returns the user to an enabled
+                // destructive button with no visible reason for the refusal.
+                setConfirmRepairOpen(false);
+                setRepairRefusal({
+                  message: response.message,
+                  remedy: response.remedy,
+                });
               },
             },
           );
@@ -147,18 +160,27 @@ function LocalStoreRepair(props: { readonly error: SnapshotFetchError }) {
 
 function UpgradeButton() {
   const runnerHost = useRunnerHost();
+  const openExternalLink = useRunnerOpenExternalLink();
   return (
     <Button
       type="button"
       size="sm"
       data-testid="snapshot-error-upgrade"
+      disabled={openExternalLink.isPending}
       onClick={() => {
-        void runnerHost.openExternalLink(
+        openExternalLink.mutate(
           resolveManageSubscriptionUrl(runnerHost.authnBaseUrl),
         );
       }}
     >
       Upgrade
+      {openExternalLink.isPending ? (
+        <AgentSpinningDots
+          className="size-3"
+          testId={undefined}
+          variant={undefined}
+        />
+      ) : null}
     </Button>
   );
 }

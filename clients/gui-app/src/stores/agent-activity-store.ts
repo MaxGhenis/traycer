@@ -7,7 +7,10 @@ import type {
 } from "@traycer-clients/shared/host-transport/i-stream-session";
 import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/host-stream-client";
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
-import type { AgentActivityServedBy } from "@traycer/protocol/host/agent/activity";
+import type {
+  AgentActivityByEpic,
+  AgentActivityServedBy,
+} from "@traycer/protocol/host/agent/activity";
 import {
   EMPTY_AGENT_ACTIVITY_BY_EPIC,
   EMPTY_EPIC_AGENT_ACTIVITY,
@@ -181,10 +184,31 @@ export function useEpicAgentActivity(epicId: string | null): EpicAgentActivity {
   return useAgentActivityStore(selector);
 }
 
-function makeSelectEpicAgentActivity(epicId: string | null) {
+function makeSelectEpicAgentActivity(
+  epicId: string | null,
+): (state: AgentActivityState) => EpicAgentActivity {
   return (state: AgentActivityState): EpicAgentActivity =>
     selectEpicAgentActivity(state.byHost, epicId);
 }
+
+/**
+ * Merged multi-host results, keyed by the `byHost` map that produced them.
+ *
+ * `selectEpicAgentActivity` runs as a Zustand selector and Zustand compares
+ * selector output with `Object.is`. The single-host path returns the bucket
+ * itself, so it is already identity-stable; the union path allocates. Without
+ * this cache EVERY unrelated write to `byHost` - a `connectionStatus` change
+ * on any host, a frame from any other host - produced a fresh merged object
+ * for every two-host epic, re-rendering every consumer and rebuilding
+ * `agentActivityTiers` (which keys its cache by activity identity).
+ *
+ * `byHost` is replaced on every write, so keying on it is exactly the right
+ * invalidation, and a WeakMap lets superseded maps and their merges go away.
+ */
+const mergedActivityByHostMap = new WeakMap<
+  ReadonlyMap<string, HostAgentActivity>,
+  Map<string, EpicAgentActivity>
+>();
 
 function selectEpicAgentActivity(
   byHost: ReadonlyMap<string, HostAgentActivity>,
@@ -192,15 +216,33 @@ function selectEpicAgentActivity(
 ): EpicAgentActivity {
   if (epicId === null) return EMPTY_EPIC_AGENT_ACTIVITY;
   let merged: EpicAgentActivity | null = null;
+  let contributors = 0;
   for (const host of byHost.values()) {
     const bucket = host.byEpic.get(epicId);
     if (bucket === undefined) continue;
+    contributors += 1;
     // Identity is preserved for the single-host case, which is still the
     // overwhelmingly common one - a fresh object every read would re-render
     // every activity consumer on every unrelated store write.
-    merged = merged === null ? bucket : mergeEpicAgentActivity(merged, bucket);
+    if (merged === null) {
+      merged = bucket;
+      continue;
+    }
+    if (contributors === 2) {
+      const cached = mergedActivityByHostMap.get(byHost)?.get(epicId);
+      if (cached !== undefined) return cached;
+    }
+    merged = mergeEpicAgentActivity(merged, bucket);
   }
-  return merged ?? EMPTY_EPIC_AGENT_ACTIVITY;
+  if (merged === null) return EMPTY_EPIC_AGENT_ACTIVITY;
+  if (contributors < 2) return merged;
+  let perEpic = mergedActivityByHostMap.get(byHost);
+  if (perEpic === undefined) {
+    perEpic = new Map<string, EpicAgentActivity>();
+    mergedActivityByHostMap.set(byHost, perEpic);
+  }
+  perEpic.set(epicId, merged);
+  return merged;
 }
 
 export function getEpicAgentActivity(epicId: string): EpicAgentActivity {
@@ -217,20 +259,6 @@ export function subscribeAgentActivity(listener: () => void): () => void {
     previous = state.byHost;
     listener();
   });
-}
-
-/**
- * Whether any host currently reporting activity is serving the LOCAL plane.
- *
- * Kept as a question about the map rather than a single `servedBy` field: the
- * host-switch reset it feeds needs to know whether a departed host's view was
- * local, and with several hosts in the map there is no one plane to read.
- */
-export function agentActivityHasLocalPlane(): boolean {
-  for (const host of useAgentActivityStore.getState().byHost.values()) {
-    if (host.servedBy === "local") return true;
-  }
-  return false;
 }
 
 /**
@@ -255,7 +283,7 @@ export function markAgentActivityReconnecting(): void {
 export const TEST_LOCAL_ACTIVITY_HOST_ID = "test-local-host";
 
 export function __setAgentActivityStateForTests(
-  byEpic: Parameters<typeof reconcileAgentActivityByEpic>[0],
+  byEpic: AgentActivityByEpic,
   servedBy: AgentActivityServedBy,
 ): void {
   __setHostAgentActivityStateForTests(
@@ -268,7 +296,7 @@ export function __setAgentActivityStateForTests(
 /** Drives ONE named host's slice - including a remote one. */
 export function __setHostAgentActivityStateForTests(
   hostId: string,
-  byEpic: Parameters<typeof reconcileAgentActivityByEpic>[0],
+  byEpic: AgentActivityByEpic,
   servedBy: AgentActivityServedBy,
 ): void {
   patchHost(hostId, (current) => ({

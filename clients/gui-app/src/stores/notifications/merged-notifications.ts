@@ -79,6 +79,7 @@ import {
   type HostNotificationsCloudFeedMarkAllReadRequest,
   type HostNotificationsCloudFeedClearAllRequest,
   type HostNotificationsEntityRef,
+  HOST_NOTIFICATIONS_HOME_ORDER,
 } from "@traycer/protocol/host/notifications/contracts";
 import type { NotificationEntry } from "@traycer/protocol/notifications/notification-entry";
 import { formatNotification } from "@traycer/protocol/notifications/notification-formatter";
@@ -341,10 +342,17 @@ function comparePartitionedAttentionOrder(
   return compareFeedCandidates(left.row, right.row);
 }
 
+/**
+ * Lane order, DERIVED from the wire contract rather than restated here.
+ *
+ * The host lane is the protocol's `"local"` home. Keeping local numeric
+ * literals meant a change to the wire-level order would leave the GUI
+ * silently disagreeing with the summaries, cursors and other clients that do
+ * follow `HOST_NOTIFICATIONS_HOME_ORDER`.
+ */
 function notificationPlaneOrder(row: MergedNotificationRow): number {
-  if (row.source === "host") return 0;
-  if (row.source === "cloud") return 1;
-  return 0;
+  const home = row.source === "cloud" ? "cloud" : "local";
+  return HOST_NOTIFICATIONS_HOME_ORDER.indexOf(home);
 }
 
 /** Every non-attention row, chronological, filtered by the open-session

@@ -100,13 +100,39 @@ describe("deriveEpicSyncPillState", () => {
     expect(result).toBe("offlineWithHostPending");
   });
 
-  it("cloud reconnecting with known host-durable work reads offlineChangesSavedLocally", () => {
+  it("cloud reconnecting with host-pending work makes no durability claim on a pre-@1.4 peer", () => {
     const result = deriveEpicSyncPillState({
       ...HEALTHY_INPUTS,
       cloudSyncStatus: "reconnecting",
       hostDirtyState: "dirty",
     });
     expect(result).toBe("offlineWithHostPending");
+  });
+
+  it("an ARMED session with the cloud down claims local durability", () => {
+    // The positive statement the claim needs. Without `armed` this returns
+    // `offlineWithHostPending` and `offlineChangesSavedLocally` is
+    // unreachable - a union member, a pill rendering and its tests for a
+    // state the derivation never produced.
+    expect(
+      deriveEpicSyncPillState({
+        ...HEALTHY_INPUTS,
+        cloudSyncStatus: "disconnected",
+        hostDirtyState: "dirty",
+        localProtection: "armed",
+      }),
+    ).toBe("offlineChangesSavedLocally");
+  });
+
+  it("keeps unknown protection on the no-claim state", () => {
+    expect(
+      deriveEpicSyncPillState({
+        ...HEALTHY_INPUTS,
+        cloudSyncStatus: "disconnected",
+        hostDirtyState: "dirty",
+        localProtection: "unknown",
+      }),
+    ).toBe("offlineWithHostPending");
   });
 
   it("warns immediately without calling renderer-only work saved locally while the cloud is down", () => {

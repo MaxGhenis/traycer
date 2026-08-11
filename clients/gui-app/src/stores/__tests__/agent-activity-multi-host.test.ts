@@ -3,6 +3,7 @@ import {
   __resetAgentActivityStoreForTests,
   __setHostAgentActivityStateForTests,
   getEpicAgentActivity,
+  markAgentActivityReconnecting,
   useAgentActivityStore,
 } from "@/stores/agent-activity-store";
 
@@ -93,5 +94,81 @@ describe("agent activity across hosts", () => {
     // The union must not allocate on every read, or every activity consumer
     // re-renders on any unrelated store write.
     expect(second).toBe(first);
+  });
+
+  it("keeps MERGED identity across reads while byHost is unchanged", () => {
+    __setHostAgentActivityStateForTests(
+      LOCAL_HOST,
+      { [CLOUD_EPIC]: { working: ["local-agent"], turn: [] } },
+      "local",
+    );
+    __setHostAgentActivityStateForTests(
+      REMOTE_HOST,
+      { [CLOUD_EPIC]: { working: ["remote-agent"], turn: [] } },
+      "cloud",
+    );
+
+    const first = getEpicAgentActivity(CLOUD_EPIC);
+    const second = getEpicAgentActivity(CLOUD_EPIC);
+    // The identity guard used to hold ONLY for one host. With two, every read
+    // allocated a fresh `{working, turn}`, so `Object.is` in the Zustand
+    // selector reported a change on every unrelated write and rebuilt
+    // `agentActivityTiers` with it.
+    expect(second).toBe(first);
+    expect([...first.working].sort()).toEqual(["local-agent", "remote-agent"]);
+  });
+
+  it("re-merges after a write rather than serving the stale union", () => {
+    __setHostAgentActivityStateForTests(
+      LOCAL_HOST,
+      { [CLOUD_EPIC]: { working: ["local-agent"], turn: [] } },
+      "local",
+    );
+    __setHostAgentActivityStateForTests(
+      REMOTE_HOST,
+      { [CLOUD_EPIC]: { working: ["remote-agent"], turn: [] } },
+      "cloud",
+    );
+    const before = getEpicAgentActivity(CLOUD_EPIC);
+
+    __setHostAgentActivityStateForTests(
+      REMOTE_HOST,
+      { [CLOUD_EPIC]: { working: ["remote-agent-2"], turn: [] } },
+      "cloud",
+    );
+
+    const after = getEpicAgentActivity(CLOUD_EPIC);
+    expect(after).not.toBe(before);
+    expect([...after.working].sort()).toEqual([
+      "local-agent",
+      "remote-agent-2",
+    ]);
+  });
+
+  it("marks EVERY host's view reconnecting on a local-replica disconnect", () => {
+    __setHostAgentActivityStateForTests(
+      LOCAL_HOST,
+      { [CLOUD_EPIC]: { working: ["local-agent"], turn: [] } },
+      "local",
+    );
+    __setHostAgentActivityStateForTests(
+      REMOTE_HOST,
+      { [CLOUD_EPIC]: { working: ["remote-agent"], turn: [] } },
+      "cloud",
+    );
+
+    markAgentActivityReconnecting();
+
+    // "Every view we hold is now stale" is what the disconnect hook means, and
+    // a multi-host fixture is the only place that scoping can be asserted.
+    const byHost = useAgentActivityStore.getState().byHost;
+    expect(byHost.get(LOCAL_HOST)?.connectionStatus).toBe("reconnecting");
+    expect(byHost.get(REMOTE_HOST)?.connectionStatus).toBe("reconnecting");
+    // It degrades the connection only - the rows themselves survive, because a
+    // disconnect is not a truth reset.
+    expect([...getEpicAgentActivity(CLOUD_EPIC).working].sort()).toEqual([
+      "local-agent",
+      "remote-agent",
+    ]);
   });
 });

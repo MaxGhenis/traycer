@@ -1,5 +1,7 @@
 import { Button } from "@/components/ui/button";
+import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { useEpicExportArtifacts } from "@/hooks/epic/use-epic-export-artifacts-mutation";
+import { useRunnerOpenExternalLink } from "@/hooks/runner/use-open-external-link-mutation";
 import {
   useEpicArtifactRecords,
   useEpicCloudFreshnessView,
@@ -118,33 +120,73 @@ function EpicDurabilityBadgeContent(props: {
         />
       )}
       {status === "paused" && props.pauseReason === "entitlement-lapsed" ? (
-        <button
-          type="button"
-          className="underline underline-offset-2"
-          data-testid="epic-durability-upgrade"
-          onClick={() => {
-            void runnerHost.openExternalLink(
-              resolveManageSubscriptionUrl(runnerHost.authnBaseUrl),
-            );
-          }}
-        >
-          Upgrade
-        </button>
+        <UpgradeAction authnBaseUrl={runnerHost.authnBaseUrl} />
       ) : null}
       {status === "paused" && exportIsTheRemedy(props.pauseReason) ? (
-        <Button
-          type="button"
-          size="xs"
-          variant="ghost"
-          className="h-auto px-0 text-current underline underline-offset-2"
-          data-testid="epic-durability-export"
+        <ExportArtifactsAction
           disabled={artifacts.length === 0 || exportArtifacts.isPending}
-          onClick={exportLocalArtifacts}
-        >
-          Export artifacts
-        </Button>
+          pending={exportArtifacts.isPending}
+          onExport={exportLocalArtifacts}
+        />
       ) : null}
     </span>
+  );
+}
+
+/** Inline pending indicator, at the size the badge's own type scale wants. */
+function BadgeActionSpinner() {
+  return (
+    <AgentSpinningDots
+      className="size-3"
+      testId={undefined}
+      variant={undefined}
+    />
+  );
+}
+
+/**
+ * The link goes through `useRunnerOpenExternalLink` rather than the bridge
+ * directly: the mutation owns the shared query key and the runner-error toast,
+ * so a rejected `openExternalLink` is reported instead of silently dropped.
+ */
+function UpgradeAction(props: { readonly authnBaseUrl: string }) {
+  const openExternalLink = useRunnerOpenExternalLink();
+  return (
+    <button
+      type="button"
+      className="underline underline-offset-2"
+      data-testid="epic-durability-upgrade"
+      disabled={openExternalLink.isPending}
+      onClick={() => {
+        openExternalLink.mutate(
+          resolveManageSubscriptionUrl(props.authnBaseUrl),
+        );
+      }}
+    >
+      Upgrade
+      {openExternalLink.isPending ? <BadgeActionSpinner /> : null}
+    </button>
+  );
+}
+
+function ExportArtifactsAction(props: {
+  readonly disabled: boolean;
+  readonly pending: boolean;
+  readonly onExport: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      size="xs"
+      variant="ghost"
+      className="h-auto px-0 text-current underline underline-offset-2"
+      data-testid="epic-durability-export"
+      disabled={props.disabled}
+      onClick={props.onExport}
+    >
+      Export artifacts
+      {props.pending ? <BadgeActionSpinner /> : null}
+    </Button>
   );
 }
 

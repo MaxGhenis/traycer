@@ -20,7 +20,6 @@ import {
   useNotificationsStore,
 } from "@/stores/notifications/notifications-store";
 import {
-  agentActivityHasLocalPlane,
   markAgentActivityReconnecting,
   openAgentActivityStream,
   useAgentActivityStore,
@@ -34,7 +33,8 @@ import {
   openCloudNotificationsStream,
   useCloudNotificationsStore,
 } from "@/stores/notifications/cloud-notifications-store";
-import { useNotificationFeedMode } from "@/lib/notifications/notification-feed-mode";
+import { useNotificationFeedModeFor } from "@/lib/notifications/notification-feed-mode";
+import { NotificationFeedModeContext } from "@/lib/notifications/notification-feed-mode-context";
 import { resetCloudEntityReadDriver } from "@/lib/notifications/cloud-entity-read-driver";
 import {
   readFocusedHostNotificationPresenceEntity,
@@ -45,6 +45,7 @@ import { getNotificationsStreamFactoryOverride } from "@/providers/notifications
 import { useAuthStore } from "@/stores/auth/auth-store";
 import { useAuthService, useHostClient } from "@/lib/host";
 import { useReactiveLocalHostEntry } from "@/hooks/host/use-reactive-local-host-entry";
+import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import { useNotificationShow } from "@/hooks/notifications/use-notifications";
 import { useNotificationActivationWithNavigate } from "@/hooks/notifications/use-notification-activation";
 import { useNotificationMarkEntityRead } from "@/hooks/notifications/use-notification-mark-entity-read-mutation";
@@ -107,6 +108,42 @@ export function NotificationsSessionProvider(
   const localHostEntry = useReactiveLocalHostEntry();
   const streamAuth = useStreamAuthRevalidator();
   const localStreamClient = useHostStreamClientFor(localHostEntry, streamAuth);
+  // Negotiated against the client the streams are actually opened on, not the
+  // app-wide active host - those differ whenever a tab is bound to a remote
+  // host, and reading the remote manifest here selected mixed mode from one
+  // host while consuming the other host's snapshots.
+  const notificationFeedMode = useNotificationFeedModeFor(localStreamClient);
+  // The session body itself consumes the mode (through
+  // `useMergedNotificationsActions`), and a component cannot read a context it
+  // renders. So the outer shell owns the negotiation and the provider, and the
+  // body sits underneath it - taking the entry and client as props so the
+  // transient stream client is built exactly once.
+  return (
+    <NotificationFeedModeContext.Provider value={notificationFeedMode}>
+      <NotificationsSessionBody
+        navigate={props.navigate}
+        localHostEntry={localHostEntry}
+        localStreamClient={localStreamClient}
+        notificationFeedMode={notificationFeedMode}
+      >
+        {props.children}
+      </NotificationsSessionBody>
+    </NotificationFeedModeContext.Provider>
+  );
+}
+
+interface NotificationsSessionBodyProps extends NotificationsSessionProviderProps {
+  readonly localHostEntry: HostDirectoryEntry | null;
+  readonly localStreamClient: IHostStreamClient<HostStreamRpcRegistry> | null;
+  readonly notificationFeedMode: "local" | "cloud" | "upgrade-required";
+}
+
+function NotificationsSessionBody(
+  props: NotificationsSessionBodyProps,
+): ReactNode {
+  const localHostEntry = props.localHostEntry;
+  const localStreamClient = props.localStreamClient;
+  const notificationFeedMode = props.notificationFeedMode;
   const localHostId = localHostEntry?.hostId ?? null;
   const queryClient = useQueryClient();
   const authService = useAuthService();
@@ -123,7 +160,6 @@ export function NotificationsSessionProvider(
   const windowsBridge = useWindowsBridge();
   const status = useAuthStore((state) => state.status);
   const userId = useAuthStore((state) => state.contextMetadata?.userId ?? null);
-  const notificationFeedMode = useNotificationFeedMode();
   const disposerRef = useRef<(() => void) | null>(null);
   const activityDisposerRef = useRef<(() => void) | null>(null);
   const hostDisposerRef = useRef<(() => void) | null>(null);
@@ -324,17 +360,22 @@ export function NotificationsSessionProvider(
 
   // A host switch only invalidates host-owned truth. Collaboration/system
   // rows are not scoped to a host and must survive the swap untouched.
-  const resetHostReplica = useCallback((): void => {
-    activeEntityRef.current = null;
-    useHostNotificationsStore.getState().reset();
-    // A local activity view belongs solely to the departed host. Cloud
-    // activity is a per-user union and remains valid across host switches.
-    if (agentActivityHasLocalPlane()) {
-      useAgentActivityStore.getState().reset();
-    }
-    resetCloudRelaySession();
-    clearNotificationIndicatorCaches(queryClient);
-  }, [queryClient, resetCloudRelaySession]);
+  const resetHostReplica = useCallback(
+    (departedHostId: string): void => {
+      activeEntityRef.current = null;
+      useHostNotificationsStore.getState().reset();
+      // Scoped to the slice that actually departed. The map holds a slice per
+      // host, so the old whole-map reset erased still-open REMOTE streams'
+      // activity whenever any slice happened to be local-served (and kept the
+      // departed slice when it was not). Those remote streams do not resend
+      // their state merely because this store was cleared, so running agents
+      // vanished - or a dead host's agents lingered - until the next frame.
+      useAgentActivityStore.getState().resetHost(departedHostId);
+      resetCloudRelaySession();
+      clearNotificationIndicatorCaches(queryClient);
+    },
+    [queryClient, resetCloudRelaySession],
+  );
 
   // Cloud rows are a relay-session snapshot, not a durable replica. A lost
   // binding or replacement stream client starts a new ownership epoch and
@@ -619,7 +660,9 @@ export function NotificationsSessionProvider(
       priorLocalHostId !== null && priorLocalHostId !== localHostId;
     if (clientSwapped || hostSwitchedAcrossDisconnect) {
       tearDown();
-      resetHostReplica();
+      // Across a switch the departed slice is the PRIOR host; a client swap
+      // keeps the same host id, so that slice is the one being replaced.
+      resetHostReplica(priorLocalHostId ?? localHostId);
     }
     if (previousFeedModeRef.current !== notificationFeedMode) {
       previousFeedModeRef.current = notificationFeedMode;

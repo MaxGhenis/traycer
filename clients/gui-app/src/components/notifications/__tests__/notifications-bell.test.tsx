@@ -14,6 +14,7 @@ import { NotificationsBell } from "@/components/notifications/notifications-bell
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 import { StreamRuntimeContext } from "@/lib/host/stream-runtime-context";
+import { NotificationFeedModeContext } from "@/lib/notifications/notification-feed-mode-context";
 import { RunnerHostProvider } from "@/providers/runner-host-provider";
 import {
   __resetAppLocalNotificationsStoreForTests,
@@ -177,6 +178,7 @@ function mountBell(
   options:
     | {
         readonly wsStreamClient: WsStreamClient<HostStreamRpcRegistry>;
+        readonly feedMode: "local" | "cloud";
       }
     | undefined,
 ): void {
@@ -195,11 +197,18 @@ function mountBell(
     return;
   }
 
+  // The feed mode is negotiated once by `NotificationsSessionProvider`, against
+  // the client it opened the streams on, and published as context. These cases
+  // are about what the BELL renders in cloud mode, not about the negotiation
+  // (which `notification-feed-mode.test.tsx` owns), so the mode is supplied
+  // directly alongside the stream runtime the rest of the tree still reads.
   render(
     <StreamRuntimeContext.Provider
       value={{ wsStreamClient: options.wsStreamClient }}
     >
-      {bell}
+      <NotificationFeedModeContext.Provider value={options.feedMode}>
+        {bell}
+      </NotificationFeedModeContext.Provider>
     </StreamRuntimeContext.Provider>,
   );
 }
@@ -449,7 +458,7 @@ describe("NotificationsBell", () => {
       "unsupported",
     );
     const runnerHost = createRunnerHost();
-    mountBell(runnerHost, { wsStreamClient: streamClient });
+    mountBell(runnerHost, { wsStreamClient: streamClient, feedMode: "local" });
 
     // By testid, not by accessible name: these three cases are about the
     // SUBTITLE, and their fixtures leave the host summary absent - which is
@@ -469,7 +478,7 @@ describe("NotificationsBell", () => {
       "unknown",
     );
     const runnerHost = createRunnerHost();
-    mountBell(runnerHost, { wsStreamClient: streamClient });
+    mountBell(runnerHost, { wsStreamClient: streamClient, feedMode: "local" });
 
     // By testid, not by accessible name: these three cases are about the
     // SUBTITLE, and their fixtures leave the host summary absent - which is
@@ -503,7 +512,7 @@ describe("NotificationsBell", () => {
       "supported",
     );
     const runnerHost = createRunnerHost();
-    mountBell(runnerHost, { wsStreamClient: streamClient });
+    mountBell(runnerHost, { wsStreamClient: streamClient, feedMode: "cloud" });
 
     // By testid, not by accessible name: these three cases are about the
     // SUBTITLE, and their fixtures leave the host summary absent - which is

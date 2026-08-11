@@ -7,7 +7,10 @@ import {
   openEpicHostIds,
   registry,
 } from "@/lib/registries/epic-session-registry";
-import { openAgentActivityStream } from "@/stores/agent-activity-store";
+import {
+  openAgentActivityStream,
+  useAgentActivityStore,
+} from "@/stores/agent-activity-store";
 
 /**
  * Agent activity from the hosts the user's open epics actually live on
@@ -71,7 +74,16 @@ function EpicHostActivityStream(props: {
   const onAuthError = props.onAuthError;
   useEffect(() => {
     if (streamClient === null) return;
-    return openAgentActivityStream(hostId, streamClient, onAuthError);
+    const dispose = openAgentActivityStream(hostId, streamClient, onAuthError);
+    return () => {
+      dispose();
+      // The disposer nulls its `currentClient` BEFORE closing, so the close
+      // callback that would normally wipe this slice is ignored. Nothing else
+      // in production calls `resetHost`, so without this the host's agent ids
+      // stayed in the cross-host union after its last tab closed and read as
+      // work still in progress.
+      useAgentActivityStore.getState().resetHost(hostId);
+    };
   }, [hostId, onAuthError, streamClient]);
   return null;
 }

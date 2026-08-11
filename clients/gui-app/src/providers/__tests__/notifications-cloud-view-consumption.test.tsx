@@ -59,6 +59,14 @@ vi.mock("@/lib/host/stream-runtime-context", () => ({
     method === "host.notifications.cloudFeed.subscribe"
       ? { major: 1, minor: 1 }
       : { major: 1, minor: 2 },
+  // The provider negotiates the feed mode against the client it opened the
+  // streams on, so it reads the `For` variants; the harness answers the same
+  // way regardless of which client is passed.
+  useStreamMethodSupportFor: () => feedSupport.value,
+  useStreamMethodSchemaVersionFor: (_client: unknown, method: string) =>
+    method === "host.notifications.cloudFeed.subscribe"
+      ? { major: 1, minor: 1 }
+      : { major: 1, minor: 2 },
 }));
 
 // Per G8 the provider binds to the LOCAL host, so these two hooks replace

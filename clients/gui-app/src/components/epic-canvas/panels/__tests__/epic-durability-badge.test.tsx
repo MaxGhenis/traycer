@@ -1,6 +1,12 @@
 import "../../../../../__tests__/test-browser-apis";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  type RenderResult,
+} from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { EpicDurabilityBadge } from "../epic-durability-badge";
 import type {
   EpicCloudFreshness,
@@ -77,6 +83,19 @@ vi.mock("@/providers/use-runner-host", () => ({
   }),
 }));
 
+/**
+ * The badge opens the upgrade link through `useRunnerOpenExternalLink` rather
+ * than calling the bridge directly, so it needs a query client like every
+ * other backend-touching surface in this app.
+ */
+function renderBadge(): RenderResult {
+  return render(
+    <QueryClientProvider client={new QueryClient()}>
+      <EpicDurabilityBadge />
+    </QueryClientProvider>,
+  );
+}
+
 describe("<EpicDurabilityBadge />", () => {
   afterEach(() => {
     cleanup();
@@ -88,7 +107,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.pauseReason = "access-revoked";
     durability.promotionState = null;
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(screen.getByText("Sync blocked — access revoked")).toBeTruthy();
     expect(
@@ -106,7 +125,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.pauseReason = "orphaned-local-edits-after-cloud-delete";
     durability.promotionState = null;
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(
       screen.getByText("Deleted in cloud — local edits kept here"),
@@ -123,7 +142,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.pauseReason = "entitlement-lapsed";
     durability.promotionState = null;
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(screen.getByText("Sync paused")).toBeTruthy();
     expect(screen.getByText("Upgrade")).toBeTruthy();
@@ -135,7 +154,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.pauseReason = null;
     durability.promotionState = null;
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(screen.getByText("Sync paused")).toBeTruthy();
     expect(screen.queryByText("Upgrade")).toBeNull();
@@ -147,7 +166,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.pauseReason = null;
     durability.promotionState = "pending";
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     const badge = screen.getByTestId("epic-durability-badge");
     expect(badge.getAttribute("data-promotion-state")).toBe("pending");
@@ -160,7 +179,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.pauseReason = null;
     durability.promotionState = "active";
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     const badge = screen.getByTestId("epic-durability-badge");
     expect(badge.getAttribute("data-promotion-state")).toBe("active");
@@ -180,7 +199,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.promotionState = null;
     durability.localProtection = "unknown";
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(screen.getByText("Storage status unknown")).toBeTruthy();
   });
@@ -191,7 +210,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.promotionState = null;
     durability.localProtection = "unavailable";
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     const badge = screen.getByTestId("epic-durability-badge");
     expect(screen.getByText("No local backup")).toBeTruthy();
@@ -206,7 +225,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.promotionState = null;
     durability.localProtection = "unknown";
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(screen.getByText("Storage status unknown")).toBeTruthy();
   });
@@ -219,7 +238,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.promotionState = null;
     durability.localProtection = "armed";
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(screen.queryByTestId("epic-durability-badge")).toBeNull();
   });
@@ -231,7 +250,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.promotionState = null;
     durability.localProtection = null;
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(screen.queryByTestId("epic-durability-badge")).toBeNull();
   });
@@ -245,7 +264,7 @@ describe("<EpicDurabilityBadge />", () => {
     durability.promotionState = null;
     durability.localProtection = "armed";
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(
       screen.getByText("Deleted in cloud — local edits kept here"),
@@ -284,7 +303,7 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
       state: "current",
     };
 
-    const { container } = render(<EpicDurabilityBadge />);
+    const { container } = renderBadge();
 
     // `current` is the reassuring answer, and the badge draws only when there
     // is something to say. This is also the case that proves the freshness
@@ -296,7 +315,7 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
     cloudDurableAndArmed();
     durability.cloudFreshness = null;
 
-    const { container } = render(<EpicDurabilityBadge />);
+    const { container } = renderBadge();
 
     expect(container.firstChild).toBeNull();
   });
@@ -309,7 +328,7 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
       state: "local-copy",
     };
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     const badge = screen.getByTestId("epic-durability-badge");
     expect(badge.getAttribute("data-cloud-freshness")).toBe("local-copy");
@@ -335,7 +354,7 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
       state: "stale",
     };
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(
       screen
@@ -359,7 +378,7 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
     // ever get.
     durability.cloudFreshness = { kind: "freshnessUnknown", state: "stale" };
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(screen.getByTestId("epic-cloud-freshness-at").textContent).toContain(
       "never synced",
@@ -376,7 +395,7 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
     durability.localProtection = "armed";
     durability.cloudFreshness = { kind: "freshnessUnknown", state: "syncing" };
 
-    render(<EpicDurabilityBadge />);
+    renderBadge();
 
     expect(screen.getByText("Cloud mirror — offline")).toBeTruthy();
     expect(screen.getByTestId("epic-cloud-freshness").textContent).toContain(

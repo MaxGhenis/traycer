@@ -205,9 +205,17 @@ export function deriveEpicSyncPillState(
   // Cloud down. The pill may not imply the work is being kept anywhere unless
   // something is keeping it - and an unarmed session is keeping it nowhere.
   if (inputs.localProtection === "unavailable") return "unprotected";
-  return inputs.hostDirtyState === "dirty"
-    ? "offlineWithHostPending"
-    : linkComingUpState(inputs.hasConnectedOnce);
+  if (inputs.hostDirtyState === "dirty") {
+    // `armed` is the POSITIVE statement this state's contract requires: the
+    // host has the outstanding work in its WAL and will replay it. Without
+    // this arm `offlineChangesSavedLocally` was unreachable - the union
+    // member, its pill rendering, and its tests all existed for a state the
+    // derivation could never return.
+    return inputs.localProtection === "armed"
+      ? "offlineChangesSavedLocally"
+      : "offlineWithHostPending";
+  }
+  return linkComingUpState(inputs.hasConnectedOnce);
 }
 
 /**

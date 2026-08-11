@@ -65,10 +65,15 @@ function warningAnnouncement(
   state: EpicSyncPillState,
   indicator: PillIndicator,
 ): string | null {
+  // `unprotected` is the only state here that reports a RISK rather than a
+  // stage, so it is the one that most needs the live region: the red pill
+  // appears while focus is elsewhere, and an `aria-label` swap on an unfocused
+  // button is not announced.
   switch (state) {
     case "offlineWithUnsavedChanges":
     case "offlineWithHostPending":
     case "offlineChangesSavedLocally":
+    case "unprotected":
     case "offline":
       return indicator.ariaLabel;
     default:
