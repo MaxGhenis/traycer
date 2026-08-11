@@ -246,6 +246,14 @@
       "method": "chat.subscribe",
       "version": "*",
       "payload": "serverFrame",
+      "path": "**.providerNotice",
+      "reason": "Parsed-stream field, nullable/.default(null): the text block's `text` always carries the full plain rendering and the client falls back to it when the notice is null - the documented pre-#243 behavior."
+    },
+    {
+      "family": "stream",
+      "method": "chat.subscribe",
+      "version": "*",
+      "payload": "serverFrame",
       "path": "**.blocks.items.anyOf[*].properties.stopped",
       "reason": "Parsed-stream flag with .default(false) on tool_call/subagent blocks: false renders the plain error end-state badge, exactly the shipped pre-#152 treatment (a legacy error-string fallback for old blocks is retained in the tool segment)."
     },
