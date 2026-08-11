@@ -1,5 +1,6 @@
 export * from "./agent";
 export * from "./browser";
+export * from "./chat-fork";
 export * from "./comments";
 export * from "./editor";
 export * from "./epic";
@@ -18,6 +19,7 @@ export * from "./runtime-capabilities";
 export * from "./speech";
 export * from "./status";
 export * from "./terminal";
+export * from "./usage-analytics";
 export * from "./workspace";
 export * from "./worktree-changed-stream";
 
@@ -26,6 +28,7 @@ export {
   hostStreamRpcRegistry,
   hostGetRuntimeCapabilitiesV10,
   hostGetRateLimitUsageV10,
+  hostUsageSummaryV10,
   snapshotsGetLocalStorageSizeV10,
   snapshotsClearLocalSnapshotsV10,
   worktreeCreateV10,

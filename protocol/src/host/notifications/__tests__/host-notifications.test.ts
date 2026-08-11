@@ -9,6 +9,8 @@ import {
   hostNotificationEntrySchema,
   hostNotificationsGetConfig,
   hostNotificationsIndicatorState,
+  hostNotificationsIndicatorStateUpgradeV10ToV11,
+  hostNotificationsIndicatorStateV10,
   hostNotificationsListV10,
   hostNotificationsListV20,
   hostNotificationsListRequestSchema,
@@ -28,7 +30,9 @@ import {
   hostNotificationsCloudFeedEntryRequestSchema,
   hostNotificationsCloudFeedClearAllRequestSchema,
   hostNotificationsCloudFeedMutationResponseSchema,
+  hostNotificationsCloudFeedMarkAllReadResponseSchema,
   hostNotificationsCloudFeedMarkRead,
+  hostNotificationsCloudFeedMarkAllRead,
   hostNotificationsCloudFeedResolve,
   hostNotificationsCloudFeedClear,
   hostNotificationsCloudFeedClearAll,
@@ -447,7 +451,7 @@ describe("host.notifications.clearAll@1.0", () => {
   });
 });
 
-describe("host.notifications.indicatorState@1.0", () => {
+describe("host.notifications.indicatorState", () => {
   it("accepts bounded separate epic and chat batches", () => {
     expect(
       hostNotificationsIndicatorState.requestSchema.parse({
@@ -479,6 +483,48 @@ describe("host.notifications.indicatorState@1.0", () => {
         chats: {},
       }).success,
     ).toBe(false);
+  });
+
+  it("adds an all-false pendingFork flag when bridging an older host", () => {
+    expect(
+      hostNotificationsIndicatorStateUpgradeV10ToV11.upgradeResponse({
+        epics: {
+          "epic-1": {
+            pendingApproval: false,
+            pendingInterview: true,
+            unreadFailure: false,
+            unreadDone: false,
+          },
+        },
+        chats: {
+          "chat-1": {
+            pendingApproval: false,
+            pendingInterview: false,
+            unreadFailure: true,
+            unreadDone: false,
+          },
+        },
+      }),
+    ).toEqual({
+      epics: {
+        "epic-1": {
+          pendingApproval: false,
+          pendingInterview: true,
+          pendingFork: false,
+          unreadFailure: false,
+          unreadDone: false,
+        },
+      },
+      chats: {
+        "chat-1": {
+          pendingApproval: false,
+          pendingInterview: false,
+          pendingFork: false,
+          unreadFailure: true,
+          unreadDone: false,
+        },
+      },
+    });
   });
 });
 
@@ -838,7 +884,7 @@ describe("host.notifications.cloudFeed@1.0 immutable-entry surface", () => {
     ).toBe(false);
   });
 
-  it("answers a mutation with a status and a version that is null exactly when unavailable", () => {
+  it("answers released per-entry mutations with a status and a version that is null exactly when unavailable", () => {
     expect(
       hostNotificationsCloudFeedMutationResponseSchema.parse({
         status: "applied",
@@ -853,6 +899,12 @@ describe("host.notifications.cloudFeed@1.0 immutable-entry surface", () => {
     ).toEqual({ status: "unavailable", version: null });
     expect(
       hostNotificationsCloudFeedMutationResponseSchema.safeParse({
+        status: "unsupported",
+        version: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      hostNotificationsCloudFeedMutationResponseSchema.safeParse({
         status: "applied",
         version: null,
       }).success,
@@ -865,11 +917,24 @@ describe("host.notifications.cloudFeed@1.0 immutable-entry surface", () => {
     ).toBe(false);
   });
 
+  it("answers the additive cloud mark-all-read operation as unsupported", () => {
+    expect(
+      hostNotificationsCloudFeedMarkAllReadResponseSchema.parse({
+        status: "unsupported",
+        version: null,
+      }),
+    ).toEqual({ status: "unsupported", version: null });
+  });
+
   it("registers the whole family on the unary registry as optional methods", () => {
     expect(
       hostRpcRegistry["host.notifications.cloudFeed.markRead"][1].versions[0]
         .contract,
     ).toBe(hostNotificationsCloudFeedMarkRead);
+    expect(
+      hostRpcRegistry["host.notifications.cloudFeed.markAllRead"][1].versions[0]
+        .contract,
+    ).toBe(hostNotificationsCloudFeedMarkAllRead);
     expect(
       hostRpcRegistry["host.notifications.cloudFeed.resolve"][1].versions[0]
         .contract,
@@ -884,6 +949,7 @@ describe("host.notifications.cloudFeed@1.0 immutable-entry surface", () => {
     ).toBe(hostNotificationsCloudFeedClearAll);
     for (const method of [
       "host.notifications.cloudFeed.markRead",
+      "host.notifications.cloudFeed.markAllRead",
       "host.notifications.cloudFeed.resolve",
       "host.notifications.cloudFeed.clear",
       "host.notifications.cloudFeed.clearAll",
@@ -926,6 +992,10 @@ describe("host.notifications registry membership", () => {
     expect(
       hostRpcRegistry["host.notifications.indicatorState"][1].versions[0]
         .contract,
+    ).toBe(hostNotificationsIndicatorStateV10);
+    expect(
+      hostRpcRegistry["host.notifications.indicatorState"][1].versions[1]
+        .contract,
     ).toBe(hostNotificationsIndicatorState);
   });
 
@@ -940,7 +1010,10 @@ describe("host.notifications registry membership", () => {
         .contract,
     ).toBe(hostNotificationsFeedSubscribeV10);
     expect(
-      Object.hasOwn(hostStreamRpcRegistry["host.notifications.feed.subscribe"], "2"),
+      Object.hasOwn(
+        hostStreamRpcRegistry["host.notifications.feed.subscribe"],
+        "2",
+      ),
     ).toBe(false);
     expect(
       hostStreamRpcRegistry["host.notifications.cloudFeed.subscribe"][1]
@@ -950,8 +1023,10 @@ describe("host.notifications registry membership", () => {
 
   it("keeps the local-feed method compatible in both directions while cloud feed remains explicitly unsupported by an old peer", () => {
     const currentManifest = buildStreamManifest(hostStreamRpcRegistry);
-    const { ["host.notifications.cloudFeed.subscribe"]: _cloudFeed, ...oldManifest } =
-      currentManifest;
+    const {
+      ["host.notifications.cloudFeed.subscribe"]: _cloudFeed,
+      ...oldManifest
+    } = currentManifest;
 
     expect(
       checkStreamMethodCompatibility(
@@ -981,7 +1056,10 @@ describe("host.notifications registry membership", () => {
       ),
     ).toMatchObject({
       ok: false,
-      details: { code: "INCOMPATIBLE", upgradeGuidance: { hostShouldUpgrade: true } },
+      details: {
+        code: "INCOMPATIBLE",
+        upgradeGuidance: { hostShouldUpgrade: true },
+      },
     });
   });
 });

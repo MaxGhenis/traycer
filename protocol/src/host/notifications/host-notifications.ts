@@ -770,12 +770,22 @@ export type HostNotificationsSubscribeClientFrame = z.infer<
   typeof hostNotificationsSubscribeClientFrameSchema
 >;
 
-export const hostNotificationsIndicatorStateSchema = z.object({
+/** Released `indicatorState@1.0` entity flags. FROZEN. */
+export const hostNotificationsIndicatorStateSchemaV10 = z.object({
   pendingApproval: z.boolean(),
   pendingInterview: z.boolean(),
   unreadFailure: z.boolean(),
   unreadDone: z.boolean(),
 });
+export type HostNotificationsIndicatorStateV10 = z.infer<
+  typeof hostNotificationsIndicatorStateSchemaV10
+>;
+
+/** `indicatorState@1.1`: pending fork truth is independent of feed read state. */
+export const hostNotificationsIndicatorStateSchema =
+  hostNotificationsIndicatorStateSchemaV10.extend({
+    pendingFork: z.boolean(),
+  });
 export type HostNotificationsIndicatorState = z.infer<
   typeof hostNotificationsIndicatorStateSchema
 >;
@@ -786,6 +796,15 @@ export const hostNotificationsIndicatorStateRequestSchema = z.object({
 });
 export type HostNotificationsIndicatorStateRequest = z.infer<
   typeof hostNotificationsIndicatorStateRequestSchema
+>;
+
+/** Released `indicatorState@1.0` response. FROZEN. */
+export const hostNotificationsIndicatorStateResponseSchemaV10 = z.object({
+  epics: z.record(z.string(), hostNotificationsIndicatorStateSchemaV10),
+  chats: z.record(z.string(), hostNotificationsIndicatorStateSchemaV10),
+});
+export type HostNotificationsIndicatorStateResponseV10 = z.infer<
+  typeof hostNotificationsIndicatorStateResponseSchemaV10
 >;
 
 export const hostNotificationsIndicatorStateResponseSchema = z.object({
@@ -1174,10 +1193,20 @@ export type HostNotificationsCloudFeedClearAllRequest = z.infer<
 >;
 
 /**
+ * Mark every notification read in the cloud snapshot the user was looking at.
+ * The shape matches clear-all because both operations are bounded by observed
+ * feed membership rather than a host timestamp.
+ */
+export const hostNotificationsCloudFeedMarkAllReadRequestSchema =
+  hostNotificationsCloudFeedClearAllRequestSchema;
+export type HostNotificationsCloudFeedMarkAllReadRequest = z.infer<
+  typeof hostNotificationsCloudFeedMarkAllReadRequestSchema
+>;
+
+/**
  * `unavailable` means the relay could not reach the cloud, and NOTHING was
  * changed anywhere - the host deliberately keeps no local shadow of the cloud
- * feed to mutate optimistically. The client keeps showing the rows it has and
- * surfaces the degraded state; it must not treat the mutation as applied.
+ * feed to mutate optimistically. Neither is an applied mutation.
  */
 export const hostNotificationsCloudFeedMutationResponseSchema = z
   .object({
@@ -1186,15 +1215,38 @@ export const hostNotificationsCloudFeedMutationResponseSchema = z
     version: z.number().int().nonnegative().nullable(),
   })
   .superRefine((value, context) => {
-    if ((value.status === "unavailable") === (value.version === null)) return;
+    if ((value.status === "applied") === (value.version !== null)) return;
     context.addIssue({
       code: "custom",
       path: ["version"],
-      message: "version must be null exactly when status is unavailable",
+      message: "version must be non-null exactly when status is applied",
     });
   });
 export type HostNotificationsCloudFeedMutationResponse = z.infer<
   typeof hostNotificationsCloudFeedMutationResponseSchema
+>;
+
+/**
+ * The atomic bulk operation is additive. `unsupported` means an older cloud
+ * server accepted its envelope but could not acknowledge this new operation;
+ * the client may then use the released per-entry compatibility path.
+ */
+export const hostNotificationsCloudFeedMarkAllReadResponseSchema = z
+  .object({
+    status: z.enum(["applied", "unavailable", "unsupported"]),
+    /** The feed version after the mutation; `null` when it was not applied. */
+    version: z.number().int().nonnegative().nullable(),
+  })
+  .superRefine((value, context) => {
+    if ((value.status === "applied") === (value.version !== null)) return;
+    context.addIssue({
+      code: "custom",
+      path: ["version"],
+      message: "version must be non-null exactly when status is applied",
+    });
+  });
+export type HostNotificationsCloudFeedMarkAllReadResponse = z.infer<
+  typeof hostNotificationsCloudFeedMarkAllReadResponseSchema
 >;
 
 export const hostNotificationsCloudFeedMarkRead = defineRpcContract({
@@ -1216,6 +1268,13 @@ export const hostNotificationsCloudFeedClear = defineRpcContract({
   schemaVersion: { major: 1, minor: 0 } as const,
   requestSchema: hostNotificationsCloudFeedEntryRequestSchema,
   responseSchema: hostNotificationsCloudFeedMutationResponseSchema,
+});
+
+export const hostNotificationsCloudFeedMarkAllRead = defineRpcContract({
+  method: "host.notifications.cloudFeed.markAllRead",
+  schemaVersion: { major: 1, minor: 0 } as const,
+  requestSchema: hostNotificationsCloudFeedMarkAllReadRequestSchema,
+  responseSchema: hostNotificationsCloudFeedMarkAllReadResponseSchema,
 });
 
 export const hostNotificationsCloudFeedClearAll = defineRpcContract({
@@ -1248,12 +1307,49 @@ export const hostNotificationsSetConfig = defineRpcContract({
   responseSchema: hostNotificationsConfigResponseSchema,
 });
 
-export const hostNotificationsIndicatorState = defineRpcContract({
+export const hostNotificationsIndicatorStateV10 = defineRpcContract({
   method: "host.notifications.indicatorState",
   schemaVersion: { major: 1, minor: 0 } as const,
   requestSchema: hostNotificationsIndicatorStateRequestSchema,
+  responseSchema: hostNotificationsIndicatorStateResponseSchemaV10,
+});
+
+export const hostNotificationsIndicatorState = defineRpcContract({
+  method: "host.notifications.indicatorState",
+  schemaVersion: { major: 1, minor: 1 } as const,
+  requestSchema: hostNotificationsIndicatorStateRequestSchema,
   responseSchema: hostNotificationsIndicatorStateResponseSchema,
 });
+
+/**
+ * A v1.0 peer predates fork indicators. Default the new pending-class flag to
+ * false so a newer renderer keeps its sidebar fully functional against an
+ * older host rather than treating field absence as a malformed response.
+ */
+export const hostNotificationsIndicatorStateUpgradeV10ToV11 =
+  defineUpgradePath<
+    typeof hostNotificationsIndicatorStateV10,
+    typeof hostNotificationsIndicatorState
+  >({
+    from: hostNotificationsIndicatorStateV10.schemaVersion,
+    to: hostNotificationsIndicatorState.schemaVersion,
+    upgradeRequest: (request) => request,
+    upgradeResponse: (response) => ({
+      epics: addPendingForkDefault(response.epics),
+      chats: addPendingForkDefault(response.chats),
+    }),
+  });
+
+function addPendingForkDefault(
+  states: Readonly<Record<string, HostNotificationsIndicatorStateV10>>,
+): Record<string, HostNotificationsIndicatorState> {
+  return Object.fromEntries(
+    Object.entries(states).map(([id, state]) => [
+      id,
+      { ...state, pendingFork: false },
+    ]),
+  );
+}
 
 /**
  * `host.notificationHooks.*@1.0` - status, test, and whole-file save surface

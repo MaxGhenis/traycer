@@ -109,7 +109,11 @@ import {
   promoteQueuedMessageToFront,
 } from "@/lib/chats/compact-conversation";
 import { useSlashCommands } from "@/hooks/composer/use-slash-commands";
-import { ChatDeadTileBanner, ChatHostStartingBanner } from "./dead-tile-banner";
+import {
+  ChatDeadTileBanner,
+  ChatHostStartingBanner,
+  type ChatDeadTileBannerReason,
+} from "./dead-tile-banner";
 import { useHostQuery } from "@/hooks/host/use-host-query";
 import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
 import { flattenCollaborators } from "@/hooks/epics/use-epic-collaborators-query";
@@ -122,6 +126,7 @@ import { useChatActions } from "@/hooks/chats/use-chat-actions";
 import { useChatSetupFailureRestoreDriver } from "@/hooks/chats/use-chat-setup-failure-restore-driver";
 import { useSetupTerminalListRefreshDriver } from "@/hooks/chats/use-setup-terminal-list-refresh-driver";
 import { useSetupTerminalTabRegisterDriver } from "@/hooks/chats/use-setup-terminal-tab-register-driver";
+import { useCloneSourceOwnerUserId } from "@/hooks/chats/use-clone-source-owner";
 import { emitChatStreamErrorNotification } from "@/stores/notifications/app-local-notifications-store";
 import { type InitialChatHandoffScope } from "@/stores/epics/initial-chat-handoff-store";
 import { contentBlocksText } from "@/lib/chat/content-block-text";
@@ -194,6 +199,7 @@ import {
   findPendingInterview,
   findUnanswerableInterviews,
 } from "./chat-tile-session-state";
+import type { ChatSurfaceNode } from "./chat-tile-types";
 import { ChatTileLoading, ChatTileError } from "./chat-tile-runtime-gate";
 import { SurfaceActivityProvider } from "@/components/home/composer/surface-activity-context";
 import { chatTileCatalogActivity } from "./chat-tile-surface-activity";
@@ -227,11 +233,16 @@ interface ChatTileProps {
 
 interface ChatTileSessionViewProps {
   readonly handle: ChatSessionStoreHandle;
-  readonly node: EpicNodeRef;
+  readonly node: ChatSurfaceNode;
   readonly viewTabId: string;
   readonly tileId: string;
   readonly isActive: boolean;
   readonly currentEpicId: string;
+  /**
+   * Why this surface's composer is locked, when the reason is not a viewer's
+   * permission. `null` on every live tile - the ordinary path is untouched.
+   */
+  readonly readOnlyNotice: string | null;
 }
 
 function buildModelReasoningLabels(
@@ -278,7 +289,29 @@ export function ChatTile(props: ChatTileProps) {
   // ahead of the create - closing the local-first subscribe-first race.
   const chatRecord = useChatById(node.id);
   const tabHostId = useTabHostId();
-  const handle = useChatSessionHandle(node.id, tabHostId, chatRecord !== null);
+  // A CROSS-HOST live open (a connected peer host's chat, opened from the
+  // unified sidebar) may never get a local projection record at all - the
+  // chat lives in the owner host's registry, not this device's. The record
+  // gate exists only to close the local-first subscribe-first race, and that
+  // race is a same-host phenomenon: the chat was just created on the host
+  // that was active here. So the gate applies exactly when this tab bound
+  // the then-active host. Decided ONCE at mount (a `useState` initializer,
+  // never a reactive active-host read - tabs are bound to a host for life
+  // and must not change behavior when the active host swaps).
+  const hostBinding = useHostBinding();
+  const [isCrossHostOpen] = useState(() => {
+    // A null active host id is ignorance (binding still resolving), not
+    // evidence of a cross-host open - exempting on it would reopen the
+    // subscribe-first race for every chat mounted during bootstrap. Only a
+    // KNOWN, different active host earns the exemption.
+    const activeHostId = hostBinding?.hostClient.getActiveHostId() ?? null;
+    return activeHostId !== null && activeHostId !== tabHostId;
+  });
+  const handle = useChatSessionHandle(
+    node.id,
+    tabHostId,
+    chatRecord !== null || isCrossHostOpen,
+  );
   const reachability = useHostReachability(tabHostId);
   // Feeds `TombstonedProfileProvider` below - "ran on <label> (removed)" for
   // a message anchored to a since-tombstoned profile. Shares the same
@@ -301,6 +334,7 @@ export function ChatTile(props: ChatTileProps) {
           chatId={node.id}
           sourceHostId={tabHostId}
           hostLabel={reachability.hostLabel}
+          reason="host-offline"
           testId={`chat-dead-tile-${node.id}`}
         />
       );
@@ -345,6 +379,7 @@ export function ChatTile(props: ChatTileProps) {
           tileId={props.tileId}
           isActive={isActive}
           currentEpicId={epicId}
+          readOnlyNotice={null}
         />
       </TombstonedProfileProvider>
     </div>
@@ -357,22 +392,35 @@ interface ChatDeadTileBannerContainerProps {
   readonly chatId: string;
   readonly sourceHostId: string;
   readonly hostLabel: string;
+  readonly reason: ChatDeadTileBannerReason;
   readonly testId: string;
 }
 
-function ChatDeadTileBannerContainer(
+export function ChatDeadTileBannerContainer(
   props: ChatDeadTileBannerContainerProps,
 ): ReactNode {
   const chatRecord = useChatById(props.chatId);
+  const bannerBinding = useHostBinding();
+  // Ticket 37: both banner render sites (this tile's unreachable-host arm and
+  // the canvas substitution) resolve the source owner through the one hook, so
+  // a chat with no local record still carries its history across the clone.
+  const sourceOwnerUserId = useCloneSourceOwnerUserId({
+    client: bannerBinding?.hostClient ?? null,
+    epicId: props.epicId,
+    chatId: props.chatId,
+  });
   const offer = useChatCloneOnHostSwitch({
     epicId: props.epicId,
     tabId: props.tabId,
+    chatId: props.chatId,
     sourceHostId: props.sourceHostId,
     sourceSettings: chatRecord?.settings ?? null,
+    sourceOwnerUserId,
   });
   return (
     <ChatDeadTileBanner
       hostLabel={props.hostLabel}
+      reason={props.reason}
       onClone={offer.clone}
       cloning={offer.cloning}
       className={undefined}
@@ -384,8 +432,11 @@ function ChatDeadTileBannerContainer(
 interface UseChatCloneOnHostSwitchArgs {
   readonly epicId: string;
   readonly tabId: string;
+  readonly chatId: string;
   readonly sourceHostId: string;
   readonly sourceSettings: ChatRunSettings | null;
+  /** The owner this banner was showing, or `null` when it does not know. */
+  readonly sourceOwnerUserId: string | null;
 }
 
 /**
@@ -425,6 +476,8 @@ function useChatCloneOnHostSwitch(args: UseChatCloneOnHostSwitchArgs): {
     cancelRef.current = cloneChatOnHostSwitch({
       epicId: args.epicId,
       tabId: args.tabId,
+      sourceChatId: args.chatId,
+      sourceOwnerUserId: args.sourceOwnerUserId,
       sourceHostId: args.sourceHostId,
       targetHostId: target.hostId,
       directory: binding.directory,
@@ -435,9 +488,22 @@ function useChatCloneOnHostSwitch(args: UseChatCloneOnHostSwitchArgs): {
           "Continuing on the Terminal account - your profile isn't available on this host.",
         );
       },
+      onHistoryUnavailable: (reason) => {
+        toast(
+          reason === "no-checkpoint"
+            ? "This agent hasn't replied yet, so its history can't be carried - continuing with settings only."
+            : "This device can't send this agent's history to that host version - continuing with settings only.",
+        );
+      },
+      onCloneFailed: () => {
+        setCloning(false);
+      },
       navigateNestedFocus,
       createChat: (request, callbacks) => {
-        createChat.mutate(request, { onSuccess: callbacks.onSuccess });
+        createChat.mutate(request, {
+          onSuccess: callbacks.onSuccess,
+          onError: callbacks.onError,
+        });
       },
     });
   }, [
@@ -446,6 +512,11 @@ function useChatCloneOnHostSwitch(args: UseChatCloneOnHostSwitchArgs): {
     navigateNestedFocus,
     args.epicId,
     args.tabId,
+    args.chatId,
+    // The cloud list can resolve AFTER this banner first renders, so the
+    // callback must be rebuilt when the owner lands - otherwise a click still
+    // sends the `null` this closed over on the first pass (ticket 37).
+    args.sourceOwnerUserId,
     args.sourceHostId,
     args.sourceSettings,
   ]);
@@ -640,7 +711,7 @@ function transcriptJumpCardKind(
   return backgroundItemCardKind(item.kind);
 }
 
-function ChatTileSessionView(props: ChatTileSessionViewProps) {
+export function ChatTileSessionView(props: ChatTileSessionViewProps) {
   const view = useChatTileSessionViewModel(props);
   const hostId = useTabHostId();
   const systemOverlayActive = useAnySystemOverlayActive();
@@ -1952,7 +2023,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
   // pinned strip. Per-folder Environment config lives inside the selected
   // Workspace panel.
   //
-  // The monitors menu rides the leading cell rather than becoming a third grid
+  // The Shells menu rides the leading cell rather than becoming a third grid
   // column: the usage chip's pinned strip spans the row via `col-span-full`,
   // which only works while it is a direct child of `ComposerWorkspaceRow`'s
   // two-column grid. `justify-between` parks the menu at that cell's trailing
@@ -1998,8 +2069,9 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     () => ({
       isViewer: accessFlags.isViewer,
       canAct,
+      readOnlyNotice: props.readOnlyNotice,
     }),
-    [accessFlags.isViewer, canAct],
+    [accessFlags.isViewer, canAct, props.readOnlyNotice],
   );
 
   // Steer capability is a stable boolean (flips only when the running turn's
@@ -2208,7 +2280,7 @@ interface ChatSessionMessagesSurfaceProps {
   readonly fatalClose: FatalErrorDetails | null;
   readonly onRetry: () => void;
   readonly restoreContext: ChatRestoreContextValue;
-  readonly node: EpicNodeRef;
+  readonly node: ChatSurfaceNode;
   readonly epicId: string;
   readonly viewTabId: string;
   readonly tabHostId: string | null;

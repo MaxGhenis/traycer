@@ -89,7 +89,7 @@ const RESTORE_CONTEXT: ChatRestoreContextValue = {
 
 const RUNNING_MONITOR: ManagedCommand = {
   id: "cmd-monitor",
-  kind: "monitor",
+  monitoring: true,
   description: "deploy watcher",
   status: { state: "running", pid: 4410, startedAtMs: 10 },
   chatId: CHAT_ID,
@@ -116,7 +116,7 @@ function surfacesProps(): ChatLowerInteractionSurfacesProps {
     viewTabId: TAB_ID,
     chatId: CHAT_ID,
     runtime: { snapshotLoaded: true },
-    access: { isViewer: false, canAct: true },
+    access: { isViewer: false, canAct: true, readOnlyNotice: null },
     turn: {
       activeTurnStatus: null,
       steerCapable: false,

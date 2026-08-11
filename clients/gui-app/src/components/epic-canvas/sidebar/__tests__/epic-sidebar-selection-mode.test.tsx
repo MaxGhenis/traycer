@@ -7,9 +7,11 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { domMax, LazyMotion } from "motion/react";
 import type { ReactNode } from "react";
 import type { Mock } from "vitest";
 import type { ProviderId } from "@/components/home/data/landing-options";
+import type { ManagedCommand } from "@traycer/protocol/host/managed-command/unary-schemas";
 import {
   createChatSessionStore,
   type ChatSessionStoreHandle,
@@ -17,6 +19,7 @@ import {
 import { IMMEDIATE_STREAM_FLUSH_COORDINATOR } from "@/stores/chats/stream-flush-coordinator";
 import { useNewConversationModalOpenStore } from "@/stores/epics/new-conversation-modal-open-store";
 import { useNewConversationModalStore } from "@/stores/epics/new-conversation-modal-store";
+import { useAppDialogStore } from "@/stores/dialogs/app-dialog-store";
 
 interface TestTreeNode {
   readonly id: string;
@@ -40,6 +43,7 @@ interface TestRecord {
 
 interface TestIndicatorState {
   readonly unreadFailure: boolean;
+  readonly pendingFork: boolean;
   readonly pendingApproval: boolean;
   readonly pendingInterview: boolean;
   readonly unreadDone: boolean;
@@ -127,6 +131,8 @@ interface TestState {
     }) => Promise<unknown>
   >;
   rowHostId: string | null;
+  rowHostReachability: "reachable" | "unreachable";
+  preparedOpenRefs: Array<{ type: string; id: string; hostId: string }>;
   rowHostEntry: unknown;
   rowHostClient: unknown;
   activeHostClient: unknown;
@@ -182,6 +188,8 @@ const testState = vi.hoisted<TestState>(() => ({
   archiveRowPending: false,
   archiveMutateAsync: vi.fn(),
   rowHostId: "host-1",
+  rowHostReachability: "reachable",
+  preparedOpenRefs: [],
   rowHostEntry: { hostId: "host-1" },
   rowHostClient: { getActiveHostId: () => "host-1" },
   activeHostClient: { getActiveHostId: () => "host-1" },
@@ -388,6 +396,18 @@ vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
   useReactiveActiveHostId: () => "host-1",
 }));
 
+// The row's unreachable-owner lock reads the host directory through
+// `useHostReachability`; this harness mounts no HostRuntimeProvider, so mock
+// at the hook boundary. "reachable" everywhere = the pre-lock rendering, so
+// every existing assertion is exercised unchanged; the lock's own behavior is
+// pinned where the directory is faked per-entry (host-binding.test.ts).
+vi.mock("@/hooks/agent/use-host-reachability", () => ({
+  useHostReachability: (hostId: string) => ({
+    status: testState.rowHostReachability,
+    hostLabel: hostId,
+  }),
+}));
+
 vi.mock("@/hooks/worktree/use-latest-conversation-workspace-seed", () => ({
   useLatestConversationWorkspaceSeed: () => null,
 }));
@@ -456,6 +476,51 @@ vi.mock("@/hooks/agent/use-create-tui-agent", () => ({
     create: vi.fn(() => Promise.resolve(null)),
     isPending: false,
   }),
+}));
+
+/**
+ * The two host queries behind the unified list's cloud rows, stubbed to
+ * "nothing to add".
+ *
+ * The chat panel reads both directly now that the "other devices" section is
+ * gone, and both are ordinary host queries - so leaving them real would need
+ * this suite to supply a `QueryClientProvider` and a host-client stub complete
+ * enough for `useReactiveHostReadiness`, for rows that do not render here
+ * either way. The fold and the interleave they feed are asserted without a
+ * renderer in `unified-chat-list.test.ts`.
+ */
+vi.mock("@/hooks/chats/use-cloud-chat-queries", () => ({
+  useCloudChatList: () => ({
+    data: undefined,
+    isError: false,
+    isPending: true,
+    isFetching: false,
+    // DISABLED, which is what this harness would really produce: it mounts no
+    // host client and no signed-in viewer, and the real hook gates on both. It
+    // matters to the assertions below - the panel's empty state waits for the
+    // list to have answered, and "it will never run" is an answer, while a
+    // request still in flight is not.
+    isEnabled: false,
+  }),
+  useCloudChatPayload: () => ({ data: undefined, isError: false }),
+  // The real predicate rather than a constant, so the stub above actually
+  // decides: a hard-coded `true` here would hide the difference between "this
+  // query will never run" and "its answer has not arrived yet", which is the one
+  // distinction the panel's empty state depends on.
+  isCloudChatListSettled: (query: {
+    readonly isEnabled: boolean;
+    readonly isSuccess: boolean;
+    readonly isError: boolean;
+  }) => !query.isEnabled || query.isSuccess || query.isError,
+}));
+
+// The fold's mapping. Stubbed alongside the list rather than left real for the
+// same reason, and to `undefined` deliberately: that is the shape an older host
+// (or an in-flight request) produces, so this suite exercises the degraded
+// path the fold is specified to tolerate.
+vi.mock("@/hooks/chats/use-chat-publication-targets", () => ({
+  useChatPublicationTargets: () => ({ data: undefined, isError: false }),
+  publicationTargetMap: () => new Map<string, string>(),
 }));
 
 vi.mock("@/lib/host/runtime", () => ({
@@ -528,6 +593,28 @@ vi.mock("@/stores/epics/canvas/store", () => ({
       markArtifactSelfDeleted: testState.markArtifactSelfDeleted,
       openTileInTab: vi.fn(),
       openTilePreviewInTab: vi.fn(),
+      prepareOpenTilePreviewInTabFocusTarget: (
+        _tabId: string,
+        ref: { type: string; id: string; hostId: string },
+      ) => {
+        testState.preparedOpenRefs.push({
+          type: ref.type,
+          id: ref.id,
+          hostId: ref.hostId,
+        });
+        return null;
+      },
+      prepareOpenTileInTabFocusTarget: (
+        _tabId: string,
+        ref: { type: string; id: string; hostId: string },
+      ) => {
+        testState.preparedOpenRefs.push({
+          type: ref.type,
+          id: ref.id,
+          hostId: ref.hostId,
+        });
+        return null;
+      },
       pendingRootCreatesByEpic: {},
       preAckRootCreatesByEpic: {},
       promotePreviewInTab: vi.fn(),
@@ -622,6 +709,10 @@ vi.mock("@/lib/epic-selectors", () => ({
   },
   useEpicArchivedNodeIds: () => testState.archivedIds,
   useEpicArtifactRecords: () => testState.records,
+  // Dedup input for the cloud-chat section. Empty: this suite is about the
+  // LOCAL tree, and the section hides itself when the cloud list has nothing
+  // to add - which, with no host client bound here, it never does.
+  useEpicChatIds: () => [],
   useEpicArtifactStatus: (artifactId: string) =>
     testState.tree.nodeById[artifactId]?.status ?? null,
   useEpicChatHarnessId: (nodeId: string) =>
@@ -630,6 +721,7 @@ vi.mock("@/lib/epic-selectors", () => ({
   useEpicNodeArchived: (nodeId: string) =>
     testState.archivedIds.includes(nodeId),
   useEpicNodeHostId: () => testState.rowHostId,
+  useEpicNodeOwnerUserId: () => "user-1",
   useEpicNodeOwnerKind: () => "chat",
   // The row's last-activity time. Production reads the chat/TUI PROJECTION
   // rather than the tree node (the node's copy lags - see the selector's doc),
@@ -827,12 +919,15 @@ describe("epic sidebar selection mode", () => {
     testState.archiveRowPending = false;
     testState.archiveMutateAsync = vi.fn();
     testState.rowHostId = "host-1";
+    testState.rowHostReachability = "reachable";
+    testState.preparedOpenRefs = [];
     testState.rowHostEntry = { hostId: "host-1" };
     testState.rowHostClient = { getActiveHostId: () => "host-1" };
     testState.activeHostClient = { getActiveHostId: () => "host-1" };
     testState.sessionHandleByChatId = {};
     useNewConversationModalStore.getState().resetForTests();
     useNewConversationModalOpenStore.getState().close();
+    useAppDialogStore.getState().closeDialog();
   });
 
   it("selects chat rows explicitly and bulk-deletes topmost selected chat roots", async () => {
@@ -2015,12 +2110,43 @@ describe("chat descendant status rollup", () => {
   ): TestIndicatorState {
     return {
       unreadFailure: false,
+      pendingFork: false,
       pendingApproval: false,
       pendingInterview: false,
       unreadDone: false,
       ...overrides,
     };
   }
+
+  // The fork indicator is an OBSERVATION now, not an entry point: a
+  // publication fork resolves itself and the user is told afterwards by a
+  // notification, so clicking the glyph opens nothing. Pinned as a click that
+  // selects the row like any other part of it, because the previous behaviour
+  // (swallow the click, open an arbitration dialog) is exactly what the
+  // demolition removed and a silent no-op glyph would read as a bug.
+  it("shows the fork glyph as a status, with no arbitration to click into", () => {
+    seedNestedChatTree();
+    testState.indicatorChats = {
+      "chat-root": indicator({ pendingFork: true }),
+    };
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    const glyph = screen.getByTestId("chat-sidebar-spinner-fork-chat-root");
+    // The indicator survives - an open episode is real state and worth showing
+    // while it lasts - but it is an OBSERVATION now. The affordance that made
+    // it an entry point into the fork dialog is gone, and both halves of that
+    // are asserted structurally rather than through a click: the delegation
+    // hook the row used to read, and the pointer affordance that advertised
+    // it. A click assertion alone would pass against a handler that silently
+    // did nothing.
+    const span = glyph.parentElement;
+    expect(span?.getAttribute("data-notification-indicator-action")).toBeNull();
+    expect(span?.className).not.toContain("cursor-pointer");
+
+    fireEvent.click(glyph);
+    expect(useAppDialogStore.getState().activeDialog).toBeNull();
+  });
 
   it("bubbles a hidden grandchild's needs-attention status onto the collapsed root", () => {
     seedNestedChatTree();
@@ -2348,6 +2474,7 @@ describe("chat row leading status icon", () => {
   ): TestIndicatorState {
     return {
       unreadFailure: false,
+      pendingFork: false,
       pendingApproval: false,
       pendingInterview: false,
       unreadDone: false,
@@ -2471,6 +2598,69 @@ describe("chat row leading status icon", () => {
   });
 });
 
+describe("unreachable-owner chat rows (tree lock + published-copy routing)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+    testState.activePanelId = "chats";
+    testState.expandedIds = new Set<string>();
+    testState.tree = { rootIds: [], childrenByParent: {}, nodeById: {} };
+    testState.records = [];
+    testState.indicatorChats = {};
+    testState.activeAgentIds = new Set<string>();
+    testState.activityTierById = new Map();
+    testState.permissionRole = "owner";
+    testState.rowHostId = "host-1";
+    testState.rowHostReachability = "reachable";
+    testState.preparedOpenRefs = [];
+  });
+
+  it("locks a chat row whose owner host is unreachable, matching the cloud rows", () => {
+    seedChatTree();
+    testState.rowHostId = "host-dead";
+    testState.rowHostReachability = "unreachable";
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    expect(screen.getByTestId("epic-sidebar-tree-lock-chat-root")).toBeTruthy();
+  });
+
+  it("keeps reachable-owner rows lock-free", () => {
+    seedChatTree();
+    testState.rowHostId = "host-1";
+    testState.rowHostReachability = "reachable";
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    expect(screen.queryByTestId("epic-sidebar-tree-lock-chat-root")).toBeNull();
+  });
+
+  it("routes an unreachable-owner row's click to the PUBLISHED COPY, not a live tab", () => {
+    seedChatTree();
+    testState.rowHostId = "host-dead";
+    testState.rowHostReachability = "unreachable";
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+    fireEvent.click(screen.getByTestId("epic-sidebar-item-chat-root"));
+
+    expect(testState.preparedOpenRefs).toHaveLength(1);
+    expect(testState.preparedOpenRefs[0].type).toBe("published-chat");
+  });
+
+  it("routes a reachable-owner row's click to a LIVE tab bound to the owner", () => {
+    seedChatTree();
+    testState.rowHostId = "host-b";
+    testState.rowHostReachability = "reachable";
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+    fireEvent.click(screen.getByTestId("epic-sidebar-item-chat-root"));
+
+    expect(testState.preparedOpenRefs).toHaveLength(1);
+    expect(testState.preparedOpenRefs[0].type).toBe("chat");
+    expect(testState.preparedOpenRefs[0].hostId).toBe("host-b");
+  });
+});
+
 describe("chat row read-only arm", () => {
   afterEach(() => {
     cleanup();
@@ -2490,6 +2680,7 @@ describe("chat row read-only arm", () => {
   ): TestIndicatorState {
     return {
       unreadFailure: false,
+      pendingFork: false,
       pendingApproval: false,
       pendingInterview: false,
       unreadDone: false,
@@ -2576,6 +2767,7 @@ describe("status survives selection mode and rename", () => {
   ): TestIndicatorState {
     return {
       unreadFailure: false,
+      pendingFork: false,
       pendingApproval: false,
       pendingInterview: false,
       unreadDone: false,
@@ -2667,6 +2859,49 @@ describe("status survives selection mode and rename", () => {
   });
 });
 
+const createdSessionHandles: ChatSessionStoreHandle[] = [];
+
+/**
+ * A real chat session store, standing in for an OPEN chat. Module-scope because
+ * two describes need one: the leading icon's authority order, and the archive
+ * gate - which reads the same store and must agree with the icon.
+ */
+function createSessionHandle(chatId: string): ChatSessionStoreHandle {
+  const handle = createChatSessionStore({
+    epicId: EPIC_ID,
+    chatId,
+    userId: null,
+    onAuthError: null,
+    onProviderAuthError: null,
+    streamFlushCoordinator: IMMEDIATE_STREAM_FLUSH_COORDINATOR,
+    streamClientFactory: () => ({
+      sendAction: () => undefined,
+      sameTurnSteeringProtocolSupported: () => false,
+      close: () => undefined,
+    }),
+  });
+  createdSessionHandles.push(handle);
+  return handle;
+}
+
+function disposeCreatedSessionHandles(): void {
+  for (const handle of createdSessionHandles.splice(0)) {
+    handle.dispose();
+  }
+}
+
+function runningShell(chatId: string): ManagedCommand {
+  return {
+    id: `${chatId}-shell`,
+    monitoring: true,
+    description: "dev server",
+    status: { state: "running", pid: 4242, startedAtMs: 1 },
+    chatId,
+    createdAtMs: 1,
+    updatedAtMs: 1,
+  };
+}
+
 describe("chat status icon session authority (open session vs awareness)", () => {
   const MONITOR_ITEM = {
     taskId: "task-1",
@@ -2676,25 +2911,6 @@ describe("chat status icon session authority (open session vs awareness)", () =>
     parentTaskId: null,
     scheduledFor: null,
   };
-  const createdSessionHandles: ChatSessionStoreHandle[] = [];
-
-  function createSessionHandle(chatId: string): ChatSessionStoreHandle {
-    const handle = createChatSessionStore({
-      epicId: EPIC_ID,
-      chatId,
-      userId: null,
-      onAuthError: null,
-      onProviderAuthError: null,
-      streamFlushCoordinator: IMMEDIATE_STREAM_FLUSH_COORDINATOR,
-      streamClientFactory: () => ({
-        sendAction: () => undefined,
-        sameTurnSteeringProtocolSupported: () => false,
-        close: () => undefined,
-      }),
-    });
-    createdSessionHandles.push(handle);
-    return handle;
-  }
 
   afterEach(() => {
     cleanup();
@@ -2707,9 +2923,7 @@ describe("chat status icon session authority (open session vs awareness)", () =>
     testState.activeAgentIds = new Set<string>();
     testState.activityTierById = new Map();
     testState.sessionHandleByChatId = {};
-    for (const handle of createdSessionHandles.splice(0)) {
-      handle.dispose();
-    }
+    disposeCreatedSessionHandles();
   });
 
   it("lets an open session's background tri-state override an awareness tier of turn, then falls back to awareness once the session closes", () => {
@@ -3184,12 +3398,18 @@ describe("chat row archive", () => {
     testState.archivedIds = [];
     testState.archiveMutate = vi.fn();
     testState.archiveBatchPending = false;
+    // Leaking this one disables every later row's Archive for a reason no test
+    // named, which reads as the gate under test firing.
+    testState.archiveRowPending = false;
     testState.archiveMutateAsync = vi.fn();
     testState.rowHostId = "host-1";
+    testState.rowHostReachability = "reachable";
+    testState.preparedOpenRefs = [];
     testState.rowHostEntry = { hostId: "host-1" };
     testState.rowHostClient = { getActiveHostId: () => "host-1" };
     testState.activeHostClient = { getActiveHostId: () => "host-1" };
     testState.sessionHandleByChatId = {};
+    disposeCreatedSessionHandles();
   });
 
   function indicator(
@@ -3197,6 +3417,7 @@ describe("chat row archive", () => {
   ): TestIndicatorState {
     return {
       unreadFailure: false,
+      pendingFork: false,
       pendingApproval: false,
       pendingInterview: false,
       unreadDone: false,
@@ -3678,6 +3899,30 @@ describe("chat row archive", () => {
     expect(leadingStatusKinds("chat-root")).toEqual(["done"]);
   });
 
+  it("keeps the final archived row mounted while its tree branch exits", () => {
+    seedGuiChatTree();
+    testState.archivedIds = ["chat-root"];
+    testState.indicatorChats = {
+      "chat-root": indicator({ unreadDone: true }),
+    };
+    const panel = () => (
+      <LazyMotion features={domMax}>
+        <EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />
+      </LazyMotion>
+    );
+    const view = render(panel());
+
+    expect(screen.getByTestId("epic-sidebar-item-chat-root")).toBeTruthy();
+
+    testState.indicatorChats = {};
+    view.rerender(panel());
+
+    // The archived-empty branch waits until Motion finishes the tree branch's
+    // exit, so the final row cannot disappear in the same render.
+    expect(screen.getByTestId("epic-sidebar-item-chat-root")).toBeTruthy();
+    expect(screen.queryByTestId("epic-chat-sidebar-archived-empty")).toBeNull();
+  });
+
   it("clears archived row styling when the unarchive projection arrives", () => {
     seedGuiChatTree();
     testState.archivedIds = ["chat-root"];
@@ -4079,6 +4324,62 @@ describe("chat row archive", () => {
     expect(isMenuItemUnavailable(item)).toBe(true);
     // ...and hard-disabled, so Radix keeps its own ARIA rather than ours.
     expect(item.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  /**
+   * A running shell is the one activity `runStatus` cannot speak for: it
+   * outlives the turn that started it, so the chat reads idle while a process
+   * of its own is still printing. The host refuses to archive over one, so the
+   * row must refuse too - both halves of the affordance, since the hover button
+   * is offered only on an idle row.
+   */
+  it("refuses Archive while an open session owns a running shell (B11)", () => {
+    seedChatTree();
+    const handle = createSessionHandle("chat-child");
+    handle.store.setState({ managedCommands: [runningShell("chat-child")] });
+    testState.sessionHandleByChatId = { "chat-child": handle };
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    // The leading icon has always read the shell; the gate must agree with it,
+    // or the row shows "working" beside an Archive that says it is idle.
+    expect(leadingStatusKinds("chat-child")).toEqual(["background-activity"]);
+    const entry = screen.getByTestId("epic-sidebar-archive-item-chat-child");
+    expect(isMenuItemUnavailable(entry)).toBe(true);
+    expect(tooltipTextIn(entry)).toBe(
+      "Can't archive while this agent has background items running. Stopping the agent won't clear them — wait for them to finish, or stop them from its chat.",
+    );
+    expect(screen.queryByTestId("epic-sidebar-archive-chat-child")).toBeNull();
+  });
+
+  it("returns both archive affordances once the shell exits (B11)", () => {
+    // Only a RUNNING shell is activity. An exited one is a durable record, and
+    // gating on it would strand the row's Archive forever.
+    seedChatTree();
+    const handle = createSessionHandle("chat-child");
+    handle.store.setState({
+      managedCommands: [
+        {
+          ...runningShell("chat-child"),
+          status: {
+            state: "exited",
+            exitCode: 0,
+            signal: null,
+            exitedAtMs: 2,
+          },
+        },
+      ],
+    });
+    testState.sessionHandleByChatId = { "chat-child": handle };
+
+    render(<EpicLeftPanelHost epicId={EPIC_ID} tabId={TAB_ID} side="left" />);
+
+    expect(leadingStatusKinds("chat-child")).toEqual([]);
+    const entry = screen.getByTestId("epic-sidebar-archive-item-chat-child");
+    expect(isMenuItemUnavailable(entry)).toBe(false);
+    expect(
+      screen.getByTestId("epic-sidebar-archive-chat-child"),
+    ).not.toBeNull();
   });
 });
 

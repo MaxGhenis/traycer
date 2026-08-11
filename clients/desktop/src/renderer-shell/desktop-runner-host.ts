@@ -20,8 +20,10 @@ import type {
   HostRestartRequestResult,
   InstallVersionOk,
   MutationOutcome,
+  NotificationFeedSource,
   NotificationForegroundAppLocal,
   NotificationForegroundDisplay,
+  NotificationShowOutcome,
   ServiceRegistrationOk,
   TraycerUninstallResult,
   FreePortAndRestartInput,
@@ -220,8 +222,9 @@ export interface DesktopPreloadBridge {
       payload: unknown,
       replaceKey: string | null,
       deliveryKey: string | null,
+      feedSource: NotificationFeedSource | null,
       foregroundAppLocal: NotificationForegroundAppLocal | null,
-    ): Promise<void>;
+    ): Promise<NotificationShowOutcome>;
     onClick(handler: (payload: unknown) => void): { dispose: () => void };
     onForegroundDisplay(
       handler: (display: NotificationForegroundDisplay) => void,
@@ -757,6 +760,7 @@ export class DesktopRunnerHost implements IRunnerHost {
         payload,
         replaceKey,
         deliveryKey,
+        feedSource,
         foregroundAppLocal,
       ) =>
         this.bridge.notifications.show(
@@ -765,6 +769,7 @@ export class DesktopRunnerHost implements IRunnerHost {
           payload,
           replaceKey,
           deliveryKey,
+          feedSource,
           foregroundAppLocal,
         ),
       onClick: (handler) =>

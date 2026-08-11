@@ -15,6 +15,7 @@ import {
   Folder,
   GitPullRequest,
   Globe,
+  Lock,
 } from "lucide-react";
 import { LEFT_PANEL_DEFINITIONS } from "@/components/epic-canvas/sidebar/left-panel-registry";
 import { EpicNodeTabIcon } from "@/components/epic-canvas/epic-node-tab-icon";
@@ -36,6 +37,7 @@ import {
   isBrowserSessionTileRef,
   isBrowserTileRef,
   isCommGraphTileRef,
+  isPublishedChatTileRef,
   isDiffTileRef,
   isGitDiffTileRef,
   isManagedCommandOutputTileRef,
@@ -208,6 +210,14 @@ function EpicCanvasNodeDragOverlay(props: {
         data-browser-overlay="drag-overlay"
       >
         <CommGraphTileIcon className="size-3.5" />
+        <span className="min-w-0 truncate font-medium">{props.node.name}</span>
+      </m.div>
+    );
+  }
+  if (isPublishedChatTileRef(props.node)) {
+    return (
+      <m.div {...CHIP_MOTION} className={cn(CHIP_CLASS)}>
+        <Lock className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 truncate font-medium">{props.node.name}</span>
       </m.div>
     );

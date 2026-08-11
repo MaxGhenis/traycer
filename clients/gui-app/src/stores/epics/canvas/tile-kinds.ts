@@ -17,9 +17,8 @@ export const TILE_KIND_AGENT_BROWSER = "agent-browser";
 const TILE_KIND_WORKSPACE_FILE = "workspace-file";
 export const TILE_KIND_GIT_DIFF = "git-diff";
 export const TILE_KIND_SNAPSHOT_DIFF = "snapshot-diff";
-// A read-only window on one managed command's log timeline ("Monitors &
-// Shells"). Renderer-local like `terminal`: the tile points at a command the
-// host owns, it does not carry one.
+// A read-only window on one shell's log timeline. Renderer-local like
+// `terminal`: the tile points at a shell the host owns, it does not carry one.
 export const TILE_KIND_MANAGED_COMMAND_OUTPUT = "managed-command-output";
 /**
  * The per-epic communication graph. Epic-scoped rather than host-scoped: the
@@ -28,6 +27,19 @@ export const TILE_KIND_MANAGED_COMMAND_OUTPUT = "managed-command-output";
  * `CommGraphTileRef`).
  */
 export const TILE_KIND_COMM_GRAPH = "comm-graph";
+/**
+ * A chat this device can only READ: its owning host is out of reach, so the
+ * tile renders the last copy that host published to the cloud.
+ *
+ * A kind of its own rather than a flag on the chat tile, because the ref names
+ * WHICH THING is open - a published copy or a live session - and those are two
+ * different things that can carry the SAME chat id. A fork leaves exactly that
+ * geometry behind: two lineages under one id, one live here and one owned by
+ * another machine. Keeping the kinds distinct also survives the owning host
+ * coming back, where the same row becomes openable live and both must be
+ * addressable at once.
+ */
+export const TILE_KIND_PUBLISHED_CHAT = "published-chat";
 export const TILE_KIND_PR_DETAIL = "pr-detail";
 export const TILE_KIND_PR_DIFF = "pr-diff";
 // A "blank" tab: a real strip tab whose body renders the inline opener until
@@ -51,6 +63,7 @@ export type TileKindId =
   | typeof TILE_KIND_SNAPSHOT_DIFF
   | typeof TILE_KIND_MANAGED_COMMAND_OUTPUT
   | typeof TILE_KIND_COMM_GRAPH
+  | typeof TILE_KIND_PUBLISHED_CHAT
   | typeof TILE_KIND_PR_DETAIL
   | typeof TILE_KIND_PR_DIFF
   | typeof TILE_KIND_BLANK;
@@ -72,6 +85,7 @@ export const isTileKind = makeLiteralGuard<TileKindId>({
   [TILE_KIND_SNAPSHOT_DIFF]: true,
   [TILE_KIND_MANAGED_COMMAND_OUTPUT]: true,
   [TILE_KIND_COMM_GRAPH]: true,
+  [TILE_KIND_PUBLISHED_CHAT]: true,
   [TILE_KIND_PR_DETAIL]: true,
   [TILE_KIND_PR_DIFF]: true,
   [TILE_KIND_BLANK]: true,

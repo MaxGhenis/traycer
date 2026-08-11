@@ -1,4 +1,5 @@
 import { HostPicker } from "@/components/layout/header/host-picker";
+import { ChatUsageDialog } from "@/components/chat/chat-usage-dialog";
 import { AppUpdateToastController } from "@/components/layout/bridges/app-update-toast-controller";
 import { BrowserLabsMarkerSync } from "@/components/layout/bridges/browser-labs-marker-sync";
 import { DesktopZoomController } from "@/components/layout/bridges/desktop-zoom-controller";
@@ -259,6 +260,14 @@ function TraycerAppRuntimeSurface(props: TraycerAppRuntimeSurfaceProps) {
       <HistoryPruneProvider router={props.router} />
       <RouterProvider router={props.router} />
       <HostPicker />
+      {/*
+        Ticket 12's chat cost line: mounted ONCE app-wide (not per-tab) since
+        the tab strip's "Usage" context-menu item can target any open chat's
+        `hostId`, which may differ from the active host - needs
+        `useHostClientForHostId`, so it lives inside `HostRuntimeProvider`
+        rather than beside `ReportIssueDialogHost` (which sits outside it).
+      */}
+      <ChatUsageDialog />
     </>
   );
 }

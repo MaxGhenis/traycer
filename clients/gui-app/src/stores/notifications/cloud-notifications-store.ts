@@ -35,7 +35,7 @@ export interface CloudNotificationsState {
   >;
   readonly summary: HostNotificationsCloudFeedSummary | null;
   /** The cloud's per-user change sequence, as of the last snapshot. This is
-   * what a `clearAll` names as the feed the user was looking at. */
+   * what a bulk mutation names as the feed the user was looking at. */
   readonly version: number | null;
   /** A cloud feed is authoritative only after this session has received a
    * complete snapshot. Until then an in-progress retry must not masquerade as
@@ -74,6 +74,9 @@ export interface CloudNotificationsState {
    * reconciles the row, but the common successful mutation never waits on a
    * wake or the relay's correctness poll to look read. */
   markReadLocally(entryId: string, readAt: number): void;
+  /** Optimistically covers the whole raw snapshot summary, including unread
+   * entries omitted from `rows` because this client cannot render them. */
+  markAllReadLocally(readAt: number): void;
   /** One atomic step for a view-consumption fan-out: claim every entry as
    * in-flight and apply its optimistic marker in a single write, so no
    * subscriber can observe the new rows before the claim is visible. */
@@ -175,6 +178,37 @@ function rowKey(row: Pick<HostNotificationsCloudFeedRow, "entryId">): string {
   return cloudNotificationFeedId(row.entryId);
 }
 
+function isUnreadFailure(row: HostNotificationsCloudFeedRow): boolean {
+  return row.entry.severity === "failure" && row.entry.readAt === null;
+}
+
+function loadedBlockingAttentionCount(
+  rows: Readonly<Partial<Record<string, HostNotificationsCloudFeedRow>>>,
+): number {
+  let count = 0;
+  for (const row of Object.values(rows)) {
+    if (
+      row !== undefined &&
+      row.entry.severity === "needs_action" &&
+      "resolvedAt" in row.entry &&
+      row.entry.resolvedAt === null
+    ) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function loadedUnreadFailureCount(
+  rows: Readonly<Partial<Record<string, HostNotificationsCloudFeedRow>>>,
+): number {
+  let count = 0;
+  for (const row of Object.values(rows)) {
+    if (row !== undefined && isUnreadFailure(row)) count += 1;
+  }
+  return count;
+}
+
 export const useCloudNotificationsStore = create<CloudNotificationsState>()(
   (set) => ({
     rows: {},
@@ -218,6 +252,7 @@ export const useCloudNotificationsStore = create<CloudNotificationsState>()(
         const key = cloudNotificationFeedId(entryId);
         const row = state.rows[key];
         if (row === undefined || row.entry.readAt !== null) return state;
+        const attentionDelta = isUnreadFailure(row) ? 1 : 0;
         return {
           rows: {
             ...state.rows,
@@ -229,6 +264,38 @@ export const useCloudNotificationsStore = create<CloudNotificationsState>()(
               : {
                   ...state.summary,
                   unreadCount: Math.max(0, state.summary.unreadCount - 1),
+                  attentionCount: Math.max(
+                    0,
+                    state.summary.attentionCount - attentionDelta,
+                  ),
+                },
+        };
+      }),
+    markAllReadLocally: (readAt) =>
+      set((state) => {
+        const unreadFailureCount = loadedUnreadFailureCount(state.rows);
+        const rows = { ...state.rows };
+        for (const [key, row] of Object.entries(rows)) {
+          if (row === undefined || row.entry.readAt !== null) continue;
+          rows[key] = { ...row, entry: { ...row.entry, readAt } };
+        }
+        return {
+          rows,
+          summary:
+            state.summary === null
+              ? null
+              : {
+                  ...state.summary,
+                  unreadCount: 0,
+                  // Summary counts include visible cloud rows this relay could
+                  // not render. Their attention may be an unresolved prompt,
+                  // which mark-all must never hide, so only subtract failures
+                  // this client can prove it marked read. The next snapshot
+                  // removes any residual summary-only failure contribution.
+                  attentionCount: Math.max(
+                    loadedBlockingAttentionCount(rows),
+                    state.summary.attentionCount - unreadFailureCount,
+                  ),
                 },
         };
       }),
@@ -237,6 +304,7 @@ export const useCloudNotificationsStore = create<CloudNotificationsState>()(
         const retries = { ...state.entityReadRetries };
         const rows = { ...state.rows };
         let flipped = 0;
+        let attentionFlipped = 0;
         for (const entryId of entryIds) {
           retries[entryId] = {
             attempts: retries[entryId]?.attempts ?? 0,
@@ -245,6 +313,7 @@ export const useCloudNotificationsStore = create<CloudNotificationsState>()(
           const key = cloudNotificationFeedId(entryId);
           const row = rows[key];
           if (row === undefined || row.entry.readAt !== null) continue;
+          if (isUnreadFailure(row)) attentionFlipped += 1;
           rows[key] = { ...row, entry: { ...row.entry, readAt } };
           flipped += 1;
         }
@@ -257,6 +326,10 @@ export const useCloudNotificationsStore = create<CloudNotificationsState>()(
               : {
                   ...state.summary,
                   unreadCount: Math.max(0, state.summary.unreadCount - flipped),
+                  attentionCount: Math.max(
+                    0,
+                    state.summary.attentionCount - attentionFlipped,
+                  ),
                 },
         };
       }),
