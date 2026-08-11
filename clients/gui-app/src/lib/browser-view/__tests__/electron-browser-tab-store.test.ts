@@ -17,6 +17,7 @@ import type {
 } from "@/lib/browser-view/desktop-browser-view";
 import {
   attachElectronBrowserTabStream,
+  drainElectronBrowserHandoffs,
   findElectronBrowserTabBinding,
   handleElectronBrowserTabFrame,
   registerElectronBrowserTab,
@@ -462,6 +463,64 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
         reason: "gui-quit",
       }),
     ]);
+  });
+
+  it("waits for the matching tileHandoff actionAck before completing the drain", async () => {
+    const bridge = new FakeBridge();
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-handoff-ack",
+        sessionId: "session-handoff-ack",
+        bridge,
+      }),
+    );
+    frames.length = 0;
+
+    bridge.emitTileHandoff({
+      ...TILE_KEY,
+      capturedUrl: "https://app.example/after",
+      capturedStorageState: null,
+      siblingTabs: [],
+      reason: "gui-quit",
+    });
+
+    const frame = frames[0];
+    if (frame.kind !== "tileHandoff") {
+      throw new Error("tile handoff frame missing");
+    }
+    const drain = drainElectronBrowserHandoffs();
+    const pending = Symbol("pending");
+    await expect(Promise.race([drain, Promise.resolve(pending)])).resolves.toBe(
+      pending,
+    );
+
+    expect(
+      handleElectronBrowserTabFrame({
+        kind: "actionAck",
+        hasBinaryPayload: false,
+        requestId: "wrong-request",
+        ok: true,
+        reason: null,
+      } satisfies BrowserSessionsServerFrame),
+    ).toBe(false);
+    await expect(Promise.race([drain, Promise.resolve(pending)])).resolves.toBe(
+      pending,
+    );
+
+    expect(
+      handleElectronBrowserTabFrame({
+        kind: "actionAck",
+        hasBinaryPayload: false,
+        requestId: frame.requestId,
+        ok: true,
+        reason: null,
+      } satisfies BrowserSessionsServerFrame),
+    ).toBe(true);
+    await expect(drain).resolves.toBeUndefined();
   });
 
   it("does not publish registration frames when no epic+host stream is attached yet", () => {

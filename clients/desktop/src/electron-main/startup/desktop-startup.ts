@@ -35,6 +35,7 @@ import {
 } from "../ipc/host-management-ipc";
 import { onHostControllerStatusBroadcast } from "../ipc/host-controller-status-broadcast";
 import {
+  drainBrowserHandoffsForQuit,
   QUIT_HOST_MUTATION_DRAIN_TIMEOUT_MS,
   runUpdateInstallQuitSequence,
 } from "./update-install-quit";
@@ -1007,7 +1008,12 @@ function wireAppLifecycle(state: BootState, services: LifecycleServices): void {
   };
 
   const authorizeQuitAfterFlush = (): void => {
-    void flushShellState().finally(() => {
+    void Promise.all([
+      flushShellState(),
+      drainBrowserHandoffsForQuit(
+        () => state.bridge?.drainBrowserHandoffs() ?? Promise.resolve(),
+      ),
+    ]).finally(() => {
       quitAuthorized = true;
       app.quit();
     });

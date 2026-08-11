@@ -64,7 +64,9 @@ import type { RunnerIpcBridge } from "./runner-ipc-bridge";
 
 const BROWSER_VIEW_RELEASE_GRACE_MS = 500;
 
-export function registerBrowserViewIpc(bridge: RunnerIpcBridge): void {
+export function registerBrowserViewIpc(
+  bridge: RunnerIpcBridge,
+): BrowserViewManager {
   const manager = new BrowserViewManager({
     createView: createElectronBrowserView,
     getWindow: (windowId) =>
@@ -437,6 +439,7 @@ export function registerBrowserViewIpc(bridge: RunnerIpcBridge): void {
   bridge.disposeFns.push(() => {
     manager.dispose();
   });
+  return manager;
 }
 
 function createElectronBrowserView(): ManagedBrowserView {

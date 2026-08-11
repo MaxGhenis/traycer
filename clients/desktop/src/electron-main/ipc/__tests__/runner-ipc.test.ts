@@ -653,6 +653,7 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.acknowledgeQuitRequest,
         RunnerHostInvoke.respondToQuitRequest,
         RunnerHostInvoke.freshUnsyncedSnapshotResponse,
+        RunnerHostInvoke.browserHandoffsDrained,
         RunnerHostInvoke.appUpdateCheck,
         RunnerHostInvoke.appUpdateDownload,
         RunnerHostInvoke.appUpdateGetSnapshot,
@@ -806,6 +807,8 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.browserViewClearDebugEvents,
         RunnerHostInvoke.browserViewStorageStateApply,
         RunnerHostInvoke.browserViewStorageStateCapture,
+        RunnerHostInvoke.browserViewPrimaryProfileCapture,
+        RunnerHostInvoke.browserViewRegisterDurableTab,
         RunnerHostInvoke.browserViewControlGrant,
         RunnerHostInvoke.browserViewControlRevoke,
         RunnerHostInvoke.browserViewControlAction,
@@ -823,6 +826,7 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.agentBrowserViewUpdateBounds,
         RunnerHostInvoke.agentBrowserViewRelease,
         RunnerHostInvoke.agentBrowserViewCdpDispatch,
+        RunnerHostInvoke.agentBrowserViewRegisterDurableTab,
       ].sort(),
     );
     bridge.dispose();
@@ -2692,6 +2696,74 @@ describe("RunnerIpcBridge", () => {
 
     await expect(inFlight).resolves.toEqual(authoritative);
     expect(bridge.getUnsyncedEditsSnapshot()).toEqual(authoritative);
+    bridge.dispose();
+  });
+
+  it("waits for the matching browser handoff acknowledgement from every window", async () => {
+    const mod = await import("../register-runner-ipc");
+    const registry = new FakeWindowRegistry();
+    const windowA = buildWindow();
+    const windowB = buildWindow();
+    registry.add("window-a", 101, windowA);
+    registry.add("window-b", 202, windowB);
+    const bridge = new mod.RunnerIpcBridge({
+      host: new FakeHost(),
+      hostController: new FakeHostController(),
+      authnBaseUrl: "http://localhost:5005",
+      authRedirectUri: null,
+      tray: null,
+      zoomController: undefined,
+      authTokenStore: undefined,
+      windowRegistry: registry,
+      ownership: new EpicWindowOwnership(null),
+      perWindowState: new PerWindowState(null),
+      authSession: new DesktopAuthSession(),
+      quitState: undefined,
+    });
+    bridge.install();
+    windowA.sentMessages.length = 0;
+    windowB.sentMessages.length = 0;
+
+    const drain = bridge.drainBrowserHandoffs();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    const requestA = windowA.sentMessages.find(
+      (message) => message.channel === RunnerHostEvent.drainBrowserHandoffs,
+    );
+    const requestB = windowB.sentMessages.find(
+      (message) => message.channel === RunnerHostEvent.drainBrowserHandoffs,
+    );
+    const responseHandler = ipcMainState.handlers.get(
+      RunnerHostInvoke.browserHandoffsDrained,
+    );
+    if (requestA === undefined || requestB === undefined) {
+      throw new Error("browser handoff drain requests missing");
+    }
+    if (responseHandler === undefined) {
+      throw new Error("browser handoff drain response handler missing");
+    }
+    const requestIdA = (requestA.payload as { readonly requestId: string })
+      .requestId;
+    const requestIdB = (requestB.payload as { readonly requestId: string })
+      .requestId;
+
+    const pending = Symbol("pending");
+    await expect(Promise.race([drain, Promise.resolve(pending)])).resolves.toBe(
+      pending,
+    );
+
+    await responseHandler(sender(202), { requestId: requestIdA });
+    await expect(Promise.race([drain, Promise.resolve(pending)])).resolves.toBe(
+      pending,
+    );
+
+    await responseHandler(sender(101), { requestId: requestIdA });
+    await expect(Promise.race([drain, Promise.resolve(pending)])).resolves.toBe(
+      pending,
+    );
+
+    await responseHandler(sender(202), { requestId: requestIdB });
+    await expect(drain).resolves.toBeUndefined();
     bridge.dispose();
   });
 

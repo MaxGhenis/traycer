@@ -18,6 +18,7 @@ import { drainDesktopTabsPersistence } from "@/stores/tabs/desktop-tabs-persiste
 import { appLogger } from "@/lib/logger";
 import { flushLiveReadingPositions } from "@/lib/reading-position";
 import { fileEditRuntimeRegistry } from "@/lib/workspace/file-edit-runtime-registry";
+import { drainElectronBrowserHandoffs } from "@/lib/browser-view/electron-browser-tab-store";
 
 /**
  * Terminal decision returned by the renderer to the Electron main process
@@ -39,6 +40,10 @@ interface FreshUnsyncedSnapshotRequest {
 interface FreshUnsyncedSnapshotResponse {
   readonly requestId: string;
   readonly snapshot: ReadonlyArray<UnsyncedEditsEntry>;
+}
+
+interface BrowserHandoffDrainRequest {
+  readonly requestId: string;
 }
 
 interface QuitRequest {
@@ -72,6 +77,12 @@ interface AppLifecycleWindowBridge {
   respondFreshUnsyncedSnapshot?: (
     reply: FreshUnsyncedSnapshotResponse,
   ) => Promise<void>;
+  onDrainBrowserHandoffs?: (
+    handler: (request: BrowserHandoffDrainRequest) => void,
+  ) => { dispose: () => void };
+  respondBrowserHandoffsDrained?: (reply: {
+    readonly requestId: string;
+  }) => Promise<void>;
 }
 
 interface RunnerHostWindowShape {
@@ -162,6 +173,20 @@ export function QuitInterceptBridge(): null | React.ReactElement {
       subscription.dispose();
     };
   }, [appLifecycle, registry]);
+
+  useEffect(() => {
+    const onDrain = appLifecycle?.onDrainBrowserHandoffs;
+    const respond = appLifecycle?.respondBrowserHandoffsDrained;
+    if (onDrain === undefined || respond === undefined) return;
+    const subscription = onDrain((request) => {
+      void drainElectronBrowserHandoffs().then(() =>
+        respond({ requestId: request.requestId }),
+      ).catch(() => undefined);
+    });
+    return () => {
+      subscription.dispose();
+    };
+  }, [appLifecycle]);
 
   useEffect(() => {
     if (appLifecycle === null) return;

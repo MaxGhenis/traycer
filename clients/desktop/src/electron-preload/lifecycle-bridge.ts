@@ -5,6 +5,8 @@ import {
 } from "../ipc-contracts/ipc-channels";
 import type {
   AppLifecycleBridge,
+  BrowserHandoffDrainRequest,
+  BrowserHandoffDrainResponse,
   FreshUnsyncedSnapshotRequest,
   FreshUnsyncedSnapshotResponse,
   QuitDecisionResponse,
@@ -53,6 +55,16 @@ export function buildLifecycleBridge(): LifecycleBridgeSurface {
       respondFreshUnsyncedSnapshot: (reply: FreshUnsyncedSnapshotResponse) =>
         ipcRenderer.invoke(
           RunnerHostInvoke.freshUnsyncedSnapshotResponse,
+          reply,
+        ) as Promise<void>,
+      onDrainBrowserHandoffs: (handler) =>
+        subscribe<BrowserHandoffDrainRequest>(
+          RunnerHostEvent.drainBrowserHandoffs,
+          handler,
+        ),
+      respondBrowserHandoffsDrained: (reply: BrowserHandoffDrainResponse) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserHandoffsDrained,
           reply,
         ) as Promise<void>,
     },

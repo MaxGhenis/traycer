@@ -84,6 +84,8 @@ export const RunnerHostInvoke = {
   respondToQuitRequest: "runnerHost:appLifecycle:respondToQuitRequest",
   freshUnsyncedSnapshotResponse:
     "runnerHost:appLifecycle:freshUnsyncedSnapshotResponse",
+  browserHandoffsDrained:
+    "runnerHost:appLifecycle:browserHandoffsDrained",
   windowsList: "runnerHost:windows:list",
   windowsRequestNew: "runnerHost:windows:requestNew",
   windowsRequestFocus: "runnerHost:windows:requestFocus",
@@ -327,6 +329,7 @@ export const RunnerHostEvent = {
   hostPickerChange: "runnerHost:event:hostPickerChange",
   quitRequested: "runnerHost:event:quitRequested",
   getFreshUnsyncedSnapshot: "runnerHost:event:getFreshUnsyncedSnapshot",
+  drainBrowserHandoffs: "runnerHost:event:drainBrowserHandoffs",
   windowsChange: "runnerHost:event:windows:change",
   ownershipChange: "runnerHost:event:windows:ownership:change",
   perWindowStateChange: "runnerHost:event:windows:perWindowState:change",

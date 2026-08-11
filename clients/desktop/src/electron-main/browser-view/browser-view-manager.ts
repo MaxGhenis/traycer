@@ -340,10 +340,9 @@ interface BrowserViewEntry {
   runtimeSessionId: string;
   runtimeTabId: string | null;
   /**
-   * Ticket 02 (multi-tab handoff): set once this entry's captured state has
-   * been folded into ANOTHER (still-live) tile's `tileHandoff` push as a
-   * sibling, so this entry's own `closeEntry` - moments later, in the same
-   * group teardown - does not push a second, now-redundant frame for it.
+   * Set once this entry has been claimed by a handoff, either as the primary
+   * frame or a sibling, so quit-time drain and later teardown cannot push it
+   * twice.
    */
   handedOff: boolean;
   /**
@@ -1149,6 +1148,19 @@ export class BrowserViewManager {
     }
     this.pendingDebugSnapshotsByKey.clear();
     this.overlayEntryKeysByOwnerId.clear();
+  }
+
+  async drainBrowserHandoffs(): Promise<void> {
+    await Promise.all(
+      Array.from(this.entriesByRuntimeKey.values())
+        .filter(
+          (entry) =>
+            entry.status !== "dead" &&
+            entry.runtimeTabId !== null &&
+            !entry.handedOff,
+        )
+        .map((entry) => this.pushTileHandoff(entry, "gui-quit")),
+    );
   }
 
   snapshotForTests(): ReadonlyArray<{
@@ -2100,6 +2112,7 @@ export class BrowserViewManager {
     reason: AgentBrowserViewTileHandoffChange["reason"],
   ): Promise<void> {
     if (entry.handedOff) return;
+    entry.handedOff = true;
     const siblings = Array.from(this.entriesByRuntimeKey.values()).filter(
       (candidate) =>
         candidate !== entry &&

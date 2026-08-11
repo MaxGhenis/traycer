@@ -2687,6 +2687,94 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
     expect(view.webContents.closeCalls).toBe(1);
   });
 
+  it("drains registered live entries and skips tiles mid-activation", async () => {
+    const harness = createHarness();
+    const liveKey = {
+      ...BASE_KEY,
+      tileInstanceId: "tile-live",
+      pageSessionId: "page-live",
+    };
+    const activatingKey = {
+      ...BASE_KEY,
+      tileInstanceId: "tile-activating",
+      pageSessionId: "page-activating",
+    };
+
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(liveKey, "https://app.example/live", true),
+    );
+    harness.manager.registerDurableTab("window-1", {
+      ...liveKey,
+      sessionId: "session-live",
+      tabId: "tab-live",
+    });
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(activatingKey, "https://app.example/activating", true),
+    );
+
+    await harness.manager.drainBrowserHandoffs();
+
+    expect(harness.tileHandoffNotifications).toEqual([
+      expect.objectContaining({
+        ...liveKey,
+        capturedUrl: "https://app.example/live",
+        capturedStorageState: { cookies: [], origins: [] },
+        reason: "gui-quit",
+      }),
+    ]);
+    expect(harness.storageStateCaptures).toHaveLength(1);
+  });
+
+  it("skips dead entries and prevents a drained entry from being pushed by dispose", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "https://app.example/live", true),
+    );
+    harness.manager.registerDurableTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-live",
+      tabId: "tab-live",
+    });
+    const liveView = harness.views[0];
+    if (liveView === undefined) throw new Error("missing live view");
+
+    await harness.manager.drainBrowserHandoffs();
+    expect(harness.tileHandoffNotifications).toHaveLength(1);
+
+    const deadKey = {
+      ...BASE_KEY,
+      tileInstanceId: "tile-dead",
+      pageSessionId: "page-dead",
+    };
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(deadKey, "https://app.example/dead", true),
+    );
+    harness.manager.registerDurableTab("window-1", {
+      ...deadKey,
+      sessionId: "session-dead",
+      tabId: "tab-dead",
+    });
+    const deadView = harness.views[1];
+    if (deadView === undefined) throw new Error("missing dead view");
+    deadView.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+    await flushCloseEntry();
+    expect(harness.tileHandoffNotifications).toHaveLength(2);
+    expect(harness.tileHandoffNotifications.at(-1)?.reason).toBe(
+      "crash-no-capture",
+    );
+
+    await harness.manager.drainBrowserHandoffs();
+    harness.manager.dispose();
+    await flushCloseEntry();
+
+    expect(harness.tileHandoffNotifications).toHaveLength(2);
+    expect(liveView.webContents.closeCalls).toBe(1);
+  });
+
   it("aggregates every live durable tab into one handoff during group dispose", async () => {
     const harness = createHarness();
     const tabs = [

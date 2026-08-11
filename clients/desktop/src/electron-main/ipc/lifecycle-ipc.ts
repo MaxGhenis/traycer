@@ -142,6 +142,23 @@ export function registerLifecycleIpc(bridge: RunnerIpcBridge): void {
       waiter.resolve(parsed.snapshot);
     },
   );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.browserHandoffsDrained,
+    (event, payload: unknown) => {
+      const windowId = bridge.resolveSenderWindowId(event);
+      const requestId = parseRequestId(
+        typeof payload === "object" && payload !== null
+          ? Reflect.get(payload, "requestId")
+          : null,
+      );
+      if (windowId === null || requestId === null) return;
+      const waiter = bridge.browserHandoffDrainWaiters.get(requestId);
+      if (waiter?.windowId !== windowId) return;
+      bridge.browserHandoffDrainWaiters.delete(requestId);
+      waiter.resolve();
+    },
+  );
 }
 
 export function aggregateUnsyncedSnapshots(

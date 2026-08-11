@@ -67,7 +67,17 @@ type SendFrame = (frame: BrowserSessionsClientFrame) => void;
 const recordsByRegistrationKey = new Map<string, ElectronBrowserTabRecord>();
 const sendFrameByEpicHost = new Map<string, SendFrame>();
 const createRequestIdByRegistrationKey = new Map<string, string>();
+const pendingHandoffAcks = new Map<
+  string,
+  { readonly promise: Promise<void>; readonly resolve: () => void }
+>();
 let focusOrder = 0;
+
+export async function drainElectronBrowserHandoffs(): Promise<void> {
+  await Promise.all(
+    Array.from(pendingHandoffAcks.values(), (pending) => pending.promise),
+  );
+}
 
 export function registerElectronBrowserTab(
   input: ElectronBrowserTabRegistration,
@@ -163,6 +173,13 @@ export function replayElectronBrowserTabRegistrations(
 export function handleElectronBrowserTabFrame(
   frame: BrowserSessionsServerFrame,
 ): boolean {
+  if (frame.kind === "actionAck") {
+    const pending = pendingHandoffAcks.get(frame.requestId);
+    if (pending === undefined) return false;
+    pendingHandoffAcks.delete(frame.requestId);
+    pending.resolve();
+    return true;
+  }
   if (frame.kind === "createElectronTab") {
     const source = findElectronBrowserTabBinding(
       frame.sessionId,
@@ -277,10 +294,19 @@ function installDesktopForwarding(record: ElectronBrowserTabRecord): void {
     if (current === undefined || !isChangeForTile(change, current.tileKey)) {
       return;
     }
+    const requestId = crypto.randomUUID();
+    let resolveAck: (() => void) | null = null;
+    const promise = new Promise<void>((resolve) => {
+      resolveAck = resolve;
+    });
+    pendingHandoffAcks.set(requestId, {
+      promise,
+      resolve: () => resolveAck?.(),
+    });
     sendForRecord(current, {
       kind: "tileHandoff",
       hasBinaryPayload: false,
-      requestId: crypto.randomUUID(),
+      requestId,
       tileInstanceId: change.tileInstanceId,
       capturedUrl: change.capturedUrl,
       capturedStorageState: jsonPayload(change.capturedStorageState),
@@ -459,6 +485,8 @@ function epicHostKey(epicId: string, hostId: string): string {
 export function resetElectronBrowserTabStoreForTests(): void {
   recordsByRegistrationKey.clear();
   sendFrameByEpicHost.clear();
+  for (const pending of pendingHandoffAcks.values()) pending.resolve();
+  pendingHandoffAcks.clear();
   createRequestIdByRegistrationKey.clear();
   focusOrder = 0;
 }

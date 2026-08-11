@@ -85,6 +85,7 @@ import { registerGlobalShortcutsIpc } from "./global-shortcuts-ipc";
 import { registerZoomIpc } from "./zoom-ipc";
 import { registerBrowserViewIpc } from "./browser-view-ipc";
 import { registerAgentBrowserViewIpc } from "./agent-browser-view-ipc";
+import type { BrowserViewManager } from "../browser-view/browser-view-manager";
 import { registerMenuIpc } from "./menu-ipc";
 import { getAppUpdateSnapshot } from "../app/updater";
 import type { HostTrayCommand } from "../../ipc-contracts/host-management-types";
@@ -420,6 +421,11 @@ interface FreshSnapshotWaiter {
   readonly resolve: (snapshot: UnsyncedEditsSnapshot) => void;
 }
 
+interface BrowserHandoffDrainWaiter {
+  readonly windowId: string;
+  readonly resolve: () => void;
+}
+
 /**
  * Installs `ipcMain.handle` endpoints that back the preload `contextBridge`
  * surface. Each handler mirrors the shape of `IRunnerHost` from
@@ -460,6 +466,11 @@ export class RunnerIpcBridge {
    * `setUnsyncedEditsSnapshot` pushes during the wait do NOT settle these.
    */
   readonly freshSnapshotWaiters = new Map<string, FreshSnapshotWaiter>();
+  readonly browserHandoffDrainWaiters = new Map<
+    string,
+    BrowserHandoffDrainWaiter
+  >();
+  private readonly browserViewManagers: BrowserViewManager[] = [];
 
   constructor(options: RunnerIpcBridgeOptions) {
     this.options = options;
@@ -504,8 +515,8 @@ export class RunnerIpcBridge {
     registerAppUpdateIpc(this);
     registerGlobalShortcutsIpc(this);
     registerZoomIpc(this);
-    registerBrowserViewIpc(this);
-    registerAgentBrowserViewIpc(this);
+    this.browserViewManagers.push(registerBrowserViewIpc(this));
+    this.browserViewManagers.push(registerAgentBrowserViewIpc(this));
     registerMenuIpc(this);
     // Power IPC (renderer-driven sleep prevention) registers a `disposeFn`
     // that releases the OS power-save blocker on teardown.
@@ -705,6 +716,37 @@ export class RunnerIpcBridge {
     return Promise.all(requests).then(() => this.getUnsyncedEditsSnapshot());
   }
 
+  async drainBrowserHandoffs(): Promise<void> {
+    await Promise.all(
+      this.browserViewManagers.map((manager) =>
+        manager.drainBrowserHandoffs(),
+      ),
+    );
+    await Promise.all(
+      this.windowRegistry.records().map(
+        (record) =>
+          new Promise<void>((resolve) => {
+            const requestId = randomUUID();
+            this.browserHandoffDrainWaiters.set(requestId, {
+              windowId: record.windowId,
+              resolve,
+            });
+            if (
+              this.safeSendToWindow(
+                record.windowId,
+                RunnerHostEvent.drainBrowserHandoffs,
+                { requestId },
+              )
+            ) {
+              return;
+            }
+            this.browserHandoffDrainWaiters.delete(requestId);
+            resolve();
+          }),
+      ),
+    );
+  }
+
   /**
    * Sends a `quitRequested` event to the renderer and resolves with the
    * renderer's decision. Used by the `before-quit` handler to coordinate the
@@ -788,6 +830,10 @@ export class RunnerIpcBridge {
     this.rejectAllQuitDecisionWaiters(
       new Error("Runner IPC bridge disposed before quit decision resolved"),
     );
+    for (const waiter of this.browserHandoffDrainWaiters.values()) {
+      waiter.resolve();
+    }
+    this.browserHandoffDrainWaiters.clear();
   }
 
   getHostPickerOpen(): boolean {

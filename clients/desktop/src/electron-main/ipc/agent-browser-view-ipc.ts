@@ -47,7 +47,9 @@ const AGENT_BROWSER_VIEW_RELEASE_GRACE_MS = 500;
  * through the agent partition (never the user's) since that is a
  * containment property, not a driving feature.
  */
-export function registerAgentBrowserViewIpc(bridge: RunnerIpcBridge): void {
+export function registerAgentBrowserViewIpc(
+  bridge: RunnerIpcBridge,
+): BrowserViewManager {
   const manager = new BrowserViewManager({
     createView: createAgentBrowserView,
     getWindow: (windowId) =>
@@ -179,6 +181,7 @@ export function registerAgentBrowserViewIpc(bridge: RunnerIpcBridge): void {
   bridge.disposeFns.push(() => {
     manager.dispose();
   });
+  return manager;
 }
 
 function createAgentBrowserView(): ManagedBrowserView {
