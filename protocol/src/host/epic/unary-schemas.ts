@@ -627,11 +627,16 @@ export type ListTasksResponseV13 = z.infer<typeof listTasksResponseSchemaV13>;
  *   beside them or the cloud page is missing, because the counts then describe
  *   a different set than the rows do.
  * - `localRows` - whether host-synthesized rows are present, absent because
- *   there were none, or SUPPRESSED because the request carried a filter term
- *   this host cannot prove against durable state. The third is the one worth
- *   naming: it is the difference between "you have no local epics matching"
- *   and "this filter cannot be answered locally", and collapsing them is how a
- *   filtered offline History came to look empty-but-authoritative.
+ *   there were none, TRUNCATED because the page-injection cap trimmed
+ *   admissible mirror rows, or SUPPRESSED because the request carried a
+ *   filter term this host cannot prove against durable state. The last two
+ *   are the ones worth naming: `truncated` is the difference between "these
+ *   are your offline tasks" and "these are the first N of them" (a silent cap
+ *   reads as covered-everything - the defect this key exists to prevent), and
+ *   `suppressed-unprovable-filter` is the difference between "you have no
+ *   local epics matching" and "this filter cannot be answered locally" -
+ *   collapsing that one is how a filtered offline History came to look
+ *   empty-but-authoritative.
  * - `sort` - `server` when the returned order is the server's evaluation of
  *   the requested sort; `loaded-union` when host rows were merged in, so the
  *   order holds over the rows present and is not a global ranking.
@@ -639,7 +644,12 @@ export type ListTasksResponseV13 = z.infer<typeof listTasksResponseSchemaV13>;
 export const listTasksCompletenessSchema = z.object({
   cloudPage: z.enum(["settled", "unavailable"]),
   facets: z.enum(["server", "partial"]),
-  localRows: z.enum(["present", "none", "suppressed-unprovable-filter"]),
+  localRows: z.enum([
+    "present",
+    "none",
+    "truncated",
+    "suppressed-unprovable-filter",
+  ]),
   sort: z.enum(["server", "loaded-union"]),
 });
 export type ListTasksCompleteness = z.infer<typeof listTasksCompletenessSchema>;

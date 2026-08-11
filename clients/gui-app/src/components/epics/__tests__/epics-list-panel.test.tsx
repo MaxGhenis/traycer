@@ -643,6 +643,24 @@ describe("<EpicsListPanel />", () => {
     expect(notice.textContent).toContain("not everything you have");
   });
 
+  it("says a capped page shows the first tasks, not all of them", async () => {
+    testState.items = [
+      historyItem({ id: "history-m1", epicId: "m1", title: "Mirror 1" }),
+    ];
+    testState.completeness = {
+      cloudPage: "unavailable",
+      facets: "partial",
+      localRows: "truncated",
+      sort: "loaded-union",
+    };
+    renderPanel("embedded", "/");
+
+    const notice = await screen.findByTestId("epics-list-completeness");
+    expect(notice.getAttribute("data-local-rows")).toBe("truncated");
+    // A capped page that says nothing reads as covered-everything.
+    expect(notice.textContent).toContain("first tasks stored on this device");
+  });
+
   it("names a filter this device cannot check rather than showing an empty list", async () => {
     testState.items = [];
     testState.completeness = {

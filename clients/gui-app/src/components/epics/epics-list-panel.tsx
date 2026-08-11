@@ -1158,6 +1158,12 @@ function HistoryCompletenessNotice(props: {
       "Cloud tasks couldn't be reached. Showing what this device holds.",
     );
   }
+  if (completeness.localRows === "truncated") {
+    // The host capped how many mirror rows it injects into one page. Without
+    // this line the capped page reads as "these are your offline tasks" when
+    // it is "these are the first N of them".
+    lines.push("Showing the first tasks stored on this device, not all.");
+  }
   if (completeness.localRows === "suppressed-unprovable-filter") {
     // The difference between "you have no local epics matching" and "this
     // filter cannot be answered from this device". Collapsing them is how a
