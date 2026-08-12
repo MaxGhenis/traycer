@@ -272,7 +272,7 @@ class FakeStreamClient {
     readonly params: unknown;
   }> = [];
 
-  constructor(private readonly autoOpen = false) {}
+  constructor(private readonly autoOpen: boolean) {}
 
   subscribe(method: string, params: unknown): FakeStreamSession {
     const session = new FakeStreamSession();
@@ -322,10 +322,7 @@ function armPeekTile(stream: FakeStreamSession): void {
     screen.getByRole("button", { name: "Browser screencast controls" }),
   );
   act(() => {
-    stream.emit(
-      { kind: "armed", hasBinaryPayload: false, armEpoch: 1 },
-      null,
-    );
+    stream.emit({ kind: "armed", hasBinaryPayload: false, armEpoch: 1 }, null);
   });
 }
 
@@ -370,7 +367,7 @@ describe("BrowserSessionDock", () => {
   });
 
   it("does not dispatch during render when the stream client identity churns", () => {
-    hookState.streamClientFactory = () => new FakeStreamClient();
+    hookState.streamClientFactory = () => new FakeStreamClient(false);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {
       return undefined;
     });
@@ -744,7 +741,7 @@ describe("BrowserPeekTile", () => {
   });
 
   it("does not dispatch during render when the peek stream client identity churns", () => {
-    hookState.streamClientFactory = () => new FakeStreamClient();
+    hookState.streamClientFactory = () => new FakeStreamClient(false);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {
       return undefined;
     });
@@ -979,6 +976,151 @@ describe("BrowserPeekTile", () => {
         generation: 10,
       }),
     );
+  });
+
+  it("clears only the matching text-free dialog settlement", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    act(() => {
+      stream.emit(
+        {
+          kind: "dialogOpened",
+          hasBinaryPayload: false,
+          generation: 7,
+          type: "confirm",
+          message: "Current dialog",
+          defaultValue: "",
+        },
+        null,
+      );
+      stream.emit(
+        {
+          kind: "dialogSettled",
+          hasBinaryPayload: false,
+          generation: 6,
+        },
+        null,
+      );
+    });
+
+    expect(screen.getByText("Current dialog")).toBeTruthy();
+    act(() => {
+      stream.emit(
+        {
+          kind: "dialogSettled",
+          hasBinaryPayload: false,
+          generation: 7,
+        },
+        null,
+      );
+    });
+    expect(screen.queryByText("Current dialog")).toBeNull();
+  });
+
+  it("resets control state on reconnect, re-arms with a fresh epoch, and accepts a low dialog generation", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    act(() => {
+      stream.emit(
+        {
+          kind: "started",
+          hasBinaryPayload: false,
+          frameWidth: 800,
+          frameHeight: 600,
+          deviceScaleFactor: 1,
+        },
+        null,
+      );
+      stream.emit(
+        {
+          kind: "frame",
+          hasBinaryPayload: true,
+          sequence: 7,
+          metadata: {
+            offsetTop: 0,
+            pageScaleFactor: 1,
+            deviceWidth: 800,
+            deviceHeight: 600,
+            scrollOffsetX: 0,
+            scrollOffsetY: 0,
+            timestamp: 1,
+          },
+        },
+        new Uint8Array([1, 2, 3]),
+      );
+    });
+    fireEvent.load(screen.getByAltText("Browser screencast"));
+    act(() => {
+      stream.emit(
+        {
+          kind: "dialogOpened",
+          hasBinaryPayload: false,
+          generation: 9,
+          type: "confirm",
+          message: "Old dialog",
+          defaultValue: "",
+        },
+        null,
+      );
+    });
+    expect(screen.getByText("Old dialog")).toBeTruthy();
+    const controls = screen.getByRole("button", {
+      name: "Browser screencast controls",
+    });
+    const tile = screen.getByTestId(
+      `browser-peek-tile-${PEEK_NODE.instanceId}`,
+    );
+    const image = screen.getByAltText("Browser screencast");
+    vi.spyOn(image, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, 800, 600),
+    );
+
+    act(() => {
+      stream.emitStatus("reconnecting");
+    });
+    expect(tile.querySelector(".ring-primary")).toBeNull();
+    expect(screen.queryByText("Old dialog")).toBeNull();
+
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(stream.sentFrames).toContainEqual({
+      kind: "arm",
+      hasBinaryPayload: false,
+      armEpoch: 2,
+    });
+    act(() => {
+      stream.emit(
+        { kind: "armed", hasBinaryPayload: false, armEpoch: 2 },
+        null,
+      );
+    });
+    fireEvent.pointerDown(controls, {
+      clientX: 400,
+      clientY: 300,
+      button: 0,
+      buttons: 1,
+    });
+    expect(stream.sentFrames).not.toContainEqual(
+      expect.objectContaining({ kind: "pointer" }),
+    );
+
+    act(() => {
+      stream.emit(
+        {
+          kind: "dialogOpened",
+          hasBinaryPayload: false,
+          generation: 1,
+          type: "alert",
+          message: "Reconnected dialog",
+          defaultValue: "",
+        },
+        null,
+      );
+    });
+    expect(screen.getByText("Reconnected dialog")).toBeTruthy();
   });
 
   it("sends one insertText frame for a local CJK composition and shows its indicator", () => {

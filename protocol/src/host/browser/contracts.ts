@@ -1028,6 +1028,11 @@ export const browserScreencastServerFrameSchema = z.discriminatedUnion("kind", [
     message: z.string(),
     defaultValue: z.string(),
   }),
+  z.object({
+    kind: z.literal("dialogSettled"),
+    ...textFrameFields,
+    generation: z.number().int().nonnegative(),
+  }),
 ]);
 export type BrowserScreencastServerFrame = z.infer<
   typeof browserScreencastServerFrameSchema
@@ -1110,8 +1115,8 @@ export const browserScreencastClientFrameSchema = z.discriminatedUnion("kind", [
     normalizedX: z.number(),
     normalizedY: z.number(),
     button: browserScreencastPointerButtonSchema,
-    buttons: z.number().int().nonnegative(),
-    modifiers: z.number().int().nonnegative(),
+    buttons: z.number().int().min(0).max(31),
+    modifiers: z.number().int().min(0).max(15),
     deltaX: z.number(),
     deltaY: z.number(),
   }),
@@ -1122,7 +1127,7 @@ export const browserScreencastClientFrameSchema = z.discriminatedUnion("kind", [
     type: browserScreencastKeyboardTypeSchema,
     code: z.string(),
     key: z.string(),
-    modifiers: z.number().int().nonnegative(),
+    modifiers: z.number().int().min(0).max(15),
   }),
   z.object({
     kind: z.literal("insertText"),

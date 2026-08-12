@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  browserScreencastClientFrameSchema,
   browserSessionsClientFrameSchema,
   browserSessionsServerFrameSchema,
   browserSessionsV1,
@@ -67,5 +68,55 @@ describe("browser.sessions@1.0 borrowed-tile attachment frames", () => {
       /^(tiles|listTiles|borrowedTiles|browserTiles)/i.test(kind),
     );
     expect(enumerationShaped).toEqual([]);
+  });
+
+  it("rejects control bitmasks outside the protocol bounds", () => {
+    const pointer = {
+      kind: "pointer" as const,
+      hasBinaryPayload: false as const,
+      armEpoch: 1,
+      seq: 0,
+      type: "move" as const,
+      castSequence: 1,
+      normalizedX: 0.5,
+      normalizedY: 0.5,
+      button: "none" as const,
+      buttons: 0,
+      modifiers: 0,
+      deltaX: 0,
+      deltaY: 0,
+    };
+    const keyboard = {
+      kind: "keyboard" as const,
+      hasBinaryPayload: false as const,
+      armEpoch: 1,
+      seq: 0,
+      type: "rawKeyDown" as const,
+      code: "KeyA",
+      key: "a",
+      modifiers: 0,
+    };
+
+    expect(browserScreencastClientFrameSchema.safeParse(pointer).success).toBe(
+      true,
+    );
+    expect(
+      browserScreencastClientFrameSchema.safeParse({
+        ...pointer,
+        buttons: 32,
+      }).success,
+    ).toBe(false);
+    expect(
+      browserScreencastClientFrameSchema.safeParse({
+        ...pointer,
+        modifiers: 16,
+      }).success,
+    ).toBe(false);
+    expect(
+      browserScreencastClientFrameSchema.safeParse({
+        ...keyboard,
+        modifiers: 16,
+      }).success,
+    ).toBe(false);
   });
 });

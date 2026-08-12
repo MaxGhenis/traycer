@@ -181,6 +181,28 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     });
     sessionRef.current = session;
     session.onStatusChange((status, reason) => {
+      if (status !== "open") {
+        presentedSequenceRef.current = null;
+        desiredArmEpochRef.current = null;
+        activeArmEpochRef.current = null;
+        activeDialogRef.current = null;
+        composingRef.current = false;
+        setArmedState(null);
+        setDialogState(null);
+        setComposing(false);
+      } else if (
+        viewportRef.current?.contains(document.activeElement) === true
+      ) {
+        armEpochCounterRef.current += 1;
+        const armEpoch = armEpochCounterRef.current;
+        desiredArmEpochRef.current = armEpoch;
+        inputSequenceRef.current = 0;
+        sendPeekFrame(session, {
+          kind: "arm",
+          hasBinaryPayload: false,
+          armEpoch,
+        });
+      }
       handleStreamStatus(status, reason, setLifecycle, setDetails);
     });
     session.onServerFrame((envelope, binaryPayload) => {
@@ -213,18 +235,20 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         setArmedState(null);
         activeDialogRef.current = null;
         setDialogState(null);
-      } else if (parsed.data.kind === "dialogOpened") {
-        const armEpoch = activeArmEpochRef.current;
-        const current = activeDialogRef.current;
-        if (
-          armEpoch === null ||
-          (current !== null && parsed.data.generation <= current.generation)
-        ) {
-          return;
-        }
-        const opened = { ...parsed.data, armEpoch };
-        activeDialogRef.current = opened;
-        setDialogState({ client, dialog: opened });
+      } else {
+        handleDialogServerFrame({
+          frame: parsed.data,
+          armEpoch: activeArmEpochRef.current,
+          current: activeDialogRef.current,
+          opened: (dialog) => {
+            activeDialogRef.current = dialog;
+            setDialogState({ client, dialog });
+          },
+          settled: () => {
+            activeDialogRef.current = null;
+            setDialogState(null);
+          },
+        });
       }
     });
 
@@ -694,6 +718,30 @@ function dialogForClient(
   client: IHostStreamClient<HostStreamRpcRegistry> | null,
 ): BrowserPeekDialog | null {
   return state?.client === client ? state.dialog : null;
+}
+
+function handleDialogServerFrame(input: {
+  readonly frame: BrowserScreencastServerFrame;
+  readonly armEpoch: number | null;
+  readonly current: BrowserPeekDialog | null;
+  readonly opened: (dialog: BrowserPeekDialog) => void;
+  readonly settled: () => void;
+}): void {
+  if (input.frame.kind === "dialogOpened") {
+    if (
+      input.armEpoch === null ||
+      (input.current !== null &&
+        input.frame.generation <= input.current.generation)
+    ) {
+      return;
+    }
+    input.opened({ ...input.frame, armEpoch: input.armEpoch });
+  } else if (
+    input.frame.kind === "dialogSettled" &&
+    input.current?.generation === input.frame.generation
+  ) {
+    input.settled();
+  }
 }
 
 function resetPeekStateForClient(
