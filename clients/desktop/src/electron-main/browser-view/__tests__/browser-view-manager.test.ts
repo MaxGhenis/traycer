@@ -999,7 +999,7 @@ describe("BrowserViewManager", () => {
     expect(settled).toBe(true);
   });
 
-  it("installs localStorage seed before the first background load", async () => {
+  it("installs localStorage only at create before the first background load", async () => {
     const harness = createHarness();
     const creation = harness.manager.createBackgroundTab("window-1", {
       ...BASE_KEY,
@@ -1037,6 +1037,7 @@ describe("BrowserViewManager", () => {
       params: { identifier: "seed-script-1" },
       sessionId: undefined,
     });
+    expect(harness.storageStateApplications).toEqual([]);
   });
 
   it("rejects a duplicate background runtime key without overwriting the first view", async () => {

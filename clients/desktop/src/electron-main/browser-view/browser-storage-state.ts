@@ -14,6 +14,8 @@ import { log } from "../app/logger";
 type BrowserStorageCookieSameSite = "Strict" | "Lax" | "None";
 
 interface BrowserStorageCookie {
+  // Partitioned cookies are intentionally unsupported: this capture shape has
+  // no partition key, so callers must not claim CHIPS identity preservation.
   readonly name: string;
   readonly value: string;
   readonly domain: string;
@@ -170,6 +172,8 @@ export async function applyBrowserViewStorageStateWithDependencies(
   input: BrowserViewStorageStateApply,
   dependencies: BrowserStorageStateApplyDependencies,
 ): Promise<BrowserViewStorageStateApplyResult> {
+  // Cookies apply live. localStorage is installed only by the create-time seed
+  // script, so an already-open native tab stays localStorage-stale until recreated.
   const storageState = parseStorageState(input.storageState);
   const cookieDetails = storageState.cookies.map(toCookieSetDetails);
   const cryptoState = dependencies.readCryptoState();

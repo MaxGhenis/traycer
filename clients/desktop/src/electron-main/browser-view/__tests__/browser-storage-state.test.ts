@@ -397,8 +397,9 @@ describe("applyBrowserViewStorageStateWithDependencies", () => {
 });
 
 describe("captureBrowserViewStorageStateWithDependencies", () => {
-  it("flushes and captures only cookies and localStorage for the chosen origin", async () => {
+  it("round-trips a host-only cookie from URL capture through native apply without widening scope", async () => {
     const calls: string[] = [];
+    const appliedCookies: CookieSetDetails[] = [];
     const webContents = {
       getURL: () => "http://localhost:3000/dashboard",
       executeJavaScript: (script: string, userGesture: boolean) => {
@@ -407,31 +408,31 @@ describe("captureBrowserViewStorageStateWithDependencies", () => {
       },
     };
 
-    await expect(
-      captureBrowserViewStorageStateWithDependencies(
+    const captured = await captureBrowserViewStorageStateWithDependencies(
+      {
+        viewTabId: "tab-1",
+        paneId: "pane-1",
+        tileInstanceId: "browser-1",
+        pageSessionId: "page-1",
+        origin: "http://localhost:3000",
+      },
+      webContents,
+      captureDependencies("http://localhost:3000", [
         {
-          viewTabId: "tab-1",
-          paneId: "pane-1",
-          tileInstanceId: "browser-1",
-          pageSessionId: "page-1",
-          origin: "http://localhost:3000",
+          name: "sid",
+          value: "cookie",
+          domain: ".localhost",
+          hostOnly: true,
+          path: "/",
+          secure: false,
+          httpOnly: true,
+          session: true,
+          sameSite: "lax",
         },
-        webContents,
-        captureDependencies("http://localhost:3000", [
-          {
-            name: "sid",
-            value: "cookie",
-            domain: "localhost",
-            hostOnly: true,
-            path: "/",
-            secure: false,
-            httpOnly: true,
-            session: true,
-            sameSite: "lax",
-          },
-        ]),
-      ),
-    ).resolves.toEqual({
+      ]),
+    );
+
+    expect(captured).toEqual({
       storageState: {
         cookies: [
           {
@@ -460,6 +461,13 @@ describe("captureBrowserViewStorageStateWithDependencies", () => {
       localStorageReason: null,
     });
     expect(calls).toHaveLength(1);
+
+    await applyBrowserViewStorageStateWithDependencies(
+      { ...APPLY_CONTEXT, storageState: captured.storageState },
+      dependencies(realState, appliedCookies, []),
+    );
+    expect(appliedCookies).toHaveLength(1);
+    expect(appliedCookies[0]).not.toHaveProperty("domain");
   });
 
   it("keeps capture read-only and returns cookies when the source tile is no longer at the origin", async () => {
@@ -644,8 +652,9 @@ function captureDependencies(
 }
 
 describe("captureBrowserPrimaryProfileWithDependencies", () => {
-  it("uses cookies.get({}) and attaches plain origin localStorage snapshots", async () => {
+  it("round-trips partition capture through native apply without widening host-only scope", async () => {
     const cookieGetFilters: Array<{ readonly url?: string }> = [];
+    const appliedCookies: CookieSetDetails[] = [];
     const origins = [
       {
         origin: "https://a.example",
@@ -717,6 +726,18 @@ describe("captureBrowserPrimaryProfileWithDependencies", () => {
       },
       reason: null,
     });
+    if (result.status !== "captured") throw new Error("expected capture");
+
+    await applyBrowserViewStorageStateWithDependencies(
+      { ...APPLY_CONTEXT, storageState: result.storageState },
+      dependencies(realState, appliedCookies, []),
+    );
+    expect(
+      appliedCookies.map(({ name, domain }) => ({ name, domain })),
+    ).toEqual([
+      { name: "host-only", domain: undefined },
+      { name: "domain-cookie", domain: ".example.com" },
+    ]);
   });
 
   it("short-circuits unavailable on degraded crypto without reading the partition", async () => {
