@@ -83,6 +83,15 @@ import {
 } from "@traycer/protocol/host/notifications/contracts";
 import type { NotificationEntry } from "@traycer/protocol/notifications/notification-entry";
 import { formatNotification } from "@traycer/protocol/notifications/notification-formatter";
+import {
+  compareProviderPackLocalFirst,
+  parseProviderPackNotificationAttribution,
+  providerPackViewingLocalityFromShell,
+  type ProviderPackNotificationAttribution,
+  type ProviderPackViewingLocalityContext,
+} from "@/lib/notifications/provider-pack-notification-attribution";
+import { useReactiveLocalHostEntry } from "@/hooks/host/use-reactive-local-host-entry";
+import { useRunnerHostOrNull } from "@/providers/use-runner-host";
 
 export type MergedNotificationSource =
   "host" | "app-local" | "global" | "cloud";
@@ -113,6 +122,13 @@ export interface MergedNotificationRow {
    * relayed the feed. Feed mutations never use it - they address the entry.
    * `null` for rows with no meaningful origin. */
   readonly originHostId: string | null;
+  /**
+   * D7: parsed host-attributed provider-pack payload (update / floor / pin
+   * lifecycle), or null. Render uses this with the **local** host id (not
+   * ambient active) to caption and de-emphasise other machines' pack-store
+   * events without dropping `needs_action` evidence.
+   */
+  readonly providerPackAttribution: ProviderPackNotificationAttribution | null;
   /** Product-vocabulary category, mapped from `source` at the projection
    * boundary so consumers never branch on the internal source seam. */
   readonly category: NotificationCategory;
@@ -306,10 +322,20 @@ interface AttentionOrderEntry {
 }
 
 /** Attention, blocking-first then failures, newest first within each tier.
- * Never filtered - Attention is complete and filter-invariant by design. */
+ * Never filtered - Attention is complete and filter-invariant by design.
+ * Within the same tier, this machine's pack-store events sort ahead of other
+ * machines' (D7 de-emphasis: listed, but local leads). */
 export function useAttentionNotificationIds(): ReadonlyArray<string> {
   const rows = useMergedNotificationRows();
+  const localHost = useReactiveLocalHostEntry();
+  const runnerHost = useRunnerHostOrNull();
+  const hasLocalHost = runnerHost?.hasLocalHost ?? false;
+  const localHostId = localHost?.hostId ?? null;
   return useMemo(() => {
+    const viewing = providerPackViewingLocalityFromShell({
+      hasLocalHost,
+      localHostId,
+    });
     const attentionRows: AttentionOrderEntry[] = rows
       .map((row) => ({
         row,
@@ -327,19 +353,27 @@ export function useAttentionNotificationIds(): ReadonlyArray<string> {
         } => entry.classification.section === "attention",
       )
       .map(({ row, classification }) => ({ row, tier: classification.tier }));
-    attentionRows.sort(comparePartitionedAttentionOrder);
+    attentionRows.sort((a, b) =>
+      comparePartitionedAttentionOrder(a, b, viewing),
+    );
     return attentionRows.map((entry) => entry.row.feedId);
-  }, [rows]);
+  }, [rows, hasLocalHost, localHostId]);
 }
 
 /**
  * Attention retains its severity tiers across planes, but once two rows share
  * a tier their plane is the protocol ordering key. This deliberately never
  * compares a local `updatedAt` to a cloud relay timestamp.
+ *
+ * Inside one plane, this machine's pack-store rows lead the ones it only heard
+ * about (D7). `compareProviderPackLocalFirst` carries the same newest-first
+ * then `feedId` tail `compareFeedCandidates` does, so the locality key is the
+ * only thing it adds below the plane.
  */
 function comparePartitionedAttentionOrder(
   left: AttentionOrderEntry,
   right: AttentionOrderEntry,
+  viewing: ProviderPackViewingLocalityContext,
 ): number {
   if (left.tier !== right.tier) {
     return left.tier === "blocking" ? -1 : 1;
@@ -347,7 +381,19 @@ function comparePartitionedAttentionOrder(
   const planeDelta =
     notificationPlaneOrder(left.row) - notificationPlaneOrder(right.row);
   if (planeDelta !== 0) return planeDelta;
-  return compareFeedCandidates(left.row, right.row);
+  return compareProviderPackLocalFirst(
+    {
+      attribution: left.row.providerPackAttribution,
+      createdAt: left.row.createdAt,
+      feedId: left.row.feedId,
+    },
+    {
+      attribution: right.row.providerPackAttribution,
+      createdAt: right.row.createdAt,
+      feedId: right.row.feedId,
+    },
+    viewing,
+  );
 }
 
 /**
@@ -365,18 +411,41 @@ function notificationPlaneOrder(row: MergedNotificationRow): number {
 
 /** Every non-attention row, chronological, filtered by the open-session
  * Unread-only/category selections. Attention rows are always excluded
- * regardless of filter state. */
+ * regardless of filter state. Local pack-store rows lead remote ones (D7). */
 export function useRecentNotificationIds(): ReadonlyArray<string> {
   const rows = useMergedNotificationRows();
   const unreadOnly = useNotificationsPopoverStore((state) => state.unreadOnly);
   const categories = useNotificationsPopoverStore((state) => state.categories);
+  const localHost = useReactiveLocalHostEntry();
+  const runnerHost = useRunnerHostOrNull();
+  const hasLocalHost = runnerHost?.hasLocalHost ?? false;
+  const localHostId = localHost?.hostId ?? null;
   return useMemo(() => {
+    const viewing = providerPackViewingLocalityFromShell({
+      hasLocalHost,
+      localHostId,
+    });
     return rows
       .filter((row) => classifyNotificationLifecycle(row).section === "recent")
       .filter((row) => categories.has(row.category))
       .filter((row) => !unreadOnly || row.readAt === null)
+      .sort((a, b) =>
+        compareProviderPackLocalFirst(
+          {
+            attribution: a.providerPackAttribution,
+            createdAt: a.createdAt,
+            feedId: a.feedId,
+          },
+          {
+            attribution: b.providerPackAttribution,
+            createdAt: b.createdAt,
+            feedId: b.feedId,
+          },
+          viewing,
+        ),
+      )
       .map((row) => row.feedId);
-  }, [rows, unreadOnly, categories]);
+  }, [rows, unreadOnly, categories, hasLocalHost, localHostId]);
 }
 
 function rowFromLocalFeedId(input: {
@@ -1396,6 +1465,9 @@ function rowFromHostEntryForOrigin(
   originHostId: string | null,
 ): MergedNotificationRow {
   const presentation = formatHostNotificationPresentation(entry);
+  const providerPackAttribution = parseProviderPackNotificationAttribution(
+    entry.payload,
+  );
   return {
     feedId: hostFeedId(entry.id),
     source: "host",
@@ -1413,6 +1485,7 @@ function rowFromHostEntryForOrigin(
     resolvedAt: "resolvedAt" in entry ? entry.resolvedAt : null,
     sourceRef: entry.sourceRef,
     originHostId,
+    providerPackAttribution,
     category: categoryForNotificationSource("host"),
   };
 }
@@ -1437,6 +1510,7 @@ export function rowFromAppLocalEntry(
     resolvedAt: null,
     sourceRef: null,
     originHostId: entry.originHostId ?? null,
+    providerPackAttribution: null,
     category: categoryForNotificationSource("app-local"),
   };
 }
@@ -1461,6 +1535,7 @@ export function rowFromGlobalEntry(
     resolvedAt: null,
     sourceRef: null,
     originHostId: null,
+    providerPackAttribution: null,
     category: categoryForNotificationSource("global"),
   };
 }
@@ -1471,6 +1546,9 @@ export function rowFromCloudFeedRow(
   const fallback = formatHostNotificationPresentation(row.entry);
   const title =
     row.presentation.chatTitle ?? row.presentation.epicTitle ?? fallback.title;
+  const providerPackAttribution = parseProviderPackNotificationAttribution(
+    row.entry.payload,
+  );
   return {
     feedId: cloudNotificationFeedId(row.entryId),
     source: "cloud",
@@ -1489,6 +1567,7 @@ export function rowFromCloudFeedRow(
     resolvedAt: "resolvedAt" in row.entry ? row.entry.resolvedAt : null,
     sourceRef: row.entry.sourceRef,
     originHostId: row.originHostId,
+    providerPackAttribution,
     category: categoryForNotificationSource("cloud"),
   };
 }

@@ -81,12 +81,19 @@ vi.mock("@/hooks/notifications/use-notification-host", () => ({
   useNotificationHost: () => ({ hostId: activeHostIdRef.value, client: null }),
 }));
 
-vi.mock("@/hooks/host/use-host-directory-entry", () => ({
-  useHostDirectoryEntry: (hostId: string) => {
-    if (hostId.length === 0 || directoryRef.value === null) return null;
-    return directoryRef.value.findById(hostId);
-  },
-}));
+vi.mock("@/hooks/host/use-host-directory-entry", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/hooks/host/use-host-directory-entry")
+    >();
+  return {
+    ...actual,
+    useHostDirectoryEntry: (hostId: string) => {
+      if (hostId.length === 0 || directoryRef.value === null) return null;
+      return directoryRef.value.findById(hostId);
+    },
+  };
+});
 
 vi.mock("@/lib/host", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/host")>();
