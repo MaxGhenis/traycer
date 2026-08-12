@@ -52,6 +52,7 @@ import type {
   BrowserPrimaryProfileOriginSnapshot,
   BrowserStorageCaptureWebContents,
 } from "./browser-storage-state";
+import { browserLocalStorageSeedScript } from "./browser-storage-state";
 import { describeLogError, log } from "../app/logger";
 import { BrowserDebugSession } from "./browser-debug-session";
 import { BrowserElementPickerSession } from "./browser-element-picker-session";
@@ -601,7 +602,16 @@ export class BrowserViewManager {
     entry.runtimeTabId = input.tabId;
     this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
     try {
+      const seedScript = browserLocalStorageSeedScript(input.seedStorageState);
+      const debugSession = this.ensureDebugSession(entry);
+      const seedScriptId =
+        seedScript === null
+          ? null
+          : await debugSession.installScriptBeforeNavigation(seedScript);
       await this.navigate(entry, input.url, true);
+      if (seedScriptId !== null) {
+        await debugSession.removeScriptBeforeNavigation(seedScriptId);
+      }
     } catch (error) {
       await this.closeEntry(entry, null);
       throw error;

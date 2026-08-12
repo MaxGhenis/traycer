@@ -33,6 +33,7 @@ export interface BrowserViewDurableTabRegistration extends BrowserViewTileKey {
 export interface BrowserViewBackgroundTabCreate
   extends BrowserViewDurableTabRegistration {
   readonly url: string;
+  readonly seedStorageState?: unknown;
 }
 
 export interface BrowserViewBackgroundThrottlingChange

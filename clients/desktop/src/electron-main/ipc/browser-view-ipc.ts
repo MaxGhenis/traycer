@@ -598,6 +598,7 @@ function parseBackgroundTabCreate(value: unknown): BrowserViewBackgroundTabCreat
   return {
     ...parseDurableTabRegistration(record),
     url: readString(record.url, "url"),
+    seedStorageState: record.seedStorageState ?? null,
   };
 }
 

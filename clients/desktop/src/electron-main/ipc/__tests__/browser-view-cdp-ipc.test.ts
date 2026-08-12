@@ -4,6 +4,7 @@ import type {
   AgentBrowserViewCdpDispatch,
   AgentBrowserViewCdpSessionEndedChange,
   AgentBrowserViewCdpTargetAttachedChange,
+  BrowserViewBackgroundTabCreate,
 } from "../../../ipc-contracts/browser-view-types";
 import type { BrowserViewManagerOptions } from "../../browser-view/browser-view-manager";
 import { parseBrowserViewCdpCommand } from "../browser-view-cdp-payload";
@@ -11,6 +12,11 @@ import { parseBrowserViewCdpCommand } from "../browser-view-cdp-payload";
 type DispatchCdpCall = {
   readonly windowId: string;
   readonly input: AgentBrowserViewCdpDispatch;
+};
+
+type BackgroundTabCreateCall = {
+  readonly windowId: string;
+  readonly input: BrowserViewBackgroundTabCreate;
 };
 
 type InvokeHandler = (
@@ -21,6 +27,7 @@ type InvokeHandler = (
 const captured = vi.hoisted(() => ({
   managerOptions: null as BrowserViewManagerOptions | null,
   dispatchCdpCalls: [] as DispatchCdpCall[],
+  backgroundTabCreates: [] as BackgroundTabCreateCall[],
 }));
 
 vi.mock("electron", () => {
@@ -100,6 +107,14 @@ vi.mock("../../browser-view/browser-view-manager", () => ({
         ok: true,
         frames: [],
       });
+    }
+
+    createBackgroundTab(
+      windowId: string,
+      input: BrowserViewBackgroundTabCreate,
+    ): Promise<void> {
+      captured.backgroundTabCreates.push({ windowId, input });
+      return Promise.resolve();
     }
 
     dispose(): void {}
@@ -382,6 +397,7 @@ describe("browser view CDP IPC (ticket 09 borrowed tile)", () => {
   beforeEach(() => {
     captured.managerOptions = null;
     captured.dispatchCdpCalls = [];
+    captured.backgroundTabCreates = [];
     vi.clearAllMocks();
   });
 
@@ -492,6 +508,51 @@ describe("browser view CDP IPC (ticket 09 borrowed tile)", () => {
       RunnerHostEvent.agentBrowserViewCdpTargetAttached,
       expect.anything(),
     );
+  });
+
+  it("passes the background storage seed through the IPC parser", async () => {
+    const { registerBrowserViewIpc } = await import("../browser-view-ipc");
+    const { RunnerHostInvoke } =
+      await import("../../../ipc-contracts/ipc-channels");
+
+    const bridge = makeBridge();
+    registerBrowserViewIpc(bridge as never);
+    const handler = findInvokeHandler(
+      bridge,
+      RunnerHostInvoke.browserViewCreateBackgroundTab,
+    );
+    const seedStorageState = {
+      cookies: [],
+      origins: [
+        {
+          origin: "https://example.com",
+          localStorage: [{ name: "token", value: "carried" }],
+        },
+      ],
+    };
+
+    await handler({}, {
+      viewTabId: "view-tab-1",
+      paneId: "pane-1",
+      tileInstanceId: "tile-1",
+      pageSessionId: "page-1",
+      sessionId: "session-1",
+      tabId: "tab-1",
+      url: "https://example.com/background",
+      seedStorageState,
+    });
+
+    expect(captured.backgroundTabCreates).toEqual([
+      {
+        windowId: "window-1",
+        input: expect.objectContaining({
+          sessionId: "session-1",
+          tabId: "tab-1",
+          url: "https://example.com/background",
+          seedStorageState,
+        }),
+      },
+    ]);
   });
 
   describe("parseBrowserViewCdpCommand (shared by agent and borrowed tiles)", () => {

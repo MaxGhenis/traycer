@@ -45,6 +45,12 @@ interface ElectronBrowserTabBridge {
   applyStorageState?: DesktopBrowserViewBridge["applyStorageState"];
 }
 
+type ElectronBrowserBackgroundTabBridge = ElectronBrowserTabBridge &
+  Pick<
+    DesktopBrowserViewBridge,
+    "applyStorageState" | "createBackgroundTab"
+  >;
+
 export interface ElectronBrowserTabRegistration {
   readonly epicId: string;
   readonly hostId: string;
@@ -74,7 +80,10 @@ type SendFrame = (frame: BrowserSessionsClientFrame) => void;
 
 const recordsByRegistrationKey = new Map<string, ElectronBrowserTabRecord>();
 const sendFrameByEpicHost = new Map<string, SendFrame>();
-const backgroundBridgeByEpicHost = new Map<string, DesktopBrowserViewBridge>();
+const backgroundBridgeByEpicHost = new Map<
+  string,
+  ElectronBrowserBackgroundTabBridge
+>();
 const createRequestIdByRegistrationKey = new Map<string, string>();
 const pendingHandoffAcks = new Map<
   string,
@@ -179,7 +188,7 @@ export function attachElectronBrowserTabStream(
 export function attachElectronBrowserBackgroundTabRoute(
   epicId: string,
   hostId: string,
-  bridge: DesktopBrowserViewBridge,
+  bridge: ElectronBrowserBackgroundTabBridge,
 ): () => void {
   const key = epicHostKey(epicId, hostId);
   backgroundBridgeByEpicHost.set(key, bridge);
@@ -356,6 +365,7 @@ function handleBackgroundElectronTabCreate(
         sessionId: frame.sessionId,
         tabId: frame.sourceTabId,
         url: frame.url,
+        seedStorageState: frame.seedStorageState ?? null,
       }),
     )
     .then(() => {

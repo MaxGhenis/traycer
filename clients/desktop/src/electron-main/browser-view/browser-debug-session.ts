@@ -75,6 +75,39 @@ export class BrowserDebugSession {
     this.onTargetAttached = options.onTargetAttached;
   }
 
+  async installScriptBeforeNavigation(source: string): Promise<string> {
+    if (this.disposed) throw new Error("Browser debug session is disposed");
+    const browserDebugger = this.webContents.debugger;
+    if (!browserDebugger.isAttached()) {
+      browserDebugger.attach("1.3");
+      this.attachedBySession = true;
+    }
+    const result = await sendDebuggerCommand(
+      browserDebugger,
+      "Page.addScriptToEvaluateOnNewDocument",
+      { source },
+      undefined,
+    );
+    if (
+      result === null ||
+      typeof result !== "object" ||
+      !("identifier" in result) ||
+      typeof result.identifier !== "string"
+    ) {
+      throw new Error("Browser seed script registration returned no identifier");
+    }
+    return result.identifier;
+  }
+
+  removeScriptBeforeNavigation(identifier: string): Promise<unknown> {
+    return sendDebuggerCommand(
+      this.webContents.debugger,
+      "Page.removeScriptToEvaluateOnNewDocument",
+      { identifier },
+      undefined,
+    );
+  }
+
   enableAfterCommit(): void {
     if (this.disposed || this.enabled || this.enableStarted) return;
     this.enableStarted = true;

@@ -9,6 +9,7 @@ import type {
 } from "../../ipc-contracts/browser-view-types";
 import { getBrowserCookieCryptoState } from "./browser-cookie-crypto";
 import { BROWSER_VIEW_PARTITION } from "./browser-session";
+import { log } from "../app/logger";
 
 type BrowserStorageCookieSameSite = "Strict" | "Lax" | "None";
 
@@ -57,8 +58,16 @@ interface BrowserCookieStore {
   flushStore(): Promise<void>;
 }
 
+interface BrowserCookieApplyStore extends BrowserCookieStore {
+  remove(url: string, name: string): Promise<void>;
+}
+
 interface BrowserStorageSession {
   readonly cookies: BrowserCookieStore;
+}
+
+interface BrowserStorageApplySession {
+  readonly cookies: BrowserCookieApplyStore;
 }
 
 export interface BrowserStorageCaptureWebContents {
@@ -76,7 +85,7 @@ export interface BrowserStorageStateApplyDependencies {
   readonly fromPartition: (
     partition: string,
     options: { readonly cache: boolean },
-  ) => BrowserStorageSession;
+  ) => BrowserStorageApplySession;
 }
 
 export interface BrowserStorageStateCaptureDependencies {
@@ -132,6 +141,21 @@ export async function captureBrowserOriginLocalStorage(
   return captured.available ? { origin, localStorage: captured.entries } : null;
 }
 
+export function browserLocalStorageSeedScript(storageState: unknown): string | null {
+  if (storageState === undefined || storageState === null) return null;
+  const origins = parseStorageState(storageState).origins;
+  if (origins.length === 0) return null;
+  return [
+    "(() => {",
+    `  const origins = ${JSON.stringify(origins)};`,
+    "  const match = origins.find((entry) => entry.origin === location.origin);",
+    "  if (match === undefined) return;",
+    "  localStorage.clear();",
+    "  for (const entry of match.localStorage) localStorage.setItem(entry.name, entry.value);",
+    "})()",
+  ].join("\n");
+}
+
 export async function applyBrowserViewStorageState(
   input: BrowserViewStorageStateApply,
 ): Promise<BrowserViewStorageStateApplyResult> {
@@ -161,15 +185,36 @@ export async function applyBrowserViewStorageStateWithDependencies(
   const browserSession = dependencies.fromPartition(BROWSER_VIEW_PARTITION, {
     cache: true,
   });
+  await browserSession.cookies.flushStore();
+  const wantedCookieKeys = new Set(
+    storageState.cookies.map((cookie) => cookieKey(cookie)),
+  );
+  const removedCookies = (await browserSession.cookies.get({})).filter(
+    (cookie) => !wantedCookieKeys.has(cookieKey(toStorageCookie(cookie))),
+  );
+  for (const cookie of removedCookies) {
+    const parsed = toStorageCookie(cookie);
+    await browserSession.cookies.remove(cookieUrl(parsed), parsed.name);
+  }
   for (const details of cookieDetails) {
     await browserSession.cookies.set(details);
   }
+  await browserSession.cookies.flushStore();
+  log.info("[browser-view] primary profile sync-back applied", {
+    kind: "primary_profile_sync_back",
+    cookiesSet: cookieDetails.length,
+    cookiesRemoved: removedCookies.length,
+  });
   return {
     status: "applied",
     cookieCount: cookieDetails.length,
     localStorageApplied: false,
     reason: "cookies-only",
   };
+}
+
+function cookieKey(cookie: BrowserStorageCookie): string {
+  return [cookie.domain, cookie.name, cookie.path].join("\u001f");
 }
 
 export async function captureBrowserViewStorageState(

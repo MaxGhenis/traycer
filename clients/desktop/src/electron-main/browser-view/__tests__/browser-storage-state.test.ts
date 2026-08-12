@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Cookie } from "electron";
 import type { BrowserCookieCryptoState } from "../../../ipc-contracts/browser-view-types";
+import { log } from "../../app/logger";
 import { BROWSER_VIEW_PARTITION } from "../browser-session";
 import {
   applyBrowserViewStorageStateWithDependencies,
@@ -67,6 +68,7 @@ const degradedState: BrowserCookieCryptoState = {
 
 describe("applyBrowserViewStorageStateWithDependencies", () => {
   let cookieSets: CookieSetDetails[];
+  let cookieRemoves: Array<{ readonly url: string; readonly name: string }>;
   let fromPartitionCalls: Array<{
     readonly partition: string;
     readonly options: { readonly cache: boolean };
@@ -74,7 +76,9 @@ describe("applyBrowserViewStorageStateWithDependencies", () => {
 
   beforeEach(() => {
     cookieSets = [];
+    cookieRemoves = [];
     fromPartitionCalls = [];
+    vi.mocked(log.info).mockClear();
   });
 
   it("validates and applies cookies to the persistent browser partition", async () => {
@@ -127,6 +131,51 @@ describe("applyBrowserViewStorageStateWithDependencies", () => {
         sameSite: "lax",
       },
     ]);
+  });
+
+  it("removes deleted cookies, retains incoming cookies, and logs counts without values", async () => {
+    const deleted = electronCookie("deleted", "secret-value");
+    const retained = electronCookie("retained", "old-value");
+    const nextStorageState = {
+      cookies: [storageCookie("retained"), storageCookie("new")],
+      origins: [],
+    };
+
+    await expect(
+      applyBrowserViewStorageStateWithDependencies(
+        { storageState: nextStorageState },
+        dependenciesWithExistingCookies(
+          realState,
+          cookieSets,
+          cookieRemoves,
+          fromPartitionCalls,
+          [deleted, retained],
+        ),
+      ),
+    ).resolves.toMatchObject({
+      status: "applied",
+      cookieCount: 2,
+      reason: "cookies-only",
+    });
+
+    expect(cookieRemoves).toEqual([
+      { url: "http://example.test/", name: "deleted" },
+    ]);
+    expect(cookieSets.map((cookie) => cookie.name)).toEqual([
+      "retained",
+      "new",
+    ]);
+    expect(log.info).toHaveBeenCalledWith(
+      "[browser-view] primary profile sync-back applied",
+      {
+        kind: "primary_profile_sync_back",
+        cookiesSet: 2,
+        cookiesRemoved: 1,
+      },
+    );
+    const logCall = vi.mocked(log.info).mock.calls.at(-1);
+    expect(JSON.stringify(logCall)).not.toContain("secret-value");
+    expect(JSON.stringify(logCall)).not.toContain("old-value");
   });
 
   it("skips persistent writes when browser cookie crypto is degraded", async () => {
@@ -407,6 +456,20 @@ function storageCookie(name: string): {
   };
 }
 
+function electronCookie(name: string, value: string): Cookie {
+  return {
+    name,
+    value,
+    domain: "example.test",
+    hostOnly: true,
+    path: "/",
+    secure: false,
+    httpOnly: false,
+    session: true,
+    sameSite: "lax",
+  };
+}
+
 function dependencies(
   cryptoState: BrowserCookieCryptoState,
   cookieSets: CookieSetDetails[],
@@ -422,6 +485,7 @@ function dependencies(
       return {
         cookies: {
           get: () => Promise.resolve([]),
+          remove: () => Promise.resolve(),
           flushStore: () => Promise.resolve(),
           set: (details) => {
             cookieSets.push(details);
@@ -449,6 +513,7 @@ function dependenciesThatRejectCookie(
       return {
         cookies: {
           get: () => Promise.resolve([]),
+          remove: () => Promise.resolve(),
           flushStore: () => Promise.resolve(),
           set: (details) => {
             cookieSets.push(details);
@@ -457,6 +522,38 @@ function dependenciesThatRejectCookie(
                 new Error(`set failed for ${rejectedCookieName}`),
               );
             }
+            return Promise.resolve();
+          },
+        },
+      };
+    },
+  };
+}
+
+function dependenciesWithExistingCookies(
+  cryptoState: BrowserCookieCryptoState,
+  cookieSets: CookieSetDetails[],
+  cookieRemoves: Array<{ readonly url: string; readonly name: string }>,
+  fromPartitionCalls: Array<{
+    readonly partition: string;
+    readonly options: { readonly cache: boolean };
+  }>,
+  existingCookies: Cookie[],
+): BrowserStorageStateApplyDependencies {
+  return {
+    readCryptoState: () => cryptoState,
+    fromPartition: (partition, options) => {
+      fromPartitionCalls.push({ partition, options });
+      return {
+        cookies: {
+          get: () => Promise.resolve(existingCookies),
+          remove: (url, name) => {
+            cookieRemoves.push({ url, name });
+            return Promise.resolve();
+          },
+          flushStore: () => Promise.resolve(),
+          set: (details) => {
+            cookieSets.push(details);
             return Promise.resolve();
           },
         },

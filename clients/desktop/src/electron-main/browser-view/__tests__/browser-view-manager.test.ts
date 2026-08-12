@@ -63,6 +63,8 @@ class FakeDebugger implements BrowserViewDebugger {
   readonly passwordSelectors = new Set<string>();
   private readonly events = new EventEmitter();
 
+  constructor(private readonly lifecycle: string[]) {}
+
   isAttached(): boolean {
     return this.attached;
   }
@@ -81,6 +83,7 @@ class FakeDebugger implements BrowserViewDebugger {
     commandParams: Record<string, unknown>,
     sessionId: string | undefined,
   ): Promise<unknown> {
+    this.lifecycle.push(method);
     this.commands.push({ method, params: commandParams, sessionId });
     if (this.deferCommands) {
       return new Promise((resolve) => {
@@ -89,6 +92,9 @@ class FakeDebugger implements BrowserViewDebugger {
     }
     if (method === "Runtime.evaluate") {
       return Promise.resolve(this.evaluateRuntime(commandParams));
+    }
+    if (method === "Page.addScriptToEvaluateOnNewDocument") {
+      return Promise.resolve({ identifier: "seed-script-1" });
     }
     return Promise.resolve(null);
   }
@@ -145,7 +151,8 @@ class FakeDebugger implements BrowserViewDebugger {
 }
 
 class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
-  readonly debugger = new FakeDebugger();
+  readonly lifecycle: string[] = [];
+  readonly debugger = new FakeDebugger(this.lifecycle);
   readonly navigationHistory = {
     canGoBack: () => this.canGoBackValue,
     canGoForward: () => this.canGoForwardValue,
@@ -205,6 +212,7 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
   }
 
   loadURL(url: string): Promise<unknown> {
+    this.lifecycle.push("loadURL");
     this.url = url;
     this.loadUrls.push(url);
     if (url === "http://127.0.0.1:65535/") {
@@ -947,6 +955,46 @@ describe("BrowserViewManager", () => {
       command: { kind: "cdpGetFrameTree" },
     });
     expect(cdp.ok).toBe(true);
+  });
+
+  it("installs localStorage seed before the first background load", async () => {
+    const harness = createHarness();
+    const creation = harness.manager.createBackgroundTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-background-seeded",
+      tabId: "tab-background-seeded",
+      url: "https://example.com/background",
+      seedStorageState: {
+        cookies: [],
+        origins: [
+          {
+            origin: "https://example.com",
+            localStorage: [{ name: "token", value: "carried" }],
+          },
+        ],
+      },
+    });
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected background view");
+
+    view.webContents.emit("did-finish-load");
+    await creation;
+
+    expect(view.webContents.lifecycle).toEqual([
+      "Page.addScriptToEvaluateOnNewDocument",
+      "loadURL",
+      "Page.removeScriptToEvaluateOnNewDocument",
+    ]);
+    expect(view.webContents.debugger.commands).toContainEqual({
+      method: "Page.addScriptToEvaluateOnNewDocument",
+      params: { source: expect.stringContaining('"token"') },
+      sessionId: undefined,
+    });
+    expect(view.webContents.debugger.commands).toContainEqual({
+      method: "Page.removeScriptToEvaluateOnNewDocument",
+      params: { identifier: "seed-script-1" },
+      sessionId: undefined,
+    });
   });
 
   it("rejects a duplicate background runtime key without overwriting the first view", async () => {

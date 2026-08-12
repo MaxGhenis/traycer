@@ -12,11 +12,15 @@ import type {
   AgentBrowserViewTileHandoffChange,
 } from "@/lib/browser-view/desktop-agent-browser-view";
 import type {
+  BrowserViewBackgroundTabCreate,
   BrowserViewDurableTabRegistration,
+  BrowserViewStorageStateApply,
+  BrowserViewStorageStateApplyResult,
   BrowserViewStatusChange,
   BrowserViewTileKey,
 } from "@/lib/browser-view/desktop-browser-view";
 import {
+  attachElectronBrowserBackgroundTabRoute,
   attachElectronBrowserTabStream,
   drainElectronBrowserHandoffs,
   findElectronBrowserTabBinding,
@@ -53,6 +57,9 @@ const TILE_KEY: BrowserViewTileKey = {
 class FakeBridge {
   readonly registerDurableTabCalls: BrowserViewDurableTabRegistration[] = [];
   readonly releaseDurableTabCalls: BrowserViewDurableTabRegistration[] = [];
+  readonly backgroundCreateCalls: BrowserViewBackgroundTabCreate[] = [];
+  readonly storageApplyCalls: BrowserViewStorageStateApply[] = [];
+  readonly backgroundOperations: string[] = [];
   readonly backgroundThrottlingCalls: Array<{
     readonly enabled: boolean;
   }> = [];
@@ -80,6 +87,25 @@ class FakeBridge {
   releaseDurableTab(input: BrowserViewDurableTabRegistration): Promise<void> {
     this.releaseDurableTabCalls.push(input);
     return Promise.resolve();
+  }
+
+  createBackgroundTab(input: BrowserViewBackgroundTabCreate): Promise<void> {
+    this.backgroundOperations.push("create");
+    this.backgroundCreateCalls.push(input);
+    return Promise.resolve();
+  }
+
+  applyStorageState(
+    input: BrowserViewStorageStateApply,
+  ): Promise<BrowserViewStorageStateApplyResult> {
+    this.backgroundOperations.push("apply");
+    this.storageApplyCalls.push(input);
+    return Promise.resolve({
+      status: "applied",
+      cookieCount: 1,
+      localStorageApplied: false,
+      reason: "cookies-only",
+    });
   }
 
   setBackgroundThrottling = (input: {
@@ -1191,6 +1217,67 @@ describe("electron-browser-tab-store createElectronTab (ticket 14)", () => {
   afterEach(() => {
     resetElectronBrowserTabStoreForTests();
     resetCanvas();
+  });
+
+  it("applies background storage seed before creating the native tab", async () => {
+    const bridge = new FakeBridge();
+    const detachRoute = attachElectronBrowserBackgroundTabRoute(
+      EPIC,
+      HOST,
+      bridge,
+    );
+    const seedStorageState = {
+      cookies: [
+        {
+          name: "sid",
+          value: "carried",
+          domain: "example.com",
+          path: "/",
+          expires: -1,
+          httpOnly: true,
+          secure: true,
+          sameSite: "Lax",
+        },
+      ],
+      origins: [
+        {
+          origin: "https://example.com",
+          localStorage: [{ name: "token", value: "carried" }],
+        },
+      ],
+    };
+
+    expect(
+      handleElectronBrowserTabFrame({
+        kind: "createElectronTab",
+        hasBinaryPayload: false,
+        requestId: "req-background-seeded",
+        sessionId: "session-background-seeded",
+        sourceTabId: "tab-background-seeded",
+        url: "https://example.com/background",
+        background: true,
+        epicId: EPIC,
+        hostId: HOST,
+        seedStorageState,
+      } satisfies BrowserSessionsServerFrame),
+    ).toBe(true);
+
+    await vi.waitFor(() => {
+      expect(bridge.backgroundOperations).toEqual(["apply", "create"]);
+    });
+    expect(bridge.storageApplyCalls).toEqual([
+      { storageState: seedStorageState },
+    ]);
+    expect(bridge.backgroundCreateCalls).toEqual([
+      expect.objectContaining({
+        sessionId: "session-background-seeded",
+        tabId: "tab-background-seeded",
+        url: "https://example.com/background",
+        seedStorageState,
+      }),
+    ]);
+
+    detachRoute();
   });
 
   it("resolves sourceTabId, splits an agent tile beside the pane, and acks only after electronTabRegistered", async () => {
