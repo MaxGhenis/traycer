@@ -9,6 +9,7 @@ import { useEpicSessionHostId } from "@/hooks/epic/use-epic-session-host-id";
 import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
 import { useHostQuery } from "@/hooks/host/use-host-query";
 import { useReactiveHostReadiness } from "@/hooks/host/use-reactive-host-readiness";
+import { useEpicChatBackupHasNoCloudTask } from "@/lib/epic-selectors";
 import { useRelativeTimestamp } from "@/lib/relative-time";
 
 export interface EpicBackupStatusIndicatorProps {
@@ -41,14 +42,23 @@ function BoundEpicBackupStatusIndicator(
 ) {
   const { client } = props;
   const readiness = useReactiveHostReadiness(client);
+  // A local-homed (or mid-promotion) epic has no cloud task to back chats up
+  // into, so every chat is honestly `behind` forever - a by-design state, not
+  // the actionable failure this indicator exists to surface. Read from the
+  // open epic's own stream (the session provider keeps it live), so promotion
+  // completing reveals the indicator without a refetch race. The query is
+  // disabled rather than the result discarded: there is nothing worth polling
+  // for while the answer is known to be structural.
+  const noCloudTask = useEpicChatBackupHasNoCloudTask();
   const query = useHostQuery({
     cacheKeyIdentity: undefined,
     client,
     method: "epic.chatBackupStatus",
     params: { epicId: props.epicId },
-    options: { poll: true },
+    options: { poll: true, enabled: !noCloudTask },
   });
 
+  if (noCloudTask) return null;
   if (!readiness.isReady || query.data === undefined) return null;
   const view = backupStatusView(query.data.chats);
   if (view === null) return null;

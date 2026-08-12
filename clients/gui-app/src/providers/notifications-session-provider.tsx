@@ -95,6 +95,27 @@ interface FocusedNotificationScope {
 }
 
 /**
+ * Whether an upsert for `entity` arriving from `hostId` names the
+ * notification scope the user is LOOKING AT right now - the only case the
+ * feed handler's terminal-severity auto-consume may fire for. A null origin
+ * on the active scope means "not host-bound", which any host may match.
+ */
+function upsertTargetsActiveEntity(
+  activeEntity: FocusedNotificationScope | null,
+  hostId: string,
+  entity: HostNotificationsEntityRef,
+): boolean {
+  if (activeEntity === null) return false;
+  if (
+    activeEntity.originHostId !== null &&
+    activeEntity.originHostId !== hostId
+  ) {
+    return false;
+  }
+  return notificationEntitiesMatch(activeEntity.entity, entity);
+}
+
+/**
  * Mounted inside the app shell post-auth. Opens the notifications stream as
  * soon as the user is signed in and tears it down on sign-out / token
  * expiry. On sign-out - and on transitions between two distinct signed-in
@@ -385,16 +406,11 @@ function NotificationsSessionBody(
           semanticId: frame.entry.id,
         },
       ]);
-      const activeEntity = activeEntityRef.current;
+      if (!upsertTargetsActiveEntity(activeEntityRef.current, hostId, entity)) {
+        return;
+      }
       const isTerminalSeverity =
         frame.entry.severity === "done" || frame.entry.severity === "failure";
-      if (
-        activeEntity === null ||
-        (activeEntity.originHostId !== null &&
-          activeEntity.originHostId !== hostId) ||
-        !notificationEntitiesMatch(activeEntity.entity, entity)
-      )
-        return;
       if (!isTerminalSeverity) return;
       consumeEntity({ originHostId: hostId, entity });
     },

@@ -195,6 +195,33 @@ export function useEpicCommentsHaveNoCloudRoom(): boolean {
   return commentsHaveNoCloudRoom(useEpicDurabilityStatus());
 }
 
+/**
+ * Whether this epic has no cloud task for its chats to back up into.
+ *
+ * The chat-backup twin of {@link commentsHaveNoCloudRoom}, and a separate
+ * predicate rather than a reuse because the two gate DIFFERENT surfaces on the
+ * same wire fact and may yet diverge: comments need the cloud comment room,
+ * chat backup needs the cloud task row the publisher addresses. Today both
+ * are absent through exactly the `local` and `promoting` window.
+ *
+ * The consumer is the sidebar's backup-status indicator: on a local-homed
+ * epic every chat is honestly `behind` forever (there is nothing to publish
+ * into), so rendering "N chats not backed up" there presents a by-design
+ * state as an actionable failure. `unknown` is deliberately NOT gated, per
+ * the `s5-status-truthfulness` rule {@link commentsHaveNoCloudRoom} states:
+ * the host could not answer, so the ordinary surface renders what the backup
+ * query reports.
+ */
+export function chatBackupHasNoCloudTask(
+  status: NonNullable<OpenEpicState["durabilityStatus"]> | null,
+): boolean {
+  return status === "local" || status === "promoting";
+}
+
+export function useEpicChatBackupHasNoCloudTask(): boolean {
+  return chatBackupHasNoCloudTask(useEpicDurabilityStatus());
+}
+
 export function useEpicDurabilityPromotionState(): NonNullable<
   OpenEpicState["durabilityPromotionState"]
 > | null {
