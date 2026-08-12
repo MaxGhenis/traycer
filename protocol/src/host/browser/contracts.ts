@@ -1006,6 +1006,11 @@ export const browserScreencastServerFrameSchema = z.discriminatedUnion("kind", [
     ...textFrameFields,
   }),
   z.object({
+    kind: z.literal("migrationPending"),
+    ...textFrameFields,
+    pending: z.boolean(),
+  }),
+  z.object({
     kind: z.literal("pong"),
     ...textFrameFields,
   }),

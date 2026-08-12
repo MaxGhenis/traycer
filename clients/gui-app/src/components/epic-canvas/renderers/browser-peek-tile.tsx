@@ -51,6 +51,7 @@ interface BrowserPeekRenderState {
   readonly image: { readonly src: string; readonly sequence: number } | null;
   readonly lifecycle: PeekLifecycle;
   readonly details: string | null;
+  readonly migrationPending: boolean;
   readonly frameSize: {
     readonly width: number;
     readonly height: number;
@@ -105,6 +106,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       image: null,
       lifecycle: "connecting",
       details: null,
+      migrationPending: false,
       frameSize: null,
     }),
   );
@@ -112,6 +114,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const image = stateMatchesClient ? streamState.image : null;
   const lifecycle = stateMatchesClient ? streamState.lifecycle : "connecting";
   const details = peekDetailsForRender(stateMatchesClient, streamState, client);
+  const migrationPending =
+    stateMatchesClient && streamState.migrationPending;
   const frameSize = stateMatchesClient ? streamState.frameSize : null;
   const armedEpoch = armedState?.client === client ? armedState.epoch : null;
   const dialog = dialogForClient(dialogState, client);
@@ -225,6 +229,12 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         setDetails,
         setFrameSize,
       });
+      if (parsed.data.kind === "migrationPending") {
+        setStreamState((current) => ({
+          ...resetPeekStateForClient(current, client),
+          migrationPending: parsed.data.pending,
+        }));
+      }
       if (parsed.data.kind === "armed") {
         if (desiredArmEpochRef.current !== parsed.data.armEpoch) return;
         activeArmEpochRef.current = parsed.data.armEpoch;
@@ -470,6 +480,11 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           <div className="truncate font-mono text-ui-xs text-muted-foreground">
             {props.node.initialUrl}
           </div>
+          {migrationPending ? (
+            <div className="truncate text-ui-xs text-muted-foreground" aria-live="polite">
+              Will go native when the agent pauses
+            </div>
+          ) : null}
         </div>
         <div
           className={cn(
@@ -755,6 +770,7 @@ function resetPeekStateForClient(
     image: null,
     lifecycle: "connecting",
     details: client === null ? "Waiting for the host stream." : null,
+    migrationPending: false,
     frameSize: null,
   };
 }

@@ -873,6 +873,39 @@ describe("BrowserPeekTile", () => {
     });
   });
 
+  it("shows and clears the quiet pending migration affordance", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+
+    act(() => {
+      stream.emit(
+        {
+          kind: "migrationPending",
+          hasBinaryPayload: false,
+          pending: true,
+        },
+        null,
+      );
+    });
+    expect(
+      screen.getByText("Will go native when the agent pauses"),
+    ).toBeTruthy();
+
+    act(() => {
+      stream.emit(
+        {
+          kind: "migrationPending",
+          hasBinaryPayload: false,
+          pending: false,
+        },
+        null,
+      );
+    });
+    expect(
+      screen.queryByText("Will go native when the agent pauses"),
+    ).toBeNull();
+  });
+
   it("ignores an armed ack that arrives after blur disarmed the tile", () => {
     render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
     const stream = liveStream();
