@@ -585,17 +585,16 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
           // LOCAL_HOME_EPIC_ID is deliberately ABSENT from the answer;
           // STALE_EPIC_ID is answered null (positively deleted).
           if (taskId === LOCAL_HOME_EPIC_ID) continue;
-          tasks[taskId] = taskId === STALE_EPIC_ID ? null : confirmedRow(taskId);
+          tasks[taskId] =
+            taskId === STALE_EPIC_ID ? null : confirmedRow(taskId);
         }
         return { tasks };
       },
     );
-    const listTasks = vi.fn(
-      (_params: ListTasksRequest): ListTasksResponse => ({
-        tasks: [],
-        hasMore: false,
-      }),
-    );
+    const listTasks = vi.fn((_params: ListTasksRequest): ListTasksResponse => ({
+      tasks: [],
+      hasMore: false,
+    }));
 
     const queryClient = mountReconciler({ getTaskContexts, listTasks });
 
@@ -623,23 +622,22 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
       (params: GetTaskContextsRequest): GetTaskContextsResponse => {
         const tasks: GetTaskContextsResponse["tasks"] = {};
         for (const taskId of params.taskIds) {
-          tasks[taskId] = taskId === STALE_EPIC_ID ? null : confirmedRow(taskId);
+          tasks[taskId] =
+            taskId === STALE_EPIC_ID ? null : confirmedRow(taskId);
         }
         return { tasks };
       },
     );
-    const listTasks = vi.fn(
-      (_params: ListTasksRequest): ListTasksResponse => ({
-        tasks: [],
-        hasMore: false,
-        completeness: {
-          cloudPage: "settled",
-          facets: "server",
-          localRows: "truncated",
-          sort: "loaded-union",
-        },
-      }),
-    );
+    const listTasks = vi.fn((_params: ListTasksRequest): ListTasksResponse => ({
+      tasks: [],
+      hasMore: false,
+      completeness: {
+        cloudPage: "settled",
+        facets: "server",
+        localRows: "truncated",
+        sort: "loaded-union",
+      },
+    }));
 
     const queryClient = mountReconciler({ getTaskContexts, listTasks });
     await waitFor(() => {

@@ -192,30 +192,45 @@ export function deriveEpicSyncPillState(
   if (!inputs.hasFreshCloudSyncStatus || inputs.hostDirtyState === "unknown") {
     return "connected";
   }
-  if (inputs.cloudSyncStatus === "connected") {
-    if (inputs.hostDirtyState === "dirty") return "hostPending";
-    if (syncedClaimIsHonest(inputs)) return "synced";
-    // Not synced anywhere in the cloud. Say which, when the host said which,
-    // and otherwise claim nothing - `connected` is the neutral state that
-    // exists for exactly this.
-    if (inputs.durability === "local" || inputs.durability === "promoting") {
-      // "Saved on this device" is a DURABILITY claim, and the local-room
-      // connection satisfying `cloudSyncStatus === "connected"` says nothing
-      // about it: with `localProtection: "unavailable"` the protocol is
-      // explicit that edits live only in the document and are lost on process
-      // exit, graceful quit included. The rule stated at
-      // `syncedClaimIsHonest` applies here identically - a calm claim needs a
-      // POSITIVE statement behind it. `unknown` claims nothing either way and
-      // stays neutral; a pre-`@1.4` peer (null) cannot express any of this
-      // and keeps its released rendering.
-      if (inputs.localProtection === "unavailable") return "unprotected";
-      if (inputs.localProtection === "unknown") return "connected";
-      return "storedLocally";
-    }
+  return inputs.cloudSyncStatus === "connected"
+    ? cloudUpState(inputs)
+    : cloudDownState(inputs);
+}
+
+/**
+ * Rule 4's tail, reached with the link up, the cloud up, a fresh snapshot and
+ * no renderer-only divergence. Split out of {@link deriveEpicSyncPillState}
+ * only to keep that function under the complexity ceiling - the ordering here
+ * is a continuation of the contract stated there, not a separate policy.
+ */
+function cloudUpState(inputs: EpicSyncPillInputs): EpicSyncPillState {
+  if (inputs.hostDirtyState === "dirty") return "hostPending";
+  if (syncedClaimIsHonest(inputs)) return "synced";
+  // Not synced anywhere in the cloud. Say which, when the host said which,
+  // and otherwise claim nothing - `connected` is the neutral state that
+  // exists for exactly this.
+  if (inputs.durability !== "local" && inputs.durability !== "promoting") {
     return "connected";
   }
-  // Cloud down. The pill may not imply the work is being kept anywhere unless
-  // something is keeping it - and an unarmed session is keeping it nowhere.
+  // "Saved on this device" is a DURABILITY claim, and the local-room
+  // connection satisfying `cloudSyncStatus === "connected"` says nothing
+  // about it: with `localProtection: "unavailable"` the protocol is explicit
+  // that edits live only in the document and are lost on process exit,
+  // graceful quit included. The rule stated at `syncedClaimIsHonest` applies
+  // here identically - a calm claim needs a POSITIVE statement behind it.
+  // `unknown` claims nothing either way and stays neutral; a pre-`@1.4` peer
+  // (null) cannot express any of this and keeps its released rendering.
+  if (inputs.localProtection === "unavailable") return "unprotected";
+  if (inputs.localProtection === "unknown") return "connected";
+  return "storedLocally";
+}
+
+/**
+ * Rule 5's tail. The pill may not imply the work is being kept anywhere
+ * unless something is keeping it - and an unarmed session is keeping it
+ * nowhere.
+ */
+function cloudDownState(inputs: EpicSyncPillInputs): EpicSyncPillState {
   if (inputs.localProtection === "unavailable") return "unprotected";
   if (inputs.hostDirtyState === "dirty") {
     // `armed` is the POSITIVE statement this state's contract requires: the

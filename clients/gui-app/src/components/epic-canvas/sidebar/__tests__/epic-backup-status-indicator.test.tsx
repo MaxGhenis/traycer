@@ -60,7 +60,10 @@ describe("<EpicBackupStatusIndicator />", () => {
     mocks.data = {
       chats: [
         statusRow({ chatId: "chat-a" }),
-        statusRow({ chatId: "chat-b", halted: { cause: "conflict", since: 1 } }),
+        statusRow({
+          chatId: "chat-b",
+          halted: { cause: "conflict", since: 1 },
+        }),
       ],
     };
     render(<EpicBackupStatusIndicator epicId="epic-a" />);

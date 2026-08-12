@@ -1077,13 +1077,13 @@ describe("<NotificationsSessionProvider />", () => {
       streamClient
         .sessionFor("host.notifications.cloudFeed.subscribe")
         .emitServerFrame({
-        kind: "snapshot",
-        hasBinaryPayload: false,
-        connectionState: "connected",
-        version: 1,
-        rows: [baseline],
-        summary: { totalCount: 1, unreadCount: 1, attentionCount: 0 },
-      });
+          kind: "snapshot",
+          hasBinaryPayload: false,
+          connectionState: "connected",
+          version: 1,
+          rows: [baseline],
+          summary: { totalCount: 1, unreadCount: 1, attentionCount: 0 },
+        });
     });
     const baselineObservation = await waitFor(() => {
       const observation = useAppLocalNotificationsStore
@@ -1134,13 +1134,13 @@ describe("<NotificationsSessionProvider />", () => {
       streamClient
         .sessionFor("host.notifications.cloudFeed.subscribe")
         .emitServerFrame({
-        kind: "snapshot",
-        hasBinaryPayload: false,
-        connectionState: "connected",
-        version: 2,
-        rows: [baseline, otherHostCompletion],
-        summary: { totalCount: 2, unreadCount: 2, attentionCount: 0 },
-      });
+          kind: "snapshot",
+          hasBinaryPayload: false,
+          connectionState: "connected",
+          version: 2,
+          rows: [baseline, otherHostCompletion],
+          summary: { totalCount: 2, unreadCount: 2, attentionCount: 0 },
+        });
     });
     await waitFor(() => {
       expect(
@@ -1174,13 +1174,13 @@ describe("<NotificationsSessionProvider />", () => {
       streamClient
         .sessionFor("host.notifications.cloudFeed.subscribe")
         .emitServerFrame({
-        kind: "snapshot",
-        hasBinaryPayload: false,
-        connectionState: "connected",
-        version: 1,
-        rows: [baseline, staleCompletion],
-        summary: { totalCount: 2, unreadCount: 2, attentionCount: 0 },
-      });
+          kind: "snapshot",
+          hasBinaryPayload: false,
+          connectionState: "connected",
+          version: 1,
+          rows: [baseline, staleCompletion],
+          summary: { totalCount: 2, unreadCount: 2, attentionCount: 0 },
+        });
     });
     expect(
       useAppLocalNotificationsStore
@@ -1206,13 +1206,13 @@ describe("<NotificationsSessionProvider />", () => {
       streamClient
         .sessionFor("host.notifications.cloudFeed.subscribe")
         .emitServerFrame({
-        kind: "snapshot",
-        hasBinaryPayload: false,
-        connectionState: "connected",
-        version: 3,
-        rows: [baseline, otherHostCompletion, arrived],
-        summary: { totalCount: 2, unreadCount: 2, attentionCount: 0 },
-      });
+          kind: "snapshot",
+          hasBinaryPayload: false,
+          connectionState: "connected",
+          version: 3,
+          rows: [baseline, otherHostCompletion, arrived],
+          summary: { totalCount: 2, unreadCount: 2, attentionCount: 0 },
+        });
     });
     await waitFor(() => {
       expect(

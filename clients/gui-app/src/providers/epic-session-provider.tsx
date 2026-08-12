@@ -379,9 +379,7 @@ function useEpicHomeCacheSync(args: CloudTaskTitleCacheSyncArgs): void {
       // they do for the pin patch - a promoted row loaded through pagination
       // kept `home: "local"` (and its cloud-only actions disabled) until a
       // reset or refresh without this half.
-      if (activeHostId !== null) {
-        setCloudEpicTasksPageLocalHome(activeHostId, userId, epicId, localHome);
-      }
+      setCloudEpicTasksPageLocalHome(activeHostId, userId, epicId, localHome);
       void queryClient.invalidateQueries({
         queryKey: hostQueryKeys.methodScope(
           activeHostId,
