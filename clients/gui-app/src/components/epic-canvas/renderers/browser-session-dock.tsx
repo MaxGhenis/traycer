@@ -27,8 +27,13 @@ import { Button } from "@/components/ui/button";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
-import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
-import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
+import {
+  authenticatedHostStreamKey,
+  authenticatedOwnerIdentityKey,
+} from "@/hooks/host/use-host-stream-client-for";
+import { useHostClient } from "@/lib/host";
+import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
+import { useDurableStreamTransportFactory } from "@/lib/host/use-durable-stream-transport";
 import {
   browserTileNameForUrl,
   openFreshBrowserTileFromBrowserPage,
@@ -54,7 +59,6 @@ import {
   type BrowserViewTileKey,
 } from "@/lib/browser-view/desktop-browser-view";
 import { cn } from "@/lib/utils";
-import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
@@ -672,8 +676,31 @@ function useBrowserSessions(
   const { hostId, epicId, chatId, browserView, primaryProfileCaptureReady } =
     args;
   const hostEntry = useHostDirectoryEntry(hostId ?? UNKNOWN_HOST_PLACEHOLDER);
-  const auth = useStreamAuthRevalidator();
-  const client = useHostStreamClientFor(hostEntry, auth);
+  const globalClient = useHostClient();
+  const transportReady =
+    authenticatedHostStreamKey(globalClient, hostEntry) !== null;
+  const ownerIdentityKey = authenticatedOwnerIdentityKey(
+    globalClient,
+    hostEntry,
+  );
+  const openTransport = useDurableStreamTransportFactory();
+  // Keep an already-owned transport through a restart's transient non-dialable
+  // directory state; its endpoint listener will redial when the new URL lands.
+  const [readyOwner, setReadyOwner] = useState<{
+    readonly hostId: string;
+    readonly identityKey: string;
+  } | null>(null);
+  if (hostId === null || ownerIdentityKey === null) {
+    if (readyOwner !== null) {
+      setReadyOwner(null);
+    }
+  } else if (
+    transportReady &&
+    (readyOwner?.hostId !== hostId ||
+      readyOwner.identityKey !== ownerIdentityKey)
+  ) {
+    setReadyOwner({ hostId, identityKey: ownerIdentityKey });
+  }
   const sessionRef = useRef<{
     sendClientFrame: (
       frame: BrowserSessionsClientFrame,
@@ -686,42 +713,44 @@ function useBrowserSessions(
       readonly resolve: (frame: PromoteStateFrame) => void;
       readonly reject: (error: Error) => void;
     }
-  > | null>(null);
+  >>(new Map());
   const pendingLendsRef = useRef<Map<
     string,
     {
       readonly resolve: (frame: LendResultFrame) => void;
       readonly reject: (error: Error) => void;
     }
-  > | null>(null);
-  if (pendingPromotesRef.current === null) {
-    pendingPromotesRef.current = new Map();
-  }
-  if (pendingLendsRef.current === null) {
-    pendingLendsRef.current = new Map();
-  }
+  >>(new Map());
   const [streamState, setStreamState] = useState<BrowserSessionsRenderState>(
     () => ({
-      client,
+      client: null,
       items: [],
       lifecycle: "connecting",
       errorMessage: null,
     }),
   );
-  const stateMatchesClient = streamState.client === client;
-  const items = stateMatchesClient ? streamState.items : [];
-  const lifecycle = stateMatchesClient ? streamState.lifecycle : "connecting";
-  const errorMessage = stateMatchesClient ? streamState.errorMessage : null;
 
   useEffect(() => {
-    if (client === null || hostId === null || chatId === null) {
+    if (
+      hostId === null ||
+      chatId === null ||
+      readyOwner?.hostId !== hostId
+    ) {
       sessionRef.current = null;
       return;
     }
     const pendingPromotes = pendingPromotesRef.current;
     const pendingLends = pendingLendsRef.current;
-    if (pendingPromotes === null || pendingLends === null) return;
-    const stream = client.subscribe("browser.sessions", { epicId, chatId });
+    const transport = openTransport(hostId);
+    const client = transport.wsStreamClient;
+    const stream = (() => {
+      try {
+        return client.subscribe("browser.sessions", { epicId, chatId });
+      } catch (cause) {
+        transport.close();
+        throw cause;
+      }
+    })();
     sessionRef.current = stream;
     // The shared stream transport deliberately drops client frames until the
     // subscription is open and during reconnects. Re-advertise this durable
@@ -736,6 +765,7 @@ function useBrowserSessions(
       },
     );
     stream.onStatusChange((status, reason) => {
+      if (sessionRef.current !== stream) return;
       if (status !== "open") {
         captureReadySentForConnection = false;
         electronTabsReplayedForConnection = false;
@@ -764,6 +794,7 @@ function useBrowserSessions(
       }));
     });
     stream.onServerFrame((envelope, binaryPayload) => {
+      if (sessionRef.current !== stream) return;
       if (binaryPayload !== null) return;
       const parsed = browserSessionsServerFrameSchema.safeParse(envelope);
       if (!parsed.success) return;
@@ -798,6 +829,7 @@ function useBrowserSessions(
       }
       detachElectronTabs();
       stream.close();
+      transport.close();
       rejectPendingPromotes(
         pendingPromotes,
         new Error("Browser sessions stream closed."),
@@ -807,15 +839,20 @@ function useBrowserSessions(
         new Error("Browser sessions stream closed."),
       );
     };
-  }, [browserView, chatId, client, epicId, hostId, primaryProfileCaptureReady]);
+  }, [
+    browserView,
+    chatId,
+    epicId,
+    hostId,
+    openTransport,
+    primaryProfileCaptureReady,
+    readyOwner,
+  ]);
 
   const requestPromoteState = useCallback((sessionId: string) => {
     const session = sessionRef.current;
     const pendingPromotes = pendingPromotesRef.current;
     if (session === null) {
-      return Promise.reject(new Error("Browser sessions stream is not ready."));
-    }
-    if (pendingPromotes === null) {
       return Promise.reject(new Error("Browser sessions stream is not ready."));
     }
     const requestId = crypto.randomUUID();
@@ -838,7 +875,7 @@ function useBrowserSessions(
     (sessionId: string, origin: string, storage: BrowserStorageLendPayload) => {
       const session = sessionRef.current;
       const pendingLends = pendingLendsRef.current;
-      if (session === null || pendingLends === null) {
+      if (session === null) {
         return Promise.reject(
           new Error("Browser sessions stream is not ready."),
         );
@@ -875,10 +912,15 @@ function useBrowserSessions(
     );
   }, []);
 
+  const stateMatchesOwner =
+    chatId !== null &&
+    readyOwner?.hostId === hostId &&
+    streamState.client !== null;
+
   return {
-    lifecycle,
-    items,
-    errorMessage,
+    lifecycle: stateMatchesOwner ? streamState.lifecycle : "connecting",
+    items: stateMatchesOwner ? streamState.items : [],
+    errorMessage: stateMatchesOwner ? streamState.errorMessage : null,
     closeSession,
     requestPromoteState,
     requestLendStorage,

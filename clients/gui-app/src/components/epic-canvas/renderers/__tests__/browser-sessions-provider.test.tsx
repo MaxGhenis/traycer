@@ -33,7 +33,22 @@ type CaptureBridge = {
 
 const hookState = vi.hoisted(() => ({
   streamClient: null as FakeStreamClient | null,
-  streamClientFactory: null as (() => FakeStreamClient | null) | null,
+  durableTransport: null as FakeDurableTransport | null,
+  openedHostIds: [] as string[],
+  hostEntry: {
+    hostId: "host-test",
+    label: "Test host",
+    kind: "local" as const,
+    websocketUrl: null as string | null,
+    version: "test-version",
+    status: "available" as const,
+  },
+  hostClient: {
+    getRequestContext: () => ({ credentials: null }),
+    getRequestContextUserId: () => "user-test",
+  },
+  transportKey: "authenticated-host-test",
+  ownerIdentityKey: "local\u0000host-test\u0000user-test",
   primaryProfileCaptureReady: true,
   browserViewBridge: null as CaptureBridge | null,
 }));
@@ -43,14 +58,33 @@ vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
 }));
 
 vi.mock("@/hooks/host/use-host-directory-entry", () => ({
-  useHostDirectoryEntry: () => ({ hostId: "host-test" }),
+  useHostDirectoryEntry: () => hookState.hostEntry,
 }));
 
 vi.mock("@/hooks/host/use-host-stream-client-for", () => ({
-  useHostStreamClientFor: () =>
-    hookState.streamClientFactory === null
-      ? hookState.streamClient
-      : hookState.streamClientFactory(),
+  authenticatedHostStreamKey: () =>
+    hookState.hostEntry.websocketUrl === null ? null : hookState.transportKey,
+  authenticatedOwnerIdentityKey: () => hookState.ownerIdentityKey,
+}));
+
+vi.mock("@/lib/host", () => ({
+  useHostClient: () => hookState.hostClient,
+}));
+
+const openTransport = vi.hoisted(
+  () => (hostId: string): FakeDurableTransport => {
+    hookState.openedHostIds.push(hostId);
+    const transport = hookState.durableTransport;
+    if (transport === null) {
+      throw new Error("expected durable stream transport");
+    }
+    transport.open();
+    return transport;
+  },
+);
+
+vi.mock("@/lib/host/use-durable-stream-transport", () => ({
+  useDurableStreamTransportFactory: () => openTransport,
 }));
 
 vi.mock("@/lib/host/stream-auth-revalidator", () => ({
@@ -152,10 +186,29 @@ class FakeStreamClient {
     readonly method: string;
     readonly params: unknown;
   }> = [];
+  readonly wireSubscriptions: Array<{
+    readonly endpoint: string;
+    readonly method: string;
+    readonly params: unknown;
+  }> = [];
+  readonly reconnects: Array<{
+    readonly reason: string;
+    readonly endpoint: string;
+  }> = [];
   private readonly dropUntilLive: boolean;
+  private endpoint: string;
+  private readonly subscriptionBySession = new Map<
+    FakeStreamSession,
+    { readonly method: string; readonly params: unknown }
+  >();
+  closed = false;
 
-  constructor(options: { readonly dropUntilLive: boolean }) {
+  constructor(options: {
+    readonly dropUntilLive: boolean;
+    readonly endpoint: string;
+  }) {
     this.dropUntilLive = options.dropUntilLive;
+    this.endpoint = options.endpoint;
   }
 
   subscribe(method: string, params: unknown): FakeStreamSession {
@@ -164,7 +217,78 @@ class FakeStreamClient {
     });
     this.sessions.push(session);
     this.subscribes.push({ method, params });
+    this.subscriptionBySession.set(session, { method, params });
+    this.wireSubscriptions.push({
+      endpoint: this.endpoint,
+      method,
+      params,
+    });
     return session;
+  }
+
+  setEndpoint(endpoint: string): void {
+    this.endpoint = endpoint;
+  }
+
+  reconnectAll(reason: string): void {
+    if (this.closed) return;
+    this.reconnects.push({ reason, endpoint: this.endpoint });
+    for (const session of this.sessions) {
+      const subscription = this.subscriptionBySession.get(session);
+      if (subscription === undefined) continue;
+      session.emitStatus("reconnecting");
+      this.wireSubscriptions.push({
+        endpoint: this.endpoint,
+        ...subscription,
+      });
+      session.emitStatus("open");
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const session of this.sessions) {
+      session.close();
+    }
+  }
+}
+
+class FakeDurableTransport {
+  readonly wsStreamClient: FakeStreamClient;
+  readonly dialedEndpoints: string[] = [];
+  private readonly initialEndpoint: string;
+  closed = false;
+  private opened = false;
+
+  constructor(options: {
+    readonly dropUntilLive: boolean;
+    readonly initialEndpoint: string;
+  }) {
+    this.initialEndpoint = options.initialEndpoint;
+    this.wsStreamClient = new FakeStreamClient({
+      dropUntilLive: options.dropUntilLive,
+      endpoint: options.initialEndpoint,
+    });
+  }
+
+  open(): void {
+    if (this.opened || this.closed) return;
+    this.opened = true;
+    this.dialedEndpoints.push(this.initialEndpoint);
+  }
+
+  moveEndpoint(endpoint: string): void {
+    if (this.closed) return;
+    this.dialedEndpoints.push(endpoint);
+    this.wsStreamClient.setEndpoint(endpoint);
+    this.wsStreamClient.reconnectAll("host-endpoint-change");
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.wsStreamClient.close();
   }
 }
 
@@ -210,6 +334,8 @@ const TILE_KEY: BrowserViewTileKey = {
   tileInstanceId: "tile-1",
   pageSessionId: "page-1",
 };
+const INITIAL_ENDPOINT = "ws://host-a/stream";
+const RESTARTED_ENDPOINT = "ws://host-b/stream";
 
 function Probe(): ReactNode {
   const sessions = useBrowserSessionsContext();
@@ -299,10 +425,23 @@ async function expectCaptureServiced(
   });
 }
 
+function installTransport(dropUntilLive: boolean): void {
+  const transport = new FakeDurableTransport({
+    dropUntilLive,
+    initialEndpoint: INITIAL_ENDPOINT,
+  });
+  hookState.durableTransport = transport;
+  hookState.streamClient = transport.wsStreamClient;
+  hookState.openedHostIds = [];
+  hookState.hostEntry = {
+    ...hookState.hostEntry,
+    websocketUrl: INITIAL_ENDPOINT,
+  };
+}
+
 describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
   beforeEach(() => {
-    hookState.streamClient = new FakeStreamClient({ dropUntilLive: false });
-    hookState.streamClientFactory = null;
+    installTransport(false);
     hookState.primaryProfileCaptureReady = true;
     hookState.browserViewBridge = null;
     resetElectronBrowserTabStoreForTests();
@@ -310,7 +449,6 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
 
   afterEach(() => {
     cleanup();
-    hookState.streamClientFactory = null;
     hookState.browserViewBridge = null;
     resetElectronBrowserTabStoreForTests();
   });
@@ -402,11 +540,13 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
     );
   });
 
-  it("preserves capture-ready + re-registration across stream client reconnect", async () => {
-    const first = new FakeStreamClient({ dropUntilLive: false });
-    const second = new FakeStreamClient({ dropUntilLive: false });
-    hookState.streamClientFactory = () => first;
-
+  it("redials the same durable transport on a host restart and replays readiness", async () => {
+    installTransport(true);
+    const transport = hookState.durableTransport;
+    expect(transport).toBeDefined();
+    if (transport === null) {
+      throw new Error("expected durable stream transport");
+    }
     const bridge = new FakeBridge();
     registerElectronBrowserTab({
       epicId: "epic-1",
@@ -426,52 +566,94 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
         <Probe />
       </BrowserSessionsProvider>,
     );
-
-    expect(first.subscribes).toHaveLength(1);
-    const firstStream = first.sessions[0];
-    // Registration re-publishes on attach; readiness waits for live.
-    expect(firstStream.sentFrames).toContainEqual(
-      expect.objectContaining({
-        kind: "registerElectronTab",
-        registrationId: "reg-1",
-      }),
-    );
-    act(() => {
-      firstStream.emitStatus("open");
-    });
-    expect(firstStream.sentFrames).toContainEqual(
-      expect.objectContaining({ kind: "primaryProfileCaptureReady" }),
-    );
-
-    hookState.streamClientFactory = () => second;
-    rerender(
-      <BrowserSessionsProvider epicId="epic-1" routingChatId="chat-alpha">
-        <Probe />
-      </BrowserSessionsProvider>,
-    );
-
+    const client = transport.wsStreamClient;
     await waitFor(() => {
-      expect(firstStream.closed).toBe(true);
-      expect(second.subscribes).toEqual([
+      expect(hookState.openedHostIds).toEqual(["host-test"]);
+      expect(client.subscribes).toEqual([
         {
           method: "browser.sessions",
           params: { epicId: "epic-1", chatId: "chat-alpha" },
         },
       ]);
     });
-    const secondStream = second.sessions[0];
-    expect(secondStream.sentFrames).toContainEqual(
+    expect(transport.dialedEndpoints).toEqual([INITIAL_ENDPOINT]);
+    expect(client.wireSubscriptions).toEqual([
+      {
+        endpoint: INITIAL_ENDPOINT,
+        method: "browser.sessions",
+        params: { epicId: "epic-1", chatId: "chat-alpha" },
+      },
+    ]);
+
+    const stream = client.sessions[0];
+    expect(stream).toBeDefined();
+    // Pre-live frames are dropped; the first open replays the registration.
+    expect(registrationFrames(stream.sentFrames)).toHaveLength(0);
+    expect(registrationFrames(stream.droppedFrames)).toHaveLength(1);
+    act(() => {
+      stream.emitStatus("open");
+    });
+    expect(stream.sentFrames).toContainEqual(
       expect.objectContaining({
         kind: "registerElectronTab",
         registrationId: "reg-1",
       }),
     );
-    act(() => {
-      secondStream.emitStatus("open");
-    });
-    expect(secondStream.sentFrames).toContainEqual(
+    expect(stream.sentFrames).toContainEqual(
       expect.objectContaining({ kind: "primaryProfileCaptureReady" }),
     );
+
+    act(() => {
+      hookState.hostEntry = {
+        ...hookState.hostEntry,
+        websocketUrl: null,
+      };
+      rerender(
+        <BrowserSessionsProvider epicId="epic-1" routingChatId="chat-alpha">
+          <Probe />
+        </BrowserSessionsProvider>,
+      );
+    });
+    expect(hookState.openedHostIds).toEqual(["host-test"]);
+    expect(transport.closed).toBe(false);
+    expect(stream.closed).toBe(false);
+
+    act(() => {
+      hookState.hostEntry = {
+        ...hookState.hostEntry,
+        websocketUrl: RESTARTED_ENDPOINT,
+      };
+      rerender(
+        <BrowserSessionsProvider epicId="epic-1" routingChatId="chat-alpha">
+          <Probe />
+        </BrowserSessionsProvider>,
+      );
+      transport.moveEndpoint(RESTARTED_ENDPOINT);
+    });
+    expect(hookState.openedHostIds).toEqual(["host-test"]);
+    expect(transport.dialedEndpoints).toEqual([
+      INITIAL_ENDPOINT,
+      RESTARTED_ENDPOINT,
+    ]);
+    expect(client.reconnects).toEqual([
+      { reason: "host-endpoint-change", endpoint: RESTARTED_ENDPOINT },
+    ]);
+    // The durable client keeps the public subscription and re-declares it on
+    // the new socket; the provider must not replace or close this session.
+    expect(client.subscribes).toHaveLength(1);
+    expect(client.wireSubscriptions).toHaveLength(2);
+    expect(client.wireSubscriptions[1]).toEqual({
+      endpoint: RESTARTED_ENDPOINT,
+      method: "browser.sessions",
+      params: { epicId: "epic-1", chatId: "chat-alpha" },
+    });
+    expect(stream.closed).toBe(false);
+    expect(registrationFrames(stream.sentFrames)).toHaveLength(2);
+    expect(readinessFrames(stream.sentFrames)).toHaveLength(2);
+
+    cleanup();
+    expect(transport.closed).toBe(true);
+    expect(stream.closed).toBe(true);
   });
 
   it("surfaces live snapshot sessions and closeSession delete frames", () => {
@@ -533,8 +715,7 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
  */
 describe("BrowserSessionsProvider (ticket 08-lift live readiness)", () => {
   beforeEach(() => {
-    hookState.streamClient = new FakeStreamClient({ dropUntilLive: true });
-    hookState.streamClientFactory = null;
+    installTransport(true);
     hookState.primaryProfileCaptureReady = true;
     hookState.browserViewBridge = null;
     resetElectronBrowserTabStoreForTests();
@@ -542,7 +723,6 @@ describe("BrowserSessionsProvider (ticket 08-lift live readiness)", () => {
 
   afterEach(() => {
     cleanup();
-    hookState.streamClientFactory = null;
     hookState.browserViewBridge = null;
     resetElectronBrowserTabStoreForTests();
   });
