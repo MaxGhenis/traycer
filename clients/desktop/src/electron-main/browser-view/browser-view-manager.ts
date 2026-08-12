@@ -592,6 +592,15 @@ export class BrowserViewManager {
     windowId: string,
     input: BrowserViewBackgroundTabCreate,
   ): Promise<void> {
+    const startedAt = Date.now();
+    log.info("[browser-view] background tab create stage", {
+      kind: "electron_tab_create",
+      stage: "manager_started",
+      outcome: "started",
+      sessionId: input.sessionId,
+      tabId: input.tabId,
+      durationMs: 0,
+    });
     const runtimeKey = [input.sessionId, input.tabId].join("\u001f");
     if (this.entriesByRuntimeKey.has(runtimeKey)) {
       throw new Error(
@@ -600,37 +609,102 @@ export class BrowserViewManager {
     }
     const key = { ...input, windowId };
     const entry = this.createEntry(key, input.url, "responsive", false);
+    log.info("[browser-view] background tab create stage", {
+      kind: "electron_tab_create",
+      stage: "entry_created",
+      outcome: "ok",
+      sessionId: input.sessionId,
+      tabId: input.tabId,
+      durationMs: Date.now() - startedAt,
+    });
     this.entriesByRuntimeKey.delete(runtimeEntryKey(entry));
     entry.runtimeSessionId = input.sessionId;
     entry.runtimeTabId = input.tabId;
     this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
     try {
+      await entry.view.webContents.loadURL("about:blank");
+      log.info("[browser-view] background tab create stage", {
+        kind: "electron_tab_create",
+        stage: "target_primed",
+        outcome: "ok",
+        sessionId: input.sessionId,
+        tabId: input.tabId,
+        durationMs: Date.now() - startedAt,
+      });
       const seedScript = browserLocalStorageSeedScript(input.seedStorageState);
       const debugSession = this.ensureDebugSession(entry);
       const seedScriptId =
         seedScript === null
           ? null
           : await debugSession.installScriptBeforeNavigation(seedScript);
+      log.info("[browser-view] background tab create stage", {
+        kind: "electron_tab_create",
+        stage: "seed_script_installed",
+        outcome: "ok",
+        sessionId: input.sessionId,
+        tabId: input.tabId,
+        durationMs: Date.now() - startedAt,
+      });
       let resolveCommitted!: () => void;
       const committed = new Promise<void>((resolve) => {
         resolveCommitted = resolve;
       });
-      const onCommitted = (): void => {
-        if (entry.status === "ready") resolveCommitted();
+      const onCommitted = (source: string): void => {
+        const ready = entry.status === "ready";
+        log.info("[browser-view] background tab create stage", {
+          kind: "electron_tab_create",
+          stage: "commit_checked",
+          outcome: ready ? "ready" : "not-ready",
+          source,
+          sessionId: input.sessionId,
+          tabId: input.tabId,
+          durationMs: Date.now() - startedAt,
+        });
+        if (ready) resolveCommitted();
       };
       const navigation = this.navigate(entry, input.url, true);
-      entry.view.webContents.on("did-frame-navigate", onCommitted);
-      entry.view.webContents.on("did-navigate", onCommitted);
-      onCommitted();
+      const onFrameNavigate = (): void => {
+        onCommitted("did-frame-navigate");
+      };
+      const onNavigate = (): void => {
+        onCommitted("did-navigate");
+      };
+      entry.view.webContents.on("did-frame-navigate", onFrameNavigate);
+      entry.view.webContents.on("did-navigate", onNavigate);
+      log.info("[browser-view] background tab create stage", {
+        kind: "electron_tab_create",
+        stage: "navigation_started",
+        outcome: "started",
+        sessionId: input.sessionId,
+        tabId: input.tabId,
+        durationMs: Date.now() - startedAt,
+      });
+      onCommitted("level-check");
       try {
         await Promise.race([navigation, committed]);
+        log.info("[browser-view] background tab create stage", {
+          kind: "electron_tab_create",
+          stage: "readiness_settled",
+          outcome: "ok",
+          sessionId: input.sessionId,
+          tabId: input.tabId,
+          durationMs: Date.now() - startedAt,
+        });
       } finally {
-        entry.view.webContents.off("did-frame-navigate", onCommitted);
-        entry.view.webContents.off("did-navigate", onCommitted);
+        entry.view.webContents.off("did-frame-navigate", onFrameNavigate);
+        entry.view.webContents.off("did-navigate", onNavigate);
       }
       if (seedScriptId !== null) {
         await debugSession.removeScriptBeforeNavigation(seedScriptId);
       }
+      log.info("[browser-view] background tab create stage", {
+        kind: "electron_tab_create",
+        stage: "seed_script_removed",
+        outcome: "ok",
+        sessionId: input.sessionId,
+        tabId: input.tabId,
+        durationMs: Date.now() - startedAt,
+      });
       if (this.electronCreateDelayMs > 0) {
         log.info("[browser-view] delaying background tab create ack", {
           sessionId: input.sessionId,
@@ -639,7 +713,24 @@ export class BrowserViewManager {
         });
         await delay(this.electronCreateDelayMs);
       }
+      log.info("[browser-view] background tab create stage", {
+        kind: "electron_tab_create",
+        stage: "manager_settled",
+        outcome: "ok",
+        sessionId: input.sessionId,
+        tabId: input.tabId,
+        durationMs: Date.now() - startedAt,
+      });
     } catch (error) {
+      log.info("[browser-view] background tab create stage", {
+        kind: "electron_tab_create",
+        stage: "manager_settled",
+        outcome: "failed",
+        cause: error instanceof Error ? error.name : typeof error,
+        sessionId: input.sessionId,
+        tabId: input.tabId,
+        durationMs: Date.now() - startedAt,
+      });
       await this.closeEntry(entry, null);
       throw error;
     }

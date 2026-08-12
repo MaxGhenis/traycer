@@ -85,7 +85,11 @@ const backgroundBridgeByEpicHost = new Map<
 >();
 const createRequestsByRegistrationKey = new Map<
   string,
-  { readonly requestId: string; readonly ready: Promise<void> }
+  {
+    readonly requestId: string;
+    readonly ready: Promise<void>;
+    readonly startedAt: number;
+  }
 >();
 const pendingHandoffAcks = new Map<
   string,
@@ -255,7 +259,11 @@ export function handleElectronBrowserTabFrame(
     }
     createRequestsByRegistrationKey.set(
       registrationKey(frame.sessionId, tile.id),
-      { requestId: frame.requestId, ready: Promise.resolve() },
+      {
+        requestId: frame.requestId,
+        ready: Promise.resolve(),
+        startedAt: Date.now(),
+      },
     );
     return true;
   }
@@ -272,13 +280,51 @@ export function handleElectronBrowserTabFrame(
     registrationKey(frame.sessionId, frame.registrationId),
   );
   if (record === undefined) return true;
+  appLogger.info("Electron background tab create stage", {
+    event: "electron_tab_create",
+    stage: "registration_received",
+    outcome: "ok",
+    requestId: frame.requestId,
+    registrationId: frame.registrationId,
+    sessionId: frame.sessionId,
+    tabId: frame.tabId,
+    durationMs: 0,
+  });
   record.tabId = frame.tabId;
   notifyBindingListeners();
+  const durableStartedAt = Date.now();
   const durableRegistration = record.bridge.registerDurableTab({
     ...record.tileKey,
     sessionId: frame.sessionId,
     tabId: frame.tabId,
   });
+  void durableRegistration.then(
+    () => {
+      appLogger.info("Electron background tab create stage", {
+        event: "electron_tab_create",
+        stage: "durable_registration_settled",
+        outcome: "ok",
+        requestId: frame.requestId,
+        registrationId: frame.registrationId,
+        sessionId: frame.sessionId,
+        tabId: frame.tabId,
+        durationMs: Date.now() - durableStartedAt,
+      });
+    },
+    (error: unknown) => {
+      appLogger.info("Electron background tab create stage", {
+        event: "electron_tab_create",
+        stage: "durable_registration_settled",
+        outcome: "failed",
+        requestId: frame.requestId,
+        registrationId: frame.registrationId,
+        sessionId: frame.sessionId,
+        tabId: frame.tabId,
+        durationMs: Date.now() - durableStartedAt,
+        cause: error instanceof Error ? error.name : typeof error,
+      });
+    },
+  );
   if (consumePendingRelease(frame.sessionId, frame.tabId)) {
     deleteRecord(record);
     const releaseDurableTab = record.bridge.releaseDurableTab?.bind(
@@ -311,7 +357,7 @@ export function handleElectronBrowserTabFrame(
     void Promise.all([durableRegistration, createRequest.ready]).then(() => {
       if (createRequestsByRegistrationKey.get(key) !== createRequest) return;
       createRequestsByRegistrationKey.delete(key);
-      sendForRecord(record, {
+      const sent = sendForRecord(record, {
         kind: "electronTabCreated",
         hasBinaryPayload: false,
         requestId: createRequest.requestId,
@@ -319,7 +365,29 @@ export function handleElectronBrowserTabFrame(
         tabId: frame.tabId,
         reason: null,
       });
-    }, ignoreRegistrationError);
+      appLogger.info("Electron background tab create stage", {
+        event: "electron_tab_create",
+        stage: "ack_sent",
+        outcome: sent ? "ok" : "route-missing",
+        requestId: createRequest.requestId,
+        registrationId: frame.registrationId,
+        sessionId: frame.sessionId,
+        tabId: frame.tabId,
+        durationMs: Date.now() - createRequest.startedAt,
+      });
+    }, (error: unknown) => {
+      appLogger.info("Electron background tab create stage", {
+        event: "electron_tab_create",
+        stage: "ack_blocked",
+        outcome: "failed",
+        requestId: createRequest.requestId,
+        registrationId: frame.registrationId,
+        sessionId: frame.sessionId,
+        tabId: frame.tabId,
+        durationMs: Date.now() - createRequest.startedAt,
+        cause: error instanceof Error ? error.name : typeof error,
+      });
+    });
   }
   return true;
 }
@@ -403,6 +471,17 @@ function handleBackgroundElectronTabCreate(
     pageSessionId: registrationId,
   };
   const key = registrationKey(frame.sessionId, registrationId);
+  const startedAt = Date.now();
+  appLogger.info("Electron background tab create stage", {
+    event: "electron_tab_create",
+    stage: "frame_received",
+    outcome: "ok",
+    requestId: frame.requestId,
+    registrationId,
+    sessionId: frame.sessionId,
+    tabId: frame.sourceTabId,
+    durationMs: 0,
+  });
   const seed =
     frame.seedStorageState === undefined || frame.seedStorageState === null
       ? Promise.resolve()
@@ -412,8 +491,29 @@ function handleBackgroundElectronTabCreate(
           tabId: frame.sourceTabId,
           purpose: "primary-profile-seed",
         });
+  appLogger.info("Electron background tab create stage", {
+    event: "electron_tab_create",
+    stage: "seed_started",
+    outcome: "started",
+    requestId: frame.requestId,
+    registrationId,
+    sessionId: frame.sessionId,
+    tabId: frame.sourceTabId,
+    durationMs: 0,
+  });
   void seed
     .then(() => {
+      appLogger.info("Electron background tab create stage", {
+        event: "electron_tab_create",
+        stage: "seed_settled",
+        outcome: "ok",
+        requestId: frame.requestId,
+        registrationId,
+        sessionId: frame.sessionId,
+        tabId: frame.sourceTabId,
+        durationMs: Date.now() - startedAt,
+      });
+      const creationStartedAt = Date.now();
       const creation = createBackgroundTab({
         ...tileKey,
         sessionId: frame.sessionId,
@@ -421,9 +521,47 @@ function handleBackgroundElectronTabCreate(
         url: frame.url,
         seedStorageState: frame.seedStorageState ?? null,
       });
+      void creation.then(
+        () => {
+          appLogger.info("Electron background tab create stage", {
+            event: "electron_tab_create",
+            stage: "desktop_create_settled",
+            outcome: "ok",
+            requestId: frame.requestId,
+            registrationId,
+            sessionId: frame.sessionId,
+            tabId: frame.sourceTabId,
+            durationMs: Date.now() - creationStartedAt,
+          });
+        },
+        (error: unknown) => {
+          appLogger.info("Electron background tab create stage", {
+            event: "electron_tab_create",
+            stage: "desktop_create_settled",
+            outcome: "failed",
+            requestId: frame.requestId,
+            registrationId,
+            sessionId: frame.sessionId,
+            tabId: frame.sourceTabId,
+            durationMs: Date.now() - creationStartedAt,
+            cause: error instanceof Error ? error.name : typeof error,
+          });
+        },
+      );
+      appLogger.info("Electron background tab create stage", {
+        event: "electron_tab_create",
+        stage: "desktop_create_invoked",
+        outcome: "started",
+        requestId: frame.requestId,
+        registrationId,
+        sessionId: frame.sessionId,
+        tabId: frame.sourceTabId,
+        durationMs: Date.now() - startedAt,
+      });
       createRequestsByRegistrationKey.set(key, {
         requestId: frame.requestId,
         ready: creation,
+        startedAt,
       });
       registerElectronBrowserTab({
         epicId,
@@ -438,6 +576,16 @@ function handleBackgroundElectronTabCreate(
         bridge,
         onRegistered: null,
         background: true,
+      });
+      appLogger.info("Electron background tab create stage", {
+        event: "electron_tab_create",
+        stage: "record_registered",
+        outcome: "ok",
+        requestId: frame.requestId,
+        registrationId,
+        sessionId: frame.sessionId,
+        tabId: frame.sourceTabId,
+        durationMs: Date.now() - startedAt,
       });
       return creation;
     })
@@ -597,7 +745,7 @@ function installCdpForwarder(record: ElectronBrowserTabRecord): () => void {
 }
 
 function publishRegistration(record: ElectronBrowserTabRecord): void {
-  sendForRecord(record, {
+  const sent = sendForRecord(record, {
     kind: "registerElectronTab",
     hasBinaryPayload: false,
     requestId: crypto.randomUUID(),
@@ -608,6 +756,22 @@ function publishRegistration(record: ElectronBrowserTabRecord): void {
     initialUrl: record.initialUrl,
     title: record.title,
   });
+  if (record.background === true) {
+    const createRequest = createRequestsByRegistrationKey.get(
+      registrationKey(record.sessionId, record.registrationId),
+    );
+    appLogger.info("Electron background tab create stage", {
+      event: "electron_tab_create",
+      stage: "registration_sent",
+      outcome: sent ? "ok" : "route-missing",
+      requestId: createRequest?.requestId ?? "unavailable",
+      registrationId: record.registrationId,
+      sessionId: record.sessionId,
+      tabId: record.requestedTabId ?? "unavailable",
+      durationMs:
+        createRequest === undefined ? 0 : Date.now() - createRequest.startedAt,
+    });
+  }
 }
 
 function publishState(record: ElectronBrowserTabRecord): void {
@@ -659,8 +823,13 @@ function mostRecentlyFocusedVisibleRecord(
 function sendForRecord(
   record: ElectronBrowserTabRegistration,
   frame: BrowserSessionsClientFrame,
-): void {
-  sendFrameByEpicHost.get(epicHostKey(record.epicId, record.hostId))?.(frame);
+): boolean {
+  const sendFrame = sendFrameByEpicHost.get(
+    epicHostKey(record.epicId, record.hostId),
+  );
+  if (sendFrame === undefined) return false;
+  sendFrame(frame);
+  return true;
 }
 
 export function findElectronBrowserTabBinding(

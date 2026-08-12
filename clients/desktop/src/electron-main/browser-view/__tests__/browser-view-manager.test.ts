@@ -887,6 +887,7 @@ describe("BrowserViewManager", () => {
       .mockImplementation(function (this: FakeWebContents, url) {
         this.lifecycle.push("loadURL");
         this.loadUrls.push(url);
+        if (url === "about:blank") return Promise.resolve(null);
         this.emit("did-frame-navigate", {}, url, 200, "OK", true);
         return new Promise<unknown>(() => {});
       });
@@ -963,6 +964,7 @@ describe("BrowserViewManager", () => {
     expect(view.visible).toBe(false);
     await vi.waitFor(() => {
       expect(view.webContents.loadUrls).toEqual([
+        "about:blank",
         "https://example.com/background",
       ]);
     });
@@ -1044,6 +1046,7 @@ describe("BrowserViewManager", () => {
     expect(harness.views[0]).toBe(view);
     expect(view.webContents.closeCalls).toBe(0);
     expect(view.webContents.loadUrls).toEqual([
+      "about:blank",
       "https://example.com/background",
     ]);
 
@@ -1144,9 +1147,14 @@ describe("BrowserViewManager", () => {
     await creation;
 
     expect(view.webContents.lifecycle).toEqual([
+      "loadURL",
       "Page.addScriptToEvaluateOnNewDocument",
       "loadURL",
       "Page.removeScriptToEvaluateOnNewDocument",
+    ]);
+    expect(view.webContents.loadUrls).toEqual([
+      "about:blank",
+      "https://example.com/background",
     ]);
     expect(view.webContents.debugger.commands).toContainEqual({
       method: "Page.addScriptToEvaluateOnNewDocument",

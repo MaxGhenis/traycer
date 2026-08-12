@@ -559,8 +559,7 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
         tabId,
       },
     ]);
-    expect(infoSpy).toHaveBeenNthCalledWith(
-      1,
+    expect(infoSpy).toHaveBeenCalledWith(
       "Electron browser tab release tombstone created",
       expect.objectContaining({
         event: "electron_release_tombstone",
@@ -569,8 +568,7 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
         tabId,
       }),
     );
-    expect(infoSpy).toHaveBeenNthCalledWith(
-      2,
+    expect(infoSpy).toHaveBeenCalledWith(
       "Electron browser tab release tombstone consumed",
       expect.objectContaining({
         event: "electron_release_tombstone",

@@ -63,6 +63,7 @@ import {
   captureBrowserViewStorageState,
 } from "../browser-view/browser-storage-state";
 import { trustBrowserCertificate } from "../app/cert-trust";
+import { log } from "../app/logger";
 import type { RunnerIpcBridge } from "./runner-ipc-bridge";
 
 const BROWSER_VIEW_RELEASE_GRACE_MS = 500;
@@ -195,10 +196,38 @@ export function registerBrowserViewIpc(
     RunnerHostInvoke.browserViewCreateBackgroundTab,
     async (event, payload) => {
       const windowId = readSenderWindowId(bridge, event);
-      await manager.createBackgroundTab(
-        windowId,
-        parseBackgroundTabCreate(payload),
-      );
+      const input = parseBackgroundTabCreate(payload);
+      const startedAt = Date.now();
+      log.info("[browser-view] background tab create stage", {
+        kind: "electron_tab_create",
+        stage: "ipc_received",
+        outcome: "started",
+        sessionId: input.sessionId,
+        tabId: input.tabId,
+        durationMs: 0,
+      });
+      try {
+        await manager.createBackgroundTab(windowId, input);
+        log.info("[browser-view] background tab create stage", {
+          kind: "electron_tab_create",
+          stage: "ipc_settled",
+          outcome: "ok",
+          sessionId: input.sessionId,
+          tabId: input.tabId,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (error) {
+        log.info("[browser-view] background tab create stage", {
+          kind: "electron_tab_create",
+          stage: "ipc_settled",
+          outcome: "failed",
+          cause: error instanceof Error ? error.name : typeof error,
+          sessionId: input.sessionId,
+          tabId: input.tabId,
+          durationMs: Date.now() - startedAt,
+        });
+        throw error;
+      }
     },
   );
 
