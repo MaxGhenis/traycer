@@ -745,10 +745,13 @@ function installCdpForwarder(record: ElectronBrowserTabRecord): () => void {
 }
 
 function publishRegistration(record: ElectronBrowserTabRecord): void {
+  const createRequest = createRequestsByRegistrationKey.get(
+    registrationKey(record.sessionId, record.registrationId),
+  );
   const sent = sendForRecord(record, {
     kind: "registerElectronTab",
     hasBinaryPayload: false,
-    requestId: crypto.randomUUID(),
+    requestId: createRequest?.requestId ?? crypto.randomUUID(),
     registrationId: record.registrationId,
     sessionId: record.sessionId,
     requestedTabId: record.requestedTabId ?? null,
@@ -757,9 +760,6 @@ function publishRegistration(record: ElectronBrowserTabRecord): void {
     title: record.title,
   });
   if (record.background === true) {
-    const createRequest = createRequestsByRegistrationKey.get(
-      registrationKey(record.sessionId, record.registrationId),
-    );
     appLogger.info("Electron background tab create stage", {
       event: "electron_tab_create",
       stage: "registration_sent",
@@ -843,13 +843,17 @@ export function useElectronBrowserTabBinding(
   sessionId: string,
   tabId: string,
 ): ElectronBrowserTabRegistration | null {
-  useSyncExternalStore(
+  const registrationId = useSyncExternalStore(
     subscribeBindingChanges,
     () =>
       findElectronBrowserTabBinding(sessionId, tabId)?.registrationId ?? null,
     () => null,
   );
-  return findElectronBrowserTabBinding(sessionId, tabId);
+  return registrationId === null
+    ? null
+    : (recordsByRegistrationKey.get(
+        registrationKey(sessionId, registrationId),
+      ) ?? null);
 }
 
 function findElectronBrowserTabRecord(

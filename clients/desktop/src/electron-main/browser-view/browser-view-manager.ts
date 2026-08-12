@@ -100,6 +100,7 @@ export interface BrowserViewDebugger {
 export interface BrowserViewNavigationHistory {
   canGoBack(): boolean;
   canGoForward(): boolean;
+  clear(): void;
   goBack(): void;
   goForward(): void;
 }
@@ -344,6 +345,7 @@ interface BrowserViewEntry {
   control: BrowserViewControlState | null;
   runtimeSessionId: string;
   runtimeTabId: string | null;
+  internalNavigation: boolean;
   /**
    * Set once this entry has been claimed by a handoff, either as the primary
    * frame or a sibling, so quit-time drain and later teardown cannot push it
@@ -622,7 +624,13 @@ export class BrowserViewManager {
     entry.runtimeTabId = input.tabId;
     this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
     try {
-      await entry.view.webContents.loadURL("about:blank");
+      entry.internalNavigation = true;
+      try {
+        await entry.view.webContents.loadURL("about:blank");
+      } finally {
+        entry.view.webContents.navigationHistory?.clear();
+        entry.internalNavigation = false;
+      }
       log.info("[browser-view] background tab create stage", {
         kind: "electron_tab_create",
         stage: "target_primed",
@@ -1402,9 +1410,11 @@ export class BrowserViewManager {
           this.handleCommittedNavigation(entry, args);
         },
         didFrameFinishLoad: () => {
+          if (entry.internalNavigation) return;
           this.invalidateOverlaySnapshot(entry, "frame-finish-load");
         },
         didFinishLoad: () => {
+          if (entry.internalNavigation) return;
           this.invalidateOverlaySnapshot(entry, "finish-load");
           this.rememberPrimaryProfileOrigin(entry);
         },
@@ -1418,6 +1428,7 @@ export class BrowserViewManager {
           this.handleFoundInPage(entry, args);
         },
         pageTitleUpdated: () => {
+          if (entry.internalNavigation) return;
           entry.currentTitle = entry.view.webContents.getTitle();
           this.invalidateOverlaySnapshot(entry, "page-title-updated");
           this.emitStatus(entry);
@@ -1455,6 +1466,7 @@ export class BrowserViewManager {
       pendingHandoffCapture: null,
       runtimeSessionId: key.pageSessionId,
       runtimeTabId: null,
+      internalNavigation: false,
     };
     const webContents = view.webContents;
     webContents.setWindowOpenHandler((details) =>
@@ -1532,6 +1544,7 @@ export class BrowserViewManager {
     entry: BrowserViewEntry,
     args: readonly unknown[],
   ): void {
+    if (entry.internalNavigation) return;
     const isMainFrame = readMainFrameFlag(args);
     if (!isMainFrame) return;
     const url = readNavigationUrl(args) ?? entry.view.webContents.getURL();
@@ -1551,6 +1564,7 @@ export class BrowserViewManager {
     entry: BrowserViewEntry,
     args: readonly unknown[],
   ): void {
+    if (entry.internalNavigation) return;
     if (!readInPageMainFrameFlag(args)) return;
     const url = readNavigationUrl(args) ?? entry.view.webContents.getURL();
     entry.currentUrl = url;
@@ -1988,6 +2002,7 @@ export class BrowserViewManager {
   }
 
   private emitStatus(entry: BrowserViewEntry): void {
+    if (entry.internalNavigation) return;
     const webContents = this.readLiveWebContents(entry);
     if (webContents === null) return;
     const navigationState = this.readNavigationState(webContents);

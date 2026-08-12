@@ -156,6 +156,9 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
   readonly navigationHistory = {
     canGoBack: () => this.canGoBackValue,
     canGoForward: () => this.canGoForwardValue,
+    clear: () => {
+      this.clearNavigationHistoryCalls += 1;
+    },
     goBack: () => {
       this.goBackCalls += 1;
     },
@@ -179,6 +182,7 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
   reloadCalls = 0;
   goBackCalls = 0;
   goForwardCalls = 0;
+  clearNavigationHistoryCalls = 0;
   stopFindCalls = 0;
   readonly backgroundThrottlingStates: boolean[] = [];
   canGoBackValue = false;
@@ -1167,6 +1171,60 @@ describe("BrowserViewManager", () => {
       sessionId: undefined,
     });
     expect(harness.storageStateApplications).toEqual([]);
+  });
+
+  it("does not publish the prime about:blank URL when requested navigation fails before commit", async () => {
+    const harness = createHarness();
+    const requestedUrl = "https://example.com/prime-failure";
+    const seedError = new Error("seed install failed");
+    const loadURL = vi
+      .spyOn(FakeWebContents.prototype, "loadURL")
+      .mockImplementation(function (this: FakeWebContents, url) {
+        this.lifecycle.push("loadURL");
+        this.loadUrls.push(url);
+        if (url === "about:blank") {
+          this.emit("did-frame-navigate", {}, "about:blank", 200, "OK", true);
+        }
+        return Promise.resolve(null);
+      });
+    const sendCommand = vi
+      .spyOn(FakeDebugger.prototype, "sendCommand")
+      .mockImplementation((method) => {
+        if (method === "Page.addScriptToEvaluateOnNewDocument") {
+          return Promise.reject(seedError);
+        }
+        return Promise.resolve(null);
+      });
+
+    try {
+      const creation = harness.manager.createBackgroundTab("window-1", {
+        ...BASE_KEY,
+        sessionId: "session-prime-failure",
+        tabId: "tab-prime-failure",
+        url: requestedUrl,
+        seedStorageState: {
+          cookies: [],
+          origins: [
+            {
+              origin: "https://example.com",
+              localStorage: [{ name: "token", value: "carried" }],
+            },
+          ],
+        },
+      });
+      const view = harness.views[0];
+      if (view === undefined) throw new Error("expected background view");
+      await expect(creation).rejects.toThrow("seed install failed");
+      expect(view.webContents.loadUrls).toEqual(["about:blank"]);
+      expect(view.webContents.clearNavigationHistoryCalls).toBe(1);
+      expect(harness.statuses.map((status) => status.url)).not.toContain(
+        "about:blank",
+      );
+      expect(harness.manager.snapshotForTests()).toEqual([]);
+    } finally {
+      loadURL.mockRestore();
+      sendCommand.mockRestore();
+    }
   });
 
   it("rejects a duplicate background runtime key without overwriting the first view", async () => {

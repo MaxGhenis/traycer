@@ -237,9 +237,10 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         props.onMigrated?.();
       }
       if (parsed.data.kind === "migrationPending") {
+        const pending = parsed.data.pending;
         setStreamState((current) => ({
           ...resetPeekStateForClient(current, client),
-          migrationPending: parsed.data.pending,
+          migrationPending: pending,
         }));
       }
       if (parsed.data.kind === "armed") {

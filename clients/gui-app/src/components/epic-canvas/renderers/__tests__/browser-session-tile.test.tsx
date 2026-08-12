@@ -41,6 +41,7 @@ import type {
   BrowserViewStatusChange,
   BrowserViewTileKey,
 } from "@/lib/browser-view/desktop-browser-view";
+import { appLogger } from "@/lib/logger";
 import { createSingleTileCanvas } from "@/stores/epics/canvas/actions";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { collectPanes } from "@/stores/epics/canvas/tile-tree";
@@ -378,6 +379,91 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
     });
     expect(screen.queryByText("Browser tab is no longer available.")).toBeNull();
     expect(peekHarness.mounts).toBe(1);
+  });
+
+  it("terminal-then-registration/ack/settlement swaps without a manual component rerender", async () => {
+    const ids = renderTile("ready");
+    const bridge = bridgeHarness.current;
+    if (bridge === null) throw new Error("expected browser view bridge");
+    const infoSpy = vi.spyOn(appLogger, "info").mockImplementation(() => {});
+
+    fireEvent.click(screen.getByTestId("browser-peek-tile"));
+    await waitFor(() => {
+      expect(infoSpy.mock.calls).toContainEqual([
+        "Browser runtime swap decision",
+        expect.objectContaining({
+          event: "browser_runtime_swap_decision",
+          sessionId: NODE.sessionId,
+          tabId: NODE.tabId,
+          terminalRegistrationId: null,
+          candidateRegistrationId: null,
+          settlementRevision: 0,
+          verdict: "hold",
+          holdReason: "binding-missing",
+        }),
+      ]);
+    });
+
+    registerElectronBrowserTab({
+      epicId: "epic-1",
+      hostId: "host-test",
+      chatId: "chat-route",
+      registrationId: "post-terminal-registration",
+      sessionId: NODE.sessionId,
+      requestedTabId: NODE.tabId,
+      initialUrl: "https://example.com/page",
+      title: "Example",
+      tileKey: {
+        viewTabId: ids.viewTabId,
+        paneId: ids.paneId,
+        tileInstanceId: NODE.instanceId,
+        pageSessionId: NODE.id,
+      },
+      bridge,
+      onRegistered: null,
+      onActivatedHeadless: null,
+      background: true,
+    });
+    sessionsState.value = {
+      ...sessionsState.value,
+      items: [
+        {
+          ...sessionFor("ready"),
+          migration: { revision: 1, runtime: "electron-tile" },
+        },
+      ],
+    };
+    act(() => {
+      handleElectronBrowserTabFrame({
+        kind: "electronTabRegistered",
+        hasBinaryPayload: false,
+        requestId: "post-terminal-ack",
+        registrationId: "post-terminal-registration",
+        sessionId: NODE.sessionId,
+        tabId: NODE.tabId,
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("browser-peek-tile")).toBeNull();
+      expect(
+        screen.getByTestId("agent-browser-tile-pointer-instance-1"),
+      ).toBeTruthy();
+    });
+    expect(infoSpy.mock.calls).toContainEqual([
+      "Browser runtime swap decision",
+      expect.objectContaining({
+        event: "browser_runtime_swap_decision",
+        sessionId: NODE.sessionId,
+        tabId: NODE.tabId,
+        terminalRegistrationId: null,
+        candidateRegistrationId: "post-terminal-registration",
+        settlementRevision: 1,
+        verdict: "swap",
+        holdReason: null,
+      }),
+    ]);
+    infoSpy.mockRestore();
   });
 
   it("cast stream teardown with tile still mounted and a stale pre-terminal binding -> registration SURVIVES, native child does not mount/replay, then a different post-terminal binding arrives, create/native swap acks, no typed loss/release", async () => {
