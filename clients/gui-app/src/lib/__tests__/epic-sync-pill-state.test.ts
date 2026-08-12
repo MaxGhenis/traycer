@@ -306,6 +306,31 @@ describe("deriveEpicSyncPillState", () => {
       ).toBe("storedLocally");
     });
 
+    it("does not claim saved-on-device while protection is UNAVAILABLE", () => {
+      // "Stored locally" is a durability claim, and the local-room connection
+      // satisfying `cloudSyncStatus: "connected"` says nothing about it: an
+      // unavailable session's edits live only in the document and are lost on
+      // process exit, graceful quit included. The pill must not encourage
+      // closing work that is not persisted anywhere.
+      expect(
+        deriveEpicSyncPillState({
+          ...HEALTHY_INPUTS,
+          durability: "local",
+          localProtection: "unavailable",
+        }),
+      ).toBe("unprotected");
+    });
+
+    it("claims nothing on a local epic whose protection is UNKNOWN", () => {
+      expect(
+        deriveEpicSyncPillState({
+          ...HEALTHY_INPUTS,
+          durability: "local",
+          localProtection: "unknown",
+        }),
+      ).toBe("connected");
+    });
+
     it("does not claim synced when the host says durability is unknown", () => {
       expect(
         deriveEpicSyncPillState({
@@ -329,14 +354,24 @@ describe("deriveEpicSyncPillState", () => {
       ).toBe("connected");
     });
 
-    it("claims synced when both legs positively say so", () => {
+    it("claims synced only on the POSITIVE cloud member, never on an absence", () => {
+      // `durability: "cloud"` is the `@1.4` statement the calm claim rests
+      // on. Absence beside `armed` used to buy the same rendering, which let
+      // a schema-permitted omission read as "All changes synced".
+      expect(
+        deriveEpicSyncPillState({
+          ...HEALTHY_INPUTS,
+          durability: "cloud",
+          localProtection: "armed",
+        }),
+      ).toBe("synced");
       expect(
         deriveEpicSyncPillState({
           ...HEALTHY_INPUTS,
           durability: undefined,
           localProtection: "armed",
         }),
-      ).toBe("synced");
+      ).not.toBe("synced");
     });
 
     it("keeps a pre-@1.4 peer on exactly its old rendering", () => {
@@ -392,7 +427,7 @@ describe("cloud freshness gates the synced claim", () => {
    */
   const CLOUD_DURABLE_ARMED: EpicSyncPillInputs = {
     ...HEALTHY_INPUTS,
-    durability: undefined,
+    durability: "cloud",
     localProtection: "armed",
     cloudFreshness: undefined,
   };

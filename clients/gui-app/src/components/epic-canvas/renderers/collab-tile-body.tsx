@@ -30,6 +30,7 @@ import {
   useEpicArtifactBodyAwareness,
   useEpicArtifactFragment,
   commentsHaveNoCloudRoom,
+  useEpicDurabilityPauseReason,
   useEpicDurabilityStatus,
   useEpicPermissionRole,
   useEpicSnapshotLoaded,
@@ -258,7 +259,10 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
   //
   // `commentsHaveNoCloudRoom`, not `!== "local"`: the reserved-but-pre-cutover
   // `promoting` window has the same null provider and used to slip through.
-  const noCloudRoom = commentsHaveNoCloudRoom(durabilityStatus);
+  const noCloudRoom = commentsHaveNoCloudRoom(
+    durabilityStatus,
+    useEpicDurabilityPauseReason(),
+  );
   const commentsSupported = commentArtifactKind !== null && !noCloudRoom;
   const setDraft = useCommentThreadsStore((s) => s.setDraft);
   const setActiveThread = useCommentThreadsStore((s) => s.setActiveThread);

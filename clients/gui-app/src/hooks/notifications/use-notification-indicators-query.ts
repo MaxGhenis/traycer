@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useNotificationFeedMode } from "@/lib/notifications/notification-feed-mode";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { useNotificationHost } from "@/hooks/notifications/use-notification-host";
 import {
   useHostNotificationIndicators,
   type UseHostNotificationIndicatorsArgs,
@@ -51,7 +51,13 @@ export function useNotificationIndicators(
 ): SurfaceNotificationIndicators {
   const feedMode = useNotificationFeedMode();
   const isMixed = feedMode === "cloud";
-  const activeHostId = useReactiveActiveHostId();
+  // The SAME owner as the stream and the RPC: `useHostNotificationIndicators`
+  // sends its request through `useNotificationHost().client`, so the response
+  // must be filed under that host's id. Keying it by the ACTIVE host put host
+  // A's local-only indicators in host B's `byOriginHostId` bucket whenever
+  // the two differed - host-bound consumers then hid A's approval/failure
+  // indicators and could decorate B's same-id tabs with them.
+  const notificationHostId = useNotificationHost().hostId;
   const hostIndicators = useHostNotificationIndicators({
     epicIds: args.epicIds,
     chatIds: args.chatIds,
@@ -76,9 +82,9 @@ export function useNotificationIndicators(
     ? mergeLocalPartitionIntoCloudIndicators(
         cloudIndicators,
         hostIndicators.data,
-        activeHostId,
+        notificationHostId,
       )
-    : scopeIndicatorsToOrigin(hostIndicators.data, activeHostId);
+    : scopeIndicatorsToOrigin(hostIndicators.data, notificationHostId);
 }
 
 function scopeIndicatorsToOrigin(

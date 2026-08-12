@@ -410,6 +410,34 @@ function cloudHomedListTasksRow(
   return row;
 }
 
+/** A `getTaskContexts` row the host POSITIVELY confirmed. */
+function confirmedRow(
+  taskId: string,
+): NonNullable<GetTaskContextsResponse["tasks"][string]> {
+  return {
+    epic: {
+      light: {
+        id: taskId,
+        title: "Confirmed",
+        initialUserPrompt: "",
+        ticketCount: 0,
+        specCount: 0,
+        storyCount: 0,
+        reviewCount: 0,
+        status: "active",
+        createdAt: 1,
+        updatedAt: 2,
+        createdBy: "user-1",
+        version: "1",
+      },
+      permission: null,
+      repos: [],
+      workspaces: [],
+      roomInfo: null,
+    },
+  };
+}
+
 function localHomedListTasksRow(
   epicId: string,
 ): ListTasksResponse["tasks"][number] {
@@ -531,6 +559,99 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
     });
     expect(collectOpenEpicIds()).toContain(LOCAL_HOME_EPIC_ID);
     expect(collectOpenEpicIds()).toContain(OPEN_EPIC_ID);
+    queryClient.clear();
+  });
+
+  it("keeps a tab open when the host leaves its id UNANSWERED, closing only ids answered null", async () => {
+    // An id absent from a successful `getTaskContexts` response is the
+    // resolver's INDETERMINATE encoding - "this host could not classify it"
+    // (an unreadable home record, or a store that exists on disk but could
+    // not open). It is a distinct wire fact from `null` ("deleted"), and
+    // reading the two identically force-closed every local tab whenever the
+    // store was unavailable at relaunch.
+    recordNegotiatedHostMethods(localSnapshot.hostId, [
+      "host.status",
+      "epic.getTaskContexts",
+    ]);
+    useEpicCanvasStore
+      .getState()
+      .openEpicTab(LOCAL_HOME_EPIC_ID, "Unclassified");
+    useEpicCanvasStore.getState().openEpicTab(STALE_EPIC_ID, "Stale Epic");
+
+    const getTaskContexts = vi.fn(
+      (params: GetTaskContextsRequest): GetTaskContextsResponse => {
+        const tasks: GetTaskContextsResponse["tasks"] = {};
+        for (const taskId of params.taskIds) {
+          // LOCAL_HOME_EPIC_ID is deliberately ABSENT from the answer;
+          // STALE_EPIC_ID is answered null (positively deleted).
+          if (taskId === LOCAL_HOME_EPIC_ID) continue;
+          tasks[taskId] = taskId === STALE_EPIC_ID ? null : confirmedRow(taskId);
+        }
+        return { tasks };
+      },
+    );
+    const listTasks = vi.fn(
+      (_params: ListTasksRequest): ListTasksResponse => ({
+        tasks: [],
+        hasMore: false,
+      }),
+    );
+
+    const queryClient = mountReconciler({ getTaskContexts, listTasks });
+
+    // The stale tab's closure proves the sweep completed...
+    await waitFor(() => {
+      expect(collectOpenEpicIds()).not.toContain(STALE_EPIC_ID);
+    });
+    // ...and the unanswered id survived it.
+    expect(collectOpenEpicIds()).toContain(LOCAL_HOME_EPIC_ID);
+    queryClient.clear();
+  });
+
+  it("declines destructive reconciliation when the local-rows page reports truncation", async () => {
+    // With more local-homed epics than the first-page injection cap, the
+    // 100-row list page does not carry every local epic - so the force-close
+    // exemption set is provably incomplete and nothing destructive may rest
+    // on it.
+    recordNegotiatedHostMethods(localSnapshot.hostId, [
+      "host.status",
+      "epic.getTaskContexts",
+    ]);
+    useEpicCanvasStore.getState().openEpicTab(STALE_EPIC_ID, "Maybe Stale");
+
+    const getTaskContexts = vi.fn(
+      (params: GetTaskContextsRequest): GetTaskContextsResponse => {
+        const tasks: GetTaskContextsResponse["tasks"] = {};
+        for (const taskId of params.taskIds) {
+          tasks[taskId] = taskId === STALE_EPIC_ID ? null : confirmedRow(taskId);
+        }
+        return { tasks };
+      },
+    );
+    const listTasks = vi.fn(
+      (_params: ListTasksRequest): ListTasksResponse => ({
+        tasks: [],
+        hasMore: false,
+        completeness: {
+          cloudPage: "settled",
+          facets: "server",
+          localRows: "truncated",
+          sort: "loaded-union",
+        },
+      }),
+    );
+
+    const queryClient = mountReconciler({ getTaskContexts, listTasks });
+    await waitFor(() => {
+      expect(getTaskContexts).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(listTasks).toHaveBeenCalledTimes(1);
+    });
+    // Give the apply effect a settled pass, then assert nothing closed - the
+    // truncated exemption set refuses the destructive step entirely.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(collectOpenEpicIds()).toContain(STALE_EPIC_ID);
     queryClient.clear();
   });
 

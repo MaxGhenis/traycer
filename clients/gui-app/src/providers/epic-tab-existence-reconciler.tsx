@@ -165,10 +165,10 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileRun }) {
   // value is a fresh `Set` per computation, so the effect below can re-run on
   // an unrelated render; `completionAppliedRef` keeps the apply once-only, as
   // it did for the paginated implementation.
-  const existingFromContexts = useHostQueries<
+  const contextsExistence = useHostQueries<
     HostRpcRegistry,
     typeof RECONCILE_METHOD,
-    ReadonlySet<string> | null
+    ReconcileExistence | null
   >({
     client,
     requests,
@@ -217,11 +217,11 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileRun }) {
   // `listTasks` from after - dropped the now-cloud-homed row from the union
   // and force-closed a tab whose epic demonstrably exists.
   const existingEpicIds = useMemo((): ReadonlySet<string> | null => {
-    if (existingFromContexts === null) return null;
+    if (contextsExistence === null) return null;
     if (listedEpicIds === null) return null;
-    if (listedEpicIds.size === 0) return existingFromContexts;
-    return new Set([...existingFromContexts, ...listedEpicIds]);
-  }, [existingFromContexts, listedEpicIds]);
+    if (listedEpicIds.size === 0) return contextsExistence.confirmed;
+    return new Set([...contextsExistence.confirmed, ...listedEpicIds]);
+  }, [contextsExistence, listedEpicIds]);
 
   useEffect(() => {
     if (existingEpicIds === null) return;
@@ -243,15 +243,41 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileRun }) {
     // Local-homed epics (`home: "local"` on the host-merged listTasks row) are
     // also never force-close candidates. That marker is durable across app
     // relaunches (host home registry), not session-scoped.
-    const staleEpicIds = closableStaleEpicIds(
-      missingEpicIds(openEpicIds, existingEpicIds),
-      localHomedEpicIds,
-    );
+    //
+    // Two refusals guard the destructive step itself:
+    //
+    //  - An id ABSENT from a successful `getTaskContexts` response is the
+    //    host's INDETERMINATE answer ("this host could not classify it"),
+    //    which is a distinct wire fact from `null` ("deleted"). Closing over
+    //    it force-closed local tabs whenever the host's local store was
+    //    unavailable at relaunch.
+    //  - A first page whose `completeness.localRows` reports `truncated` did
+    //    not carry every local-homed epic, so the force-close exemption set
+    //    is incomplete and no destructive reconciliation may rest on it.
+    const localRowsTruncated =
+      localHomeListQuery.isSuccess &&
+      localHomeListQuery.data.completeness?.localRows === "truncated";
+    const answeredEpicIds = contextsExistence?.answered ?? new Set<string>();
+    const staleEpicIds = localRowsTruncated
+      ? []
+      : closableStaleEpicIds(
+          missingEpicIds(openEpicIds, existingEpicIds).filter((epicId) =>
+            answeredEpicIds.has(epicId),
+          ),
+          localHomedEpicIds,
+        );
     if (staleEpicIds.length > 0) {
       useComposerRunSettingsStore.getState().clearEpicRunSettings(staleEpicIds);
       tabCommandCoordinator.handleEpicAccessLoss(staleEpicIds);
     }
-  }, [existingEpicIds, localHomedEpicIds, openEpicIds]);
+  }, [
+    contextsExistence,
+    existingEpicIds,
+    localHomeListQuery.data,
+    localHomeListQuery.isSuccess,
+    localHomedEpicIds,
+    openEpicIds,
+  ]);
 
   return null;
 }
@@ -270,14 +296,28 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileRun }) {
  * `light` - a row that resolves to a phase, or an epic row without `light`, is
  * not an existing epic, matching what the epic-filtered sweep counted.
  */
+type ReconcileExistence = {
+  /** Ids the host POSITIVELY confirmed as existing epics. */
+  readonly confirmed: ReadonlySet<string>;
+  /**
+   * Ids the host ANSWERED at all - with a row or with `null`. An id absent
+   * from a successful response is the resolver's deliberate indeterminate
+   * encoding ("could not classify; do not treat as deleted"), and only
+   * answered ids may become force-close candidates.
+   */
+  readonly answered: ReadonlySet<string>;
+};
+
 function combineExistingEpicIds(
   results: Array<UseQueryResult<GetTaskContextsResponse, HostRpcError>>,
-): ReadonlySet<string> | null {
+): ReconcileExistence | null {
   if (results.length === 0) return null;
   const existingEpicIds = new Set<string>();
+  const answeredEpicIds = new Set<string>();
   for (const result of results) {
     if (!result.isSuccess) return null;
     for (const [taskId, task] of Object.entries(result.data.tasks)) {
+      answeredEpicIds.add(taskId);
       if (task === null) continue;
       const epic = task.epic;
       if (epic === null || epic === undefined) continue;
@@ -285,7 +325,7 @@ function combineExistingEpicIds(
       existingEpicIds.add(taskId);
     }
   }
-  return existingEpicIds;
+  return { confirmed: existingEpicIds, answered: answeredEpicIds };
 }
 
 /**

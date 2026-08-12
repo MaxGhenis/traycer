@@ -219,13 +219,20 @@ export type EpicDurabilityPauseReasonV14 = z.infer<
  * ambiguity in the reassuring direction. That is precisely the defect: a
  * session with no local protection renders identically to a protected one.
  *
- * `unknown` makes the indeterminate state expressible POSITIVELY. Together
- * with the `@1.4` reading of absence (see the frame below), a negotiated peer
- * can always tell "unknown" from "fine": at `@1.4` an absent `durability` key
- * means unknown, never synced.
+ * `unknown` makes the indeterminate state expressible POSITIVELY, and `cloud`
+ * does the same for the calm state: the epic is cloud-homed and served by a
+ * live cloud connection, so there is no local-durability claim to make. Both
+ * exist because the absence rule (see the frame below) leaves absence meaning
+ * UNKNOWN, never synced - so "fine" needs its own member or it has no
+ * representation at all. Review found the earlier revision of this minor
+ * saying both that absence means unknown AND that a peer can tell unknown
+ * from fine, which cannot simultaneously hold with a five-member enum; the
+ * client was resolving the contradiction by reading absence-beside-armed as
+ * the calm arm, which is precisely the silence-as-reassurance inference this
+ * minor exists to break.
  *
  * Value growth on the same emission-gated terms as the pause-reason widening:
- * `@1.2` / `@1.3` stay frozen and are never sent `unknown`.
+ * `@1.2` / `@1.3` stay frozen and are never sent `unknown` or `cloud`.
  */
 export const epicDurabilityStatusSchemaV14 = z.enum([
   "local",
@@ -233,6 +240,7 @@ export const epicDurabilityStatusSchemaV14 = z.enum([
   "paused",
   "offline",
   "unknown",
+  "cloud",
 ]);
 export type EpicDurabilityStatusV14 = z.infer<
   typeof epicDurabilityStatusSchemaV14

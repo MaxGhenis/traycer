@@ -8,6 +8,7 @@ import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { useEpicCommentThreads } from "@/hooks/comments/use-epic-comment-threads";
 import {
   commentsHaveNoCloudRoom,
+  useEpicDurabilityPauseReason,
   useEpicDurabilityStatus,
 } from "@/lib/epic-selectors";
 import type { EpicDurabilityStatusV14 } from "@traycer/protocol/host/epic/subscribe";
@@ -69,7 +70,10 @@ export function CommentSidebar(props: CommentSidebarProps) {
   // on exactly `"local"`, this gate re-enabled comments mid-promotion against
   // a null provider and the user got a generic RPC failure for a state the
   // host can name.
-  const localCommentsUnavailable = commentsHaveNoCloudRoom(durabilityStatus);
+  const localCommentsUnavailable = commentsHaveNoCloudRoom(
+    durabilityStatus,
+    useEpicDurabilityPauseReason(),
+  );
 
   const query = useEpicCommentThreads(epicId, artifactType, artifactId, {
     enabled: !localCommentsUnavailable,

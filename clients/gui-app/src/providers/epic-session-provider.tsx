@@ -24,6 +24,7 @@ import {
   setEpicLocalHomeInCloudTaskCaches,
   updateEpicTitleInCloudTaskCaches,
 } from "@/lib/cloud-epic-tasks-query/cache";
+import { setCloudEpicTasksPageLocalHome } from "@/stores/epics/cloud-epic-tasks-pages-store";
 import { hostQueryKeys } from "@/lib/query-keys";
 import {
   claimDesktopEpicOwnership,
@@ -374,6 +375,13 @@ function useEpicHomeCacheSync(args: CloudTaskTitleCacheSyncArgs): void {
         epicId,
         localHome,
       );
+      // The retained "Show more" tails live in the pages store, exactly as
+      // they do for the pin patch - a promoted row loaded through pagination
+      // kept `home: "local"` (and its cloud-only actions disabled) until a
+      // reset or refresh without this half.
+      if (activeHostId !== null) {
+        setCloudEpicTasksPageLocalHome(activeHostId, userId, epicId, localHome);
+      }
       void queryClient.invalidateQueries({
         queryKey: hostQueryKeys.methodScope(
           activeHostId,

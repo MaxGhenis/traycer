@@ -393,7 +393,10 @@ function viewStatus(
   if (
     view.kind === "legacy" &&
     view.status !== null &&
-    view.status !== "unknown"
+    view.status !== "unknown" &&
+    // A pre-`@1.4` peer cannot emit the two `@1.4`-only members; the guard
+    // exists for the type, not for a reachable frame.
+    view.status !== "cloud"
   ) {
     return view.status;
   }

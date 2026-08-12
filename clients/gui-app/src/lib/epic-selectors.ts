@@ -187,12 +187,26 @@ export function useEpicDurabilityPauseReason(): NonNullable<
  */
 export function commentsHaveNoCloudRoom(
   status: NonNullable<OpenEpicState["durabilityStatus"]> | null,
+  pauseReason: string | null,
 ): boolean {
-  return status === "local" || status === "promoting";
+  if (status === "local" || status === "promoting") return true;
+  // A preserved orphan: the epic was paused because its CLOUD copy was
+  // deleted while never-uploaded local edits survived. The cloud comment room
+  // went with the cloud copy, so enabling comments here offers actions that
+  // can only fail against an absent room. The other pause reasons make no
+  // such claim - an entitlement lapse or revoked access leaves the room in
+  // place, merely unreachable, which is not this predicate's question.
+  return (
+    status === "paused" &&
+    pauseReason === "orphaned-local-edits-after-cloud-delete"
+  );
 }
 
 export function useEpicCommentsHaveNoCloudRoom(): boolean {
-  return commentsHaveNoCloudRoom(useEpicDurabilityStatus());
+  return commentsHaveNoCloudRoom(
+    useEpicDurabilityStatus(),
+    useEpicDurabilityPauseReason(),
+  );
 }
 
 /**
@@ -214,12 +228,24 @@ export function useEpicCommentsHaveNoCloudRoom(): boolean {
  */
 export function chatBackupHasNoCloudTask(
   status: NonNullable<OpenEpicState["durabilityStatus"]> | null,
+  pauseReason: string | null,
 ): boolean {
-  return status === "local" || status === "promoting";
+  if (status === "local" || status === "promoting") return true;
+  // Same fact as the comments predicate: the orphan pause means the cloud
+  // TASK ROW is deleted, so there is nothing for the publisher to back a
+  // chat up into and "N chats not backed up" would present a by-design
+  // preservation state as an actionable failure.
+  return (
+    status === "paused" &&
+    pauseReason === "orphaned-local-edits-after-cloud-delete"
+  );
 }
 
 export function useEpicChatBackupHasNoCloudTask(): boolean {
-  return chatBackupHasNoCloudTask(useEpicDurabilityStatus());
+  return chatBackupHasNoCloudTask(
+    useEpicDurabilityStatus(),
+    useEpicDurabilityPauseReason(),
+  );
 }
 
 export function useEpicDurabilityPromotionState(): NonNullable<
@@ -301,7 +327,7 @@ export type EpicDurabilityView =
   /** The host stated where the epic is durable. */
   | {
       readonly kind: "stated";
-      readonly status: Exclude<EpicDurabilityStatusV14, "unknown">;
+      readonly status: Exclude<EpicDurabilityStatusV14, "unknown" | "cloud">;
       readonly protection: EpicLocalProtection;
     }
   /** Durable in the cloud, and locally protected. The only calm arm. */
@@ -337,16 +363,19 @@ export function deriveEpicDurabilityView(
   }
   // Absence from a peer that speaks the legs is the wire contract's UNKNOWN.
   const stated: EpicLocalProtection = protection ?? "unknown";
-  if (status === null) {
-    // Absence from a `@1.4` peer means "no local-durability claim" - the epic
-    // is durable in the cloud, which the frozen enum has no member for. Calm
-    // is licensed only alongside the POSITIVE `armed`; anything else is
-    // indeterminate, which is the absence rule stated as code.
-    return stated === "armed"
-      ? { kind: "cloudDurable" }
-      : { kind: "indeterminate", protection: stated };
+  if (status === "cloud") {
+    // The POSITIVE cloud-durable statement the `@1.4` enum carries. Calm
+    // rests on this member alone - never on an absence.
+    return { kind: "cloudDurable" };
   }
-  if (status === "unknown") {
+  if (status === null || status === "unknown") {
+    // The frame's absence rule, stated as code: an absent `durability` key
+    // from a `@1.4` peer means UNKNOWN, never synced. Review found the
+    // earlier arm here resolving absence-beside-`armed` into the calm
+    // rendering, which let a schema-permitted omission claim "All changes
+    // synced" - the silence-as-reassurance inference this minor exists to
+    // break. The shipping host now emits `"cloud"` explicitly, so the calm
+    // case lost nothing.
     return { kind: "indeterminate", protection: stated };
   }
   // `stated` KEEPS its protection leg rather than collapsing to

@@ -198,9 +198,21 @@ export function deriveEpicSyncPillState(
     // Not synced anywhere in the cloud. Say which, when the host said which,
     // and otherwise claim nothing - `connected` is the neutral state that
     // exists for exactly this.
-    return inputs.durability === "local" || inputs.durability === "promoting"
-      ? "storedLocally"
-      : "connected";
+    if (inputs.durability === "local" || inputs.durability === "promoting") {
+      // "Saved on this device" is a DURABILITY claim, and the local-room
+      // connection satisfying `cloudSyncStatus === "connected"` says nothing
+      // about it: with `localProtection: "unavailable"` the protocol is
+      // explicit that edits live only in the document and are lost on process
+      // exit, graceful quit included. The rule stated at
+      // `syncedClaimIsHonest` applies here identically - a calm claim needs a
+      // POSITIVE statement behind it. `unknown` claims nothing either way and
+      // stays neutral; a pre-`@1.4` peer (null) cannot express any of this
+      // and keeps its released rendering.
+      if (inputs.localProtection === "unavailable") return "unprotected";
+      if (inputs.localProtection === "unknown") return "connected";
+      return "storedLocally";
+    }
+    return "connected";
   }
   // Cloud down. The pill may not imply the work is being kept anywhere unless
   // something is keeping it - and an unarmed session is keeping it nowhere.
@@ -232,12 +244,14 @@ export function deriveEpicSyncPillState(
  * - No `localProtection` at all means a pre-`@1.4` peer, which cannot express
  *   any of this. It keeps its exact current behaviour; degrading it to unknown
  *   would make this minor a breaking change for every older host.
- * - An absent `durability` from a `@1.4` peer means "no local-durability claim
- *   to make", i.e. the epic is durable in the cloud - the one state the frozen
- *   enum has no member for. Calm is licensed there, but only alongside the
- *   positive `armed`, so silence alone never buys reassurance.
- * - Any STATED durability value says the epic is not simply sitting durable in
- *   the cloud, `unknown` included.
+ * - `durability: "cloud"` is the POSITIVE cloud-durable statement the `@1.4`
+ *   enum now carries, and it is the ONLY durability value that licenses calm.
+ *   An absent `durability` from a `@1.4` peer means UNKNOWN - the frame's own
+ *   absence rule - and review found the earlier reading here (absence beside
+ *   `armed` as the calm arm) resolving a schema-permitted omission into
+ *   exactly the silence-as-reassurance this minor exists to break.
+ * - Every OTHER stated durability value says the epic is not simply sitting
+ *   durable in the cloud, `unknown` included.
  * - A STATED freshness other than `current` says the DOCUMENT is not known to
  *   match the cloud's, whatever the durability legs say about the bytes going
  *   the other way. "All changes synced" over a document the host is still
@@ -252,9 +266,7 @@ function syncedClaimIsHonest(inputs: EpicSyncPillInputs): boolean {
     return false;
   }
   if (inputs.localProtection === undefined) return true;
-  if (inputs.durability === undefined)
-    return inputs.localProtection === "armed";
-  return false;
+  return inputs.durability === "cloud";
 }
 
 function linkComingUpState(
