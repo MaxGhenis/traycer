@@ -1,4 +1,5 @@
 import "../../../../../__tests__/test-browser-apis";
+import { useRef } from "react";
 import {
   act,
   cleanup,
@@ -68,6 +69,10 @@ const bridgeHarness = vi.hoisted<{
   runnerHost: { agentBrowserView: null },
 }));
 
+const peekHarness = vi.hoisted<{
+  mounts: number;
+}>(() => ({ mounts: 0 }));
+
 vi.mock("@/components/epic-canvas/renderers/browser-sessions-context", () => ({
   useBrowserSessionsContext: () => sessionsState.value,
 }));
@@ -87,14 +92,21 @@ vi.mock("@/components/epic-canvas/renderers/browser-peek-tile", () => ({
   BrowserPeekTile: (props: {
     readonly node: { readonly sessionId: string; readonly tabId: string };
     readonly onMigrated: (() => void) | undefined;
-  }) => (
-    <div
-      data-testid="browser-peek-tile"
-      data-session={props.node.sessionId}
-      data-tab={props.node.tabId}
-      onClick={() => props.onMigrated?.()}
-    />
-  ),
+  }) => {
+    const mounted = useRef(false);
+    if (!mounted.current) {
+      mounted.current = true;
+      peekHarness.mounts += 1;
+    }
+    return (
+      <div
+        data-testid="browser-peek-tile"
+        data-session={props.node.sessionId}
+        data-tab={props.node.tabId}
+        onClick={() => props.onMigrated?.()}
+      />
+    );
+  },
 }));
 
 class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
@@ -257,6 +269,7 @@ function renderTile(
 describe("BrowserSessionTile (ticket 08 pointer view)", () => {
   beforeEach(() => {
     resetElectronBrowserTabStoreForTests();
+    peekHarness.mounts = 0;
     const bridge = new FakeAgentBrowserViewBridge();
     bridgeHarness.current = bridge;
     bridgeHarness.runnerHost.agentBrowserView = bridge;
@@ -315,6 +328,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
   it("swaps the screencast tile for native view on migrated terminal status", async () => {
     const ids = renderTile("ready");
     expect(screen.getByTestId("browser-peek-tile")).toBeTruthy();
+    expect(peekHarness.mounts).toBe(1);
     fireEvent.click(screen.getByTestId("browser-peek-tile"));
 
     const bridge = bridgeHarness.current;
@@ -355,6 +369,62 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       ).toBeTruthy();
     });
     expect(screen.queryByText("Browser tab is no longer available.")).toBeNull();
+    expect(peekHarness.mounts).toBe(1);
+  });
+
+  it("resubscribes after terminal status once rollback settles headless", async () => {
+    const ids = seedCanvas(NODE);
+    const initialSession = sessionFor("ready");
+    sessionsState.value = {
+      lifecycle: "live",
+      items: [initialSession],
+      errorMessage: null,
+      routingChatId: "chat-route",
+      closeSession: vi.fn(),
+      requestPromoteState: vi.fn(),
+      requestLendStorage: vi.fn(),
+    };
+    const view = render(
+      <BrowserSessionTile
+        node={NODE}
+        viewTabId={ids.viewTabId}
+        paneId={ids.paneId}
+        epicId="epic-1"
+      />,
+    );
+    expect(peekHarness.mounts).toBe(1);
+
+    fireEvent.click(screen.getByTestId("browser-peek-tile"));
+    expect(screen.getByTestId("browser-peek-tile")).toBeTruthy();
+    expect(peekHarness.mounts).toBe(1);
+
+    act(() => {
+      sessionsState.value = {
+        ...sessionsState.value,
+        items: [
+          {
+            ...initialSession,
+            migration: { revision: 1, runtime: "headless" },
+          },
+        ],
+      };
+      view.rerender(
+        <BrowserSessionTile
+          node={NODE}
+          viewTabId={ids.viewTabId}
+          paneId={ids.paneId}
+          epicId="epic-1"
+        />,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("browser-peek-tile")).toBeTruthy();
+      expect(peekHarness.mounts).toBe(2);
+    });
+    expect(
+      screen.queryByTestId("agent-browser-tile-pointer-instance-1"),
+    ).toBeNull();
   });
 
   it("falls back to existing screencast on BROWSER_TAB_ACTIVATED_HEADLESS instead of a second native view", async () => {

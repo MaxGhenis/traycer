@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentBrowserTile } from "./agent-browser-tile";
 import { BrowserPeekTile } from "./browser-peek-tile";
 import { useBrowserSessionsContext } from "./browser-sessions-context";
@@ -28,13 +28,30 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
   );
   const [activatedHeadless, setActivatedHeadless] = useState(false);
   const [castMigrated, setCastMigrated] = useState(false);
+  const [castGeneration, setCastGeneration] = useState(0);
+  const latestMigrationRevisionRef = useRef(0);
+  const terminalMigrationRevisionRef = useRef(0);
+  latestMigrationRevisionRef.current = session?.migration?.revision ?? 0;
   const handleActivatedHeadless = useCallback(() => {
     setActivatedHeadless(true);
   }, []);
   const handleMigrated = useCallback(() => {
     setActivatedHeadless(false);
+    terminalMigrationRevisionRef.current = latestMigrationRevisionRef.current;
     setCastMigrated(true);
   }, []);
+
+  useEffect(() => {
+    if (
+      !castMigrated ||
+      session?.migration?.runtime !== "headless" ||
+      session.migration.revision <= terminalMigrationRevisionRef.current
+    ) {
+      return;
+    }
+    setCastMigrated(false);
+    setCastGeneration((current) => current + 1);
+  }, [castMigrated, session?.migration]);
 
   if (session === undefined || tab === undefined) {
     return (
@@ -61,6 +78,7 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
     };
     return (
       <BrowserPeekTile
+        key={castGeneration}
         epicId={props.epicId}
         node={peek}
         onMigrated={handleMigrated}

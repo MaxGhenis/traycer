@@ -129,6 +129,15 @@ export const browserSessionInfoSchema = z.object({
   createdBy: browserSessionCreatedBySchema,
   createdAt: z.number(),
   lastActivityAt: z.number(),
+  // Explicit live-runtime settlement for reverse migration. `revision`
+  // changes only after the transition has settled, so a cast that received
+  // terminal(migrated) never has to infer rollback from tab/binding shape.
+  migration: z
+    .object({
+      revision: z.number().int().nonnegative(),
+      runtime: z.enum(["headless", "electron-tile", "dormant"]),
+    })
+    .optional(),
   tabs: z.array(browserTabInfoSchema),
 });
 export type BrowserSessionInfo = z.infer<typeof browserSessionInfoSchema>;
