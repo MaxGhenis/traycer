@@ -256,7 +256,10 @@ export const RunnerHostInvoke = {
   zoomStepOut: "runnerHost:zoom:stepOut",
   zoomReset: "runnerHost:zoom:reset",
   browserViewUpsert: "runnerHost:browserView:upsert",
+  browserViewCreateBackgroundTab: "runnerHost:browserView:createBackgroundTab",
   browserViewRegisterDurableTab: "runnerHost:browserView:registerDurableTab",
+  browserViewSetBackgroundThrottling:
+    "runnerHost:browserView:setBackgroundThrottling",
   browserViewUpdateBounds: "runnerHost:browserView:updateBounds",
   browserViewSetViewportPreset: "runnerHost:browserView:setViewportPreset",
   browserViewRelease: "runnerHost:browserView:release",

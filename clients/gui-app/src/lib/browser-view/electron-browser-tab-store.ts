@@ -1,4 +1,5 @@
 import type {
+  BrowserSessionInfo,
   BrowserSessionsClientFrame,
   BrowserSessionsServerFrame,
 } from "@traycer/protocol/host/browser/contracts";
@@ -15,12 +16,14 @@ import type {
   AgentBrowserViewTileHandoffChange,
 } from "./desktop-agent-browser-view";
 import type {
+  DesktopBrowserViewBridge,
   BrowserViewDurableTabRegistration,
   BrowserViewStatusChange,
   BrowserViewTileKey,
 } from "./desktop-browser-view";
 
 interface ElectronBrowserTabBridge {
+  createBackgroundTab?: DesktopBrowserViewBridge["createBackgroundTab"];
   registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
   dispatchCdp(
     input: AgentBrowserViewCdpDispatch,
@@ -37,6 +40,7 @@ interface ElectronBrowserTabBridge {
   onTileHandoff(handler: (change: AgentBrowserViewTileHandoffChange) => void): {
     dispose: () => void;
   };
+  setBackgroundThrottling?: DesktopBrowserViewBridge["setBackgroundThrottling"];
 }
 
 export interface ElectronBrowserTabRegistration {
@@ -52,6 +56,7 @@ export interface ElectronBrowserTabRegistration {
   readonly bridge: ElectronBrowserTabBridge;
   readonly onRegistered: ((tabId: string) => void) | null;
   readonly onActivatedHeadless?: ((tabId: string) => void) | null;
+  readonly background?: boolean;
 }
 
 interface ElectronBrowserTabRecord extends ElectronBrowserTabRegistration {
@@ -66,6 +71,10 @@ type SendFrame = (frame: BrowserSessionsClientFrame) => void;
 
 const recordsByRegistrationKey = new Map<string, ElectronBrowserTabRecord>();
 const sendFrameByEpicHost = new Map<string, SendFrame>();
+const backgroundBridgeByEpicHost = new Map<
+  string,
+  DesktopBrowserViewBridge
+>();
 const createRequestIdByRegistrationKey = new Map<string, string>();
 const pendingHandoffAcks = new Map<
   string,
@@ -87,7 +96,11 @@ export function registerElectronBrowserTab(
   if (existing !== undefined) {
     const tileInstanceChanged =
       existing.tileKey.tileInstanceId !== input.tileKey.tileInstanceId;
-    Object.assign(existing, input);
+    const bridge =
+      existing.background === true && input.background === true
+        ? existing.bridge
+        : input.bridge;
+    Object.assign(existing, input, { bridge });
     if (tileInstanceChanged) installCdpForwarder(existing);
     if (existing.tabId !== null) existing.onRegistered?.(existing.tabId);
     publishRegistration(existing);
@@ -159,6 +172,20 @@ export function attachElectronBrowserTabStream(
   };
 }
 
+export function attachElectronBrowserBackgroundTabRoute(
+  epicId: string,
+  hostId: string,
+  bridge: DesktopBrowserViewBridge,
+): () => void {
+  const key = epicHostKey(epicId, hostId);
+  backgroundBridgeByEpicHost.set(key, bridge);
+  return () => {
+    if (backgroundBridgeByEpicHost.get(key) === bridge) {
+      backgroundBridgeByEpicHost.delete(key);
+    }
+  };
+}
+
 export function replayElectronBrowserTabRegistrations(
   epicId: string,
   hostId: string,
@@ -181,6 +208,9 @@ export function handleElectronBrowserTabFrame(
     return true;
   }
   if (frame.kind === "createElectronTab") {
+    if (frame.background === true) {
+      return handleBackgroundElectronTabCreate(frame);
+    }
     const source = findElectronBrowserTabBinding(
       frame.sessionId,
       frame.sourceTabId,
@@ -246,6 +276,78 @@ export function handleElectronBrowserTabFrame(
     });
   }
   return true;
+}
+
+function handleBackgroundElectronTabCreate(
+  frame: Extract<BrowserSessionsServerFrame, { kind: "createElectronTab" }>,
+): boolean {
+  const epicId = frame.epicId;
+  const hostId = frame.hostId;
+  if (epicId === undefined || hostId === undefined) return false;
+  const bridge = backgroundBridgeByEpicHost.get(epicHostKey(epicId, hostId));
+  if (bridge?.createBackgroundTab === undefined) return false;
+  const registrationId = crypto.randomUUID();
+  const tileKey: BrowserViewTileKey = {
+    viewTabId: "background",
+    paneId: "background",
+    tileInstanceId: crypto.randomUUID(),
+    pageSessionId: registrationId,
+  };
+  createRequestIdByRegistrationKey.set(
+    registrationKey(frame.sessionId, registrationId),
+    frame.requestId,
+  );
+  void bridge
+    .createBackgroundTab({
+      ...tileKey,
+      sessionId: frame.sessionId,
+      tabId: frame.sourceTabId,
+      url: frame.url,
+    })
+    .then(() => {
+      registerElectronBrowserTab({
+        epicId,
+        hostId,
+        chatId: null,
+        registrationId,
+        sessionId: frame.sessionId,
+        requestedTabId: frame.sourceTabId,
+        initialUrl: frame.url,
+        title: null,
+        tileKey,
+        bridge,
+        onRegistered: null,
+        background: true,
+      });
+    })
+    .catch((error: unknown) => {
+      createRequestIdByRegistrationKey.delete(
+        registrationKey(frame.sessionId, registrationId),
+      );
+      sendFrameByEpicHost.get(epicHostKey(epicId, hostId))?.({
+        kind: "electronTabCreated",
+        hasBinaryPayload: false,
+        requestId: frame.requestId,
+        sessionId: frame.sessionId,
+        tabId: null,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    });
+  return true;
+}
+
+export function syncElectronBrowserTabDrivers(
+  session: BrowserSessionInfo,
+): void {
+  for (const tab of session.tabs) {
+    const record = findElectronBrowserTabBinding(session.sessionId, tab.tabId);
+    const setBackgroundThrottling = record?.bridge.setBackgroundThrottling;
+    if (record === null || setBackgroundThrottling === undefined) continue;
+    void setBackgroundThrottling({
+      ...record.tileKey,
+      enabled: tab.drivenBy.length === 0,
+    }).catch(ignoreRegistrationError);
+  }
 }
 
 function installDesktopForwarding(record: ElectronBrowserTabRecord): void {
@@ -485,6 +587,7 @@ function epicHostKey(epicId: string, hostId: string): string {
 export function resetElectronBrowserTabStoreForTests(): void {
   recordsByRegistrationKey.clear();
   sendFrameByEpicHost.clear();
+  backgroundBridgeByEpicHost.clear();
   for (const pending of pendingHandoffAcks.values()) pending.resolve();
   pendingHandoffAcks.clear();
   createRequestIdByRegistrationKey.clear();

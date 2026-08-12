@@ -72,6 +72,7 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
       paneId={props.paneId}
       requestedTabId={props.node.tabId}
       activateBeforeNativeView
+      usePrimaryProfileRuntime={binding?.background === true}
       onActivatedHeadless={handleActivatedHeadless}
     />
   );

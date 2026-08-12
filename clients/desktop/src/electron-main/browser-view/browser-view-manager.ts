@@ -10,6 +10,8 @@ import type {
   AgentBrowserViewCdpTargetAttachedChange,
   AgentBrowserViewTileHandoffChange,
   BrowserViewBounds,
+  BrowserViewBackgroundTabCreate,
+  BrowserViewBackgroundThrottlingChange,
   BrowserViewBoundsUpdate,
   BrowserViewCapturePageResult,
   BrowserViewCertificateErrorChange,
@@ -123,6 +125,7 @@ export interface BrowserViewWebContents {
   stopFindInPage(action: "clearSelection"): void;
   getZoomFactor(): number;
   setZoomFactor(factor: number): void;
+  setBackgroundThrottling(allowed: boolean): void;
   setDevToolsWebContents(webContents: BrowserViewDevToolsWebContents): void;
   openDevTools(options: BrowserViewOpenDevToolsOptions): void;
   setWindowOpenHandler(
@@ -560,7 +563,7 @@ export class BrowserViewManager {
       this.entriesByKey.get(keyId) ?? this.findTransferableEntry(key);
     const entry =
       existing === null
-        ? this.createEntry(key, input.url, input.viewportPreset)
+        ? this.createEntry(key, input.url, input.viewportPreset, true)
         : existing;
 
     if (entryKeyId(entry.key) !== keyId) {
@@ -581,6 +584,27 @@ export class BrowserViewManager {
     this.applyEntryVisibility(entry);
   }
 
+  async createBackgroundTab(
+    windowId: string,
+    input: BrowserViewBackgroundTabCreate,
+  ): Promise<void> {
+    const key = { ...input, windowId };
+    const entry = this.createEntry(key, input.url, "responsive", false);
+    this.entriesByRuntimeKey.delete(runtimeEntryKey(entry));
+    entry.runtimeSessionId = input.sessionId;
+    entry.runtimeTabId = input.tabId;
+    this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
+    if (entry.status === "ready") return;
+    await new Promise<void>((resolve) => {
+      const onFinish = (): void => {
+        entry.view.webContents.off("did-finish-load", onFinish);
+        resolve();
+      };
+      entry.view.webContents.on("did-finish-load", onFinish);
+      this.navigate(entry, input.url);
+    });
+  }
+
   registerDurableTab(
     windowId: string,
     input: BrowserViewDurableTabRegistration,
@@ -593,6 +617,16 @@ export class BrowserViewManager {
     entry.runtimeSessionId = input.sessionId;
     entry.runtimeTabId = input.tabId;
     this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
+  }
+
+  setBackgroundThrottling(
+    windowId: string,
+    input: BrowserViewBackgroundThrottlingChange,
+  ): void {
+    const key = { ...input, windowId };
+    const entry =
+      this.entriesByKey.get(entryKeyId(key)) ?? this.findTransferableEntry(key);
+    entry?.view.webContents.setBackgroundThrottling(input.enabled);
   }
 
   applyStorageState(
@@ -1191,6 +1225,7 @@ export class BrowserViewManager {
     key: BrowserViewEntryKey,
     requestedUrl: string,
     viewportPreset: BrowserViewViewportPresetId,
+    navigateNow: boolean,
   ): BrowserViewEntry {
     const view = this.createView();
     const entry: BrowserViewEntry = {
@@ -1295,7 +1330,7 @@ export class BrowserViewManager {
     webContents.on("render-process-gone", entry.listeners.renderProcessGone);
     this.entriesByKey.set(entryKeyId(key), entry);
     this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
-    this.navigate(entry, requestedUrl);
+    if (navigateNow) this.navigate(entry, requestedUrl);
     return entry;
   }
 

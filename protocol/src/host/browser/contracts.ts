@@ -578,6 +578,9 @@ export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
     sessionId: z.string(),
     sourceTabId: z.string(),
     url: z.string(),
+    background: z.boolean().optional(),
+    epicId: z.string().optional(),
+    hostId: z.string().optional(),
   }),
   z.object({
     kind: z.literal("electronTabRegistrationFailed"),

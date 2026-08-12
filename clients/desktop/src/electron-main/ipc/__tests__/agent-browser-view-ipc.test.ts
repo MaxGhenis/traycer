@@ -36,6 +36,7 @@ function makeUnusedWebContentsStub(): BrowserViewWebContents {
     stopFindInPage: notUsed,
     getZoomFactor: notUsed,
     setZoomFactor: notUsed,
+    setBackgroundThrottling: notUsed,
     setDevToolsWebContents: notUsed,
     openDevTools: notUsed,
     setWindowOpenHandler: notUsed,

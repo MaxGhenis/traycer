@@ -45,9 +45,11 @@ import {
 } from "@/lib/browser-view/browser-tile-control-store";
 import { publishAgentBrowserCdpRequest } from "@/lib/browser-view/agent-browser-cdp-store";
 import {
+  attachElectronBrowserBackgroundTabRoute,
   attachElectronBrowserTabStream,
   handleElectronBrowserTabFrame,
   replayElectronBrowserTabRegistrations,
+  syncElectronBrowserTabDrivers,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import type { AgentBrowserViewCdpCommand } from "@/lib/browser-view/desktop-agent-browser-view";
 import {
@@ -764,6 +766,10 @@ function useBrowserSessions(
         stream.sendClientFrame(frame, null);
       },
     );
+    const detachBackgroundRoute =
+      browserView === null
+        ? null
+        : attachElectronBrowserBackgroundTabRoute(epicId, hostId, browserView);
     stream.onStatusChange((status, reason) => {
       if (sessionRef.current !== stream) return;
       if (status !== "open") {
@@ -828,6 +834,7 @@ function useBrowserSessions(
         sessionRef.current = null;
       }
       detachElectronTabs();
+      detachBackgroundRoute?.();
       stream.close();
       transport.close();
       rejectPendingPromotes(
@@ -1074,16 +1081,21 @@ function handleBrowserSessionLifecycleFrame(args: {
   readonly setItems: Dispatch<SetStateAction<readonly BrowserSessionInfo[]>>;
 }): boolean {
   if (args.frame.kind === "snapshot") {
+    for (const session of args.frame.sessions) {
+      syncElectronBrowserTabDrivers(session);
+    }
     args.setItems(args.frame.sessions);
     return true;
   }
   if (args.frame.kind === "sessionCreated") {
     const session = args.frame.session;
+    syncElectronBrowserTabDrivers(session);
     args.setItems((current) => upsertSession(current, session));
     return true;
   }
   if (args.frame.kind === "sessionUpdated") {
     const session = args.frame.session;
+    syncElectronBrowserTabDrivers(session);
     args.setItems((current) => upsertSession(current, session));
     return true;
   }

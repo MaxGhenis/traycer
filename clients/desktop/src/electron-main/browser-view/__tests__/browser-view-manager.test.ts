@@ -172,6 +172,7 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
   goBackCalls = 0;
   goForwardCalls = 0;
   stopFindCalls = 0;
+  readonly backgroundThrottlingStates: boolean[] = [];
   canGoBackValue = false;
   canGoForwardValue = false;
   throwDeprecatedNavigation = false;
@@ -289,6 +290,10 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
 
   setZoomFactor(factor: number): void {
     this.zoomFactor = factor;
+  }
+
+  setBackgroundThrottling(allowed: boolean): void {
+    this.backgroundThrottlingStates.push(allowed);
   }
 
   setDevToolsWebContents(webContents: { readonly id: number }): void {
@@ -843,6 +848,130 @@ describe("BrowserViewManager", () => {
       upsert(BASE_KEY, "http://localhost:3000", false),
     );
     expect(view.visible).toBe(false);
+  });
+
+  it("creates a hidden background tab, waits for finish-load, and keeps it CDP-drivable across tile open/close", async () => {
+    const harness = createHarness();
+    const backgroundKey: BrowserViewTileKey = {
+      viewTabId: "background",
+      paneId: "background",
+      tileInstanceId: "background-tile",
+      pageSessionId: "background-page",
+    };
+    const creation = harness.manager.createBackgroundTab("window-1", {
+      ...backgroundKey,
+      sessionId: "session-background",
+      tabId: "tab-background",
+      url: "https://example.com/background",
+    });
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected background view");
+
+    let settled = false;
+    void creation.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(harness.windows.get("window-1")?.contentView.children).toEqual([]);
+    expect(view.visible).toBe(false);
+
+    view.webContents.emit(
+      "did-frame-navigate",
+      {},
+      "https://example.com/background",
+      200,
+      "OK",
+      true,
+    );
+    await Promise.resolve();
+    expect(view.webContents.debugger.attached).toBe(true);
+    expect(settled).toBe(false);
+
+    view.webContents.emit("did-finish-load");
+    await creation;
+    expect(harness.views).toHaveLength(1);
+    expect(harness.manager.snapshotForTests()[0]).toMatchObject({
+      parentWindowId: null,
+      visible: false,
+      status: "ready",
+      requestedUrl: "https://example.com/background",
+    });
+    const hiddenCdp = await harness.manager.dispatchCdp("window-1", {
+      ...backgroundKey,
+      sessionId: null,
+      command: { kind: "cdpGetFrameTree" },
+    });
+    expect(hiddenCdp.ok).toBe(true);
+
+    const openedKey: BrowserViewTileKey = {
+      ...backgroundKey,
+      viewTabId: "view-tab-opened",
+      paneId: "pane-opened",
+      tileInstanceId: "tile-opened",
+    };
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(openedKey, "https://example.com/background", true),
+    );
+    harness.manager.updateBounds("window-1", {
+      ...openedKey,
+      bounds: { x: 0, y: 0, width: 500, height: 300 },
+    });
+    expect(harness.views).toHaveLength(1);
+    expect(harness.views[0]).toBe(view);
+    expect(harness.windows.get("window-1")?.contentView.children).toEqual([
+      view,
+    ]);
+    expect(view.visible).toBe(true);
+
+    harness.manager.releaseTile("window-1", openedKey);
+    expect(harness.windows.get("window-1")?.contentView.children).toEqual([]);
+    expect(view.visible).toBe(false);
+    expect(view.webContents.closeCalls).toBe(0);
+
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(openedKey, "https://example.com/background", true),
+    );
+    expect(harness.views).toHaveLength(1);
+    expect(harness.views[0]).toBe(view);
+    expect(view.webContents.closeCalls).toBe(0);
+    expect(view.webContents.loadUrls).toEqual([
+      "https://example.com/background",
+    ]);
+
+    const cdp = await harness.manager.dispatchCdp("window-1", {
+      ...openedKey,
+      sessionId: null,
+      command: { kind: "cdpGetFrameTree" },
+    });
+    expect(cdp.ok).toBe(true);
+  });
+
+  it("sets background throttling off while driven and restores it when idle", async () => {
+    const harness = createHarness();
+    const creation = harness.manager.createBackgroundTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-background-throttle",
+      tabId: "tab-background-throttle",
+      url: "https://example.com/background",
+    });
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected background view");
+
+    harness.manager.setBackgroundThrottling("window-1", {
+      ...BASE_KEY,
+      enabled: false,
+    });
+    harness.manager.setBackgroundThrottling("window-1", {
+      ...BASE_KEY,
+      enabled: true,
+    });
+
+    expect(view.webContents.backgroundThrottlingStates).toEqual([false, true]);
+    view.webContents.emit("did-finish-load");
+    await creation;
   });
 
   it("reparents the same view across panes and windows without reloading", () => {

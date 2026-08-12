@@ -10,6 +10,8 @@ import type {
   AgentBrowserViewCdpTargetAttachedChange,
   AgentBrowserViewTileHandoffChange,
   BrowserCookieCryptoState,
+  BrowserViewBackgroundTabCreate,
+  BrowserViewBackgroundThrottlingChange,
   BrowserLabsStateUpdate,
   BrowserPrimaryProfileCaptureResult,
   BrowserViewBoundsUpdate,
@@ -50,7 +52,11 @@ import { subscribe, type Disposable, type Listener } from "./subscribe";
 export interface BrowserViewBridgeSurface {
   browserView: {
     upsertTile(input: BrowserViewTileUpsert): Promise<void>;
+    createBackgroundTab(input: BrowserViewBackgroundTabCreate): Promise<void>;
     registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
+    setBackgroundThrottling(
+      input: BrowserViewBackgroundThrottlingChange,
+    ): Promise<void>;
     updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
     setViewportPreset(input: BrowserViewViewportPresetChange): Promise<void>;
     releaseTile(input: BrowserViewTileKey): Promise<void>;
@@ -140,9 +146,19 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
           RunnerHostInvoke.browserViewUpsert,
           input,
         ) as Promise<void>,
+      createBackgroundTab: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewCreateBackgroundTab,
+          input,
+        ) as Promise<void>,
       registerDurableTab: (input) =>
         ipcRenderer.invoke(
           RunnerHostInvoke.browserViewRegisterDurableTab,
+          input,
+        ) as Promise<void>,
+      setBackgroundThrottling: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewSetBackgroundThrottling,
           input,
         ) as Promise<void>,
       updateBounds: (input) =>

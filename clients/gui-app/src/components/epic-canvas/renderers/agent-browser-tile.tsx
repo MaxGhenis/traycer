@@ -7,7 +7,10 @@ import {
   type AgentBrowserViewTileKey,
   type DesktopAgentBrowserViewBridge,
 } from "@/lib/browser-view/desktop-agent-browser-view";
-import type { BrowserViewStatus } from "@/lib/browser-view/desktop-browser-view";
+import {
+  resolveDesktopBrowserViewBridge,
+  type BrowserViewStatus,
+} from "@/lib/browser-view/desktop-browser-view";
 import { selectSiblingChatIdForBrowserTile } from "@/lib/browser-view/browser-tile-chat-routing";
 import {
   registerElectronBrowserTab,
@@ -27,6 +30,7 @@ export interface AgentBrowserTileProps {
   readonly requestedTabId?: string | null;
   readonly onActivatedHeadless?: ((tabId: string) => void) | null;
   readonly activateBeforeNativeView?: boolean;
+  readonly usePrimaryProfileRuntime?: boolean;
 }
 
 /**
@@ -44,10 +48,26 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const runnerHost = useRunnerHost();
   const visible = useTileBodyVisible();
   const paneFocused = usePaneFocused();
-  const browserView = useMemo(
-    () => resolveDesktopAgentBrowserViewBridge(runnerHost),
-    [runnerHost],
-  );
+  const browserView = useMemo<DesktopAgentBrowserViewBridge | null>(() => {
+    if (props.usePrimaryProfileRuntime !== true) {
+      return resolveDesktopAgentBrowserViewBridge(runnerHost);
+    }
+    const primary = resolveDesktopBrowserViewBridge(runnerHost);
+    if (primary === null) return null;
+    return {
+      upsertTile: (input) =>
+        primary.upsertTile({ ...input, viewportPreset: "responsive" }),
+      registerDurableTab: (input) => primary.registerDurableTab(input),
+      updateBounds: (input) => primary.updateBounds(input),
+      releaseTile: (input) => primary.releaseTile(input),
+      onStatusChange: (handler) => primary.onStatusChange(handler),
+      onOpenTileRequest: (handler) => primary.onOpenTileRequest(handler),
+      dispatchCdp: (input) => primary.dispatchCdp(input),
+      onCdpSessionEnded: (handler) => primary.onCdpSessionEnded(handler),
+      onCdpTargetAttached: (handler) => primary.onCdpTargetAttached(handler),
+      onTileHandoff: (handler) => primary.onTileHandoff(handler),
+    };
+  }, [props.usePrimaryProfileRuntime, runnerHost]);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<BrowserViewStatus>("loading");
   const [statusReason, setStatusReason] = useState<string | null>(null);
@@ -120,6 +140,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       bridge: browserView,
       onRegistered: setDurableTabId,
       onActivatedHeadless: props.onActivatedHeadless,
+      background: props.usePrimaryProfileRuntime === true,
     });
   }, [
     browserView,
@@ -131,6 +152,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     props.node.url,
     props.requestedTabId,
     props.onActivatedHeadless,
+    props.usePrimaryProfileRuntime,
     registrationChatId,
     tileKey,
   ]);

@@ -15,6 +15,8 @@ import {
 import type {
   AgentBrowserViewCdpDispatch,
   BrowserLabsStateUpdate,
+  BrowserViewBackgroundTabCreate,
+  BrowserViewBackgroundThrottlingChange,
   BrowserViewBounds,
   BrowserViewBoundsUpdate,
   BrowserViewCertificateTrust,
@@ -186,12 +188,34 @@ export function registerBrowserViewIpc(
   });
 
   bridge.handleInvoke(
+    RunnerHostInvoke.browserViewCreateBackgroundTab,
+    async (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      await manager.createBackgroundTab(
+        windowId,
+        parseBackgroundTabCreate(payload),
+      );
+    },
+  );
+
+  bridge.handleInvoke(
     RunnerHostInvoke.browserViewRegisterDurableTab,
     (event, payload) => {
       const windowId = readSenderWindowId(bridge, event);
       manager.registerDurableTab(
         windowId,
         parseDurableTabRegistration(payload),
+      );
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.browserViewSetBackgroundThrottling,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.setBackgroundThrottling(
+        windowId,
+        parseBackgroundThrottlingChange(payload),
       );
     },
   );
@@ -555,6 +579,27 @@ function parseDurableTabRegistration(
     ...parseTileKey(record),
     sessionId: readString(record.sessionId, "sessionId"),
     tabId: readString(record.tabId, "tabId"),
+  };
+}
+
+function parseBackgroundTabCreate(value: unknown): BrowserViewBackgroundTabCreate {
+  const record = assertRecord(value, "Browser background tab create payload");
+  return {
+    ...parseDurableTabRegistration(record),
+    url: readString(record.url, "url"),
+  };
+}
+
+function parseBackgroundThrottlingChange(
+  value: unknown,
+): BrowserViewBackgroundThrottlingChange {
+  const record = assertRecord(
+    value,
+    "Browser background throttling payload",
+  );
+  return {
+    ...parseTileKey(record),
+    enabled: readBoolean(record.enabled, "enabled"),
   };
 }
 

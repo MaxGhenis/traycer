@@ -16,6 +16,16 @@ export interface BrowserViewDurableTabRegistration extends BrowserViewTileKey {
   readonly tabId: string;
 }
 
+export interface BrowserViewBackgroundTabCreate
+  extends BrowserViewDurableTabRegistration {
+  readonly url: string;
+}
+
+export interface BrowserViewBackgroundThrottlingChange
+  extends BrowserViewTileKey {
+  readonly enabled: boolean;
+}
+
 export interface BrowserViewBounds {
   readonly x: number;
   readonly y: number;

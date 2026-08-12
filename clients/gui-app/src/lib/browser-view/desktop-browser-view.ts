@@ -30,6 +30,16 @@ export interface BrowserViewDurableTabRegistration extends BrowserViewTileKey {
   readonly tabId: string;
 }
 
+export interface BrowserViewBackgroundTabCreate
+  extends BrowserViewDurableTabRegistration {
+  readonly url: string;
+}
+
+export interface BrowserViewBackgroundThrottlingChange
+  extends BrowserViewTileKey {
+  readonly enabled: boolean;
+}
+
 export interface BrowserViewBounds {
   readonly x: number;
   readonly y: number;
@@ -387,7 +397,13 @@ export interface BrowserLabsStateUpdate {
 
 export interface DesktopBrowserViewBridge {
   upsertTile(input: BrowserViewTileUpsert): Promise<void>;
+  createBackgroundTab?(
+    input: BrowserViewBackgroundTabCreate,
+  ): Promise<void>;
   registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
+  setBackgroundThrottling?(
+    input: BrowserViewBackgroundThrottlingChange,
+  ): Promise<void>;
   updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
   setViewportPreset(input: BrowserViewViewportPresetChange): Promise<void>;
   releaseTile(input: BrowserViewTileKey): Promise<void>;
@@ -591,7 +607,12 @@ function readBrowserViewBridgeMethods(
 ): BrowserViewBridgeMethodSet {
   return {
     upsertTile: readBridgeMethod(value, "upsertTile"),
+    createBackgroundTab: readBridgeMethod(value, "createBackgroundTab"),
     registerDurableTab: readBridgeMethod(value, "registerDurableTab"),
+    setBackgroundThrottling: readBridgeMethod(
+      value,
+      "setBackgroundThrottling",
+    ),
     updateBounds: readBridgeMethod(value, "updateBounds"),
     setViewportPreset: readBridgeMethod(value, "setViewportPreset"),
     releaseTile: readBridgeMethod(value, "releaseTile"),
@@ -642,8 +663,12 @@ function createBrowserViewLifecycleBridge(
 ) {
   return {
     upsertTile: (input) => callBridgeVoid(value, methods.upsertTile, input),
+    createBackgroundTab: (input) =>
+      callBridgeVoid(value, methods.createBackgroundTab, input),
     registerDurableTab: (input) =>
       callBridgeVoid(value, methods.registerDurableTab, input),
+    setBackgroundThrottling: (input) =>
+      callBridgeVoid(value, methods.setBackgroundThrottling, input),
     updateBounds: (input) => callBridgeVoid(value, methods.updateBounds, input),
     setViewportPreset: (input) =>
       callBridgeVoid(value, methods.setViewportPreset, input),
@@ -651,7 +676,9 @@ function createBrowserViewLifecycleBridge(
   } satisfies Pick<
     DesktopBrowserViewBridge,
     | "upsertTile"
+    | "createBackgroundTab"
     | "registerDurableTab"
+    | "setBackgroundThrottling"
     | "updateBounds"
     | "setViewportPreset"
     | "releaseTile"

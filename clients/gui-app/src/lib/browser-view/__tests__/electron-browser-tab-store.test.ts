@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
+  BrowserSessionInfo,
   BrowserSessionsClientFrame,
   BrowserSessionsServerFrame,
 } from "@traycer/protocol/host/browser/contracts";
@@ -22,6 +23,7 @@ import {
   handleElectronBrowserTabFrame,
   registerElectronBrowserTab,
   resetElectronBrowserTabStoreForTests,
+  syncElectronBrowserTabDrivers,
   updateElectronBrowserTabView,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import { createSingleTileCanvas } from "@/stores/epics/canvas/actions";
@@ -49,6 +51,9 @@ const TILE_KEY: BrowserViewTileKey = {
 
 class FakeBridge {
   readonly registerDurableTabCalls: BrowserViewDurableTabRegistration[] = [];
+  readonly backgroundThrottlingCalls: Array<{
+    readonly enabled: boolean;
+  }> = [];
   readonly statusHandlers = new Set<
     (change: BrowserViewStatusChange) => void
   >();
@@ -69,6 +74,13 @@ class FakeBridge {
     this.registerDurableTabCalls.push(input);
     return Promise.resolve();
   }
+
+  setBackgroundThrottling = (input: {
+    readonly enabled: boolean;
+  }): Promise<void> => {
+    this.backgroundThrottlingCalls.push({ enabled: input.enabled });
+    return Promise.resolve();
+  };
 
   dispatchCdp(
     _input: AgentBrowserViewCdpDispatch,
@@ -182,6 +194,62 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
         initialUrl: "https://app.example",
         title: "App",
       }),
+    ]);
+  });
+
+  it("turns background throttling off for driven tabs and restores it when idle", async () => {
+    const bridge = new FakeBridge();
+    attachElectronBrowserTabStream(EPIC, HOST, () => {});
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-throttle",
+        sessionId: "session-throttle",
+        bridge,
+        background: true,
+      }),
+    );
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-throttle",
+      registrationId: "reg-throttle",
+      sessionId: "session-throttle",
+      tabId: "tab-throttle",
+    });
+
+    const session = {
+      sessionId: "session-throttle",
+      epicId: EPIC,
+      hostId: HOST,
+      profile: "primary",
+      name: "Agent browser",
+      createdBy: { chatId: "chat-1", agentRunId: "agent-1" },
+      createdAt: 0,
+      lastActivityAt: 0,
+      tabs: [
+        {
+          tabId: "tab-throttle",
+          url: "https://app.example",
+          originTier: "external",
+          status: "ready",
+          title: null,
+          viewed: false,
+          drivenBy: [
+            { chatId: "chat-1", agentRunId: "agent-1", requestId: "req-1" },
+          ],
+        },
+      ],
+    } satisfies BrowserSessionInfo;
+    syncElectronBrowserTabDrivers(session);
+    syncElectronBrowserTabDrivers({
+      ...session,
+      tabs: [{ ...session.tabs[0], drivenBy: [] }],
+    });
+    await Promise.resolve();
+
+    expect(bridge.backgroundThrottlingCalls).toEqual([
+      { enabled: false },
+      { enabled: true },
     ]);
   });
 
