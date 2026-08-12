@@ -164,6 +164,7 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
     },
   };
   readonly loadUrls: string[] = [];
+  readonly executedJavaScript: string[] = [];
   readonly captureVisibleStates: boolean[] = [];
   readonly findInPageCalls: Array<{
     readonly requestId: number;
@@ -221,7 +222,8 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
     return Promise.resolve(null);
   }
 
-  executeJavaScript(): Promise<unknown> {
+  executeJavaScript(script: string): Promise<unknown> {
+    this.executedJavaScript.push(script);
     return Promise.resolve([]);
   }
 
@@ -969,6 +971,43 @@ describe("BrowserViewManager", () => {
       command: { kind: "cdpGetFrameTree" },
     });
     expect(cdp.ok).toBe(true);
+  });
+
+  it("unbound-readiness probe does not wait for paint or rAF", async () => {
+    const harness = createHarness();
+    const backgroundKey: BrowserViewTileKey = {
+      viewTabId: "unbound-readiness",
+      paneId: "unbound-readiness",
+      tileInstanceId: "unbound-readiness-tile",
+      pageSessionId: "unbound-readiness-page",
+    };
+    const creation = harness.manager.createBackgroundTab("window-1", {
+      ...backgroundKey,
+      sessionId: "session-unbound-readiness",
+      tabId: "tab-unbound-readiness",
+      url: "https://example.com/unbound-readiness",
+    });
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected background view");
+
+    expect(harness.windows.get("window-1")?.contentView.children).toEqual([]);
+    view.webContents.emit("did-finish-load");
+    const outcomePromise = Promise.race([
+      creation.then(() => "ready" as const),
+      new Promise<"timed-out">((resolve) => {
+        setTimeout(() => resolve("timed-out"), 100);
+      }),
+    ]);
+    await vi.advanceTimersByTimeAsync(100);
+    const outcome = await outcomePromise;
+
+    expect(outcome).toBe("ready");
+    expect(harness.windows.get("window-1")?.contentView.children).toEqual([]);
+    expect(
+      view.webContents.executedJavaScript.some((script) =>
+        /requestAnimationFrame|(?:^|[^\w])paint(?:[^\w]|$)/i.test(script),
+      ),
+    ).toBe(false);
   });
 
   it("registers a background entry before delayed create readiness settles", async () => {
