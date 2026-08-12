@@ -710,7 +710,7 @@ describe("BrowserPeekTile", () => {
     );
   });
 
-  it("renders JPEG frames and acks each frame", () => {
+  it("renders JPEG frames and acks only after the image is presented", () => {
     render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
     const stream = liveStream();
     act(() => {
@@ -744,14 +744,55 @@ describe("BrowserPeekTile", () => {
       );
     });
 
-    expect(
-      screen.getByAltText("Read-only browser screencast").getAttribute("src"),
-    ).toBe("data:image/jpeg;base64,AQID");
+    expect(screen.getByAltText("Browser screencast").getAttribute("src")).toBe(
+      "data:image/jpeg;base64,AQID",
+    );
+    expect(stream.sentFrames).not.toContainEqual({
+      kind: "ack",
+      hasBinaryPayload: false,
+      sequence: 7,
+    });
+
+    fireEvent.load(screen.getByAltText("Browser screencast"));
+
     expect(stream.sentFrames).toContainEqual({
       kind: "ack",
       hasBinaryPayload: false,
       sequence: 7,
     });
+  });
+
+  it("ignores an armed ack that arrives after blur disarmed the tile", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    const controls = screen.getByRole("button", {
+      name: "Browser screencast controls",
+    });
+
+    fireEvent.focus(controls);
+    expect(stream.sentFrames).toContainEqual({
+      kind: "arm",
+      hasBinaryPayload: false,
+      armEpoch: 1,
+    });
+    fireEvent.blur(controls);
+    expect(stream.sentFrames).toContainEqual({
+      kind: "disarm",
+      hasBinaryPayload: false,
+      armEpoch: 1,
+    });
+    act(() => {
+      stream.emit(
+        { kind: "armed", hasBinaryPayload: false, armEpoch: 1 },
+        null,
+      );
+    });
+
+    expect(controls.className).not.toContain("ring-primary");
+    fireEvent.keyDown(controls, { code: "KeyA", key: "a" });
+    expect(stream.sentFrames).not.toContainEqual(
+      expect.objectContaining({ kind: "keyboard" }),
+    );
   });
 
   it("pauses the stream when the tile is hidden", () => {

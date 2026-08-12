@@ -4,8 +4,10 @@ import {
   useMemo,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
   type SetStateAction,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { AlertTriangle, Pause, Radio, WifiOff } from "lucide-react";
 import {
@@ -44,7 +46,7 @@ type PeekLifecycle =
 
 interface BrowserPeekRenderState {
   readonly client: IHostStreamClient<HostStreamRpcRegistry> | null;
-  readonly imageSrc: string | null;
+  readonly image: { readonly src: string; readonly sequence: number } | null;
   readonly lifecycle: PeekLifecycle;
   readonly details: string | null;
   readonly frameSize: {
@@ -70,22 +72,33 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       binaryPayload: Uint8Array | null,
     ) => void;
   } | null>(null);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const viewportRef = useRef<HTMLButtonElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
   const lastFrameAtRef = useRef<number | null>(null);
+  const armEpochCounterRef = useRef(0);
+  const desiredArmEpochRef = useRef<number | null>(null);
+  const activeArmEpochRef = useRef<number | null>(null);
+  const inputSequenceRef = useRef(0);
+  const presentedSequenceRef = useRef<number | null>(null);
+  const [armedState, setArmedState] = useState<{
+    readonly client: IHostStreamClient<HostStreamRpcRegistry>;
+    readonly epoch: number;
+  } | null>(null);
   const [streamState, setStreamState] = useState<BrowserPeekRenderState>(
     () => ({
       client,
-      imageSrc: null,
+      image: null,
       lifecycle: "connecting",
       details: null,
       frameSize: null,
     }),
   );
   const stateMatchesClient = streamState.client === client;
-  const imageSrc = stateMatchesClient ? streamState.imageSrc : null;
+  const image = stateMatchesClient ? streamState.image : null;
   const lifecycle = stateMatchesClient ? streamState.lifecycle : "connecting";
   const details = peekDetailsForRender(stateMatchesClient, streamState, client);
   const frameSize = stateMatchesClient ? streamState.frameSize : null;
+  const armedEpoch = armedState?.client === client ? armedState.epoch : null;
 
   const setLifecycle = useCallback(
     (value: SetStateAction<PeekLifecycle>) => {
@@ -107,11 +120,11 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     },
     [client],
   );
-  const setImageSrc = useCallback(
-    (value: string) => {
+  const setImage = useCallback(
+    (value: { readonly src: string; readonly sequence: number }) => {
       setStreamState((current) => ({
         ...resetPeekStateForClient(current, client),
-        imageSrc: value,
+        image: value,
       }));
     },
     [client],
@@ -134,6 +147,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   useEffect(() => {
     if (client === null) {
       sessionRef.current = null;
+      desiredArmEpochRef.current = null;
+      activeArmEpochRef.current = null;
       return;
     }
 
@@ -153,22 +168,41 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     session.onServerFrame((envelope, binaryPayload) => {
       const parsed = browserScreencastServerFrameSchema.safeParse(envelope);
       if (!parsed.success) return;
+      if (
+        parsed.data.kind === "started" ||
+        parsed.data.kind === "resized" ||
+        parsed.data.kind === "failed" ||
+        parsed.data.kind === "complete"
+      ) {
+        presentedSequenceRef.current = null;
+      }
       handleScreencastFrame({
         frame: parsed.data,
         binaryPayload,
-        session,
-        setImageSrc,
+        setImage,
         setLifecycle,
         setDetails,
         setFrameSize,
-        lastFrameAtRef,
       });
+      if (parsed.data.kind === "armed") {
+        if (desiredArmEpochRef.current !== parsed.data.armEpoch) return;
+        activeArmEpochRef.current = parsed.data.armEpoch;
+        setArmedState({ client, epoch: parsed.data.armEpoch });
+      } else if (parsed.data.kind === "revoked") {
+        if (activeArmEpochRef.current !== parsed.data.armEpoch) return;
+        desiredArmEpochRef.current = null;
+        activeArmEpochRef.current = null;
+        setArmedState(null);
+      }
     });
 
     return () => {
       if (sessionRef.current === session) {
         sessionRef.current = null;
       }
+      desiredArmEpochRef.current = null;
+      activeArmEpochRef.current = null;
+      presentedSequenceRef.current = null;
       session.close();
     };
   }, [
@@ -178,7 +212,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     props.node.tabId,
     setDetails,
     setFrameSize,
-    setImageSrc,
+    setImage,
     setLifecycle,
   ]);
 
@@ -225,6 +259,96 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     [details, lifecycle, visible],
   );
 
+  const arm = useCallback(() => {
+    if (
+      desiredArmEpochRef.current !== null ||
+      activeArmEpochRef.current !== null
+    ) {
+      return;
+    }
+    armEpochCounterRef.current += 1;
+    const armEpoch = armEpochCounterRef.current;
+    desiredArmEpochRef.current = armEpoch;
+    inputSequenceRef.current = 0;
+    sendPeekFrame(sessionRef.current, {
+      kind: "arm",
+      hasBinaryPayload: false,
+      armEpoch,
+    });
+  }, []);
+
+  const disarm = useCallback(() => {
+    const armEpoch = activeArmEpochRef.current ?? desiredArmEpochRef.current;
+    desiredArmEpochRef.current = null;
+    activeArmEpochRef.current = null;
+    setArmedState(null);
+    if (armEpoch === null) return;
+    sendPeekFrame(sessionRef.current, {
+      kind: "disarm",
+      hasBinaryPayload: false,
+      armEpoch,
+    });
+  }, []);
+
+  const sendInput = useCallback(
+    (
+      frame:
+        | Omit<
+            Extract<BrowserScreencastClientFrame, { readonly kind: "pointer" }>,
+            "armEpoch" | "seq" | "hasBinaryPayload"
+          >
+        | Omit<
+            Extract<
+              BrowserScreencastClientFrame,
+              { readonly kind: "keyboard" }
+            >,
+            "armEpoch" | "seq" | "hasBinaryPayload"
+          >,
+    ) => {
+      const armEpoch = activeArmEpochRef.current;
+      if (armEpoch === null) return;
+      sendPeekFrame(sessionRef.current, {
+        ...frame,
+        hasBinaryPayload: false,
+        armEpoch,
+        seq: inputSequenceRef.current,
+      });
+      inputSequenceRef.current += 1;
+    },
+    [],
+  );
+
+  const sendPointer = useCallback(
+    (
+      event:
+        | ReactPointerEvent<HTMLButtonElement>
+        | ReactWheelEvent<HTMLButtonElement>,
+      type: "move" | "down" | "up" | "wheel",
+    ) => {
+      const castSequence = presentedSequenceRef.current;
+      const normalized = normalizedPointerPosition(
+        event.clientX,
+        event.clientY,
+        imageRef.current,
+        frameSize,
+      );
+      if (castSequence === null || normalized === null) return;
+      const pointerEvent = "button" in event ? event : null;
+      sendInput({
+        kind: "pointer",
+        type,
+        castSequence,
+        ...normalized,
+        button: pointerButton(pointerEvent?.button ?? -1),
+        buttons: event.buttons,
+        modifiers: inputModifiers(event),
+        deltaX: "deltaX" in event ? event.deltaX : 0,
+        deltaY: "deltaY" in event ? event.deltaY : 0,
+      });
+    },
+    [frameSize, sendInput],
+  );
+
   return (
     <div
       className="flex h-full w-full flex-col bg-canvas text-foreground"
@@ -252,26 +376,93 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           <span>{status.label}</span>
         </div>
       </div>
-      <div
+      <button
+        type="button"
         ref={viewportRef}
-        className="relative min-h-0 flex-1 overflow-hidden bg-background"
+        className={cn(
+          "relative min-h-0 flex-1 cursor-default overflow-hidden bg-background p-0 text-left outline-none",
+          armedEpoch !== null && "ring-2 ring-primary ring-inset",
+        )}
+        aria-label="Browser screencast controls"
+        onFocus={arm}
+        onBlur={disarm}
+        onPointerDown={(event) => {
+          event.currentTarget.focus();
+          sendPointer(event, "down");
+        }}
+        onPointerMove={(event) => sendPointer(event, "move")}
+        onPointerUp={(event) => sendPointer(event, "up")}
+        onWheel={(event) => {
+          if (activeArmEpochRef.current === null) return;
+          event.preventDefault();
+          sendPointer(event, "wheel");
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            disarm();
+            event.currentTarget.blur();
+            return;
+          }
+          if (activeArmEpochRef.current === null) return;
+          event.preventDefault();
+          sendInput({
+            kind: "keyboard",
+            type: "rawKeyDown",
+            code: event.code,
+            key: event.key,
+            modifiers: inputModifiers(event),
+          });
+          if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) {
+            sendInput({
+              kind: "keyboard",
+              type: "char",
+              code: event.code,
+              key: event.key,
+              modifiers: inputModifiers(event),
+            });
+          }
+        }}
+        onKeyUp={(event) => {
+          if (activeArmEpochRef.current === null) return;
+          event.preventDefault();
+          sendInput({
+            kind: "keyboard",
+            type: "keyUp",
+            code: event.code,
+            key: event.key,
+            modifiers: inputModifiers(event),
+          });
+        }}
       >
-        {imageSrc === null ? (
+        {image === null ? (
           <div className="absolute inset-0 flex items-center justify-center px-4 text-center">
             <div>
               <div className="text-ui-base font-medium">Waiting for frames</div>
               <div className="mt-1 max-w-[min(90vw,32rem)] text-ui-sm text-muted-foreground">
-                This is a read-only peek of the agent browser. Page input is not
-                forwarded.
+                Click the screencast to control this browser tab.
               </div>
             </div>
           </div>
         ) : (
           <img
-            src={imageSrc}
-            alt="Read-only browser screencast"
+            key={image.sequence}
+            ref={imageRef}
+            src={image.src}
+            alt="Browser screencast"
             className="h-full w-full object-contain"
             draggable={false}
+            onLoad={() => {
+              presentedSequenceRef.current = image.sequence;
+              lastFrameAtRef.current = Date.now();
+              setLifecycle("live");
+              setDetails(null);
+              sendPeekFrame(sessionRef.current, {
+                kind: "ack",
+                hasBinaryPayload: false,
+                sequence: image.sequence,
+              });
+            }}
           />
         )}
         {status.overlay === null ? null : (
@@ -284,7 +475,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
             {frameSize.width} x {frameSize.height}
           </div>
         )}
-      </div>
+      </button>
     </div>
   );
 }
@@ -296,7 +487,7 @@ function resetPeekStateForClient(
   if (current.client === client) return current;
   return {
     client,
-    imageSrc: null,
+    image: null,
     lifecycle: "connecting",
     details: client === null ? "Waiting for the host stream." : null,
     frameSize: null,
@@ -346,19 +537,15 @@ function handleStreamStatus(
 function handleScreencastFrame(args: {
   readonly frame: BrowserScreencastServerFrame;
   readonly binaryPayload: Uint8Array | null;
-  readonly session: {
-    sendClientFrame: (
-      frame: BrowserScreencastClientFrame,
-      binaryPayload: Uint8Array | null,
-    ) => void;
-  };
-  readonly setImageSrc: (value: string) => void;
+  readonly setImage: (value: {
+    readonly src: string;
+    readonly sequence: number;
+  }) => void;
   readonly setLifecycle: (value: PeekLifecycle) => void;
   readonly setDetails: (value: string | null) => void;
   readonly setFrameSize: (
     value: { readonly width: number; readonly height: number } | null,
   ) => void;
-  readonly lastFrameAtRef: RefObject<number | null>;
 }): void {
   if (args.frame.kind === "started") {
     args.setLifecycle("waiting");
@@ -370,15 +557,8 @@ function handleScreencastFrame(args: {
   }
   if (args.frame.kind === "frame") {
     if (args.binaryPayload === null) return;
-    args.lastFrameAtRef.current = Date.now();
-    args.setImageSrc(
-      `data:image/jpeg;base64,${bytesToBase64(args.binaryPayload)}`,
-    );
-    args.setLifecycle("live");
-    args.setDetails(null);
-    sendPeekFrame(args.session, {
-      kind: "ack",
-      hasBinaryPayload: false,
+    args.setImage({
+      src: `data:image/jpeg;base64,${bytesToBase64(args.binaryPayload)}`,
       sequence: args.frame.sequence,
     });
     return;
@@ -407,7 +587,7 @@ function handleScreencastFrame(args: {
 }
 
 function useScreencastParamsBridge(
-  ref: RefObject<HTMLDivElement | null>,
+  ref: RefObject<HTMLElement | null>,
   visible: boolean,
   sendParams: (params: {
     readonly maxWidth: number;
@@ -514,4 +694,53 @@ function bytesToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.slice(index, index + chunkSize));
   }
   return window.btoa(binary);
+}
+
+function inputModifiers(event: {
+  readonly altKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+  readonly shiftKey: boolean;
+}): number {
+  return (
+    (event.altKey ? 1 : 0) |
+    (event.ctrlKey ? 2 : 0) |
+    (event.metaKey ? 4 : 0) |
+    (event.shiftKey ? 8 : 0)
+  );
+}
+
+function pointerButton(
+  button: number,
+): Extract<
+  BrowserScreencastClientFrame,
+  { readonly kind: "pointer" }
+>["button"] {
+  if (button === 0) return "left";
+  if (button === 1) return "middle";
+  if (button === 2) return "right";
+  if (button === 3) return "back";
+  if (button === 4) return "forward";
+  return "none";
+}
+
+function normalizedPointerPosition(
+  clientX: number,
+  clientY: number,
+  image: HTMLImageElement | null,
+  frameSize: { readonly width: number; readonly height: number } | null,
+): { readonly normalizedX: number; readonly normalizedY: number } | null {
+  if (image === null || frameSize === null) return null;
+  const rect = image.getBoundingClientRect();
+  const scale = Math.min(
+    rect.width / frameSize.width,
+    rect.height / frameSize.height,
+  );
+  if (!Number.isFinite(scale) || scale <= 0) return null;
+  const width = frameSize.width * scale;
+  const height = frameSize.height * scale;
+  const x = clientX - rect.left - (rect.width - width) / 2;
+  const y = clientY - rect.top - (rect.height - height) / 2;
+  if (x < 0 || x > width || y < 0 || y > height) return null;
+  return { normalizedX: x / width, normalizedY: y / height };
 }

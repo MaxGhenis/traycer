@@ -455,12 +455,7 @@ const browserSessionsServerFrameSchemaV13 = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("cdpDispatchMouseEvent"),
     ...cdpRequestFrameFields,
-    type: z.enum([
-      "mousePressed",
-      "mouseReleased",
-      "mouseMoved",
-      "mouseWheel",
-    ]),
+    type: z.enum(["mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"]),
     x: z.number(),
     y: z.number(),
     button: z.enum(["left", "right", "middle", "none"]).nullable(),
@@ -1014,9 +1009,56 @@ export const browserScreencastServerFrameSchema = z.discriminatedUnion("kind", [
     kind: z.literal("pong"),
     ...textFrameFields,
   }),
+  z.object({
+    kind: z.literal("armed"),
+    ...textFrameFields,
+    armEpoch: z.number().int().nonnegative(),
+  }),
+  z.object({
+    kind: z.literal("revoked"),
+    ...textFrameFields,
+    armEpoch: z.number().int().nonnegative(),
+    cause: z.enum(["disarmed", "stolen"]),
+  }),
 ]);
 export type BrowserScreencastServerFrame = z.infer<
   typeof browserScreencastServerFrameSchema
+>;
+
+const browserScreencastControlIdentitySchema = {
+  armEpoch: z.number().int().nonnegative(),
+  seq: z.number().int().nonnegative(),
+};
+
+export const browserScreencastPointerTypeSchema = z.enum([
+  "move",
+  "down",
+  "up",
+  "wheel",
+]);
+export type BrowserScreencastPointerType = z.infer<
+  typeof browserScreencastPointerTypeSchema
+>;
+
+export const browserScreencastPointerButtonSchema = z.enum([
+  "none",
+  "left",
+  "middle",
+  "right",
+  "back",
+  "forward",
+]);
+export type BrowserScreencastPointerButton = z.infer<
+  typeof browserScreencastPointerButtonSchema
+>;
+
+export const browserScreencastKeyboardTypeSchema = z.enum([
+  "rawKeyDown",
+  "keyUp",
+  "char",
+]);
+export type BrowserScreencastKeyboardType = z.infer<
+  typeof browserScreencastKeyboardTypeSchema
 >;
 
 export const browserScreencastClientFrameSchema = z.discriminatedUnion("kind", [
@@ -1040,6 +1082,45 @@ export const browserScreencastClientFrameSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("ping"),
     ...textFrameFields,
+  }),
+  z.object({
+    kind: z.literal("arm"),
+    ...textFrameFields,
+    armEpoch: z.number().int().nonnegative(),
+  }),
+  z.object({
+    kind: z.literal("disarm"),
+    ...textFrameFields,
+    armEpoch: z.number().int().nonnegative(),
+  }),
+  z.object({
+    kind: z.literal("pointer"),
+    ...textFrameFields,
+    ...browserScreencastControlIdentitySchema,
+    type: browserScreencastPointerTypeSchema,
+    castSequence: z.number().int().nonnegative(),
+    normalizedX: z.number(),
+    normalizedY: z.number(),
+    button: browserScreencastPointerButtonSchema,
+    buttons: z.number().int().nonnegative(),
+    modifiers: z.number().int().nonnegative(),
+    deltaX: z.number(),
+    deltaY: z.number(),
+  }),
+  z.object({
+    kind: z.literal("keyboard"),
+    ...textFrameFields,
+    ...browserScreencastControlIdentitySchema,
+    type: browserScreencastKeyboardTypeSchema,
+    code: z.string(),
+    key: z.string(),
+    modifiers: z.number().int().nonnegative(),
+  }),
+  z.object({
+    kind: z.literal("insertText"),
+    ...textFrameFields,
+    ...browserScreencastControlIdentitySchema,
+    text: z.string(),
   }),
 ]);
 export type BrowserScreencastClientFrame = z.infer<

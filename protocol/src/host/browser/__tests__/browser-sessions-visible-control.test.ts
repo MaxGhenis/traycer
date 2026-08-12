@@ -5,7 +5,10 @@ import {
   browserSessionsServerFrameSchema,
   browserSessionsV1,
   browserSessionInfoSchema,
+  browserScreencastClientFrameSchema,
   browserScreencastOpenRequestSchema,
+  browserScreencastServerFrameSchema,
+  browserScreencastV10,
   browserTabInfoSchema,
 } from "@traycer/protocol/host/browser/contracts";
 
@@ -114,6 +117,72 @@ describe("browser.sessions@1.0 visible tile control frames", () => {
     expect(browserSessionsServerFrameSchema.safeParse(frame).success).toBe(
       true,
     );
+  });
+});
+
+describe("browser.screencast@1.0 control frames", () => {
+  it("carries arming and subscription-bound input on the unreleased baseline", () => {
+    const clientFrames = [
+      { kind: "arm", hasBinaryPayload: false, armEpoch: 3 },
+      { kind: "disarm", hasBinaryPayload: false, armEpoch: 3 },
+      {
+        kind: "pointer",
+        hasBinaryPayload: false,
+        armEpoch: 3,
+        seq: 0,
+        type: "down",
+        castSequence: 7,
+        normalizedX: 0.25,
+        normalizedY: 0.75,
+        button: "left",
+        buttons: 1,
+        modifiers: 2,
+        deltaX: 0,
+        deltaY: 0,
+      },
+      {
+        kind: "keyboard",
+        hasBinaryPayload: false,
+        armEpoch: 3,
+        seq: 1,
+        type: "rawKeyDown",
+        code: "KeyA",
+        key: "a",
+        modifiers: 0,
+      },
+      {
+        kind: "insertText",
+        hasBinaryPayload: false,
+        armEpoch: 3,
+        seq: 2,
+        text: "hello",
+      },
+    ];
+    for (const frame of clientFrames) {
+      expect(browserScreencastClientFrameSchema.safeParse(frame).success).toBe(
+        true,
+      );
+      expect(
+        browserScreencastV10.clientFrameSchema.safeParse(frame).success,
+      ).toBe(true);
+    }
+
+    for (const frame of [
+      { kind: "armed", hasBinaryPayload: false, armEpoch: 3 },
+      {
+        kind: "revoked",
+        hasBinaryPayload: false,
+        armEpoch: 3,
+        cause: "stolen",
+      },
+    ]) {
+      expect(browserScreencastServerFrameSchema.safeParse(frame).success).toBe(
+        true,
+      );
+      expect(
+        browserScreencastV10.serverFrameSchema.safeParse(frame).success,
+      ).toBe(true);
+    }
   });
 });
 
