@@ -21,6 +21,12 @@ import {
 } from "./provider-ids";
 import {
   DEFAULT_PROVIDER_NATIVE_CAPABILITIES,
+  DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70,
+  modelProviderAuthActionSchema,
+  modelProviderAuthCancelContextSchema,
+  modelProviderAuthPollContextSchema,
+  modelProviderAuthResultSchema,
+  modelProvidersListResultSchema,
   nativeAuthActionSchema,
   nativeAuthCancelContextSchema,
   nativeAuthPollContextSchema,
@@ -29,7 +35,14 @@ import {
   nativeListResultSchema,
   nativeMutationResultSchema,
   nativeMutationSchema,
+  projectNativeCapabilitiesToV70,
   providerNativeCapabilitiesSchema,
+  providerNativeCapabilitiesSchemaV70,
+  type ModelProviderAuthAction,
+  type ModelProviderAuthCancelContext,
+  type ModelProviderAuthPollContext,
+  type ModelProviderAuthResult,
+  type ModelProvidersListResult,
   type NativeAuthAction,
   type NativeAuthCancelContext,
   type NativeAuthPollContext,
@@ -39,6 +52,7 @@ import {
   type NativeMutation,
   type NativeMutationResult,
   type ProviderNativeCapabilities,
+  type ProviderNativeCapabilitiesV70,
 } from "./provider-native-schemas";
 
 export {
@@ -1422,7 +1436,7 @@ export type ProviderCliState = z.infer<typeof providerCliStateSchema>;
  * any earlier line predate it, so the v6.0 -> v7.0 upgrade fills `native: null`
  * ("classic caller, no native query").
  *
- * `native` rides v7.0 ALONE. It was authored against the live request object
+ * `native` rides v7.0. It was authored against the live request object
  * while v6.0 was still unreleased, which silently grew the already-shipped
  * v4.0/v5.0/v6.0 request lines too; `host-v1.1.10` then froze those three
  * lines without it, because the commit that added it was not in the release
@@ -1749,8 +1763,13 @@ export const providerCliStateSchemaV70 = z.object({
   providerId: providerIdSchemaV70,
   ...providerCliStateBaseShapeV70,
   auth: PROVIDER_AUTH_SCHEMA_V20,
-  nativeCapabilities: providerNativeCapabilitiesSchema.catch(
-    DEFAULT_PROVIDER_NATIVE_CAPABILITIES,
+  // Hand-frozen since the live descriptor grew `modelProviders` (and its
+  // `supportedTabs` member) past this line - the "hand-freeze the sub-schema
+  // that grew" step the deep snapshot demands. The `.catch()` keeps the
+  // v7.0-shaped default so this line decodes byte-for-byte the way it did at
+  // the freeze cut.
+  nativeCapabilities: providerNativeCapabilitiesSchemaV70.catch(
+    DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70,
   ),
 });
 export type ProviderCliStateV70 = z.infer<typeof providerCliStateSchemaV70>;
@@ -1781,7 +1800,10 @@ export type ProvidersListResponseV10 = z.infer<
 
 export {
   DEFAULT_PROVIDER_NATIVE_CAPABILITIES,
+  DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70,
+  providerNativeCapabilitiesSchemaV70,
   type ProviderNativeCapabilities,
+  type ProviderNativeCapabilitiesV70,
 };
 
 // ── Frozen major-2.1 mutation-response provider state (pre-registry) ───────
@@ -2451,7 +2473,119 @@ export type ProvidersNativeMutateResponse = z.infer<
   typeof providersNativeMutateResponseSchema
 >;
 
+// ── Model providers (optional capability channel) ──────────────────────────
+//
+// Four dedicated methods for the Model Providers tab, registered with
+// `degrade: { kind: "unsupported" }` exactly like the `providers.mcpAuth` trio
+// above and for the same reason: they are new METHOD NAMES, so an older host
+// fails them per call with upgrade guidance instead of failing the handshake.
+//
+// Dedicated methods rather than new arms on `providers.list`'s `native`
+// carrier or on `providers.nativeMutate`. Both of those are released shapes,
+// and both bake the MCP model into their payloads - `nativeListQuerySchema`
+// carries a scope tuple every arm must answer, `nativeAuthActionSchema` a
+// `serverName`. Upstream LLM credentials have neither: no project scope, no
+// server. Widening those unions would grow a released wire shape (which the
+// compat gate rejects) in order to model fields that are meaningless here.
+//
+// `result` is non-nullable on all four, matching the mcpAuth trio: these
+// methods exist only to serve this surface, so "no payload" is not a reachable
+// success state - the resolver answers with a result (including the typed
+// `error` / `unsupported` arms) or throws.
+
+/**
+ * `providers.listModelProviders@1.0` request. `providerId` is the Traycer
+ * provider whose settings tab is open - the `opencode` module today, and the
+ * host gates the capability to it.
+ */
+export const providersListModelProvidersRequestSchema = z.object({
+  providerId: providerIdSchema,
+});
+export type ProvidersListModelProvidersRequest = z.infer<
+  typeof providersListModelProvidersRequestSchema
+>;
+
+/** `providers.listModelProviders@1.0` response. */
+export const providersListModelProvidersResponseSchema = z.object({
+  result: modelProvidersListResultSchema,
+});
+export type ProvidersListModelProvidersResponse = z.infer<
+  typeof providersListModelProvidersResponseSchema
+>;
+
+/** `providers.modelProviderAuth@1.0` request - the full auth action set. */
+export const providersModelProviderAuthRequestSchema = z.object({
+  providerId: providerIdSchema,
+  action: modelProviderAuthActionSchema,
+});
+export type ProvidersModelProviderAuthRequest = z.infer<
+  typeof providersModelProviderAuthRequestSchema
+>;
+
+/** `providers.modelProviderAuth@1.0` response. */
+export const providersModelProviderAuthResponseSchema = z.object({
+  result: modelProviderAuthResultSchema,
+});
+export type ProvidersModelProviderAuthResponse = z.infer<
+  typeof providersModelProviderAuthResponseSchema
+>;
+
+/**
+ * `providers.awaitModelProviderAuth@1.0` request - a **bounded status poll**
+ * (well under the 30s unary frame deadline), never a long poll. The host's
+ * pending-auth registry owns concurrency and expiry.
+ */
+export const providersAwaitModelProviderAuthRequestSchema = z.object({
+  providerId: providerIdSchema,
+  context: modelProviderAuthPollContextSchema,
+});
+export type ProvidersAwaitModelProviderAuthRequest = z.infer<
+  typeof providersAwaitModelProviderAuthRequestSchema
+>;
+
+/** `providers.awaitModelProviderAuth@1.0` response. */
+export const providersAwaitModelProviderAuthResponseSchema = z.object({
+  result: modelProviderAuthResultSchema,
+});
+export type ProvidersAwaitModelProviderAuthResponse = z.infer<
+  typeof providersAwaitModelProviderAuthResponseSchema
+>;
+
+/** `providers.cancelModelProviderAuth@1.0` request. */
+export const providersCancelModelProviderAuthRequestSchema = z.object({
+  providerId: providerIdSchema,
+  context: modelProviderAuthCancelContextSchema,
+});
+export type ProvidersCancelModelProviderAuthRequest = z.infer<
+  typeof providersCancelModelProviderAuthRequestSchema
+>;
+
+/**
+ * `providers.cancelModelProviderAuth@1.0` response. `cancelled` reports
+ * whether a pending attempt was actually found and torn down, distinct from
+ * `result`, which describes the resulting auth state - cancelling an attempt
+ * that already completed, expired or was superseded is `cancelled: false` with
+ * a perfectly normal result. Same split as
+ * `providersCancelMcpAuthResponseSchema`.
+ *
+ * Cancel is best-effort and LOCAL: upstream exposes no OAuth-cancel endpoint,
+ * so this discards the pending attempt and releases its server lease. It never
+ * claims to have revoked anything on the provider's side.
+ */
+export const providersCancelModelProviderAuthResponseSchema = z.object({
+  cancelled: z.boolean(),
+  result: modelProviderAuthResultSchema,
+});
+export type ProvidersCancelModelProviderAuthResponse = z.infer<
+  typeof providersCancelModelProviderAuthResponseSchema
+>;
+
 export type {
+  ModelProviderAuthAction,
+  ModelProviderAuthCancelContext,
+  ModelProviderAuthPollContext,
+  ModelProviderAuthResult,
+  ModelProvidersListResult,
   NativeAuthAction,
   NativeAuthCancelContext,
   NativeAuthPollContext,
@@ -2955,7 +3089,12 @@ export type DowngradableToV10ProviderState = (
   | ProviderMutationCliStateV21
 ) & {
   profiles?: ProviderCliState["profiles"];
-  nativeCapabilities?: ProviderNativeCapabilities;
+  // Widened to the frozen v7.0 capability shape as well as the live one for
+  // the same reason `loginCapability` below is widened across its own frozen
+  // snapshots: callers reach this function holding either shape, and the
+  // strict v1.0 parse strips the field either way.
+  nativeCapabilities?:
+    ProviderNativeCapabilities | ProviderNativeCapabilitiesV70;
   // Widened to the live OR the frozen v7.0 union once v8.0 grew the live arms
   // with `version`. `providersListDowngradeV7ToV1` feeds this function
   // v7.0-shaped rows, which no longer satisfy the live type - and the two are
@@ -3101,6 +3240,34 @@ export function downgradeProviderCliStateListToV50(
 }
 
 /**
+ * Lift a frozen v6.0 state onto the FROZEN v7.0 shape (not the live one).
+ *
+ * The v6 -> v7 hop's target is v7.0, so its fill has to land there: pointing
+ * it at the live shape would have the bridge emit whatever the live capability
+ * object happens to be as its "v7.0" value, which stays correct only while the
+ * two agree. `DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70`
+ * is the same "old host never had this feature" reading its live counterpart
+ * carries - a v6.0 host advertised no native capabilities at all.
+ */
+export function upgradeProviderCliStateToV70(
+  state:
+    ProviderCliStateV20 | ProviderCliStateV30 | ProviderMutationCliStateV20,
+): ProviderCliStateV70 {
+  return providerCliStateSchemaV70.parse({
+    ...state,
+    nativeCapabilities: DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70,
+  });
+}
+
+export function upgradeProviderCliStateListToV70(
+  states: readonly (
+    ProviderCliStateV20 | ProviderCliStateV30 | ProviderMutationCliStateV20
+  )[],
+): ProviderCliStateV70[] {
+  return states.map(upgradeProviderCliStateToV70);
+}
+
+/**
  * Drop post-v6.0 providers (currently `huggingface`) for an already-shipped
  * v6.0 client, and strip the provider-pack-registry fields the frozen v6.0
  * state does not model. Same filter-by-reparse shape as the older bridges: an
@@ -3136,7 +3303,21 @@ export function downgradeProviderCliStateListToV70(
   states: readonly unknown[],
 ): ProviderCliStateV70[] {
   return states.flatMap((state) => {
-    const parsed = providerCliStateSchemaV70.safeParse(state);
+    // A live-shaped row carries a capability descriptor the frozen v7.0
+    // schema cannot reparse - `supportedTabs` may hold members the frozen
+    // enum rejects WHOLE, and the state's `.catch()` would then serve the
+    // empty default, wiping MCP/Plugins/Skills for the peer. Project the
+    // descriptor first; rows that are not live-shaped parse as-is.
+    const live = providerCliStateSchema.safeParse(state);
+    const candidate = live.success
+      ? {
+          ...live.data,
+          nativeCapabilities: projectNativeCapabilitiesToV70(
+            live.data.nativeCapabilities,
+          ),
+        }
+      : state;
+    const parsed = providerCliStateSchemaV70.safeParse(candidate);
     return parsed.success ? [parsed.data] : [];
   });
 }
@@ -3168,6 +3349,12 @@ export function upgradeProviderMutationCliStateV20ToLatest(
     nativeCapabilities: DEFAULT_PROVIDER_NATIVE_CAPABILITIES,
   });
 }
+
+// The `providers.list` fills aimed at the frozen v7.0 line are
+// `upgradeProviderCliStateToV70` / `...ListToV70`, named for their TARGET LINE
+// rather than for "latest". A bridge aims at a line: with v8.0 open above
+// v7.0, a fill named "latest" silently means a shape v7.0 cannot carry. The
+// latest-named fills below aim at the HEAD line and move with it.
 
 /** Upgrade frozen list@2.0 / v3.0 state to latest by attaching the default descriptor. */
 export function upgradeProviderCliStateToLatest(

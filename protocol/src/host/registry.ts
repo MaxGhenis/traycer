@@ -538,6 +538,14 @@ import {
   providersListResponseSchemaV40,
   providersListResponseSchemaV50,
   providersListResponseSchemaV60,
+  providersListModelProvidersRequestSchema,
+  providersListModelProvidersResponseSchema,
+  providersModelProviderAuthRequestSchema,
+  providersModelProviderAuthResponseSchema,
+  providersAwaitModelProviderAuthRequestSchema,
+  providersAwaitModelProviderAuthResponseSchema,
+  providersCancelModelProviderAuthRequestSchema,
+  providersCancelModelProviderAuthResponseSchema,
   providersListResponseSchemaV70,
   downgradeProviderCliStateToV10,
   downgradeProviderCliStateListToV20,
@@ -556,7 +564,7 @@ import {
   providersSetPackPolicyRequestSchema,
   providersSetPackPolicyResponseSchema,
   upgradeProviderCliStateV10ToV20,
-  upgradeProviderCliStateListToLatest,
+  upgradeProviderCliStateListToV70,
   upgradeProviderCliStateV10ToMutationV20,
   providersRemoveCustomPathRequestSchema,
   providersRemoveCustomPathRequestSchemaV10,
@@ -1585,6 +1593,12 @@ export const providersListUpgradeV7ToV8 = defineUpgradePath<
       managedInstallState: upgradeManagedInstallStateFromV70(
         provider.managedInstallState ?? null,
       ),
+      // The frozen v7.0 capability descriptor predates `modelProviders`; the
+      // live shape requires the key, so the same honest fill applies.
+      nativeCapabilities: {
+        ...provider.nativeCapabilities,
+        modelProviders: null,
+      },
     })),
     native: response.native,
   }),
@@ -1781,7 +1795,7 @@ export const providersListUpgradeV6ToV7 = defineUpgradePath<
   //
   // `terminalLogin` is filled here for the same reason and on the same hop:
   // this is the first bridge whose target models it. Stated explicitly rather
-  // than left to `upgradeProviderCliStateListToLatest`'s live re-parse, whose
+  // than left to `upgradeProviderCliStateListToV70`'s live re-parse, whose
   // job is `nativeCapabilities` - the fill must not silently depend on a
   // re-parse that exists for another field. See
   // `upgradeLoginCapabilityFromV40`.
@@ -1792,8 +1806,12 @@ export const providersListUpgradeV6ToV7 = defineUpgradePath<
   // native query"). This fill used to sit on the v3.0 -> v4.0 hop, back when
   // v4.0/v5.0/v6.0 were still pinned to the live request schema.
   upgradeRequest: (request) => ({ ...request, native: null }),
+  // The target is the FROZEN v7.0 shape, so the capability fill lands there
+  // (`upgradeProviderCliStateListToV70`) rather than on the live one. A bridge
+  // aims at a LINE, never at "latest" - the two agree today, and the day they
+  // stop, a hop pointed at the live shape starts labelling it "v7.0".
   upgradeResponse: (response) => ({
-    providers: upgradeProviderCliStateListToLatest(
+    providers: upgradeProviderCliStateListToV70(
       response.providers.map((provider) => ({
         ...provider,
         ...PROVIDER_LIVE_FIELDS_PRE_REGISTRY,
@@ -2702,6 +2720,57 @@ export const providersSetPackPolicyV10 = defineRpcContract({
   schemaVersion: { major: 1, minor: 0 } as const,
   requestSchema: providersSetPackPolicyRequestSchema,
   responseSchema: providersSetPackPolicyResponseSchema,
+});
+
+/**
+ * Model Providers surface: four brand-new v1.0 methods, none of them on
+ * `RELEASED_FLOOR_METHOD_NAMES`, all registered below with
+ * `degrade: { kind: "unsupported" }` - the same optional-capability channel
+ * the `providers.mcpAuth` trio rides, and for the same reason: a brand-new
+ * method NAME must not be handshake-fatal against a host that predates it.
+ *
+ * Dedicated methods rather than new arms on the released `native` carrier or
+ * on `providers.nativeMutate`: those payloads bake the MCP model in (a scope
+ * tuple every arm must answer, a `serverName` on every auth action), neither
+ * of which has a referent for upstream LLM credentials, and widening them
+ * would grow already-released wire shapes.
+ *
+ * Missing-peer behavior: a host that predates this surface reports
+ * `nativeCapabilities.modelProviders: null` for every provider (through the
+ * v6 -> v7 upgrade bridge), and the GUI only renders the tab when that block
+ * is non-null. So these methods are unreachable on such a host by
+ * construction, and `E_HOST_UNSUPPORTED` is a backstop rather than the primary
+ * guard - the same layering the MCP surface uses.
+ */
+export const providersListModelProvidersV10 = defineRpcContract({
+  method: "providers.listModelProviders",
+  schemaVersion: { major: 1, minor: 0 } as const,
+  requestSchema: providersListModelProvidersRequestSchema,
+  responseSchema: providersListModelProvidersResponseSchema,
+});
+
+/** Connect / start-OAuth / submit-code / disconnect for one upstream provider. */
+export const providersModelProviderAuthV10 = defineRpcContract({
+  method: "providers.modelProviderAuth",
+  schemaVersion: { major: 1, minor: 0 } as const,
+  requestSchema: providersModelProviderAuthRequestSchema,
+  responseSchema: providersModelProviderAuthResponseSchema,
+});
+
+/** Bounded status poll for an in-flight OAuth attempt. Never a long poll. */
+export const providersAwaitModelProviderAuthV10 = defineRpcContract({
+  method: "providers.awaitModelProviderAuth",
+  schemaVersion: { major: 1, minor: 0 } as const,
+  requestSchema: providersAwaitModelProviderAuthRequestSchema,
+  responseSchema: providersAwaitModelProviderAuthResponseSchema,
+});
+
+/** Cancels an in-flight OAuth attempt (best-effort, local). */
+export const providersCancelModelProviderAuthV10 = defineRpcContract({
+  method: "providers.cancelModelProviderAuth",
+  schemaVersion: { major: 1, minor: 0 } as const,
+  requestSchema: providersCancelModelProviderAuthRequestSchema,
+  responseSchema: providersCancelModelProviderAuthResponseSchema,
 });
 
 /**
@@ -5911,6 +5980,246 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
       downgradePathsFromLatest: {},
     },
   },
+  "worktree.listBindingsForEpic": {
+    1: {
+      latestMinor: 2,
+      versions: {
+        0: {
+          contract: worktreeListBindingsForEpicV10,
+          upgradeFromPreviousVersion: null,
+        },
+        1: {
+          contract: worktreeListBindingsForEpicV11,
+          upgradeFromPreviousVersion:
+            worktreeListBindingsForEpicUpgradeV10ToV11,
+        },
+        2: {
+          contract: worktreeListBindingsForEpicV12,
+          upgradeFromPreviousVersion:
+            worktreeListBindingsForEpicUpgradeV11ToV12,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  // `speech.*@1.0` - on-device dictation model lifecycle. The live audio
+  // stream rides `speech.dictate` in `hostStreamRpcRegistry` below; these
+  // unary methods only manage the recognizer's model files. Schemas live in
+  // `protocol/host/speech/`.
+  "speech.getModelStatus": {
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: speechGetModelStatusV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "speech.ensureModel": {
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: speechEnsureModelV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "agent.listProviderProfiles": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentListProviderProfilesV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+    2: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentListProviderProfilesV20,
+          upgradeFromPreviousVersion: agentListProviderProfilesUpgradeV10ToV20,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: agentListProviderProfilesDowngradeV20ToV10,
+      },
+    },
+    3: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentListProviderProfilesV30,
+          upgradeFromPreviousVersion: agentListProviderProfilesUpgradeV20ToV30,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: agentListProviderProfilesDowngradeV30ToV10,
+        2: agentListProviderProfilesDowngradeV30ToV20,
+      },
+    },
+    4: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentListProviderProfilesV40,
+          upgradeFromPreviousVersion: agentListProviderProfilesUpgradeV30ToV40,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: agentListProviderProfilesDowngradeV40ToV10,
+        2: agentListProviderProfilesDowngradeV40ToV20,
+        3: agentListProviderProfilesDowngradeV40ToV30,
+      },
+    },
+  },
+  "agent.getProviderProfileRateLimits": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentGetProviderProfileRateLimitsV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+    2: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentGetProviderProfileRateLimitsV20,
+          upgradeFromPreviousVersion:
+            agentGetProviderProfileRateLimitsUpgradeV10ToV20,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: agentGetProviderProfileRateLimitsDowngradeV20ToV10,
+      },
+    },
+    3: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentGetProviderProfileRateLimitsV30,
+          upgradeFromPreviousVersion:
+            agentGetProviderProfileRateLimitsUpgradeV20ToV30,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: agentGetProviderProfileRateLimitsDowngradeV30ToV10,
+        2: agentGetProviderProfileRateLimitsDowngradeV30ToV20,
+      },
+    },
+    4: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentGetProviderProfileRateLimitsV40,
+          upgradeFromPreviousVersion:
+            agentGetProviderProfileRateLimitsUpgradeV30ToV40,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: agentGetProviderProfileRateLimitsDowngradeV40ToV10,
+        2: agentGetProviderProfileRateLimitsDowngradeV40ToV20,
+        3: agentGetProviderProfileRateLimitsDowngradeV40ToV30,
+      },
+    },
+  },
+  "agent.configure": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentConfigureV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+    2: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentConfigureV20,
+          upgradeFromPreviousVersion: agentConfigureUpgradeV10ToV20,
+        },
+      },
+      downgradePathsFromLatest: { 1: agentConfigureDowngradeV20ToV10 },
+    },
+    3: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentConfigureV30,
+          upgradeFromPreviousVersion: agentConfigureUpgradeV20ToV30,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: agentConfigureDowngradeV30ToV10,
+        2: agentConfigureDowngradeV30ToV20,
+      },
+    },
+    4: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentConfigureV40,
+          upgradeFromPreviousVersion: agentConfigureUpgradeV30ToV40,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: agentConfigureDowngradeV40ToV10,
+        2: agentConfigureDowngradeV40ToV20,
+        3: agentConfigureDowngradeV40ToV30,
+      },
+    },
+  },
+  // Additive, post-v1.0.0 optional method: a PR's patch read from the local
+  // checkout. A host that predates it simply lacks it and the PR view falls
+  // back to the GitHub-sourced file list (which is all the detail stream ever
+  // carried), so it rides the optional-capability channel
+  // (`degrade: unsupported`) and stays out of the released floor / baseline
+  // surface.
+  "pr.getLocalDiff": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: prGetLocalDiffV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+} as const;
+
+/**
+ * The `providers.*` family, split out of the base definition purely to keep
+ * declaration emit under `tsc`'s serialization ceiling (TS7056) - the same
+ * reason `HOST_RPC_EDITING_REGISTRY_DEFINITION` exists. `providers.list`
+ * alone carries seven majors and their bridges, and the inferred type of one
+ * object literal holding every method crossed the limit as this family grew.
+ *
+ * Purely a compile-time seam: the four definitions are intersected into one
+ * `HostRpcRegistryDefinition` below, so nothing about registration, ordering
+ * or negotiation changes.
+ */
+const HOST_RPC_PROVIDERS_REGISTRY_DEFINITION = {
   "providers.list": {
     1: {
       latestMinor: 0,
@@ -6239,6 +6548,58 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
       downgradePathsFromLatest: {},
     },
   },
+  "providers.listModelProviders": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: providersListModelProvidersV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "providers.modelProviderAuth": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: providersModelProviderAuthV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "providers.awaitModelProviderAuth": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: providersAwaitModelProviderAuthV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "providers.cancelModelProviderAuth": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: providersCancelModelProviderAuthV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
   // The four per-pack version-manager methods. All `degrade: unsupported`:
   // they are new names outside `RELEASED_FLOOR_METHOD_NAMES`, so a host that
   // predates them must fail these calls individually rather than refuse the
@@ -6517,232 +6878,6 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
       },
     },
   },
-  "worktree.listBindingsForEpic": {
-    1: {
-      latestMinor: 2,
-      versions: {
-        0: {
-          contract: worktreeListBindingsForEpicV10,
-          upgradeFromPreviousVersion: null,
-        },
-        1: {
-          contract: worktreeListBindingsForEpicV11,
-          upgradeFromPreviousVersion:
-            worktreeListBindingsForEpicUpgradeV10ToV11,
-        },
-        2: {
-          contract: worktreeListBindingsForEpicV12,
-          upgradeFromPreviousVersion:
-            worktreeListBindingsForEpicUpgradeV11ToV12,
-        },
-      },
-      downgradePathsFromLatest: {},
-    },
-  },
-  // `speech.*@1.0` - on-device dictation model lifecycle. The live audio
-  // stream rides `speech.dictate` in `hostStreamRpcRegistry` below; these
-  // unary methods only manage the recognizer's model files. Schemas live in
-  // `protocol/host/speech/`.
-  "speech.getModelStatus": {
-    1: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: speechGetModelStatusV10,
-          upgradeFromPreviousVersion: null,
-        },
-      },
-      downgradePathsFromLatest: {},
-    },
-  },
-  "speech.ensureModel": {
-    1: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: speechEnsureModelV10,
-          upgradeFromPreviousVersion: null,
-        },
-      },
-      downgradePathsFromLatest: {},
-    },
-  },
-  "agent.listProviderProfiles": {
-    degrade: { kind: "unsupported" },
-    1: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentListProviderProfilesV10,
-          upgradeFromPreviousVersion: null,
-        },
-      },
-      downgradePathsFromLatest: {},
-    },
-    2: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentListProviderProfilesV20,
-          upgradeFromPreviousVersion: agentListProviderProfilesUpgradeV10ToV20,
-        },
-      },
-      downgradePathsFromLatest: {
-        1: agentListProviderProfilesDowngradeV20ToV10,
-      },
-    },
-    3: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentListProviderProfilesV30,
-          upgradeFromPreviousVersion: agentListProviderProfilesUpgradeV20ToV30,
-        },
-      },
-      downgradePathsFromLatest: {
-        1: agentListProviderProfilesDowngradeV30ToV10,
-        2: agentListProviderProfilesDowngradeV30ToV20,
-      },
-    },
-    4: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentListProviderProfilesV40,
-          upgradeFromPreviousVersion: agentListProviderProfilesUpgradeV30ToV40,
-        },
-      },
-      downgradePathsFromLatest: {
-        1: agentListProviderProfilesDowngradeV40ToV10,
-        2: agentListProviderProfilesDowngradeV40ToV20,
-        3: agentListProviderProfilesDowngradeV40ToV30,
-      },
-    },
-  },
-  "agent.getProviderProfileRateLimits": {
-    degrade: { kind: "unsupported" },
-    1: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentGetProviderProfileRateLimitsV10,
-          upgradeFromPreviousVersion: null,
-        },
-      },
-      downgradePathsFromLatest: {},
-    },
-    2: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentGetProviderProfileRateLimitsV20,
-          upgradeFromPreviousVersion:
-            agentGetProviderProfileRateLimitsUpgradeV10ToV20,
-        },
-      },
-      downgradePathsFromLatest: {
-        1: agentGetProviderProfileRateLimitsDowngradeV20ToV10,
-      },
-    },
-    3: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentGetProviderProfileRateLimitsV30,
-          upgradeFromPreviousVersion:
-            agentGetProviderProfileRateLimitsUpgradeV20ToV30,
-        },
-      },
-      downgradePathsFromLatest: {
-        1: agentGetProviderProfileRateLimitsDowngradeV30ToV10,
-        2: agentGetProviderProfileRateLimitsDowngradeV30ToV20,
-      },
-    },
-    4: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentGetProviderProfileRateLimitsV40,
-          upgradeFromPreviousVersion:
-            agentGetProviderProfileRateLimitsUpgradeV30ToV40,
-        },
-      },
-      downgradePathsFromLatest: {
-        1: agentGetProviderProfileRateLimitsDowngradeV40ToV10,
-        2: agentGetProviderProfileRateLimitsDowngradeV40ToV20,
-        3: agentGetProviderProfileRateLimitsDowngradeV40ToV30,
-      },
-    },
-  },
-  "agent.configure": {
-    degrade: { kind: "unsupported" },
-    1: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentConfigureV10,
-          upgradeFromPreviousVersion: null,
-        },
-      },
-      downgradePathsFromLatest: {},
-    },
-    2: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentConfigureV20,
-          upgradeFromPreviousVersion: agentConfigureUpgradeV10ToV20,
-        },
-      },
-      downgradePathsFromLatest: { 1: agentConfigureDowngradeV20ToV10 },
-    },
-    3: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentConfigureV30,
-          upgradeFromPreviousVersion: agentConfigureUpgradeV20ToV30,
-        },
-      },
-      downgradePathsFromLatest: {
-        1: agentConfigureDowngradeV30ToV10,
-        2: agentConfigureDowngradeV30ToV20,
-      },
-    },
-    4: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: agentConfigureV40,
-          upgradeFromPreviousVersion: agentConfigureUpgradeV30ToV40,
-        },
-      },
-      downgradePathsFromLatest: {
-        1: agentConfigureDowngradeV40ToV10,
-        2: agentConfigureDowngradeV40ToV20,
-        3: agentConfigureDowngradeV40ToV30,
-      },
-    },
-  },
-  // Additive, post-v1.0.0 optional method: a PR's patch read from the local
-  // checkout. A host that predates it simply lacks it and the PR view falls
-  // back to the GitHub-sourced file list (which is all the detail stream ever
-  // carried), so it rides the optional-capability channel
-  // (`degrade: unsupported`) and stays out of the released floor / baseline
-  // surface.
-  "pr.getLocalDiff": {
-    degrade: { kind: "unsupported" },
-    1: {
-      latestMinor: 0,
-      versions: {
-        0: {
-          contract: prGetLocalDiffV10,
-          upgradeFromPreviousVersion: null,
-        },
-      },
-      downgradePathsFromLatest: {},
-    },
-  },
 } as const;
 
 const HOST_RPC_EDITING_REGISTRY_DEFINITION = {
@@ -6800,6 +6935,18 @@ type DuplicateHostRpcMethodNames =
       keyof typeof HOST_RPC_EDITING_REGISTRY_DEFINITION
     >
   | Extract<
+      keyof typeof HOST_RPC_REGISTRY_BASE_DEFINITION,
+      keyof typeof HOST_RPC_PROVIDERS_REGISTRY_DEFINITION
+    >
+  | Extract<
+      keyof typeof HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION,
+      keyof typeof HOST_RPC_PROVIDERS_REGISTRY_DEFINITION
+    >
+  | Extract<
+      keyof typeof HOST_RPC_PROVIDERS_REGISTRY_DEFINITION,
+      keyof typeof HOST_RPC_EDITING_REGISTRY_DEFINITION
+    >
+  | Extract<
       keyof typeof HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION,
       keyof typeof HOST_RPC_EDITING_REGISTRY_DEFINITION
     >;
@@ -6808,12 +6955,14 @@ type DuplicateHostRpcMethodNames =
 // intersection is a no-op in the healthy case.
 type HostRpcRegistryDefinition = typeof HOST_RPC_REGISTRY_BASE_DEFINITION &
   typeof HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION &
+  typeof HOST_RPC_PROVIDERS_REGISTRY_DEFINITION &
   typeof HOST_RPC_EDITING_REGISTRY_DEFINITION &
   Record<AssertNever<DuplicateHostRpcMethodNames>, never>;
 
 const HOST_RPC_REGISTRY_DEFINITION: HostRpcRegistryDefinition = {
   ...HOST_RPC_REGISTRY_BASE_DEFINITION,
   ...HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION,
+  ...HOST_RPC_PROVIDERS_REGISTRY_DEFINITION,
   ...HOST_RPC_EDITING_REGISTRY_DEFINITION,
 };
 
