@@ -34,6 +34,7 @@ const DEFAULT_MAX_WIDTH = 1280;
 const DEFAULT_MAX_HEIGHT = 720;
 const DEFAULT_QUALITY = 70;
 const STALE_WITHOUT_FRAME_MS = 8_000;
+const VIEWPORT_DEBOUNCE_MS = 200;
 
 type PeekLifecycle =
   | "connecting"
@@ -282,21 +283,21 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     });
   }, [visible]);
 
-  const sendParams = useCallback(
-    (params: {
-      readonly maxWidth: number;
-      readonly maxHeight: number;
-      readonly quality: number;
+  const sendViewport = useCallback(
+    (viewport: {
+      readonly width: number;
+      readonly height: number;
+      readonly dpr: number;
     }) => {
       sendPeekFrame(sessionRef.current, {
-        kind: "setParams",
+        kind: "viewport",
         hasBinaryPayload: false,
-        ...params,
+        ...viewport,
       });
     },
     [],
   );
-  useScreencastParamsBridge(viewportRef, visible, sendParams);
+  useScreencastViewportBridge(viewportRef, visible, sendViewport);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -850,32 +851,41 @@ function handleScreencastFrame(args: {
   }
 }
 
-function useScreencastParamsBridge(
+function useScreencastViewportBridge(
   ref: RefObject<HTMLElement | null>,
   visible: boolean,
-  sendParams: (params: {
-    readonly maxWidth: number;
-    readonly maxHeight: number;
-    readonly quality: number;
+  sendViewport: (viewport: {
+    readonly width: number;
+    readonly height: number;
+    readonly dpr: number;
   }) => void,
 ): void {
   useEffect(() => {
     const element = ref.current;
     if (element === null) return;
-    const emit = (): void => {
+    let timer: number | null = null;
+    const emit = (width: number, height: number): void => {
       if (!visible) return;
-      const rect = element.getBoundingClientRect();
-      const maxWidth = Math.max(1, Math.min(1920, Math.round(rect.width)));
-      const maxHeight = Math.max(1, Math.min(1080, Math.round(rect.height)));
-      sendParams({ maxWidth, maxHeight, quality: DEFAULT_QUALITY });
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        sendViewport({
+          width: Math.max(1, Math.round(width)),
+          height: Math.max(1, Math.round(height)),
+          dpr: window.devicePixelRatio,
+        });
+      }, VIEWPORT_DEBOUNCE_MS);
     };
-    const observer = new ResizeObserver(emit);
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry !== undefined) emit(entry.contentRect.width, entry.contentRect.height);
+    });
     observer.observe(element);
-    emit();
+    emit(element.clientWidth, element.clientHeight);
     return () => {
       observer.disconnect();
+      if (timer !== null) window.clearTimeout(timer);
     };
-  }, [ref, sendParams, visible]);
+  }, [ref, sendViewport, visible]);
 }
 
 function sendPeekFrame(

@@ -1093,6 +1093,13 @@ export const browserScreencastClientFrameSchema = z.discriminatedUnion("kind", [
     quality: z.number().int().min(0).max(100),
   }),
   z.object({
+    kind: z.literal("viewport"),
+    ...textFrameFields,
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    dpr: z.number().finite().positive(),
+  }),
+  z.object({
     kind: z.literal("ping"),
     ...textFrameFields,
   }),

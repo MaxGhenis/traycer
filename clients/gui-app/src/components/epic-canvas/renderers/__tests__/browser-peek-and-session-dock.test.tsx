@@ -283,6 +283,67 @@ class FakeStreamClient {
   }
 }
 
+let controllableResizeObservers: ControllableResizeObserver[] = [];
+
+function resizeEntry(
+  target: Element,
+  width: number,
+  height: number,
+): ResizeObserverEntry {
+  const contentRect = {
+    x: 0,
+    y: 0,
+    width,
+    height,
+    top: 0,
+    left: 0,
+    right: width,
+    bottom: height,
+    toJSON: () => ({}),
+  } as DOMRectReadOnly;
+  return {
+    target,
+    contentRect,
+    borderBoxSize: [],
+    contentBoxSize: [],
+    devicePixelContentBoxSize: [],
+  };
+}
+
+class ControllableResizeObserver implements ResizeObserver {
+  readonly callback: ResizeObserverCallback;
+  readonly observed = new Set<Element>();
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    controllableResizeObservers.push(this);
+  }
+
+  observe(target: Element): void {
+    this.observed.add(target);
+  }
+
+  unobserve(target: Element): void {
+    this.observed.delete(target);
+  }
+
+  disconnect(): void {
+    this.observed.clear();
+  }
+
+  emit(width: number, height: number): void {
+    const target = this.observed.values().next().value;
+    if (!(target instanceof Element)) return;
+    this.callback([resizeEntry(target, width, height)], this);
+  }
+}
+
+Object.defineProperty(globalThis, "ResizeObserver", {
+  configurable: true,
+  writable: true,
+  value: ControllableResizeObserver,
+});
+
 const PEEK_NODE: BrowserPeekTileRef = {
   id: "browser-peek-headless-1",
   instanceId: "peek-instance-1",
@@ -736,6 +797,7 @@ describe("BrowserPeekTile", () => {
     hookState.visible = true;
     hookState.streamClient = new FakeStreamClient(true);
     hookState.streamClientFactory = null;
+    controllableResizeObservers = [];
   });
 
   afterEach(() => {
@@ -1174,5 +1236,46 @@ describe("BrowserPeekTile", () => {
       hasBinaryPayload: false,
       paused: true,
     });
+  });
+
+  it("coalesces tile viewport changes with a trailing 200ms debounce", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+      const stream = liveStream();
+      const observer = controllableResizeObservers.at(-1);
+      if (observer === undefined) throw new Error("expected resize observer");
+
+      observer.emit(320, 240);
+      observer.emit(640, 360);
+      observer.emit(720, 400);
+      expect(
+        stream.sentFrames.filter((frame) => frame.kind === "viewport"),
+      ).toEqual([]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(199);
+      });
+      expect(
+        stream.sentFrames.filter((frame) => frame.kind === "viewport"),
+      ).toEqual([]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(
+        stream.sentFrames.filter((frame) => frame.kind === "viewport"),
+      ).toEqual([
+        {
+          kind: "viewport",
+          hasBinaryPayload: false,
+          width: 720,
+          height: 400,
+          dpr: window.devicePixelRatio,
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
