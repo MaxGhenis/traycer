@@ -51,6 +51,7 @@ const TILE_KEY: BrowserViewTileKey = {
 
 class FakeBridge {
   readonly registerDurableTabCalls: BrowserViewDurableTabRegistration[] = [];
+  readonly releaseDurableTabCalls: BrowserViewDurableTabRegistration[] = [];
   readonly backgroundThrottlingCalls: Array<{
     readonly enabled: boolean;
   }> = [];
@@ -72,6 +73,11 @@ class FakeBridge {
 
   registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void> {
     this.registerDurableTabCalls.push(input);
+    return Promise.resolve();
+  }
+
+  releaseDurableTab(input: BrowserViewDurableTabRegistration): Promise<void> {
+    this.releaseDurableTabCalls.push(input);
     return Promise.resolve();
   }
 
@@ -411,6 +417,50 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
       },
     ]);
     expect(onRegistered).toHaveBeenCalledWith("host-minted-tab-99");
+  });
+
+  it("releases the desktop durable tab without emitting a tile handoff", async () => {
+    const bridge = new FakeBridge();
+    attachElectronBrowserTabStream(EPIC, HOST, () => {});
+
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-release",
+        sessionId: "session-release",
+        bridge,
+      }),
+    );
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-release-register",
+      registrationId: "reg-release",
+      sessionId: "session-release",
+      tabId: "tab-release",
+    });
+    await Promise.resolve();
+
+    expect(
+      handleElectronBrowserTabFrame({
+        kind: "releaseElectronTab",
+        hasBinaryPayload: false,
+        requestId: "req-release",
+        sessionId: "session-release",
+        tabId: "tab-release",
+      }),
+    ).toBe(true);
+    await Promise.resolve();
+
+    expect(bridge.releaseDurableTabCalls).toEqual([
+      {
+        ...TILE_KEY,
+        sessionId: "session-release",
+        tabId: "tab-release",
+      },
+    ]);
+    expect(
+      findElectronBrowserTabBinding("session-release", "tab-release"),
+    ).toBeNull();
   });
 
   it("forwards status changes as electronTabState only after host mint is known", async () => {

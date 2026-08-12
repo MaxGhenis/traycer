@@ -258,6 +258,7 @@ export const RunnerHostInvoke = {
   browserViewUpsert: "runnerHost:browserView:upsert",
   browserViewCreateBackgroundTab: "runnerHost:browserView:createBackgroundTab",
   browserViewRegisterDurableTab: "runnerHost:browserView:registerDurableTab",
+  browserViewReleaseDurableTab: "runnerHost:browserView:releaseDurableTab",
   browserViewSetBackgroundThrottling:
     "runnerHost:browserView:setBackgroundThrottling",
   browserViewUpdateBounds: "runnerHost:browserView:updateBounds",

@@ -54,6 +54,9 @@ export interface BrowserViewBridgeSurface {
     upsertTile(input: BrowserViewTileUpsert): Promise<void>;
     createBackgroundTab(input: BrowserViewBackgroundTabCreate): Promise<void>;
     registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
+    releaseDurableTab(
+      input: BrowserViewDurableTabRegistration,
+    ): Promise<void>;
     setBackgroundThrottling(
       input: BrowserViewBackgroundThrottlingChange,
     ): Promise<void>;
@@ -154,6 +157,11 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
       registerDurableTab: (input) =>
         ipcRenderer.invoke(
           RunnerHostInvoke.browserViewRegisterDurableTab,
+          input,
+        ) as Promise<void>,
+      releaseDurableTab: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewReleaseDurableTab,
           input,
         ) as Promise<void>,
       setBackgroundThrottling: (input) =>

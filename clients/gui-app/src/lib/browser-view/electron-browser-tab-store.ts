@@ -25,6 +25,9 @@ import type {
 interface ElectronBrowserTabBridge {
   createBackgroundTab?: DesktopBrowserViewBridge["createBackgroundTab"];
   registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
+  releaseDurableTab?(
+    input: BrowserViewDurableTabRegistration,
+  ): Promise<void>;
   dispatchCdp(
     input: AgentBrowserViewCdpDispatch,
   ): Promise<AgentBrowserViewCdpResult>;
@@ -41,6 +44,7 @@ interface ElectronBrowserTabBridge {
     dispose: () => void;
   };
   setBackgroundThrottling?: DesktopBrowserViewBridge["setBackgroundThrottling"];
+  applyStorageState?: DesktopBrowserViewBridge["applyStorageState"];
 }
 
 export interface ElectronBrowserTabRegistration {
@@ -201,11 +205,7 @@ export function handleElectronBrowserTabFrame(
   frame: BrowserSessionsServerFrame,
 ): boolean {
   if (frame.kind === "actionAck") {
-    const pending = pendingHandoffAcks.get(frame.requestId);
-    if (pending === undefined) return false;
-    pendingHandoffAcks.delete(frame.requestId);
-    pending.resolve();
-    return true;
+    return handleActionAck(frame.requestId);
   }
   if (frame.kind === "createElectronTab") {
     if (frame.background === true) {
@@ -238,6 +238,22 @@ export function handleElectronBrowserTabFrame(
       registrationKey(frame.sessionId, tile.id),
       frame.requestId,
     );
+    return true;
+  }
+  if (frame.kind === "releaseElectronTab") {
+    const record = findElectronBrowserTabBinding(frame.sessionId, frame.tabId);
+    if (record === null) return true;
+    recordsByRegistrationKey.delete(
+      registrationKey(record.sessionId, record.registrationId),
+    );
+    if (record.bridge.releaseDurableTab === undefined) return true;
+    void record.bridge
+      .releaseDurableTab({
+        ...record.tileKey,
+        sessionId: frame.sessionId,
+        tabId: frame.tabId,
+      })
+      .catch(ignoreRegistrationError);
     return true;
   }
   if (frame.kind === "electronTabRegistrationFailed") {
@@ -286,6 +302,7 @@ function handleBackgroundElectronTabCreate(
   if (epicId === undefined || hostId === undefined) return false;
   const bridge = backgroundBridgeByEpicHost.get(epicHostKey(epicId, hostId));
   if (bridge?.createBackgroundTab === undefined) return false;
+  const createBackgroundTab = bridge.createBackgroundTab.bind(bridge);
   const registrationId = crypto.randomUUID();
   const tileKey: BrowserViewTileKey = {
     viewTabId: "background",
@@ -297,13 +314,21 @@ function handleBackgroundElectronTabCreate(
     registrationKey(frame.sessionId, registrationId),
     frame.requestId,
   );
-  void bridge
-    .createBackgroundTab({
-      ...tileKey,
-      sessionId: frame.sessionId,
-      tabId: frame.sourceTabId,
-      url: frame.url,
-    })
+  const seed =
+    frame.seedStorageState === undefined || frame.seedStorageState === null
+      ? Promise.resolve()
+      : bridge.applyStorageState({
+          storageState: frame.seedStorageState,
+        });
+  void seed
+    .then(() =>
+      createBackgroundTab({
+        ...tileKey,
+        sessionId: frame.sessionId,
+        tabId: frame.sourceTabId,
+        url: frame.url,
+      }),
+    )
     .then(() => {
       registerElectronBrowserTab({
         epicId,
@@ -333,6 +358,14 @@ function handleBackgroundElectronTabCreate(
         reason: error instanceof Error ? error.message : String(error),
       });
     });
+  return true;
+}
+
+function handleActionAck(requestId: string): boolean {
+  const pending = pendingHandoffAcks.get(requestId);
+  if (pending === undefined) return false;
+  pendingHandoffAcks.delete(requestId);
+  pending.resolve();
   return true;
 }
 

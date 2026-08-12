@@ -459,6 +459,9 @@ export interface DesktopBrowserViewBridge {
     input: BrowserViewBackgroundTabCreate,
   ): Promise<void>;
   registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
+  releaseDurableTab?(
+    input: BrowserViewDurableTabRegistration,
+  ): Promise<void>;
   setBackgroundThrottling?(
     input: BrowserViewBackgroundThrottlingChange,
   ): Promise<void>;

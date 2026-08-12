@@ -210,6 +210,17 @@ export function registerBrowserViewIpc(
   );
 
   bridge.handleInvoke(
+    RunnerHostInvoke.browserViewReleaseDurableTab,
+    async (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      await manager.releaseDurableTab(
+        windowId,
+        parseDurableTabRegistration(payload),
+      );
+    },
+  );
+
+  bridge.handleInvoke(
     RunnerHostInvoke.browserViewSetBackgroundThrottling,
     (event, payload) => {
       const windowId = readSenderWindowId(bridge, event);

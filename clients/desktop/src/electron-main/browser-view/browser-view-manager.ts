@@ -619,6 +619,17 @@ export class BrowserViewManager {
     this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
   }
 
+  async releaseDurableTab(
+    windowId: string,
+    input: BrowserViewDurableTabRegistration,
+  ): Promise<void> {
+    const entry = this.entriesByRuntimeKey.get(
+      [input.sessionId, input.tabId].join("\u001f"),
+    );
+    if (entry === undefined || entry.key.windowId !== windowId) return;
+    await this.closeEntry(entry, null);
+  }
+
   setBackgroundThrottling(
     windowId: string,
     input: BrowserViewBackgroundThrottlingChange,
@@ -2018,7 +2029,7 @@ export class BrowserViewManager {
 
   private async closeEntry(
     entry: BrowserViewEntry,
-    handoffReason: AgentBrowserViewTileHandoffChange["reason"],
+    handoffReason: AgentBrowserViewTileHandoffChange["reason"] | null,
   ): Promise<void> {
     const keyId = entryKeyId(entry.key);
     // Claim this entry synchronously, before the `await` below yields
@@ -2039,10 +2050,12 @@ export class BrowserViewManager {
     // reason is overridden with "crash-no-capture" regardless of which of
     // the three teardown paths is processing it now, since a crashed
     // renderer cannot safely be captured from either way.
-    await this.pushTileHandoff(
-      entry,
-      entry.status === "dead" ? "crash-no-capture" : handoffReason,
-    );
+    if (handoffReason !== null) {
+      await this.pushTileHandoff(
+        entry,
+        entry.status === "dead" ? "crash-no-capture" : handoffReason,
+      );
+    }
     // Ticket 02 fixup: `pushTileHandoff` above returns immediately for a
     // claimed sibling (its `handedOff` guard), so on its own this `await`
     // does nothing to protect it from the teardown below - it is whichever

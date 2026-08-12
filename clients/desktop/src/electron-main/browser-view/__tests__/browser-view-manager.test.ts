@@ -2432,6 +2432,67 @@ async function upsertAndAttach(
 }
 
 describe("BrowserViewManager CDP dispatch", () => {
+  it("keeps agent CDP dispatch independent when native input cancels visible control", async () => {
+    const harness = createHarness();
+    await upsertAndAttach(harness, "window-1", BASE_KEY);
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
+    view.webContents.debugger.deferCommands = true;
+    const commandsBeforeControl = view.webContents.debugger.commands.length;
+
+    expect(
+      harness.manager.grantControl("window-1", {
+        ...BASE_KEY,
+        controlId: "control-1",
+        chatId: "chat-1",
+        agentRunId: "agent-1",
+        agentLabel: "Agent One",
+        origin: "http://localhost:3000",
+        expiresAt: Date.now() + 60_000,
+      }),
+    ).toEqual({ status: "granted", controlId: "control-1" });
+
+    const control = harness.manager.executeControlAction("window-1", {
+      ...BASE_KEY,
+      controlId: "control-1",
+      actionId: "action-1",
+      sensitiveApprovalId: null,
+      action: { kind: "scroll", deltaX: 0, deltaY: 120 },
+    });
+    await Promise.resolve();
+    expect(view.webContents.debugger.commands).toHaveLength(
+      commandsBeforeControl + 1,
+    );
+
+    view.webContents.emit("input-event", {}, { type: "mouseDown" });
+    const agent = harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: { kind: "cdpGetFrameTree" },
+    });
+    await Promise.resolve();
+    expect(view.webContents.debugger.commands).toHaveLength(
+      commandsBeforeControl + 2,
+    );
+
+    view.webContents.debugger.commandResolvers[0]?.(null);
+    view.webContents.debugger.commandResolvers[1]?.(null);
+    await expect(control).resolves.toEqual({
+      status: "cancelled",
+      reason: "user took over",
+    });
+    await expect(agent).resolves.toMatchObject({
+      kind: "cdpGetFrameTree",
+      ok: true,
+    });
+    expect(harness.controlRevocations).toContainEqual(
+      expect.objectContaining({
+        controlId: "control-1",
+        reason: "user took over",
+      }),
+    );
+  });
+
   it("dispatches cdpNavigate as Page.navigate and returns the typed result", async () => {
     const harness = createHarness();
     await upsertAndAttach(harness, "window-1", BASE_KEY);
@@ -3221,6 +3282,31 @@ describe("BrowserViewManager durable runtime registration (ticket 05)", () => {
     expect(harness.windows.get("window-1")?.contentView.children).toContain(
       view,
     );
+  });
+
+  it("releaseDurableTab destroys WebContents without a tile handoff", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", false),
+    );
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
+
+    harness.manager.registerDurableTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-release",
+      tabId: "tab-release",
+    });
+    await harness.manager.releaseDurableTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-release",
+      tabId: "tab-release",
+    });
+
+    expect(view.webContents.closeCalls).toBe(1);
+    expect(harness.tileHandoffNotifications).toEqual([]);
+    expect(harness.manager.snapshotForTests()).toEqual([]);
   });
 
   it("target=_blank open requests still surface so same-session popup tabs can register", () => {

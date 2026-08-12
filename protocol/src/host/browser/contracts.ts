@@ -581,6 +581,13 @@ export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
     background: z.boolean().optional(),
     epicId: z.string().optional(),
     hostId: z.string().optional(),
+    seedStorageState: z.unknown().nullable().optional(),
+  }),
+  z.object({
+    kind: z.literal("releaseElectronTab"),
+    ...requestFrameFields,
+    sessionId: z.string(),
+    tabId: z.string(),
   }),
   z.object({
     kind: z.literal("electronTabRegistrationFailed"),

@@ -13,6 +13,20 @@ const CREATE_REQUEST = {
   url: "https://example.com/agent",
 } as const;
 
+const CREATE_BACKGROUND_WITH_STORAGE = {
+  ...CREATE_REQUEST,
+  background: true,
+  seedStorageState: { cookies: [], origins: [] },
+} as const;
+
+const RELEASE_REQUEST = {
+  kind: "releaseElectronTab",
+  hasBinaryPayload: false,
+  requestId: "req-release-1",
+  sessionId: "session-1",
+  tabId: "tab-minted-9",
+} as const;
+
 const CREATED_OK = {
   kind: "electronTabCreated",
   hasBinaryPayload: false,
@@ -38,6 +52,22 @@ describe("browser.sessions createElectronTab / electronTabCreated (ticket 14)", 
     if (parsed.success) {
       expect(parsed.data).toEqual(CREATE_REQUEST);
     }
+  });
+
+  it("parses background create frames with the primary-store seed", () => {
+    const parsed = browserSessionsServerFrameSchema.safeParse(
+      CREATE_BACKGROUND_WITH_STORAGE,
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data).toEqual(CREATE_BACKGROUND_WITH_STORAGE);
+    }
+  });
+
+  it("parses releaseElectronTab request frames", () => {
+    const parsed = browserSessionsServerFrameSchema.safeParse(RELEASE_REQUEST);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data).toEqual(RELEASE_REQUEST);
   });
 
   it("rejects createElectronTab missing sourceTabId or url", () => {
