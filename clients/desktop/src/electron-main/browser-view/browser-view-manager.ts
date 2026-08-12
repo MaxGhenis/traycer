@@ -578,7 +578,7 @@ export class BrowserViewManager {
       this.applyEntryBounds(entry);
     }
     if (entry.requestedUrl !== input.url) {
-      this.navigate(entry, input.url);
+      void this.navigate(entry, input.url, false);
     }
     this.attachToCurrentWindow(entry);
     this.applyEntryVisibility(entry);
@@ -588,21 +588,24 @@ export class BrowserViewManager {
     windowId: string,
     input: BrowserViewBackgroundTabCreate,
   ): Promise<void> {
+    const runtimeKey = [input.sessionId, input.tabId].join("\u001f");
+    if (this.entriesByRuntimeKey.has(runtimeKey)) {
+      throw new Error(
+        `Browser runtime tab ${input.sessionId}/${input.tabId} already exists.`,
+      );
+    }
     const key = { ...input, windowId };
     const entry = this.createEntry(key, input.url, "responsive", false);
     this.entriesByRuntimeKey.delete(runtimeEntryKey(entry));
     entry.runtimeSessionId = input.sessionId;
     entry.runtimeTabId = input.tabId;
     this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
-    if (entry.status === "ready") return;
-    await new Promise<void>((resolve) => {
-      const onFinish = (): void => {
-        entry.view.webContents.off("did-finish-load", onFinish);
-        resolve();
-      };
-      entry.view.webContents.on("did-finish-load", onFinish);
-      this.navigate(entry, input.url);
-    });
+    try {
+      await this.navigate(entry, input.url, true);
+    } catch (error) {
+      await this.closeEntry(entry, null);
+      throw error;
+    }
   }
 
   registerDurableTab(
@@ -1343,7 +1346,7 @@ export class BrowserViewManager {
     webContents.on("render-process-gone", entry.listeners.renderProcessGone);
     this.entriesByKey.set(entryKeyId(key), entry);
     this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
-    if (navigateNow) this.navigate(entry, requestedUrl);
+    if (navigateNow) void this.navigate(entry, requestedUrl, false);
     return entry;
   }
 
@@ -1368,23 +1371,31 @@ export class BrowserViewManager {
     this.queueDebugSnapshot(entry);
   }
 
-  private navigate(entry: BrowserViewEntry, url: string): void {
+  private async navigate(
+    entry: BrowserViewEntry,
+    url: string,
+    rejectOnFailure: boolean,
+  ): Promise<void> {
     this.endPickerSession(entry);
     entry.requestedUrl = url;
     entry.status = "loading";
     entry.statusReason = null;
     entry.certificateError = null;
     this.invalidateOverlaySnapshot(entry, "navigation-started");
-    entry.view.webContents.loadURL(url).catch((err: unknown) => {
+    this.emitStatus(entry);
+    try {
+      await entry.view.webContents.loadURL(url);
+    } catch (err: unknown) {
       log.warn("[browser-view] loadURL failed", {
         error: describeLogError(err),
         url,
       });
-      if (!this.isEntryCurrent(entry)) return;
-      this.setStatus(entry, "dead", "Navigation failed");
-      this.applyEntryVisibility(entry);
-    });
-    this.emitStatus(entry);
+      if (this.isEntryCurrent(entry)) {
+        this.setStatus(entry, "dead", "Navigation failed");
+        this.applyEntryVisibility(entry);
+      }
+      if (rejectOnFailure) throw err;
+    }
   }
 
   private handleCommittedNavigation(
@@ -2170,10 +2181,8 @@ export class BrowserViewManager {
         candidate.runtimeSessionId === entry.runtimeSessionId &&
         !candidate.handedOff,
     );
-    const {
-      promise: aggregationPromise,
-      resolve: resolveAggregation,
-    } = Promise.withResolvers<void>();
+    const { promise: aggregationPromise, resolve: resolveAggregation } =
+      Promise.withResolvers<void>();
     for (const sibling of siblings) {
       sibling.handedOff = true;
       sibling.pendingHandoffCapture = aggregationPromise;

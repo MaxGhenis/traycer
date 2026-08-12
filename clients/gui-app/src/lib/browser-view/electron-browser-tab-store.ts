@@ -25,9 +25,7 @@ import type {
 interface ElectronBrowserTabBridge {
   createBackgroundTab?: DesktopBrowserViewBridge["createBackgroundTab"];
   registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
-  releaseDurableTab?(
-    input: BrowserViewDurableTabRegistration,
-  ): Promise<void>;
+  releaseDurableTab?(input: BrowserViewDurableTabRegistration): Promise<void>;
   dispatchCdp(
     input: AgentBrowserViewCdpDispatch,
   ): Promise<AgentBrowserViewCdpResult>;
@@ -69,16 +67,14 @@ interface ElectronBrowserTabRecord extends ElectronBrowserTabRegistration {
   visible: boolean;
   focused: boolean;
   focusOrder: number;
+  cleanup: () => void;
 }
 
 type SendFrame = (frame: BrowserSessionsClientFrame) => void;
 
 const recordsByRegistrationKey = new Map<string, ElectronBrowserTabRecord>();
 const sendFrameByEpicHost = new Map<string, SendFrame>();
-const backgroundBridgeByEpicHost = new Map<
-  string,
-  DesktopBrowserViewBridge
->();
+const backgroundBridgeByEpicHost = new Map<string, DesktopBrowserViewBridge>();
 const createRequestIdByRegistrationKey = new Map<string, string>();
 const pendingHandoffAcks = new Map<
   string,
@@ -98,14 +94,17 @@ export function registerElectronBrowserTab(
   const key = registrationKey(input.sessionId, input.registrationId);
   const existing = recordsByRegistrationKey.get(key);
   if (existing !== undefined) {
-    const tileInstanceChanged =
-      existing.tileKey.tileInstanceId !== input.tileKey.tileInstanceId;
+    const tileKeyChanged = !isChangeForTile(input.tileKey, existing.tileKey);
     const bridge =
       existing.background === true && input.background === true
         ? existing.bridge
         : input.bridge;
+    const forwardingChanged = tileKeyChanged || bridge !== existing.bridge;
     Object.assign(existing, input, { bridge });
-    if (tileInstanceChanged) installCdpForwarder(existing);
+    if (forwardingChanged) {
+      existing.cleanup();
+      existing.cleanup = installDesktopForwarding(existing);
+    }
     if (existing.tabId !== null) existing.onRegistered?.(existing.tabId);
     publishRegistration(existing);
     return;
@@ -118,9 +117,10 @@ export function registerElectronBrowserTab(
     visible: false,
     focused: false,
     focusOrder: 0,
+    cleanup: () => {},
   };
   recordsByRegistrationKey.set(key, record);
-  installDesktopForwarding(record);
+  record.cleanup = installDesktopForwarding(record);
   publishRegistration(record);
 }
 
@@ -205,7 +205,11 @@ export function handleElectronBrowserTabFrame(
   frame: BrowserSessionsServerFrame,
 ): boolean {
   if (frame.kind === "actionAck") {
-    return handleActionAck(frame.requestId);
+    const pending = pendingHandoffAcks.get(frame.requestId);
+    if (pending === undefined) return false;
+    pendingHandoffAcks.delete(frame.requestId);
+    pending.resolve();
+    return true;
   }
   if (frame.kind === "createElectronTab") {
     if (frame.background === true) {
@@ -241,26 +245,11 @@ export function handleElectronBrowserTabFrame(
     return true;
   }
   if (frame.kind === "releaseElectronTab") {
-    const record = findElectronBrowserTabBinding(frame.sessionId, frame.tabId);
-    if (record === null) return true;
-    recordsByRegistrationKey.delete(
-      registrationKey(record.sessionId, record.registrationId),
-    );
-    if (record.bridge.releaseDurableTab === undefined) return true;
-    void record.bridge
-      .releaseDurableTab({
-        ...record.tileKey,
-        sessionId: frame.sessionId,
-        tabId: frame.tabId,
-      })
-      .catch(ignoreRegistrationError);
+    releaseElectronTab(frame);
     return true;
   }
   if (frame.kind === "electronTabRegistrationFailed") {
-    const record = recordsByRegistrationKey.get(
-      registrationKey(frame.sessionId, frame.registrationId),
-    );
-    record?.onActivatedHeadless?.(frame.tabId);
+    handleElectronTabRegistrationFailed(frame);
     return true;
   }
   if (frame.kind !== "electronTabRegistered") return false;
@@ -292,6 +281,46 @@ export function handleElectronBrowserTabFrame(
     });
   }
   return true;
+}
+
+function releaseElectronTab(
+  frame: Extract<BrowserSessionsServerFrame, { kind: "releaseElectronTab" }>,
+): void {
+  const record = findElectronBrowserTabRecord(frame.sessionId, frame.tabId);
+  if (record === undefined) return;
+  deleteRecord(record);
+  if (record.bridge.releaseDurableTab === undefined) return;
+  void record.bridge
+    .releaseDurableTab({
+      ...record.tileKey,
+      sessionId: frame.sessionId,
+      tabId: frame.tabId,
+    })
+    .catch(ignoreRegistrationError);
+}
+
+function handleElectronTabRegistrationFailed(
+  frame: Extract<
+    BrowserSessionsServerFrame,
+    { kind: "electronTabRegistrationFailed" }
+  >,
+): void {
+  const record = recordsByRegistrationKey.get(
+    registrationKey(frame.sessionId, frame.registrationId),
+  );
+  if (record?.background === true) {
+    deleteRecord(record);
+    if (record.bridge.releaseDurableTab !== undefined) {
+      void record.bridge
+        .releaseDurableTab({
+          ...record.tileKey,
+          sessionId: frame.sessionId,
+          tabId: frame.tabId,
+        })
+        .catch(ignoreRegistrationError);
+    }
+  }
+  record?.onActivatedHeadless?.(frame.tabId);
 }
 
 function handleBackgroundElectronTabCreate(
@@ -361,14 +390,6 @@ function handleBackgroundElectronTabCreate(
   return true;
 }
 
-function handleActionAck(requestId: string): boolean {
-  const pending = pendingHandoffAcks.get(requestId);
-  if (pending === undefined) return false;
-  pendingHandoffAcks.delete(requestId);
-  pending.resolve();
-  return true;
-}
-
 export function syncElectronBrowserTabDrivers(
   session: BrowserSessionInfo,
 ): void {
@@ -383,10 +404,11 @@ export function syncElectronBrowserTabDrivers(
   }
 }
 
-function installDesktopForwarding(record: ElectronBrowserTabRecord): void {
-  installCdpForwarder(record);
-
-  record.bridge.onStatusChange((change) => {
+function installDesktopForwarding(
+  record: ElectronBrowserTabRecord,
+): () => void {
+  const disposeCdp = installCdpForwarder(record);
+  const status = record.bridge.onStatusChange((change) => {
     const current = currentRecord(record);
     if (current === undefined || !isChangeForTile(change, current.tileKey)) {
       return;
@@ -394,7 +416,7 @@ function installDesktopForwarding(record: ElectronBrowserTabRecord): void {
     current.lastState = change;
     publishState(current);
   });
-  record.bridge.onCdpSessionEnded((change) => {
+  const cdpSessionEnded = record.bridge.onCdpSessionEnded((change) => {
     const current = currentRecord(record);
     if (current === undefined || !isChangeForTile(change, current.tileKey)) {
       return;
@@ -407,7 +429,7 @@ function installDesktopForwarding(record: ElectronBrowserTabRecord): void {
       reason: change.reason,
     });
   });
-  record.bridge.onCdpTargetAttached((change) => {
+  const cdpTargetAttached = record.bridge.onCdpTargetAttached((change) => {
     const current = currentRecord(record);
     if (current === undefined || !isChangeForTile(change, current.tileKey)) {
       return;
@@ -424,7 +446,7 @@ function installDesktopForwarding(record: ElectronBrowserTabRecord): void {
       waitingForDebugger: change.waitingForDebugger,
     });
   });
-  record.bridge.onTileHandoff((change) => {
+  const tileHandoff = record.bridge.onTileHandoff((change) => {
     const current = currentRecord(record);
     if (current === undefined || !isChangeForTile(change, current.tileKey)) {
       return;
@@ -453,41 +475,51 @@ function installDesktopForwarding(record: ElectronBrowserTabRecord): void {
       reason: change.reason,
     });
   });
+  return () => {
+    disposeCdp();
+    status.dispose();
+    cdpSessionEnded.dispose();
+    cdpTargetAttached.dispose();
+    tileHandoff.dispose();
+  };
 }
 
-function installCdpForwarder(record: ElectronBrowserTabRecord): void {
-  registerAgentBrowserCdpHandler(record.tileKey.tileInstanceId, (request) => {
-    const current = currentRecord(record);
-    if (current === undefined) return;
-    void current.bridge
-      .dispatchCdp({
-        ...current.tileKey,
-        sessionId: request.sessionId,
-        command: request.command,
-      })
-      .then((result) => {
-        request.sendFrame(
-          buildCdpResultFrame(
-            request.requestId,
-            request.tileInstanceId,
-            result,
-          ),
-        );
-      })
-      .catch((error: unknown) => {
-        request.sendFrame(
-          buildCdpResultFrame(request.requestId, request.tileInstanceId, {
-            kind: request.command.kind,
-            ok: false,
-            error: {
-              kind: "cdp_error",
-              message: error instanceof Error ? error.message : String(error),
-              code: null,
-            },
-          }),
-        );
-      });
-  });
+function installCdpForwarder(record: ElectronBrowserTabRecord): () => void {
+  return registerAgentBrowserCdpHandler(
+    record.tileKey.tileInstanceId,
+    (request) => {
+      const current = currentRecord(record);
+      if (current === undefined) return;
+      void current.bridge
+        .dispatchCdp({
+          ...current.tileKey,
+          sessionId: request.sessionId,
+          command: request.command,
+        })
+        .then((result) => {
+          request.sendFrame(
+            buildCdpResultFrame(
+              request.requestId,
+              request.tileInstanceId,
+              result,
+            ),
+          );
+        })
+        .catch((error: unknown) => {
+          request.sendFrame(
+            buildCdpResultFrame(request.requestId, request.tileInstanceId, {
+              kind: request.command.kind,
+              ok: false,
+              error: {
+                kind: "cdp_error",
+                message: error instanceof Error ? error.message : String(error),
+                code: null,
+              },
+            }),
+          );
+        });
+    },
+  );
 }
 
 function publishRegistration(record: ElectronBrowserTabRecord): void {
@@ -561,10 +593,17 @@ export function findElectronBrowserTabBinding(
   sessionId: string,
   tabId: string,
 ): ElectronBrowserTabRegistration | null {
+  return findElectronBrowserTabRecord(sessionId, tabId) ?? null;
+}
+
+function findElectronBrowserTabRecord(
+  sessionId: string,
+  tabId: string,
+): ElectronBrowserTabRecord | undefined {
   for (const record of recordsByRegistrationKey.values()) {
     if (record.sessionId === sessionId && record.tabId === tabId) return record;
   }
-  return null;
+  return undefined;
 }
 
 function isChangeForTile(
@@ -618,6 +657,7 @@ function epicHostKey(epicId: string, hostId: string): string {
 }
 
 export function resetElectronBrowserTabStoreForTests(): void {
+  for (const record of recordsByRegistrationKey.values()) record.cleanup();
   recordsByRegistrationKey.clear();
   sendFrameByEpicHost.clear();
   backgroundBridgeByEpicHost.clear();
@@ -625,4 +665,11 @@ export function resetElectronBrowserTabStoreForTests(): void {
   pendingHandoffAcks.clear();
   createRequestIdByRegistrationKey.clear();
   focusOrder = 0;
+}
+
+function deleteRecord(record: ElectronBrowserTabRecord): void {
+  record.cleanup();
+  recordsByRegistrationKey.delete(
+    registrationKey(record.sessionId, record.registrationId),
+  );
 }

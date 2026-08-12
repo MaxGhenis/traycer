@@ -949,6 +949,53 @@ describe("BrowserViewManager", () => {
     expect(cdp.ok).toBe(true);
   });
 
+  it("rejects a duplicate background runtime key without overwriting the first view", async () => {
+    const harness = createHarness();
+    const creation = harness.manager.createBackgroundTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-duplicate-runtime",
+      tabId: "tab-duplicate-runtime",
+      url: "https://example.com/duplicate-runtime",
+    });
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected background view");
+    await Promise.resolve();
+
+    await expect(
+      harness.manager.createBackgroundTab("window-1", {
+        ...BASE_KEY,
+        tileInstanceId: "tile-duplicate-runtime-second",
+        pageSessionId: "page-duplicate-runtime-second",
+        sessionId: "session-duplicate-runtime",
+        tabId: "tab-duplicate-runtime",
+        url: "https://example.com/duplicate-runtime-second",
+      }),
+    ).rejects.toThrow(
+      "Browser runtime tab session-duplicate-runtime/tab-duplicate-runtime already exists.",
+    );
+    expect(harness.views).toHaveLength(1);
+    expect(harness.manager.snapshotForTests()).toHaveLength(1);
+
+    view.webContents.emit("did-finish-load");
+    await creation;
+  });
+
+  it("rejects a failed background load and closes its provisional entry", async () => {
+    const harness = createHarness();
+    const creation = harness.manager.createBackgroundTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-background-load-failure",
+      tabId: "tab-background-load-failure",
+      url: "http://127.0.0.1:65535/",
+    });
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected background view");
+
+    await expect(creation).rejects.toThrow("ERR_CONNECTION_REFUSED");
+    expect(view.webContents.closeCalls).toBe(1);
+    expect(harness.manager.snapshotForTests()).toEqual([]);
+  });
+
   it("sets background throttling off while driven and restores it when idle", async () => {
     const harness = createHarness();
     const creation = harness.manager.createBackgroundTab("window-1", {

@@ -26,6 +26,7 @@ import {
   syncElectronBrowserTabDrivers,
   updateElectronBrowserTabView,
 } from "@/lib/browser-view/electron-browser-tab-store";
+import { publishAgentBrowserCdpRequest } from "@/lib/browser-view/agent-browser-cdp-store";
 import { createSingleTileCanvas } from "@/stores/epics/canvas/actions";
 import { collectPanes } from "@/stores/epics/canvas/tile-tree";
 import { makeBrowserTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
@@ -463,6 +464,72 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
     ).toBeNull();
   });
 
+  it("disposes bridge and CDP callbacks across two release/re-register cycles", async () => {
+    const bridge = new FakeBridge();
+    attachElectronBrowserTabStream(EPIC, HOST, () => {});
+    const dispatchSpy = vi.spyOn(bridge, "dispatchCdp");
+
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      const registrationId = `reg-dispose-cycle-${cycle}`;
+      const sessionId = `session-dispose-cycle-${cycle}`;
+      const tileInstanceId = `tile-dispose-cycle-${cycle}`;
+      registerElectronBrowserTab(
+        baseRegistration({
+          registrationId,
+          sessionId,
+          bridge,
+          tileKey: { ...TILE_KEY, tileInstanceId },
+        }),
+      );
+      handleElectronBrowserTabFrame({
+        kind: "electronTabRegistered",
+        hasBinaryPayload: false,
+        requestId: `req-dispose-cycle-${cycle}`,
+        registrationId,
+        sessionId,
+        tabId: `tab-dispose-cycle-${cycle}`,
+      });
+
+      expect(bridge.statusHandlers.size).toBe(1);
+      expect(bridge.cdpSessionEndedHandlers.size).toBe(1);
+      expect(bridge.cdpTargetAttachedHandlers.size).toBe(1);
+      expect(bridge.tileHandoffHandlers.size).toBe(1);
+      const sendFrame = vi.fn();
+      publishAgentBrowserCdpRequest({
+        requestId: `req-cdp-dispose-cycle-${cycle}`,
+        tileInstanceId,
+        sessionId,
+        command: { kind: "cdpGetFrameTree" },
+        sendFrame,
+      });
+      await Promise.resolve();
+      expect(dispatchSpy).toHaveBeenCalledTimes(1);
+      dispatchSpy.mockClear();
+
+      handleElectronBrowserTabFrame({
+        kind: "releaseElectronTab",
+        hasBinaryPayload: false,
+        requestId: `req-release-dispose-cycle-${cycle}`,
+        sessionId,
+        tabId: `tab-dispose-cycle-${cycle}`,
+      });
+      await Promise.resolve();
+
+      expect(bridge.statusHandlers.size).toBe(0);
+      expect(bridge.cdpSessionEndedHandlers.size).toBe(0);
+      expect(bridge.cdpTargetAttachedHandlers.size).toBe(0);
+      expect(bridge.tileHandoffHandlers.size).toBe(0);
+      publishAgentBrowserCdpRequest({
+        requestId: `req-cdp-dispose-cycle-${cycle}-after-release`,
+        tileInstanceId,
+        sessionId,
+        command: { kind: "cdpGetFrameTree" },
+        sendFrame,
+      });
+      expect(dispatchSpy).not.toHaveBeenCalled();
+    }
+  });
+
   it("forwards status changes as electronTabState only after host mint is known", async () => {
     const bridge = new FakeBridge();
     const frames: BrowserSessionsClientFrame[] = [];
@@ -692,6 +759,61 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
 
     expect(handled).toBe(true);
     expect(onActivatedHeadless).toHaveBeenCalledWith("tab-headless-1");
+  });
+
+  it("deletes and releases a background record on typed headless loss", async () => {
+    const bridge = new FakeBridge();
+    const onActivatedHeadless = vi.fn();
+    attachElectronBrowserTabStream(EPIC, HOST, () => {});
+
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-background-headless-loss",
+        sessionId: "session-background-headless-loss",
+        bridge,
+        background: true,
+        onActivatedHeadless,
+      }),
+    );
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-background-headless-loss-register",
+      registrationId: "reg-background-headless-loss",
+      sessionId: "session-background-headless-loss",
+      tabId: "tab-background-headless-loss",
+    });
+    await Promise.resolve();
+
+    expect(
+      handleElectronBrowserTabFrame({
+        kind: "electronTabRegistrationFailed",
+        hasBinaryPayload: false,
+        requestId: "req-background-headless-loss",
+        registrationId: "reg-background-headless-loss",
+        sessionId: "session-background-headless-loss",
+        tabId: "tab-background-headless-loss",
+        code: "BROWSER_TAB_ACTIVATED_HEADLESS",
+      } satisfies BrowserSessionsServerFrame),
+    ).toBe(true);
+    await Promise.resolve();
+
+    expect(
+      findElectronBrowserTabBinding(
+        "session-background-headless-loss",
+        "tab-background-headless-loss",
+      ),
+    ).toBeNull();
+    expect(bridge.releaseDurableTabCalls).toEqual([
+      {
+        ...TILE_KEY,
+        sessionId: "session-background-headless-loss",
+        tabId: "tab-background-headless-loss",
+      },
+    ]);
+    expect(onActivatedHeadless).toHaveBeenCalledWith(
+      "tab-background-headless-loss",
+    );
   });
 });
 
