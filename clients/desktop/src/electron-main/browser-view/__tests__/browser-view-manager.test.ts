@@ -874,7 +874,54 @@ describe("BrowserViewManager", () => {
     expect(view.visible).toBe(false);
   });
 
-  it("resolves background readiness on a main-frame commit without tile attachment or finish-load", async () => {
+  it("commit-event-fires-BEFORE-listener-attaches -> readiness still resolves", async () => {
+    const harness = createHarness();
+    const backgroundKey: BrowserViewTileKey = {
+      viewTabId: "background-before-listener",
+      paneId: "background-before-listener",
+      tileInstanceId: "background-before-listener-tile",
+      pageSessionId: "background-before-listener-page",
+    };
+    const loadURL = vi
+      .spyOn(FakeWebContents.prototype, "loadURL")
+      .mockImplementation(function (this: FakeWebContents, url) {
+        this.lifecycle.push("loadURL");
+        this.loadUrls.push(url);
+        this.emit("did-frame-navigate", {}, url, 200, "OK", true);
+        return new Promise<unknown>(() => {});
+      });
+    const creation = harness.manager.createBackgroundTab("window-1", {
+      ...backgroundKey,
+      sessionId: "session-background-before-listener",
+      tabId: "tab-background-before-listener",
+      url: "https://example.com/background-before-listener",
+    });
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected background view");
+    const outcomePromise = Promise.race([
+      creation.then(() => "ready" as const),
+      new Promise<"timed-out">((resolve) => {
+        setTimeout(() => resolve("timed-out"), 100);
+      }),
+    ]);
+    await vi.advanceTimersByTimeAsync(100);
+    const outcome = await outcomePromise;
+    if (outcome === "timed-out") {
+      view.webContents.emit(
+        "did-frame-navigate",
+        {},
+        "https://example.com/background-before-listener",
+        200,
+        "OK",
+        true,
+      );
+      await creation;
+    }
+    loadURL.mockRestore();
+    expect(outcome).toBe("ready");
+  });
+
+  it("commit-after-attach -> readiness still resolves", async () => {
     const harness = createHarness();
     const backgroundKey: BrowserViewTileKey = {
       viewTabId: "background",
@@ -1145,7 +1192,7 @@ describe("BrowserViewManager", () => {
     await creation;
   });
 
-  it("rejects a failed background load and closes its provisional entry", async () => {
+  it("load-failure -> rejects", async () => {
     const harness = createHarness();
     const creation = harness.manager.createBackgroundTab("window-1", {
       ...BASE_KEY,

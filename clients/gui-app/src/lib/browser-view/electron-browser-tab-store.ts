@@ -687,10 +687,13 @@ function findElectronBrowserTabRecord(
   sessionId: string,
   tabId: string,
 ): ElectronBrowserTabRecord | undefined {
+  let found: ElectronBrowserTabRecord | undefined;
   for (const record of recordsByRegistrationKey.values()) {
-    if (record.sessionId === sessionId && record.tabId === tabId) return record;
+    if (record.sessionId === sessionId && record.tabId === tabId) {
+      found = record;
+    }
   }
-  return undefined;
+  return found;
 }
 
 function isChangeForTile(

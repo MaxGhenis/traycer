@@ -971,7 +971,7 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
     expect(onActivatedHeadless).toHaveBeenCalledWith("tab-headless-1");
   });
 
-  it("deletes and releases a background record on typed headless loss", async () => {
+  it("real tile close / renderer death -> existing typed loss/release behavior still fires", async () => {
     const bridge = new FakeBridge();
     const onActivatedHeadless = vi.fn();
     attachElectronBrowserTabStream(EPIC, HOST, () => {});

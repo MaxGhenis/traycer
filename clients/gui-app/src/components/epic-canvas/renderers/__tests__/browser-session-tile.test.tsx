@@ -19,10 +19,12 @@ import type { BrowserSessionTileRef } from "@/stores/epics/canvas/types";
 import { TILE_KIND_BROWSER_SESSION } from "@/stores/epics/canvas/tile-kinds";
 import {
   attachElectronBrowserTabStream,
+  findElectronBrowserTabBinding,
   handleElectronBrowserTabFrame,
   registerElectronBrowserTab,
   resetElectronBrowserTabStoreForTests,
 } from "@/lib/browser-view/electron-browser-tab-store";
+import type { ElectronBrowserTabRegistration } from "@/lib/browser-view/electron-browser-tab-store";
 import type {
   AgentBrowserViewCdpDispatch,
   AgentBrowserViewCdpResult,
@@ -112,6 +114,7 @@ vi.mock("@/components/epic-canvas/renderers/browser-peek-tile", () => ({
 class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
   readonly upsertCalls: AgentBrowserViewTileUpsert[] = [];
   readonly registerDurableTabCalls: BrowserViewDurableTabRegistration[] = [];
+  readonly releaseDurableTabCalls: BrowserViewDurableTabRegistration[] = [];
   private readonly statusHandlers = new Set<
     (change: BrowserViewStatusChange) => void
   >();
@@ -126,6 +129,11 @@ class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
 
   registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void> {
     this.registerDurableTabCalls.push(input);
+    return Promise.resolve();
+  }
+
+  releaseDurableTab(input: BrowserViewDurableTabRegistration): Promise<void> {
+    this.releaseDurableTabCalls.push(input);
     return Promise.resolve();
   }
 
@@ -370,6 +378,124 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
     });
     expect(screen.queryByText("Browser tab is no longer available.")).toBeNull();
     expect(peekHarness.mounts).toBe(1);
+  });
+
+  it("cast stream teardown with tile still mounted and a stale pre-terminal binding -> registration SURVIVES, native child does not mount/replay, then a different post-terminal binding arrives, create/native swap acks, no typed loss/release", async () => {
+    const bridge = bridgeHarness.current;
+    if (bridge === null) throw new Error("expected browser view bridge");
+    sessionsState.value = {
+      lifecycle: "live",
+      items: [sessionFor("ready")],
+      errorMessage: null,
+      routingChatId: "chat-route",
+      closeSession: vi.fn(),
+      requestPromoteState: vi.fn(),
+      requestLendStorage: vi.fn(),
+    };
+    const ids = seedCanvas(NODE);
+    const preTerminalBinding: ElectronBrowserTabRegistration = {
+      epicId: "epic-1",
+      hostId: "host-test",
+      chatId: "chat-route",
+      registrationId: "pre-terminal-registration",
+      sessionId: NODE.sessionId,
+      requestedTabId: NODE.tabId,
+      initialUrl: "https://example.com/page",
+      title: "Example",
+      tileKey: {
+        viewTabId: ids.viewTabId,
+        paneId: ids.paneId,
+        tileInstanceId: NODE.instanceId,
+        pageSessionId: NODE.id,
+      },
+      bridge,
+      onRegistered: null,
+      onActivatedHeadless: null,
+      background: false,
+    };
+    registerElectronBrowserTab(preTerminalBinding);
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "pre-terminal-ack",
+      registrationId: preTerminalBinding.registrationId,
+      sessionId: NODE.sessionId,
+      tabId: NODE.tabId,
+    });
+    await Promise.resolve();
+
+    const view = render(
+      <BrowserSessionTile
+        node={NODE}
+        viewTabId={ids.viewTabId}
+        paneId={ids.paneId}
+        epicId="epic-1"
+      />,
+    );
+    expect(screen.getByTestId("browser-peek-tile")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("browser-peek-tile"));
+    expect(screen.getByTestId("browser-peek-tile")).toBeTruthy();
+    expect(
+      screen.queryByTestId("agent-browser-tile-pointer-instance-1"),
+    ).toBeNull();
+    expect(peekHarness.mounts).toBe(1);
+
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistrationFailed",
+      hasBinaryPayload: false,
+      requestId: "pre-terminal-loss",
+      registrationId: preTerminalBinding.registrationId,
+      sessionId: NODE.sessionId,
+      tabId: NODE.tabId,
+      code: "BROWSER_TAB_ACTIVATED_HEADLESS",
+    });
+    expect(
+      findElectronBrowserTabBinding(NODE.sessionId, NODE.tabId)?.registrationId,
+    ).toBe(preTerminalBinding.registrationId);
+    expect(bridge.releaseDurableTabCalls).toEqual([]);
+
+    const postTerminalBinding: ElectronBrowserTabRegistration = {
+      ...preTerminalBinding,
+      registrationId: "post-terminal-registration",
+    };
+    registerElectronBrowserTab(postTerminalBinding);
+    act(() => {
+      view.rerender(
+        <BrowserSessionTile
+          node={NODE}
+          viewTabId={ids.viewTabId}
+          paneId={ids.paneId}
+          epicId="epic-1"
+        />,
+      );
+    });
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "post-terminal-ack",
+      registrationId: postTerminalBinding.registrationId,
+      sessionId: NODE.sessionId,
+      tabId: NODE.tabId,
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("browser-peek-tile")).toBeNull();
+      expect(
+        screen.getByTestId("agent-browser-tile-pointer-instance-1"),
+      ).toBeTruthy();
+    });
+    expect(bridge.registerDurableTabCalls.at(-1)).toMatchObject({
+      viewTabId: ids.viewTabId,
+      paneId: ids.paneId,
+      tileInstanceId: NODE.instanceId,
+      pageSessionId: NODE.id,
+      sessionId: NODE.sessionId,
+      tabId: NODE.tabId,
+    });
+    expect(
+      findElectronBrowserTabBinding(NODE.sessionId, NODE.tabId)?.registrationId,
+    ).toBe(postTerminalBinding.registrationId);
+    expect(bridge.releaseDurableTabCalls).toEqual([]);
   });
 
   it("resubscribes after terminal status once rollback settles headless", async () => {

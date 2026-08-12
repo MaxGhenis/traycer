@@ -615,17 +615,18 @@ export class BrowserViewManager {
       const committed = new Promise<void>((resolve) => {
         resolveCommitted = resolve;
       });
-      const onCommitted = (...args: unknown[]): void => {
-        if (readMainFrameFlag(args)) resolveCommitted();
+      const onCommitted = (): void => {
+        if (entry.status === "ready") resolveCommitted();
       };
+      const navigation = this.navigate(entry, input.url, true);
       entry.view.webContents.on("did-frame-navigate", onCommitted);
+      entry.view.webContents.on("did-navigate", onCommitted);
+      onCommitted();
       try {
-        await Promise.race([
-          this.navigate(entry, input.url, true),
-          committed,
-        ]);
+        await Promise.race([navigation, committed]);
       } finally {
         entry.view.webContents.off("did-frame-navigate", onCommitted);
+        entry.view.webContents.off("did-navigate", onCommitted);
       }
       if (seedScriptId !== null) {
         await debugSession.removeScriptBeforeNavigation(seedScriptId);

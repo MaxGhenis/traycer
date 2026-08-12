@@ -29,14 +29,19 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
   const [activatedHeadless, setActivatedHeadless] = useState(false);
   const [castMigrated, setCastMigrated] = useState(false);
   const [castGeneration, setCastGeneration] = useState(0);
+  const bindingRegistrationIdRef = useRef<string | null>(null);
+  const terminalBindingRegistrationIdRef = useRef<string | null>(null);
   const latestMigrationRevisionRef = useRef(0);
   const terminalMigrationRevisionRef = useRef(0);
+  bindingRegistrationIdRef.current = binding?.registrationId ?? null;
   latestMigrationRevisionRef.current = session?.migration?.revision ?? 0;
   const handleActivatedHeadless = useCallback(() => {
     setActivatedHeadless(true);
   }, []);
   const handleMigrated = useCallback(() => {
     setActivatedHeadless(false);
+    terminalBindingRegistrationIdRef.current =
+      bindingRegistrationIdRef.current;
     terminalMigrationRevisionRef.current = latestMigrationRevisionRef.current;
     setCastMigrated(true);
   }, []);
@@ -63,7 +68,10 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
 
   const renderHeadless =
     activatedHeadless ||
-    (tab.status !== "dormant" && (binding === null || !castMigrated));
+    (tab.status !== "dormant" &&
+      (binding === null ||
+        !castMigrated ||
+        binding.registrationId === terminalBindingRegistrationIdRef.current));
   if (renderHeadless) {
     const peek: BrowserPeekTileRef = {
       id: props.node.id,
