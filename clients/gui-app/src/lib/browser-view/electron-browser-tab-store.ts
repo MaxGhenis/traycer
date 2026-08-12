@@ -3,6 +3,7 @@ import type {
   BrowserSessionsClientFrame,
   BrowserSessionsServerFrame,
 } from "@traycer/protocol/host/browser/contracts";
+import { appLogger } from "@/lib/logger";
 import {
   buildCdpResultFrame,
   registerAgentBrowserCdpHandler,
@@ -89,6 +90,9 @@ const pendingHandoffAcks = new Map<
   string,
   { readonly promise: Promise<void>; readonly resolve: () => void }
 >();
+const pendingReleases = new Map<string, number>();
+const PENDING_RELEASE_TTL_MS = 60_000;
+const PENDING_RELEASE_MAX = 128;
 let focusOrder = 0;
 
 export async function drainElectronBrowserHandoffs(): Promise<void> {
@@ -267,13 +271,35 @@ export function handleElectronBrowserTabFrame(
   );
   if (record === undefined) return true;
   record.tabId = frame.tabId;
-  void record.bridge
-    .registerDurableTab({
-      ...record.tileKey,
-      sessionId: frame.sessionId,
-      tabId: frame.tabId,
-    })
-    .catch(ignoreRegistrationError);
+  const durableRegistration = record.bridge.registerDurableTab({
+    ...record.tileKey,
+    sessionId: frame.sessionId,
+    tabId: frame.tabId,
+  });
+  if (consumePendingRelease(frame.sessionId, frame.tabId)) {
+    deleteRecord(record);
+    const releaseDurableTab = record.bridge.releaseDurableTab?.bind(
+      record.bridge,
+    );
+    if (releaseDurableTab !== undefined) {
+      void durableRegistration
+        .then(() =>
+          releaseDurableTab({
+            ...record.tileKey,
+            sessionId: frame.sessionId,
+            tabId: frame.tabId,
+          }),
+        )
+        .catch(ignoreRegistrationError);
+    } else {
+      void durableRegistration.catch(ignoreRegistrationError);
+    }
+    createRequestIdByRegistrationKey.delete(
+      registrationKey(frame.sessionId, frame.registrationId),
+    );
+    return true;
+  }
+  void durableRegistration.catch(ignoreRegistrationError);
   record.onRegistered?.(frame.tabId);
   publishState(record);
   const key = registrationKey(frame.sessionId, frame.registrationId);
@@ -296,7 +322,10 @@ function releaseElectronTab(
   frame: Extract<BrowserSessionsServerFrame, { kind: "releaseElectronTab" }>,
 ): void {
   const record = findElectronBrowserTabRecord(frame.sessionId, frame.tabId);
-  if (record === undefined) return;
+  if (record === undefined) {
+    retainPendingRelease(frame.sessionId, frame.tabId);
+    return;
+  }
   deleteRecord(record);
   if (record.bridge.releaseDurableTab === undefined) return;
   void record.bridge
@@ -662,6 +691,52 @@ function registrationKey(sessionId: string, registrationId: string): string {
   return [sessionId, registrationId].join("\u001f");
 }
 
+function retainPendingRelease(sessionId: string, tabId: string): void {
+  const now = Date.now();
+  prunePendingReleases(now);
+  const key = registrationKey(sessionId, tabId);
+  pendingReleases.delete(key);
+  pendingReleases.set(key, now);
+  while (pendingReleases.size > PENDING_RELEASE_MAX) {
+    for (const oldest of pendingReleases.keys()) {
+      pendingReleases.delete(oldest);
+      break;
+    }
+  }
+  appLogger.info("Electron browser tab release tombstone created", {
+    event: "electron_release_tombstone",
+    action: "create",
+    sessionId,
+    tabId,
+    pendingCount: pendingReleases.size,
+  });
+}
+
+function consumePendingRelease(sessionId: string, tabId: string): boolean {
+  const now = Date.now();
+  prunePendingReleases(now);
+  const key = registrationKey(sessionId, tabId);
+  const createdAt = pendingReleases.get(key);
+  if (createdAt === undefined) return false;
+  pendingReleases.delete(key);
+  appLogger.info("Electron browser tab release tombstone consumed", {
+    event: "electron_release_tombstone",
+    action: "consume",
+    sessionId,
+    tabId,
+    ageMs: now - createdAt,
+    pendingCount: pendingReleases.size,
+  });
+  return true;
+}
+
+function prunePendingReleases(now: number): void {
+  for (const [key, createdAt] of pendingReleases) {
+    if (now - createdAt <= PENDING_RELEASE_TTL_MS) break;
+    pendingReleases.delete(key);
+  }
+}
+
 function epicHostKey(epicId: string, hostId: string): string {
   return `${epicId}\u0000${hostId}`;
 }
@@ -674,6 +749,7 @@ export function resetElectronBrowserTabStoreForTests(): void {
   for (const pending of pendingHandoffAcks.values()) pending.resolve();
   pendingHandoffAcks.clear();
   createRequestIdByRegistrationKey.clear();
+  pendingReleases.clear();
   focusOrder = 0;
 }
 

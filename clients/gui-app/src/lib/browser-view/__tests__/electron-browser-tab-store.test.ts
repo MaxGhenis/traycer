@@ -31,6 +31,7 @@ import {
   updateElectronBrowserTabView,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import { publishAgentBrowserCdpRequest } from "@/lib/browser-view/agent-browser-cdp-store";
+import { appLogger } from "@/lib/logger";
 import { createSingleTileCanvas } from "@/stores/epics/canvas/actions";
 import { collectPanes } from "@/stores/epics/canvas/tile-tree";
 import { makeBrowserTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
@@ -200,6 +201,8 @@ function baseRegistration(
 describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
   afterEach(() => {
     resetElectronBrowserTabStoreForTests();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("publishes registerElectronTab when the epic+host stream is attached", () => {
@@ -488,6 +491,187 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
     expect(
       findElectronBrowserTabBinding("session-release", "tab-release"),
     ).toBeNull();
+  });
+
+  it("consumes a late release tombstone in K2 order and leaves no provisional binding", async () => {
+    const bridge = new FakeBridge();
+    const sessionId = "session-late-release";
+    const tabId = "tab-late-release";
+    const order: string[] = [];
+    let resolveRegistration!: () => void;
+    const registrationPromise = new Promise<void>((resolve) => {
+      resolveRegistration = resolve;
+    });
+    const infoSpy = vi.spyOn(appLogger, "info").mockImplementation(() => {});
+
+    vi.spyOn(bridge, "registerDurableTab").mockImplementation((input) => {
+      order.push("register");
+      bridge.registerDurableTabCalls.push(input);
+      return registrationPromise;
+    });
+    vi.spyOn(bridge, "releaseDurableTab").mockImplementation((input) => {
+      order.push("release");
+      bridge.releaseDurableTabCalls.push(input);
+      return Promise.resolve();
+    });
+
+    attachElectronBrowserTabStream(EPIC, HOST, () => {});
+    expect(
+      handleElectronBrowserTabFrame({
+        kind: "releaseElectronTab",
+        hasBinaryPayload: false,
+        requestId: "req-late-release",
+        sessionId,
+        tabId,
+      } satisfies BrowserSessionsServerFrame),
+    ).toBe(true);
+
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-late-release",
+        sessionId,
+        bridge,
+      }),
+    );
+    expect(
+      handleElectronBrowserTabFrame({
+        kind: "electronTabRegistered",
+        hasBinaryPayload: false,
+        requestId: "req-late-registered",
+        registrationId: "reg-late-release",
+        sessionId,
+        tabId,
+      } satisfies BrowserSessionsServerFrame),
+    ).toBe(true);
+
+    expect(order).toEqual(["register"]);
+    expect(findElectronBrowserTabBinding(sessionId, tabId)).toBeNull();
+    expect(bridge.releaseDurableTabCalls).toEqual([]);
+
+    resolveRegistration();
+    await Promise.resolve();
+
+    expect(order).toEqual(["register", "release"]);
+    expect(bridge.releaseDurableTabCalls).toEqual([
+      {
+        ...TILE_KEY,
+        sessionId,
+        tabId,
+      },
+    ]);
+    expect(infoSpy).toHaveBeenNthCalledWith(
+      1,
+      "Electron browser tab release tombstone created",
+      expect.objectContaining({
+        event: "electron_release_tombstone",
+        action: "create",
+        sessionId,
+        tabId,
+      }),
+    );
+    expect(infoSpy).toHaveBeenNthCalledWith(
+      2,
+      "Electron browser tab release tombstone consumed",
+      expect.objectContaining({
+        event: "electron_release_tombstone",
+        action: "consume",
+        sessionId,
+        tabId,
+      }),
+    );
+  });
+
+  it("evicts the oldest pending release after the 128-entry cap", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    vi.spyOn(appLogger, "info").mockImplementation(() => {});
+
+    const bridge = new FakeBridge();
+    attachElectronBrowserTabStream(EPIC, HOST, () => {});
+    for (let index = 0; index < 129; index += 1) {
+      expect(
+        handleElectronBrowserTabFrame({
+          kind: "releaseElectronTab",
+          hasBinaryPayload: false,
+          requestId: `req-cap-${index}`,
+          sessionId: `session-cap-${index}`,
+          tabId: `tab-cap-${index}`,
+        } satisfies BrowserSessionsServerFrame),
+      ).toBe(true);
+    }
+
+    const register = (index: number): void => {
+      registerElectronBrowserTab(
+        baseRegistration({
+          registrationId: `reg-cap-${index}`,
+          sessionId: `session-cap-${index}`,
+          bridge,
+        }),
+      );
+      handleElectronBrowserTabFrame({
+        kind: "electronTabRegistered",
+        hasBinaryPayload: false,
+        requestId: `req-cap-registered-${index}`,
+        registrationId: `reg-cap-${index}`,
+        sessionId: `session-cap-${index}`,
+        tabId: `tab-cap-${index}`,
+      } satisfies BrowserSessionsServerFrame);
+    };
+
+    register(0);
+    expect(
+      findElectronBrowserTabBinding("session-cap-0", "tab-cap-0"),
+    ).not.toBeNull();
+
+    register(128);
+    await Promise.resolve();
+    expect(
+      findElectronBrowserTabBinding("session-cap-128", "tab-cap-128"),
+    ).toBeNull();
+    expect(bridge.releaseDurableTabCalls).toEqual([
+      {
+        ...TILE_KEY,
+        sessionId: "session-cap-128",
+        tabId: "tab-cap-128",
+      },
+    ]);
+  });
+
+  it("does not consume a pending release after the 60-second TTL", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const bridge = new FakeBridge();
+    const sessionId = "session-expired-release";
+    const tabId = "tab-expired-release";
+    attachElectronBrowserTabStream(EPIC, HOST, () => {});
+    handleElectronBrowserTabFrame({
+      kind: "releaseElectronTab",
+      hasBinaryPayload: false,
+      requestId: "req-expired-release",
+      sessionId,
+      tabId,
+    });
+
+    vi.setSystemTime(60_001);
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-expired-release",
+        sessionId,
+        bridge,
+      }),
+    );
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-expired-registered",
+      registrationId: "reg-expired-release",
+      sessionId,
+      tabId,
+    });
+
+    expect(findElectronBrowserTabBinding(sessionId, tabId)).not.toBeNull();
+    expect(bridge.releaseDurableTabCalls).toEqual([]);
   });
 
   it("disposes bridge and CDP callbacks across two release/re-register cycles", async () => {
