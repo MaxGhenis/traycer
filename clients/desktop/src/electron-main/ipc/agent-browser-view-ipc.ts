@@ -133,6 +133,7 @@ export function registerAgentBrowserViewIpc(
       }),
     capturePrimaryProfileLocalStorage: () => Promise.resolve(null),
     releaseGraceMs: AGENT_BROWSER_VIEW_RELEASE_GRACE_MS,
+    electronCreateDelayMs: 0,
   });
 
   bridge.handleInvoke(

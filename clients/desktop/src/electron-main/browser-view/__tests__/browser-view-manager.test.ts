@@ -468,7 +468,8 @@ interface Harness {
 }
 
 type HarnessOptions = {
-  readonly captureStorageState: BrowserViewManagerOptions["captureStorageState"];
+  readonly captureStorageState?: BrowserViewManagerOptions["captureStorageState"];
+  readonly electronCreateDelayMs?: number;
 };
 
 const DEFAULT_CAPTURE_STORAGE_STATE: BrowserViewManagerOptions["captureStorageState"] =
@@ -635,6 +636,7 @@ function createHarnessWithOptions(
         localStorage: [{ name: "k", value: origin }],
       }),
     releaseGraceMs: 10,
+    electronCreateDelayMs: harnessOptions?.electronCreateDelayMs ?? 0,
   };
   return {
     manager: new BrowserViewManager(options),
@@ -967,6 +969,34 @@ describe("BrowserViewManager", () => {
       command: { kind: "cdpGetFrameTree" },
     });
     expect(cdp.ok).toBe(true);
+  });
+
+  it("registers a background entry before delayed create readiness settles", async () => {
+    const harness = createHarnessWithOptions({ electronCreateDelayMs: 6_000 });
+    const creation = harness.manager.createBackgroundTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-delayed-background",
+      tabId: "tab-source",
+      url: "https://example.com/delayed-background",
+    });
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected background view");
+
+    let settled = false;
+    void creation.then(() => {
+      settled = true;
+    });
+    view.webContents.emit("did-finish-load");
+    await Promise.resolve();
+
+    expect(harness.manager.snapshotForTests()).toHaveLength(1);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(5_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await creation;
+    expect(settled).toBe(true);
   });
 
   it("installs localStorage seed before the first background load", async () => {
@@ -3413,6 +3443,34 @@ describe("BrowserViewManager durable runtime registration (ticket 05)", () => {
 
     expect(view.webContents.closeCalls).toBe(1);
     expect(harness.tileHandoffNotifications).toEqual([]);
+    expect(harness.manager.snapshotForTests()).toEqual([]);
+  });
+
+  it("releaseDurableTab closes a background entry when the failure tab id differs from its runtime id", async () => {
+    const harness = createHarness();
+    const creation = harness.manager.createBackgroundTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-headless-loss",
+      tabId: "tab-source",
+      url: "https://example.com/headless-loss",
+    });
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected background view");
+    view.webContents.emit("did-finish-load");
+    await creation;
+
+    harness.manager.registerDurableTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-headless-loss",
+      tabId: "tab-minted",
+    });
+    await harness.manager.releaseDurableTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-headless-loss",
+      tabId: "tab-failure-source",
+    });
+
+    expect(view.webContents.closeCalls).toBe(1);
     expect(harness.manager.snapshotForTests()).toEqual([]);
   });
 

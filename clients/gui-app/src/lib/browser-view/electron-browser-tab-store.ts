@@ -47,10 +47,7 @@ interface ElectronBrowserTabBridge {
 }
 
 type ElectronBrowserBackgroundTabBridge = ElectronBrowserTabBridge &
-  Pick<
-    DesktopBrowserViewBridge,
-    "applyStorageState" | "createBackgroundTab"
-  >;
+  Pick<DesktopBrowserViewBridge, "applyStorageState" | "createBackgroundTab">;
 
 export interface ElectronBrowserTabRegistration {
   readonly epicId: string;
@@ -85,7 +82,10 @@ const backgroundBridgeByEpicHost = new Map<
   string,
   ElectronBrowserBackgroundTabBridge
 >();
-const createRequestIdByRegistrationKey = new Map<string, string>();
+const createRequestsByRegistrationKey = new Map<
+  string,
+  { readonly requestId: string; readonly ready: Promise<void> }
+>();
 const pendingHandoffAcks = new Map<
   string,
   { readonly promise: Promise<void>; readonly resolve: () => void }
@@ -251,9 +251,9 @@ export function handleElectronBrowserTabFrame(
       });
       return true;
     }
-    createRequestIdByRegistrationKey.set(
+    createRequestsByRegistrationKey.set(
       registrationKey(frame.sessionId, tile.id),
-      frame.requestId,
+      { requestId: frame.requestId, ready: Promise.resolve() },
     );
     return true;
   }
@@ -294,7 +294,7 @@ export function handleElectronBrowserTabFrame(
     } else {
       void durableRegistration.catch(ignoreRegistrationError);
     }
-    createRequestIdByRegistrationKey.delete(
+    createRequestsByRegistrationKey.delete(
       registrationKey(frame.sessionId, frame.registrationId),
     );
     return true;
@@ -303,17 +303,20 @@ export function handleElectronBrowserTabFrame(
   record.onRegistered?.(frame.tabId);
   publishState(record);
   const key = registrationKey(frame.sessionId, frame.registrationId);
-  const createRequestId = createRequestIdByRegistrationKey.get(key);
-  if (createRequestId !== undefined) {
-    createRequestIdByRegistrationKey.delete(key);
-    sendForRecord(record, {
-      kind: "electronTabCreated",
-      hasBinaryPayload: false,
-      requestId: createRequestId,
-      sessionId: frame.sessionId,
-      tabId: frame.tabId,
-      reason: null,
-    });
+  const createRequest = createRequestsByRegistrationKey.get(key);
+  if (createRequest !== undefined) {
+    void Promise.all([durableRegistration, createRequest.ready]).then(() => {
+      if (createRequestsByRegistrationKey.get(key) !== createRequest) return;
+      createRequestsByRegistrationKey.delete(key);
+      sendForRecord(record, {
+        kind: "electronTabCreated",
+        hasBinaryPayload: false,
+        requestId: createRequest.requestId,
+        sessionId: frame.sessionId,
+        tabId: frame.tabId,
+        reason: null,
+      });
+    }, ignoreRegistrationError);
   }
   return true;
 }
@@ -326,6 +329,15 @@ function releaseElectronTab(
     retainPendingRelease(frame.sessionId, frame.tabId);
     return;
   }
+  createRequestsByRegistrationKey.delete(
+    registrationKey(record.sessionId, record.registrationId),
+  );
+  appLogger.info("Electron browser tab release applied", {
+    event: "electron_tab_release",
+    action: "direct",
+    sessionId: frame.sessionId,
+    tabId: frame.tabId,
+  });
   deleteRecord(record);
   if (record.bridge.releaseDurableTab === undefined) return;
   void record.bridge
@@ -346,7 +358,17 @@ function handleElectronTabRegistrationFailed(
   const record = recordsByRegistrationKey.get(
     registrationKey(frame.sessionId, frame.registrationId),
   );
+  createRequestsByRegistrationKey.delete(
+    registrationKey(frame.sessionId, frame.registrationId),
+  );
   if (record?.background === true) {
+    appLogger.info("Electron background tab lost registration", {
+      event: "electron_typed_loss_release",
+      action: "release",
+      sessionId: frame.sessionId,
+      tabId: frame.tabId,
+      registrationId: frame.registrationId,
+    });
     deleteRecord(record);
     if (record.bridge.releaseDurableTab !== undefined) {
       void record.bridge
@@ -377,10 +399,7 @@ function handleBackgroundElectronTabCreate(
     tileInstanceId: crypto.randomUUID(),
     pageSessionId: registrationId,
   };
-  createRequestIdByRegistrationKey.set(
-    registrationKey(frame.sessionId, registrationId),
-    frame.requestId,
-  );
+  const key = registrationKey(frame.sessionId, registrationId);
   const seed =
     frame.seedStorageState === undefined || frame.seedStorageState === null
       ? Promise.resolve()
@@ -391,16 +410,18 @@ function handleBackgroundElectronTabCreate(
           purpose: "primary-profile-seed",
         });
   void seed
-    .then(() =>
-      createBackgroundTab({
+    .then(() => {
+      const creation = createBackgroundTab({
         ...tileKey,
         sessionId: frame.sessionId,
         tabId: frame.sourceTabId,
         url: frame.url,
         seedStorageState: frame.seedStorageState ?? null,
-      }),
-    )
-    .then(() => {
+      });
+      createRequestsByRegistrationKey.set(key, {
+        requestId: frame.requestId,
+        ready: creation,
+      });
       registerElectronBrowserTab({
         epicId,
         hostId,
@@ -415,11 +436,19 @@ function handleBackgroundElectronTabCreate(
         onRegistered: null,
         background: true,
       });
+      return creation;
     })
     .catch((error: unknown) => {
-      createRequestIdByRegistrationKey.delete(
-        registrationKey(frame.sessionId, registrationId),
-      );
+      createRequestsByRegistrationKey.delete(key);
+      const record = recordsByRegistrationKey.get(key);
+      if (record !== undefined) deleteRecord(record);
+      void bridge
+        .releaseDurableTab?.({
+          ...tileKey,
+          sessionId: frame.sessionId,
+          tabId: frame.sourceTabId,
+        })
+        .catch(ignoreRegistrationError);
       sendFrameByEpicHost.get(epicHostKey(epicId, hostId))?.({
         kind: "electronTabCreated",
         hasBinaryPayload: false,
@@ -751,7 +780,7 @@ export function resetElectronBrowserTabStoreForTests(): void {
   backgroundBridgeByEpicHost.clear();
   for (const pending of pendingHandoffAcks.values()) pending.resolve();
   pendingHandoffAcks.clear();
-  createRequestIdByRegistrationKey.clear();
+  createRequestsByRegistrationKey.clear();
   pendingReleases.clear();
   focusOrder = 0;
 }

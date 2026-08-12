@@ -303,6 +303,7 @@ export interface BrowserViewManagerOptions {
     webContents: BrowserStorageCaptureWebContents,
   ) => Promise<BrowserPrimaryProfileOriginSnapshot | null>;
   readonly releaseGraceMs: number;
+  readonly electronCreateDelayMs: number;
 }
 
 export interface BrowserViewScheduledTask {
@@ -505,6 +506,7 @@ export class BrowserViewManager {
   private readonly offWindowChange: () => void;
   private readonly offDownloadChange: () => void;
   private readonly offCertificateError: () => void;
+  private readonly electronCreateDelayMs: number;
   private readonly entriesByKey = new Map<string, BrowserViewEntry>();
   private readonly entriesByRuntimeKey = new Map<string, BrowserViewEntry>();
   private readonly popupEntriesByWebContentsId = new Map<
@@ -546,6 +548,7 @@ export class BrowserViewManager {
     this.capturePrimaryProfileFromBrowser = options.capturePrimaryProfile;
     this.capturePrimaryProfileLocalStorageFromBrowser =
       options.capturePrimaryProfileLocalStorage;
+    this.electronCreateDelayMs = options.electronCreateDelayMs;
     this.offWindowChange = options.onWindowChange(() => {
       this.reconcileWindowVisibility();
     });
@@ -612,6 +615,14 @@ export class BrowserViewManager {
       if (seedScriptId !== null) {
         await debugSession.removeScriptBeforeNavigation(seedScriptId);
       }
+      if (this.electronCreateDelayMs > 0) {
+        log.info("[browser-view] delaying background tab create ack", {
+          sessionId: input.sessionId,
+          tabId: input.tabId,
+          delayMs: this.electronCreateDelayMs,
+        });
+        await delay(this.electronCreateDelayMs);
+      }
     } catch (error) {
       await this.closeEntry(entry, null);
       throw error;
@@ -636,9 +647,11 @@ export class BrowserViewManager {
     windowId: string,
     input: BrowserViewDurableTabRegistration,
   ): Promise<void> {
-    const entry = this.entriesByRuntimeKey.get(
-      [input.sessionId, input.tabId].join("\u001f"),
-    );
+    const entry =
+      this.entriesByKey.get(entryKeyId({ ...input, windowId })) ??
+      this.entriesByRuntimeKey.get(
+        [input.sessionId, input.tabId].join("\u001f"),
+      );
     if (entry === undefined || entry.key.windowId !== windowId) return;
     await this.closeEntry(entry, null);
   }

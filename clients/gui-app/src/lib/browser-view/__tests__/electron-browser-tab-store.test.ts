@@ -991,7 +991,7 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
       requestId: "req-background-headless-loss-register",
       registrationId: "reg-background-headless-loss",
       sessionId: "session-background-headless-loss",
-      tabId: "tab-background-headless-loss",
+      tabId: "tab-background-headless-loss-minted",
     });
     await Promise.resolve();
 
@@ -1002,7 +1002,10 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
         requestId: "req-background-headless-loss",
         registrationId: "reg-background-headless-loss",
         sessionId: "session-background-headless-loss",
-        tabId: "tab-background-headless-loss",
+        // Host reports the pre-registration/request tab id. The Desktop
+        // record is already rebound to the host-minted id, so release must
+        // resolve by the exact tile key instead of this runtime mismatch.
+        tabId: "tab-background-headless-loss-source",
         code: "BROWSER_TAB_ACTIVATED_HEADLESS",
       } satisfies BrowserSessionsServerFrame),
     ).toBe(true);
@@ -1018,11 +1021,11 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
       {
         ...TILE_KEY,
         sessionId: "session-background-headless-loss",
-        tabId: "tab-background-headless-loss",
+        tabId: "tab-background-headless-loss-source",
       },
     ]);
     expect(onActivatedHeadless).toHaveBeenCalledWith(
-      "tab-background-headless-loss",
+      "tab-background-headless-loss-source",
     );
   });
 });
@@ -1469,6 +1472,112 @@ describe("electron-browser-tab-store createElectronTab (ticket 14)", () => {
     detachRoute();
   });
 
+  it("registers a background record before delayed desktop readiness, then releases a late ack", async () => {
+    const bridge = new FakeBridge();
+    let resolveCreation!: () => void;
+    const creation = new Promise<void>((resolve) => {
+      resolveCreation = resolve;
+    });
+    vi.spyOn(bridge, "createBackgroundTab").mockImplementation((input) => {
+      bridge.backgroundOperations.push("create");
+      bridge.backgroundCreateCalls.push(input);
+      return creation;
+    });
+    const frames: BrowserSessionsClientFrame[] = [];
+    const detachStream = attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+    const detachRoute = attachElectronBrowserBackgroundTabRoute(
+      EPIC,
+      HOST,
+      bridge,
+    );
+    const sessionId = "session-delayed-background";
+
+    expect(
+      handleElectronBrowserTabFrame({
+        kind: "createElectronTab",
+        hasBinaryPayload: false,
+        requestId: "req-delayed-background",
+        sessionId,
+        sourceTabId: "tab-source",
+        url: "https://example.com/delayed-background",
+        background: true,
+        epicId: EPIC,
+        hostId: HOST,
+        seedStorageState: null,
+      } satisfies BrowserSessionsServerFrame),
+    ).toBe(true);
+
+    await vi.waitFor(() => {
+      expect(
+        frames.some((frame) => frame.kind === "registerElectronTab"),
+      ).toBe(true);
+    });
+    const registration = frames.find(
+      (frame) => frame.kind === "registerElectronTab",
+    );
+    if (registration === undefined) {
+      throw new Error("expected background registration frame");
+    }
+    const background = bridge.backgroundCreateCalls[0];
+
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-delayed-background-register",
+      registrationId: registration.registrationId,
+      sessionId,
+      tabId: "tab-minted",
+    });
+    await Promise.resolve();
+
+    expect(findElectronBrowserTabBinding(sessionId, "tab-minted")).not.toBe(
+      null,
+    );
+    expect(frames.some((frame) => frame.kind === "electronTabCreated")).toBe(
+      false,
+    );
+
+    resolveCreation();
+    await vi.waitFor(() => {
+      expect(frames).toContainEqual({
+        kind: "electronTabCreated",
+        hasBinaryPayload: false,
+        requestId: "req-delayed-background",
+        sessionId,
+        tabId: "tab-minted",
+        reason: null,
+      });
+    });
+
+    expect(
+      handleElectronBrowserTabFrame({
+        kind: "releaseElectronTab",
+        hasBinaryPayload: false,
+        requestId: "req-late-release",
+        sessionId,
+        tabId: "tab-minted",
+      } satisfies BrowserSessionsServerFrame),
+    ).toBe(true);
+    await vi.waitFor(() => {
+      expect(bridge.releaseDurableTabCalls).toEqual([
+        {
+          viewTabId: background.viewTabId,
+          paneId: background.paneId,
+          tileInstanceId: background.tileInstanceId,
+          pageSessionId: background.pageSessionId,
+          sessionId,
+          tabId: "tab-minted",
+        },
+      ]);
+    });
+    expect(findElectronBrowserTabBinding(sessionId, "tab-minted")).toBeNull();
+
+    detachRoute();
+    detachStream();
+  });
+
   it("resolves sourceTabId, splits an agent tile beside the pane, and acks only after electronTabRegistered", async () => {
     const { paneId: sourcePaneId, tileKey } = seedSourcePane();
     const sourceBridge = new FakeBridge();
@@ -1569,17 +1678,17 @@ describe("electron-browser-tab-store createElectronTab (ticket 14)", () => {
       sessionId: "session-shared",
       tabId: "tab-agent-minted-9",
     });
-    await Promise.resolve();
-
-    expect(frames).toContainEqual(
-      expect.objectContaining({
-        kind: "electronTabCreated",
-        requestId: "req-create-1",
-        sessionId: "session-shared",
-        tabId: "tab-agent-minted-9",
-        reason: null,
-      }),
-    );
+    await vi.waitFor(() => {
+      expect(frames).toContainEqual(
+        expect.objectContaining({
+          kind: "electronTabCreated",
+          requestId: "req-create-1",
+          sessionId: "session-shared",
+          tabId: "tab-agent-minted-9",
+          reason: null,
+        }),
+      );
+    });
     expect(
       findElectronBrowserTabBinding("session-shared", "tab-agent-minted-9"),
     ).not.toBeNull();

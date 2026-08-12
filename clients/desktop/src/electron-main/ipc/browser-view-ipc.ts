@@ -36,6 +36,7 @@ import type {
   BrowserViewViewportPresetChange,
   BrowserViewViewportPresetId,
 } from "../../ipc-contracts/browser-view-types";
+import { config } from "../../config";
 import { setInAppBrowserBetaEnabledMarker } from "../app/browser-labs-state";
 import {
   BrowserViewManager,
@@ -65,6 +66,8 @@ import { trustBrowserCertificate } from "../app/cert-trust";
 import type { RunnerIpcBridge } from "./runner-ipc-bridge";
 
 const BROWSER_VIEW_RELEASE_GRACE_MS = 500;
+const BROWSER_ELECTRON_CREATE_DELAY_ENV =
+  "TRAYCER_BROWSER_ELECTRON_CREATE_DELAY_MS";
 
 export function registerBrowserViewIpc(
   bridge: RunnerIpcBridge,
@@ -180,6 +183,7 @@ export function registerBrowserViewIpc(
     capturePrimaryProfile: captureBrowserPrimaryProfile,
     capturePrimaryProfileLocalStorage: captureBrowserOriginLocalStorage,
     releaseGraceMs: BROWSER_VIEW_RELEASE_GRACE_MS,
+    electronCreateDelayMs: readElectronCreateDelayMs(),
   });
 
   bridge.handleInvoke(RunnerHostInvoke.browserViewUpsert, (event, payload) => {
@@ -477,6 +481,19 @@ export function registerBrowserViewIpc(
   return manager;
 }
 
+function readElectronCreateDelayMs(): number {
+  if (config.environment !== "dev") return 0;
+  const value = process.env[BROWSER_ELECTRON_CREATE_DELAY_ENV];
+  if (value === undefined || value.trim().length === 0) return 0;
+  const parsed = Number(value.trim());
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(
+      `${BROWSER_ELECTRON_CREATE_DELAY_ENV} must be a whole number of milliseconds >= 0`,
+    );
+  }
+  return parsed;
+}
+
 function createElectronBrowserView(): ManagedBrowserView {
   // Browser page webContents are intentionally not registered as trusted IPC
   // senders. They get no preload / Node integration; the Traycer renderer
@@ -593,7 +610,9 @@ function parseDurableTabRegistration(
   };
 }
 
-function parseBackgroundTabCreate(value: unknown): BrowserViewBackgroundTabCreate {
+function parseBackgroundTabCreate(
+  value: unknown,
+): BrowserViewBackgroundTabCreate {
   const record = assertRecord(value, "Browser background tab create payload");
   return {
     ...parseDurableTabRegistration(record),
@@ -605,10 +624,7 @@ function parseBackgroundTabCreate(value: unknown): BrowserViewBackgroundTabCreat
 function parseBackgroundThrottlingChange(
   value: unknown,
 ): BrowserViewBackgroundThrottlingChange {
-  const record = assertRecord(
-    value,
-    "Browser background throttling payload",
-  );
+  const record = assertRecord(value, "Browser background throttling payload");
   return {
     ...parseTileKey(record),
     enabled: readBoolean(record.enabled, "enabled"),
