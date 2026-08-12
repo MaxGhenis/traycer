@@ -71,6 +71,8 @@ vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
 // from this suite's existing host ref so the scenario it was already
 // describing is unchanged.
 vi.mock("@/hooks/notifications/use-notification-host", () => ({
+  useNotificationHostId: () =>
+    hostBindingState.current?.hostClient.getActiveHostId() ?? null,
   useNotificationHost: () => ({
     hostId: hostBindingState.current?.hostClient.getActiveHostId() ?? null,
     client: hostBindingState.current?.hostClient ?? null,

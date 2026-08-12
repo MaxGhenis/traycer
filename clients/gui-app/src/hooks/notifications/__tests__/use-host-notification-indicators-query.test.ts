@@ -41,6 +41,7 @@ vi.mock("@/lib/host", async (importOriginal) => {
 // the centre renders - rather than the app-wide active host, so a `home:
 // local` partition question is not asked of some other host's local partition.
 vi.mock("@/hooks/notifications/use-notification-host", () => ({
+  useNotificationHostId: () => hostClient.getActiveHostId(),
   useNotificationHost: () => ({
     hostId: hostClient.getActiveHostId(),
     client: hostClient,

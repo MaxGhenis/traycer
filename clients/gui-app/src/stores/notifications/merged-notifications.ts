@@ -10,7 +10,10 @@ import {
 } from "@/lib/analytics";
 import { useHostMutation } from "@/hooks/host/use-host-query";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
-import { useNotificationHost } from "@/hooks/notifications/use-notification-host";
+import {
+  useNotificationHost,
+  useNotificationHostId,
+} from "@/hooks/notifications/use-notification-host";
 import { notificationsMutationKeys } from "@/lib/query-keys";
 import { toastFromHostError } from "@/lib/host-error-toast";
 import {
@@ -234,7 +237,7 @@ function useMergedNotificationRows(): ReadonlyArray<MergedNotificationRow> {
   // The host that SERVED these rows, not whichever host is app-wide active -
   // `originHostId` routes activation and names the machine in the row, so the
   // active host's id here sent a local row's click to a different machine.
-  const notificationHostId = useNotificationHost().hostId;
+  const notificationHostId = useNotificationHostId();
   const hostIds = useHostNotificationIds();
   const appLocalIds = useAppLocalNotificationIds();
   const globalIds = useNotificationEntryIds();
@@ -487,7 +490,7 @@ export function useMergedNotificationRow(
   feedId: string,
 ): MergedNotificationRow | null {
   const feedMode = useNotificationFeedMode();
-  const notificationHostId = useNotificationHost().hostId;
+  const notificationHostId = useNotificationHostId();
   const parsed = parseFeedId(feedId);
   const hostEntry = useHostNotificationById(
     parsed?.source === "host" ? parsed.sourceId : "",
@@ -626,7 +629,7 @@ export interface NotificationCenterHostState {
 
 /** Active-host subtitle/partial-state selector for the center header. */
 export function useNotificationCenterHostState(): NotificationCenterHostState {
-  const notificationHostId = useNotificationHost().hostId;
+  const notificationHostId = useNotificationHostId();
   const hostEntry = useHostDirectoryEntry(notificationHostId ?? "");
   const feedMode = useNotificationFeedMode();
   const localSummary = useHostNotificationsStore(selectHostNotificationSummary);

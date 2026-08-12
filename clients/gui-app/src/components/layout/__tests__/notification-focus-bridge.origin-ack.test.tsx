@@ -56,6 +56,8 @@ vi.mock("@/lib/host-error-toast", () => ({ toastFromHostError }));
 // provider this suite does not mount - so it is projected from the same
 // binding ref the rest of these mocks use.
 vi.mock("@/hooks/notifications/use-notification-host", () => ({
+  useNotificationHostId: () =>
+    bindingRef.current?.hostClient.getActiveHostId() ?? null,
   useNotificationHost: () => ({
     hostId: bindingRef.current?.hostClient.getActiveHostId() ?? null,
     client: bindingRef.current?.hostClient ?? null,

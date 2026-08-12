@@ -58,7 +58,7 @@ import {
   type AgentActivityTier,
 } from "@/lib/agent-activity";
 import { useEpicAgentActivity } from "@/stores/agent-activity-store";
-import { useEpicStore } from "@/hooks/use-epic-store";
+import { useEpicStore, useMaybeEpicStore } from "@/hooks/use-epic-store";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { useTerminalDisplayTitle } from "@/hooks/terminal/use-terminal-display-title";
@@ -241,11 +241,24 @@ export function chatBackupHasNoCloudTask(
   );
 }
 
+/**
+ * Tolerant of a missing session on purpose: the only caller is the Epic
+ * sidebar's backup indicator, which is a sibling of the canvas and mounts on
+ * split surfaces that have no `<EpicSessionProvider>` above them. The strict
+ * read threw straight through the surface's error boundary and blanked it.
+ *
+ * With no open epic the answer is `false` - "nothing here says there is no
+ * cloud task" - which is the same fail-open direction the host-side gate uses:
+ * a wrong `true` silently hides a real backup failure, a wrong `false` only
+ * shows an indicator that the query then finds nothing to report.
+ */
 export function useEpicChatBackupHasNoCloudTask(): boolean {
-  return chatBackupHasNoCloudTask(
-    useEpicDurabilityStatus(),
-    useEpicDurabilityPauseReason(),
+  const status = useMaybeEpicStore((s) => s.durabilityStatus ?? null, null);
+  const pauseReason = useMaybeEpicStore(
+    (s) => s.durabilityPauseReason ?? null,
+    null,
   );
+  return chatBackupHasNoCloudTask(status, pauseReason);
 }
 
 export function useEpicDurabilityPromotionState(): NonNullable<
@@ -387,11 +400,17 @@ export function deriveEpicDurabilityView(
 
 /** The composed durability reading for the open epic. */
 export function useEpicDurabilityView(): EpicDurabilityView {
-  return useEpicStore((s) =>
-    deriveEpicDurabilityView(
-      s.durabilityStatus ?? null,
-      s.localProtection ?? null,
-      s.durabilityLegsNegotiated,
+  // `useShallow` per this file's own object-select rule: the derivation builds
+  // a fresh literal on every call, so a bare select hands `useSyncExternalStore`
+  // a new snapshot each read and the badge re-renders itself to the update-depth
+  // ceiling.
+  return useEpicStore(
+    useShallow((s) =>
+      deriveEpicDurabilityView(
+        s.durabilityStatus ?? null,
+        s.localProtection ?? null,
+        s.durabilityLegsNegotiated,
+      ),
     ),
   );
 }
@@ -446,8 +465,9 @@ export function deriveEpicCloudFreshnessView(
 
 /** The composed freshness reading for the open epic. */
 export function useEpicCloudFreshnessView(): EpicCloudFreshnessView {
-  return useEpicStore((s) =>
-    deriveEpicCloudFreshnessView(s.cloudFreshness ?? null),
+  // Object-shaped select; see {@link useEpicDurabilityView}.
+  return useEpicStore(
+    useShallow((s) => deriveEpicCloudFreshnessView(s.cloudFreshness ?? null)),
   );
 }
 

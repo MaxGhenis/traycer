@@ -48,3 +48,17 @@ export function useNotificationHost(): NotificationHost {
     [hostId, client],
   );
 }
+
+/**
+ * {@link useNotificationHost}'s id half, for the consumers that only need to
+ * FILE rows under the owning host rather than talk to it.
+ *
+ * Deliberately not `useNotificationHost().hostId`: resolving the client goes
+ * through `useHostClient()`, which THROWS outside a `<HostRuntimeProvider>`.
+ * The indicator query is read by ordinary chrome - the tab strip, the sidebar
+ * rows - that renders in trees with no host runtime at all, so pulling the
+ * client in just to read an id turned a null host into a render crash.
+ */
+export function useNotificationHostId(): string | null {
+  return useReactiveLocalHostEntry()?.hostId ?? null;
+}

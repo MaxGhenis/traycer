@@ -241,8 +241,10 @@ describe("<EpicDurabilityBadge />", () => {
 
   it("stays silent when both legs positively say cloud-durable and armed", () => {
     // The calm case still has to be silent, or the fix is just noise on every
-    // healthy online epic. It is licensed by `armed`, not by the absence.
-    durability.status = null;
+    // healthy online epic. It is licensed by the explicit `"cloud"` member the
+    // `@1.4` enum now carries - never by the absence of the key, which is the
+    // inference the previous fixture encoded and the minor exists to break.
+    durability.status = "cloud";
     durability.pauseReason = null;
     durability.promotionState = null;
     durability.localProtection = "armed";
@@ -338,7 +340,8 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
 
   /** The calm baseline every case below is measured against. */
   function cloudDurableAndArmed(): void {
-    durability.status = null;
+    // The POSITIVE statement, not an absence - see the calm-case test above.
+    durability.status = "cloud";
     durability.pauseReason = null;
     durability.promotionState = null;
     durability.localProtection = "armed";

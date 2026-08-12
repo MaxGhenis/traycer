@@ -23,7 +23,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { NotificationFilterMenu } from "@/components/notifications/notification-filter-menu";
 import { NotificationRow } from "@/components/notifications/notification-row";
-import { useNotificationHost } from "@/hooks/notifications/use-notification-host";
+import { useNotificationHostId } from "@/hooks/notifications/use-notification-host";
 import { useNotificationActivation } from "@/hooks/notifications/use-notification-activation";
 import { useNotificationCenterArrivals } from "@/hooks/notifications/use-notification-center-arrivals";
 import { useNotificationCenterScrollAnchor } from "@/hooks/notifications/use-notification-center-scroll-anchor";
@@ -221,7 +221,7 @@ export function NotificationsPopover(
   // Authoritative liveness signal for the "Mark all read" enablement gate -
   // the SAME notification host the mutations behind that button are bound to,
   // and `null` during a disconnect even though the runtime binding is retained.
-  const notificationHostId = useNotificationHost().hostId;
+  const notificationHostId = useNotificationHostId();
   // Loaded HOST Attention rows (feed ids are `host:<id>`); app-local/global
   // attention is locally actionable and already reflected in `unreadCount`.
   const loadedHostAttentionCount = attentionIds.filter((feedId) =>

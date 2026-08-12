@@ -77,6 +77,7 @@ vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
 // from this suite's existing host ref so the scenario it was already
 // describing is unchanged.
 vi.mock("@/hooks/notifications/use-notification-host", () => ({
+  useNotificationHostId: () => mockLocalHostEntry.hostId,
   useNotificationHost: () => ({
     hostId: mockLocalHostEntry.hostId,
     client: requireHostClient(),

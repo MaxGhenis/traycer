@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import { useNotificationFeedMode } from "@/lib/notifications/notification-feed-mode";
-import { useNotificationHost } from "@/hooks/notifications/use-notification-host";
 import {
   useHostNotificationIndicators,
   type UseHostNotificationIndicatorsArgs,
@@ -51,13 +50,6 @@ export function useNotificationIndicators(
 ): SurfaceNotificationIndicators {
   const feedMode = useNotificationFeedMode();
   const isMixed = feedMode === "cloud";
-  // The SAME owner as the stream and the RPC: `useHostNotificationIndicators`
-  // sends its request through `useNotificationHost().client`, so the response
-  // must be filed under that host's id. Keying it by the ACTIVE host put host
-  // A's local-only indicators in host B's `byOriginHostId` bucket whenever
-  // the two differed - host-bound consumers then hid A's approval/failure
-  // indicators and could decorate B's same-id tabs with them.
-  const notificationHostId = useNotificationHost().hostId;
   const hostIndicators = useHostNotificationIndicators({
     epicIds: args.epicIds,
     chatIds: args.chatIds,
@@ -65,6 +57,15 @@ export function useNotificationIndicators(
     home: isMixed ? "local" : undefined,
     enabled: args.enabled,
   });
+  // The SAME owner as the stream and the RPC, read off the response rather
+  // than looked up again: the query sends its request through
+  // `useNotificationHost().client`, so the answer must be filed under that
+  // host. Keying it by the ACTIVE host put host A's local-only indicators in
+  // host B's `byOriginHostId` bucket whenever the two differed - host-bound
+  // consumers then hid A's approval/failure indicators and could decorate B's
+  // same-id tabs with them. Taking the id from the query instead of asking a
+  // second hook is what makes the two unable to disagree.
+  const notificationHostId = hostIndicators.hostId;
   const cloudRows = useCloudNotificationsStore((state) => state.rows);
   const cloudIndicators = useMemo<SurfaceNotificationIndicators>(() => {
     if (!isMixed || !args.enabled) return EMPTY_INDICATOR_STATE_RESPONSE;

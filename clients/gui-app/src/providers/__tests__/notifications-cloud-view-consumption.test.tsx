@@ -51,6 +51,8 @@ function requireHostClient(): HostClient<HostRpcRegistry> {
 // which reaches the host runtime provider this suite does not mount - so it is
 // stubbed to the same client the streams here are opened on.
 vi.mock("@/hooks/notifications/use-notification-host", () => ({
+  useNotificationHostId: () =>
+    hostState.client === null ? null : mockLocalHostEntry.hostId,
   useNotificationHost: () => ({
     hostId: hostState.client === null ? null : mockLocalHostEntry.hostId,
     client: hostState.client,

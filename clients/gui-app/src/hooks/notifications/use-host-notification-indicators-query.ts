@@ -33,7 +33,18 @@ export interface HostNotificationIndicatorsQuery {
   readonly isFetching: boolean;
   readonly error: HostRpcError | null;
   readonly refetch: () => Promise<void>;
+  /**
+   * The host that ANSWERED, so consumers can file the rows under it without
+   * repeating the lookup - and, more to the point, without a second lookup
+   * that could name a different machine than the one this request went to.
+   * `null` when there is no notification host to ask.
+   */
+  readonly hostId: string | null;
 }
+
+/** {@link HostNotificationIndicatorsQuery} minus the field this hook adds
+ * around `useHostQueries`, whose `combine` only sees the query results. */
+type CombinedIndicatorResults = Omit<HostNotificationIndicatorsQuery, "hostId">;
 
 /**
  * One surface-level indicator observer. The visible ids are canonicalized and
@@ -48,7 +59,8 @@ export function useHostNotificationIndicators(
   // is rendering. Asked of a different host it describes that host's local
   // partition instead, so indicators light for rows the feed does not hold and
   // stay dark for rows it does.
-  const client = useNotificationHost().client;
+  const notificationHost = useNotificationHost();
+  const client = notificationHost.client;
   const userId = useAuthStore((state) => state.contextMetadata?.userId ?? null);
   const requests = useMemo(
     () =>
@@ -63,7 +75,7 @@ export function useHostNotificationIndicators(
   const combined = useHostQueries<
     HostRpcRegistry,
     "host.notifications.indicatorState",
-    HostNotificationIndicatorsQuery
+    CombinedIndicatorResults
   >({
     client,
     requests: requests.map((params) => ({
@@ -91,7 +103,10 @@ export function useHostNotificationIndicators(
       },
     }),
   });
-  return combined;
+  return useMemo(
+    () => ({ ...combined, hostId: notificationHost.hostId }),
+    [combined, notificationHost.hostId],
+  );
 }
 
 export function indicatorRequests(
