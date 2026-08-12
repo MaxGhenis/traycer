@@ -637,6 +637,8 @@ export class BrowserViewManager {
     const key = { ...input, windowId };
     const entry =
       this.entriesByKey.get(entryKeyId(key)) ?? this.findTransferableEntry(key);
+    // Unbound views have no compositor: timers/events stay unthrottled, but
+    // requestAnimationFrame needs the view bound to a window.
     entry?.view.webContents.setBackgroundThrottling(input.enabled);
   }
 

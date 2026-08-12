@@ -554,6 +554,7 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
       chatId: "chat-alpha",
       registrationId: "reg-1",
       sessionId: "session-1",
+      requestedTabId: "durable-tab-1",
       initialUrl: "https://app.example",
       title: "App",
       tileKey: TILE_KEY,
@@ -648,7 +649,13 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
       params: { epicId: "epic-1", chatId: "chat-alpha" },
     });
     expect(stream.closed).toBe(false);
-    expect(registrationFrames(stream.sentFrames)).toHaveLength(2);
+    const replayedRegistrations = registrationFrames(stream.sentFrames);
+    expect(replayedRegistrations).toHaveLength(2);
+    expect(replayedRegistrations[1]).toMatchObject({
+      sessionId: "session-1",
+      registrationId: "reg-1",
+      requestedTabId: "durable-tab-1",
+    });
     expect(readinessFrames(stream.sentFrames)).toHaveLength(2);
 
     cleanup();
