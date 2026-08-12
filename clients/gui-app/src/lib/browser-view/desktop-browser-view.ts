@@ -164,6 +164,9 @@ export interface BrowserViewSnapshotInvalidatedChange extends BrowserViewTileKey
 
 export interface BrowserViewStorageStateApply {
   readonly storageState: unknown;
+  readonly sessionId: string | null;
+  readonly tabId: string | null;
+  readonly purpose: "primary-profile-seed" | "sync-back";
 }
 
 export interface BrowserViewStorageStateCapture extends BrowserViewTileKey {

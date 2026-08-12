@@ -248,6 +248,9 @@ export function BrowserSessionDock(props: BrowserSessionDockProps) {
               ? null
               : await browserView.applyStorageState({
                   storageState: state.storageState,
+                  sessionId: session.sessionId,
+                  tabId: session.tabs[0]?.tabId ?? null,
+                  purpose: "sync-back",
                 });
           openFreshBrowserTileFromBrowserPage({
             viewTabId: props.viewTabId,

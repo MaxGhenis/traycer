@@ -1450,7 +1450,12 @@ describe("electron-browser-tab-store createElectronTab (ticket 14)", () => {
       expect(bridge.backgroundOperations).toEqual(["apply", "create"]);
     });
     expect(bridge.storageApplyCalls).toEqual([
-      { storageState: seedStorageState },
+      {
+        storageState: seedStorageState,
+        sessionId: "session-background-seeded",
+        tabId: "tab-background-seeded",
+        purpose: "primary-profile-seed",
+      },
     ]);
     expect(bridge.backgroundCreateCalls).toEqual([
       expect.objectContaining({

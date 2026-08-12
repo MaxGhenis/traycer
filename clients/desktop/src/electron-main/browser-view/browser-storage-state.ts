@@ -44,7 +44,7 @@ interface BrowserCookieSetDetails {
   readonly url: string;
   readonly name: string;
   readonly value: string;
-  readonly domain: string;
+  readonly domain?: string;
   readonly path: string;
   readonly expirationDate: number | undefined;
   readonly httpOnly: boolean;
@@ -174,6 +174,17 @@ export async function applyBrowserViewStorageStateWithDependencies(
   const cookieDetails = storageState.cookies.map(toCookieSetDetails);
   const cryptoState = dependencies.readCryptoState();
   if (cryptoState.mode === "degraded") {
+    log.info("[browser-view] primary profile storage apply", {
+      kind: "primary_profile_storage_apply",
+      sessionId: input.sessionId,
+      tabId: input.tabId,
+      purpose: input.purpose,
+      cookieCount: storageState.cookies.length,
+      originCount: storageState.origins.length,
+      cookiesSet: 0,
+      cookiesRemoved: 0,
+      outcome: "skipped-degraded",
+    });
     return {
       status: "skipped-degraded",
       cookieCount: 0,
@@ -204,6 +215,17 @@ export async function applyBrowserViewStorageStateWithDependencies(
     kind: "primary_profile_sync_back",
     cookiesSet: cookieDetails.length,
     cookiesRemoved: removedCookies.length,
+  });
+  log.info("[browser-view] primary profile storage apply", {
+    kind: "primary_profile_storage_apply",
+    sessionId: input.sessionId,
+    tabId: input.tabId,
+    purpose: input.purpose,
+    cookieCount: storageState.cookies.length,
+    originCount: storageState.origins.length,
+    cookiesSet: cookieDetails.length,
+    cookiesRemoved: removedCookies.length,
+    outcome: "applied",
   });
   return {
     status: "applied",
@@ -329,7 +351,7 @@ function toCookieSetDetails(
     url: cookieUrl(cookie),
     name: cookie.name,
     value: cookie.value,
-    domain: cookie.domain,
+    ...(cookie.domain.startsWith(".") ? { domain: cookie.domain } : {}),
     path: cookie.path,
     expirationDate: cookie.expires < 0 ? undefined : cookie.expires,
     httpOnly: cookie.httpOnly ?? false,
@@ -370,7 +392,11 @@ function toStorageCookie(cookie: Cookie): BrowserStorageCookie {
   return {
     name: cookie.name,
     value: cookie.value,
-    ...readCookieDomain(cookie.domain),
+    ...readCookieDomain(
+      cookie.hostOnly === true && typeof cookie.domain === "string"
+        ? cookie.domain.replace(/^\./, "")
+        : cookie.domain,
+    ),
     path: readCookiePath(cookie.path),
     expires:
       typeof cookie.expirationDate === "number" ? cookie.expirationDate : -1,

@@ -455,6 +455,9 @@ describe("BrowserSessionDock", () => {
     await screen.findByText(/in-page JS, SPA state, and live sockets/i);
     expect(applyStorageStateMock.fn).toHaveBeenCalledWith({
       storageState: { cookies: [], origins: [] },
+      sessionId: "headless-1",
+      tabId: "headless-tab-1",
+      purpose: "sync-back",
     });
     expect(openFreshBrowserTileMock.fn).toHaveBeenCalledWith({
       viewTabId: "tab-1",

@@ -686,7 +686,17 @@ function parseStorageStateApply(value: unknown): BrowserViewStorageStateApply {
   const record = assertRecord(value, "Browser storageState apply payload");
   return {
     storageState: record.storageState,
+    sessionId: readNullableString(record.sessionId, "sessionId"),
+    tabId: readNullableString(record.tabId, "tabId"),
+    purpose: readStorageStateApplyPurpose(record.purpose),
   };
+}
+
+function readStorageStateApplyPurpose(
+  value: unknown,
+): BrowserViewStorageStateApply["purpose"] {
+  if (value === "primary-profile-seed" || value === "sync-back") return value;
+  throw new Error("Browser storageState apply purpose is invalid");
 }
 
 function parseStorageStateCapture(

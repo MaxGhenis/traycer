@@ -40,7 +40,7 @@ interface CookieSetDetails {
   readonly url: string;
   readonly name: string;
   readonly value: string;
-  readonly domain: string;
+  readonly domain?: string;
   readonly path: string;
   readonly expirationDate: number | undefined;
   readonly httpOnly: boolean;
@@ -66,6 +66,12 @@ const degradedState: BrowserCookieCryptoState = {
   mockKeychainEnabled: true,
 };
 
+const APPLY_CONTEXT = {
+  sessionId: "session-test",
+  tabId: "tab-test",
+  purpose: "sync-back" as const,
+};
+
 describe("applyBrowserViewStorageStateWithDependencies", () => {
   let cookieSets: CookieSetDetails[];
   let cookieRemoves: Array<{ readonly url: string; readonly name: string }>;
@@ -85,6 +91,9 @@ describe("applyBrowserViewStorageStateWithDependencies", () => {
     await expect(
       applyBrowserViewStorageStateWithDependencies(
         {
+          sessionId: "session-cookie-map",
+          tabId: "tab-cookie-map",
+          purpose: "primary-profile-seed",
           storageState: {
             cookies: [
               {
@@ -131,6 +140,51 @@ describe("applyBrowserViewStorageStateWithDependencies", () => {
         sameSite: "lax",
       },
     ]);
+    expect(log.info).toHaveBeenCalledWith(
+      "[browser-view] primary profile storage apply",
+      {
+        kind: "primary_profile_storage_apply",
+        sessionId: "session-cookie-map",
+        tabId: "tab-cookie-map",
+        purpose: "primary-profile-seed",
+        cookieCount: 1,
+        originCount: 1,
+        cookiesSet: 1,
+        cookiesRemoved: 0,
+        outcome: "applied",
+      },
+    );
+    expect(JSON.stringify(vi.mocked(log.info).mock.calls)).not.toContain("abc");
+    expect(JSON.stringify(vi.mocked(log.info).mock.calls)).not.toContain("dark");
+  });
+
+  it("omits host-only cookie domains while preserving dotted domain cookies", async () => {
+    await applyBrowserViewStorageStateWithDependencies(
+      {
+        ...APPLY_CONTEXT,
+        storageState: {
+          cookies: [
+            {
+              ...storageCookie("host-only"),
+              domain: "example.test",
+            },
+            {
+              ...storageCookie("domain-cookie"),
+              domain: ".example.test",
+            },
+          ],
+          origins: [],
+        },
+      },
+      dependencies(realState, cookieSets, fromPartitionCalls),
+    );
+
+    expect(cookieSets.map(({ name, domain }) => ({ name, domain }))).toEqual([
+      { name: "host-only", domain: undefined },
+      { name: "domain-cookie", domain: ".example.test" },
+    ]);
+    expect(cookieSets[0]).not.toHaveProperty("domain");
+    expect(cookieSets[1]).toHaveProperty("domain", ".example.test");
   });
 
   it("removes deleted cookies, retains incoming cookies, and logs counts without values", async () => {
@@ -143,7 +197,7 @@ describe("applyBrowserViewStorageStateWithDependencies", () => {
 
     await expect(
       applyBrowserViewStorageStateWithDependencies(
-        { storageState: nextStorageState },
+        { ...APPLY_CONTEXT, storageState: nextStorageState },
         dependenciesWithExistingCookies(
           realState,
           cookieSets,
@@ -182,6 +236,7 @@ describe("applyBrowserViewStorageStateWithDependencies", () => {
     await expect(
       applyBrowserViewStorageStateWithDependencies(
         {
+          ...APPLY_CONTEXT,
           storageState: {
             cookies: [
               {
@@ -215,6 +270,7 @@ describe("applyBrowserViewStorageStateWithDependencies", () => {
     await expect(
       applyBrowserViewStorageStateWithDependencies(
         {
+          ...APPLY_CONTEXT,
           storageState: {
             cookies: [
               {
@@ -252,6 +308,7 @@ describe("applyBrowserViewStorageStateWithDependencies", () => {
       await expect(
         applyBrowserViewStorageStateWithDependencies(
           {
+            ...APPLY_CONTEXT,
             storageState: {
               cookies: [
                 {
@@ -281,6 +338,7 @@ describe("applyBrowserViewStorageStateWithDependencies", () => {
     await expect(
       applyBrowserViewStorageStateWithDependencies(
         {
+          ...APPLY_CONTEXT,
           storageState: {
             cookies: [
               {
@@ -309,6 +367,7 @@ describe("applyBrowserViewStorageStateWithDependencies", () => {
     await expect(
       applyBrowserViewStorageStateWithDependencies(
         {
+          ...APPLY_CONTEXT,
           storageState: {
             cookies: [
               storageCookie("first"),
@@ -602,10 +661,21 @@ describe("captureBrowserPrimaryProfileWithDependencies", () => {
       origins,
       primaryCaptureDependencies(realState, cookieGetFilters, [
         {
-          name: "sid",
+          name: "host-only",
           value: "cookie",
-          domain: "example.com",
+          domain: ".example.com",
           hostOnly: true,
+          path: "/",
+          secure: true,
+          httpOnly: true,
+          session: true,
+          sameSite: "lax",
+        },
+        {
+          name: "domain-cookie",
+          value: "cookie-domain",
+          domain: ".example.com",
+          hostOnly: false,
           path: "/",
           secure: true,
           httpOnly: true,
@@ -621,9 +691,20 @@ describe("captureBrowserPrimaryProfileWithDependencies", () => {
       storageState: {
         cookies: [
           {
-            name: "sid",
+            name: "host-only",
             value: "cookie",
             domain: "example.com",
+            canonicalDomain: "example.com",
+            path: "/",
+            expires: -1,
+            httpOnly: true,
+            secure: true,
+            sameSite: "Lax",
+          },
+          {
+            name: "domain-cookie",
+            value: "cookie-domain",
+            domain: ".example.com",
             canonicalDomain: "example.com",
             path: "/",
             expires: -1,

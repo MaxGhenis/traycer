@@ -386,6 +386,9 @@ function handleBackgroundElectronTabCreate(
       ? Promise.resolve()
       : bridge.applyStorageState({
           storageState: frame.seedStorageState,
+          sessionId: frame.sessionId,
+          tabId: frame.sourceTabId,
+          purpose: "primary-profile-seed",
         });
   void seed
     .then(() =>

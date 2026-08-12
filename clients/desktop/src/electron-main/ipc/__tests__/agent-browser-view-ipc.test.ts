@@ -207,6 +207,9 @@ describe("registerAgentBrowserViewIpc", () => {
     await expect(
       options.applyStorageState({
         storageState: { cookies: [], origins: [] },
+        sessionId: null,
+        tabId: null,
+        purpose: "primary-profile-seed",
       }),
     ).rejects.toThrow(/not supported on the agent browser partition/i);
 

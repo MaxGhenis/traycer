@@ -698,14 +698,26 @@ describe("BrowserViewManager", () => {
     };
 
     await expect(
-      harness.manager.applyStorageState({ storageState }),
+      harness.manager.applyStorageState({
+        storageState,
+        sessionId: "session-manager-test",
+        tabId: "tab-manager-test",
+        purpose: "sync-back",
+      }),
     ).resolves.toEqual({
       status: "applied",
       cookieCount: 1,
       localStorageApplied: false,
       reason: "cookies-only",
     });
-    expect(harness.storageStateApplications).toEqual([{ storageState }]);
+    expect(harness.storageStateApplications).toEqual([
+      {
+        storageState,
+        sessionId: "session-manager-test",
+        tabId: "tab-manager-test",
+        purpose: "sync-back",
+      },
+    ]);
   });
 
   it("releaseTile unbinds the view without destroying WebContents (ticket 05)", () => {
