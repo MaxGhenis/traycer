@@ -1,9 +1,6 @@
 import { useMemo } from "react";
-import type {
-  HostNotificationsIndicatorState,
-  HostNotificationsIndicatorStateResponse,
-} from "@traycer/protocol/host/notifications/contracts";
 import { useNotificationFeedMode } from "@/lib/notifications/notification-feed-mode";
+import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import {
   useHostNotificationIndicators,
   type UseHostNotificationIndicatorsArgs,
@@ -11,25 +8,39 @@ import {
 import { useCloudNotificationsStore } from "@/stores/notifications/cloud-notifications-store";
 import {
   EMPTY_INDICATOR_STATE_RESPONSE,
-  selectCloudNotificationIndicators,
+  mergeLocalPartitionIntoCloudIndicators,
+  selectCloudNotificationIndicatorProjection,
+  type SurfaceNotificationIndicators,
 } from "@/stores/notifications/notification-indicator-state";
 
 /**
- * Per-entity indicator flags for one surface. In mixed mode the host and
- * cloud calls each return one exact durable-home partition and their boolean
- * flags are ORed; neither side derives counts from its loaded rows.
+ * Per-entity indicator flags for one surface, from whichever feeds are
+ * authoritative - mirroring how the notification center itself is mode-aware.
  *
- * The mixed mode label remains `cloud`, but its inputs are two disjoint
- * durable-home partitions: the host's v1.1 `home: local` indicator response
- * and the cloud snapshot. A foreign cloud row never enters the local origin,
- * while a local-homed row is absent from the cloud partition, so the OR merge
- * neither drops nor double-counts a notification. The cloud store still owns
- * optimistic cloud-row reads, keeping its visible row and its contribution to
- * the indicator coherent while that mutation is in flight.
+ * ## Mixed mode is two EXACT partitions, ORed
  *
- * In local mode this remains the whole-origin host path for old/methodless
- * hosts and the local-only product; only mixed mode asks the host for its
- * `home: local` partition.
+ * The mode label is still `cloud`, but its inputs are two disjoint
+ * durable-home partitions: the host's `indicatorState@1.1` response under
+ * `home: "local"`, and the cloud snapshot. A foreign cloud row never enters
+ * the local origin and a local-homed row is absent from the cloud partition,
+ * so the per-flag OR neither drops a notification nor double-counts one.
+ *
+ * That disjointness is what licenses folding host feed bits in at all. Before
+ * the `home` selector the host answered over its WHOLE SQLite, where an entry
+ * produced on host B never appears - so its answer could not light a tab bound
+ * to host A, and only the host-local `pendingFork` bit was safe to import.
+ * `pendingFork` still comes from the host in both modes, but it now arrives as
+ * one flag of the partition rather than as a special case: fork truth lives on
+ * the connected host's notice board, which is part of that host's local plane.
+ *
+ * The cloud store keeps owning optimistic cloud-row reads, so its visible row
+ * and its contribution to the indicator stay coherent while a mark-read
+ * mutation is in flight.
+ *
+ * ## Local mode
+ *
+ * The whole-origin host path, for old/methodless hosts and the local-only
+ * product. Only mixed mode asks the host to restrict itself to `home: local`.
  *
  * App-local failure rows contribute in BOTH modes - they are client-side
  * state, neither host nor cloud state - and are folded in downstream by
@@ -37,9 +48,10 @@ import {
  */
 export function useNotificationIndicators(
   args: UseHostNotificationIndicatorsArgs,
-): HostNotificationsIndicatorStateResponse {
+): SurfaceNotificationIndicators {
   const feedMode = useNotificationFeedMode();
   const isMixed = feedMode === "cloud";
+  const activeHostId = useReactiveActiveHostId();
   const hostIndicators = useHostNotificationIndicators({
     epicIds: args.epicIds,
     chatIds: args.chatIds,
@@ -48,70 +60,34 @@ export function useNotificationIndicators(
     enabled: args.enabled,
   });
   const cloudRows = useCloudNotificationsStore((state) => state.rows);
-  const cloudIndicators = useMemo(
-    () =>
-      isMixed && args.enabled
-        ? selectCloudNotificationIndicators(
-            cloudRows,
-            args.epicIds,
-            args.chatIds,
-          )
-        : EMPTY_INDICATOR_STATE_RESPONSE,
-    [isMixed, args.enabled, cloudRows, args.epicIds, args.chatIds],
-  );
+  const cloudIndicators = useMemo<SurfaceNotificationIndicators>(() => {
+    if (!isMixed || !args.enabled) return EMPTY_INDICATOR_STATE_RESPONSE;
+    const projection = selectCloudNotificationIndicatorProjection(
+      cloudRows,
+      args.epicIds,
+      args.chatIds,
+    );
+    return {
+      ...projection.aggregate,
+      byOriginHostId: projection.byOriginHostId,
+    };
+  }, [isMixed, args.enabled, cloudRows, args.epicIds, args.chatIds]);
   return isMixed
-    ? mergeNotificationIndicatorPartitions(hostIndicators.data, cloudIndicators)
-    : hostIndicators.data;
+    ? mergeLocalPartitionIntoCloudIndicators(
+        cloudIndicators,
+        hostIndicators.data,
+        activeHostId,
+      )
+    : scopeIndicatorsToOrigin(hostIndicators.data, activeHostId);
 }
 
-function mergeNotificationIndicatorPartitions(
-  local: HostNotificationsIndicatorStateResponse,
-  cloud: HostNotificationsIndicatorStateResponse,
-): HostNotificationsIndicatorStateResponse {
+function scopeIndicatorsToOrigin(
+  indicators: SurfaceNotificationIndicators,
+  originHostId: string | null,
+): SurfaceNotificationIndicators {
+  if (originHostId === null) return indicators;
   return {
-    epics: mergeIndicatorRecord(local.epics, cloud.epics),
-    chats: mergeIndicatorRecord(local.chats, cloud.chats),
-  };
-}
-
-function mergeIndicatorRecord(
-  local: HostNotificationsIndicatorStateResponse["epics"],
-  cloud: HostNotificationsIndicatorStateResponse["epics"],
-): HostNotificationsIndicatorStateResponse["epics"] {
-  const merged = { ...local };
-  for (const [id, cloudState] of Object.entries(cloud)) {
-    merged[id] = orIndicatorState(readIndicatorState(merged, id), cloudState);
-  }
-  return merged;
-}
-
-/**
- * A record read that admits the id may be absent.
- *
- * The wire type is a `z.record`, which TypeScript widens to a TOTAL
- * `Record<string, T>` - so an inline `record[id] === undefined` check reads as
- * dead code to the type checker while being the only thing standing between a
- * partition that lacks the id and a `.pendingApproval` on `undefined`.
- */
-function readIndicatorState(
-  record: HostNotificationsIndicatorStateResponse["epics"],
-  id: string,
-): HostNotificationsIndicatorState | undefined {
-  return Object.hasOwn(record, id) ? record[id] : undefined;
-}
-
-/** Per-flag OR of two exact durable-home partitions. Neither drops the other:
- * a foreign cloud row never enters the local origin, and a local-homed row is
- * absent from the cloud partition. */
-function orIndicatorState(
-  local: HostNotificationsIndicatorState | undefined,
-  cloud: HostNotificationsIndicatorState,
-): HostNotificationsIndicatorState {
-  if (local === undefined) return cloud;
-  return {
-    pendingApproval: local.pendingApproval || cloud.pendingApproval,
-    pendingInterview: local.pendingInterview || cloud.pendingInterview,
-    unreadFailure: local.unreadFailure || cloud.unreadFailure,
-    unreadDone: local.unreadDone || cloud.unreadDone,
+    ...indicators,
+    byOriginHostId: { [originHostId]: indicators },
   };
 }

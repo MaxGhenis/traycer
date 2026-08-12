@@ -855,12 +855,22 @@ export type HostNotificationsSubscribeClientFrame = z.infer<
   typeof hostNotificationsSubscribeClientFrameSchema
 >;
 
-export const hostNotificationsIndicatorStateSchema = z.object({
+/** Released `indicatorState@1.0` entity flags. FROZEN. */
+export const hostNotificationsIndicatorStateSchemaV10 = z.object({
   pendingApproval: z.boolean(),
   pendingInterview: z.boolean(),
   unreadFailure: z.boolean(),
   unreadDone: z.boolean(),
 });
+export type HostNotificationsIndicatorStateV10 = z.infer<
+  typeof hostNotificationsIndicatorStateSchemaV10
+>;
+
+/** `indicatorState@1.1`: pending fork truth is independent of feed read state. */
+export const hostNotificationsIndicatorStateSchema =
+  hostNotificationsIndicatorStateSchemaV10.extend({
+    pendingFork: z.boolean(),
+  });
 export type HostNotificationsIndicatorState = z.infer<
   typeof hostNotificationsIndicatorStateSchema
 >;
@@ -885,6 +895,15 @@ export const hostNotificationsIndicatorStateRequestSchemaV11 =
   });
 export type HostNotificationsIndicatorStateRequestV11 = z.infer<
   typeof hostNotificationsIndicatorStateRequestSchemaV11
+>;
+
+/** Released `indicatorState@1.0` response. FROZEN. */
+export const hostNotificationsIndicatorStateResponseSchemaV10 = z.object({
+  epics: z.record(z.string(), hostNotificationsIndicatorStateSchemaV10),
+  chats: z.record(z.string(), hostNotificationsIndicatorStateSchemaV10),
+});
+export type HostNotificationsIndicatorStateResponseV10 = z.infer<
+  typeof hostNotificationsIndicatorStateResponseSchemaV10
 >;
 
 export const hostNotificationsIndicatorStateResponseSchema = z.object({
@@ -1524,13 +1543,22 @@ export const hostNotificationsSetConfig = defineRpcContract({
   responseSchema: hostNotificationsConfigResponseSchema,
 });
 
-export const hostNotificationsIndicatorState = defineRpcContract({
+export const hostNotificationsIndicatorStateV10 = defineRpcContract({
   method: "host.notifications.indicatorState",
   schemaVersion: { major: 1, minor: 0 } as const,
   requestSchema: hostNotificationsIndicatorStateRequestSchema,
-  responseSchema: hostNotificationsIndicatorStateResponseSchema,
+  responseSchema: hostNotificationsIndicatorStateResponseSchemaV10,
 });
 
+/**
+ * `@1.1` carries BOTH of the bumps that landed on this method independently:
+ * the local-home request selector (`home`, `chatEpicIds`) and the `pendingFork`
+ * response flag. They arrived on different branches, each bumping 1.0 -> 1.1 on
+ * its own axis - one on the request, one on the response - so the merged minor
+ * is their union rather than either one. Two `@1.1` definitions of one method
+ * cannot both be registered, and picking one would silently drop the other's
+ * field from the wire.
+ */
 export const hostNotificationsIndicatorStateV11 = defineRpcContract({
   method: "host.notifications.indicatorState",
   schemaVersion: { major: 1, minor: 1 } as const,
@@ -1538,16 +1566,48 @@ export const hostNotificationsIndicatorStateV11 = defineRpcContract({
   responseSchema: hostNotificationsIndicatorStateResponseSchema,
 });
 
+/**
+ * The bare name is the LATEST, which is the convention the rest of this file
+ * and the incoming mainline both use. Kept as an alias rather than a fourth
+ * `defineRpcContract` so there is exactly one `@1.1` object: a second one would
+ * be a distinct contract instance for the same version, and the registry's
+ * `typeof` entries would then disagree about which is canonical.
+ */
+export const hostNotificationsIndicatorState =
+  hostNotificationsIndicatorStateV11;
+
+/**
+ * A v1.0 peer predates fork indicators. Default the new pending-class flag to
+ * false so a newer renderer keeps its sidebar fully functional against an
+ * older host rather than treating field absence as a malformed response.
+ *
+ * The request half stays identity: `@1.1` only ADDS optional selectors, so a
+ * v1.0 request is already a well-formed v1.1 one.
+ */
 export const hostNotificationsIndicatorStateUpgradeV10ToV11 =
   defineUpgradePath<
-    typeof hostNotificationsIndicatorState,
+    typeof hostNotificationsIndicatorStateV10,
     typeof hostNotificationsIndicatorStateV11
   >({
-    from: hostNotificationsIndicatorState.schemaVersion,
+    from: hostNotificationsIndicatorStateV10.schemaVersion,
     to: hostNotificationsIndicatorStateV11.schemaVersion,
     upgradeRequest: (request) => request,
-    upgradeResponse: (response) => response,
+    upgradeResponse: (response) => ({
+      epics: addPendingForkDefault(response.epics),
+      chats: addPendingForkDefault(response.chats),
+    }),
   });
+
+function addPendingForkDefault(
+  states: Readonly<Record<string, HostNotificationsIndicatorStateV10>>,
+): Record<string, HostNotificationsIndicatorState> {
+  return Object.fromEntries(
+    Object.entries(states).map(([id, state]) => [
+      id,
+      { ...state, pendingFork: false },
+    ]),
+  );
+}
 
 /**
  * `host.notificationHooks.*@1.0` - status, test, and whole-file save surface

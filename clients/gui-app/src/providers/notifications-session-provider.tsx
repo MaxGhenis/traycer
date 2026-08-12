@@ -37,8 +37,9 @@ import { useNotificationFeedModeFor } from "@/lib/notifications/notification-fee
 import { NotificationFeedModeContext } from "@/lib/notifications/notification-feed-mode-context";
 import { resetCloudEntityReadDriver } from "@/lib/notifications/cloud-entity-read-driver";
 import {
-  readFocusedHostNotificationPresenceEntity,
+  readFocusedHostNotificationPresence,
   subscribeHostNotificationPresence,
+  type FocusedHostNotificationPresence,
   type HostNotificationPresenceFrame,
 } from "@/lib/notifications/notification-presence";
 import { getNotificationsStreamFactoryOverride } from "@/providers/notifications-stream-factory-override";
@@ -72,19 +73,25 @@ import {
 } from "@/lib/notifications";
 import { useAppLocalNotificationsStore } from "@/stores/notifications/app-local-notifications-store";
 import type {
+  HostNotificationEntryV21,
   HostNotificationsEntityRef,
-  HostNotificationsPresenceEntity,
 } from "@traycer/protocol/host/notifications/contracts";
 import {
   useMergedNotificationsActions,
   type MergedNotificationRow,
 } from "@/stores/notifications/merged-notifications";
 import { activationResultHandler } from "@/lib/notifications/notification-activation-result";
+import { occurrenceKeyForNotification } from "@/lib/notifications/notification-occurrence";
 
 export interface NotificationsSessionProviderProps {
   readonly children: ReactNode;
   /** The live per-window router owns this provider's toast navigation. */
   readonly navigate: NotificationNavigate;
+}
+
+interface FocusedNotificationScope {
+  readonly originHostId: string | null;
+  readonly entity: HostNotificationsEntityRef;
 }
 
 /**
@@ -183,7 +190,55 @@ function NotificationsSessionBody(
   const windowId = windowsBridge?.windowId ?? fallbackWindowId;
   const markEntityReadMutation = useNotificationMarkEntityRead();
   const markEntityRead = markEntityReadMutation.mutate;
-  const activeEntityRef = useRef<HostNotificationsEntityRef | null>(null);
+  const activeEntityRef = useRef<FocusedNotificationScope | null>(null);
+  // Notification-feed delivery is independent from the live chat stream. A
+  // newly observed row may describe an older turn that replicated late, so it
+  // cannot causally consume a renderer-local transport failure. Seed every
+  // completion into the durable replay ledger only; the live
+  // `turn.completed` event acknowledges app-local failures at the chat-store
+  // boundary where ordering is authoritative.
+  const recordCompletions = useCallback(
+    (
+      inputs: ReadonlyArray<{
+        readonly entry: HostNotificationEntryV21;
+        readonly originHostId: string;
+        readonly semanticId: string;
+      }>,
+    ): void => {
+      const observedAt = Date.now();
+      useAppLocalNotificationsStore.getState().recordCompletions(
+        inputs.flatMap(({ entry, originHostId, semanticId }) => {
+          if (entry.severity !== "done") return [];
+          const entity = notificationEntityFromHostEntry(entry);
+          if (entity === null) return [];
+          return [
+            {
+              originHostId,
+              completion: {
+                id: semanticId,
+                occurrenceKey: occurrenceKeyForNotification({
+                  feedId: semanticId,
+                  createdAt: entry.updatedAt,
+                  sourceRef: entry.sourceRef,
+                }),
+              },
+              entity: null,
+              observedAt,
+            },
+          ];
+        }),
+      );
+    },
+    [],
+  );
+  const removeObservedCompletions = useCallback(
+    (originHostId: string, completionIds: ReadonlyArray<string>): void => {
+      useAppLocalNotificationsStore
+        .getState()
+        .removeObservedCompletions(originHostId, completionIds);
+    },
+    [],
+  );
   const onToastClick = useCallback(
     (row: MergedNotificationRow): void => {
       if (row.payload === null) return;
@@ -217,36 +272,47 @@ function NotificationsSessionBody(
     markCloudEntityReadRef.current = mergedActions.markEntityAsRead;
   }, [mergedActions]);
   const markCloudEntityRead = useCallback(
-    (entity: HostNotificationsEntityRef): void => {
-      markCloudEntityReadRef.current(entity);
+    (scope: FocusedNotificationScope): void => {
+      markCloudEntityReadRef.current(scope.originHostId, scope.entity);
     },
     [],
   );
   const consumeEntity = useCallback(
-    (entity: HostNotificationsEntityRef): void => {
+    (scope: FocusedNotificationScope): void => {
       // App-local rows are client-side state owned by neither feed, so this
       // half runs identically in both modes.
       useAppLocalNotificationsStore
         .getState()
-        .markEntityAsRead(entity, Date.now());
-      // The host feed is always the exact local durable-home partition. In
-      // mixed mode the cloud fan-out covers the other partition as well; both
-      // calls are necessary, but neither can address the other plane's rows.
-      markEntityRead(entity);
-      if (notificationFeedMode === "cloud") markCloudEntityRead(entity);
+        .markEntityAsRead(scope.originHostId, scope.entity, Date.now());
+      // BOTH calls in mixed mode, and no early return between them. The host
+      // feed is the exact local durable-home partition while the cloud fan-out
+      // covers its complement, so each addresses rows the other cannot: an
+      // early return after the cloud call left every local-homed row unread.
+      //
+      // The host-binding guard still applies to the local half. The local
+      // notification RPC addresses the CONNECTED host, so a tile bound to
+      // another host must not acknowledge the same entity there.
+      if (scope.originHostId === null || scope.originHostId === localHostId) {
+        markEntityRead(scope.entity);
+      }
+      if (notificationFeedMode === "cloud") {
+        markCloudEntityRead(scope);
+      }
     },
-    [markEntityRead, markCloudEntityRead, notificationFeedMode],
+    [localHostId, markEntityRead, markCloudEntityRead, notificationFeedMode],
   );
   const onPresenceChanged = useCallback(
     (frame: HostNotificationPresenceFrame, hostId: string): void => {
       if (localHostId !== hostId) return;
-      const nextEntity = entityFromFocusedPresence(frame);
+      const nextEntity = frame.focused
+        ? scopeFromFocusedPresence(readFocusedHostNotificationPresence())
+        : null;
       const previousEntity = activeEntityRef.current;
       if (
         (nextEntity === null && previousEntity === null) ||
         (nextEntity !== null &&
           previousEntity !== null &&
-          notificationEntitiesMatch(nextEntity, previousEntity))
+          focusedNotificationScopesMatch(nextEntity, previousEntity))
       )
         return;
       activeEntityRef.current = nextEntity;
@@ -257,16 +323,31 @@ function NotificationsSessionBody(
   const onFeedFrame = useCallback(
     (frame: HostNotificationsFeedFrame, hostId: string): void => {
       if (localHostId !== hostId) return;
-      if (
-        frame.kind === "snapshot" ||
-        frame.kind === "partitionSnapshot" ||
-        frame.kind === "cleared" ||
-        frame.kind === "removed"
-      ) {
+      // `partitionSnapshot` is a `snapshot` for every purpose here: `@1.2`
+      // defines it by extending the frozen V11 snapshot, so it carries the
+      // same `attention` / `recent` pages and only narrows WHICH rows they
+      // hold. Omitting it would drop completion receipts for the whole local
+      // partition on every mixed-mode session.
+      if (frame.kind === "snapshot" || frame.kind === "partitionSnapshot") {
+        invalidateNotificationIndicators(queryClient, hostId, hostClient);
+        recordCompletions(
+          [...frame.attention.entries, ...frame.recent.entries].map(
+            (entry) => ({
+              entry,
+              originHostId: hostId,
+              semanticId: entry.id,
+            }),
+          ),
+        );
+        return;
+      }
+      if (frame.kind === "cleared" || frame.kind === "removed") {
+        removeObservedCompletions(hostId, frame.removedIds);
         invalidateNotificationIndicators(queryClient, hostId, hostClient);
         return;
       }
       if (frame.kind === "readStateChanged") {
+        removeObservedCompletions(hostId, frame.removedIds);
         // A read-state frame can also carry retention `removedIds` for
         // unrelated rows the protocol has no entity refs for - full-invalidate
         // rather than leave those entities' indicators stale.
@@ -283,6 +364,7 @@ function NotificationsSessionBody(
         return;
       }
       const entity = notificationEntityFromHostEntry(frame.entry);
+      removeObservedCompletions(hostId, frame.removedIds);
       // Same reasoning as above: a surviving upsert's `removedIds` can name
       // entities this frame carries no ref for.
       if (frame.removedIds.length > 0) {
@@ -296,18 +378,34 @@ function NotificationsSessionBody(
         );
       }
       if (entity === null) return;
+      recordCompletions([
+        {
+          entry: frame.entry,
+          originHostId: hostId,
+          semanticId: frame.entry.id,
+        },
+      ]);
       const activeEntity = activeEntityRef.current;
       const isTerminalSeverity =
         frame.entry.severity === "done" || frame.entry.severity === "failure";
       if (
         activeEntity === null ||
-        !notificationEntitiesMatch(activeEntity, entity)
+        (activeEntity.originHostId !== null &&
+          activeEntity.originHostId !== hostId) ||
+        !notificationEntitiesMatch(activeEntity.entity, entity)
       )
         return;
       if (!isTerminalSeverity) return;
-      consumeEntity(entity);
+      consumeEntity({ originHostId: hostId, entity });
     },
-    [localHostId, consumeEntity, hostClient, queryClient],
+    [
+      localHostId,
+      consumeEntity,
+      recordCompletions,
+      removeObservedCompletions,
+      hostClient,
+      queryClient,
+    ],
   );
   const onHostStreamOpened = useCallback((): void => {
     activeEntityRef.current = null;
@@ -414,10 +512,21 @@ function NotificationsSessionBody(
       const activeEntity = activeEntityRef.current;
       if (activeEntity === null) return;
       const hasUnreadArrivalForActiveEntity = Object.values(state.byId).some(
-        (entry) =>
-          entry.readAt === null &&
-          !Object.hasOwn(previous.byId, entry.id) &&
-          notificationPayloadBelongsToEntity(entry.payload, activeEntity),
+        (entry) => {
+          if (entry.readAt !== null) return false;
+          const prior = Object.hasOwn(previous.byId, entry.id)
+            ? previous.byId[entry.id]
+            : null;
+          const isNewUnreadOccurrence = prior === null || prior.readAt !== null;
+          return (
+            isNewUnreadOccurrence &&
+            (entry.originHostId ?? null) === activeEntity.originHostId &&
+            notificationPayloadBelongsToEntity(
+              entry.payload,
+              activeEntity.entity,
+            )
+          );
+        },
       );
       if (hasUnreadArrivalForActiveEntity) {
         consumeEntity(activeEntity);
@@ -430,7 +539,7 @@ function NotificationsSessionBody(
   // Local mode learns "the user is looking at X" from host presence frames,
   // and neither local stream is opened in cloud mode. But those frames are
   // built from state this renderer already owns: the canvas store plus
-  // document focus. `readFocusedHostNotificationPresenceEntity` is literally
+  // document focus. `readFocusedHostNotificationPresence` is literally
   // the function the outgoing frame is composed from, and
   // `subscribeHostNotificationPresence` already watches exactly the inputs
   // that can change it. Reading it directly is the same signal one hop
@@ -438,15 +547,15 @@ function NotificationsSessionBody(
   useEffect(() => {
     if (notificationFeedMode !== "cloud") return;
     const evaluate = (): void => {
-      const nextEntity = entityFromFocusedPresenceEntity(
-        readFocusedHostNotificationPresenceEntity(),
+      const nextEntity = scopeFromFocusedPresence(
+        readFocusedHostNotificationPresence(),
       );
       const previousEntity = activeEntityRef.current;
       if (
         (nextEntity === null && previousEntity === null) ||
         (nextEntity !== null &&
           previousEntity !== null &&
-          notificationEntitiesMatch(nextEntity, previousEntity))
+          focusedNotificationScopesMatch(nextEntity, previousEntity))
       )
         return;
       activeEntityRef.current = nextEntity;
@@ -534,8 +643,15 @@ function NotificationsSessionBody(
         localStreamClient,
         onAuthError,
         onEntitlementDenied,
-        (entries) => {
-          displayCloudSnapshotArrivals(entries, {
+        ({ rows, arrivals }) => {
+          recordCompletions(
+            rows.map((row) => ({
+              entry: row.entry,
+              originHostId: row.originHostId,
+              semanticId: row.entryId,
+            })),
+          );
+          displayCloudSnapshotArrivals(arrivals, {
             showNotification,
             playChime: playNotificationChime,
             onToastClick: (row) => onToastClickRef.current(row),
@@ -547,6 +663,19 @@ function NotificationsSessionBody(
       useCloudNotificationsStore.getState().setConnectionState("unavailable");
       return;
     }
+    // Every transport session starts with a baseline snapshot. Keep durable,
+    // bounded receipts for replay bookkeeping, but never treat a row from
+    // this independently ordered feed as causal evidence over a renderer-local
+    // failure.
+    //
+    // LOCAL MODE ONLY. This opens the legacy whole-origin Yjs replica
+    // (`useNotificationsStore`), which mixed mode does not read: there the
+    // local lane comes from the per-host store that `openHostNotificationsStream`
+    // below fills, and `merged-notifications` concatenates that with the cloud
+    // rows. The completion receipts are unaffected - they are recorded in
+    // `onFeedFrame`, which belongs to the host stream and runs in both modes -
+    // so opening this one in mixed mode would be a second subscription whose
+    // rows nothing reads.
     if (notificationFeedMode === "local") {
       disposerRef.current = openNotificationsStream(
         createNotificationsStream,
@@ -584,6 +713,7 @@ function NotificationsSessionBody(
   }, [
     localStreamClient,
     authService,
+    recordCompletions,
     localHostId,
     windowId,
     showNotification,
@@ -778,23 +908,30 @@ function anyStreamOpen(
   return refs.some((ref) => ref.current !== null);
 }
 
-function entityFromFocusedPresence(
-  frame: HostNotificationPresenceFrame,
-): HostNotificationsEntityRef | null {
-  if (!frame.focused) return null;
-  return entityFromFocusedPresenceEntity(frame.entity);
+function scopeFromFocusedPresence(
+  focused: FocusedHostNotificationPresence | null,
+): FocusedNotificationScope | null {
+  if (focused === null || focused.entity.epicId === undefined) return null;
+  return {
+    originHostId: focused.originHostId,
+    entity:
+      focused.entity.chatId === undefined
+        ? { epicId: focused.entity.epicId }
+        : {
+            epicId: focused.entity.epicId,
+            chatId: focused.entity.chatId,
+          },
+  };
 }
 
-/** The presence entity normalized to an addressable entity ref. Shared so the
- * cloud path, which reads the focused entity locally, and the local path,
- * which receives it back as a host frame, cannot drift apart. */
-function entityFromFocusedPresenceEntity(
-  entity: HostNotificationsPresenceEntity | null,
-): HostNotificationsEntityRef | null {
-  if (entity === null || entity.epicId === undefined) return null;
-  return entity.chatId === undefined
-    ? { epicId: entity.epicId }
-    : { epicId: entity.epicId, chatId: entity.chatId };
+function focusedNotificationScopesMatch(
+  left: FocusedNotificationScope,
+  right: FocusedNotificationScope,
+): boolean {
+  return (
+    left.originHostId === right.originHostId &&
+    notificationEntitiesMatch(left.entity, right.entity)
+  );
 }
 
 function createFallbackNotificationsWindowId(): string {

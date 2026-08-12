@@ -229,6 +229,36 @@ function cloudDone(
   };
 }
 
+function cloudFailure(
+  entryId: string,
+  createdAt: number,
+  readAt: number | null,
+): HostNotificationsCloudFeedRow {
+  return {
+    entryId,
+    originHostId: "host-cloud",
+    coalesceKey: "agent.stopped:chat-cloud",
+    entry: {
+      id: entryId,
+      updatedAt: createdAt,
+      readAt,
+      kind: "agent.stopped",
+      sourceRef: entryId,
+      severity: "failure",
+      outcome: "errored",
+      epicId: "epic-cloud",
+      chatId: "chat-cloud",
+      payload: {
+        kind: "chat",
+        epicId: "epic-cloud",
+        chatId: "chat-cloud",
+        outcome: "errored",
+      },
+    },
+    presentation: { epicTitle: "Cloud epic", chatTitle: "Cloud chat" },
+  };
+}
+
 function appLocalEntry(
   id: string,
   updatedAt: number,
@@ -690,6 +720,28 @@ describe("cloud feed projection authority", () => {
     expect(result.current.unreadCount).toBe(0);
     expect(result.current.bell).toEqual({ kind: "unknown" });
     expect(result.current.hostState.isPartial).toBe(true);
+  });
+
+  it("never keeps the attention bell after optimistically marking every cloud failure read", () => {
+    // An EMPTY host snapshot, not an absent one. Mixed mode now reports
+    // `unknown` while either partition's summary is missing rather than
+    // understating the total from the one it has, so a cloud-only arrangement
+    // would assert the partial state instead of this test's subject.
+    applyHostSnapshot([], { unreadCount: 0, attentionCount: 0 });
+    const failure = cloudFailure("entry-failure", 7, null);
+    useCloudNotificationsStore.getState().applySnapshot({
+      rows: [failure],
+      summary: { totalCount: 1, unreadCount: 1, attentionCount: 1 },
+      version: 7,
+    });
+    const { result } = renderHook(() => useNotificationBellState());
+    expect(result.current).toEqual({ kind: "attention", count: 1 });
+
+    act(() => {
+      useCloudNotificationsStore.getState().markAllReadLocally(8);
+    });
+
+    expect(result.current).toEqual({ kind: "clear" });
   });
 
   it("keys a row by entryId alone - originHostId is display metadata, not identity", () => {

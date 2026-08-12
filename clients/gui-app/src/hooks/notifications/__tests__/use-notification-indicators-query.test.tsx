@@ -174,14 +174,38 @@ const EMPTY_HOST_RESPONSE: HostNotificationsIndicatorStateResponse = {
   chats: {},
 };
 
-/** Serializes the four flags so an assertion names the exact indicator the
+/** Serializes the flags so an assertion names the exact indicator the
  * user sees rather than a boolean in isolation. */
 function IndicatorProbe(props: {
   readonly entity: HostNotificationsEntityRef;
   readonly testId: string;
 }): ReactNode {
-  const state = useSurfaceNotificationIndicatorState(props.entity);
+  const state = useSurfaceNotificationIndicatorState(props.entity, null);
   const lit = [
+    state.pendingFork ? "pendingFork" : null,
+    state.pendingApproval ? "pendingApproval" : null,
+    state.pendingInterview ? "pendingInterview" : null,
+    state.unreadFailure ? "unreadFailure" : null,
+    state.unreadDone ? "unreadDone" : null,
+  ].filter((flag): flag is string => flag !== null);
+  return (
+    <span data-testid={props.testId}>
+      {lit.length === 0 ? "none" : lit.join(",")}
+    </span>
+  );
+}
+
+function HostScopedIndicatorProbe(props: {
+  readonly entity: HostNotificationsEntityRef;
+  readonly originHostId: string;
+  readonly testId: string;
+}): ReactNode {
+  const state = useSurfaceNotificationIndicatorState(
+    props.entity,
+    props.originHostId,
+  );
+  const lit = [
+    state.pendingFork ? "pendingFork" : null,
     state.pendingApproval ? "pendingApproval" : null,
     state.pendingInterview ? "pendingInterview" : null,
     state.unreadFailure ? "unreadFailure" : null,
@@ -406,12 +430,54 @@ describe("mixed-plane notification indicators", () => {
       expect(indicatorText("chat")).toBe("unreadDone");
     });
     // The foreign row still lights the indicator even though the exact local
-    // partition is empty. That local partition is queried precisely once;
-    // the cloud frame remains the sole source for this foreign entry.
+    // partition is empty: the entry never entered this host's SQLite, so the
+    // local partition could not have produced it. That partition is queried
+    // precisely once, and the cloud frame stays the sole source for this
+    // foreign entry.
     expect(OTHER_HOST_ID).not.toBe(CONNECTED_HOST_ID);
     await expectSingleLocalIndicatorRequest(harness, {
       epicIds: [],
       chatIds: [CHAT_ID],
+    });
+  });
+
+  it("does not decorate a host-bound tab with another host's same-id feed row", async () => {
+    const harness = createHarness(EMPTY_HOST_RESPONSE);
+    applyCloudSnapshot(
+      [
+        cloudRow({
+          entryId: "entry-b",
+          originHostId: OTHER_HOST_ID,
+          readAt: null,
+        }),
+      ],
+      1,
+    );
+
+    renderSurface(harness, {
+      epicIds: [],
+      chatIds: [CHAT_ID],
+      children: (
+        <>
+          <IndicatorProbe entity={ENTITY} testId="aggregate" />
+          <HostScopedIndicatorProbe
+            entity={ENTITY}
+            originHostId={CONNECTED_HOST_ID}
+            testId="connected-host"
+          />
+          <HostScopedIndicatorProbe
+            entity={ENTITY}
+            originHostId={OTHER_HOST_ID}
+            testId="origin-host"
+          />
+        </>
+      ),
+    });
+
+    await waitFor(() => {
+      expect(indicatorText("aggregate")).toBe("unreadDone");
+      expect(indicatorText("connected-host")).toBe("none");
+      expect(indicatorText("origin-host")).toBe("unreadDone");
     });
   });
 
@@ -528,6 +594,65 @@ describe("mixed-plane notification indicators", () => {
     expect(harness.hostIndicators.requestCount.value).toBe(1);
   });
 
+  it("keeps a host-derived pending fork lit when its cloud row is marked read", async () => {
+    const harness = createHarness({
+      epics: {},
+      chats: {
+        [CHAT_ID]: {
+          unreadFailure: false,
+          pendingFork: true,
+          pendingApproval: false,
+          pendingInterview: false,
+          unreadDone: false,
+        },
+      },
+    });
+    applyCloudSnapshot(
+      [
+        cloudRow({
+          entryId: "entry-b",
+          originHostId: OTHER_HOST_ID,
+          readAt: null,
+        }),
+      ],
+      1,
+    );
+
+    renderSurface(harness, {
+      epicIds: [],
+      chatIds: [CHAT_ID],
+      children: (
+        <>
+          <IndicatorProbe entity={ENTITY} testId="chat" />
+          <HostScopedIndicatorProbe
+            entity={ENTITY}
+            originHostId={CONNECTED_HOST_ID}
+            testId="connected-host"
+          />
+          <HostScopedIndicatorProbe
+            entity={ENTITY}
+            originHostId={OTHER_HOST_ID}
+            testId="origin-host"
+          />
+          <MarkReadButton entryId="entry-b" />
+        </>
+      ),
+    });
+    await waitFor(() => {
+      expect(indicatorText("chat")).toBe("pendingFork,unreadDone");
+      expect(indicatorText("connected-host")).toBe("pendingFork");
+      expect(indicatorText("origin-host")).toBe("unreadDone");
+    });
+
+    screen.getByRole("button", { name: "Mark read" }).click();
+
+    await waitFor(() => {
+      expect(indicatorText("chat")).toBe("pendingFork");
+      expect(indicatorText("connected-host")).toBe("pendingFork");
+      expect(indicatorText("origin-host")).toBe("none");
+    });
+  });
+
   it("keeps a degraded mark-read's icon agreeing with its retained row, then reconverges on the next snapshot", async () => {
     const harness = createHarness(EMPTY_HOST_RESPONSE);
     harness.cloudMarkRead.mode = "unavailable";
@@ -617,6 +742,7 @@ describe("local-mode notification indicators", () => {
       chats: {
         [CHAT_ID]: {
           unreadFailure: false,
+          pendingFork: false,
           pendingApproval: true,
           pendingInterview: false,
           unreadDone: false,
@@ -648,6 +774,48 @@ describe("local-mode notification indicators", () => {
     expect(harness.hostIndicators.requestCount.value).toBeGreaterThan(0);
   });
 
+  it("does not decorate another host's bound tab with the active host response", async () => {
+    feedMode.value = "local";
+    const harness = createHarness({
+      epics: {},
+      chats: {
+        [CHAT_ID]: {
+          unreadFailure: false,
+          pendingFork: false,
+          pendingApproval: false,
+          pendingInterview: false,
+          unreadDone: true,
+        },
+      },
+    });
+
+    renderSurface(harness, {
+      epicIds: [],
+      chatIds: [CHAT_ID],
+      children: (
+        <>
+          <IndicatorProbe entity={ENTITY} testId="aggregate" />
+          <HostScopedIndicatorProbe
+            entity={ENTITY}
+            originHostId={CONNECTED_HOST_ID}
+            testId="connected-host"
+          />
+          <HostScopedIndicatorProbe
+            entity={ENTITY}
+            originHostId={OTHER_HOST_ID}
+            testId="other-host"
+          />
+        </>
+      ),
+    });
+
+    await waitFor(() => {
+      expect(indicatorText("aggregate")).toBe("unreadDone");
+      expect(indicatorText("connected-host")).toBe("unreadDone");
+      expect(indicatorText("other-host")).toBe("none");
+    });
+  });
+
   it("folds unread app-local failures into the host response", async () => {
     feedMode.value = "local";
     const harness = createHarness({
@@ -655,6 +823,7 @@ describe("local-mode notification indicators", () => {
       chats: {
         [CHAT_ID]: {
           unreadFailure: false,
+          pendingFork: false,
           pendingApproval: false,
           pendingInterview: false,
           unreadDone: true,

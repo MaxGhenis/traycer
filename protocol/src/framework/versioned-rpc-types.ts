@@ -74,6 +74,12 @@ export const RPC_ERROR_CODES = [
   "E_SHARE_PENDING_OFFLINE",
   "E_SHARE_PENDING_FAILED",
   "E_SHARE_REFUSED",
+  // A latest-checkpoint fork (`epic.createChat`'s `forkSource: {boundary:
+  // "latest"}`, and the A2A `agent.fork`/`forkAgent` tool that shares the same
+  // seed builder) named a source chat with no assistant record to fork from
+  // yet. A precondition on the CALLER's chosen source, not a server fault -
+  // same additive degrade story as E_INVALID_ARGUMENT.
+  "E_FORK_CHECKPOINT_UNAVAILABLE",
 ] as const;
 
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
