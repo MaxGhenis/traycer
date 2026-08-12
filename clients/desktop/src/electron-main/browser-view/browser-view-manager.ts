@@ -611,7 +611,22 @@ export class BrowserViewManager {
         seedScript === null
           ? null
           : await debugSession.installScriptBeforeNavigation(seedScript);
-      await this.navigate(entry, input.url, true);
+      let resolveCommitted!: () => void;
+      const committed = new Promise<void>((resolve) => {
+        resolveCommitted = resolve;
+      });
+      const onCommitted = (...args: unknown[]): void => {
+        if (readMainFrameFlag(args)) resolveCommitted();
+      };
+      entry.view.webContents.on("did-frame-navigate", onCommitted);
+      try {
+        await Promise.race([
+          this.navigate(entry, input.url, true),
+          committed,
+        ]);
+      } finally {
+        entry.view.webContents.off("did-frame-navigate", onCommitted);
+      }
       if (seedScriptId !== null) {
         await debugSession.removeScriptBeforeNavigation(seedScriptId);
       }

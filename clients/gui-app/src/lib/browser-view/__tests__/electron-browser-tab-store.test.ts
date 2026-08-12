@@ -1472,6 +1472,107 @@ describe("electron-browser-tab-store createElectronTab (ticket 14)", () => {
     detachRoute();
   });
 
+  it("acks a seeded background create only after main-frame readiness", async () => {
+    const bridge = new FakeBridge();
+    let resolveCommitted!: () => void;
+    const committed = new Promise<void>((resolve) => {
+      resolveCommitted = resolve;
+    });
+    vi.spyOn(bridge, "createBackgroundTab").mockImplementation((input) => {
+      bridge.backgroundOperations.push("create");
+      bridge.backgroundCreateCalls.push(input);
+      return committed;
+    });
+    const frames: BrowserSessionsClientFrame[] = [];
+    const detachStream = attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+    const detachRoute = attachElectronBrowserBackgroundTabRoute(
+      EPIC,
+      HOST,
+      bridge,
+    );
+    const sessionId = "session-background-commit";
+    const seedStorageState = {
+      cookies: [],
+      origins: [
+        {
+          origin: "https://example.com",
+          localStorage: [{ name: "token", value: "carried" }],
+        },
+      ],
+    };
+
+    expect(
+      handleElectronBrowserTabFrame({
+        kind: "createElectronTab",
+        hasBinaryPayload: false,
+        requestId: "req-background-commit",
+        sessionId,
+        sourceTabId: "tab-source",
+        url: "https://example.com/background",
+        background: true,
+        epicId: EPIC,
+        hostId: HOST,
+        seedStorageState,
+      } satisfies BrowserSessionsServerFrame),
+    ).toBe(true);
+
+    await vi.waitFor(() => {
+      expect(bridge.backgroundOperations).toEqual(["apply", "create"]);
+    });
+    expect(bridge.backgroundCreateCalls[0]).toEqual(
+      expect.objectContaining({
+        sessionId,
+        tabId: "tab-source",
+        url: "https://example.com/background",
+        seedStorageState,
+      }),
+    );
+    expect(frames.some((frame) => frame.kind === "electronTabCreated")).toBe(
+      false,
+    );
+
+    const registration = frames.find(
+      (frame) => frame.kind === "registerElectronTab",
+    );
+    if (
+      registration === undefined ||
+      registration.kind !== "registerElectronTab"
+    ) {
+      throw new Error("expected background registration frame");
+    }
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-background-register",
+      registrationId: registration.registrationId,
+      sessionId,
+      tabId: "tab-minted",
+    });
+    await Promise.resolve();
+    expect(frames.some((frame) => frame.kind === "electronTabCreated")).toBe(
+      false,
+    );
+
+    // The bridge promise represents the desktop main-frame commit. No
+    // did-finish-load/full-load event is needed for the renderer ack.
+    resolveCommitted();
+    await vi.waitFor(() => {
+      expect(frames).toContainEqual({
+        kind: "electronTabCreated",
+        hasBinaryPayload: false,
+        requestId: "req-background-commit",
+        sessionId,
+        tabId: "tab-minted",
+        reason: null,
+      });
+    });
+
+    detachRoute();
+    detachStream();
+  });
+
   it("registers a background record before delayed desktop readiness, then releases a late ack", async () => {
     const bridge = new FakeBridge();
     let resolveCreation!: () => void;

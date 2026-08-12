@@ -874,7 +874,7 @@ describe("BrowserViewManager", () => {
     expect(view.visible).toBe(false);
   });
 
-  it("creates a hidden background tab, waits for finish-load, and keeps it CDP-drivable across tile open/close", async () => {
+  it("resolves background readiness on a main-frame commit without tile attachment or finish-load", async () => {
     const harness = createHarness();
     const backgroundKey: BrowserViewTileKey = {
       viewTabId: "background",
@@ -887,9 +887,24 @@ describe("BrowserViewManager", () => {
       sessionId: "session-background",
       tabId: "tab-background",
       url: "https://example.com/background",
+      seedStorageState: {
+        cookies: [],
+        origins: [
+          {
+            origin: "https://example.com",
+            localStorage: [{ name: "token", value: "carried" }],
+          },
+        ],
+      },
     });
     const view = harness.views[0];
     if (view === undefined) throw new Error("expected background view");
+
+    vi.spyOn(view.webContents, "loadURL").mockImplementation((url) => {
+      view.webContents.lifecycle.push("loadURL");
+      view.webContents.loadUrls.push(url);
+      return new Promise<unknown>(() => {});
+    });
 
     let settled = false;
     void creation.then(() => {
@@ -899,6 +914,11 @@ describe("BrowserViewManager", () => {
     expect(settled).toBe(false);
     expect(harness.windows.get("window-1")?.contentView.children).toEqual([]);
     expect(view.visible).toBe(false);
+    await vi.waitFor(() => {
+      expect(view.webContents.loadUrls).toEqual([
+        "https://example.com/background",
+      ]);
+    });
 
     view.webContents.emit(
       "did-frame-navigate",
@@ -908,12 +928,27 @@ describe("BrowserViewManager", () => {
       "OK",
       true,
     );
-    await Promise.resolve();
+    const outcomePromise = Promise.race([
+      creation.then(() => "ready" as const),
+      new Promise<"timed-out">((resolve) => {
+        setTimeout(() => resolve("timed-out"), 100);
+      }),
+    ]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await outcomePromise).toBe("ready");
+    expect(settled).toBe(true);
     expect(view.webContents.debugger.attached).toBe(true);
-    expect(settled).toBe(false);
-
-    view.webContents.emit("did-finish-load");
-    await creation;
+    expect(harness.windows.get("window-1")?.contentView.children).toEqual([]);
+    expect(view.webContents.debugger.commands).toContainEqual({
+      method: "Page.addScriptToEvaluateOnNewDocument",
+      params: { source: expect.stringContaining('"token"') },
+      sessionId: undefined,
+    });
+    expect(view.webContents.debugger.commands).toContainEqual({
+      method: "Page.removeScriptToEvaluateOnNewDocument",
+      params: { identifier: "seed-script-1" },
+      sessionId: undefined,
+    });
     expect(harness.views).toHaveLength(1);
     expect(harness.manager.snapshotForTests()[0]).toMatchObject({
       parentWindowId: null,
