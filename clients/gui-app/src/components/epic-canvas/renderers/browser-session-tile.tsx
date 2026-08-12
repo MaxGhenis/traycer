@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { AgentBrowserTile } from "./agent-browser-tile";
 import { BrowserPeekTile } from "./browser-peek-tile";
 import { useBrowserSessionsContext } from "./browser-sessions-context";
-import { findElectronBrowserTabBinding } from "@/lib/browser-view/electron-browser-tab-store";
+import { useElectronBrowserTabBinding } from "@/lib/browser-view/electron-browser-tab-store";
 import type {
   AgentBrowserTileRef,
   BrowserPeekTileRef,
@@ -22,13 +22,18 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
     (item) => item.sessionId === props.node.sessionId,
   );
   const tab = session?.tabs.find((item) => item.tabId === props.node.tabId);
-  const binding = findElectronBrowserTabBinding(
+  const binding = useElectronBrowserTabBinding(
     props.node.sessionId,
     props.node.tabId,
   );
   const [activatedHeadless, setActivatedHeadless] = useState(false);
+  const [castMigrated, setCastMigrated] = useState(false);
   const handleActivatedHeadless = useCallback(() => {
     setActivatedHeadless(true);
+  }, []);
+  const handleMigrated = useCallback(() => {
+    setActivatedHeadless(false);
+    setCastMigrated(true);
   }, []);
 
   if (session === undefined || tab === undefined) {
@@ -40,7 +45,8 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
   }
 
   const renderHeadless =
-    activatedHeadless || (tab.status !== "dormant" && binding === null);
+    activatedHeadless ||
+    (tab.status !== "dormant" && (binding === null || !castMigrated));
   if (renderHeadless) {
     const peek: BrowserPeekTileRef = {
       id: props.node.id,
@@ -53,7 +59,13 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
       tabId: props.node.tabId,
       initialUrl: tab.url,
     };
-    return <BrowserPeekTile epicId={props.epicId} node={peek} />;
+    return (
+      <BrowserPeekTile
+        epicId={props.epicId}
+        node={peek}
+        onMigrated={handleMigrated}
+      />
+    );
   }
 
   const native: AgentBrowserTileRef = {

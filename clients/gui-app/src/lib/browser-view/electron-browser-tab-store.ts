@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import type {
   BrowserSessionInfo,
   BrowserSessionsClientFrame,
@@ -94,6 +95,7 @@ const pendingReleases = new Map<string, number>();
 const PENDING_RELEASE_TTL_MS = 60_000;
 const PENDING_RELEASE_MAX = 128;
 let focusOrder = 0;
+const bindingListeners = new Set<() => void>();
 
 export async function drainElectronBrowserHandoffs(): Promise<void> {
   await Promise.all(
@@ -271,6 +273,7 @@ export function handleElectronBrowserTabFrame(
   );
   if (record === undefined) return true;
   record.tabId = frame.tabId;
+  notifyBindingListeners();
   const durableRegistration = record.bridge.registerDurableTab({
     ...record.tileKey,
     sessionId: frame.sessionId,
@@ -667,6 +670,19 @@ export function findElectronBrowserTabBinding(
   return findElectronBrowserTabRecord(sessionId, tabId) ?? null;
 }
 
+export function useElectronBrowserTabBinding(
+  sessionId: string,
+  tabId: string,
+): ElectronBrowserTabRegistration | null {
+  useSyncExternalStore(
+    subscribeBindingChanges,
+    () =>
+      findElectronBrowserTabBinding(sessionId, tabId)?.registrationId ?? null,
+    () => null,
+  );
+  return findElectronBrowserTabBinding(sessionId, tabId);
+}
+
 function findElectronBrowserTabRecord(
   sessionId: string,
   tabId: string,
@@ -783,6 +799,7 @@ export function resetElectronBrowserTabStoreForTests(): void {
   createRequestsByRegistrationKey.clear();
   pendingReleases.clear();
   focusOrder = 0;
+  notifyBindingListeners();
 }
 
 function deleteRecord(record: ElectronBrowserTabRecord): void {
@@ -790,4 +807,14 @@ function deleteRecord(record: ElectronBrowserTabRecord): void {
   recordsByRegistrationKey.delete(
     registrationKey(record.sessionId, record.registrationId),
   );
+  notifyBindingListeners();
+}
+
+function subscribeBindingChanges(listener: () => void): () => void {
+  bindingListeners.add(listener);
+  return () => bindingListeners.delete(listener);
+}
+
+function notifyBindingListeners(): void {
+  for (const listener of bindingListeners) listener();
 }

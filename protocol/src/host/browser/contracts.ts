@@ -1004,6 +1004,7 @@ export const browserScreencastServerFrameSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("complete"),
     ...textFrameFields,
+    cause: z.enum(["migrated"]).optional(),
   }),
   z.object({
     kind: z.literal("migrationPending"),

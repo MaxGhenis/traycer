@@ -66,6 +66,7 @@ type BrowserPeekDialog = Extract<
 export interface BrowserPeekTileProps {
   readonly epicId: string;
   readonly node: BrowserPeekTileRef;
+  readonly onMigrated?: () => void;
 }
 
 export function BrowserPeekTile(props: BrowserPeekTileProps) {
@@ -229,6 +230,12 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         setDetails,
         setFrameSize,
       });
+      if (
+        parsed.data.kind === "complete" &&
+        parsed.data.cause === "migrated"
+      ) {
+        props.onMigrated?.();
+      }
       if (parsed.data.kind === "migrationPending") {
         setStreamState((current) => ({
           ...resetPeekStateForClient(current, client),
@@ -279,6 +286,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     props.epicId,
     props.node.sessionId,
     props.node.tabId,
+    props.onMigrated,
     setDetails,
     setFrameSize,
     setImage,

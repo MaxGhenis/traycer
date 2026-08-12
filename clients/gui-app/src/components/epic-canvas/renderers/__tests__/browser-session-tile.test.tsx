@@ -1,5 +1,12 @@
 import "../../../../../__tests__/test-browser-apis";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   BrowserSessionInfo,
@@ -12,6 +19,7 @@ import { TILE_KIND_BROWSER_SESSION } from "@/stores/epics/canvas/tile-kinds";
 import {
   attachElectronBrowserTabStream,
   handleElectronBrowserTabFrame,
+  registerElectronBrowserTab,
   resetElectronBrowserTabStoreForTests,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import type {
@@ -78,11 +86,13 @@ vi.mock("@/providers/use-runner-host", () => ({
 vi.mock("@/components/epic-canvas/renderers/browser-peek-tile", () => ({
   BrowserPeekTile: (props: {
     readonly node: { readonly sessionId: string; readonly tabId: string };
+    readonly onMigrated: (() => void) | undefined;
   }) => (
     <div
       data-testid="browser-peek-tile"
       data-session={props.node.sessionId}
       data-tab={props.node.tabId}
+      onClick={() => props.onMigrated?.()}
     />
   ),
 }));
@@ -300,6 +310,51 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
     const peek = screen.getByTestId("browser-peek-tile");
     expect(peek.getAttribute("data-session")).toBe("sess-1");
     expect(peek.getAttribute("data-tab")).toBe("tab-1");
+  });
+
+  it("swaps the screencast tile for native view on migrated terminal status", async () => {
+    const ids = renderTile("ready");
+    expect(screen.getByTestId("browser-peek-tile")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("browser-peek-tile"));
+
+    const bridge = bridgeHarness.current;
+    if (bridge === null) throw new Error("expected browser view bridge");
+    registerElectronBrowserTab({
+      epicId: "epic-1",
+      hostId: "host-test",
+      chatId: "chat-route",
+      registrationId: NODE.id,
+      sessionId: NODE.sessionId,
+      requestedTabId: NODE.tabId,
+      initialUrl: "https://example.com/page",
+      title: "Example",
+      tileKey: {
+        viewTabId: ids.viewTabId,
+        paneId: ids.paneId,
+        tileInstanceId: NODE.instanceId,
+        pageSessionId: NODE.id,
+      },
+      bridge,
+      onRegistered: () => {},
+      onActivatedHeadless: null,
+      background: false,
+    });
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "migration-native",
+      registrationId: NODE.id,
+      sessionId: NODE.sessionId,
+      tabId: NODE.tabId,
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("browser-peek-tile")).toBeNull();
+      expect(
+        screen.getByTestId("agent-browser-tile-pointer-instance-1"),
+      ).toBeTruthy();
+    });
+    expect(screen.queryByText("Browser tab is no longer available.")).toBeNull();
   });
 
   it("falls back to existing screencast on BROWSER_TAB_ACTIVATED_HEADLESS instead of a second native view", async () => {

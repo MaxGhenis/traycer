@@ -906,6 +906,29 @@ describe("BrowserPeekTile", () => {
     ).toBeNull();
   });
 
+  it("notifies the tile owner on a migrated terminal frame", () => {
+    const onMigrated = vi.fn();
+    render(
+      <BrowserPeekTile
+        epicId="epic-1"
+        node={PEEK_NODE}
+        onMigrated={onMigrated}
+      />,
+    );
+    const stream = liveStream();
+
+    act(() => {
+      stream.emit(
+        { kind: "complete", hasBinaryPayload: false, cause: "migrated" },
+        null,
+      );
+    });
+
+    expect(onMigrated).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Ended")).toBeTruthy();
+    expect(screen.getByText("Screencast ended.")).toBeTruthy();
+  });
+
   it("ignores an armed ack that arrives after blur disarmed the tile", () => {
     render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
     const stream = liveStream();
