@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CompositionEvent as ReactCompositionEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
   type SetStateAction,
@@ -55,6 +56,11 @@ interface BrowserPeekRenderState {
   } | null;
 }
 
+type BrowserPeekDialog = Extract<
+  BrowserScreencastServerFrame,
+  { readonly kind: "dialogOpened" }
+> & { readonly armEpoch: number };
+
 export interface BrowserPeekTileProps {
   readonly epicId: string;
   readonly node: BrowserPeekTileRef;
@@ -72,18 +78,26 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       binaryPayload: Uint8Array | null,
     ) => void;
   } | null>(null);
-  const viewportRef = useRef<HTMLButtonElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const imeInputRef = useRef<HTMLInputElement | null>(null);
   const lastFrameAtRef = useRef<number | null>(null);
   const armEpochCounterRef = useRef(0);
   const desiredArmEpochRef = useRef<number | null>(null);
   const activeArmEpochRef = useRef<number | null>(null);
   const inputSequenceRef = useRef(0);
   const presentedSequenceRef = useRef<number | null>(null);
+  const activeDialogRef = useRef<BrowserPeekDialog | null>(null);
+  const composingRef = useRef(false);
   const [armedState, setArmedState] = useState<{
     readonly client: IHostStreamClient<HostStreamRpcRegistry>;
     readonly epoch: number;
   } | null>(null);
+  const [dialogState, setDialogState] = useState<{
+    readonly client: IHostStreamClient<HostStreamRpcRegistry>;
+    readonly dialog: BrowserPeekDialog;
+  } | null>(null);
+  const [composing, setComposing] = useState(false);
   const [streamState, setStreamState] = useState<BrowserPeekRenderState>(
     () => ({
       client,
@@ -99,6 +113,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const details = peekDetailsForRender(stateMatchesClient, streamState, client);
   const frameSize = stateMatchesClient ? streamState.frameSize : null;
   const armedEpoch = armedState?.client === client ? armedState.epoch : null;
+  const dialog = dialogForClient(dialogState, client);
 
   const setLifecycle = useCallback(
     (value: SetStateAction<PeekLifecycle>) => {
@@ -145,10 +160,13 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   );
 
   useEffect(() => {
+    activeDialogRef.current = null;
+    composingRef.current = false;
     if (client === null) {
       sessionRef.current = null;
       desiredArmEpochRef.current = null;
       activeArmEpochRef.current = null;
+      activeDialogRef.current = null;
       return;
     }
 
@@ -193,6 +211,20 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         desiredArmEpochRef.current = null;
         activeArmEpochRef.current = null;
         setArmedState(null);
+        activeDialogRef.current = null;
+        setDialogState(null);
+      } else if (parsed.data.kind === "dialogOpened") {
+        const armEpoch = activeArmEpochRef.current;
+        const current = activeDialogRef.current;
+        if (
+          armEpoch === null ||
+          (current !== null && parsed.data.generation <= current.generation)
+        ) {
+          return;
+        }
+        const opened = { ...parsed.data, armEpoch };
+        activeDialogRef.current = opened;
+        setDialogState({ client, dialog: opened });
       }
     });
 
@@ -203,6 +235,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       desiredArmEpochRef.current = null;
       activeArmEpochRef.current = null;
       presentedSequenceRef.current = null;
+      activeDialogRef.current = null;
+      composingRef.current = false;
       session.close();
     };
   }, [
@@ -281,6 +315,10 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     const armEpoch = activeArmEpochRef.current ?? desiredArmEpochRef.current;
     desiredArmEpochRef.current = null;
     activeArmEpochRef.current = null;
+    activeDialogRef.current = null;
+    composingRef.current = false;
+    setComposing(false);
+    setDialogState(null);
     setArmedState(null);
     if (armEpoch === null) return;
     sendPeekFrame(sessionRef.current, {
@@ -303,6 +341,13 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               { readonly kind: "keyboard" }
             >,
             "armEpoch" | "seq" | "hasBinaryPayload"
+          >
+        | Omit<
+            Extract<
+              BrowserScreencastClientFrame,
+              { readonly kind: "insertText" }
+            >,
+            "armEpoch" | "seq" | "hasBinaryPayload"
           >,
     ) => {
       const armEpoch = activeArmEpochRef.current;
@@ -314,6 +359,33 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         seq: inputSequenceRef.current,
       });
       inputSequenceRef.current += 1;
+    },
+    [],
+  );
+
+  const respondToDialog = useCallback(
+    (generation: number, accept: boolean, promptText: string | null) => {
+      const current = activeDialogRef.current;
+      const armEpoch = activeArmEpochRef.current;
+      if (
+        current === null ||
+        current.generation !== generation ||
+        armEpoch === null ||
+        current.armEpoch !== armEpoch
+      ) {
+        return;
+      }
+      activeDialogRef.current = null;
+      setDialogState(null);
+      sendPeekFrame(sessionRef.current, {
+        kind: "dialogResponse",
+        hasBinaryPayload: false,
+        armEpoch,
+        generation,
+        accept,
+        promptText,
+      });
+      imeInputRef.current?.focus();
     },
     [],
   );
@@ -349,6 +421,19 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     [frameSize, sendInput],
   );
 
+  const handleFocusExit = useCallback(
+    (relatedTarget: EventTarget | null) => {
+      if (
+        relatedTarget instanceof Node &&
+        viewportRef.current?.contains(relatedTarget) === true
+      ) {
+        return;
+      }
+      disarm();
+    },
+    [disarm],
+  );
+
   return (
     <div
       className="flex h-full w-full flex-col bg-canvas text-foreground"
@@ -376,108 +461,239 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           <span>{status.label}</span>
         </div>
       </div>
-      <button
-        type="button"
+      <div
         ref={viewportRef}
         className={cn(
           "relative min-h-0 flex-1 cursor-default overflow-hidden bg-background p-0 text-left outline-none",
           armedEpoch !== null && "ring-2 ring-primary ring-inset",
         )}
-        aria-label="Browser screencast controls"
-        onFocus={arm}
-        onBlur={disarm}
-        onPointerDown={(event) => {
-          event.currentTarget.focus();
-          sendPointer(event, "down");
-        }}
-        onPointerMove={(event) => sendPointer(event, "move")}
-        onPointerUp={(event) => sendPointer(event, "up")}
-        onWheel={(event) => {
-          if (activeArmEpochRef.current === null) return;
-          event.preventDefault();
-          sendPointer(event, "wheel");
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
+      >
+        <button
+          type="button"
+          className="absolute inset-0 h-full w-full cursor-default overflow-hidden bg-background p-0 text-left outline-none"
+          aria-label="Browser screencast controls"
+          onFocus={() => imeInputRef.current?.focus()}
+          onBlur={(event) => handleFocusExit(event.relatedTarget)}
+          onPointerDown={(event) => {
             event.preventDefault();
-            disarm();
-            event.currentTarget.blur();
-            return;
-          }
-          if (activeArmEpochRef.current === null) return;
-          event.preventDefault();
-          sendInput({
-            kind: "keyboard",
-            type: "rawKeyDown",
-            code: event.code,
-            key: event.key,
-            modifiers: inputModifiers(event),
-          });
-          if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) {
+            imeInputRef.current?.focus();
+            sendPointer(event, "down");
+          }}
+          onPointerMove={(event) => sendPointer(event, "move")}
+          onPointerUp={(event) => sendPointer(event, "up")}
+          onWheel={(event) => {
+            if (activeArmEpochRef.current === null) return;
+            event.preventDefault();
+            sendPointer(event, "wheel");
+          }}
+        >
+          {image === null ? (
+            <div className="absolute inset-0 flex items-center justify-center px-4 text-center">
+              <div>
+                <div className="text-ui-base font-medium">
+                  Waiting for frames
+                </div>
+                <div className="mt-1 max-w-[min(90vw,32rem)] text-ui-sm text-muted-foreground">
+                  Click the screencast to control this browser tab.
+                </div>
+              </div>
+            </div>
+          ) : (
+            <img
+              key={image.sequence}
+              ref={imageRef}
+              src={image.src}
+              alt="Browser screencast"
+              className="h-full w-full object-contain"
+              draggable={false}
+              onLoad={() => {
+                presentedSequenceRef.current = image.sequence;
+                lastFrameAtRef.current = Date.now();
+                setLifecycle("live");
+                setDetails(null);
+                sendPeekFrame(sessionRef.current, {
+                  kind: "ack",
+                  hasBinaryPayload: false,
+                  sequence: image.sequence,
+                });
+              }}
+            />
+          )}
+          {status.overlay === null ? null : (
+            <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded border border-border bg-popover/95 px-3 py-2 text-ui-sm text-popover-foreground shadow-sm">
+              {status.overlay}
+            </div>
+          )}
+          {frameSize === null ? null : (
+            <div className="pointer-events-none absolute left-3 top-3 rounded-sm bg-background/80 px-2 py-1 font-mono text-ui-xs text-muted-foreground">
+              {frameSize.width} x {frameSize.height}
+            </div>
+          )}
+        </button>
+        <input
+          ref={imeInputRef}
+          aria-label="Browser IME input"
+          autoComplete="off"
+          className="pointer-events-none absolute left-0 top-0 size-px opacity-0"
+          onFocus={arm}
+          onBlur={(event) => handleFocusExit(event.relatedTarget)}
+          onKeyDown={(event) => {
+            if (activeDialogRef.current !== null) return;
+            if (event.nativeEvent.isComposing || composingRef.current) return;
+            if (event.key === "Escape") {
+              event.preventDefault();
+              disarm();
+              event.currentTarget.blur();
+              return;
+            }
+            if (activeArmEpochRef.current === null) return;
+            event.preventDefault();
             sendInput({
               kind: "keyboard",
-              type: "char",
+              type: "rawKeyDown",
               code: event.code,
               key: event.key,
               modifiers: inputModifiers(event),
             });
-          }
-        }}
-        onKeyUp={(event) => {
-          if (activeArmEpochRef.current === null) return;
-          event.preventDefault();
-          sendInput({
-            kind: "keyboard",
-            type: "keyUp",
-            code: event.code,
-            key: event.key,
-            modifiers: inputModifiers(event),
-          });
-        }}
-      >
-        {image === null ? (
-          <div className="absolute inset-0 flex items-center justify-center px-4 text-center">
-            <div>
-              <div className="text-ui-base font-medium">Waiting for frames</div>
-              <div className="mt-1 max-w-[min(90vw,32rem)] text-ui-sm text-muted-foreground">
-                Click the screencast to control this browser tab.
-              </div>
-            </div>
-          </div>
-        ) : (
-          <img
-            key={image.sequence}
-            ref={imageRef}
-            src={image.src}
-            alt="Browser screencast"
-            className="h-full w-full object-contain"
-            draggable={false}
-            onLoad={() => {
-              presentedSequenceRef.current = image.sequence;
-              lastFrameAtRef.current = Date.now();
-              setLifecycle("live");
-              setDetails(null);
-              sendPeekFrame(sessionRef.current, {
-                kind: "ack",
-                hasBinaryPayload: false,
-                sequence: image.sequence,
+            if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) {
+              sendInput({
+                kind: "keyboard",
+                type: "char",
+                code: event.code,
+                key: event.key,
+                modifiers: inputModifiers(event),
               });
-            }}
+            }
+          }}
+          onKeyUp={(event) => {
+            if (activeDialogRef.current !== null) return;
+            if (event.nativeEvent.isComposing || composingRef.current) return;
+            if (activeArmEpochRef.current === null) return;
+            event.preventDefault();
+            sendInput({
+              kind: "keyboard",
+              type: "keyUp",
+              code: event.code,
+              key: event.key,
+              modifiers: inputModifiers(event),
+            });
+          }}
+          onCompositionStart={() => {
+            composingRef.current = true;
+            setComposing(true);
+          }}
+          onCompositionEnd={(
+            event: ReactCompositionEvent<HTMLInputElement>,
+          ) => {
+            composingRef.current = false;
+            setComposing(false);
+            event.currentTarget.value = "";
+            if (event.data !== "") {
+              sendInput({ kind: "insertText", text: event.data });
+            }
+          }}
+          onInput={(event) => {
+            if (!composingRef.current) event.currentTarget.value = "";
+          }}
+        />
+        {composing ? (
+          <div
+            aria-live="polite"
+            className="pointer-events-none absolute right-3 top-3 rounded-sm bg-background/90 px-2 py-1 text-ui-xs text-muted-foreground"
+          >
+            Composing text…
+          </div>
+        ) : null}
+        {dialog === null ? null : (
+          <BrowserDialogOverlay
+            key={dialog.generation}
+            dialog={dialog}
+            onRespond={respondToDialog}
+            onFocusExit={handleFocusExit}
           />
         )}
-        {status.overlay === null ? null : (
-          <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded border border-border bg-popover/95 px-3 py-2 text-ui-sm text-popover-foreground shadow-sm">
-            {status.overlay}
-          </div>
-        )}
-        {frameSize === null ? null : (
-          <div className="pointer-events-none absolute left-3 top-3 rounded-sm bg-background/80 px-2 py-1 font-mono text-ui-xs text-muted-foreground">
-            {frameSize.width} x {frameSize.height}
-          </div>
-        )}
-      </button>
+      </div>
     </div>
   );
+}
+
+function BrowserDialogOverlay(props: {
+  readonly dialog: BrowserPeekDialog;
+  readonly onRespond: (
+    generation: number,
+    accept: boolean,
+    promptText: string | null,
+  ) => void;
+  readonly onFocusExit: (relatedTarget: EventTarget | null) => void;
+}) {
+  const [promptText, setPromptText] = useState(props.dialog.defaultValue);
+  const isAlert = props.dialog.type === "alert";
+  const isPrompt = props.dialog.type === "prompt";
+  let title = "Confirm";
+  if (isAlert) title = "Alert";
+  else if (isPrompt) title = "Prompt";
+  return (
+    <dialog
+      open
+      aria-label={`${props.dialog.type} dialog`}
+      aria-modal="true"
+      className="absolute inset-0 z-10 m-0 flex h-full max-h-none w-full max-w-none items-center justify-center border-0 bg-background/60 p-4 text-foreground"
+    >
+      <div className="w-full max-w-md rounded-md border border-border bg-popover p-4 text-popover-foreground shadow-lg">
+        <div className="text-ui-base font-medium">{title}</div>
+        <div className="mt-2 whitespace-pre-wrap break-words text-ui-sm">
+          {props.dialog.message}
+        </div>
+        {isPrompt ? (
+          <input
+            aria-label="Prompt response"
+            className="mt-3 w-full rounded border border-input bg-background px-3 py-2 text-ui-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            value={promptText}
+            onChange={(event) => setPromptText(event.currentTarget.value)}
+            onBlur={(event) => props.onFocusExit(event.relatedTarget)}
+          />
+        ) : null}
+        <div className="mt-4 flex justify-end gap-2">
+          {isAlert ? null : (
+            <button
+              type="button"
+              className="rounded border border-border px-3 py-1.5 text-ui-sm hover:bg-muted"
+              onClick={() =>
+                props.onRespond(props.dialog.generation, false, null)
+              }
+              onBlur={(event) => props.onFocusExit(event.relatedTarget)}
+            >
+              Cancel
+            </button>
+          )}
+          <button
+            type="button"
+            className="rounded bg-primary px-3 py-1.5 text-ui-sm text-primary-foreground hover:bg-primary/90"
+            onClick={() =>
+              props.onRespond(
+                props.dialog.generation,
+                true,
+                isPrompt ? promptText : null,
+              )
+            }
+            onBlur={(event) => props.onFocusExit(event.relatedTarget)}
+          >
+            OK
+          </button>
+        </div>
+      </div>
+    </dialog>
+  );
+}
+
+function dialogForClient(
+  state: {
+    readonly client: IHostStreamClient<HostStreamRpcRegistry>;
+    readonly dialog: BrowserPeekDialog;
+  } | null,
+  client: IHostStreamClient<HostStreamRpcRegistry> | null,
+): BrowserPeekDialog | null {
+  return state?.client === client ? state.dialog : null;
 }
 
 function resetPeekStateForClient(

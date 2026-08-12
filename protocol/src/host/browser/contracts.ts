@@ -1020,6 +1020,14 @@ export const browserScreencastServerFrameSchema = z.discriminatedUnion("kind", [
     armEpoch: z.number().int().nonnegative(),
     cause: z.enum(["disarmed", "stolen"]),
   }),
+  z.object({
+    kind: z.literal("dialogOpened"),
+    ...textFrameFields,
+    generation: z.number().int().nonnegative(),
+    type: z.enum(["alert", "beforeunload", "confirm", "prompt"]),
+    message: z.string(),
+    defaultValue: z.string(),
+  }),
 ]);
 export type BrowserScreencastServerFrame = z.infer<
   typeof browserScreencastServerFrameSchema
@@ -1121,6 +1129,14 @@ export const browserScreencastClientFrameSchema = z.discriminatedUnion("kind", [
     ...textFrameFields,
     ...browserScreencastControlIdentitySchema,
     text: z.string(),
+  }),
+  z.object({
+    kind: z.literal("dialogResponse"),
+    ...textFrameFields,
+    armEpoch: z.number().int().nonnegative(),
+    generation: z.number().int().nonnegative(),
+    accept: z.boolean(),
+    promptText: z.string().nullable(),
   }),
 ]);
 export type BrowserScreencastClientFrame = z.infer<

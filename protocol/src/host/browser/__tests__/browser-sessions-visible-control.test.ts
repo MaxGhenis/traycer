@@ -184,6 +184,51 @@ describe("browser.screencast@1.0 control frames", () => {
       ).toBe(true);
     }
   });
+
+  it("parses generation-bound dialog open and response frames", () => {
+    const opened = {
+      kind: "dialogOpened",
+      hasBinaryPayload: false,
+      generation: 12,
+      type: "prompt",
+      message: "prompt text stays on the wire only",
+      defaultValue: "default text",
+    };
+    const response = {
+      kind: "dialogResponse",
+      hasBinaryPayload: false,
+      armEpoch: 4,
+      generation: 12,
+      accept: true,
+      promptText: "typed text",
+    };
+
+    expect(browserScreencastServerFrameSchema.safeParse(opened).success).toBe(
+      true,
+    );
+    expect(browserScreencastV10.serverFrameSchema.safeParse(opened).success).toBe(
+      true,
+    );
+    expect(browserScreencastClientFrameSchema.safeParse(response).success).toBe(
+      true,
+    );
+    expect(browserScreencastV10.clientFrameSchema.safeParse(response).success).toBe(
+      true,
+    );
+
+    expect(
+      browserScreencastServerFrameSchema.safeParse({
+        ...opened,
+        generation: -1,
+      }).success,
+    ).toBe(false);
+    expect(
+      browserScreencastClientFrameSchema.safeParse({
+        ...response,
+        promptText: 42,
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("browser.sessions@1.0 dual-key open + tab-shaped session info", () => {

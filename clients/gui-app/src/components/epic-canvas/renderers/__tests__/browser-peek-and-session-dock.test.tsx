@@ -25,6 +25,10 @@ const hookState = vi.hoisted(() => ({
   streamClient: null as FakeStreamClient | null,
   streamClientFactory: null as (() => FakeStreamClient | null) | null,
   visible: true,
+  hostClient: {
+    getRequestContext: () => ({ credentials: null }),
+    getRequestContextUserId: () => "user-test",
+  },
 }));
 
 const splitPaneWithNodeMock = vi.hoisted(() => ({ fn: vi.fn() }));
@@ -54,6 +58,32 @@ vi.mock("@/hooks/host/use-host-stream-client-for", () => ({
     hookState.streamClientFactory === null
       ? hookState.streamClient
       : hookState.streamClientFactory(),
+  authenticatedHostStreamKey: () => "authenticated-host-test",
+  authenticatedOwnerIdentityKey: () => "local\u0000host-test\u0000user-test",
+}));
+
+vi.mock("@/lib/host", () => ({
+  useHostClient: () => hookState.hostClient,
+}));
+
+const openDurableTransport = vi.hoisted(
+  () =>
+    (): {
+      readonly wsStreamClient: FakeStreamClient;
+      readonly close: () => void;
+    } => {
+      if (hookState.streamClient === null) {
+        throw new Error("expected stream client");
+      }
+      return {
+        wsStreamClient: hookState.streamClient,
+        close: () => {},
+      };
+    },
+);
+
+vi.mock("@/lib/host/use-durable-stream-transport", () => ({
+  useDurableStreamTransportFactory: () => openDurableTransport,
 }));
 
 vi.mock("@/lib/host/stream-auth-revalidator", () => ({
@@ -191,6 +221,8 @@ class FakeStreamSession {
         reason: null,
       ) => void)
     | null = null;
+  private currentStatus: "connecting" | "open" | "reconnecting" | "closed" =
+    "connecting";
   closed = false;
 
   sendClientFrame(frame: Record<string, unknown>): void {
@@ -213,6 +245,7 @@ class FakeStreamSession {
     ) => void,
   ): void {
     this.statusHandler = handler;
+    if (this.currentStatus === "open") handler("open", null);
   }
 
   close(): void {
@@ -220,6 +253,7 @@ class FakeStreamSession {
   }
 
   emitStatus(status: "connecting" | "open" | "reconnecting" | "closed"): void {
+    this.currentStatus = status;
     this.statusHandler?.(status, null);
   }
 
@@ -238,10 +272,13 @@ class FakeStreamClient {
     readonly params: unknown;
   }> = [];
 
+  constructor(private readonly autoOpen = false) {}
+
   subscribe(method: string, params: unknown): FakeStreamSession {
     const session = new FakeStreamSession();
     this.sessions.push(session);
     this.subscribes.push({ method, params });
+    if (this.autoOpen) session.emitStatus("open");
     return session;
   }
 }
@@ -280,10 +317,22 @@ const HEADLESS_SESSION = {
   ],
 };
 
+function armPeekTile(stream: FakeStreamSession): void {
+  fireEvent.focus(
+    screen.getByRole("button", { name: "Browser screencast controls" }),
+  );
+  act(() => {
+    stream.emit(
+      { kind: "armed", hasBinaryPayload: false, armEpoch: 1 },
+      null,
+    );
+  });
+}
+
 describe("BrowserSessionDock", () => {
   beforeEach(() => {
     hookState.visible = true;
-    hookState.streamClient = new FakeStreamClient();
+    hookState.streamClient = new FakeStreamClient(true);
     hookState.streamClientFactory = null;
     splitPaneWithNodeMock.fn.mockReset();
     openFreshBrowserTileMock.fn.mockReset();
@@ -685,7 +734,7 @@ describe("BrowserSessionDock", () => {
 describe("BrowserPeekTile", () => {
   beforeEach(() => {
     hookState.visible = true;
-    hookState.streamClient = new FakeStreamClient();
+    hookState.streamClient = new FakeStreamClient(true);
     hookState.streamClientFactory = null;
   });
 
@@ -793,6 +842,177 @@ describe("BrowserPeekTile", () => {
     expect(stream.sentFrames).not.toContainEqual(
       expect.objectContaining({ kind: "keyboard" }),
     );
+  });
+
+  it("renders an alert overlay and responds with its generation", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    act(() => {
+      stream.emit(
+        {
+          kind: "dialogOpened",
+          hasBinaryPayload: false,
+          generation: 7,
+          type: "alert",
+          message: "Alert message",
+          defaultValue: "",
+        },
+        null,
+      );
+    });
+
+    expect(
+      screen.getByRole("dialog", { name: "alert dialog" }).textContent,
+    ).toContain("Alert message");
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+
+    expect(stream.sentFrames).toContainEqual({
+      kind: "dialogResponse",
+      hasBinaryPayload: false,
+      armEpoch: 1,
+      generation: 7,
+      accept: true,
+      promptText: null,
+    });
+  });
+
+  it("renders confirm and prompt overlays with dismiss and prompt responses", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    act(() => {
+      stream.emit(
+        {
+          kind: "dialogOpened",
+          hasBinaryPayload: false,
+          generation: 8,
+          type: "confirm",
+          message: "Confirm message",
+          defaultValue: "",
+        },
+        null,
+      );
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(stream.sentFrames).toContainEqual({
+      kind: "dialogResponse",
+      hasBinaryPayload: false,
+      armEpoch: 1,
+      generation: 8,
+      accept: false,
+      promptText: null,
+    });
+
+    act(() => {
+      stream.emit(
+        {
+          kind: "dialogOpened",
+          hasBinaryPayload: false,
+          generation: 9,
+          type: "prompt",
+          message: "Prompt message",
+          defaultValue: "initial value",
+        },
+        null,
+      );
+    });
+    const prompt = screen.getByRole("textbox", { name: "Prompt response" });
+    if (!(prompt instanceof HTMLInputElement)) {
+      throw new Error("expected prompt input");
+    }
+    expect(prompt.value).toBe("initial value");
+    fireEvent.change(prompt, { target: { value: "typed value" } });
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+
+    expect(stream.sentFrames).toContainEqual({
+      kind: "dialogResponse",
+      hasBinaryPayload: false,
+      armEpoch: 1,
+      generation: 9,
+      accept: true,
+      promptText: "typed value",
+    });
+  });
+
+  it("drops stale dialog generations before presenting or responding", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    act(() => {
+      stream.emit(
+        {
+          kind: "dialogOpened",
+          hasBinaryPayload: false,
+          generation: 11,
+          type: "confirm",
+          message: "Current dialog",
+          defaultValue: "",
+        },
+        null,
+      );
+      stream.emit(
+        {
+          kind: "dialogOpened",
+          hasBinaryPayload: false,
+          generation: 10,
+          type: "confirm",
+          message: "Stale dialog",
+          defaultValue: "",
+        },
+        null,
+      );
+    });
+
+    expect(screen.getByText("Current dialog")).toBeTruthy();
+    expect(screen.queryByText("Stale dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(stream.sentFrames).toContainEqual(
+      expect.objectContaining({
+        kind: "dialogResponse",
+        generation: 11,
+      }),
+    );
+    expect(stream.sentFrames).not.toContainEqual(
+      expect.objectContaining({
+        kind: "dialogResponse",
+        generation: 10,
+      }),
+    );
+  });
+
+  it("sends one insertText frame for a local CJK composition and shows its indicator", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    const input = screen.getByRole("textbox", { name: "Browser IME input" });
+
+    fireEvent.compositionStart(input);
+    expect(screen.getByText("Composing text…")).toBeTruthy();
+    fireEvent.input(input, { target: { value: "に" } });
+    expect(
+      stream.sentFrames.filter(
+        (frame) => frame.kind === "keyboard" || frame.kind === "insertText",
+      ),
+    ).toEqual([]);
+
+    fireEvent.compositionEnd(input, { data: "日本語" });
+
+    expect(screen.queryByText("Composing text…")).toBeNull();
+    expect(
+      stream.sentFrames.filter((frame) => frame.kind === "keyboard"),
+    ).toEqual([]);
+    expect(
+      stream.sentFrames.filter((frame) => frame.kind === "insertText"),
+    ).toEqual([
+      expect.objectContaining({
+        kind: "insertText",
+        hasBinaryPayload: false,
+        armEpoch: 1,
+        seq: 0,
+        text: "日本語",
+      }),
+    ]);
   });
 
   it("pauses the stream when the tile is hidden", () => {
