@@ -1596,9 +1596,21 @@ export class BrowserViewManager {
 
   private rekeyEntry(entry: BrowserViewEntry, key: BrowserViewEntryKey): void {
     this.cancelDebugSnapshot(entry);
-    this.entriesByKey.delete(entryKeyId(entry.key));
+    const previousKeyId = entryKeyId(entry.key);
+    const nextKeyId = entryKeyId(key);
+    this.entriesByKey.delete(previousKeyId);
     entry.key = key;
-    this.entriesByKey.set(entryKeyId(key), entry);
+    this.entriesByKey.set(nextKeyId, entry);
+    for (const overlayId of entry.overlayOwnerIds) {
+      const overlayKeyIds = this.overlayEntryKeysByOwnerId.get(overlayId);
+      if (overlayKeyIds === undefined) continue;
+      this.overlayEntryKeysByOwnerId.set(
+        overlayId,
+        overlayKeyIds.map((keyId) =>
+          keyId === previousKeyId ? nextKeyId : keyId,
+        ),
+      );
+    }
     this.attachToCurrentWindow(entry);
     this.emitStatus(entry);
     this.queueDebugSnapshot(entry);

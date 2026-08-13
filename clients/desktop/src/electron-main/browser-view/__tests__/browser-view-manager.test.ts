@@ -1955,6 +1955,62 @@ describe("BrowserViewManager", () => {
     expect(harness.manager.snapshotForTests()[0]?.overlayOwnerIds).toEqual([]);
   });
 
+  it("keeps overlay ownership releasable when a view is rekeyed", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    harness.manager.updateBounds("window-1", {
+      ...BASE_KEY,
+      bounds: { x: 0, y: 0, width: 500, height: 300 },
+    });
+    const view = harness.views[0];
+
+    await harness.manager.occludeForOverlay("window-1", {
+      overlayId: "dialog",
+      tiles: [BASE_KEY],
+    });
+    const rekeyed = { ...BASE_KEY, tileInstanceId: "tile-2" };
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(rekeyed, "http://localhost:3000", true),
+    );
+
+    expect(
+      harness.manager.releaseOverlay("window-1", {
+        overlayId: "dialog",
+      }),
+    ).toEqual({ restoredTiles: [rekeyed] });
+    expect(view.visible).toBe(true);
+  });
+
+  it("does not duplicate overlay ownership when a rekeyed view is occluded again", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    await harness.manager.occludeForOverlay("window-1", {
+      overlayId: "dialog",
+      tiles: [BASE_KEY],
+    });
+    const rekeyed = { ...BASE_KEY, tileInstanceId: "tile-2" };
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(rekeyed, "http://localhost:3000", true),
+    );
+
+    await harness.manager.occludeForOverlay("window-1", {
+      overlayId: "dialog",
+      tiles: [rekeyed],
+    });
+
+    expect(harness.manager.snapshotForTests()[0]?.overlayOwnerIds).toEqual([
+      "dialog",
+    ]);
+  });
+
   it("restores overlay-owned views in reverse occlusion order", async () => {
     const harness = createHarness();
     const secondKey: BrowserViewTileKey = {
