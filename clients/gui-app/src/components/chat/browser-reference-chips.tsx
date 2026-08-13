@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import type { BrowserContextAttachmentRecord } from "@traycer/protocol/persistence/epic/schemas";
 import type { BrowserTabInfo } from "@traycer/protocol/host/browser/contracts";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
-import { useBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
+import { useMaybeBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import {
   browserTabFaviconUrl,
   resolveTabTitle,
@@ -22,16 +22,16 @@ export function BrowserReferenceChips(props: {
 function BrowserReferenceChipsLive(props: {
   readonly references: ReadonlyArray<BrowserContextAttachmentRecord>;
 }) {
-  const sessions = useBrowserSessionsContext();
+  const sessions = useMaybeBrowserSessionsContext();
   const tabByReferenceKey = useMemo(() => {
     const map = new Map<string, BrowserTabInfo>();
-    sessions.items.forEach((session) => {
+    sessions?.items.forEach((session) => {
       session.tabs.forEach((tab) => {
         map.set(`${session.sessionId}:${tab.tabId}`, tab);
       });
     });
     return map;
-  }, [sessions.items]);
+  }, [sessions?.items]);
 
   return (
     <div className="mb-2 flex max-w-full flex-wrap justify-start gap-1.5">

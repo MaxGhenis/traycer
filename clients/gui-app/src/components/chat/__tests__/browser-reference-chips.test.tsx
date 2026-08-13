@@ -93,6 +93,18 @@ describe("BrowserReferenceChips (ticket 08 disambiguation)", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it("renders a static fallback for a persisted reference outside BrowserSessionsProvider", () => {
+    render(
+      wrapper(
+        <BrowserReferenceChips
+          references={[{ ...BASE, sessionId: "sess-a", tabId: "tab-1" }]}
+        />,
+      ),
+    );
+
+    expect(screen.getByText("Browser")).toBeTruthy();
+  });
+
   it("renders the referenced tab's title, not the raw sessionId/tabId pair", async () => {
     const user = userEvent.setup();
     const references: BrowserContextAttachmentRecord[] = [
