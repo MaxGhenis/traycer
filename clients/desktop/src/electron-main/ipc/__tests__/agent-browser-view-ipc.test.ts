@@ -168,7 +168,7 @@ describe("registerAgentBrowserViewIpc", () => {
     );
   });
 
-  it("registers only the five agent browser invoke channels", async () => {
+  it("registers only the seven agent browser invoke channels", async () => {
     const { registerAgentBrowserViewIpc } =
       await import("../agent-browser-view-ipc");
     const { RunnerHostInvoke } =
@@ -189,6 +189,10 @@ describe("registerAgentBrowserViewIpc", () => {
       // count - it exists so a new channel onto the agent's tile has to be
       // added here deliberately, which is the whole point of it being exact.
       RunnerHostInvoke.agentBrowserViewCdpDispatch,
+      // Fix round 3 (native-view overlay bug): the renderer broadcasts
+      // occlude/release to both the primary and agent managers.
+      RunnerHostInvoke.agentBrowserViewOccludeForOverlay,
+      RunnerHostInvoke.agentBrowserViewReleaseOverlay,
     ]);
   });
 

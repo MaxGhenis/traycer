@@ -3,6 +3,10 @@ import type {
   BrowserViewBoundsUpdate,
   BrowserViewDurableTabRegistration,
   BrowserViewOpenTileRequest,
+  BrowserViewOverlayOcclusion,
+  BrowserViewOverlayOcclusionResult,
+  BrowserViewOverlayRelease,
+  BrowserViewOverlayReleaseResult,
   BrowserViewStatusChange,
   BrowserViewTileKey,
 } from "./desktop-browser-view";
@@ -216,6 +220,12 @@ export interface DesktopAgentBrowserViewBridge {
   dispatchCdp(
     input: AgentBrowserViewCdpDispatch,
   ): Promise<AgentBrowserViewCdpResult>;
+  occludeForOverlay(
+    input: BrowserViewOverlayOcclusion,
+  ): Promise<BrowserViewOverlayOcclusionResult>;
+  releaseOverlay(
+    input: BrowserViewOverlayRelease,
+  ): Promise<BrowserViewOverlayReleaseResult>;
   onCdpSessionEnded(
     handler: (change: AgentBrowserViewCdpSessionEndedChange) => void,
   ): {
@@ -250,6 +260,8 @@ const REQUIRED_AGENT_BROWSER_VIEW_BRIDGE_METHODS = [
   "onStatusChange",
   "onOpenTileRequest",
   "dispatchCdp",
+  "occludeForOverlay",
+  "releaseOverlay",
   "onCdpSessionEnded",
   "onCdpTargetAttached",
   "onTileHandoff",
@@ -275,6 +287,14 @@ export function resolveDesktopAgentBrowserViewBridge(
       Promise.resolve(
         methods.dispatchCdp.call(value, input),
       ) as Promise<AgentBrowserViewCdpResult>,
+    occludeForOverlay: (input) =>
+      Promise.resolve(
+        methods.occludeForOverlay.call(value, input),
+      ) as Promise<BrowserViewOverlayOcclusionResult>,
+    releaseOverlay: (input) =>
+      Promise.resolve(
+        methods.releaseOverlay.call(value, input),
+      ) as Promise<BrowserViewOverlayReleaseResult>,
     onCdpSessionEnded: (handler) =>
       readDisposable(methods.onCdpSessionEnded.call(value, handler)),
     onCdpTargetAttached: (handler) =>
@@ -305,6 +325,8 @@ function readAgentBrowserViewBridgeMethods(
     onStatusChange: readBridgeMethod(value, "onStatusChange"),
     onOpenTileRequest: readBridgeMethod(value, "onOpenTileRequest"),
     dispatchCdp: readBridgeMethod(value, "dispatchCdp"),
+    occludeForOverlay: readBridgeMethod(value, "occludeForOverlay"),
+    releaseOverlay: readBridgeMethod(value, "releaseOverlay"),
     onCdpSessionEnded: readBridgeMethod(value, "onCdpSessionEnded"),
     onCdpTargetAttached: readBridgeMethod(value, "onCdpTargetAttached"),
     onTileHandoff: readBridgeMethod(value, "onTileHandoff"),

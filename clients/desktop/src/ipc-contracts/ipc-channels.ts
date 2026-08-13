@@ -305,6 +305,13 @@ export const RunnerHostInvoke = {
     "runnerHost:agentBrowserView:registerDurableTab",
   agentBrowserViewUpdateBounds: "runnerHost:agentBrowserView:updateBounds",
   agentBrowserViewRelease: "runnerHost:agentBrowserView:release",
+  // Fix round 3 (native-view overlay bug): the renderer's overlay coordinator
+  // broadcasts the same occlude/release call to both the primary and agent
+  // managers - each one silently no-ops the tiles it does not own - so the
+  // agent manager needs this surface too, not just the primary one above.
+  agentBrowserViewOccludeForOverlay:
+    "runnerHost:agentBrowserView:occludeForOverlay",
+  agentBrowserViewReleaseOverlay: "runnerHost:agentBrowserView:releaseOverlay",
   // Ticket 03's typed CDP bridge: one invoke carrying an enumerated command
   // (see `AgentBrowserViewCdpCommand`), never a generic method/params pair.
   agentBrowserViewCdpDispatch: "runnerHost:agentBrowserView:cdp:dispatch",

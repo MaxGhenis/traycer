@@ -12,6 +12,10 @@ import type {
   BrowserViewBoundsUpdate,
   BrowserViewDurableTabRegistration,
   BrowserViewOpenTileRequest,
+  BrowserViewOverlayOcclusion,
+  BrowserViewOverlayOcclusionResult,
+  BrowserViewOverlayRelease,
+  BrowserViewOverlayReleaseResult,
   BrowserViewStatusChange,
   BrowserViewTileKey,
   BrowserViewTileUpsert,
@@ -31,6 +35,12 @@ export interface AgentBrowserViewBridgeSurface {
     dispatchCdp(
       input: AgentBrowserViewCdpDispatch,
     ): Promise<AgentBrowserViewCdpResult>;
+    occludeForOverlay(
+      input: BrowserViewOverlayOcclusion,
+    ): Promise<BrowserViewOverlayOcclusionResult>;
+    releaseOverlay(
+      input: BrowserViewOverlayRelease,
+    ): Promise<BrowserViewOverlayReleaseResult>;
     onCdpSessionEnded(
       handler: Listener<AgentBrowserViewCdpSessionEndedChange>,
     ): Disposable;
@@ -81,6 +91,16 @@ export function buildAgentBrowserViewBridge(): AgentBrowserViewBridgeSurface {
           RunnerHostInvoke.agentBrowserViewCdpDispatch,
           input,
         ) as Promise<AgentBrowserViewCdpResult>,
+      occludeForOverlay: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.agentBrowserViewOccludeForOverlay,
+          input,
+        ) as Promise<BrowserViewOverlayOcclusionResult>,
+      releaseOverlay: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.agentBrowserViewReleaseOverlay,
+          input,
+        ) as Promise<BrowserViewOverlayReleaseResult>,
       onCdpSessionEnded: (handler) =>
         subscribe<AgentBrowserViewCdpSessionEndedChange>(
           RunnerHostEvent.agentBrowserViewCdpSessionEnded,

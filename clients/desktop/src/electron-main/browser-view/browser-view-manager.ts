@@ -1118,6 +1118,24 @@ export class BrowserViewManager {
       ),
     );
 
+    // Fix round 3: the renderer now broadcasts every occlusion to both the
+    // primary and agent managers, and each one silently no-ops the tiles it
+    // does not own (by design - see `occludeEntryForOverlay`). That is
+    // correct but otherwise invisible; log once per call when this manager
+    // matched none of the requested tiles, so "this manager isn't the one
+    // that owns this overlay's tiles" stays distinguishable in the log from
+    // an actual regression, without spamming per-tile.
+    const matchedCount = nextKeyIds.filter((keyId) =>
+      this.entriesByKey.has(keyId),
+    ).length;
+    if (nextKeyIds.length > 0 && matchedCount === 0) {
+      log.info("[browser-view] occlude for overlay: no matching entries", {
+        overlayId: input.overlayId,
+        requestedCount: nextKeyIds.length,
+        matchedCount,
+      });
+    }
+
     return {
       snapshots: snapshots.filter(
         (snapshot): snapshot is BrowserViewOverlaySnapshot => snapshot !== null,

@@ -176,6 +176,17 @@ class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
     };
   }
 
+  occludeForOverlay(): Promise<{
+    readonly snapshots: never[];
+    readonly restoredTiles: never[];
+  }> {
+    return Promise.resolve({ snapshots: [], restoredTiles: [] });
+  }
+
+  releaseOverlay(): Promise<{ readonly restoredTiles: never[] }> {
+    return Promise.resolve({ restoredTiles: [] });
+  }
+
   emitCdpSessionEnded(change: AgentBrowserViewCdpSessionEndedChange): void {
     this.cdpSessionEndedHandlers.forEach((handler) => handler(change));
   }

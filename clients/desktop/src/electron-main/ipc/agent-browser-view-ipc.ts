@@ -14,6 +14,8 @@ import type {
   BrowserViewBoundsUpdate,
   BrowserViewDurableTabRegistration,
   BrowserViewOpenTileRequest,
+  BrowserViewOverlayOcclusion,
+  BrowserViewOverlayRelease,
   BrowserViewTileKey,
   BrowserViewTileUpsert,
 } from "../../ipc-contracts/browser-view-types";
@@ -180,6 +182,25 @@ export function registerAgentBrowserViewIpc(
     },
   );
 
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewOccludeForOverlay,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      return manager.occludeForOverlay(
+        windowId,
+        parseOverlayOcclusion(payload),
+      );
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewReleaseOverlay,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      return manager.releaseOverlay(windowId, parseOverlayRelease(payload));
+    },
+  );
+
   bridge.disposeFns.push(() => {
     manager.dispose();
   });
@@ -276,6 +297,25 @@ function parseTileKey(value: unknown): BrowserViewTileKey {
     paneId: readString(record.paneId, "paneId"),
     tileInstanceId: readString(record.tileInstanceId, "tileInstanceId"),
     pageSessionId: readString(record.pageSessionId, "pageSessionId"),
+  };
+}
+
+function parseOverlayOcclusion(value: unknown): BrowserViewOverlayOcclusion {
+  const record = assertRecord(value, "Agent browser view overlay occlusion payload");
+  const tilesValue = record.tiles;
+  if (!Array.isArray(tilesValue)) {
+    throw new Error("Agent browser view overlay tiles must be an array");
+  }
+  return {
+    overlayId: readString(record.overlayId, "overlayId"),
+    tiles: tilesValue.map((tile) => parseTileKey(tile)),
+  };
+}
+
+function parseOverlayRelease(value: unknown): BrowserViewOverlayRelease {
+  const record = assertRecord(value, "Agent browser view overlay release payload");
+  return {
+    overlayId: readString(record.overlayId, "overlayId"),
   };
 }
 

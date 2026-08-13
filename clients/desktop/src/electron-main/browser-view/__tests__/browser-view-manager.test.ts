@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { log } from "../../app/logger";
 import {
   BrowserViewManager,
   PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT,
@@ -3837,5 +3838,56 @@ describe("BrowserViewManager host window renderer reset (fix round 2)", () => {
       bounds: { x: 5, y: 5, width: 300, height: 200 },
     });
     expect(view.visible).toBe(false);
+  });
+});
+
+describe("BrowserViewManager overlay occlusion broadcast routing (fix round 3)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("logs once, with counts, when none of the requested tiles belong to this manager instance", async () => {
+    const harness = createHarness();
+    // No upsertTile call for BASE_KEY - this manager instance owns nothing,
+    // exactly the shape of an occlude broadcast landing on the agent
+    // manager for a primary-only tile (or vice versa).
+    const infoSpy = vi.spyOn(log, "info");
+
+    await harness.manager.occludeForOverlay("window-1", {
+      overlayId: "settings-dialog",
+      tiles: [BASE_KEY],
+    });
+
+    expect(infoSpy).toHaveBeenCalledWith(
+      "[browser-view] occlude for overlay: no matching entries",
+      expect.objectContaining({
+        overlayId: "settings-dialog",
+        requestedCount: 1,
+        matchedCount: 0,
+      }),
+    );
+  });
+
+  it("does not log a no-match warning when this manager owns the requested tile", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    harness.manager.updateBounds("window-1", {
+      ...BASE_KEY,
+      bounds: { x: 0, y: 0, width: 300, height: 200 },
+    });
+    const infoSpy = vi.spyOn(log, "info");
+
+    await harness.manager.occludeForOverlay("window-1", {
+      overlayId: "settings-dialog",
+      tiles: [BASE_KEY],
+    });
+
+    expect(infoSpy).not.toHaveBeenCalledWith(
+      "[browser-view] occlude for overlay: no matching entries",
+      expect.anything(),
+    );
   });
 });

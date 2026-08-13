@@ -37,7 +37,18 @@ import type {
   BrowserViewTileKey,
   DesktopBrowserViewBridge,
 } from "@/lib/browser-view/desktop-browser-view";
-import type { AgentBrowserViewCdpResult } from "@/lib/browser-view/desktop-agent-browser-view";
+import type {
+  AgentBrowserViewBoundsUpdate,
+  AgentBrowserViewCdpDispatch,
+  AgentBrowserViewCdpResult,
+  AgentBrowserViewCdpSessionEndedChange,
+  AgentBrowserViewCdpTargetAttachedChange,
+  AgentBrowserViewDurableTabRegistration,
+  AgentBrowserViewStatusChange,
+  AgentBrowserViewTileHandoffChange,
+  AgentBrowserViewTileUpsert,
+  DesktopAgentBrowserViewBridge,
+} from "@/lib/browser-view/desktop-agent-browser-view";
 import { RunnerHostProvider } from "@/providers/runner-host-provider";
 
 const BASE_KEY: BrowserViewTileKey = {
@@ -342,6 +353,79 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
   }
 }
 
+class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
+  readonly occludeCalls: BrowserViewOverlayOcclusion[] = [];
+  readonly releaseCalls: BrowserViewOverlayRelease[] = [];
+
+  upsertTile(_input: AgentBrowserViewTileUpsert): Promise<void> {
+    return Promise.resolve();
+  }
+
+  registerDurableTab(
+    _input: AgentBrowserViewDurableTabRegistration,
+  ): Promise<void> {
+    return Promise.resolve();
+  }
+
+  updateBounds(_input: AgentBrowserViewBoundsUpdate): Promise<void> {
+    return Promise.resolve();
+  }
+
+  releaseTile(_input: BrowserViewTileKey): Promise<void> {
+    return Promise.resolve();
+  }
+
+  onStatusChange(_handler: (change: AgentBrowserViewStatusChange) => void): {
+    dispose: () => void;
+  } {
+    return { dispose: () => undefined };
+  }
+
+  onOpenTileRequest(_handler: (change: BrowserViewOpenTileRequest) => void): {
+    dispose: () => void;
+  } {
+    return { dispose: () => undefined };
+  }
+
+  dispatchCdp(
+    _input: AgentBrowserViewCdpDispatch,
+  ): Promise<AgentBrowserViewCdpResult> {
+    throw new Error("dispatchCdp is not exercised by this test");
+  }
+
+  occludeForOverlay(
+    input: BrowserViewOverlayOcclusion,
+  ): Promise<BrowserViewOverlayOcclusionResult> {
+    this.occludeCalls.push(input);
+    return Promise.resolve({ snapshots: [], restoredTiles: [] });
+  }
+
+  releaseOverlay(
+    input: BrowserViewOverlayRelease,
+  ): Promise<BrowserViewOverlayReleaseResult> {
+    this.releaseCalls.push(input);
+    return Promise.resolve({ restoredTiles: [] });
+  }
+
+  onCdpSessionEnded(
+    _handler: (change: AgentBrowserViewCdpSessionEndedChange) => void,
+  ): { dispose: () => void } {
+    return { dispose: () => undefined };
+  }
+
+  onCdpTargetAttached(
+    _handler: (change: AgentBrowserViewCdpTargetAttachedChange) => void,
+  ): { dispose: () => void } {
+    return { dispose: () => undefined };
+  }
+
+  onTileHandoff(
+    _handler: (change: AgentBrowserViewTileHandoffChange) => void,
+  ): { dispose: () => void } {
+    return { dispose: () => undefined };
+  }
+}
+
 describe("<BrowserOverlayCoordinator />", () => {
   beforeEach(() => {
     let nextFrameId = 1;
@@ -373,7 +457,7 @@ describe("<BrowserOverlayCoordinator />", () => {
     });
     const overlay = appendOverlay("palette", rect(200, 200, 40, 40));
 
-    renderBrowserOverlayCoordinator(bridge);
+    renderBrowserOverlayCoordinator(bridge, null);
     await Promise.resolve();
 
     expect(bridge.occludeCalls).toEqual([]);
@@ -392,7 +476,7 @@ describe("<BrowserOverlayCoordinator />", () => {
     );
     const toast = appendOverlay("toast", rect(80, 80, 40, 40));
 
-    renderBrowserOverlayCoordinator(bridge);
+    renderBrowserOverlayCoordinator(bridge, null);
 
     await waitFor(() => {
       expect(bridge.occludeCalls).toHaveLength(2);
@@ -435,7 +519,7 @@ describe("<BrowserOverlayCoordinator />", () => {
       appendOverlay(category, rect(5 + index, 5 + index, 20, 20)),
     );
 
-    renderBrowserOverlayCoordinator(bridge);
+    renderBrowserOverlayCoordinator(bridge, null);
 
     await waitFor(() => {
       expect(bridge.occludeCalls).toHaveLength(categories.length);
@@ -455,7 +539,7 @@ describe("<BrowserOverlayCoordinator />", () => {
     });
     const toaster = appendSonnerToaster(rect(16, 16, 48, 24));
 
-    renderBrowserOverlayCoordinator(bridge);
+    renderBrowserOverlayCoordinator(bridge, null);
 
     await waitFor(() => {
       expect(bridge.occludeCalls).toHaveLength(1);
@@ -474,7 +558,7 @@ describe("<BrowserOverlayCoordinator />", () => {
     });
     const overlay = appendOverlay("dropdown", rect(10, 10, 20, 20));
 
-    renderBrowserOverlayCoordinator(bridge);
+    renderBrowserOverlayCoordinator(bridge, null);
     await waitFor(() => {
       expect(getBrowserViewSnapshot(BASE_KEY)).not.toBeNull();
     });
@@ -501,7 +585,7 @@ describe("<BrowserOverlayCoordinator />", () => {
     });
     const overlay = appendOverlay("hover-card", rect(10, 10, 20, 20));
 
-    renderBrowserOverlayCoordinator(bridge);
+    renderBrowserOverlayCoordinator(bridge, null);
     await waitFor(() => {
       expect(getBrowserViewSnapshot(BASE_KEY)).toEqual({
         dataUrl: "data:image/png;base64,hover-card",
@@ -517,10 +601,58 @@ describe("<BrowserOverlayCoordinator />", () => {
     });
     overlay.remove();
   });
+
+  it("broadcasts the same occlude and release call to both the primary and agent bridges (fix round 3)", async () => {
+    const bridge = new FakeBrowserViewBridge();
+    const agentBridge = new FakeAgentBrowserViewBridge();
+    registerBrowserOverlayTile({
+      key: BASE_KEY,
+      rect: rect(0, 0, 100, 100),
+    });
+    const overlay = appendOverlay("settings-dialog", rect(10, 10, 20, 20));
+
+    renderBrowserOverlayCoordinator(bridge, agentBridge);
+
+    await waitFor(() => {
+      expect(bridge.occludeCalls).toHaveLength(1);
+      expect(agentBridge.occludeCalls).toHaveLength(1);
+    });
+    // Both bridges receive the identical, full tile list - neither the
+    // coordinator nor the renderer-side registry needs to know which
+    // manager actually owns BASE_KEY; each manager silently no-ops the
+    // tiles it does not own.
+    expect(bridge.occludeCalls[0]).toEqual(agentBridge.occludeCalls[0]);
+    expect(bridge.occludeCalls[0]?.tiles).toEqual([BASE_KEY]);
+
+    overlay.remove();
+    await waitFor(() => {
+      expect(bridge.releaseCalls).toHaveLength(1);
+      expect(agentBridge.releaseCalls).toHaveLength(1);
+    });
+    expect(bridge.releaseCalls[0]).toEqual(agentBridge.releaseCalls[0]);
+  });
+
+  it("still occludes when only the primary bridge is available (agent bridge null)", async () => {
+    const bridge = new FakeBrowserViewBridge();
+    registerBrowserOverlayTile({
+      key: BASE_KEY,
+      rect: rect(0, 0, 100, 100),
+    });
+    const overlay = appendOverlay("settings-dialog", rect(10, 10, 20, 20));
+
+    renderBrowserOverlayCoordinator(bridge, null);
+
+    await waitFor(() => {
+      expect(bridge.occludeCalls).toHaveLength(1);
+    });
+
+    overlay.remove();
+  });
 });
 
 function renderBrowserOverlayCoordinator(
   browserView: DesktopBrowserViewBridge,
+  agentBrowserView: DesktopAgentBrowserViewBridge | null,
 ): void {
   const runnerHost = Object.assign(
     new MockRunnerHost({
@@ -532,7 +664,7 @@ function renderBrowserOverlayCoordinator(
       hasLocalHost: undefined,
       traycerCli: undefined,
     }),
-    { browserView },
+    { browserView, agentBrowserView },
   );
   render(
     <RunnerHostProvider runnerHost={runnerHost}>

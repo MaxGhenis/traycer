@@ -152,6 +152,17 @@ class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
     return Promise.resolve({ kind: "cdpGetFrameTree", ok: true, frames: [] });
   }
 
+  occludeForOverlay(): Promise<{
+    readonly snapshots: never[];
+    readonly restoredTiles: never[];
+  }> {
+    return Promise.resolve({ snapshots: [], restoredTiles: [] });
+  }
+
+  releaseOverlay(): Promise<{ readonly restoredTiles: never[] }> {
+    return Promise.resolve({ restoredTiles: [] });
+  }
+
   onStatusChange(handler: (change: BrowserViewStatusChange) => void): {
     dispose: () => void;
   } {
