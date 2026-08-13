@@ -204,7 +204,10 @@ import { SidebarPanelEmptyState } from "@/components/epic-canvas/sidebar/sidebar
 import { useShallow } from "zustand/react/shallow";
 
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
-import { EpicBrowserSidebar } from "@/components/epic-canvas/sidebar/epic-browser-sidebar";
+import {
+  BrowsersPanelActions,
+  BrowsersPanelBody,
+} from "@/components/epic-canvas/sidebar/epic-browser-sidebar";
 interface ArtifactReadTarget {
   readonly id: string;
   readonly updatedAt: number;
@@ -366,6 +369,14 @@ const PANEL_SLOTS_BY_ID: Readonly<Record<LeftPanelId, LeftPanelModeSlots>> = {
       Subtitle: null,
     },
     loading: emptyLoadingSlots(TerminalsLoadingPanelBody),
+  },
+  browsers: {
+    live: {
+      Body: BrowsersPanelBody,
+      Actions: BrowsersPanelActions,
+      Subtitle: null,
+    },
+    loading: emptyLoadingSlots(GenericLoadingPanelBody),
   },
   artifacts: {
     live: {
@@ -541,7 +552,6 @@ export function EpicLeftPanelHost(props: EpicLeftPanelHostProps) {
       data-left-panel-group-size={panels.length}
     >
       <ArtifactReadLifecycleBridge epicId={epicId} tabId={tabId} />
-      <EpicBrowserSidebar epicId={epicId} tabId={tabId} />
       <PanelGroupBody epicId={epicId} tabId={tabId} panels={panels} />
     </Sidebar>
   );

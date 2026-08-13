@@ -14,7 +14,10 @@ import type {
   BrowserTabInfo,
 } from "@traycer/protocol/host/browser/contracts";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { EpicBrowserSidebar } from "@/components/epic-canvas/sidebar/epic-browser-sidebar";
+import {
+  BrowsersPanelActions,
+  BrowsersPanelBody,
+} from "@/components/epic-canvas/sidebar/epic-browser-sidebar";
 import type { BrowserSessionsState } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import {
   findOpenArtifactInTab,
@@ -166,7 +169,7 @@ function seedCanvasTab(): void {
   });
 }
 
-describe("EpicBrowserSidebar (ticket 08)", () => {
+describe("BrowsersPanelBody", () => {
   beforeEach(() => {
     closeSession.mockReset();
     navigateNested.mockClear();
@@ -185,6 +188,7 @@ describe("EpicBrowserSidebar (ticket 08)", () => {
               url: "https://app.example/live",
               title: "Live page",
               status: "ready",
+              viewed: true,
               drivenBy: [
                 {
                   chatId: "chat-driver",
@@ -193,6 +197,13 @@ describe("EpicBrowserSidebar (ticket 08)", () => {
                 },
               ],
             }),
+          ],
+        }),
+        session({
+          sessionId: "sess-dormant",
+          name: "Agent browser",
+          profile: "primary",
+          tabs: [
             tab({
               tabId: "tab-dormant",
               url: "https://app.example/old",
@@ -228,29 +239,46 @@ describe("EpicBrowserSidebar (ticket 08)", () => {
     resetElectronBrowserTabStoreForTests();
   });
 
-  it("lists live sessions with profile badges and dormant styling", () => {
-    const { container } = render(
-      wrapper(<EpicBrowserSidebar epicId="epic-1" tabId="view-tab-1" />),
+  it("lists sessions by their active tab's title, with dormant styling and isolated-only badges", () => {
+    render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
     );
 
-    expect(screen.getByText("Browsers")).toBeTruthy();
-    expect(screen.getByText("Main")).toBeTruthy();
-    expect(screen.getByText("primary")).toBeTruthy();
-    expect(screen.getByText("Agent: checkout")).toBeTruthy();
-    expect(screen.getByText("isolated")).toBeTruthy();
     expect(screen.getByText("Live page")).toBeTruthy();
     expect(screen.getByText("Dormant page")).toBeTruthy();
+    expect(screen.getByText("Checkout")).toBeTruthy();
+    expect(screen.getByText("isolated")).toBeTruthy();
+    // The primary-profile session must not render a badge - only the
+    // isolated one earns one, per the row-redesign rule.
+    expect(screen.queryByText("primary")).toBeNull();
+    // The old placeholder session name never appears as a row's primary text.
+    expect(screen.queryByText("Agent browser")).toBeNull();
 
     const dormantRow = screen.getByText("Dormant page").closest("div.group");
     expect(dormantRow?.className.split(/\s+/)).toContain("opacity-60");
     const liveRow = screen.getByText("Live page").closest("div.group");
     expect(liveRow?.className.split(/\s+/)).not.toContain("opacity-60");
-    expect(container.textContent).toContain("2");
+  });
+
+  it("gives every row a unique, title-derived accessible close name", () => {
+    render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Close Live page" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Close Dormant page" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Close Checkout" }),
+    ).toBeTruthy();
   });
 
   it("shows drivenBy attribution via real tooltip and opens the driving chat", async () => {
     const user = userEvent.setup();
-    render(wrapper(<EpicBrowserSidebar epicId="epic-1" tabId="view-tab-1" />));
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     const driveButton = screen.getByRole("button", {
       name: "Open driving chat Checkout agent",
@@ -272,20 +300,18 @@ describe("EpicBrowserSidebar (ticket 08)", () => {
   });
 
   it("close sends closeSession (host delete resource)", () => {
-    render(wrapper(<EpicBrowserSidebar epicId="epic-1" tabId="view-tab-1" />));
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
-    // One close control per tab row; all rows for the same session share the
-    // session-level delete action.
     fireEvent.click(
-      screen.getAllByRole("button", { name: "Close browser session Main" })[0],
+      screen.getByRole("button", { name: "Close Live page" }),
     );
     expect(closeSession).toHaveBeenCalledWith("sess-primary");
   });
 
-  it("tab click opens a browser-session pointer tile when none is open", () => {
-    render(wrapper(<EpicBrowserSidebar epicId="epic-1" tabId="view-tab-1" />));
+  it("row click opens a browser-session pointer tile when none is open", () => {
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
-    fireEvent.click(screen.getByRole("button", { name: /Live page/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Live page/i }));
 
     const expected = makeBrowserSessionTileRef({
       name: "Live page",
@@ -307,7 +333,7 @@ describe("EpicBrowserSidebar (ticket 08)", () => {
     });
   });
 
-  it("tab click focuses an existing pointer tile instead of opening a duplicate", () => {
+  it("row click focuses an existing pointer tile instead of opening a duplicate", () => {
     const existing = makeBrowserSessionTileRef({
       name: "Live page",
       hostId: "host-1",
@@ -320,8 +346,8 @@ describe("EpicBrowserSidebar (ticket 08)", () => {
         ?.tilesByInstanceId ?? {},
     ).length;
 
-    render(wrapper(<EpicBrowserSidebar epicId="epic-1" tabId="view-tab-1" />));
-    fireEvent.click(screen.getByRole("button", { name: /Live page/i }));
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+    fireEvent.click(screen.getByRole("button", { name: /^Live page/i }));
 
     const afterCount = Object.keys(
       useEpicCanvasStore.getState().canvasByTabId["view-tab-1"]
@@ -333,7 +359,7 @@ describe("EpicBrowserSidebar (ticket 08)", () => {
     expect(focused?.instanceId).toBe(existing.instanceId);
   });
 
-  it("tab click focuses an existing native electron binding tile by registrationId", async () => {
+  it("row click focuses an existing native electron binding tile by registrationId", async () => {
     const bridge = new FakeBridge();
     const tileKey: BrowserViewTileKey = {
       viewTabId: "view-tab-1",
@@ -380,8 +406,8 @@ describe("EpicBrowserSidebar (ticket 08)", () => {
         ?.tilesByInstanceId ?? {},
     ).length;
 
-    render(wrapper(<EpicBrowserSidebar epicId="epic-1" tabId="view-tab-1" />));
-    fireEvent.click(screen.getByRole("button", { name: /Live page/i }));
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+    fireEvent.click(screen.getByRole("button", { name: /^Live page/i }));
 
     const afterCount = Object.keys(
       useEpicCanvasStore.getState().canvasByTabId["view-tab-1"]
@@ -391,5 +417,58 @@ describe("EpicBrowserSidebar (ticket 08)", () => {
     const focused = findOpenArtifactInTab("view-tab-1", "reg-native-1");
     expect(typeof focused?.paneId).toBe("string");
     expect(focused?.instanceId).toBe("native-instance");
+  });
+
+  it("shows the empty state with an Add browser action when there are no sessions", () => {
+    sessionsState.value = { ...sessionsState.value, items: [] };
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+
+    expect(screen.getByTestId("epic-browsers-panel-empty")).toBeTruthy();
+    expect(screen.getByText("No browsers yet.")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Add browser" }),
+    ).toBeTruthy();
+  });
+});
+
+describe("BrowsersPanelActions", () => {
+  beforeEach(() => {
+    navigateNested.mockClear();
+    seedCanvasTab();
+    sessionsState.value = {
+      lifecycle: "live",
+      items: [],
+      errorMessage: null,
+      routingChatId: null,
+      closeSession: forwardCloseSession,
+      requestPromoteState: vi.fn(),
+      requestLendStorage: vi.fn(),
+    };
+  });
+
+  afterEach(() => {
+    cleanup();
+    useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
+  });
+
+  it("opens a new browser tile via the header Add browser action", () => {
+    render(
+      wrapper(<BrowsersPanelActions epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add browser" }));
+
+    expect(navigateNested).toHaveBeenCalledWith(
+      "epic-1",
+      "view-tab-1",
+      expect.any(Function),
+    );
+    const tilesByInstanceId =
+      useEpicCanvasStore.getState().canvasByTabId["view-tab-1"]
+        ?.tilesByInstanceId ?? {};
+    const opened = Object.values(tilesByInstanceId).find(
+      (tile) => tile !== undefined && tile.type === "browser",
+    );
+    expect(opened).toBeTruthy();
   });
 });

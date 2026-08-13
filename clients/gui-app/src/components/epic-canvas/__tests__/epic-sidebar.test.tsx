@@ -351,6 +351,7 @@ describe("<EpicLeftPanelRail />", () => {
       "epic-rail-chats",
       "epic-rail-terminals",
       "epic-rail-panel-drop-line",
+      "epic-rail-browsers",
       "epic-rail-git-diff",
       "epic-rail-pull-requests",
       "epic-rail-file-tree",
@@ -522,6 +523,7 @@ describe("<EpicLeftPanelRail />", () => {
       ).toEqual([
         "Agents",
         "Terminals",
+        "Browsers",
         "Artifacts",
         "Git Diff",
         "Pull Requests",
@@ -639,6 +641,7 @@ describe("<EpicLeftPanelRail />", () => {
     it("refuses to hide the last visible panel", () => {
       for (const panelId of [
         "terminals",
+        "browsers",
         "artifacts",
         "git-diff",
         "pull-requests",
