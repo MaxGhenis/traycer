@@ -278,10 +278,17 @@ function isElementVisible(element: HTMLElement): boolean {
   if (element.getAttribute("aria-hidden") === "true") return false;
   if (element.getAttribute("data-state") === "closed") return false;
   const style = window.getComputedStyle(element);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  if (style.opacity !== "0") return true;
+  // A fade-in (e.g. Radix `data-open:animate-in fade-in-0`) starts at
+  // opacity 0 and produces no further DOM mutation once mounted, so a scan
+  // that lands during the fade would otherwise skip the overlay here and
+  // never rescan - a permanent occlusion miss on an otherwise DOM-quiet
+  // screen. A still-running animation counts as visible so occlusion
+  // engages immediately, not after the fade completes.
   return (
-    style.display !== "none" &&
-    style.visibility !== "hidden" &&
-    style.opacity !== "0"
+    typeof element.getAnimations === "function" &&
+    element.getAnimations().length > 0
   );
 }
 
