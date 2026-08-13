@@ -84,6 +84,7 @@ import {
 import { PANEL_RESIZING_CLASS_NAME } from "@/lib/layout/panel-resizing-class";
 import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
+import { useSettingsStore } from "@/stores/settings/settings-store";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import type { BrowserTileRef } from "@/stores/epics/canvas/types";
 import { BrowserDebugPanels } from "@/components/epic-canvas/renderers/browser-debug-panels";
@@ -1004,6 +1005,9 @@ function sendBrowserTileControlActionFailure(
 function BrowserCookieDegradedBanner(props: {
   readonly cryptoState: BrowserCookieCryptoState;
 }) {
+  const inAppBrowserBetaEnabled = useSettingsStore(
+    (state) => state.inAppBrowserBetaEnabled,
+  );
   return (
     <div
       role="status"
@@ -1015,7 +1019,7 @@ function BrowserCookieDegradedBanner(props: {
         aria-hidden
       />
       <span className="min-w-0 flex-1">
-        {browserCookieDegradedMessage(props.cryptoState)}
+        {browserCookieDegradedMessage(props.cryptoState, inAppBrowserBetaEnabled)}
       </span>
     </div>
   );
@@ -1287,6 +1291,9 @@ function BrowserSiteInfoButton(props: {
   readonly cookieCryptoState: BrowserCookieCryptoState | null;
 }) {
   const isWebOrigin = isWebOriginUrl(props.url);
+  const inAppBrowserBetaEnabled = useSettingsStore(
+    (state) => state.inAppBrowserBetaEnabled,
+  );
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -1312,7 +1319,10 @@ function BrowserSiteInfoButton(props: {
         {props.cookieCryptoState === null ? null : (
           <BrowserSiteInfoRow
             title={cookieCryptoHeadline(props.cookieCryptoState)}
-            detail={cookieCryptoDetail(props.cookieCryptoState)}
+            detail={cookieCryptoDetail(
+              props.cookieCryptoState,
+              inAppBrowserBetaEnabled,
+            )}
           />
         )}
       </PopoverContent>
@@ -1350,9 +1360,12 @@ function cookieCryptoHeadline(state: BrowserCookieCryptoState): string {
     : "Logins saved with basic protection";
 }
 
-function cookieCryptoDetail(state: BrowserCookieCryptoState): string {
+function cookieCryptoDetail(
+  state: BrowserCookieCryptoState,
+  inAppBrowserBetaEnabled: boolean,
+): string {
   if (state.mode === "degraded" || state.persistence === "ephemeral") {
-    return browserCookieDegradedMessage(state);
+    return browserCookieDegradedMessage(state, inAppBrowserBetaEnabled);
   }
   if (state.mode === "real") {
     return "Cookies and saved logins on this page are encrypted by your operating system.";

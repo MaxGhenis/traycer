@@ -58,6 +58,7 @@ import type {
   AgentBrowserViewTileHandoffChange,
 } from "@/lib/browser-view/desktop-agent-browser-view";
 import type { TileFindAdapter } from "@/stores/tile-find";
+import { useSettingsStore } from "@/stores/settings/settings-store";
 import { TILE_KIND_BROWSER } from "@/stores/epics/canvas/tile-kinds";
 import type { BrowserTileRef } from "@/stores/epics/canvas/types";
 
@@ -638,6 +639,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     updateBrowserTileUrlMock.fn.mockReset();
     updateBrowserTileViewportPresetMock.fn.mockReset();
     openFreshBrowserTileMock.fn.mockReset();
+    useSettingsStore.setState({ inAppBrowserBetaEnabled: false });
   });
 
   afterEach(() => {
@@ -645,14 +647,26 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     resetBrowserTileControlStoreForTests();
   });
 
-  it("renders the degraded-mode ephemeral login banner", async () => {
+  it("renders the degraded-mode ephemeral login banner pointing at the beta setting", async () => {
     bridgeHarness.current = new FakeBrowserViewBridge(DEGRADED_STATE);
 
     renderBrowserTile(null, NODE);
 
     const banner = await screen.findByTestId("browser-cookie-degraded-banner");
     expect(banner.textContent).toContain(
-      "Restart Traycer to enable persistent logins.",
+      'Enable "In-app browser (beta)" in Settings, then restart Traycer, for persistent logins.',
+    );
+  });
+
+  it("renders a restart-to-apply banner once the beta setting is already on", async () => {
+    useSettingsStore.setState({ inAppBrowserBetaEnabled: true });
+    bridgeHarness.current = new FakeBrowserViewBridge(DEGRADED_STATE);
+
+    renderBrowserTile(null, NODE);
+
+    const banner = await screen.findByTestId("browser-cookie-degraded-banner");
+    expect(banner.textContent).toContain(
+      "Restart Traycer to apply the in-app browser setting and enable persistent logins.",
     );
   });
 
@@ -728,7 +742,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
       state: DEGRADED_STATE,
       headline: "Logins aren't saved",
       detail:
-        "Logins in this browser are temporary until Traycer restarts. Restart Traycer to enable persistent logins.",
+        'Logins in this browser are temporary. Enable "In-app browser (beta)" in Settings, then restart Traycer, for persistent logins.',
     },
   ])(
     "describes $label cookie protection",
