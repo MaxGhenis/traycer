@@ -212,27 +212,25 @@ describe("ChunkPacer stays within its per-second budget under a fake clock", () 
     }
   });
 
-  it("recordUnpaced drains the same bucket a subsequent tryConsume reads from", () => {
+  it("frame-token exhaustion paces out the next frame regardless of its size", () => {
     const nowMs = 0;
     const pacer = new ChunkPacer(() => nowMs);
 
-    // Exhaust the frame-token budget purely via recordUnpaced (never calling
-    // tryConsume up to this point).
-    for (let i = 0; i < CHUNK_PACE_BURST_FRAMES + 1; i++) {
-      pacer.recordUnpaced(1);
+    // Tiny frames spend the whole frame-token burst without denting the byte
+    // budget - the frame dimension alone must then pace the bucket out.
+    for (let i = 0; i < CHUNK_PACE_BURST_FRAMES; i++) {
+      expect(pacer.tryConsume(1)).toBe(true);
     }
-
-    // Same instant, no refill occurred: tryConsume must observe the drained
-    // bucket and report paced-out even though it was never called before.
     expect(pacer.tryConsume(1)).toBe(false);
   });
 
-  it("recordUnpaced draining the byte budget also blocks a subsequent tryConsume", () => {
+  it("byte-budget exhaustion paces out a frame while frame tokens remain", () => {
     const nowMs = 0;
     const pacer = new ChunkPacer(() => nowMs);
 
-    pacer.recordUnpaced(CHUNK_PACE_BURST_BYTES + 1);
-
-    expect(pacer.tryConsume(1)).toBe(false);
+    // One consume drains the byte burst almost entirely, using a single frame
+    // token - the byte dimension alone must then pace the next frame out.
+    expect(pacer.tryConsume(CHUNK_PACE_BURST_BYTES - 1)).toBe(true);
+    expect(pacer.tryConsume(2)).toBe(false);
   });
 });

@@ -27,10 +27,13 @@ import {
  * the other queue — because interleaving a frame into another message's chunk
  * sequence on the same stream is reassembler corruption on the peer.
  *
- * Pacing: chunked sources are metered by a `ChunkPacer` kept safely under the
- * relay's per-session rate caps (the relay kills a session over budget);
- * single-frame messages are never delayed but drain the same bucket. When
- * only paced work remains, the pump re-arms itself at the next refill.
+ * Pacing: EVERY frame — chunked or single — is metered by a `ChunkPacer`
+ * kept safely under the relay's per-session rate caps, because the relay
+ * counts raw frames with no class distinction and kills a session over
+ * budget: an ungated single-frame burst would trade a few ms of latency for
+ * losing the whole session. The pacer is clock-fed, so a pace-blocked
+ * interactive frame waits on the bucket refill (ms-scale), never on the
+ * peer. When only paced work remains, the pump re-arms at the next refill.
  *
  * Writes are serialized (one in flight at a time) so per-stream FIFO survives
  * the async encode+encrypt.
@@ -185,14 +188,10 @@ export class PriorityScheduler {
         continue;
       }
       const frameBytes = item.source.nextFrameByteSize;
-      if (item.source.chunked) {
-        if (!this.pacer.tryConsume(frameBytes)) {
-          this.notePaceWait(this.pacer.msUntilAvailable(frameBytes));
-          blockedStreams.add(streamId);
-          continue;
-        }
-      } else {
-        this.pacer.recordUnpaced(frameBytes);
+      if (!this.pacer.tryConsume(frameBytes)) {
+        this.notePaceWait(this.pacer.msUntilAvailable(frameBytes));
+        blockedStreams.add(streamId);
+        continue;
       }
       const frame = item.source.nextFrame();
       if (item.source.done) {

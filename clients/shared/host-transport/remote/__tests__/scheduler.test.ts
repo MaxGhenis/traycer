@@ -425,6 +425,48 @@ describe("PriorityScheduler", () => {
     expect(written).toHaveLength(totalFrames);
     expect(source.done).toBe(true);
   });
+
+  it("pace-bounds an unchunked interactive burst to CHUNK_PACE_BURST_FRAMES under a frozen clock, then resumes on refill", async () => {
+    vi.useFakeTimers();
+    try {
+      const written: number[] = [];
+      const scheduler = new PriorityScheduler({
+        write: async (frame) => {
+          written.push(frame.streamId);
+        },
+        onWriteError: (error) => {
+          throw error instanceof Error ? error : new Error(String(error));
+        },
+        initialBulkCredits: 0,
+        now: () => Date.now(),
+      });
+
+      // A burst of single-frame INTERACTIVE messages, well past the pacer's
+      // frame burst (`CHUNK_PACE_BURST_FRAMES` = 64) - INTERACTIVE is never
+      // credit-gated, so nothing but the pacer can explain a stop short of
+      // `CHUNK_PACE_BURST_FRAMES`. This is the regression pin for "every
+      // frame - not just chunked ones - now consults the pacer": deleting
+      // the `tryConsume` call for unchunked frames in `pullFromQueue` would
+      // let every one of these 100 frames drain in this same synchronous
+      // pass instead of stopping at exactly 64.
+      const total = CHUNK_PACE_BURST_FRAMES + 36;
+      for (let i = 0; i < total; i += 1) {
+        scheduler.enqueue(messageSource(1, QosClass.INTERACTIVE));
+      }
+      // No simulated time elapses: only the frozen burst can drain.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(written.length).toBe(CHUNK_PACE_BURST_FRAMES);
+
+      // Advancing the clock refills the bucket at CHUNK_PACE_FRAMES_PER_SEC
+      // and the rest drains.
+      for (let i = 0; i < 100 && written.length < total; i += 1) {
+        await vi.advanceTimersByTimeAsync(50);
+      }
+      expect(written.length).toBe(total);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("InboundCreditTracker", () => {

@@ -475,12 +475,15 @@ function nextSeqValue(seq: number): number {
 }
 
 /**
- * Token bucket pacing chunked transfers to {@link CHUNK_PACE_BYTES_PER_SEC} /
- * {@link CHUNK_PACE_FRAMES_PER_SEC} per session. `tryConsume` gates chunk
- * frames; `recordUnpaced` drains (never blocks) for everything else sent on
- * the same session, so the COMBINED rate stays inside the relay's budget —
- * the bucket may go negative from unpaced traffic, which simply delays the
- * next chunk. Injectable clock for tests.
+ * Token bucket pacing a session's outbound frames to
+ * {@link CHUNK_PACE_BYTES_PER_SEC} / {@link CHUNK_PACE_FRAMES_PER_SEC}.
+ * `tryConsume` gates EVERY frame — chunked and single-frame alike — because
+ * the relay's per-session budget is enforced on raw frames with no class
+ * distinction: an unpaced single-frame burst (live terminal output, chat
+ * deltas) over the relay window gets the whole session killed, so "never
+ * delay interactive" must mean "delay only by bucket refill (clock-bound,
+ * ms-scale), never by the peer". Burst capacity covers any single frame, so
+ * a `tryConsume(false)` is always transient. Injectable clock for tests.
  */
 export class ChunkPacer {
   private readonly now: () => number;
@@ -493,7 +496,7 @@ export class ChunkPacer {
     this.lastRefillMs = now();
   }
 
-  /** Consumes budget for one chunk frame if available; false = paced out. */
+  /** Consumes budget for one frame if available; false = paced out. */
   tryConsume(frameBytes: number): boolean {
     this.refill();
     if (this.byteTokens < frameBytes || this.frameTokens < 1) {
@@ -504,14 +507,7 @@ export class ChunkPacer {
     return true;
   }
 
-  /** Drains budget for an unpaced (single-frame) send without ever blocking it. */
-  recordUnpaced(frameBytes: number): void {
-    this.refill();
-    this.byteTokens -= frameBytes;
-    this.frameTokens -= 1;
-  }
-
-  /** How long until a chunk frame of `frameBytes` could pass `tryConsume`. */
+  /** How long until a frame of `frameBytes` could pass `tryConsume`. */
   msUntilAvailable(frameBytes: number): number {
     this.refill();
     const byteWaitMs =
