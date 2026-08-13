@@ -1056,7 +1056,14 @@ export const userMessageAnchorTailUpdatedEventSchema = z.object({
   // that names the same session; the consumer drops a mismatch instead of
   // stitching a row from one transcript onto an anchor for another.
   sessionId: z.string(),
-  tailUuid: z.string(),
+  // Null CLEARS the recorded tail. Emitted when tail ownership moves to a
+  // just-accepted steer: acceptance is stdin-enqueue, but the CLI only
+  // consumes the queued message at its next boundary, so rows emitted in
+  // that window still belong to the PREVIOUS message. Freezing the previous
+  // tail at hand-off would cut its slice early; clearing it hands the slice
+  // back to the boundary scan, which stops exactly at the steer's
+  // queued_command attachment row.
+  tailUuid: z.string().nullable(),
 });
 export type UserMessageAnchorTailUpdatedEvent = z.infer<
   typeof userMessageAnchorTailUpdatedEventSchema
