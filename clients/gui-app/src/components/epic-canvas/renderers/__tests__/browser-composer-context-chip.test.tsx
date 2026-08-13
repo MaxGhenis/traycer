@@ -201,13 +201,14 @@ describe("BrowserComposerContextChip", () => {
         dataLevel: "debug-errors",
         expiresAt: 605000,
       },
-      screenshot: {
-        base64: CAPTURE.base64,
-        hash: CAPTURE.sha256,
-      },
       consoleEntries: [ERROR_ENTRY],
       networkEntries: [FAILED_REQUEST],
     });
+    // ticket 22 fixup (b64e88d6): nothing reads title/screenshot on the
+    // browser-debug-context payload - the captured base64 must not linger.
+    expect(attachment).not.toHaveProperty("title");
+    expect(attachment).not.toHaveProperty("screenshot");
+    expect(JSON.stringify(attachment)).not.toContain(CAPTURE.base64);
   });
 
   it("routes a clicked chat chip to that chat even when another chat handler mounted later", async () => {
