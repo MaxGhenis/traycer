@@ -345,6 +345,70 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
     expect(peek.getAttribute("data-tab")).toBe("tab-1");
   });
 
+  it("renders an existing native binding immediately for a ready electron tab", async () => {
+    const bridge = bridgeHarness.current;
+    if (bridge === null) throw new Error("expected browser view bridge");
+    const ids = seedCanvas(NODE);
+    sessionsState.value = {
+      lifecycle: "live",
+      items: [
+        {
+          ...sessionFor("ready"),
+          migration: { revision: 1, runtime: "electron-tile" },
+        },
+      ],
+      errorMessage: null,
+      routingChatId: "chat-route",
+      closeSession: vi.fn(),
+      requestPromoteState: vi.fn(),
+      requestLendStorage: vi.fn(),
+    };
+    registerElectronBrowserTab({
+      epicId: "epic-1",
+      hostId: "host-test",
+      chatId: "chat-route",
+      registrationId: "existing-native-registration",
+      sessionId: NODE.sessionId,
+      requestedTabId: NODE.tabId,
+      initialUrl: "https://example.com/page",
+      title: "Example",
+      tileKey: {
+        viewTabId: ids.viewTabId,
+        paneId: ids.paneId,
+        tileInstanceId: NODE.instanceId,
+        pageSessionId: NODE.id,
+      },
+      bridge,
+      onRegistered: null,
+      onActivatedHeadless: null,
+      background: true,
+    });
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "existing-native-ack",
+      registrationId: "existing-native-registration",
+      sessionId: NODE.sessionId,
+      tabId: NODE.tabId,
+    });
+    await Promise.resolve();
+
+    render(
+      <BrowserSessionTile
+        node={NODE}
+        viewTabId={ids.viewTabId}
+        paneId={ids.paneId}
+        epicId="epic-1"
+      />,
+    );
+
+    expect(screen.queryByTestId("browser-peek-tile")).toBeNull();
+    expect(peekHarness.mounts).toBe(0);
+    expect(
+      screen.getByTestId("agent-browser-tile-pointer-instance-1"),
+    ).toBeTruthy();
+  });
+
   it("swaps the screencast tile for native view on migrated terminal status", async () => {
     const ids = renderTile("ready");
     expect(screen.getByTestId("browser-peek-tile")).toBeTruthy();
@@ -482,7 +546,12 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
     if (bridge === null) throw new Error("expected browser view bridge");
     sessionsState.value = {
       lifecycle: "live",
-      items: [sessionFor("ready")],
+      items: [
+        {
+          ...sessionFor("ready"),
+          migration: { revision: 0, runtime: "headless" },
+        },
+      ],
       errorMessage: null,
       routingChatId: "chat-route",
       closeSession: vi.fn(),
@@ -557,6 +626,15 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
     };
     registerElectronBrowserTab(postTerminalBinding);
     act(() => {
+      sessionsState.value = {
+        ...sessionsState.value,
+        items: [
+          {
+            ...sessionFor("ready"),
+            migration: { revision: 1, runtime: "electron-tile" },
+          },
+        ],
+      };
       view.rerender(
         <BrowserSessionTile
           node={NODE}

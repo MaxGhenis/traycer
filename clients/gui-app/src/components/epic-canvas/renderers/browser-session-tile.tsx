@@ -63,9 +63,11 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
   const renderHeadless =
     activatedHeadless ||
     (tab?.status !== "dormant" &&
-      (binding === null ||
-        !castMigrated ||
-        binding.registrationId === terminalBindingRegistrationIdRef.current));
+      (session?.migration?.runtime === "headless" ||
+        binding === null ||
+        (castMigrated &&
+          binding.registrationId ===
+            terminalBindingRegistrationIdRef.current)));
   const swapHoldReason = !renderHeadless
     ? null
     : activatedHeadless
