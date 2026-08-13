@@ -2,11 +2,13 @@ import "../../../../../__tests__/test-browser-apis";
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
   type RenderResult,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentBrowserTile } from "@/components/epic-canvas/renderers/agent-browser-tile";
 import type {
@@ -224,6 +226,24 @@ function tileKey(paneId: string): BrowserViewTileKey {
   };
 }
 
+function emitStatus(
+  bridge: FakeAgentBrowserViewBridge,
+  key: BrowserViewTileKey,
+  status: BrowserViewStatusChange["status"],
+  reason: string | null,
+): void {
+  bridge.emitStatus({
+    ...key,
+    url: NODE.url,
+    title: "Example",
+    status,
+    reason,
+    canGoBack: false,
+    canGoForward: false,
+    zoomPercent: 100,
+  });
+}
+
 function seedAgentBrowserCanvas(): string {
   const canvas = createSingleTileCanvas(NODE);
   if (canvas.root === null) throw new Error("expected canvas root");
@@ -269,6 +289,7 @@ describe("<AgentBrowserTile />", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     resetElectronBrowserTabStoreForTests();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
   });
@@ -283,9 +304,29 @@ describe("<AgentBrowserTile />", () => {
     expect(
       screen.getByText("Native browser views are unavailable."),
     ).toBeTruthy();
+    expect(screen.queryByText(`Host ${NODE.hostId}`)).toBeNull();
+    expect(screen.getByRole("button", { name: "Host details" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close tab" })).toBeNull();
     expect(
       screen.getByTestId(`agent-browser-tile-${NODE.instanceId}`),
     ).toBeTruthy();
+  });
+
+  it("shows the host id only through the real Host details tooltip", async () => {
+    bridgeHarness.current = null;
+    const paneId = seedAgentBrowserCanvas();
+    const user = userEvent.setup();
+
+    renderAgentBrowserTile(paneId);
+
+    expect(screen.queryByText(`Host ${NODE.hostId}`)).toBeNull();
+    const trigger = screen.getByRole("button", { name: "Host details" });
+    await user.hover(trigger);
+
+    expect((await screen.findByRole("tooltip")).textContent).toBe(
+      `Host ${NODE.hostId}`,
+    );
   });
 
   it("upserts on mount and releases on unmount", async () => {
@@ -328,6 +369,8 @@ describe("<AgentBrowserTile />", () => {
 
     // Loading by default until a matching status arrives.
     expect(screen.getByText("Reconnecting to this session")).toBeTruthy();
+    expect(screen.queryByText(`Host ${NODE.hostId}`)).toBeNull();
+    expect(screen.getByRole("button", { name: "Host details" })).toBeTruthy();
 
     bridge.emitStatus({
       viewTabId: "other-tab",
@@ -359,6 +402,147 @@ describe("<AgentBrowserTile />", () => {
       expect(screen.getByText("Agent browser unavailable")).toBeTruthy();
     });
     expect(screen.getByText("crashed")).toBeTruthy();
+    expect(screen.queryByText(`Host ${NODE.hostId}`)).toBeNull();
+    expect(screen.getByRole("button", { name: "Host details" })).toBeTruthy();
+  });
+
+  it("switches loading to unreachable after the timeout", () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new FakeAgentBrowserViewBridge();
+      bridgeHarness.current = bridge;
+      const paneId = seedAgentBrowserCanvas();
+
+      renderAgentBrowserTile(paneId);
+
+      expect(screen.getByText("Reconnecting to this session")).toBeTruthy();
+      act(() => {
+        vi.advanceTimersByTime(12_001);
+      });
+
+      expect(
+        screen.getByText("This session's host isn't responding"),
+      ).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Close tab" })).toBeTruthy();
+      expect(screen.queryByText("Reconnecting to this session")).toBeNull();
+      expect(screen.queryByText(`Host ${NODE.hostId}`)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries an unreachable session by re-upserting and re-arms loading", () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new FakeAgentBrowserViewBridge();
+      bridgeHarness.current = bridge;
+      const paneId = seedAgentBrowserCanvas();
+
+      renderAgentBrowserTile(paneId);
+      const initialUpsertCount = bridge.upsertCalls.length;
+      act(() => {
+        vi.advanceTimersByTime(12_001);
+      });
+      expect(
+        screen.getByText("This session's host isn't responding"),
+      ).toBeTruthy();
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      });
+
+      expect(screen.getByText("Reconnecting to this session")).toBeTruthy();
+      expect(
+        screen.queryByText("This session's host isn't responding"),
+      ).toBeNull();
+      expect(bridge.upsertCalls.length).toBeGreaterThan(initialUpsertCount);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes the canvas tile from the unreachable state", () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new FakeAgentBrowserViewBridge();
+      bridgeHarness.current = bridge;
+      const paneId = seedAgentBrowserCanvas();
+
+      renderAgentBrowserTile(paneId);
+      act(() => {
+        vi.advanceTimersByTime(12_001);
+      });
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: "Close tab" }));
+      });
+
+      expect(agentBrowserTilesOnCanvas()).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a real reconnect leak the loading timeout", () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new FakeAgentBrowserViewBridge();
+      bridgeHarness.current = bridge;
+      const paneId = seedAgentBrowserCanvas();
+      const key = tileKey(paneId);
+
+      renderAgentBrowserTile(paneId);
+      act(() => {
+        emitStatus(bridge, key, "ready", null);
+      });
+      act(() => {
+        vi.advanceTimersByTime(12_001);
+      });
+
+      expect(
+        screen.queryByText("This session's host isn't responding"),
+      ).toBeNull();
+      expect(screen.getByText("Reconnecting to this session")).toBeTruthy();
+      expect(
+        screen.getByText("Reconnecting to this session").parentElement
+          ?.className ?? "",
+      ).toContain("opacity-0");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("documents the stale unreachable state after loading-ready-loading", () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new FakeAgentBrowserViewBridge();
+      bridgeHarness.current = bridge;
+      const paneId = seedAgentBrowserCanvas();
+      const key = tileKey(paneId);
+
+      renderAgentBrowserTile(paneId);
+      act(() => {
+        vi.advanceTimersByTime(12_001);
+      });
+      expect(
+        screen.getByText("This session's host isn't responding"),
+      ).toBeTruthy();
+
+      act(() => {
+        emitStatus(bridge, key, "ready", null);
+      });
+      act(() => {
+        emitStatus(bridge, key, "loading", null);
+      });
+
+      expect(
+        screen.getByText("This session's host isn't responding"),
+      ).toBeTruthy();
+      expect(screen.queryByText("Reconnecting to this session")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("disposes the component status subscription on unmount", async () => {
