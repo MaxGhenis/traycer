@@ -1039,6 +1039,29 @@ export type UserMessageAnchorResolvedEvent = z.infer<
   typeof userMessageAnchorResolvedEventSchema
 >;
 
+/**
+ * Advances the durable turn-tail on a user message's session anchor while the
+ * turn is still streaming (see `turnTailUuid` on the persisted Claude anchor).
+ * Emitted per provider transcript row, so a crash mid-turn leaves the tail at
+ * the last row the host actually observed. Host-internal: the chat session
+ * consumes it before the blockDelta broadcast, so it never reaches the wire
+ * and needs no subscribe-version freeze entry.
+ */
+export const userMessageAnchorTailUpdatedEventSchema = z.object({
+  ...baseRuntimeEventFields,
+  type: z.literal("user_message.anchor_tail_updated"),
+  messageId: z.string(),
+  harnessId: z.literal("claude"),
+  // Session the tail row belongs to. A tail is only meaningful on the anchor
+  // that names the same session; the consumer drops a mismatch instead of
+  // stitching a row from one transcript onto an anchor for another.
+  sessionId: z.string(),
+  tailUuid: z.string(),
+});
+export type UserMessageAnchorTailUpdatedEvent = z.infer<
+  typeof userMessageAnchorTailUpdatedEventSchema
+>;
+
 export const turnCompletedEventSchema = z.object({
   ...baseRuntimeEventFields,
   type: z.literal("turn.completed"),
@@ -1200,6 +1223,7 @@ export const runtimeEventSchema = z.discriminatedUnion("type", [
   workflowCompletedEventSchema,
   providerNoticeUpsertEventSchema,
   imageResolutionUpdatedEventSchema,
+  userMessageAnchorTailUpdatedEventSchema,
 ]);
 export type RuntimeEvent = z.infer<typeof runtimeEventSchema>;
 
