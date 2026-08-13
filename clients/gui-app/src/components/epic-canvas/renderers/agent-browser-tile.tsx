@@ -14,6 +14,11 @@ import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body
 import { useCloseCanvasTileWithNestedFocus } from "@/components/epic-canvas/renderers/use-close-canvas-tile-with-nested-focus";
 import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
 import {
+  rectFromDomRect,
+  registerBrowserOverlayTile,
+  updateBrowserOverlayTileRect,
+} from "@/lib/browser-view/browser-overlay-coordinator";
+import {
   resolveDesktopAgentBrowserViewBridge,
   type AgentBrowserViewTileKey,
   type DesktopAgentBrowserViewBridge,
@@ -447,6 +452,10 @@ function useAgentBrowserViewBoundsBridge(
   useEffect(() => {
     const surface = surfaceRef.current;
     if (browserView === null || surface === null || !visible) return;
+    const unregisterOverlayTile = registerBrowserOverlayTile({
+      key: tileKey,
+      rect: rectFromDomRect(surface.getBoundingClientRect()),
+    });
 
     let frameId: number | null = null;
     let frozen = document.documentElement.classList.contains(
@@ -457,6 +466,7 @@ function useAgentBrowserViewBoundsBridge(
       const rect = surface.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       if (frozen && !force) return;
+      updateBrowserOverlayTileRect(tileKey, rectFromDomRect(rect));
       if (frameId !== null) window.cancelAnimationFrame(frameId);
       frameId = window.requestAnimationFrame(() => {
         frameId = null;
@@ -505,6 +515,7 @@ function useAgentBrowserViewBoundsBridge(
       resizeObserver.disconnect();
       mutationObserver.disconnect();
       window.removeEventListener("resize", handleWindowResize);
+      unregisterOverlayTile();
     };
   }, [browserView, surfaceRef, tileKey, visible]);
 }

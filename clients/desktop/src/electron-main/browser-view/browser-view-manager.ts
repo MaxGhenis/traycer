@@ -342,6 +342,8 @@ interface BrowserViewEntry {
   viewportPreset: BrowserViewViewportPresetId;
   overlayOwnerIds: string[];
   overlaySnapshotStale: boolean;
+  /** Last `visible` value logged by `applyEntryVisibility`, so forensics logging fires only on change. */
+  lastLoggedVisible: boolean | null;
   control: BrowserViewControlState | null;
   runtimeSessionId: string;
   runtimeTabId: string | null;
@@ -571,6 +573,12 @@ export class BrowserViewManager {
       existing === null
         ? this.createEntry(key, input.url, input.viewportPreset, true)
         : existing;
+    log.info("[browser-view] upsert tile", {
+      keyId,
+      outcome: existing === null ? "created" : "reused",
+      visible: input.visible,
+      url: input.url,
+    });
 
     if (entryKeyId(entry.key) !== keyId) {
       this.rekeyEntry(entry, key);
@@ -749,13 +757,31 @@ export class BrowserViewManager {
     input: BrowserViewDurableTabRegistration,
   ): void {
     const key = { ...input, windowId };
+    const keyId = entryKeyId(key);
     const entry =
-      this.entriesByKey.get(entryKeyId(key)) ?? this.findTransferableEntry(key);
-    if (entry === null) return;
-    this.entriesByRuntimeKey.delete(runtimeEntryKey(entry));
+      this.entriesByKey.get(keyId) ?? this.findTransferableEntry(key);
+    if (entry === null) {
+      log.warn("[browser-view] register durable tab: no matching entry", {
+        keyId,
+        sessionId: input.sessionId,
+        tabId: input.tabId,
+      });
+      return;
+    }
+    const previousRuntimeKey = runtimeEntryKey(entry);
+    this.entriesByRuntimeKey.delete(previousRuntimeKey);
     entry.runtimeSessionId = input.sessionId;
     entry.runtimeTabId = input.tabId;
-    this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
+    const nextRuntimeKey = runtimeEntryKey(entry);
+    this.entriesByRuntimeKey.set(nextRuntimeKey, entry);
+    log.info("[browser-view] register durable tab", {
+      keyId,
+      sessionId: input.sessionId,
+      tabId: input.tabId,
+      previousRuntimeKey,
+      nextRuntimeKey,
+      rekeyed: previousRuntimeKey !== nextRuntimeKey,
+    });
   }
 
   async releaseDurableTab(
@@ -1461,6 +1487,7 @@ export class BrowserViewManager {
       viewportPreset,
       overlayOwnerIds: [],
       overlaySnapshotStale: false,
+      lastLoggedVisible: null,
       control: null,
       handedOff: false,
       pendingHandoffCapture: null,
@@ -1489,6 +1516,16 @@ export class BrowserViewManager {
     this.entriesByKey.set(entryKeyId(key), entry);
     this.entriesByRuntimeKey.set(runtimeEntryKey(entry), entry);
     if (navigateNow) void this.navigate(entry, requestedUrl, false);
+    log.info("[browser-view] view created", {
+      keyId: entryKeyId(key),
+      viewTabId: key.viewTabId,
+      paneId: key.paneId,
+      tileInstanceId: key.tileInstanceId,
+      pageSessionId: key.pageSessionId,
+      windowId: key.windowId,
+      viewportPreset,
+      navigateNow,
+    });
     return entry;
   }
 
@@ -2162,6 +2199,21 @@ export class BrowserViewManager {
       !window.isDestroyed() &&
       window.isVisible() &&
       !window.isMinimized();
+    if (entry.lastLoggedVisible !== visible) {
+      log.info("[browser-view] visibility changed", {
+        keyId: entryKeyId(entry.key),
+        visible,
+        desiredVisible: entry.desiredVisible,
+        overlayOwnerCount: entry.overlayOwnerIds.length,
+        hasUsableBounds,
+        status: entry.status,
+        windowVisible:
+          window !== null && !window.isDestroyed() && window.isVisible(),
+        windowMinimized:
+          window !== null && !window.isDestroyed() && window.isMinimized(),
+      });
+      entry.lastLoggedVisible = visible;
+    }
     entry.view.setVisible(visible);
   }
 
@@ -2196,7 +2248,18 @@ export class BrowserViewManager {
     // forgets rather than awaiting, so a second teardown trigger racing the
     // first (e.g. two window-change events) must not find this entry again
     // via `entriesByKey` and process it a second time.
-    if (this.entriesByRuntimeKey.get(runtimeEntryKey(entry)) !== entry) return;
+    if (this.entriesByRuntimeKey.get(runtimeEntryKey(entry)) !== entry) {
+      log.info("[browser-view] view destroy skipped: already claimed", {
+        keyId,
+        handoffReason,
+      });
+      return;
+    }
+    log.info("[browser-view] view destroy started", {
+      keyId,
+      handoffReason,
+      status: entry.status,
+    });
     this.entriesByKey.delete(keyId);
     this.entriesByRuntimeKey.delete(runtimeEntryKey(entry));
     this.destroyDevToolsWindow(entry);
@@ -2258,6 +2321,7 @@ export class BrowserViewManager {
     entry.debugSession = null;
     entry.view.setVisible(false);
     webContents.close();
+    log.info("[browser-view] view destroy requested", { keyId });
   }
 
   private destroyDevToolsWindow(entry: BrowserViewEntry): void {

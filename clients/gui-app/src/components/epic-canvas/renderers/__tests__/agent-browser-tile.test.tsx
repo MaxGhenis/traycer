@@ -31,6 +31,10 @@ import {
   handleElectronBrowserTabFrame,
   resetElectronBrowserTabStoreForTests,
 } from "@/lib/browser-view/electron-browser-tab-store";
+import {
+  listBrowserOverlayTiles,
+  resetBrowserOverlayCoordinatorForTests,
+} from "@/lib/browser-view/browser-overlay-coordinator";
 import { appLogger } from "@/lib/logger";
 import { createSingleTileCanvas } from "@/stores/epics/canvas/actions";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
@@ -284,6 +288,7 @@ describe("<AgentBrowserTile />", () => {
     bridgeHarness.current = null;
     visibilityHarness.visible = true;
     resetElectronBrowserTabStoreForTests();
+    resetBrowserOverlayCoordinatorForTests();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
   });
 
@@ -291,7 +296,33 @@ describe("<AgentBrowserTile />", () => {
     cleanup();
     vi.useRealTimers();
     resetElectronBrowserTabStoreForTests();
+    resetBrowserOverlayCoordinatorForTests();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
+  });
+
+  it("registers with the overlay coordinator on mount and unregisters on unmount", async () => {
+    const bridge = new FakeAgentBrowserViewBridge();
+    bridgeHarness.current = bridge;
+    const paneId = seedAgentBrowserCanvas();
+    const key = tileKey(paneId);
+
+    const view = renderAgentBrowserTile(paneId);
+
+    await waitFor(() => {
+      expect(
+        listBrowserOverlayTiles().some(
+          (tile) =>
+            tile.key.viewTabId === key.viewTabId &&
+            tile.key.paneId === key.paneId &&
+            tile.key.tileInstanceId === key.tileInstanceId &&
+            tile.key.pageSessionId === key.pageSessionId,
+        ),
+      ).toBe(true);
+    });
+
+    view.unmount();
+
+    expect(listBrowserOverlayTiles()).toEqual([]);
   });
 
   it("renders a dead state when the agent browser bridge is unavailable", () => {
