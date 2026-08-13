@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Camera, Send, Trash2 } from "lucide-react";
+import { Camera, ChevronDown, ChevronUp, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,7 @@ const EMPTY_SNAPSHOT: BrowserViewDebugSnapshotChange = {
 export function BrowserDebugPanels(props: BrowserDebugPanelsProps) {
   const { browserView, tileKey, pageUrl, status, targetChatId } = props;
   const [tab, setTab] = useState<BrowserPanelTab>("console");
+  const [expanded, setExpanded] = useState(false);
   const [snapshot, setSnapshot] =
     useState<BrowserViewDebugSnapshotChange>(EMPTY_SNAPSHOT);
   const [capturePending, setCapturePending] = useState(false);
@@ -139,6 +140,18 @@ export function BrowserDebugPanels(props: BrowserDebugPanelsProps) {
     [pageUrl, targetChatId, tileKey],
   );
 
+  if (!expanded) {
+    return (
+      <BrowserDebugCollapsedRow
+        consoleCount={activeSnapshot.consoleEntries.length}
+        consoleErrorCount={consoleErrorCount}
+        networkCount={activeSnapshot.networkEntries.length}
+        networkFailedCount={failedRequestCount}
+        onExpand={() => setExpanded(true)}
+      />
+    );
+  }
+
   return (
     <div className="flex max-h-[min(38dvh,18rem)] min-h-[9rem] shrink-0 flex-col border-t border-border bg-canvas">
       <div className="flex min-h-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
@@ -211,6 +224,22 @@ export function BrowserDebugPanels(props: BrowserDebugPanelsProps) {
               <Trash2 />
             </Button>
           </TooltipWrapper>
+          <TooltipWrapper
+            label="Collapse"
+            side="top"
+            sideOffset={6}
+            align="center"
+          >
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Collapse console and network"
+              onClick={() => setExpanded(false)}
+            >
+              <ChevronDown />
+            </Button>
+          </TooltipWrapper>
         </div>
       </div>
       <Tabs value={tab} className="min-h-0 flex-1 gap-0">
@@ -228,6 +257,40 @@ export function BrowserDebugPanels(props: BrowserDebugPanelsProps) {
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+function BrowserDebugCollapsedRow(props: {
+  readonly consoleCount: number;
+  readonly consoleErrorCount: number;
+  readonly networkCount: number;
+  readonly networkFailedCount: number;
+  readonly onExpand: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={props.onExpand}
+      aria-label="Show console and network"
+      data-testid="browser-debug-panels-collapsed"
+      className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-canvas px-3 py-1.5 text-ui-xs text-muted-foreground outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span className="flex min-w-0 items-center gap-3">
+        <span className={cn(props.consoleErrorCount > 0 && "text-destructive")}>
+          Console {props.consoleCount}
+          {props.consoleErrorCount > 0
+            ? ` · ${props.consoleErrorCount} error${props.consoleErrorCount === 1 ? "" : "s"}`
+            : ""}
+        </span>
+        <span className={cn(props.networkFailedCount > 0 && "text-destructive")}>
+          Network {props.networkCount}
+          {props.networkFailedCount > 0
+            ? ` · ${props.networkFailedCount} failed`
+            : ""}
+        </span>
+      </span>
+      <ChevronUp className="size-3.5 shrink-0" aria-hidden />
+    </button>
   );
 }
 

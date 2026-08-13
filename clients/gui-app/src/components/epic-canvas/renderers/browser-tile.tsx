@@ -14,6 +14,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bug,
+  Info,
   Monitor,
   RotateCw,
   ShieldCheck,
@@ -33,6 +34,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   BROWSER_VIEW_SURFACE_ATTRIBUTE,
   getBrowserViewSnapshot,
@@ -208,7 +214,6 @@ export function BrowserTile(props: BrowserTileProps) {
     }),
     [props.viewTabId, props.paneId, props.node.instanceId, props.node.id],
   );
-  const originLabel = browserOriginLabel(props.node.url);
   const addressValue =
     addressDraft.sourceUrl === props.node.url
       ? addressDraft.value
@@ -816,9 +821,10 @@ export function BrowserTile(props: BrowserTileProps) {
           className="flex min-w-0 flex-1 items-center gap-2"
           onSubmit={navigateToAddress}
         >
-          <span className="shrink-0 rounded-sm border border-border bg-muted px-2 py-1 text-ui-xs font-medium text-muted-foreground">
-            {originLabel}
-          </span>
+          <BrowserSiteInfoButton
+            url={props.node.url}
+            cookieCryptoState={cookieCryptoState}
+          />
           <Input
             aria-label="Browser address"
             value={addressValue}
@@ -828,7 +834,7 @@ export function BrowserTile(props: BrowserTileProps) {
                 value: event.target.value,
               });
             }}
-            className="h-7 flex-1 font-mono text-ui-sm"
+            className="h-7 min-w-0 flex-1 truncate font-mono text-ui-sm"
             spellCheck={false}
           />
         </form>
@@ -1276,16 +1282,82 @@ function BrowserViewSnapshotLayer(props: {
   );
 }
 
-function browserOriginLabel(url: string): string {
+function BrowserSiteInfoButton(props: {
+  readonly url: string;
+  readonly cookieCryptoState: BrowserCookieCryptoState | null;
+}) {
+  const isWebOrigin = isWebOriginUrl(props.url);
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Site information"
+          className="shrink-0"
+        >
+          <Info />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72 space-y-3 text-ui-sm">
+        <BrowserSiteInfoRow
+          title={isWebOrigin ? "Web page" : "Local page"}
+          detail={
+            isWebOrigin
+              ? "Served over the network from this page's origin."
+              : "Not loaded from a web address (for example, a blank tab or an internal page)."
+          }
+        />
+        {props.cookieCryptoState === null ? null : (
+          <BrowserSiteInfoRow
+            title={cookieCryptoHeadline(props.cookieCryptoState)}
+            detail={cookieCryptoDetail(props.cookieCryptoState)}
+          />
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function BrowserSiteInfoRow(props: {
+  readonly title: string;
+  readonly detail: string;
+}) {
+  return (
+    <div>
+      <div className="font-medium text-foreground">{props.title}</div>
+      <div className="mt-0.5 text-ui-xs text-muted-foreground">
+        {props.detail}
+      </div>
+    </div>
+  );
+}
+
+function isWebOriginUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return "local";
-    }
-    return "unclassified";
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
   } catch {
-    return "local";
+    return false;
   }
+}
+
+function cookieCryptoHeadline(state: BrowserCookieCryptoState): string {
+  if (state.persistence === "ephemeral") return "Logins aren't saved";
+  return state.mode === "real"
+    ? "Logins saved securely"
+    : "Logins saved with basic protection";
+}
+
+function cookieCryptoDetail(state: BrowserCookieCryptoState): string {
+  if (state.mode === "degraded" || state.persistence === "ephemeral") {
+    return browserCookieDegradedMessage(state);
+  }
+  if (state.mode === "real") {
+    return "Cookies and saved logins on this page are encrypted by your operating system.";
+  }
+  return "Cookies and saved logins on this page use basic, less secure encryption.";
 }
 
 function originFromUrl(url: string): string {
