@@ -276,6 +276,110 @@ describe("BrowsersPanelBody", () => {
     ).toBeTruthy();
   });
 
+  it("keeps close controls and row names unique across near-identical sessions", () => {
+    const titles = ["Checkout", "Checkout 1", "Checkout 2", "Checkout 3"];
+    sessionsState.value = {
+      ...sessionsState.value,
+      items: titles.map((title, index) =>
+        session({
+          sessionId: `sess-near-${index}`,
+          name: "Agent browser",
+          profile: "primary",
+          tabs: [
+            tab({
+              tabId: `tab-near-${index}`,
+              url: `https://checkout-${index}.example`,
+              title,
+              viewed: true,
+            }),
+          ],
+        }),
+      ),
+    };
+
+    render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    expect(screen.getAllByRole("button", { name: /^Close / })).toHaveLength(
+      titles.length,
+    );
+    for (const title of titles) {
+      const index = titles.indexOf(title);
+      expect(
+        screen.getByRole("button", { name: `Close ${title}` }),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("button", {
+          name: `${title}checkout-${index}.example`,
+        }),
+      ).toBeTruthy();
+    }
+  });
+
+  it("inherits the shared sidebar scroll container", () => {
+    render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    const list = screen.getByTestId("epic-browsers-panel-list");
+    const scrollContainer = list.closest('[data-sidebar="content"]');
+    expect(scrollContainer).not.toBeNull();
+    expect(scrollContainer?.className.split(/\s+/)).toContain("overflow-auto");
+    expect(list.closest('[data-sidebar="group-content"]')).not.toBeNull();
+  });
+
+  it("skips empty sessions and handles malformed URLs with mixed tab status", () => {
+    sessionsState.value = {
+      ...sessionsState.value,
+      items: [
+        session({
+          sessionId: "sess-empty-tabs",
+          name: "Empty",
+          profile: "primary",
+          tabs: [],
+        }),
+        session({
+          sessionId: "sess-invalid-url",
+          name: "Agent browser",
+          profile: "primary",
+          tabs: [
+            tab({
+              tabId: "tab-invalid-url",
+              url: "not a URL",
+              title: "   ",
+              viewed: true,
+              status: "ready",
+            }),
+            tab({
+              tabId: "tab-dormant-subrow",
+              url: "https://old.example/path",
+              title: "Old page",
+              status: "dormant",
+            }),
+          ],
+        }),
+      ],
+    };
+
+    render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    expect(screen.getByText("Browser")).toBeTruthy();
+    expect(screen.queryByText("Agent browser")).toBeNull();
+    expect(screen.queryByText("not a URL")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Close Browser" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Open Old page" }).className,
+    ).toContain("opacity-60");
+    expect(screen.getByText("Browser").closest("div.group")?.className).not.toContain(
+      "opacity-60",
+    );
+  });
+
   it("shows drivenBy attribution via real tooltip and opens the driving chat", async () => {
     const user = userEvent.setup();
     render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
