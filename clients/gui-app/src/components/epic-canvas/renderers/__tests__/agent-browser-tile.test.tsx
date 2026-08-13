@@ -327,7 +327,7 @@ describe("<AgentBrowserTile />", () => {
     });
 
     // Loading by default until a matching status arrives.
-    expect(screen.getByText("Loading page")).toBeTruthy();
+    expect(screen.getByText("Reconnecting to this session")).toBeTruthy();
 
     bridge.emitStatus({
       viewTabId: "other-tab",
@@ -342,7 +342,7 @@ describe("<AgentBrowserTile />", () => {
       canGoForward: false,
       zoomPercent: 100,
     });
-    expect(screen.getByText("Loading page")).toBeTruthy();
+    expect(screen.getByText("Reconnecting to this session")).toBeTruthy();
 
     bridge.emitStatus({
       ...key,

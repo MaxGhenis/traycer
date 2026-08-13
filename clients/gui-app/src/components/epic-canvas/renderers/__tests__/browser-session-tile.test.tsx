@@ -324,7 +324,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
     expect(
       screen.getByTestId("agent-browser-tile-pointer-instance-1"),
     ).toBeTruthy();
-    expect(screen.getByText("Loading page")).toBeTruthy();
+    expect(screen.getByText("Reconnecting to this session")).toBeTruthy();
   });
 
   it("renders screencast for ready headless tabs with no electron binding", () => {

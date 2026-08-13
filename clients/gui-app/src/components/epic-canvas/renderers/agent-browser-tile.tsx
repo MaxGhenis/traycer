@@ -1,6 +1,17 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
+import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
+import { Button } from "@/components/ui/button";
+import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
+import { useCloseCanvasTileWithNestedFocus } from "@/components/epic-canvas/renderers/use-close-canvas-tile-with-nested-focus";
 import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
 import {
   resolveDesktopAgentBrowserViewBridge,
@@ -19,9 +30,18 @@ import {
 import { openFreshAgentBrowserTileFromBrowserPage } from "@/lib/browser-view/browser-link-routing-core";
 import { PANEL_RESIZING_CLASS_NAME } from "@/lib/layout/panel-resizing-class";
 import { appLogger } from "@/lib/logger";
+import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import type { AgentBrowserTileRef } from "@/stores/epics/canvas/types";
+
+/**
+ * How long a tile can sit in `"loading"` before the placeholder stops
+ * reading as "still connecting" and switches to "gave up, offer a way out."
+ * The host has no typed timeout/failure status for this today (only
+ * loading/ready/dead), so this is a client-side ceiling, not a host signal.
+ */
+const AGENT_BROWSER_UNREACHABLE_TIMEOUT_MS = 12_000;
 
 export interface AgentBrowserTileProps {
   readonly node: AgentBrowserTileRef;
@@ -72,6 +92,8 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const [status, setStatus] = useState<BrowserViewStatus>("loading");
   const [statusReason, setStatusReason] = useState<string | null>(null);
   const [durableTabId, setDurableTabId] = useState<string | null>(null);
+  const [unreachable, setUnreachable] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
   const registrationChatId = useEpicCanvasStore((state) =>
     selectSiblingChatIdForBrowserTile(
       state.canvasByTabId[props.viewTabId] ?? null,
@@ -99,6 +121,38 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       ? "Native browser views are unavailable."
       : statusReason;
 
+  // The host reports only loading/ready/dead - no typed timeout, so a session
+  // that never activates sits in "loading" forever with nothing to tell the
+  // user apart "still connecting" from "never coming back." This ceiling
+  // makes that call locally: past it, the placeholder offers a way out.
+  // `unreachable` only reads as true while still loading (see
+  // `effectiveUnreachable` below), so leaving "loading" doesn't need its own
+  // reset here - only the timer firing needs to set state.
+  // ponytail: doesn't re-arm if the host bounces loading -> ready -> loading
+  // again without a Retry click in between (stale `unreachable` would read
+  // true immediately on the new attempt); add an explicit reset keyed off a
+  // fresh loading transition if that ever proves to happen in practice.
+  useEffect(() => {
+    if (status !== "loading") return;
+    const timer = window.setTimeout(() => {
+      setUnreachable(true);
+    }, AGENT_BROWSER_UNREACHABLE_TIMEOUT_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [status, retryNonce]);
+  const effectiveUnreachable = status === "loading" && unreachable;
+
+  const closeCanvasTile = useCloseCanvasTileWithNestedFocus(
+    props.viewTabId,
+    props.paneId,
+    props.node.instanceId,
+  );
+  const retry = useCallback(() => {
+    setUnreachable(false);
+    setRetryNonce((current) => current + 1);
+  }, []);
+
   useEffect(() => {
     if (browserView === null) return;
     return () => {
@@ -116,6 +170,9 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     void browserView
       .upsertTile({ ...tileKey, url: props.node.url, visible })
       .catch(ignoreAgentBrowserViewError);
+    // `retryNonce` is otherwise unused inside the effect - its only job is to
+    // force this upsert to re-fire when the user clicks Retry on an
+    // unreachable session, since there is no dedicated reload RPC.
   }, [
     browserView,
     durableTabId,
@@ -123,6 +180,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     tileKey,
     props.node.url,
     visible,
+    retryNonce,
   ]);
 
   useEffect(() => {
@@ -244,22 +302,107 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     >
       <div ref={surfaceRef} className="relative min-h-0 flex-1 bg-background">
         <div
-          className={
-            effectiveStatus === "ready"
-              ? "pointer-events-none absolute inset-0 flex min-h-0 flex-col items-center justify-center gap-3 px-4 text-center opacity-0"
-              : "absolute inset-0 flex min-h-0 flex-col items-center justify-center gap-3 px-4 text-center"
-          }
+          className={cn(
+            "absolute inset-0 flex min-h-0 flex-col items-center justify-center gap-3 px-4 text-center",
+            effectiveStatus === "ready" && "pointer-events-none opacity-0",
+          )}
         >
-          <div className="text-ui-base font-medium">
-            {effectiveStatus === "dead"
-              ? "Agent browser unavailable"
-              : "Loading page"}
-          </div>
-          <div className="max-w-[min(90vw,32rem)] text-ui-sm text-muted-foreground">
-            {effectiveStatusReason ?? `Host ${hostId}`}
-          </div>
+          <AgentBrowserTileStatus
+            status={effectiveStatus}
+            reason={effectiveStatusReason}
+            unreachable={effectiveUnreachable}
+            hostId={hostId}
+            onRetry={retry}
+            onClose={closeCanvasTile}
+          />
         </div>
       </div>
+    </div>
+  );
+}
+
+interface AgentBrowserTileStatusProps {
+  readonly status: BrowserViewStatus;
+  readonly reason: string | null;
+  readonly unreachable: boolean;
+  readonly hostId: string;
+  readonly onRetry: () => void;
+  readonly onClose: () => void;
+}
+
+/**
+ * Splits the old single indefinite "Loading page" placeholder into states a
+ * user can actually tell apart: still connecting (spinner), gave up waiting
+ * (Retry/Close), or the native view is unavailable in this environment.
+ */
+function AgentBrowserTileStatus(props: AgentBrowserTileStatusProps) {
+  if (props.status === "dead") {
+    return (
+      <>
+        <div className="text-ui-base font-medium">
+          Agent browser unavailable
+        </div>
+        <AgentBrowserTileReason reason={props.reason} hostId={props.hostId} />
+      </>
+    );
+  }
+  if (props.status === "loading" && props.unreachable) {
+    return (
+      <>
+        <div className="text-ui-base font-medium">
+          This session&apos;s host isn&apos;t responding
+        </div>
+        <AgentBrowserTileReason reason={props.reason} hostId={props.hostId} />
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={props.onRetry}
+          >
+            Retry
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={props.onClose}
+          >
+            Close tab
+          </Button>
+        </div>
+      </>
+    );
+  }
+  return (
+    <>
+      <AgentSpinningDots className="shrink-0" testId={undefined} variant={undefined} />
+      <div className="text-ui-base font-medium">Reconnecting to this session</div>
+      <AgentBrowserTileReason reason={props.reason} hostId={props.hostId} />
+    </>
+  );
+}
+
+function AgentBrowserTileReason(props: {
+  readonly reason: string | null;
+  readonly hostId: string;
+}) {
+  return (
+    <div className="flex max-w-[min(90vw,32rem)] flex-col items-center gap-1 text-ui-sm text-muted-foreground">
+      {props.reason === null ? null : <span>{props.reason}</span>}
+      <TooltipWrapper
+        label={`Host ${props.hostId}`}
+        side="top"
+        sideOffset={undefined}
+        align={undefined}
+      >
+        <button
+          type="button"
+          className="text-ui-xs text-muted-foreground/70 underline decoration-dotted underline-offset-2 outline-none hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Host details
+        </button>
+      </TooltipWrapper>
     </div>
   );
 }
