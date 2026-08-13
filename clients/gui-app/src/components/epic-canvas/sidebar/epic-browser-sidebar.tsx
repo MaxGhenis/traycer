@@ -39,6 +39,49 @@ import {
   useLeftPanelSectionCollapsed,
 } from "@/stores/epics/left-panel-store";
 
+/** Session's viewed tab, else its first - same rule the row itself uses. */
+function resolveSessionActiveTab(
+  session: BrowserSessionInfo,
+): BrowserTabInfo | undefined {
+  return session.tabs.find((tab) => tab.viewed) ?? session.tabs[0];
+}
+
+/**
+ * host:port (not bare hostname) so two localhost dev servers on different
+ * ports - the exact case that produced duplicate "127.0.0.1" close labels -
+ * read as different origins.
+ */
+function tabOriginLabel(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+      return null;
+    return parsed.host.length > 0 ? parsed.host : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Unique accessible name for a row's close control. Most rows have a
+ * genuinely distinct title and need nothing else; when several sessions
+ * resolve to the same title (e.g. several tabs with no page title, all
+ * falling back to the same bare host), the origin (host:port) disambiguates;
+ * if even that collides, the session id is the one value guaranteed unique
+ * per row - a last resort, not the common case.
+ */
+function resolveCloseAriaLabel(
+  session: BrowserSessionInfo,
+  activeTab: BrowserTabInfo,
+  title: string,
+  isDuplicateTitle: boolean,
+): string {
+  if (!isDuplicateTitle) return `Close ${title}`;
+  const origin = tabOriginLabel(activeTab.url);
+  if (origin !== null && origin !== title) return `Close ${title} (${origin})`;
+  return `Close ${title} (${session.sessionId})`;
+}
+
 /**
  * Shared open-a-new-browser-tile action behind both the panel header's "Add
  * browser" button and the empty-state's own button - the same tile-open path
@@ -112,6 +155,20 @@ function BrowsersPanelBodyLive(props: {
     () => new Map(chats.map((chat) => [chat.id, chat])),
     [chats],
   );
+  const duplicateTitles = useMemo(() => {
+    const counts = new Map<string, number>();
+    sessions.items.forEach((session) => {
+      const activeTab = resolveSessionActiveTab(session);
+      if (activeTab === undefined) return;
+      const title = resolveTabTitle(activeTab);
+      counts.set(title, (counts.get(title) ?? 0) + 1);
+    });
+    const duplicates = new Set<string>();
+    counts.forEach((count, title) => {
+      if (count > 1) duplicates.add(title);
+    });
+    return duplicates;
+  }, [sessions.items]);
   const hostId = useReactiveActiveHostId() ?? UNKNOWN_HOST_PLACEHOLDER;
   const navigateNested = useEpicNestedFocusNavigation();
   const prepareOpen = useEpicCanvasStore(
@@ -189,6 +246,7 @@ function BrowsersPanelBodyLive(props: {
           key={session.sessionId}
           session={session}
           chatById={chatById}
+          duplicateTitles={duplicateTitles}
           onOpenTab={openTab}
           onOpenDrivingChat={openDrivingChat}
           onClose={sessions.closeSession}
@@ -235,13 +293,15 @@ function BrowsersPanelEmptyState(props: { readonly onAddBrowser: () => void }) {
 interface BrowserSessionRowProps {
   readonly session: BrowserSessionInfo;
   readonly chatById: ReadonlyMap<string, { readonly id: string; readonly title: string }>;
+  readonly duplicateTitles: ReadonlySet<string>;
   readonly onOpenTab: (session: BrowserSessionInfo, tab: BrowserTabInfo) => void;
   readonly onOpenDrivingChat: (driver: BrowserTabDriver) => void;
   readonly onClose: (sessionId: string) => void;
 }
 
 function BrowserSessionRow(props: BrowserSessionRowProps) {
-  const { session, chatById, onOpenTab, onOpenDrivingChat, onClose } = props;
+  const { session, chatById, duplicateTitles, onOpenTab, onOpenDrivingChat, onClose } =
+    props;
   if (session.tabs.length === 0) return null;
   const primaryTab = session.tabs[0];
   const activeTab = session.tabs.find((tab) => tab.viewed) ?? primaryTab;
@@ -249,6 +309,12 @@ function BrowserSessionRow(props: BrowserSessionRowProps) {
   const title = resolveTabTitle(activeTab);
   const host = browserTabHostname(activeTab.url);
   const isDormant = activeTab.status === "dormant";
+  const closeAriaLabel = resolveCloseAriaLabel(
+    session,
+    activeTab,
+    title,
+    duplicateTitles.has(title),
+  );
 
   return (
     <li>
@@ -313,7 +379,7 @@ function BrowserSessionRow(props: BrowserSessionRowProps) {
             variant="ghost"
             size="icon"
             className="size-6 text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-            aria-label={`Close ${title}`}
+            aria-label={closeAriaLabel}
             onClick={() => onClose(session.sessionId)}
           >
             <X className="size-3.5" aria-hidden />

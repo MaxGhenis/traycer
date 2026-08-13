@@ -306,6 +306,17 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
             "absolute inset-0 flex min-h-0 flex-col items-center justify-center gap-3 px-4 text-center",
             effectiveStatus === "ready" && "pointer-events-none opacity-0",
           )}
+          role={
+            effectiveStatus === "dead" || effectiveUnreachable
+              ? "alert"
+              : "status"
+          }
+          aria-live={
+            effectiveStatus === "dead" || effectiveUnreachable
+              ? "assertive"
+              : "polite"
+          }
+          aria-busy={effectiveStatus === "loading" && !effectiveUnreachable}
         >
           <AgentBrowserTileStatus
             status={effectiveStatus}
