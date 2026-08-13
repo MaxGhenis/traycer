@@ -383,8 +383,25 @@ class FakeContentView implements ManagedContentView {
   }
 }
 
+class FakeHostWebContents extends EventEmitter {
+  on(
+    event: "did-start-navigation" | "render-process-gone",
+    listener: (...args: unknown[]) => void,
+  ): this {
+    return super.on(event, listener);
+  }
+
+  off(
+    event: "did-start-navigation" | "render-process-gone",
+    listener: (...args: unknown[]) => void,
+  ): this {
+    return super.off(event, listener);
+  }
+}
+
 class FakeWindow implements BrowserViewWindow {
   readonly contentView = new FakeContentView();
+  readonly webContents = new FakeHostWebContents();
   destroyed = false;
   visible = true;
   minimized = false;
@@ -3688,5 +3705,137 @@ describe("BrowserViewManager durable runtime registration (ticket 05)", () => {
         disposition: "foreground-tab",
       }),
     ]);
+  });
+});
+
+describe("BrowserViewManager host window renderer reset (fix round 2)", () => {
+  function makeVisible(harness: Harness, key: BrowserViewTileKey): void {
+    harness.manager.upsertTile("window-1", upsert(key, "https://example.com", true));
+    harness.manager.updateBounds("window-1", {
+      ...key,
+      bounds: { x: 0, y: 0, width: 300, height: 200 },
+    });
+  }
+
+  it("hides every entry on that window when the host renderer starts a fresh main-frame navigation", () => {
+    const harness = createHarness();
+    makeVisible(harness, BASE_KEY);
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
+    expect(view.visible).toBe(true);
+
+    const hostWebContents = harness.windows.get("window-1")?.webContents;
+    if (hostWebContents === undefined) throw new Error("expected host window");
+    // (event, url, isInPlace, isMainFrame, frameProcessId, frameRoutingId)
+    hostWebContents.emit(
+      "did-start-navigation",
+      {},
+      "http://localhost:31873/",
+      false,
+      true,
+      1,
+      1,
+    );
+
+    expect(view.visible).toBe(false);
+  });
+
+  it("ignores same-document and non-main-frame navigations on the host window", () => {
+    const harness = createHarness();
+    makeVisible(harness, BASE_KEY);
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
+
+    const hostWebContents = harness.windows.get("window-1")?.webContents;
+    if (hostWebContents === undefined) throw new Error("expected host window");
+    hostWebContents.emit(
+      "did-start-navigation",
+      {},
+      "http://localhost:31873/#hash",
+      true,
+      true,
+      1,
+      1,
+    );
+    expect(view.visible).toBe(true);
+
+    hostWebContents.emit(
+      "did-start-navigation",
+      {},
+      "http://localhost:31873/iframe",
+      false,
+      false,
+      1,
+      2,
+    );
+    expect(view.visible).toBe(true);
+  });
+
+  it("hides every entry on that window when the host renderer crashes", () => {
+    const harness = createHarness();
+    makeVisible(harness, BASE_KEY);
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
+
+    const hostWebContents = harness.windows.get("window-1")?.webContents;
+    if (hostWebContents === undefined) throw new Error("expected host window");
+    hostWebContents.emit("render-process-gone", {}, { reason: "crashed" });
+
+    expect(view.visible).toBe(false);
+  });
+
+  it("re-upserting the same tile clears the reset and makes it visible again", () => {
+    const harness = createHarness();
+    makeVisible(harness, BASE_KEY);
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
+
+    const hostWebContents = harness.windows.get("window-1")?.webContents;
+    if (hostWebContents === undefined) throw new Error("expected host window");
+    hostWebContents.emit(
+      "did-start-navigation",
+      {},
+      "http://localhost:31873/",
+      false,
+      true,
+      1,
+      1,
+    );
+    expect(view.visible).toBe(false);
+
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "https://example.com", true),
+    );
+    expect(view.visible).toBe(true);
+  });
+
+  it("does not re-show a stale entry that was never re-upserted, even after further recomputes", () => {
+    const harness = createHarness();
+    makeVisible(harness, BASE_KEY);
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
+
+    const hostWebContents = harness.windows.get("window-1")?.webContents;
+    if (hostWebContents === undefined) throw new Error("expected host window");
+    hostWebContents.emit(
+      "did-start-navigation",
+      {},
+      "http://localhost:31873/",
+      false,
+      true,
+      1,
+      1,
+    );
+    expect(view.visible).toBe(false);
+
+    // A recompute unrelated to this exact tile (e.g. another tile's bounds
+    // update triggering window reconciliation) must not accidentally
+    // re-show a stale-generation entry that the new renderer never claimed.
+    harness.manager.updateBounds("window-1", {
+      ...BASE_KEY,
+      bounds: { x: 5, y: 5, width: 300, height: 200 },
+    });
+    expect(view.visible).toBe(false);
   });
 });

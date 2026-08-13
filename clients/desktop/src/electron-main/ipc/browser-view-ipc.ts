@@ -41,6 +41,7 @@ import { setInAppBrowserBetaEnabledMarker } from "../app/browser-labs-state";
 import {
   BrowserViewManager,
   scheduleBrowserViewDebugSnapshot,
+  type BrowserViewHostWebContents,
   type BrowserViewWindow,
   type ManagedBrowserView,
   type ManagedContentView,
@@ -812,6 +813,7 @@ function toBrowserViewWindow(value: unknown): BrowserViewWindow | null {
   }
   return {
     contentView,
+    webContents: toBrowserViewHostWebContents(Reflect.get(value, "webContents")),
     isDestroyed: () => Boolean(isDestroyed.call(value)),
     isVisible: () => Boolean(isVisible.call(value)),
     isMinimized: () =>
@@ -825,6 +827,23 @@ function isContentView(value: unknown): value is ManagedContentView {
     typeof Reflect.get(value, "addChildView") === "function" &&
     typeof Reflect.get(value, "removeChildView") === "function"
   );
+}
+
+function toBrowserViewHostWebContents(
+  value: unknown,
+): BrowserViewHostWebContents | null {
+  if (!isRecord(value)) return null;
+  const on = Reflect.get(value, "on");
+  const off = Reflect.get(value, "off");
+  if (typeof on !== "function" || typeof off !== "function") return null;
+  return {
+    on: (event, listener) => {
+      on.call(value, event, listener);
+    },
+    off: (event, listener) => {
+      off.call(value, event, listener);
+    },
+  };
 }
 
 function assertRecord(value: unknown, label: string): Record<string, unknown> {

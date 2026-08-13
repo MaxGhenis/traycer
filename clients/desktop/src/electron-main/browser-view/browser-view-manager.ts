@@ -185,8 +185,26 @@ export interface ManagedContentView {
   removeChildView(view: ManagedBrowserView): void;
 }
 
+/**
+ * The host window's own renderer lifecycle events - distinct from a browser
+ * tile's `webContents`, which is a separate `WebContentsView`. Used to hide
+ * every entry attached to this window while its renderer is reloading or
+ * has crashed, so the native views do not composite over a blank window.
+ */
+export interface BrowserViewHostWebContents {
+  on(
+    event: "did-start-navigation" | "render-process-gone",
+    listener: (...args: unknown[]) => void,
+  ): void;
+  off(
+    event: "did-start-navigation" | "render-process-gone",
+    listener: (...args: unknown[]) => void,
+  ): void;
+}
+
 export interface BrowserViewWindow {
   readonly contentView: ManagedContentView;
+  readonly webContents: BrowserViewHostWebContents | null;
   isDestroyed(): boolean;
   isVisible(): boolean;
   isMinimized(): boolean;
@@ -344,6 +362,14 @@ interface BrowserViewEntry {
   overlaySnapshotStale: boolean;
   /** Last `visible` value logged by `applyEntryVisibility`, so forensics logging fires only on change. */
   lastLoggedVisible: boolean | null;
+  /**
+   * Set when the host window's own renderer starts a fresh main-frame
+   * navigation or crashes, before the new renderer has re-upserted this
+   * entry. Forces `applyEntryVisibility` to hide the tile so it cannot
+   * composite over the blank/reloading window; cleared by the next
+   * `upsertTile` call for this exact key.
+   */
+  rendererResetPending: boolean;
   control: BrowserViewControlState | null;
   runtimeSessionId: string;
   runtimeTabId: string | null;
@@ -525,6 +551,14 @@ export class BrowserViewManager {
     string,
     BrowserViewScheduledTask
   >();
+  private readonly hostWindowResetListenersByWindowId = new Map<
+    string,
+    {
+      readonly webContents: BrowserViewHostWebContents;
+      readonly onNavigate: (...args: unknown[]) => void;
+      readonly onGone: (...args: unknown[]) => void;
+    }
+  >();
   private readonly recentPrimaryProfileOrigins: BrowserPrimaryProfileRecentOrigin[] =
     [];
   private primaryProfileVisitSequence = 0;
@@ -587,6 +621,7 @@ export class BrowserViewManager {
     }
 
     entry.desiredVisible = input.visible;
+    entry.rendererResetPending = false;
     if (entry.viewportPreset !== input.viewportPreset) {
       entry.viewportPreset = input.viewportPreset;
       this.applyEntryBounds(entry);
@@ -1488,6 +1523,7 @@ export class BrowserViewManager {
       overlayOwnerIds: [],
       overlaySnapshotStale: false,
       lastLoggedVisible: null,
+      rendererResetPending: false,
       control: null,
       handedOff: false,
       pendingHandoffCapture: null,
@@ -2160,6 +2196,9 @@ export class BrowserViewManager {
 
   private attachToCurrentWindow(entry: BrowserViewEntry): void {
     const targetWindow = this.getWindow(entry.key.windowId);
+    if (targetWindow !== null) {
+      this.ensureHostWindowResetListener(entry.key.windowId, targetWindow);
+    }
     const currentWindow =
       entry.parentWindowId === null
         ? null
@@ -2174,6 +2213,77 @@ export class BrowserViewManager {
     if (targetWindow === null || targetWindow.isDestroyed()) return;
     targetWindow.contentView.addChildView(entry.view);
     entry.parentWindowId = entry.key.windowId;
+  }
+
+  /**
+   * The host window itself (not any browser tile's own `webContents`) can
+   * reload or crash - a vite HMR full reload in dev, a renderer crash in
+   * production. When that happens every tile attached to this window keeps
+   * `desiredVisible: true` in this (main-process, reload-surviving) manager
+   * and would otherwise keep compositing over the blank window until the
+   * new renderer re-registers it. One listener per window, attached lazily
+   * the first time an entry attaches to it.
+   */
+  private ensureHostWindowResetListener(
+    windowId: string,
+    window: BrowserViewWindow,
+  ): void {
+    if (this.hostWindowResetListenersByWindowId.has(windowId)) return;
+    const webContents = window.webContents;
+    if (webContents === null) return;
+    const onNavigate = (...args: unknown[]): void => {
+      const { isMainFrame, isInPlace } = readHostNavigationFlags(args);
+      if (!isMainFrame || isInPlace) return;
+      this.handleHostWindowRendererReset(windowId, "navigation", null);
+    };
+    const onGone = (...args: unknown[]): void => {
+      this.handleHostWindowRendererReset(
+        windowId,
+        "crash",
+        readRenderGoneReason(args),
+      );
+    };
+    webContents.on("did-start-navigation", onNavigate);
+    webContents.on("render-process-gone", onGone);
+    this.hostWindowResetListenersByWindowId.set(windowId, {
+      webContents,
+      onNavigate,
+      onGone,
+    });
+  }
+
+  private detachHostWindowResetListenerIfUnused(windowId: string): void {
+    const stillUsed = Array.from(this.entriesByKey.values()).some(
+      (entry) => entry.key.windowId === windowId,
+    );
+    if (stillUsed) return;
+    const listeners = this.hostWindowResetListenersByWindowId.get(windowId);
+    if (listeners === undefined) return;
+    listeners.webContents.off("did-start-navigation", listeners.onNavigate);
+    listeners.webContents.off("render-process-gone", listeners.onGone);
+    this.hostWindowResetListenersByWindowId.delete(windowId);
+  }
+
+  private handleHostWindowRendererReset(
+    windowId: string,
+    reason: "navigation" | "crash",
+    detail: string | null,
+  ): void {
+    let affectedCount = 0;
+    for (const entry of this.entriesByKey.values()) {
+      if (entry.key.windowId !== windowId) continue;
+      if (entry.rendererResetPending) continue;
+      entry.rendererResetPending = true;
+      affectedCount += 1;
+      this.applyEntryVisibility(entry);
+    }
+    if (affectedCount === 0) return;
+    log.info("[browser-view] host window renderer reset: hiding entries", {
+      windowId,
+      reason,
+      detail,
+      affectedCount,
+    });
   }
 
   private applyEntryBounds(entry: BrowserViewEntry): void {
@@ -2193,6 +2303,7 @@ export class BrowserViewManager {
     const visible =
       entry.desiredVisible &&
       entry.overlayOwnerIds.length === 0 &&
+      !entry.rendererResetPending &&
       hasUsableBounds &&
       entry.status !== "dead" &&
       window !== null &&
@@ -2205,6 +2316,7 @@ export class BrowserViewManager {
         visible,
         desiredVisible: entry.desiredVisible,
         overlayOwnerCount: entry.overlayOwnerIds.length,
+        rendererResetPending: entry.rendererResetPending,
         hasUsableBounds,
         status: entry.status,
         windowVisible:
@@ -2262,6 +2374,7 @@ export class BrowserViewManager {
     });
     this.entriesByKey.delete(keyId);
     this.entriesByRuntimeKey.delete(runtimeEntryKey(entry));
+    this.detachHostWindowResetListenerIfUnused(entry.key.windowId);
     this.destroyDevToolsWindow(entry);
     this.cancelControl(entry, "browser tile closed", null);
     // Ticket 12 item 2: capture and push before anything below tears the
@@ -2729,6 +2842,23 @@ function httpOrigin(url: string): string | null {
 function readMainFrameFlag(args: readonly unknown[]): boolean {
   const value = args[4];
   return typeof value === "boolean" ? value : true;
+}
+
+/**
+ * `did-start-navigation` on the host window's own `webContents`:
+ * `(event, url, isInPlace, isMainFrame, frameProcessId, frameRoutingId)`.
+ * `isInPlace` is Electron's same-document flag (hash change, pushState).
+ */
+function readHostNavigationFlags(args: readonly unknown[]): {
+  readonly isMainFrame: boolean;
+  readonly isInPlace: boolean;
+} {
+  const isInPlace = args[2];
+  const isMainFrame = args[3];
+  return {
+    isMainFrame: typeof isMainFrame === "boolean" ? isMainFrame : true,
+    isInPlace: typeof isInPlace === "boolean" ? isInPlace : false,
+  };
 }
 
 function readInPageMainFrameFlag(args: readonly unknown[]): boolean {
