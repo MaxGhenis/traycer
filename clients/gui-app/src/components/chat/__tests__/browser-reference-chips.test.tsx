@@ -67,14 +67,14 @@ function sessionsState(
 function renderChips(
   references: ReadonlyArray<BrowserContextAttachmentRecord>,
   items: ReadonlyArray<BrowserSessionInfo>,
-): void {
-  render(
+): HTMLElement {
+  return render(
     <TooltipProvider delayDuration={0}>
       <BrowserSessionsContext.Provider value={sessionsState(items)}>
         <BrowserReferenceChips references={references} />
       </BrowserSessionsContext.Provider>
     </TooltipProvider>,
-  );
+  ).container;
 }
 
 function wrapper(node: ReactNode): ReactNode {
@@ -162,6 +162,30 @@ describe("BrowserReferenceChips (ticket 08 disambiguation)", () => {
 
     expect(screen.getByText("app.example")).toBeTruthy();
     expect(screen.getByText("Browser")).toBeTruthy();
+  });
+
+  it("renders the resolved tab favicon when one is available", () => {
+    const container = renderChips(
+      [{ ...BASE, sessionId: "sess-a", tabId: "tab-1" }],
+      [
+        session({
+          sessionId: "sess-a",
+          tabs: [
+            tab({
+              tabId: "tab-1",
+              url: "https://app.example/dashboard",
+              title: "Dashboard",
+            }),
+          ],
+        }),
+      ],
+    );
+
+    const favicon = container.querySelector("img");
+    expect(favicon).not.toBeNull();
+    expect(favicon?.getAttribute("src")).toBe(
+      "https://app.example/favicon.ico",
+    );
   });
 
   it("disambiguates same session different tabs without collapsing labels", () => {

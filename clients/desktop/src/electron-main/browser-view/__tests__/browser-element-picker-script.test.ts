@@ -17,6 +17,7 @@ describe("buildElementPickerBootstrap", () => {
     // Bakes the shared limits and interaction wiring into the injected string.
     expect(source).toContain(String(ELEMENT_PICKER_LIMITS.outerHtml));
     expect(source).toContain("elementsFromPoint");
+    expect(source).toContain("typeof el.innerText === 'string'");
     expect(source).toContain("__traycerElementPickerCancel");
     expect(source).toContain("return new Promise");
   });
