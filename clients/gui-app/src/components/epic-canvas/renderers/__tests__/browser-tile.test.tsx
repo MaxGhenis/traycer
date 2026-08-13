@@ -597,11 +597,12 @@ function tileKey(): BrowserViewTileKey {
 
 function renderBrowserTile(
   registerAdapter: ((adapter: TileFindAdapter) => () => void) | null,
+  node: BrowserTileRef,
 ): void {
   const tile = (
     <TooltipProvider>
       <BrowserTile
-        node={NODE}
+        node={node}
         viewTabId="view-tab-1"
         paneId="pane-1"
         epicId="epic-1"
@@ -615,7 +616,7 @@ function renderBrowserTile(
   render(
     <TileFindContext.Provider
       value={{
-        tileInstanceId: NODE.instanceId,
+        tileInstanceId: node.instanceId,
         registerAdapter,
       }}
     >
@@ -647,12 +648,109 @@ describe("<BrowserTile /> cookie crypto banner", () => {
   it("renders the degraded-mode ephemeral login banner", async () => {
     bridgeHarness.current = new FakeBrowserViewBridge(DEGRADED_STATE);
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
 
     const banner = await screen.findByTestId("browser-cookie-degraded-banner");
     expect(banner.textContent).toContain(
       "Restart Traycer to enable persistent logins.",
     );
+  });
+
+  it("keeps a long URL intact and applies truncation classes", () => {
+    const bridge = new FakeBrowserViewBridge(REAL_STATE);
+    const longUrl = `https://example.com/${"very-long-path-segment/".repeat(20)}`;
+    bridgeHarness.current = bridge;
+
+    renderBrowserTile(null, { ...NODE, url: longUrl });
+
+    const address = screen.getByLabelText("Browser address");
+    expect((address as HTMLInputElement).value).toBe(longUrl);
+    expect(address.className).toContain("min-w-0");
+    expect(address.className).toContain("truncate");
+  });
+
+  it("shows web origin and waits for cookie state before rendering its cookie row", async () => {
+    const bridge = new FakeBrowserViewBridge(REAL_STATE);
+    let resolveCookieState: (state: BrowserCookieCryptoState) => void = () => {
+      throw new Error("cookie state resolver was not initialized");
+    };
+    const cookieStatePromise = new Promise<BrowserCookieCryptoState>(
+      (resolve) => {
+        resolveCookieState = resolve;
+      },
+    );
+    vi.spyOn(bridge, "getCookieCryptoState").mockReturnValue(
+      cookieStatePromise,
+    );
+    bridgeHarness.current = bridge;
+
+    renderBrowserTile(null, NODE);
+    fireEvent.click(screen.getByRole("button", { name: "Site information" }));
+
+    expect(screen.getByText("Web page")).toBeTruthy();
+    expect(screen.queryByText("Logins saved securely")).toBeNull();
+
+    act(() => {
+      resolveCookieState(REAL_STATE);
+    });
+
+    expect(await screen.findByText("Logins saved securely")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Cookies and saved logins on this page are encrypted by your operating system.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it.each([
+    {
+      label: "real",
+      state: REAL_STATE,
+      headline: "Logins saved securely",
+      detail:
+        "Cookies and saved logins on this page are encrypted by your operating system.",
+    },
+    {
+      label: "basic",
+      state: {
+        ...REAL_STATE,
+        mode: "basic",
+        reason: "linux-basic-text",
+        storageBackend: "basic_text",
+        encryptionAvailable: false,
+      } satisfies BrowserCookieCryptoState,
+      headline: "Logins saved with basic protection",
+      detail:
+        "Cookies and saved logins on this page use basic, less secure encryption.",
+    },
+    {
+      label: "degraded",
+      state: DEGRADED_STATE,
+      headline: "Logins aren't saved",
+      detail:
+        "Logins in this browser are temporary until Traycer restarts. Restart Traycer to enable persistent logins.",
+    },
+  ])(
+    "describes $label cookie protection",
+    async ({ state, headline, detail }) => {
+      bridgeHarness.current = new FakeBrowserViewBridge(state);
+
+      renderBrowserTile(null, NODE);
+      fireEvent.click(screen.getByRole("button", { name: "Site information" }));
+
+      expect(await screen.findByText(headline)).toBeTruthy();
+      expect(screen.getAllByText(detail).length).toBeGreaterThan(0);
+    },
+  );
+
+  it("identifies about:blank as a local page", () => {
+    bridgeHarness.current = new FakeBrowserViewBridge(REAL_STATE);
+
+    renderBrowserTile(null, { ...NODE, url: "about:blank" });
+    fireEvent.click(screen.getByRole("button", { name: "Site information" }));
+
+    expect(screen.getByText("Local page")).toBeTruthy();
+    expect(screen.queryByText("Web page")).toBeNull();
   });
 
   it("renders a dead state when native browser views are unavailable", () => {
@@ -661,7 +759,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
       .mockImplementation(() => undefined);
     bridgeHarness.current = null;
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
 
     expect(screen.getByText("Browser view unavailable")).toBeTruthy();
     expect(
@@ -690,7 +788,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
       return () => {
         adapterRef.current = null;
       };
-    });
+    }, NODE);
 
     const adapter = readRegisteredAdapter(adapterRef);
     void adapter.search({ requestId: 3, query: "needle", matchCase: false });
@@ -732,7 +830,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     const bridge = new FakeBrowserViewBridge(REAL_STATE);
     bridgeHarness.current = bridge;
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
 
     fireEvent.click(screen.getByLabelText("Zoom in"));
     expect(bridge.zoomInCalls).toEqual([tileKey()]);
@@ -836,7 +934,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     const bridge = new FakeBrowserViewBridge(REAL_STATE);
     bridgeHarness.current = bridge;
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
 
     fireEvent.pointerDown(
       screen.getByRole("button", { name: "Browser viewport preset" }),
@@ -862,7 +960,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     const bridge = new FakeBrowserViewBridge(REAL_STATE);
     bridgeHarness.current = bridge;
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
     act(() => {
       bridge.emitDownload({
         ...tileKey(),
@@ -891,7 +989,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     const bridge = new FakeBrowserViewBridge(REAL_STATE);
     bridgeHarness.current = bridge;
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
     act(() => {
       bridge.emitCertificateError({
         ...tileKey(),
@@ -926,7 +1024,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     const bridge = new FakeBrowserViewBridge(REAL_STATE);
     bridgeHarness.current = bridge;
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
     act(() => {
       bridge.emitOpenTileRequest({
         ...tileKey(),
@@ -948,7 +1046,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     const sendFrame = vi.fn();
     bridgeHarness.current = bridge;
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
     const request = {
       requestId: "control-request-1",
       grantId: "grant-1",
@@ -1020,7 +1118,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     );
     bridgeHarness.current = bridge;
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
     const request = {
       requestId: "control-request-1",
       grantId: "grant-1",
@@ -1096,7 +1194,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     });
     bridgeHarness.current = bridge;
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
     const request = {
       requestId: "control-request-1",
       grantId: "grant-1",
@@ -1190,7 +1288,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
       });
       bridgeHarness.current = bridge;
 
-      renderBrowserTile(null);
+      renderBrowserTile(null, NODE);
       const request = {
         requestId: "control-request-1",
         grantId: "grant-1",
@@ -1310,7 +1408,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     );
     bridgeHarness.current = bridge;
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
     const request = {
       requestId: "control-request-1",
       grantId: "grant-1",
@@ -1397,7 +1495,7 @@ describe("<BrowserTile /> cookie crypto banner", () => {
     const sendFrame = vi.fn<(frame: BrowserSessionsClientFrame) => void>();
     bridgeHarness.current = bridge;
 
-    renderBrowserTile(null);
+    renderBrowserTile(null, NODE);
     const request = {
       requestId: "control-request-1",
       grantId: "grant-1",
