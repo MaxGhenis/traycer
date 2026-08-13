@@ -276,6 +276,111 @@ describe("BrowsersPanelBody", () => {
     ).toBeTruthy();
   });
 
+  it("disambiguates duplicate host fallback titles with each tab's origin", () => {
+    sessionsState.value = {
+      ...sessionsState.value,
+      items: [3000, 5173].map((port) =>
+        session({
+          sessionId: `sess-localhost-${port}`,
+          name: "Agent browser",
+          profile: "primary",
+          tabs: [
+            tab({
+              tabId: `tab-localhost-${port}`,
+              url: `http://127.0.0.1:${port}`,
+              viewed: true,
+            }),
+          ],
+        }),
+      ),
+    };
+
+    render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    const closeButtons = screen.getAllByRole("button", {
+      name: /^Close 127\.0\.0\.1 \(/,
+    });
+    expect(closeButtons).toHaveLength(2);
+    const closeLabels = closeButtons.map((button) =>
+      button.getAttribute("aria-label"),
+    );
+    expect(closeLabels).toEqual([
+      "Close 127.0.0.1 (127.0.0.1:3000)",
+      "Close 127.0.0.1 (127.0.0.1:5173)",
+    ]);
+    expect(screen.queryByText("127.0.0.1:3000")).toBeNull();
+    expect(screen.queryByText("127.0.0.1:5173")).toBeNull();
+    expect(screen.getAllByText("127.0.0.1")).toHaveLength(4);
+  });
+
+  it("falls back to session ids when duplicate titles also share no origin", () => {
+    const sessionIds = ["sess-fallback-1", "sess-fallback-2", "sess-fallback-3"];
+    sessionsState.value = {
+      ...sessionsState.value,
+      items: sessionIds.map((sessionId, index) =>
+        session({
+          sessionId,
+          name: "Agent browser",
+          profile: "primary",
+          tabs: [
+            tab({
+              tabId: `tab-fallback-${index}`,
+              url: "",
+              title: "Checkout",
+              viewed: true,
+            }),
+          ],
+        }),
+      ),
+    };
+
+    render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    const closeLabels = screen
+      .getAllByRole("button", { name: /^Close Checkout \(/ })
+      .map((button) => button.getAttribute("aria-label"));
+    expect(new Set(closeLabels).size).toBe(sessionIds.length);
+    for (const sessionId of sessionIds) {
+      expect(closeLabels).toContain(`Close Checkout (${sessionId})`);
+    }
+  });
+
+  it("keeps the plain close name when the active title is unique", () => {
+    sessionsState.value = {
+      ...sessionsState.value,
+      items: [
+        session({
+          sessionId: "sess-unique-title",
+          name: "Agent browser",
+          profile: "primary",
+          tabs: [
+            tab({
+              tabId: "tab-unique-title",
+              url: "https://unique.example",
+              title: "Unique page",
+              viewed: true,
+            }),
+          ],
+        }),
+      ],
+    };
+
+    render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Close Unique page" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /Close Unique page \(/ }),
+    ).toBeNull();
+  });
+
   it("keeps close controls and row names unique across near-identical sessions", () => {
     const titles = ["Checkout", "Checkout 1", "Checkout 2", "Checkout 3"];
     sessionsState.value = {

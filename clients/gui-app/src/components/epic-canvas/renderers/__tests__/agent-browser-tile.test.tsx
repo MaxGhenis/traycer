@@ -304,6 +304,9 @@ describe("<AgentBrowserTile />", () => {
     expect(
       screen.getByText("Native browser views are unavailable."),
     ).toBeTruthy();
+    const overlay = screen.getByRole("alert");
+    expect(overlay.getAttribute("aria-live")).toBe("assertive");
+    expect(overlay.getAttribute("aria-busy")).toBe("false");
     expect(screen.queryByText(`Host ${NODE.hostId}`)).toBeNull();
     expect(screen.getByRole("button", { name: "Host details" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
@@ -369,6 +372,9 @@ describe("<AgentBrowserTile />", () => {
 
     // Loading by default until a matching status arrives.
     expect(screen.getByText("Reconnecting to this session")).toBeTruthy();
+    const loadingOverlay = screen.getByRole("status");
+    expect(loadingOverlay.getAttribute("aria-live")).toBe("polite");
+    expect(loadingOverlay.getAttribute("aria-busy")).toBe("true");
     expect(screen.queryByText(`Host ${NODE.hostId}`)).toBeNull();
     expect(screen.getByRole("button", { name: "Host details" })).toBeTruthy();
 
@@ -425,6 +431,9 @@ describe("<AgentBrowserTile />", () => {
       ).toBeTruthy();
       expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Close tab" })).toBeTruthy();
+      const unreachableOverlay = screen.getByRole("alert");
+      expect(unreachableOverlay.getAttribute("aria-live")).toBe("assertive");
+      expect(unreachableOverlay.getAttribute("aria-busy")).toBe("false");
       expect(screen.queryByText("Reconnecting to this session")).toBeNull();
       expect(screen.queryByText(`Host ${NODE.hostId}`)).toBeNull();
     } finally {
