@@ -229,7 +229,11 @@ const ELEMENT_PICKER_BOOTSTRAP_BODY = [
   "  return implicit ? bounded(implicit, LIMITS.ariaRole) : null;",
   "}",
   "function textOf(el) {",
-  "  var raw = el.textContent || '';",
+  // `innerText` reflects rendered/visible text (respects CSS display/
+  // visibility) and never surfaces <style>/<script> descendant text the way
+  // `textContent` does - falls back to textContent for elements that don't
+  // implement innerText (e.g. SVG).
+  "  var raw = (typeof el.innerText === 'string') ? el.innerText : (el.textContent || '');",
   "  var text = raw.replace(/\\s+/g, ' ').trim();",
   "  return text ? bounded(text, LIMITS.textPreview) : null;",
   "}",

@@ -13,6 +13,11 @@ import type { LeftPanelSlotProps } from "@/components/epic-canvas/sidebar/left-p
 import { useBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import {
+  browserTabFaviconUrl,
+  browserTabHostname,
+  resolveTabTitle,
+} from "@/lib/browser-view/browser-tab-display";
 import { findElectronBrowserTabBinding } from "@/lib/browser-view/electron-browser-tab-store";
 import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { cn } from "@/lib/utils";
@@ -33,22 +38,6 @@ import {
   useEpicLeftPanelStore,
   useLeftPanelSectionCollapsed,
 } from "@/stores/epics/left-panel-store";
-
-function resolveTabTitle(tab: BrowserTabInfo): string {
-  if (tab.title !== null && tab.title.trim().length > 0) return tab.title;
-  const host = tabHostname(tab.url);
-  return host ?? "Browser";
-}
-
-function tabHostname(url: string): string | null {
-  if (url.length === 0) return null;
-  try {
-    const hostname = new URL(url).hostname;
-    return hostname.length > 0 ? hostname : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Shared open-a-new-browser-tile action behind both the panel header's "Add
@@ -258,7 +247,7 @@ function BrowserSessionRow(props: BrowserSessionRowProps) {
   const activeTab = session.tabs.find((tab) => tab.viewed) ?? primaryTab;
   const otherTabs = session.tabs.filter((tab) => tab.tabId !== activeTab.tabId);
   const title = resolveTabTitle(activeTab);
-  const host = tabHostname(activeTab.url);
+  const host = browserTabHostname(activeTab.url);
   const isDormant = activeTab.status === "dormant";
 
   return (
@@ -359,7 +348,7 @@ function BrowserSessionRow(props: BrowserSessionRowProps) {
 }
 
 function BrowserFavicon(props: { readonly tab: BrowserTabInfo }) {
-  const favicon = faviconUrl(props.tab.url);
+  const favicon = browserTabFaviconUrl(props.tab.url);
   if (favicon === null) {
     return <Globe2 className="size-3.5 shrink-0 text-muted-foreground" />;
   }
@@ -373,15 +362,4 @@ function BrowserFavicon(props: { readonly tab: BrowserTabInfo }) {
       }}
     />
   );
-}
-
-function faviconUrl(url: string): string | null {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-      return null;
-    return new URL("/favicon.ico", parsed.origin).toString();
-  } catch {
-    return null;
-  }
 }
