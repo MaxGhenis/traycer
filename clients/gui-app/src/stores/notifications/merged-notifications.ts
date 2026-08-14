@@ -431,8 +431,16 @@ export function useRecentNotificationIds(): ReadonlyArray<string> {
       .filter((row) => classifyNotificationLifecycle(row).section === "recent")
       .filter((row) => categories.has(row.category))
       .filter((row) => !unreadOnly || row.readAt === null)
-      .sort((a, b) =>
-        compareProviderPackLocalFirst(
+      .sort((a, b) => {
+        // Plane FIRST, exactly as the Attention projection orders: the two
+        // lanes carry clocks with different semantics, so a cloud relay
+        // timestamp must never be compared against a local `createdAt` -
+        // protocol order decides between lanes, the comparator below decides
+        // within one.
+        const planeDelta =
+          notificationPlaneOrder(a) - notificationPlaneOrder(b);
+        if (planeDelta !== 0) return planeDelta;
+        return compareProviderPackLocalFirst(
           {
             attribution: a.providerPackAttribution,
             createdAt: a.createdAt,
@@ -444,8 +452,8 @@ export function useRecentNotificationIds(): ReadonlyArray<string> {
             feedId: b.feedId,
           },
           viewing,
-        ),
-      )
+        );
+      })
       .map((row) => row.feedId);
   }, [rows, unreadOnly, categories, hasLocalHost, localHostId]);
 }

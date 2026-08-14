@@ -13,6 +13,7 @@ import { toastFromHostError } from "@/lib/host-error-toast";
 import type { HostRpcRegistry } from "@/lib/host";
 import { hostQueryKeys } from "@/lib/query-keys";
 import { localStoreMutationKeys } from "@/lib/query-keys/local-store-mutation-keys";
+import { resetCloudEpicTasksPagesForHost } from "@/stores/epics/cloud-epic-tasks-pages-store";
 
 interface LocalStoreRebindContext {
   readonly hostId: string | null;
@@ -66,6 +67,13 @@ export function useLocalStoreRebindMutation(): UseMutationResult<
       onMutate: () => ({ hostId: sessionHostId }),
       onSuccess: (response, _variables, context) => {
         if (response.status !== "rebound") return;
+        // The "Show more" tails live OUTSIDE TanStack Query, in the pages
+        // store, and `useCloudEpicTasksQuery` keeps concatenating them with
+        // the refetched first page - so invalidation alone would leave rows,
+        // home markers and cursors answered by the abandoned store on screen.
+        if (context.hostId !== null) {
+          resetCloudEpicTasksPagesForHost(context.hostId);
+        }
         void queryClient.invalidateQueries({
           queryKey: hostQueryKeys.scope(context.hostId),
         });

@@ -220,6 +220,24 @@ export function resetCloudEpicTasksPagesForScope(
 }
 
 /**
+ * Drops every accumulated pagination tail for one HOST, every user. A local
+ * store rebind republishes the host's durability store wholesale, so a tail
+ * answered by the abandoned store is stale for whoever loaded it - its rows,
+ * home markers and cursors all name the old store's world.
+ */
+export function resetCloudEpicTasksPagesForHost(hostId: string): void {
+  const state = useCloudEpicTasksPagesStore.getState();
+  const prefix = `${hostId}|`;
+  const identities = new Set([
+    ...Object.keys(state.pagesByIdentity),
+    ...Object.keys(state.generationByIdentity),
+  ]);
+  identities.forEach((identity) => {
+    if (identity.startsWith(prefix)) state.resetIdentity(identity);
+  });
+}
+
+/**
  * Drops only last-viewed pagination tails for one host/user. Recording a view
  * can move rows across page boundaries for that ordering, but leaves cursors
  * for every other sort valid.

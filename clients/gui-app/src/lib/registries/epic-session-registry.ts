@@ -110,17 +110,21 @@ export function getOpenEpicRegistry(): OpenEpicSessionRegistry {
   return registry;
 }
 
-const EMPTY_LIVE_CHAT_IDS: ReadonlyArray<string> = [];
+const EMPTY_LIVE_CHAT_EPIC_IDS: Readonly<Record<string, string>> = {};
 
 /**
  * The chat ids that still exist in the currently-live sessions for a set of
- * task tabs. Notification task rollups use this as a whitelist: deleting a
- * chat removes its id here immediately, so its historical notification can
- * stay in the bell without continuing to bubble up to the task tab.
+ * task tabs, each mapped to its OWNING epic. Notification task rollups use
+ * the key set as a whitelist: deleting a chat removes its id here
+ * immediately, so its historical notification can stay in the bell without
+ * continuing to bubble up to the task tab. The epic mapping rides along
+ * because mixed mode's `home: local` indicator partition can only classify a
+ * chat id by durable home through its parent epic - ids alone are host-minted
+ * and encode nothing.
  */
-export function useLiveChatIdsForEpics(
+export function useLiveChatEpicIdsForEpics(
   epicIds: ReadonlyArray<string>,
-): ReadonlyArray<string> {
+): Readonly<Record<string, string>> {
   const canonicalEpicIds = useMemo(
     () =>
       [...new Set(epicIds)].sort((left, right) => left.localeCompare(right)),
@@ -128,7 +132,7 @@ export function useLiveChatIdsForEpics(
   );
   const snapshotCache = useRef<{
     readonly signature: string;
-    readonly chatIds: ReadonlyArray<string>;
+    readonly chatEpicIds: Readonly<Record<string, string>>;
   } | null>(null);
   const subscribe = useCallback(
     (listener: () => void): (() => void) => {
@@ -152,23 +156,25 @@ export function useLiveChatIdsForEpics(
     },
     [canonicalEpicIds],
   );
-  const getSnapshot = useCallback((): ReadonlyArray<string> => {
-    const chatIds = canonicalEpicIds.flatMap(
-      (epicId) => registry.peek(epicId)?.store.getState().chats.allIds ?? [],
+  const getSnapshot = useCallback((): Readonly<Record<string, string>> => {
+    const entries = canonicalEpicIds.flatMap((epicId) =>
+      (registry.peek(epicId)?.store.getState().chats.allIds ?? []).map(
+        (chatId): readonly [string, string] => [chatId, epicId],
+      ),
     );
-    const snapshot = [...new Set(chatIds)].sort((left, right) =>
-      left.localeCompare(right),
-    );
-    const signature = JSON.stringify(snapshot);
+    entries.sort(([left], [right]) => left.localeCompare(right));
+    const snapshot: Readonly<Record<string, string>> =
+      Object.fromEntries(entries);
+    const signature = JSON.stringify(entries);
     const cached = snapshotCache.current;
-    if (cached?.signature === signature) return cached.chatIds;
-    snapshotCache.current = { signature, chatIds: snapshot };
+    if (cached?.signature === signature) return cached.chatEpicIds;
+    snapshotCache.current = { signature, chatEpicIds: snapshot };
     return snapshot;
   }, [canonicalEpicIds]);
   return useSyncExternalStore(
     subscribe,
     getSnapshot,
-    () => EMPTY_LIVE_CHAT_IDS,
+    () => EMPTY_LIVE_CHAT_EPIC_IDS,
   );
 }
 

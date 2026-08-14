@@ -314,6 +314,7 @@ export function useEpicSyncPillState(): EpicSyncPillState {
       // `s5-status-truthfulness` instance 1.
       durability: s.durabilityStatus ?? undefined,
       localProtection: s.localProtection ?? undefined,
+      durabilityLegsNegotiated: s.durabilityLegsNegotiated,
       // The ninth leg, and the one that is about the DOCUMENT rather than
       // about where the work is going - `s5-mirror-first-serving`.
       cloudFreshness: s.cloudFreshness ?? undefined,
@@ -344,8 +345,13 @@ export type EpicDurabilityView =
       readonly status: Exclude<EpicDurabilityStatusV14, "unknown" | "cloud">;
       readonly protection: EpicLocalProtection;
     }
-  /** Durable in the cloud, and locally protected. The only calm arm. */
-  | { readonly kind: "cloudDurable" }
+  /**
+   * Durable in the cloud. The calm arm - but calm about DURABILITY only:
+   * protection is the independent axis, and `unavailable` beside `cloud`
+   * still means offline edits die with the process, so the leg rides along
+   * for the risk copy instead of being swallowed by the calm verdict.
+   */
+  | { readonly kind: "cloudDurable"; readonly protection: EpicLocalProtection }
   /** The host cannot say, or said it has no local protection. */
   | {
       readonly kind: "indeterminate";
@@ -379,8 +385,11 @@ export function deriveEpicDurabilityView(
   const stated: EpicLocalProtection = protection ?? "unknown";
   if (status === "cloud") {
     // The POSITIVE cloud-durable statement the `@1.4` enum carries. Calm
-    // rests on this member alone - never on an absence.
-    return { kind: "cloudDurable" };
+    // rests on this member alone - never on an absence. The protection leg is
+    // KEPT, not resolved by the calm: the axes are independent, and a stated
+    // `unavailable` beside `cloud` is exactly the "No local backup" risk the
+    // badge exists to surface.
+    return { kind: "cloudDurable", protection: stated };
   }
   if (status === null || status === "unknown") {
     // The frame's absence rule, stated as code: an absent `durability` key

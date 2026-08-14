@@ -53,7 +53,7 @@ import {
   useEpicTaskPinnedStates,
   type TaskPinnedState,
 } from "@/hooks/epic/use-epic-task-pinned-states-query";
-import { useLiveChatIdsForEpics } from "@/lib/registries/epic-session-registry";
+import { useLiveChatEpicIdsForEpics } from "@/lib/registries/epic-session-registry";
 
 export function TabStrip() {
   const hasHydrated = useWindowsBridgeHydrated();
@@ -87,7 +87,11 @@ function TabStripBody() {
     () => allTabs.flatMap((tab) => (tab.kind === "epic" ? [tab.epicId] : [])),
     [allTabs],
   );
-  const indicatorChatIds = useLiveChatIdsForEpics(indicatorEpicIds);
+  const indicatorChatEpicIds = useLiveChatEpicIdsForEpics(indicatorEpicIds);
+  const indicatorChatIds = useMemo(
+    () => Object.keys(indicatorChatEpicIds),
+    [indicatorChatEpicIds],
+  );
   const notificationIndicators = useNotificationIndicators({
     // Epic ids only, so the notification host is the right one to ask: an
     // Epic is a shared cloud entity, not a host-owned record, and the strip's
@@ -95,6 +99,10 @@ function TabStripBody() {
     hostId: null,
     epicIds: indicatorEpicIds,
     chatIds: indicatorChatIds,
+    // The live chats' owning epics, so mixed mode's `home: local` partition
+    // can classify each chat id by durable home - without the map those chats
+    // fall out of the partition and their contribution reads as clear.
+    chatEpicIds: indicatorChatEpicIds,
     enabled: indicatorEpicIds.length > 0,
   });
   const taskPinnedStates = useEpicTaskPinnedStates(indicatorEpicIds);

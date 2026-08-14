@@ -136,15 +136,27 @@ export function openAgentActivityStream(
           // The wipe on close is scoped to THIS host. Wiping the whole map
           // would make one remote host's disconnect erase the local host's
           // live agents, which is the mirror image of the defect being fixed.
-          patchHost(hostId, (current) =>
-            status === "closed"
-              ? {
-                  connectionStatus: status,
-                  servedBy: null,
-                  byEpic: EMPTY_AGENT_ACTIVITY_BY_EPIC,
-                }
-              : { ...current, connectionStatus: status },
-          );
+          //
+          // And it is scoped to PERMANENT closes. A close the reopen
+          // scheduler is about to dial through means the socket died, not
+          // that the agents stopped - replacing the authoritative snapshot
+          // with an empty map there turns lost visibility into observed
+          // idleness, the exact false-idle this multi-host stream exists to
+          // prevent. The retained snapshot is replaced by the reopened
+          // session's own state frame.
+          patchHost(hostId, (current) => {
+            if (status !== "closed") {
+              return { ...current, connectionStatus: status };
+            }
+            if (isReopenableHostStreamClose(reason)) {
+              return { ...current, connectionStatus: status, servedBy: null };
+            }
+            return {
+              connectionStatus: status,
+              servedBy: null,
+              byEpic: EMPTY_AGENT_ACTIVITY_BY_EPIC,
+            };
+          });
           if (status === "closed") {
             reopenScheduler.scheduleAfterClose(reason);
             if (isUnauthorized(reason)) onAuthError?.();

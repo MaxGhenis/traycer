@@ -137,6 +137,16 @@ export interface EpicSyncPillInputs {
    */
   readonly localProtection: EpicLocalProtection | undefined;
   /**
+   * Whether the session's negotiated `epic.subscribe` minor speaks the
+   * `@1.4` durability legs. The probe-by-presence above identifies a peer
+   * that SENT the key; this identifies one that COULD have. The schema marks
+   * every `@1.4` leg optional and an absent one means UNKNOWN, so an omission
+   * from a negotiated-`@1.4` peer must stay indeterminate rather than taking
+   * the legacy calm arm - the same handshake-over-frame-shape rule
+   * `deriveEpicDurabilityView` applies.
+   */
+  readonly durabilityLegsNegotiated: boolean;
+  /**
    * Input 9 - how the served document stands relative to the cloud (`@1.4`,
    * `s5-mirror-first-serving`).
    *
@@ -280,7 +290,15 @@ function syncedClaimIsHonest(inputs: EpicSyncPillInputs): boolean {
   ) {
     return false;
   }
-  if (inputs.localProtection === undefined) return true;
+  if (
+    inputs.localProtection === undefined &&
+    !inputs.durabilityLegsNegotiated
+  ) {
+    // A genuinely pre-`@1.4` peer keeps its legacy rendering. A negotiated
+    // `@1.4` peer omitting the optional key falls through: absence is the
+    // wire contract's UNKNOWN and cannot license the calm claim.
+    return true;
+  }
   return inputs.durability === "cloud";
 }
 

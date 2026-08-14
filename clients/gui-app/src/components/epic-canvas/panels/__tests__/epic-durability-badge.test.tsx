@@ -372,6 +372,20 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it("draws 'No local backup' over a cloud-durable epic whose protection is UNAVAILABLE", () => {
+    // The axes are independent: cloud durability says where the work already
+    // is, `unavailable` says offline edits die with the process. The calm
+    // durability answer must not swallow the stated risk.
+    cloudDurableAndArmed();
+    durability.localProtection = "unavailable";
+
+    renderBadge();
+
+    const badge = screen.getByTestId("epic-durability-badge");
+    expect(badge.getAttribute("data-local-protection")).toBe("unavailable");
+    expect(badge.textContent).toContain("No local backup");
+  });
+
   it("draws over a cloud-durable epic that is only a local copy, which the badge could not previously say", () => {
     cloudDurableAndArmed();
     durability.cloudFreshness = {

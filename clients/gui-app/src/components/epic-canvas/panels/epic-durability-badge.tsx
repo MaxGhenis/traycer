@@ -50,7 +50,16 @@ export function EpicDurabilityBadge() {
   // What used to join them is `indeterminate`, and it does not any more: an
   // unknown or unprotected session drew no badge at all, so it looked
   // identical to a protected one. It now draws.
-  if (view.kind === "cloudDurable" && freshnessCopy === null) return null;
+  if (
+    view.kind === "cloudDurable" &&
+    freshnessCopy === null &&
+    // Cloud durability is calm about the DURABILITY axis only. A stated
+    // `unavailable` protection beside it still means offline edits die with
+    // the process, so that pair draws the risk copy instead of staying silent.
+    view.protection !== "unavailable"
+  ) {
+    return null;
+  }
   if (
     view.kind === "legacy" &&
     view.status === null &&
@@ -404,10 +413,8 @@ function viewStatus(
 }
 
 function viewProtection(view: EpicDurabilityView): EpicLocalProtection | null {
-  if (view.kind === "stated" || view.kind === "indeterminate") {
-    return view.protection;
-  }
-  return null;
+  if (view.kind === "legacy") return null;
+  return view.protection;
 }
 
 /**
@@ -427,7 +434,7 @@ function viewProtection(view: EpicDurabilityView): EpicLocalProtection | null {
  * not a question the badge has to answer.
  */
 function durabilityRiskCopy(view: EpicDurabilityView): string | null {
-  if (view.kind !== "stated") return null;
+  if (view.kind !== "stated" && view.kind !== "cloudDurable") return null;
   return view.protection === "unavailable" ? "No local backup" : null;
 }
 

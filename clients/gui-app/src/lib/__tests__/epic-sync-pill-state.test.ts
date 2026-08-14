@@ -16,10 +16,12 @@ const HEALTHY_INPUTS: EpicSyncPillInputs = {
   hasUnsyncedLocalChanges: false,
   hasConnectedOnce: true,
   // A pre-@1.4 peer, which is what every case in this file was written
-  // against. `localProtection: undefined` is how the derivation identifies
-  // one, so these keep asserting exactly the behaviour they always did.
+  // against. The undefined key PLUS a handshake that never negotiated the
+  // legs is how the derivation identifies one, so these keep asserting
+  // exactly the behaviour they always did.
   durability: undefined,
   localProtection: undefined,
+  durabilityLegsNegotiated: false,
   cloudFreshness: undefined,
 };
 
@@ -56,6 +58,7 @@ function allCombinations(): readonly EpicSyncPillInputs[] {
               hasConnectedOnce,
               durability: undefined,
               localProtection: undefined,
+              durabilityLegsNegotiated: false,
               cloudFreshness: undefined,
             })),
           ),
@@ -256,6 +259,7 @@ describe("deriveEpicSyncPillState", () => {
         hasConnectedOnce: true,
         durability: undefined,
         localProtection: undefined,
+        durabilityLegsNegotiated: false,
         cloudFreshness: undefined,
       });
       expect(result).toBe("connected");
@@ -271,6 +275,7 @@ describe("deriveEpicSyncPillState", () => {
         hasConnectedOnce: true,
         durability: undefined,
         localProtection: undefined,
+        durabilityLegsNegotiated: false,
         cloudFreshness: undefined,
       });
       expect(result).toBe("offlineWithUnsavedChanges");
@@ -286,6 +291,25 @@ describe("deriveEpicSyncPillState", () => {
   // epic no cloud has ever seen. Every case below returns `synced` on the
   // pre-fix derivation.
   describe("the synced claim needs a cloud durability fact behind it", () => {
+    it("keeps a negotiated @1.4 peer's omitted legs indeterminate", () => {
+      // The schema marks every `@1.4` leg optional and an absent one means
+      // UNKNOWN. Presence-probing alone read this frame as a pre-`@1.4` peer
+      // and claimed "All changes synced" off an absence - the negotiated
+      // handshake is what tells the two silences apart.
+      expect(
+        deriveEpicSyncPillState({
+          ...HEALTHY_INPUTS,
+          durability: undefined,
+          localProtection: undefined,
+          durabilityLegsNegotiated: true,
+        }),
+      ).toBe("connected");
+    });
+
+    it("still claims synced for a genuinely pre-@1.4 peer", () => {
+      expect(deriveEpicSyncPillState(HEALTHY_INPUTS)).toBe("synced");
+    });
+
     it("does not claim synced for a local-homed epic", () => {
       expect(
         deriveEpicSyncPillState({
