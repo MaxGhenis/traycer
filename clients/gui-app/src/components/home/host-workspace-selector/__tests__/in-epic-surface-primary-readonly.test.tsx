@@ -41,7 +41,7 @@ vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
         kind: "local",
         websocketUrl: null,
         version: null,
-        status: "available",
+        transportDialability: "dialable",
       },
     ],
   }),
@@ -61,6 +61,8 @@ vi.mock("@/hooks/worktree/use-worktree-workspaces-refresh", () => ({
     isRefreshing: false,
     checkedAt: null,
     canRefresh: false,
+    verifyFailed: false,
+    refreshGeneration: 0,
   }),
 }));
 vi.mock("@/hooks/worktree/use-worktree-set-entry-mode-mutation", () => ({

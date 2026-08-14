@@ -19,7 +19,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorktreeWorkspaceSummaryV14 } from "@traycer/protocol/host/worktree-schemas";
+import type { WorktreeWorkspaceSummaryV15 } from "@traycer/protocol/host/worktree-schemas";
 import type { ResolvedFolder } from "@/lib/workspace/resolved-folder";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -40,7 +40,7 @@ interface MockHostClient {
     readonly kind: "local";
     readonly websocketUrl: string;
     readonly version: string;
-    readonly status: "available";
+    readonly transportDialability: "dialable";
   };
   getActiveHostId(): string;
   getRequestContextUserId(): string;
@@ -65,7 +65,7 @@ const RESOLVED_FOLDER: ResolvedFolder = {
   repoIdentifier: { owner: "acme", repo: "app" },
 };
 
-const SUMMARY: WorktreeWorkspaceSummaryV14 = {
+const SUMMARY: WorktreeWorkspaceSummaryV15 = {
   workspacePath: WORKSPACE_PATH,
   isGitRepo: true,
   repoIdentifier: { owner: "acme", repo: "app" },
@@ -82,6 +82,7 @@ const SUMMARY: WorktreeWorkspaceSummaryV14 = {
   scripts: null,
   repoBranchPrefix: { status: "absent" },
   resolvedAt: 1,
+  presence: "present",
 };
 
 const hostClient: MockHostClient = {
@@ -91,7 +92,7 @@ const hostClient: MockHostClient = {
     kind: "local",
     websocketUrl: "ws://127.0.0.1:0",
     version: "0.0.0-test",
-    status: "available",
+    transportDialability: "dialable",
   }),
   getActiveHostId: () => "host-test",
   getRequestContextUserId: () => "user-test",
@@ -133,11 +134,29 @@ vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
         kind: "local",
         websocketUrl: "ws://127.0.0.1:0",
         version: "0.0.0-test",
-        status: "available",
+        transportDialability: "dialable",
       },
     ],
   }),
 }));
+
+// This suite is about branch-prefix / draftId edge behavior, not the host
+// list, so it mocks `useHostOptions` at the boundary (the same pattern panel
+// suites use for `useHostScope`) rather than standing up the six hooks it
+// composes.
+vi.mock("@/components/settings/host-scope/use-host-options", async () => {
+  const { hostOptionsFixture, hostScopeOptionFixture } =
+    await import("@/components/settings/host-scope/host-scope-fixture");
+  return {
+    useHostOptions: () =>
+      hostOptionsFixture({
+        hosts: [
+          hostScopeOptionFixture({ hostId: "host-test", name: "Test host" }),
+        ],
+        activeHostId: "host-test",
+      }),
+  };
+});
 
 vi.mock("@/hooks/workspace/use-resolved-workspace-folders-query", () => ({
   useResolvedWorkspaceFolders: () => mocks.resolvedWorkspace.current,

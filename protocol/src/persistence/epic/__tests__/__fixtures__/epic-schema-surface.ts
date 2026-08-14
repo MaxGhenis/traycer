@@ -3401,6 +3401,98 @@ export const epicSchemaSurfaceBaseline = {
                                 "stopped": {
                                   "default": false,
                                   "type": "boolean"
+                                },
+                                "imageResults": {
+                                  "default": [],
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "attachmentHash": {
+                                        "type": "string",
+                                        "pattern": "^[0-9a-f]{64}$"
+                                      },
+                                      "mediaType": {
+                                        "type": "string",
+                                        "enum": [
+                                          "image/png",
+                                          "image/jpeg",
+                                          "image/gif",
+                                          "image/webp",
+                                          "image/svg+xml"
+                                        ]
+                                      },
+                                      "byteLength": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "width": {
+                                        "default": null,
+                                        "anyOf": [
+                                          {
+                                            "type": "integer",
+                                            "exclusiveMinimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "height": {
+                                        "default": null,
+                                        "anyOf": [
+                                          {
+                                            "type": "integer",
+                                            "exclusiveMinimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "alt": {
+                                        "default": null,
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "revisedPrompt": {
+                                        "default": null,
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "filePath": {
+                                        "default": null,
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "attachmentHash",
+                                      "mediaType",
+                                      "byteLength"
+                                    ]
+                                  }
                                 }
                               },
                               "required": [
@@ -5356,6 +5448,135 @@ export const epicSchemaSurfaceBaseline = {
                             "type": "null"
                           }
                         ]
+                      },
+                      "imageResolutions": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "source": {
+                                  "type": "string"
+                                },
+                                "canonicalSource": {
+                                  "type": "string"
+                                },
+                                "width": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "height": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "const": "resolved"
+                                },
+                                "attachmentHash": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{64}$"
+                                },
+                                "mediaType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "image/png",
+                                    "image/jpeg",
+                                    "image/gif",
+                                    "image/webp",
+                                    "image/svg+xml"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "source",
+                                "canonicalSource",
+                                "state",
+                                "attachmentHash",
+                                "mediaType"
+                              ]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "source": {
+                                  "type": "string"
+                                },
+                                "canonicalSource": {
+                                  "type": "string"
+                                },
+                                "width": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "height": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "blocked",
+                                    "consent-required",
+                                    "oversized",
+                                    "not-found"
+                                  ]
+                                },
+                                "attachmentHash": {
+                                  "default": null,
+                                  "type": "null"
+                                },
+                                "mediaType": {
+                                  "default": null,
+                                  "type": "null"
+                                }
+                              },
+                              "required": [
+                                "source",
+                                "canonicalSource",
+                                "state"
+                              ]
+                            }
+                          ]
+                        }
                       }
                     },
                     "required": [
@@ -10636,6 +10857,104 @@ export const epicSchemaSurfaceBaseline = {
                                 "stopped": {
                                   "default": false,
                                   "type": "boolean"
+                                },
+                                "imageResults": {
+                                  "default": [],
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "attachmentHash": {
+                                        "type": "string",
+                                        "pattern": "^[0-9a-f]{64}$"
+                                      },
+                                      "mediaType": {
+                                        "type": "string",
+                                        "enum": [
+                                          "image/png",
+                                          "image/jpeg",
+                                          "image/gif",
+                                          "image/webp",
+                                          "image/svg+xml"
+                                        ]
+                                      },
+                                      "byteLength": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "width": {
+                                        "default": null,
+                                        "anyOf": [
+                                          {
+                                            "type": "integer",
+                                            "exclusiveMinimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "height": {
+                                        "default": null,
+                                        "anyOf": [
+                                          {
+                                            "type": "integer",
+                                            "exclusiveMinimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "alt": {
+                                        "default": null,
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "revisedPrompt": {
+                                        "default": null,
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "filePath": {
+                                        "default": null,
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "attachmentHash",
+                                      "mediaType",
+                                      "byteLength",
+                                      "width",
+                                      "height",
+                                      "alt",
+                                      "revisedPrompt",
+                                      "filePath"
+                                    ],
+                                    "additionalProperties": false
+                                  }
                                 }
                               },
                               "required": [
@@ -10654,7 +10973,8 @@ export const epicSchemaSurfaceBaseline = {
                                 "startedAt",
                                 "endedAt",
                                 "backgroundTask",
-                                "stopped"
+                                "stopped",
+                                "imageResults"
                               ],
                               "additionalProperties": false
                             },
@@ -12621,6 +12941,143 @@ export const epicSchemaSurfaceBaseline = {
                             "type": "null"
                           }
                         ]
+                      },
+                      "imageResolutions": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "source": {
+                                  "type": "string"
+                                },
+                                "canonicalSource": {
+                                  "type": "string"
+                                },
+                                "width": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "height": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "const": "resolved"
+                                },
+                                "attachmentHash": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{64}$"
+                                },
+                                "mediaType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "image/png",
+                                    "image/jpeg",
+                                    "image/gif",
+                                    "image/webp",
+                                    "image/svg+xml"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "source",
+                                "canonicalSource",
+                                "width",
+                                "height",
+                                "state",
+                                "attachmentHash",
+                                "mediaType"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "source": {
+                                  "type": "string"
+                                },
+                                "canonicalSource": {
+                                  "type": "string"
+                                },
+                                "width": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "height": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "blocked",
+                                    "consent-required",
+                                    "oversized",
+                                    "not-found"
+                                  ]
+                                },
+                                "attachmentHash": {
+                                  "default": null,
+                                  "type": "null"
+                                },
+                                "mediaType": {
+                                  "default": null,
+                                  "type": "null"
+                                }
+                              },
+                              "required": [
+                                "source",
+                                "canonicalSource",
+                                "width",
+                                "height",
+                                "state",
+                                "attachmentHash",
+                                "mediaType"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
                       }
                     },
                     "required": [
@@ -12633,7 +13090,8 @@ export const epicSchemaSurfaceBaseline = {
                       "turnId",
                       "usage",
                       "reasoningEffort",
-                      "serviceTier"
+                      "serviceTier",
+                      "imageResolutions"
                     ],
                     "additionalProperties": false
                   }

@@ -34,6 +34,7 @@ import type {
   GuiHarnessId,
   TuiHarnessId,
 } from "@traycer/protocol/persistence/epic/schemas";
+import type { ChatRecordRemovalReason } from "@traycer/protocol/host/epic/chat-records";
 import type { WorktreeBindingOwnerKind } from "@traycer/protocol/host/worktree-schemas";
 import type { SnapshotMetaEpic } from "@traycer/protocol/host/epic/snapshot-meta";
 import type { StreamConnectionStatus } from "@traycer-clients/shared/host-transport/i-stream-session";
@@ -197,6 +198,10 @@ export function useEpicPermissionRole(): PermissionRole | null {
 
 export function useEpicSnapshotLoaded(): boolean {
   return useEpicStore((s) => s.snapshotLoaded);
+}
+
+export function useEpicChatRecordListAuthoritative(): boolean {
+  return useEpicStore((s) => s.chatRecordListAuthoritative);
 }
 
 export function useEpicSnapshotFetchError(): SnapshotFetchError | null {
@@ -643,6 +648,54 @@ export function useEpicArtifact(
     }
     return null;
   });
+}
+
+type EpicAgentProjection = ChatProjection | TuiAgentProjection;
+
+const MIN_AGENT_REFERENCE_PREFIX_LENGTH = 4;
+
+function exactEpicAgent(
+  state: Pick<OpenEpicState, "chats" | "tuiAgents">,
+  agentId: string,
+): EpicAgentProjection | null {
+  if (Object.hasOwn(state.chats.byId, agentId)) {
+    return state.chats.byId[agentId];
+  }
+  if (Object.hasOwn(state.tuiAgents.byId, agentId)) {
+    return state.tuiAgents.byId[agentId];
+  }
+  return null;
+}
+
+/**
+ * Resolves the agent-id syntax accepted by the host: exact id first, then a
+ * unique case-sensitive prefix of at least four characters. Role-claim ids and
+ * artifact ids are deliberately outside this candidate set.
+ */
+function resolveEpicAgentReference(
+  state: Pick<OpenEpicState, "chats" | "tuiAgents">,
+  referenceId: string,
+): EpicAgentProjection | null {
+  const exact = exactEpicAgent(state, referenceId);
+  if (exact !== null) return exact;
+  if (referenceId.length < MIN_AGENT_REFERENCE_PREFIX_LENGTH) return null;
+
+  let matchedId: string | null = null;
+  for (const candidateId of [
+    ...state.chats.allIds,
+    ...state.tuiAgents.allIds,
+  ]) {
+    if (!candidateId.startsWith(referenceId)) continue;
+    if (matchedId !== null && matchedId !== candidateId) return null;
+    matchedId = candidateId;
+  }
+  return matchedId === null ? null : exactEpicAgent(state, matchedId);
+}
+
+export function useEpicAgentReference(
+  referenceId: string,
+): EpicAgentProjection | null {
+  return useEpicStore((state) => resolveEpicAgentReference(state, referenceId));
 }
 
 export function useEpicLiveArtifactTitle(
@@ -1329,6 +1382,32 @@ export function useChatById(id: string | null): ChatProjection | null {
   return useEpicStore((s) => {
     if (id === null) return null;
     if (Object.hasOwn(s.chats.byId, id)) return s.chats.byId[id];
+    return null;
+  });
+}
+
+/**
+ * WHY a chat's record was retracted from this session, or `null` if it was not.
+ *
+ * The record table can only say a row is GONE. This says which of the two
+ * honest things an open tab may claim about that: `deleted` (the chat is gone
+ * for everyone) or `revoked` (it still exists; this viewer may no longer see
+ * it). Only the push stream carries the distinction - a poll that stops
+ * returning a row cannot - so this reads `null` on any host without
+ * `host.chatRecords.subscribe`, and the tab keeps the pre-existing
+ * reachability-derived end states.
+ *
+ * A single per-id scalar, so a retraction of one chat re-renders only the tab
+ * rendering that chat.
+ */
+export function useEpicChatRetraction(
+  chatId: string | null,
+): ChatRecordRemovalReason | null {
+  return useEpicStore((s) => {
+    if (chatId === null) return null;
+    if (Object.hasOwn(s.chatRetractions, chatId)) {
+      return s.chatRetractions[chatId];
+    }
     return null;
   });
 }

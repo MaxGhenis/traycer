@@ -220,6 +220,24 @@ vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
   useReactiveActiveHostId: () => "host-test",
 }));
 
+// This matrix uses a live Y.Doc as the local projection. The deletion row
+// additionally needs an answered cloud plane so doc absence is authoritative
+// under the same two-plane gate production uses.
+vi.mock("@/hooks/chats/use-cloud-chat-queries", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/hooks/chats/use-cloud-chat-queries")
+  >()),
+  useCloudChatList: () => ({
+    data: { chats: [] },
+    error: null,
+    isEnabled: true,
+    isSuccess: true,
+    isError: false,
+    isPending: false,
+    isFetching: false,
+  }),
+}));
+
 /**
  * Instrumentation-only wrapper around the REAL `ChatTile` (`importOriginal`,
  * following the `ChatMessage` render-probe precedent in
@@ -346,6 +364,12 @@ function deleteChatFromLiveDoc(chatId: string): void {
   chatsMap.delete(chatId);
 }
 
+function markChatRecordListAuthoritative(): void {
+  const handle = __getOpenEpicRegistryForTests().peek(EPIC_ID);
+  if (handle === null) throw new Error("expected a live epic session handle");
+  handle.store.getState().markChatRecordListAuthoritative();
+}
+
 /** Row 13 recovery: re-insert a fresh Y.Map entry for the chat. */
 function restoreChatToLiveDoc(chat: EpicCanvasTileRef): void {
   const handle = __getOpenEpicRegistryForTests().peek(EPIC_ID);
@@ -420,6 +444,7 @@ function buildAssistantSnapshotMessage(
     usage: null,
     reasoningEffort: null,
     serviceTier: null,
+    imageResolutions: [],
   };
 }
 
@@ -1641,6 +1666,9 @@ describe("StableTileSurfaceHost permanent lifecycle matrix (real store/coordinat
     expect(unmountCount(CHAT_TRACKED.instanceId)).toBe(0);
 
     act(() => {
+      // Cloud absence is the successful empty mock above; answer the local
+      // record plane too before using doc absence as deletion evidence.
+      markChatRecordListAuthoritative();
       deleteChatFromLiveDoc(CHAT_TRACKED.id);
     });
 

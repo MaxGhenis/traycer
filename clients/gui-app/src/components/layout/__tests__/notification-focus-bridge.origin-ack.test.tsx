@@ -82,6 +82,7 @@ const LOCAL_SNAPSHOT: LocalHostSnapshot = {
   pid: 4242,
   systemHostName: "this-mac",
   displayName: "This Mac",
+  availability: "available",
 };
 
 const ORIGIN_HOST: HostDirectoryEntry = {
@@ -90,7 +91,7 @@ const ORIGIN_HOST: HostDirectoryEntry = {
   kind: "remote",
   websocketUrl: "wss://build-box.traycer.invalid/rpc",
   version: "1.2.3",
-  status: "available",
+  transportDialability: "dialable",
 };
 
 const WORKTREE_SETTINGS_ROUTE: NotificationPayload = {
@@ -126,6 +127,8 @@ async function mountBridge(
   });
   const directory = new HostDirectoryService({
     runnerHost,
+    authContextId: null,
+    credentialGeneration: null,
     remoteFetcher: () =>
       Promise.resolve({ kind: "hosts" as const, entries: [ORIGIN_HOST] }),
     localHostIdSeeder: null,

@@ -22,6 +22,7 @@ import {
 } from "@/components/settings/host-scope/use-host-scope";
 import { useAddHostDialogStore } from "@/stores/settings/add-host-dialog-store";
 import { AddHostDialog } from "@/components/settings/host-scope/add-host-dialog";
+import { useRegisteredHostsPollLiveness } from "@/hooks/auth/use-registered-hosts-query";
 
 export type SettingsSidebarMode =
   | { readonly kind: "route" }
@@ -47,14 +48,19 @@ export interface SettingsSidebarProps {
  */
 export function SettingsSidebar(props: SettingsSidebarProps) {
   const scope = useHostScope();
-  // A section backed by the local config store cannot describe a host this
-  // window can only reach over the wire. Dimming those rows while a remote
-  // host is selected costs a click that would only ever land on a notice.
-  //
-  // An unresolved scope is NOT local. Treating `null` as local lit those rows
-  // up as fully available while the panels behind them had no host to describe
-  // — the rail promising what the page could not deliver.
-  const localHostSelected = scope.host !== null && scope.host.isLocalMachine;
+  // The host picker below shows a live dot and a health word per row, so this
+  // is a liveness surface and opts into the registry poll. It is also the ONE
+  // place in Settings that has to: the picker is mounted for as long as any
+  // settings panel is, so a per-panel opt-in would poll on exactly the same
+  // schedule while being fifteen times easier to get wrong. Panels that merely
+  // read `useHostScope` for names — Shell, Worktrees, Providers — do not, which
+  // is the point: reading the list no longer implies polling it.
+  useRegisteredHostsPollLiveness();
+  // No row is dimmed by host kind any more. Shell and Diagnostics used to be,
+  // because both read the on-disk config store through the local CLI bridge and
+  // could only ever describe this computer; `config.*` / `diagnostics.*` made
+  // them work for whichever host the picker names, so a dimmed row would now be
+  // discouraging a click that lands on a working page.
   return (
     <aside className="flex w-[clamp(13rem,20vw,17rem)] shrink-0 flex-col gap-1 overflow-y-auto border-r border-border/60 bg-background p-4">
       {SETTINGS_SECTION_GROUPS.map((group, groupIndex) => (
@@ -81,9 +87,6 @@ export function SettingsSidebar(props: SettingsSidebarProps) {
                   section={section}
                   index={index}
                   mode={props.mode}
-                  unreachable={
-                    section.requiresLocalHost ? !localHostSelected : false
-                  }
                 />
               ) : null,
             )}
@@ -115,7 +118,15 @@ function SettingsSidebarHostPicker(props: {
         selected={scope.host}
         activeHostId={scope.activeHostId}
         onSelect={scope.setHostId}
-        onAddHost={() => openAddHost(scope.hosts.map((host) => host.hostId))}
+        // Settings is where the add-host dialog lives, so here the list ends in
+        // the verb itself rather than in a link to this very page.
+        action={{
+          kind: "add-host",
+          onSelect: () => openAddHost(scope.hosts.map((host) => host.hostId)),
+        }}
+        surface="rail"
+        intent="view"
+        disabled={false}
         isLoading={scope.isLoading}
         listsFailed={scope.listsFailed}
         onRetryLists={scope.retryLists}
@@ -177,11 +188,10 @@ interface SettingsSidebarItemProps {
   section: SettingsSection;
   index: number;
   mode: SettingsSidebarMode;
-  unreachable: boolean;
 }
 
 function SettingsSidebarItem(props: SettingsSidebarItemProps) {
-  const { section, index, mode, unreachable } = props;
+  const { section, index, mode } = props;
   const badgeModifier = useSettingsLeaderModifierForIndex(index);
   const Icon = section.icon;
   const digit = singleDigitLeaderDigitFor(index);
@@ -225,7 +235,6 @@ function SettingsSidebarItem(props: SettingsSidebarItemProps) {
           active
             ? "bg-accent text-accent-foreground"
             : "text-foreground/70 hover:bg-accent/60 hover:text-accent-foreground",
-          unreachable && !active && "text-foreground/40",
         )}
       >
         <Icon className="size-4 shrink-0" />
@@ -235,12 +244,7 @@ function SettingsSidebarItem(props: SettingsSidebarItemProps) {
     );
   }
   return (
-    <SettingsSidebarRouteItem
-      section={section}
-      label={label}
-      badge={badge}
-      unreachable={unreachable}
-    />
+    <SettingsSidebarRouteItem section={section} label={label} badge={badge} />
   );
 }
 
@@ -248,9 +252,8 @@ function SettingsSidebarRouteItem(props: {
   readonly section: SettingsSection;
   readonly label: ReactNode;
   readonly badge: ReactNode;
-  readonly unreachable: boolean;
 }) {
-  const { section, label, badge, unreachable } = props;
+  const { section, label, badge } = props;
   const Icon = section.icon;
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const active = isSectionPathname(pathname, section.id);
@@ -270,7 +273,6 @@ function SettingsSidebarRouteItem(props: {
         active
           ? "bg-accent text-accent-foreground"
           : "text-foreground/70 hover:bg-accent/60 hover:text-accent-foreground",
-        unreachable && !active && "text-foreground/40",
       )}
     >
       <Icon className="size-4 shrink-0" />

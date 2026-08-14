@@ -72,7 +72,7 @@ interface HostQueryMocks {
   directoryEntries: ReadonlyArray<{
     readonly hostId: string;
     readonly label: string;
-    readonly status: string;
+    readonly transportDialability: string;
     readonly websocketUrl: string;
   }>;
 }
@@ -182,13 +182,13 @@ const hostQueryMocks = vi.hoisted((): HostQueryMocks => ({
     {
       hostId: "host-test",
       label: "Local host",
-      status: "available",
+      transportDialability: "dialable",
       websocketUrl: "ws://local.invalid",
     },
     {
       hostId: "remote-host",
       label: "Remote host",
-      status: "available",
+      transportDialability: "dialable",
       websocketUrl: "ws://remote.invalid",
     },
   ],
@@ -312,13 +312,13 @@ describe("GeneralSettingsPanel", () => {
       {
         hostId: "host-test",
         label: "Local host",
-        status: "available",
+        transportDialability: "dialable",
         websocketUrl: "ws://local.invalid",
       },
       {
         hostId: "remote-host",
         label: "Remote host",
-        status: "available",
+        transportDialability: "dialable",
         websocketUrl: "ws://remote.invalid",
       },
     ];

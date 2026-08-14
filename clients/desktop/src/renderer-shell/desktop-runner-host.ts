@@ -96,6 +96,7 @@ import type {
   UpdateHostVersionPolicyFetchResult,
   UpdateHostVersionPolicyInput,
 } from "@traycer-clients/shared/host-client/host-version-policy-fetcher";
+import type { DeregisterHostFetchResult } from "@traycer-clients/shared/host-client/host-deregister-fetcher";
 import type { Disposable } from "@traycer-clients/shared/platform/uri-callback";
 import type {
   DesktopAppUpdateCheckIntent,
@@ -183,6 +184,10 @@ export interface DesktopPreloadBridge {
     hostId: string,
     input: UpdateHostVersionPolicyInput,
   ): Promise<UpdateHostVersionPolicyFetchResult>;
+  deregisterHostFromAccount(
+    bearerToken: string,
+    hostId: string,
+  ): Promise<DeregisterHostFetchResult>;
   // Credentials-file token store (tech plan §3): an IPC client of the main
   // `FileTokenStore`. Replaces the renderer-local encrypt-storage token slots.
   tokenStore: ITokenStore;
@@ -353,6 +358,12 @@ export interface DesktopMigrationBridge {
 }
 
 export interface DesktopPlatformBridge {
+  clipboard?: {
+    writeImage(input: {
+      readonly type: string;
+      readonly bytes: ArrayBuffer;
+    }): Promise<void>;
+  };
   recentDocuments: {
     add(path: string): Promise<void>;
   };
@@ -961,6 +972,13 @@ export class DesktopRunnerHost implements IRunnerHost {
     input: UpdateHostVersionPolicyInput,
   ): Promise<UpdateHostVersionPolicyFetchResult> {
     return this.bridge.updateHostVersionPolicy(bearerToken, hostId, input);
+  }
+
+  deregisterHostFromAccount(
+    bearerToken: string,
+    hostId: string,
+  ): Promise<DeregisterHostFetchResult> {
+    return this.bridge.deregisterHostFromAccount(bearerToken, hostId);
   }
 
   beginAuthAttempt(): void {

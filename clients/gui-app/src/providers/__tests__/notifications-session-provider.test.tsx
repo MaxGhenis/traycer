@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import * as Y from "yjs";
 import { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import { mockLocalHostEntry } from "@traycer-clients/shared/host-client/mock/mock-host-directory";
@@ -422,10 +423,13 @@ function appendEntry(entry: NotificationEntry): void {
 function hostEntry(input: {
   readonly id: string;
   readonly epicId: string;
-  readonly chatId: string;
+  readonly chatId: string | null;
   readonly severity: "done" | "failure" | "needs_action";
 }): HostNotificationEntry {
   if (input.severity === "needs_action") {
+    if (input.chatId === null) {
+      throw new Error("Interview notification fixtures require a chat.");
+    }
     return {
       id: input.id,
       updatedAt: 1,
@@ -450,11 +454,14 @@ function hostEntry(input: {
     outcome: "completed",
     epicId: input.epicId,
     chatId: input.chatId,
-    payload: {
-      epicId: input.epicId,
-      chatId: input.chatId,
-      outcome: "completed",
-    },
+    payload:
+      input.chatId === null
+        ? { epicId: input.epicId, outcome: "completed" }
+        : {
+            epicId: input.epicId,
+            chatId: input.chatId,
+            outcome: "completed",
+          },
   };
 }
 
@@ -535,7 +542,7 @@ function setFocusedChat(epicId: string, chatId: string): void {
       instanceId: `${chatId}-instance`,
       type: "chat",
       name: "Chat",
-      hostId: "host-a",
+      hostId: mockLocalHostEntry.hostId,
     }),
   );
 }
@@ -548,7 +555,7 @@ function setFocusedTerminal(epicId: string, terminalId: string): void {
     type: "terminal",
     name: "Terminal",
     titleSource: "default",
-    hostId: "host-a",
+    hostId: mockLocalHostEntry.hostId,
     cwd: "/repo",
   });
 }
@@ -662,7 +669,7 @@ describe("<NotificationsSessionProvider />", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses the dedicated host-selected activity stream while cloud relay owns notification rows", async () => {
+  it("keeps local failures and ingests collaboration rows alongside the cloud relay", async () => {
     const queryClient = new QueryClient();
     const streamClient = new MockWsStreamClient();
     hostState.id = mockLocalHostEntry.hostId;
@@ -673,6 +680,8 @@ describe("<NotificationsSessionProvider />", () => {
       .activateIdentity("alice@example.com");
     emitTerminalCrashedNotification({
       instanceId: "terminal-before-cloud",
+      hostId: "host-a",
+      terminalName: "Terminal before cloud",
       target: {
         kind: "terminal",
         epicId: "epic-1",
@@ -700,11 +709,39 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
       ]);
-      expect(useAppLocalNotificationsStore.getState().orderedIds).toEqual([]);
+      expect(useAppLocalNotificationsStore.getState().orderedIds).toHaveLength(
+        1,
+      );
       expect(useNotificationsStore.getState().entryIds).toEqual([]);
     });
+
+    const collaborationDoc = new Y.Doc();
+    collaborationDoc
+      .getArray<NotificationRoomEntryMap>(NOTIFICATIONS_ARRAY_KEY)
+      .push([
+        createNotificationRoomEntryMap(
+          invitedEntry("global-after-cloud", "epic-1"),
+        ),
+      ]);
+    act(() => {
+      streamClient.sessionFor("notifications.subscribe").emitBinaryServerFrame(
+        {
+          kind: "snapshot",
+          meta: { schemaVersion: "2" },
+          hasBinaryPayload: true,
+        },
+        Y.encodeStateAsUpdate(collaborationDoc),
+      );
+    });
+    await waitFor(() => {
+      expect(useNotificationsStore.getState().entryIds).toEqual([
+        "global-after-cloud",
+      ]);
+    });
+    collaborationDoc.destroy();
 
     act(() => {
       streamClient.sessionFor("agent.activity.subscribe").emitServerFrame({
@@ -720,7 +757,9 @@ describe("<NotificationsSessionProvider />", () => {
     expect([
       ...(useAgentActivityStore.getState().byEpic.get("epic-1")?.working ?? []),
     ]).toEqual(["agent-1"]);
-    expect(useNotificationsStore.getState().entryIds).toEqual([]);
+    expect(useNotificationsStore.getState().entryIds).toEqual([
+      "global-after-cloud",
+    ]);
 
     act(() => {
       streamClient.sessionFor("agent.activity.subscribe").emitStatus("closed");
@@ -753,6 +792,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(firstClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
       ]);
     });
@@ -772,6 +812,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(secondClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
       ]);
     });
@@ -782,6 +823,9 @@ describe("<NotificationsSessionProvider />", () => {
       firstClient.sessionFor("host.notifications.cloudFeed.subscribe")
         .closeCount,
     ).toBe(1);
+    expect(firstClient.sessionFor("notifications.subscribe").closeCount).toBe(
+      1,
+    );
   });
 
   it("reopens activity after a recoverable terminal close", async () => {
@@ -804,6 +848,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
       ]);
     });
@@ -821,6 +866,7 @@ describe("<NotificationsSessionProvider />", () => {
       });
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "agent.activity.subscribe",
       ]);
@@ -830,7 +876,7 @@ describe("<NotificationsSessionProvider />", () => {
           .emitClosed(fatalClose("INCOMPATIBLE"));
         vi.advanceTimersByTime(2 * HOST_STREAM_REOPEN_MAX_BACKOFF_MS);
       });
-      expect(streamClient.subscribedMethods).toHaveLength(3);
+      expect(streamClient.subscribedMethods).toHaveLength(4);
     } finally {
       vi.useRealTimers();
     }
@@ -856,6 +902,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
       ]);
     });
@@ -907,6 +954,179 @@ describe("<NotificationsSessionProvider />", () => {
     expect(showNotificationMock).toHaveBeenCalledTimes(1);
   });
 
+  it("never lets an independently arriving cloud completion consume a local failure", async () => {
+    const queryClient = new QueryClient();
+    const streamClient = new MockWsStreamClient();
+    hostState.id = mockLocalHostEntry.hostId;
+    streamState.client = streamClient;
+    streamState.cloudFeedSupport = "supported";
+    useAppLocalNotificationsStore
+      .getState()
+      .activateIdentity("alice@example.com");
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <NotificationsSessionProvider>
+          <div />
+        </NotificationsSessionProvider>
+      </QueryClientProvider>,
+    );
+    act(() => {
+      resetAuth("signed-in", "alice@example.com", "alice@example.com");
+    });
+    await waitFor(() => {
+      expect(streamClient.subscribedMethods).toContain(
+        "host.notifications.cloudFeed.subscribe",
+      );
+    });
+    const baseline = cloudRow("cloud-entry-baseline", 10);
+
+    act(() => {
+      streamClient.session.emitServerFrame({
+        kind: "snapshot",
+        hasBinaryPayload: false,
+        connectionState: "connected",
+        version: 1,
+        rows: [baseline],
+        summary: { totalCount: 1, unreadCount: 1, attentionCount: 0 },
+      });
+    });
+    const baselineObservation = await waitFor(() => {
+      const observation = useAppLocalNotificationsStore
+        .getState()
+        .observedCompletionsByHost[baseline.originHostId]?.find(
+          (completion) => completion.id === baseline.entryId,
+        );
+      expect(observation).toBeDefined();
+      return observation;
+    });
+    if (baselineObservation === undefined) {
+      throw new Error("Expected the cloud baseline receipt");
+    }
+    useAppLocalNotificationsStore.getState().upsert({
+      id: "cross-plane-later-failure",
+      originHostId: baseline.originHostId,
+      updatedAt: 25,
+      readAt: null,
+      kind: "stream.transport.error",
+      sourceRef: "chat-cloud",
+      payload: {
+        kind: "chat",
+        epicId: "epic-cloud",
+        chatId: "chat-cloud",
+      },
+      message: "Later failure",
+      detail: null,
+    });
+    useAppLocalNotificationsStore.getState().observeCompletion(
+      baseline.originHostId,
+      {
+        id: baseline.entryId,
+        occurrenceKey: baselineObservation.occurrenceKey,
+      },
+      { epicId: "epic-cloud", chatId: "chat-cloud" },
+      26,
+    );
+    expect(
+      useAppLocalNotificationsStore.getState().byId["cross-plane-later-failure"]
+        .readAt,
+    ).toBeNull();
+
+    const otherHostCompletion = {
+      ...cloudRow("cloud-entry-other-host", baseline.entry.updatedAt),
+      originHostId: "host-b",
+    };
+    act(() => {
+      streamClient.session.emitServerFrame({
+        kind: "snapshot",
+        hasBinaryPayload: false,
+        connectionState: "connected",
+        version: 2,
+        rows: [baseline, otherHostCompletion],
+        summary: { totalCount: 2, unreadCount: 2, attentionCount: 0 },
+      });
+    });
+    await waitFor(() => {
+      expect(
+        useAppLocalNotificationsStore.getState().observedCompletionsByHost[
+          "host-b"
+        ],
+      ).toBeDefined();
+    });
+    expect(
+      useAppLocalNotificationsStore.getState().byId["cross-plane-later-failure"]
+        .readAt,
+    ).toBeNull();
+
+    useAppLocalNotificationsStore.getState().upsert({
+      id: "stale-frame-failure",
+      originHostId: baseline.originHostId,
+      updatedAt: 30,
+      readAt: null,
+      kind: "stream.transport.error",
+      sourceRef: "chat-cloud",
+      payload: {
+        kind: "chat",
+        epicId: "epic-cloud",
+        chatId: "chat-cloud",
+      },
+      message: "Failure after the accepted cloud snapshot",
+      detail: null,
+    });
+    const staleCompletion = cloudRow("cloud-entry-stale", 5);
+    act(() => {
+      streamClient.session.emitServerFrame({
+        kind: "snapshot",
+        hasBinaryPayload: false,
+        connectionState: "connected",
+        version: 1,
+        rows: [baseline, staleCompletion],
+        summary: { totalCount: 2, unreadCount: 2, attentionCount: 0 },
+      });
+    });
+    expect(
+      useAppLocalNotificationsStore
+        .getState()
+        .observedCompletionsByHost[baseline.originHostId]?.some(
+          (completion) => completion.id === staleCompletion.entryId,
+        ),
+    ).toBe(false);
+    expect(
+      useAppLocalNotificationsStore.getState().byId["stale-frame-failure"]
+        .readAt,
+    ).toBeNull();
+
+    const arrived = {
+      ...cloudRow("cloud-entry-arrived", baseline.entry.updatedAt),
+      coalesceKey: baseline.coalesceKey,
+      entry: {
+        ...cloudRow("cloud-entry-arrived", baseline.entry.updatedAt).entry,
+        sourceRef: baseline.entry.sourceRef,
+      },
+    };
+    act(() => {
+      streamClient.session.emitServerFrame({
+        kind: "snapshot",
+        hasBinaryPayload: false,
+        connectionState: "connected",
+        version: 3,
+        rows: [baseline, otherHostCompletion, arrived],
+        summary: { totalCount: 2, unreadCount: 2, attentionCount: 0 },
+      });
+    });
+    await waitFor(() => {
+      expect(
+        useAppLocalNotificationsStore.getState().byId[
+          "cross-plane-later-failure"
+        ].readAt,
+      ).toBeNull();
+      expect(
+        useAppLocalNotificationsStore.getState().byId["stale-frame-failure"]
+          .readAt,
+      ).toBeNull();
+    });
+  });
+
   it("drops a cloud snapshot across an A to null to A binding cycle", async () => {
     const queryClient = new QueryClient();
     const streamClient = new MockWsStreamClient();
@@ -928,6 +1148,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
       ]);
     });
@@ -967,8 +1188,10 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
       ]);
       expect(useCloudNotificationsStore.getState().hasSnapshot).toBe(false);
@@ -999,6 +1222,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(firstClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
       ]);
     });
@@ -1020,6 +1244,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(replacementClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
       ]);
       const cloud = useCloudNotificationsStore.getState();
@@ -1211,6 +1436,8 @@ describe("<NotificationsSessionProvider />", () => {
     );
     emitTerminalCrashedNotification({
       instanceId: "terminal-before-user-switch",
+      hostId: "host-a",
+      terminalName: "Terminal before user switch",
       target: {
         kind: "terminal",
         epicId: "epic-alpha",
@@ -1296,6 +1523,8 @@ describe("<NotificationsSessionProvider />", () => {
     });
     emitTerminalCrashedNotification({
       instanceId: "terminal-user-a",
+      hostId: "host-a",
+      terminalName: "User A terminal",
       target: {
         kind: "terminal",
         epicId: "epic-alpha",
@@ -1384,6 +1613,8 @@ describe("<NotificationsSessionProvider />", () => {
     });
     emitTerminalCrashedNotification({
       instanceId: "terminal-before-host-switch",
+      hostId: "host-a",
+      terminalName: "Terminal before host switch",
       target: {
         kind: "terminal",
         epicId: "epic-alpha",
@@ -1709,6 +1940,8 @@ describe("<NotificationsSessionProvider />", () => {
     });
     emitTerminalCrashedNotification({
       instanceId: "disconnect-system",
+      hostId: "host-a",
+      terminalName: "Disconnected terminal",
       target: {
         kind: "terminal",
         epicId: "epic-alpha",
@@ -1933,6 +2166,7 @@ describe("<NotificationsSessionProvider />", () => {
       await renderHostNotificationsProvider();
     useAppLocalNotificationsStore.getState().upsert({
       id: "local-error",
+      originHostId: mockLocalHostEntry.hostId,
       updatedAt: 1,
       readAt: null,
       kind: "host.error",
@@ -1971,6 +2205,92 @@ describe("<NotificationsSessionProvider />", () => {
     ).not.toBeNull();
   });
 
+  it("does not infer causality from notification-feed observation order", async () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const { markReadCalls, streamClient } =
+      await renderHostNotificationsProvider();
+    useAppLocalNotificationsStore.getState().upsert({
+      id: "observed-local-error",
+      originHostId: mockLocalHostEntry.hostId,
+      updatedAt: 2,
+      readAt: null,
+      kind: "stream.transport.error",
+      sourceRef: "chat-a",
+      payload: { kind: "chat", epicId: "epic-a", chatId: "chat-a" },
+      message: "Observed local error",
+      detail: null,
+    });
+    useAppLocalNotificationsStore.getState().upsert({
+      id: "sibling-local-error",
+      originHostId: mockLocalHostEntry.hostId,
+      updatedAt: 0,
+      readAt: null,
+      kind: "stream.transport.error",
+      sourceRef: "chat-b",
+      payload: { kind: "chat", epicId: "epic-a", chatId: "chat-b" },
+      message: "Sibling local error",
+      detail: null,
+    });
+
+    act(() => {
+      streamClient.session.emitServerFrame({
+        kind: "upserted",
+        hasBinaryPayload: false,
+        entry: hostEntry({
+          id: "done-1",
+          epicId: "epic-a",
+          chatId: "chat-a",
+          severity: "done",
+        }),
+        removedIds: [],
+        summary: { unreadCount: 1, attentionCount: 0 },
+      });
+    });
+
+    expect(
+      useAppLocalNotificationsStore.getState().byId["observed-local-error"]
+        .readAt,
+    ).toBeNull();
+    useAppLocalNotificationsStore.getState().upsert({
+      id: "later-local-error",
+      originHostId: mockLocalHostEntry.hostId,
+      updatedAt: 0,
+      readAt: null,
+      kind: "stream.transport.error",
+      sourceRef: "chat-a",
+      payload: { kind: "chat", epicId: "epic-a", chatId: "chat-a" },
+      message: "Later local error",
+      detail: null,
+    });
+    act(() => {
+      streamClient.session.emitServerFrame({
+        kind: "snapshot",
+        hasBinaryPayload: false,
+        attention: { entries: [], nextCursor: null },
+        recent: {
+          entries: [
+            hostEntry({
+              id: "done-1",
+              epicId: "epic-a",
+              chatId: "chat-a",
+              severity: "done",
+            }),
+          ],
+          nextCursor: null,
+        },
+        summary: { unreadCount: 1, attentionCount: 0 },
+      });
+    });
+    expect(
+      useAppLocalNotificationsStore.getState().byId["later-local-error"].readAt,
+    ).toBeNull();
+    expect(
+      useAppLocalNotificationsStore.getState().byId["sibling-local-error"]
+        .readAt,
+    ).toBeNull();
+    expect(markReadCalls).toEqual([]);
+  });
+
   it("consumes the chat after a tab activates before its canvas tile settles", async () => {
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const { markReadCalls, streamClient } =
@@ -1997,7 +2317,7 @@ describe("<NotificationsSessionProvider />", () => {
           instanceId: "chat-a-instance",
           type: "chat",
           name: "Chat",
-          hostId: "host-a",
+          hostId: mockLocalHostEntry.hostId,
         }),
       );
     });
@@ -2030,6 +2350,7 @@ describe("<NotificationsSessionProvider />", () => {
       selectNotificationIndicatorState(
         { byId: {} },
         { epicId: "epic-a", chatId: "chat-a" },
+        null,
         {
           epics: {},
           chats: {
@@ -2082,6 +2403,58 @@ describe("<NotificationsSessionProvider />", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(markReadCalls).toEqual([]);
+  });
+
+  it("consumes a same-id failure recurrence while its chat stays focused", async () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const { markReadCalls } = await renderHostNotificationsProvider();
+
+    act(() => {
+      setFocusedChat("epic-a", "chat-a");
+      hasFocus.mockReturnValue(true);
+      sendPresence();
+    });
+    await waitFor(() => expect(markReadCalls).toHaveLength(1));
+    markReadCalls.splice(0);
+
+    const recurringFailure = {
+      id: `stream.transport.error:${mockLocalHostEntry.hostId}:chat-a:UNAVAILABLE`,
+      originHostId: mockLocalHostEntry.hostId,
+      updatedAt: 10,
+      readAt: null,
+      kind: "stream.transport.error" as const,
+      sourceRef: "chat-a",
+      payload: { kind: "chat" as const, epicId: "epic-a", chatId: "chat-a" },
+      message: "Connection lost",
+      detail: null,
+    };
+    act(() => {
+      useAppLocalNotificationsStore
+        .getState()
+        .upsertRecurringFailure(recurringFailure);
+    });
+    await waitFor(() => {
+      expect(
+        useAppLocalNotificationsStore.getState().byId[recurringFailure.id]
+          .readAt,
+      ).not.toBeNull();
+    });
+    expect(markReadCalls).toHaveLength(1);
+    markReadCalls.splice(0);
+
+    act(() => {
+      useAppLocalNotificationsStore.getState().upsertRecurringFailure({
+        ...recurringFailure,
+        updatedAt: 20,
+      });
+    });
+    await waitFor(() => {
+      expect(
+        useAppLocalNotificationsStore.getState().byId[recurringFailure.id]
+          .readAt,
+      ).not.toBeNull();
+      expect(markReadCalls).toHaveLength(1);
+    });
   });
 
   it("does not consume done rows belonging to a different tile in the same epic", async () => {
@@ -2148,6 +2521,37 @@ describe("<NotificationsSessionProvider />", () => {
     expect(markReadCalls).toEqual([]);
   });
 
+  it("consumes epic rows from the local host for an epic-only presence", async () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const { markReadCalls, streamClient } =
+      await renderHostNotificationsProvider();
+
+    act(() => {
+      useEpicCanvasStore.getState().openEpicTab("epic-a", "Epic");
+      hasFocus.mockReturnValue(true);
+      sendPresence();
+    });
+    await waitFor(() => expect(markReadCalls).toHaveLength(1));
+    markReadCalls.splice(0);
+
+    act(() => {
+      streamClient.session.emitServerFrame({
+        kind: "upserted",
+        hasBinaryPayload: false,
+        entry: hostEntry({
+          id: "done-epic-row",
+          epicId: "epic-a",
+          chatId: null,
+          severity: "done",
+        }),
+        removedIds: [],
+        summary: { unreadCount: 1, attentionCount: 0 },
+      });
+    });
+
+    await waitFor(() => expect(markReadCalls).toHaveLength(1));
+  });
+
   it("does not consume done rows while the window is unfocused", async () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
     const { markReadCalls, streamClient } =
@@ -2187,6 +2591,8 @@ describe("<NotificationsSessionProvider />", () => {
     act(() => {
       emitTerminalCrashedNotification({
         instanceId: "terminal-a-instance",
+        hostId: mockLocalHostEntry.hostId,
+        terminalName: "Terminal A",
         target: {
           kind: "terminal",
           epicId: "epic-a",
@@ -2210,6 +2616,44 @@ describe("<NotificationsSessionProvider />", () => {
     ]);
   });
 
+  it("keeps a same-terminal crash from another host unread", async () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const { markReadCalls } = await renderHostNotificationsProvider();
+
+    act(() => {
+      setFocusedTerminal("epic-a", "terminal-a");
+      hasFocus.mockReturnValue(true);
+      sendPresence();
+    });
+    await waitFor(() => expect(markReadCalls).toHaveLength(1));
+    markReadCalls.splice(0);
+
+    act(() => {
+      emitTerminalCrashedNotification({
+        instanceId: "terminal-a-on-host-b",
+        hostId: "host-b",
+        terminalName: "Terminal A on host B",
+        target: {
+          kind: "terminal",
+          epicId: "epic-a",
+          terminalId: "terminal-a",
+          tabId: "view-tab-host-b",
+          paneId: "pane-host-b",
+          tileInstanceId: "terminal-a-on-host-b",
+        },
+        cause: "exit",
+      });
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const crash = Object.values(
+      useAppLocalNotificationsStore.getState().byId,
+    )[0];
+    expect(crash.originHostId).toBe("host-b");
+    expect(crash.readAt).toBeNull();
+    expect(markReadCalls).toEqual([]);
+  });
+
   it("leaves crashes for a background terminal unread", async () => {
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
     const { markReadCalls } = await renderHostNotificationsProvider();
@@ -2225,6 +2669,8 @@ describe("<NotificationsSessionProvider />", () => {
     act(() => {
       emitTerminalCrashedNotification({
         instanceId: "terminal-b-instance",
+        hostId: "host-b",
+        terminalName: "Terminal B",
         target: {
           kind: "terminal",
           epicId: "epic-a",

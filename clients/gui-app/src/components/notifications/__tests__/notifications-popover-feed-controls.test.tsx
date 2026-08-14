@@ -87,12 +87,19 @@ vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
   useReactiveActiveHostId: () => activeHostIdRef.value,
 }));
 
-vi.mock("@/hooks/host/use-host-directory-entry", () => ({
-  useHostDirectoryEntry: (hostId: string) => {
-    if (hostId.length === 0 || directoryRef.value === null) return null;
-    return directoryRef.value.findById(hostId);
-  },
-}));
+vi.mock("@/hooks/host/use-host-directory-entry", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/hooks/host/use-host-directory-entry")
+    >();
+  return {
+    ...actual,
+    useHostDirectoryEntry: (hostId: string) => {
+      if (hostId.length === 0 || directoryRef.value === null) return null;
+      return directoryRef.value.findById(hostId);
+    },
+  };
+});
 
 vi.mock("@/lib/host-error-toast", () => ({
   toastFromHostError: vi.fn(),
@@ -241,7 +248,8 @@ function applyHostSnapshot(input: {
     attention: {
       entries: input.entries.filter(
         (entry) =>
-          entry.severity === "needs_action" || entry.severity === "failure",
+          entry.readAt === null &&
+          (entry.severity === "needs_action" || entry.severity === "failure"),
       ),
       nextCursor: input.attentionCursor,
     },

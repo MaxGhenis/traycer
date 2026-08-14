@@ -8,6 +8,7 @@ import {
 } from "@traycer-clients/shared/host-client/mock/mock-runner-host";
 import {
   HostReadinessControllerContext,
+  postLatchSurfaceFor,
   projectDefaultHostReadiness,
   resolveSurfaceReadiness,
   type HostReadinessController,
@@ -29,7 +30,8 @@ afterEach(() => {
 });
 
 const DEFAULT_HOST_PRESENTATION: DefaultHostReadinessPresentation = {
-  localTarget: true,
+  targetKind: "local",
+  localBootIntent: true,
   localHostState: "unknown",
   stage: "loading",
   progress: null,
@@ -43,6 +45,10 @@ const DEFAULT_HOST_PRESENTATION: DefaultHostReadinessPresentation = {
   forceProvisioning: () => undefined,
   reinstall: () => undefined,
   configureShell: () => undefined,
+  refreshDirectory: () => undefined,
+  openHostPicker: () => undefined,
+  openSettings: () => undefined,
+  anyHostDialable: false,
   requestRespawn: () => undefined,
   respawnPending: false,
   compatibility: {
@@ -129,6 +135,7 @@ describe("<SurfaceReadinessBoundary />", () => {
         directoryEntries: [],
         hasLocalHost: false,
         hasMobileNoHost: true,
+        hasReadySessionFor: () => false,
       }),
     ).toEqual({ kind: "ready" });
     expect(
@@ -141,6 +148,7 @@ describe("<SurfaceReadinessBoundary />", () => {
         directoryEntries: [],
         hasLocalHost: true,
         hasMobileNoHost: false,
+        hasReadySessionFor: () => false,
       }),
     ).toEqual({ kind: "restoring-request-context" });
     expect(
@@ -153,6 +161,7 @@ describe("<SurfaceReadinessBoundary />", () => {
         directoryEntries: [],
         hasLocalHost: false,
         hasMobileNoHost: true,
+        hasReadySessionFor: () => false,
       }),
     ).toEqual({ kind: "mobile-no-host" });
     expect(
@@ -169,11 +178,12 @@ describe("<SurfaceReadinessBoundary />", () => {
             kind: "remote",
             websocketUrl: "ws://host-b",
             version: "1.0.0",
-            status: "available",
+            transportDialability: "dialable",
           },
         ],
         hasLocalHost: true,
         hasMobileNoHost: false,
+        hasReadySessionFor: () => false,
       }),
     ).toEqual({ kind: "ready" });
     expect(
@@ -186,8 +196,44 @@ describe("<SurfaceReadinessBoundary />", () => {
         directoryEntries: [],
         hasLocalHost: true,
         hasMobileNoHost: false,
+        hasReadySessionFor: () => false,
       }),
     ).toEqual({ kind: "unavailable-host" });
+    // The ready-session input must actually reach the refusal gate: the same
+    // registry-refused tab host flips to ready when this client holds a live
+    // session to it (firsthand evidence outranks the cloud verdict), and the
+    // gate reads the CALLER-supplied reactive answer, not the pull-only cache.
+    const refusedTabArgs = {
+      scope: "tab-host",
+      tabHostId: "host-b",
+      authStatus: "signed-in",
+      activeHostId: "host-a",
+      requestContextUserId: "user-a",
+      directoryEntries: [
+        {
+          hostId: "host-b",
+          label: "Bound host",
+          kind: "remote",
+          websocketUrl: "ws://host-b",
+          version: "1.0.0",
+          transportDialability: "not-dialable",
+        },
+      ],
+      hasLocalHost: true,
+      hasMobileNoHost: false,
+    } as const;
+    expect(
+      resolveSurfaceReadiness({
+        ...refusedTabArgs,
+        hasReadySessionFor: () => false,
+      }),
+    ).toEqual({ kind: "unavailable-host" });
+    expect(
+      resolveSurfaceReadiness({
+        ...refusedTabArgs,
+        hasReadySessionFor: (hostId) => hostId === "host-b",
+      }),
+    ).toEqual({ kind: "ready" });
     expect(
       resolveSurfaceReadiness({
         scope: "default-host",
@@ -202,11 +248,12 @@ describe("<SurfaceReadinessBoundary />", () => {
             kind: "local",
             websocketUrl: null,
             version: "1.0.0",
-            status: "unavailable",
+            transportDialability: "not-dialable",
           },
         ],
         hasLocalHost: true,
         hasMobileNoHost: false,
+        hasReadySessionFor: () => false,
       }),
     ).toEqual({ kind: "unavailable-host" });
     expect(
@@ -223,11 +270,12 @@ describe("<SurfaceReadinessBoundary />", () => {
             kind: "local",
             websocketUrl: "ws://host-a",
             version: "1.0.0",
-            status: "available",
+            transportDialability: "dialable",
           },
         ],
         hasLocalHost: true,
         hasMobileNoHost: false,
+        hasReadySessionFor: () => false,
       }),
     ).toEqual({ kind: "ready" });
   });
@@ -289,7 +337,8 @@ describe("<SurfaceReadinessBoundary />", () => {
 
     const remoteIncompatible: DefaultHostReadinessPresentation = {
       ...DEFAULT_HOST_PRESENTATION,
-      localTarget: false,
+      targetKind: "remote",
+      localBootIntent: false,
       provisioning: true,
       removed: true,
       provisioningError: new Error("local ensure failed"),
@@ -304,6 +353,139 @@ describe("<SurfaceReadinessBoundary />", () => {
         presentation: remoteIncompatible,
       }),
     ).toEqual({ kind: "ready" });
+  });
+
+  it("passes an unknown target through without local-bootstrap projection", () => {
+    // D4: an unresolved directory entry must never inherit local
+    // host-management actions (respawn Retry, bootstrap body, compat
+    // projection) - unless the app is genuinely booting THIS machine's host,
+    // which is the arm below. That misattribution is what turned a
+    // still-dialing remote switch into a full-screen local-bootstrap card.
+    const unknownProvisioning: DefaultHostReadinessPresentation = {
+      ...DEFAULT_HOST_PRESENTATION,
+      targetKind: "unknown",
+      // No local-boot intent: the durable selection names another machine.
+      localBootIntent: false,
+      provisioning: true,
+      removed: true,
+      provisioningError: new Error("local ensure failed"),
+      compatibility: {
+        ...DEFAULT_HOST_PRESENTATION.compatibility,
+        status: "checking",
+      },
+    };
+    expect(
+      projectDefaultHostReadiness({
+        readiness: { kind: "ready" },
+        presentation: unknownProvisioning,
+      }),
+    ).toEqual({ kind: "ready" });
+    expect(
+      projectDefaultHostReadiness({
+        readiness: { kind: "unavailable-host" },
+        presentation: {
+          ...unknownProvisioning,
+          compatibility: {
+            ...DEFAULT_HOST_PRESENTATION.compatibility,
+            status: "failed",
+            unreachable: true,
+          },
+        },
+      }),
+    ).toEqual({ kind: "unavailable-host" });
+
+    const controller = {
+      ...readinessController({
+        "default-host:": { kind: "unavailable-host" },
+      }),
+      defaultHostPresentation: {
+        ...DEFAULT_HOST_PRESENTATION,
+        targetKind: "unknown" as const,
+        localBootIntent: false,
+        localHostState: "unavailable" as const,
+        stage: "slow" as const,
+      },
+    };
+
+    renderWithProviders(
+      controller,
+      <SurfaceReadinessBoundary scope="default-host" tabHostId={null}>
+        <Member id="epic" />
+      </SurfaceReadinessBoundary>,
+      buildRunnerHost(),
+    );
+
+    // Unbound target must not paint local-bootstrap UI (retry / spinner).
+    expect(screen.queryByTestId("local-host-retry")).toBeNull();
+    expect(screen.queryByTestId("local-host-loading-spinner")).toBeNull();
+    expect(
+      screen.getByTestId("surface-readiness-unavailable-host"),
+    ).toBeTruthy();
+  });
+
+  it("keeps the local lifecycle for an unresolved target that IS a local boot", () => {
+    // The other half of the tri-state, and the reason it is not simply
+    // "resolved-local only": a first-ever install has no directory row until
+    // provisioning creates one. Refusing it there would replace the install
+    // card - progress, bootstrap.log path, the traycer#862 diagnostics - with
+    // a bare line for the whole first run.
+    const localBoot: DefaultHostReadinessPresentation = {
+      ...DEFAULT_HOST_PRESENTATION,
+      targetKind: "unknown",
+      localBootIntent: true,
+      provisioning: true,
+    };
+    expect(
+      projectDefaultHostReadiness({
+        readiness: { kind: "ready" },
+        presentation: localBoot,
+      }),
+    ).toEqual({ kind: "provisioning-host" });
+
+    const controller = {
+      ...readinessController({ "default-host:": { kind: "loading-host" } }),
+      defaultHostPresentation: localBoot,
+    };
+    renderWithProviders(
+      controller,
+      <SurfaceReadinessBoundary scope="default-host" tabHostId={null}>
+        <Member id="epic" />
+      </SurfaceReadinessBoundary>,
+      buildRunnerHost(),
+    );
+    expect(screen.getByTestId("local-host-loading-spinner")).toBeTruthy();
+  });
+
+  it("classifies every readiness kind against D1's post-latch surface table", () => {
+    // One exhaustive map, shared by the gate and the strip: a new kind must
+    // land here or the gate and strip will disagree about whether it is a
+    // splash, an amber strip, a red strip, or the app alone.
+    //
+    // A `Record` keyed by the union, NOT a list of pairs. As a list, adding a
+    // kind and forgetting it here still compiled and still passed - the loop
+    // only visits what is written down, so the "must land here" above was a
+    // request rather than a rule. Missing an entry is now a type error.
+    const table: Record<
+      SurfaceReadiness["kind"],
+      "app" | "switching" | "error" | "splash"
+    > = {
+      ready: "app",
+      "compatibility-checking": "switching",
+      "loading-host": "switching",
+      "provisioning-host": "switching",
+      "unavailable-host": "switching",
+      "restoring-request-context": "switching",
+      "compatibility-error": "error",
+      "incompatible-host": "error",
+      "provisioning-error": "error",
+      "removed-host": "error",
+      "mobile-no-host": "splash",
+    };
+    for (const [kind, surface] of Object.entries(table)) {
+      expect(postLatchSurfaceFor(kind as SurfaceReadiness["kind"])).toBe(
+        surface,
+      );
+    }
   });
 
   it("keeps local slow-start and busy recovery scoped to the default host", () => {

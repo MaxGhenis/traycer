@@ -19,6 +19,23 @@ import type {
 } from "@traycer-clients/shared/host-transport/host-messenger";
 import { hostRpcRegistry, type HostRpcRegistry } from "@/lib/host";
 import { EpicUsageDialog } from "@/components/epic-canvas/panels/epic-usage-dialog";
+import type { UsageChartOption } from "@/lib/usage-analytics/usage-chart-option";
+import { getEChartsMockInstances } from "../../../../../__tests__/test-browser-apis";
+
+/**
+ * How many per-day points the mounted trend chart was actually given -
+ * read from the option the mocked ECharts instance received, the area
+ * chart's equivalent of counting the old per-day bar columns.
+ */
+function chartDayCount(): number {
+  const option = getEChartsMockInstances().at(-1)?.options.at(-1);
+  if (option === undefined) throw new Error("no ECharts option captured");
+  const { xAxis } = option as UsageChartOption;
+  const axis = Array.isArray(xAxis) ? xAxis[0] : xAxis;
+  const data = axis !== undefined && "data" in axis ? axis.data : undefined;
+  if (!Array.isArray(data)) throw new Error("x-axis carries no day labels");
+  return data.length;
+}
 
 type UsageSummaryRequest = RequestOfMethod<
   HostRpcRegistry,
@@ -179,6 +196,24 @@ function renderDialog(
 }
 
 describe("<EpicUsageDialog />", () => {
+  it("defaults to the last 7 days", async () => {
+    const handler = vi.fn(
+      (_request: UsageSummaryRequest): UsageSummaryResponse =>
+        usageSummaryResponse(),
+    );
+    renderDialog(handler);
+    await screen.findByTestId("usage-cost-figure");
+
+    expect(handler.mock.calls.at(0)?.at(0)).toMatchObject({
+      windowDays: 7,
+      window: undefined,
+      epicId: "epic-1",
+    });
+    expect(
+      screen.getByTestId("usage-window-7").getAttribute("data-state"),
+    ).toBe("active");
+  });
+
   it("renders the headline and the by-chat breakdown once open", async () => {
     renderDialog(usageSummaryResponse);
     const costFigure = await screen.findByTestId("usage-cost-figure");
@@ -203,66 +238,13 @@ describe("<EpicUsageDialog />", () => {
     });
   });
 
-  it("switching to 'Entire epic' issues a new request with window: epic", async () => {
-    const user = userEvent.setup();
-    const handler = vi.fn(
-      (_request: UsageSummaryRequest): UsageSummaryResponse =>
-        usageSummaryResponse(),
-    );
-    renderDialog(handler);
-    await screen.findByTestId("usage-cost-figure");
-    // The default window must NOT already be scoping to the epic lifetime,
-    // or the assertion below would pass on a repeat of the first request.
-    expect(handler.mock.calls.at(0)?.at(0)).toMatchObject({
-      window: undefined,
-      epicId: "epic-1",
-    });
-    handler.mockClear();
-
-    await user.click(screen.getByTestId("epic-usage-window-epic"));
-
-    await waitFor(() => {
-      expect(handler).toHaveBeenCalled();
-    });
-    expect(handler.mock.calls.at(-1)?.at(0)).toMatchObject({
-      window: "epic",
-      epicId: "epic-1",
-    });
-  });
-
-  it("bounds the trend for a long-lived epic, and says so rather than capping silently", async () => {
-    // `window: "epic"` resolves `windowDays` from the epic's own fact span,
-    // so a near-epoch `occurredAt` (a valid non-negative integer on the
-    // wire) asks for ~20k columns - each a tooltip-wrapped button.
-    renderDialog(() => {
-      const response = usageSummaryResponse();
-      return {
-        ...response,
-        summary: {
-          ...response.summary,
-          window: { ...response.summary.window, windowDays: 20_000 },
-        },
-      };
-    });
-
-    await screen.findByTestId("usage-cost-figure");
-    await waitFor(() => {
-      expect(screen.getByTestId("usage-daily-chart")).toBeTruthy();
-    });
-    expect(screen.getAllByTestId("usage-daily-chart-column")).toHaveLength(90);
-    expect(
-      screen.getByTestId("epic-usage-trend-capped-note").textContent,
-    ).toContain("Trend shows the last 90 days");
-  });
-
-  it("leaves an in-range trend uncapped and unannotated", async () => {
+  it("plots the requested response window", async () => {
     renderDialog(usageSummaryResponse);
     await screen.findByTestId("usage-cost-figure");
     await waitFor(() => {
       expect(screen.getByTestId("usage-daily-chart")).toBeTruthy();
     });
-    expect(screen.getAllByTestId("usage-daily-chart-column")).toHaveLength(30);
-    expect(screen.queryByTestId("epic-usage-trend-capped-note")).toBeNull();
+    expect(chartDayCount()).toBe(30);
   });
 
   it("renders a retryable error card, never a silent fallback, when the RPC fails", async () => {

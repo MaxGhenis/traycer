@@ -13,6 +13,7 @@ import type {
   ChatRunSettings,
   ChatSubscribeClientFrame,
 } from "@traycer/protocol/host/agent/gui/subscribe";
+import { createImageResolutionUpdatedFrame } from "@traycer/protocol/host/agent/gui/subscribe";
 import type { ManagedCommand } from "@traycer/protocol/host/managed-command/unary-schemas";
 import type { WorktreeBinding } from "@traycer/protocol/host/worktree-schemas";
 import type { SchemaVersion } from "@traycer/protocol/framework/versioned-stream-rpc";
@@ -61,6 +62,10 @@ import {
 } from "@/stores/composer/interview-draft-store";
 import { isOptimisticQueuedItem } from "@/stores/chats/optimistic-queue";
 import type { WorktreeIntent } from "@traycer/protocol/host/worktree-schemas";
+import {
+  __resetAppLocalNotificationsStoreForTests,
+  useAppLocalNotificationsStore,
+} from "@/stores/notifications/app-local-notifications-store";
 
 const EPIC_ID = "epic-1";
 const CHAT_ID = "chat-1";
@@ -236,6 +241,7 @@ function createHarness(): Harness {
   const sent: ChatSubscribeClientFrame[] = [];
   let callbacks: ChatStreamCallbacks | null = null;
   const handle = createChatSessionStore({
+    hostId: "host-a",
     epicId: EPIC_ID,
     chatId: CHAT_ID,
     userId: OWNER_ID,
@@ -269,6 +275,7 @@ function createProtocolChainHarness(
   const mockWs = new ProtocolMockWsStreamClient(negotiatedVersion);
   const created: { client: ChatStreamClient | null } = { client: null };
   const handle = createChatSessionStore({
+    hostId: "host-a",
     epicId: EPIC_ID,
     chatId: CHAT_ID,
     userId: OWNER_ID,
@@ -530,6 +537,7 @@ function assistantSteerMessage(
     usage: null,
     reasoningEffort: null,
     serviceTier: null,
+    imageResolutions: [],
   };
 }
 
@@ -558,6 +566,7 @@ describe("createChatSessionStore", () => {
   afterEach(() => {
     useWorktreeIntentStagingStore.getState().resetForTests();
     useInterviewDraftStore.setState({ draftsByChat: {} });
+    __resetAppLocalNotificationsStoreForTests();
     window.localStorage.clear();
   });
 
@@ -596,11 +605,107 @@ describe("createChatSessionStore", () => {
     expect(harness.handle.store.getState().snapshotLoaded).toBe(false);
   });
 
+  it("emits each actual fatal close once and resurfaces a later close", () => {
+    useAppLocalNotificationsStore.getState().activateIdentity(OWNER_ID);
+    const harness = createHarness();
+    const reason = {
+      kind: "fatalError" as const,
+      details: {
+        code: "CONNECTION_LOST",
+        reason: "Connection lost",
+        incompatibleMethods: null,
+        upgradeGuidance: null,
+      },
+    };
+    const notificationId =
+      "stream.transport.error:host-a:chat-1:CONNECTION_LOST";
+
+    harness.callbacks().onConnectionStatus("closed", reason);
+    useAppLocalNotificationsStore
+      .getState()
+      .markAsRead(notificationId, Date.now());
+    harness.callbacks().onConnectionStatus("closed", reason);
+    expect(
+      useAppLocalNotificationsStore.getState().byId[notificationId].readAt,
+    ).not.toBeNull();
+
+    harness.handle.store.getState().retry();
+    harness.callbacks().onConnectionStatus("closed", reason);
+    expect(
+      useAppLocalNotificationsStore.getState().byId[notificationId].readAt,
+    ).toBeNull();
+  });
+
+  it("acknowledges an earlier stream failure only on a live completed turn", () => {
+    useAppLocalNotificationsStore.getState().activateIdentity(OWNER_ID);
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const notificationId =
+      "stream.transport.error:host-a:chat-1:CONNECTION_LOST";
+    const fatalClose = {
+      kind: "fatalError" as const,
+      details: {
+        code: "CONNECTION_LOST",
+        reason: "Connection lost",
+        incompatibleMethods: null,
+        upgradeGuidance: null,
+      },
+    };
+
+    callbacks.onConnectionStatus("closed", fatalClose);
+    expect(
+      useAppLocalNotificationsStore.getState().byId[notificationId].readAt,
+    ).toBeNull();
+
+    harness.handle.store.getState().retry();
+    const recoveredCallbacks = harness.callbacks();
+    startRunningTurn(recoveredCallbacks);
+    recoveredCallbacks.onBlockDelta({
+      kind: "blockDelta",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      event: {
+        type: "turn.completed",
+        blockId: "turn-0",
+        timestamp: 4,
+        turnId: "turn-0",
+      },
+    });
+
+    expect(
+      useAppLocalNotificationsStore.getState().byId[notificationId].readAt,
+    ).toBeNull();
+
+    recoveredCallbacks.onBlockDelta({
+      kind: "blockDelta",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      event: {
+        type: "turn.completed",
+        blockId: "turn-1",
+        timestamp: 4,
+        turnId: "turn-1",
+      },
+    });
+
+    expect(
+      useAppLocalNotificationsStore.getState().byId[notificationId].readAt,
+    ).not.toBeNull();
+
+    recoveredCallbacks.onConnectionStatus("closed", fatalClose);
+    expect(
+      useAppLocalNotificationsStore.getState().byId[notificationId].readAt,
+    ).toBeNull();
+  });
+
   it("retry re-subscribes and clears the fatal close", () => {
     let factoryCalls = 0;
     let lastCallbacks: ChatStreamCallbacks | null = null;
     let closeCalls = 0;
     const handle = createChatSessionStore({
+      hostId: "host-a",
       epicId: EPIC_ID,
       chatId: CHAT_ID,
       userId: OWNER_ID,
@@ -652,6 +757,7 @@ describe("createChatSessionStore", () => {
   it("retry ignores callbacks from the stale stream client", () => {
     let lastCallbacks: ChatStreamCallbacks | null = null;
     const handle = createChatSessionStore({
+      hostId: "host-a",
       epicId: EPIC_ID,
       chatId: CHAT_ID,
       userId: OWNER_ID,
@@ -3376,6 +3482,7 @@ describe("createChatSessionStore", () => {
         toolName: "Bash",
         agentMessageSend: null,
         backgroundTask: true,
+        imageResults: [],
       },
     });
 
@@ -3426,6 +3533,7 @@ describe("createChatSessionStore", () => {
           usage: null,
           reasoningEffort: null,
           serviceTier: null,
+          imageResolutions: [],
         },
       ],
       queue: { status: "idle", items: [] },
@@ -3714,6 +3822,7 @@ describe("createChatSessionStore", () => {
               usage: null,
               reasoningEffort: null,
               serviceTier: null,
+              imageResolutions: [],
             },
           ],
           events: [],
@@ -3856,6 +3965,7 @@ describe("createChatSessionStore", () => {
               usage: null,
               reasoningEffort: null,
               serviceTier: null,
+              imageResolutions: [],
             },
             persistedUserMessage("message-split-steered"),
             {
@@ -3881,6 +3991,7 @@ describe("createChatSessionStore", () => {
               usage: null,
               reasoningEffort: null,
               serviceTier: null,
+              imageResolutions: [],
             },
           ],
           events: [],
@@ -4861,6 +4972,7 @@ function createCoalesceHarness(): CoalesceHarness {
   const manual = createManualCoordinator();
   let callbacks: ChatStreamCallbacks | null = null;
   const handle = createChatSessionStore({
+    hostId: "host-a",
     epicId: EPIC_ID,
     chatId: CHAT_ID,
     userId: OWNER_ID,
@@ -4959,6 +5071,84 @@ describe("blockDelta coalescing", () => {
     expect(harness.manual.pendingCount()).toBe(0);
 
     unsubscribe();
+  });
+
+  it("applies image resolution events to an ordinary live turn", () => {
+    const harness = createCoalesceHarness();
+    const callbacks = harness.callbacks();
+    startRunningTurn(callbacks);
+
+    const emitResolution = (attachmentHash: string, timestamp: number): void =>
+      callbacks.onBlockDelta(
+        createImageResolutionUpdatedFrame({
+          epicId: EPIC_ID,
+          chatId: CHAT_ID,
+          event: {
+            type: "image_resolution.updated",
+            blockId: "assistant-live-1",
+            messageId: "assistant-live-1",
+            timestamp,
+            turnId: "turn-1",
+            entry: {
+              source: "C:%5Cwork%5Cchart.png",
+              canonicalSource: "C:\\work\\chart.png",
+              state: "resolved",
+              attachmentHash,
+              mediaType: "image/png",
+              width: null,
+              height: null,
+            },
+          },
+        }),
+      );
+
+    emitResolution("hash-1", 11);
+    harness.manual.runAll();
+    let live = harness.handle.store.getState().liveAssistantMessage;
+    expect(live?.imageResolutions).toHaveLength(1);
+    expect(live?.imageResolutions[0]?.messageId).toBe("assistant-live-1");
+    expect(live?.imageResolutions[0]?.entry.attachmentHash).toBe("hash-1");
+
+    callbacks.onBlockDelta(
+      createImageResolutionUpdatedFrame({
+        epicId: EPIC_ID,
+        chatId: CHAT_ID,
+        event: {
+          type: "image_resolution.updated",
+          blockId: "assistant-old-1",
+          messageId: "assistant-old-1",
+          timestamp: 12,
+          turnId: "turn-old",
+          entry: {
+            source: "C:%5Cwork%5Cold.png",
+            canonicalSource: "C:\\work\\old.png",
+            state: "resolved",
+            attachmentHash: "stale-hash",
+            mediaType: "image/png",
+            width: null,
+            height: null,
+          },
+        },
+      }),
+    );
+    harness.manual.runAll();
+    live = harness.handle.store.getState().liveAssistantMessage;
+    expect(live?.imageResolutions).toHaveLength(1);
+
+    emitTextDelta(callbacks, "![chart](C:%5Cwork%5Cchart.png)", 12);
+    harness.manual.runAll();
+    live = harness.handle.store.getState().liveAssistantMessage;
+    expect(live?.blocks).toHaveLength(1);
+    expect(live?.imageResolutions).toHaveLength(1);
+    expect(live?.imageResolutions[0]?.entry.attachmentHash).toBe("hash-1");
+    expect(live?.imageResolutionsVersion).toBe(1);
+
+    emitResolution("hash-2", 13);
+    harness.manual.runAll();
+    live = harness.handle.store.getState().liveAssistantMessage;
+    expect(live?.imageResolutions).toHaveLength(1);
+    expect(live?.imageResolutions[0]?.entry.attachmentHash).toBe("hash-2");
+    expect(live?.imageResolutionsVersion).toBe(2);
   });
 
   it("flushes buffered deltas before a consuming frame materializes the turn", () => {
@@ -5089,6 +5279,7 @@ describe("surface visibility rollup", () => {
       }),
     };
     const handle = createChatSessionStore({
+      hostId: "host-a",
       epicId: EPIC_ID,
       chatId: CHAT_ID,
       userId: OWNER_ID,
@@ -5526,6 +5717,7 @@ describe("createChatSessionStore - persisted auth-error provider nudge", () => {
       usage: null,
       reasoningEffort: null,
       serviceTier: null,
+      imageResolutions: [],
     };
   }
 
@@ -5539,6 +5731,7 @@ describe("createChatSessionStore - persisted auth-error provider nudge", () => {
     let nudges = 0;
     let callbacks: ChatStreamCallbacks | null = null;
     const handle = createChatSessionStore({
+      hostId: "host-a",
       epicId: EPIC_ID,
       chatId: CHAT_ID,
       userId: OWNER_ID,
@@ -5710,6 +5903,7 @@ describe("createChatSessionStore - persisted auth-error provider nudge", () => {
         usage: null,
         reasoningEffort: null,
         serviceTier: null,
+        imageResolutions: [],
       },
     ]);
     expect(harness.nudgeCount()).toBe(1);

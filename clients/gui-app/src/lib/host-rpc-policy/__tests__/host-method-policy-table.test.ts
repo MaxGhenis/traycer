@@ -101,6 +101,32 @@ describe("host method poll policy table", () => {
     expect(HOST_METHOD_POLL_TABLE["agent.roles.relinquish"].mode).toBe("fifo");
   });
 
+  it("declares the two chat-sharing writes as independent fifo queues", () => {
+    // fifo is per (method, params). These two methods never share a
+    // coordinator queue; cross-surface ordering is the client-side
+    // one-in-flight gate, not this table.
+    expect(HOST_METHOD_POLL_TABLE["epic.setCloudChatVisibility"].mode).toBe(
+      "fifo",
+    );
+    expect(HOST_METHOD_POLL_TABLE["epic.setChatSharingDefault"].mode).toBe(
+      "fifo",
+    );
+    expect(
+      hostRpcSchedulingPolicy.modeFor("epic.setCloudChatVisibility", {
+        taskId: "task-1",
+        chatId: "chat-1",
+        visibility: "private",
+      }),
+    ).toBe("fifo");
+    expect(
+      hostRpcSchedulingPolicy.modeFor("epic.setChatSharingDefault", {
+        taskId: "task-1",
+        defaultVisibility: "private",
+        applyToExisting: true,
+      }),
+    ).toBe("fifo");
+  });
+
   it("keeps ordinary provider listing latest but serializes forced auth refresh", () => {
     expect(
       hostRpcSchedulingPolicy.modeFor("providers.list", { native: null }),
@@ -121,12 +147,27 @@ describe("host method poll policy table", () => {
   });
 
   it("narrows null and fixed policies", () => {
-    const neverPolled: null = HOST_METHOD_POLL_TABLE["host.status"].poll;
+    const neverPolled: null = HOST_METHOD_POLL_TABLE["host.identity.get"].poll;
     expect(neverPolled).toBeNull();
 
     const fixed = HOST_METHOD_POLL_TABLE["host.getRateLimitUsage"].poll;
     const intervalMs: number = fixed.intervalMs;
     expect(intervalMs).toBe(15 * 60 * 1_000);
+  });
+
+  // `host.status` used to be un-polled entirely. It is now opted in
+  // (`poll: { kind: "fixed", intervalMs: 10_000 }`) for one caller: the
+  // Overview's drain affordance, whose `liveBusySessionCount` must stay a LIVE
+  // reading under the query's 30s `staleTime` — see `host-overview-rpc.ts` and
+  // `liveBusySessionCount` in `my-hosts-model.ts`.
+  it("polls host.status on a fixed 10s cadence, comfortably under its query's staleTime", () => {
+    const policy = HOST_METHOD_POLL_TABLE["host.status"].poll;
+    const intervalMs: number = policy.intervalMs;
+    expect(intervalMs).toBe(10_000);
+    // The interval must stay strictly under the 30s `staleTime` that demotes a
+    // retained `liveBusySessionCount` to `null` — inverting the two would make
+    // a healthy query flicker between live and unknown on every tick.
+    expect(intervalMs).toBeLessThan(30_000);
   });
 
   it("consumes condition cache data as unknown", () => {
@@ -211,6 +252,82 @@ describe("host method poll policy table", () => {
       }),
     ).toBe(PROVIDERS_LIMITED_POLL_LANE);
     expect(policy.classify({ providers: [] })).toBe(PROVIDERS_STEADY_POLL_LANE);
+  });
+
+  // Integration seam: non-blocking installPackVersion leaves only the
+  // user-lane version row as downloading while the automatic slot stays
+  // settled. Classifying that as steady freezes the progress bar at 15 min.
+  it("selects the installing lane when only a user-lane version row is downloading", () => {
+    const policy = HOST_METHOD_POLL_TABLE["providers.list"].poll;
+    expect(
+      policy.classify({
+        providers: [
+          {
+            enabled: true,
+            authPending: false,
+            availabilityPending: false,
+            candidates: [],
+            profiles: [],
+            // Automatic lane settled — the case the old classifier missed.
+            managedInstallState: { status: "installed", version: "1.0.0" },
+            managedVersions: {
+              autoDownload: true,
+              pinnedVersion: null,
+              updateAvailable: null,
+              sharedWithProviders: [],
+              totalSizeBytes: 0,
+              available: [
+                {
+                  version: "1.2.0",
+                  sizeBytes: 40_000_000,
+                  certification: "eligible",
+                  recommended: false,
+                  current: false,
+                  // Sibling-owned transfer: percent null still needs the fast
+                  // lane so completion is noticed promptly.
+                  installState: { status: "downloading", percent: null },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    ).toBe(PROVIDERS_INSTALLING_POLL_LANE);
+  });
+
+  it("selects the installing lane for a determinate user-lane download too", () => {
+    const policy = HOST_METHOD_POLL_TABLE["providers.list"].poll;
+    expect(
+      policy.classify({
+        providers: [
+          {
+            enabled: true,
+            authPending: false,
+            availabilityPending: false,
+            candidates: [],
+            profiles: [],
+            managedInstallState: { status: "absent" },
+            managedVersions: {
+              autoDownload: false,
+              pinnedVersion: null,
+              updateAvailable: { version: "1.3.0" },
+              sharedWithProviders: [],
+              totalSizeBytes: null,
+              available: [
+                {
+                  version: "1.3.0",
+                  sizeBytes: 10_000_000,
+                  certification: "eligible",
+                  recommended: true,
+                  current: false,
+                  installState: { status: "downloading", percent: 42 },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    ).toBe(PROVIDERS_INSTALLING_POLL_LANE);
   });
 
   // Not cosmetic, and the reason it is asserted as a bound rather than as two

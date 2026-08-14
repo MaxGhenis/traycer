@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import type {
   AgentMessageSend,
   BackgroundTaskOutput,
+  ImageGenerationResult,
 } from "@traycer/protocol/persistence/epic/content-blocks";
 import type { SegmentEndState } from "@/stores/composer/chat-store";
 import { deriveA2ASendCollapsibleKey } from "@/components/chat/chat-collapsible-key";
@@ -12,13 +13,12 @@ import { chatFindA2ASendBodyUnitId } from "@/components/chat/chat-find";
 import { SegmentEndStateBadge } from "./segment-end-state-badge";
 import { LivePulse } from "@/components/ui/live-pulse";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
-import { useEpicArtifact, useOpenEpicId } from "@/lib/epic-selectors";
+import { useEpicAgentReference, useOpenEpicId } from "@/lib/epic-selectors";
 import {
   resolveToolInputDetail,
   type ToolInputDetail,
 } from "@traycer/protocol/host/agent/gui/tool-input-detail";
 import type {
-  ArtifactProjection,
   ChatProjection,
   TuiAgentProjection,
 } from "@/stores/epics/open-epic/types";
@@ -47,6 +47,7 @@ import {
   useChatOpenStoreScope,
 } from "@/stores/chats/open-store-scope";
 import { ElapsedTime } from "./segment-elapsed";
+import { ImageGenerationCard } from "./image-generation-card";
 
 interface ToolSegmentProps {
   id: string;
@@ -74,6 +75,7 @@ interface ToolSegmentProps {
   // Wall-clock start (epoch ms) driving the elapsed heartbeat while streaming.
   startedAt: number;
   durationMs: number | null;
+  imageResults: ReadonlyArray<ImageGenerationResult>;
   variant: "card" | "row";
   headerFindUnitId: string | null;
 }
@@ -101,7 +103,7 @@ interface ToolSegmentBodyProps {
   readonly toolName: string;
 }
 
-type ReceiverNode = ArtifactProjection | ChatProjection | TuiAgentProjection;
+type ReceiverNode = ChatProjection | TuiAgentProjection;
 
 interface ReceiverOpenTarget {
   readonly type: "chat" | "terminal-agent";
@@ -136,7 +138,6 @@ function receiverOpenTarget(
   if ("harnessId" in receiverNode) {
     return { type: "terminal-agent", hostId: receiverNode.hostId };
   }
-  if ("kind" in receiverNode) return null;
   const hostId = receiverNode.hostId ?? fallbackHostId;
   if (hostId === null) return null;
   return { type: "chat", hostId };
@@ -253,6 +254,20 @@ function renderToolStreamingFooter(props: {
 }
 
 export function ToolSegment(props: ToolSegmentProps) {
+  if (props.toolName === "image_generation" && props.variant === "card") {
+    return (
+      <ImageGenerationCard
+        id={props.id}
+        inputSummary={props.inputSummary}
+        inputDetail={props.inputDetail}
+        error={props.error}
+        isStreaming={props.isStreaming}
+        endState={props.endState}
+        stopped={props.stopped}
+        imageResults={props.imageResults}
+      />
+    );
+  }
   if (props.agentMessageSend !== null) {
     return <A2ASendToolSegment {...props} send={props.agentMessageSend} />;
   }
@@ -610,16 +625,16 @@ function A2ASendToolSegment(
     isStreaming,
     isStopped: false,
   });
-  const receiverNode = useEpicArtifact(send.receiverAgentId);
+  const receiverNode = useEpicAgentReference(send.receiverAgentId);
   const activeHostId = useReactiveActiveHostId();
   const epicId = useOpenEpicId();
   const tileNavigation = useEpicTileNavigation();
   const receiverName = receiverDisplayName(receiverNode, send.receiverAgentId);
   const openTarget = receiverOpenTarget(receiverNode, activeHostId);
   const openReceiverTab = () => {
-    if (openTarget === null) return;
+    if (openTarget === null || receiverNode === null) return;
     tileNavigation.openTileInEpic(epicId, {
-      id: send.receiverAgentId,
+      id: receiverNode.id,
       instanceId: uuidv4(),
       type: openTarget.type,
       name: receiverName,

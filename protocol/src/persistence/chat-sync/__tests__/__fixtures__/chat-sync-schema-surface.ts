@@ -15,7 +15,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 0
+              "const": 1
             }
           },
           "required": [
@@ -43,30 +43,56 @@ export const chatSyncSchemaSurfaceBaseline = {
           "type": "number"
         },
         "minReaderVersion": {
-          "default": null,
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "major": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "minor": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                }
-              },
-              "required": [
-                "major",
-                "minor"
-              ]
+          "type": "object",
+          "properties": {
+            "major": {
+              "type": "number",
+              "const": 1
             },
-            {
-              "type": "null"
+            "minor": {
+              "type": "number",
+              "const": 1
             }
+          },
+          "required": [
+            "major",
+            "minor"
+          ]
+        },
+        "cdc": {
+          "type": "object",
+          "properties": {
+            "algorithm": {
+              "type": "string",
+              "const": "fastcdc-gear-v1"
+            },
+            "mask": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "target": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "min": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "algorithm",
+            "mask",
+            "target",
+            "min",
+            "max"
           ]
         },
         "core": {
@@ -248,11 +274,39 @@ export const chatSyncSchemaSurfaceBaseline = {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991
+              },
+              "firstSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "lastSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordCount": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "firstRecordId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastRecordId": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
               "sha256",
-              "byteLength"
+              "byteLength",
+              "firstSeq",
+              "lastSeq",
+              "recordCount",
+              "firstRecordId",
+              "lastRecordId"
             ]
           }
         },
@@ -280,11 +334,39 @@ export const chatSyncSchemaSurfaceBaseline = {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991
+              },
+              "firstSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "lastSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordCount": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "firstRecordId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastRecordId": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
               "sha256",
-              "byteLength"
+              "byteLength",
+              "firstSeq",
+              "lastSeq",
+              "recordCount",
+              "firstRecordId",
+              "lastRecordId"
             ]
           }
         },
@@ -342,6 +424,8 @@ export const chatSyncSchemaSurfaceBaseline = {
         "parentHeadSha256",
         "throughRecordSeq",
         "capturedAt",
+        "minReaderVersion",
+        "cdc",
         "core",
         "messageShards",
         "events",
@@ -364,7 +448,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 0
+              "const": 1
             }
           },
           "required": [
@@ -393,32 +477,59 @@ export const chatSyncSchemaSurfaceBaseline = {
           "type": "number"
         },
         "minReaderVersion": {
-          "default": null,
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "major": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "minor": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                }
-              },
-              "required": [
-                "major",
-                "minor"
-              ],
-              "additionalProperties": false
+          "type": "object",
+          "properties": {
+            "major": {
+              "type": "number",
+              "const": 1
             },
-            {
-              "type": "null"
+            "minor": {
+              "type": "number",
+              "const": 1
             }
-          ]
+          },
+          "required": [
+            "major",
+            "minor"
+          ],
+          "additionalProperties": false
+        },
+        "cdc": {
+          "type": "object",
+          "properties": {
+            "algorithm": {
+              "type": "string",
+              "const": "fastcdc-gear-v1"
+            },
+            "mask": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "target": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "min": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "algorithm",
+            "mask",
+            "target",
+            "min",
+            "max"
+          ],
+          "additionalProperties": false
         },
         "core": {
           "type": "object",
@@ -607,11 +718,39 @@ export const chatSyncSchemaSurfaceBaseline = {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991
+              },
+              "firstSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "lastSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordCount": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "firstRecordId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastRecordId": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
               "sha256",
-              "byteLength"
+              "byteLength",
+              "firstSeq",
+              "lastSeq",
+              "recordCount",
+              "firstRecordId",
+              "lastRecordId"
             ],
             "additionalProperties": false
           }
@@ -933,11 +1072,39 @@ export const chatSyncSchemaSurfaceBaseline = {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991
+              },
+              "firstSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "lastSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordCount": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "firstRecordId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastRecordId": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
               "sha256",
-              "byteLength"
+              "byteLength",
+              "firstSeq",
+              "lastSeq",
+              "recordCount",
+              "firstRecordId",
+              "lastRecordId"
             ],
             "additionalProperties": false
           }
@@ -1001,6 +1168,7 @@ export const chatSyncSchemaSurfaceBaseline = {
         "throughRecordSeq",
         "capturedAt",
         "minReaderVersion",
+        "cdc",
         "core",
         "messageShards",
         "events",
@@ -1026,7 +1194,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 0
+              "const": 1
             }
           },
           "required": [
@@ -1101,7 +1269,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 0
+              "const": 1
             }
           },
           "required": [
@@ -2125,6 +2293,104 @@ export const chatSyncSchemaSurfaceBaseline = {
                                             "stopped": {
                                               "default": false,
                                               "type": "boolean"
+                                            },
+                                            "imageResults": {
+                                              "default": [],
+                                              "type": "array",
+                                              "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "attachmentHash": {
+                                                    "type": "string",
+                                                    "pattern": "^[0-9a-f]{64}$"
+                                                  },
+                                                  "mediaType": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "image/png",
+                                                      "image/jpeg",
+                                                      "image/gif",
+                                                      "image/webp",
+                                                      "image/svg+xml"
+                                                    ]
+                                                  },
+                                                  "byteLength": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 9007199254740991
+                                                  },
+                                                  "width": {
+                                                    "default": null,
+                                                    "anyOf": [
+                                                      {
+                                                        "type": "integer",
+                                                        "exclusiveMinimum": 0,
+                                                        "maximum": 9007199254740991
+                                                      },
+                                                      {
+                                                        "type": "null"
+                                                      }
+                                                    ]
+                                                  },
+                                                  "height": {
+                                                    "default": null,
+                                                    "anyOf": [
+                                                      {
+                                                        "type": "integer",
+                                                        "exclusiveMinimum": 0,
+                                                        "maximum": 9007199254740991
+                                                      },
+                                                      {
+                                                        "type": "null"
+                                                      }
+                                                    ]
+                                                  },
+                                                  "alt": {
+                                                    "default": null,
+                                                    "anyOf": [
+                                                      {
+                                                        "type": "string"
+                                                      },
+                                                      {
+                                                        "type": "null"
+                                                      }
+                                                    ]
+                                                  },
+                                                  "revisedPrompt": {
+                                                    "default": null,
+                                                    "anyOf": [
+                                                      {
+                                                        "type": "string"
+                                                      },
+                                                      {
+                                                        "type": "null"
+                                                      }
+                                                    ]
+                                                  },
+                                                  "filePath": {
+                                                    "default": null,
+                                                    "anyOf": [
+                                                      {
+                                                        "type": "string"
+                                                      },
+                                                      {
+                                                        "type": "null"
+                                                      }
+                                                    ]
+                                                  }
+                                                },
+                                                "required": [
+                                                  "attachmentHash",
+                                                  "mediaType",
+                                                  "byteLength",
+                                                  "width",
+                                                  "height",
+                                                  "alt",
+                                                  "revisedPrompt",
+                                                  "filePath"
+                                                ],
+                                                "additionalProperties": false
+                                              }
                                             }
                                           },
                                           "required": [
@@ -2143,7 +2409,8 @@ export const chatSyncSchemaSurfaceBaseline = {
                                             "startedAt",
                                             "endedAt",
                                             "backgroundTask",
-                                            "stopped"
+                                            "stopped",
+                                            "imageResults"
                                           ],
                                           "additionalProperties": false
                                         },
@@ -4063,6 +4330,143 @@ export const chatSyncSchemaSurfaceBaseline = {
                                 "type": "null"
                               }
                             ]
+                          },
+                          "imageResolutions": {
+                            "default": [],
+                            "type": "array",
+                            "items": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "source": {
+                                      "type": "string"
+                                    },
+                                    "canonicalSource": {
+                                      "type": "string"
+                                    },
+                                    "width": {
+                                      "default": null,
+                                      "anyOf": [
+                                        {
+                                          "type": "integer",
+                                          "exclusiveMinimum": 0,
+                                          "maximum": 9007199254740991
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "height": {
+                                      "default": null,
+                                      "anyOf": [
+                                        {
+                                          "type": "integer",
+                                          "exclusiveMinimum": 0,
+                                          "maximum": 9007199254740991
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "state": {
+                                      "type": "string",
+                                      "const": "resolved"
+                                    },
+                                    "attachmentHash": {
+                                      "type": "string",
+                                      "pattern": "^[0-9a-f]{64}$"
+                                    },
+                                    "mediaType": {
+                                      "type": "string",
+                                      "enum": [
+                                        "image/png",
+                                        "image/jpeg",
+                                        "image/gif",
+                                        "image/webp",
+                                        "image/svg+xml"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "source",
+                                    "canonicalSource",
+                                    "width",
+                                    "height",
+                                    "state",
+                                    "attachmentHash",
+                                    "mediaType"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "source": {
+                                      "type": "string"
+                                    },
+                                    "canonicalSource": {
+                                      "type": "string"
+                                    },
+                                    "width": {
+                                      "default": null,
+                                      "anyOf": [
+                                        {
+                                          "type": "integer",
+                                          "exclusiveMinimum": 0,
+                                          "maximum": 9007199254740991
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "height": {
+                                      "default": null,
+                                      "anyOf": [
+                                        {
+                                          "type": "integer",
+                                          "exclusiveMinimum": 0,
+                                          "maximum": 9007199254740991
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "state": {
+                                      "type": "string",
+                                      "enum": [
+                                        "blocked",
+                                        "consent-required",
+                                        "oversized",
+                                        "not-found"
+                                      ]
+                                    },
+                                    "attachmentHash": {
+                                      "default": null,
+                                      "type": "null"
+                                    },
+                                    "mediaType": {
+                                      "default": null,
+                                      "type": "null"
+                                    }
+                                  },
+                                  "required": [
+                                    "source",
+                                    "canonicalSource",
+                                    "width",
+                                    "height",
+                                    "state",
+                                    "attachmentHash",
+                                    "mediaType"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
                           }
                         },
                         "required": [
@@ -4075,7 +4479,8 @@ export const chatSyncSchemaSurfaceBaseline = {
                           "turnId",
                           "usage",
                           "reasoningEffort",
-                          "serviceTier"
+                          "serviceTier",
+                          "imageResolutions"
                         ],
                         "additionalProperties": false
                       }

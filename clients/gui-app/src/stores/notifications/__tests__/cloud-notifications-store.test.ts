@@ -23,6 +23,7 @@ import { HOST_STREAM_REOPEN_INITIAL_BACKOFF_MS } from "@/lib/host/stream-reopen"
 import {
   cloudNotificationFeedId,
   openCloudNotificationsStream,
+  selectCloudEntityReadTargets,
   useCloudNotificationsStore,
 } from "@/stores/notifications/cloud-notifications-store";
 
@@ -255,6 +256,27 @@ describe("cloud notifications store", () => {
     });
   });
 
+  it("selects focused entity reads from only the focused origin host", () => {
+    const hostA = cloudFailureRow("failure-a", 1);
+    const hostB = {
+      ...cloudFailureRow("failure-b", 2),
+      originHostId: "host-b",
+    };
+    useCloudNotificationsStore.getState().applySnapshot({
+      rows: [hostA, hostB],
+      summary: { ...summary, totalCount: 2, unreadCount: 2 },
+      version: 1,
+    });
+
+    expect(
+      selectCloudEntityReadTargets(
+        useCloudNotificationsStore.getState(),
+        { epicId: "epic-1", chatId: "chat-1" },
+        "host-a",
+      ),
+    ).toEqual(["failure-a"]);
+  });
+
   it("adopts a newer version from a content-identical snapshot", () => {
     const row = cloudRow("entry-a", 1, "host-a");
     useCloudNotificationsStore.getState().applySnapshot({
@@ -313,7 +335,7 @@ describe("cloud notifications store", () => {
         summary: staleSummary,
         version: 9,
       }),
-    ).toEqual([]);
+    ).toBeNull();
   });
 
   it("ignores a delayed snapshot from below the version already rendered", () => {
@@ -399,7 +421,7 @@ describe("cloud notifications store", () => {
     });
   });
 
-  it("keeps unresolved needs-action rows in attention after optimistic mark-all-read", () => {
+  it("moves unresolved needs-action rows out of attention after optimistic mark-all-read", () => {
     const failure = cloudFailureRow("entry-failure", 10);
     const prompt = cloudPromptRow("entry-prompt", 20);
     useCloudNotificationsStore.getState().applySnapshot({
@@ -414,14 +436,14 @@ describe("cloud notifications store", () => {
     expect(cloud.summary).toEqual({
       totalCount: 2,
       unreadCount: 0,
-      attentionCount: 1,
+      attentionCount: 0,
     });
     expect(Object.values(cloud.rows).map((row) => row?.entry.readAt)).toEqual([
       30, 30,
     ]);
   });
 
-  it("preserves summary-only attention after optimistic mark-all-read", () => {
+  it("clears summary-only attention after optimistic mark-all-read", () => {
     const failure = cloudFailureRow("entry-failure", 10);
     useCloudNotificationsStore.getState().applySnapshot({
       rows: [failure],
@@ -435,22 +457,22 @@ describe("cloud notifications store", () => {
     expect(useCloudNotificationsStore.getState().summary).toEqual({
       totalCount: 2,
       unreadCount: 0,
-      attentionCount: 1,
+      attentionCount: 0,
     });
   });
 
-  it("decrements optimistic attention only for failures during entity-read fan-out", () => {
+  it("decrements optimistic attention for every read-based attention row during entity-read fan-out", () => {
     const failure = cloudFailureRow("entry-failure", 10);
-    const informational = cloudRow("entry-info", 20, "host-a");
+    const prompt = cloudPromptRow("entry-prompt", 20);
     useCloudNotificationsStore.getState().applySnapshot({
-      rows: [failure, informational],
-      summary: { totalCount: 2, unreadCount: 2, attentionCount: 1 },
+      rows: [failure, prompt],
+      summary: { totalCount: 2, unreadCount: 2, attentionCount: 2 },
       version: 1,
     });
 
     useCloudNotificationsStore
       .getState()
-      .beginEntityRead([failure.entryId, informational.entryId], 30);
+      .beginEntityRead([failure.entryId, prompt.entryId], 30);
 
     expect(useCloudNotificationsStore.getState().summary).toEqual({
       totalCount: 2,
@@ -557,6 +579,57 @@ describe("cloud notifications store", () => {
       summary: { totalCount: 0, unreadCount: 0, attentionCount: 0 },
     });
     expect(useCloudNotificationsStore.getState().rows).toEqual({});
+    close();
+  });
+
+  it("reports baseline rows as a snapshot even when there are no arrivals", () => {
+    const client = new ControlledWsStreamClient();
+    const onSnapshot = vi.fn();
+    const close = openCloudNotificationsStream(client, null, null, onSnapshot);
+    const row = cloudRow("entry-a", 4, "host-a");
+
+    client.sessions[0].emitServerFrame({
+      kind: "snapshot",
+      hasBinaryPayload: false,
+      connectionState: "connected",
+      version: 4,
+      rows: [row],
+      summary,
+    });
+
+    expect(onSnapshot).toHaveBeenCalledWith({ rows: [row], arrivals: [] });
+    close();
+  });
+
+  it("does not forward a lower-version snapshot after rejecting its rewind", () => {
+    const client = new ControlledWsStreamClient();
+    const onSnapshot = vi.fn();
+    const close = openCloudNotificationsStream(client, null, null, onSnapshot);
+    const accepted = cloudRow("entry-current", 10, "host-a");
+
+    client.sessions[0].emitServerFrame({
+      kind: "snapshot",
+      hasBinaryPayload: false,
+      connectionState: "connected",
+      version: 10,
+      rows: [accepted],
+      summary,
+    });
+    onSnapshot.mockClear();
+
+    client.sessions[0].emitServerFrame({
+      kind: "snapshot",
+      hasBinaryPayload: false,
+      connectionState: "connected",
+      version: 9,
+      rows: [cloudRow("entry-stale", 9, "host-a")],
+      summary: staleSummary,
+    });
+
+    expect(onSnapshot).not.toHaveBeenCalled();
+    expect(useCloudNotificationsStore.getState().rows).toEqual({
+      [cloudNotificationFeedId("entry-current")]: accepted,
+    });
     close();
   });
 

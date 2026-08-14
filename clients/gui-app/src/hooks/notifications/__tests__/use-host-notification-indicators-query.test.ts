@@ -29,6 +29,13 @@ const flushQueryNotifications = async (): Promise<void> => {
   });
 };
 
+// The indicator hook resolves its own client from a host id (so the surfaces
+// that mount it need no host plumbing of their own). This suite builds the
+// `HostClient` itself, so the resolver is pointed straight at it.
+vi.mock("@/hooks/host/use-host-client-for-host-id", () => ({
+  useHostClientForHostId: () => hostClient,
+}));
+
 vi.mock("@/lib/host", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/host")>();
   return {
@@ -63,6 +70,37 @@ describe("indicatorRequests", () => {
     ]);
     expect(requests[0].chatIds).toEqual(["chat-a", "chat-b"]);
     expect(requests[1].chatIds).toEqual([]);
+  });
+
+  it("pairs epic and chat chunks without a cross-product", () => {
+    const epicIds = Array.from(
+      { length: HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP + 1 },
+      (_value, index) => `epic-${index}`,
+    );
+    const chatIds = Array.from(
+      { length: HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP + 1 },
+      (_value, index) => `chat-${index}`,
+    );
+
+    const requests = indicatorRequests(epicIds, chatIds);
+
+    const sortedEpicIds = [...epicIds].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    const sortedChatIds = [...chatIds].sort((left, right) =>
+      left.localeCompare(right),
+    );
+
+    expect(requests).toEqual([
+      {
+        epicIds: sortedEpicIds.slice(0, HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
+        chatIds: sortedChatIds.slice(0, HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
+      },
+      {
+        epicIds: sortedEpicIds.slice(HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
+        chatIds: sortedChatIds.slice(HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
+      },
+    ]);
   });
 });
 
@@ -141,6 +179,7 @@ describe("useHostNotificationIndicators recovery", () => {
     const { result } = renderHook(
       () =>
         useHostNotificationIndicators({
+          hostId: mockLocalHostEntry.hostId,
           epicIds: ["epic-a"],
           chatIds: [],
           enabled: true,
