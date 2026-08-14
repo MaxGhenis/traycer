@@ -532,7 +532,7 @@ describe("cloud-derived notification indicators", () => {
     expect(harness.cloudMarkRead.calls).toEqual(["entry-approval"]);
   });
 
-  it("keeps a resolved approval lit until its notification is read", async () => {
+  it("stops lighting an approval once the cloud row carries resolvedAt", async () => {
     const harness = createHarness(EMPTY_HOST_RESPONSE);
     applyCloudSnapshot(
       [
@@ -565,22 +565,6 @@ describe("cloud-derived notification indicators", () => {
         }),
       ],
       2,
-    );
-
-    await waitFor(() => {
-      expect(indicatorText("chat")).toBe("pendingApproval");
-    });
-
-    applyCloudSnapshot(
-      [
-        cloudApproval({
-          entryId: "entry-approval",
-          originHostId: OTHER_HOST_ID,
-          readAt: 3_000,
-          resolvedAt: 2_000,
-        }),
-      ],
-      3,
     );
 
     await waitFor(() => {
