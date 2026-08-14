@@ -111,7 +111,8 @@ function selectHostIndicatorState(
  * snapshots, already filtered for cleared/superseded), and every row carries
  * the entity columns, severity, kind and markers, so it can mirror the host's
  * derivation over rows from EVERY host rather than only the connected one.
- * Pending prompts are ORed normally. Terminal rows first resolve to the newest
+ * Unread prompt notifications are ORed normally, independently of whether the
+ * underlying workflow has resolved. Terminal rows first resolve to the newest
  * outcome for each lifecycle group and exact entity within one origin host,
  * whose timestamps share a clock domain. Those per-host winners are then
  * rolled into epic state. This lets a later success replace an earlier failure
@@ -300,9 +301,9 @@ function indicatorContribution(
   entry: HostNotificationEntry,
 ): HostNotificationsIndicatorState | null {
   const pendingApproval =
-    entry.kind === "approval.requested" && entry.resolvedAt === null;
+    entry.kind === "approval.requested" && entry.readAt === null;
   const pendingInterview =
-    entry.kind === "interview.requested" && entry.resolvedAt === null;
+    entry.kind === "interview.requested" && entry.readAt === null;
   if (!pendingApproval && !pendingInterview) {
     return null;
   }
