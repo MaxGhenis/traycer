@@ -528,7 +528,7 @@ describe("cloud notification indicator derivation", () => {
     expect(result).toEqual({ epics: {}, chats: {} });
   });
 
-  it("lights an approval only while its notification is unread", () => {
+  it("lights an approval only while it is unresolved and unread", () => {
     const unresolved = selectCloudNotificationIndicators(
       rowsById([prompt("approval", "approval.requested", null, null)]),
       [],
@@ -546,7 +546,7 @@ describe("cloud notification indicator derivation", () => {
     );
 
     expect(unresolved.chats["chat-1"].pendingApproval).toBe(true);
-    expect(resolvedButUnread.chats["chat-1"].pendingApproval).toBe(true);
+    expect(resolvedButUnread.chats["chat-1"]).toBeUndefined();
     expect(unresolvedButRead.chats["chat-1"]).toBeUndefined();
   });
 

@@ -301,9 +301,13 @@ function indicatorContribution(
   entry: HostNotificationEntry,
 ): HostNotificationsIndicatorState | null {
   const pendingApproval =
-    entry.kind === "approval.requested" && entry.readAt === null;
+    entry.kind === "approval.requested" &&
+    entry.readAt === null &&
+    entry.resolvedAt === null;
   const pendingInterview =
-    entry.kind === "interview.requested" && entry.readAt === null;
+    entry.kind === "interview.requested" &&
+    entry.readAt === null &&
+    entry.resolvedAt === null;
   if (!pendingApproval && !pendingInterview) {
     return null;
   }
