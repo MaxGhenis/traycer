@@ -65,6 +65,8 @@ import {
 } from "@/stores/notifications/cloud-notifications-store";
 import { useNotificationsPopoverStore } from "@/stores/notifications/notifications-popover-store";
 import { useAppLocalNotificationUnreadCount } from "@/stores/notifications/app-local-notifications-store";
+import { useHostNotificationUnreadCount } from "@/stores/notifications/host-notifications-store";
+import { useNotificationUnreadCount } from "@/stores/notifications/notifications-store";
 import { useSystemTabModalActions } from "@/stores/tabs/use-system-tab-modal";
 
 interface NotificationsPopoverProps {
@@ -105,7 +107,9 @@ function isAttentionSectionVisible(input: {
 function isMarkAllReadDisabled(input: {
   readonly unreadCount: number;
   readonly loadedHostAttentionCount: number;
+  readonly hostUnreadCount: number;
   readonly appLocalUnreadCount: number;
+  readonly globalUnreadCount: number;
   readonly hasActiveHost: boolean;
   readonly cloudConnectionState: CloudNotificationsConnectionState | null;
 }): boolean {
@@ -119,15 +123,25 @@ function isMarkAllReadDisabled(input: {
     // `unreadCount` alone disabled the control in precisely the case the
     // fan-out was added for: a local `needs_action` row already read via
     // navigation, still dismissable, and the only thing left to act on.
-    if (input.unreadCount === 0 && actionableHostAttention === 0) return true;
-    // The cloud LEG still needs its connection; the host leg's own liveness is
-    // already carried by `hasActiveHost` above, and app-local unread rows are
-    // client-side state that needs neither - they stay actionable while the
-    // cloud is away.
+    //
+    // Everything on the CLOUD-INDEPENDENT side of the fan-out counts here:
+    // the host plane's own unread rows (its liveness is the notification
+    // host's, not the relay's), plus the app-local and collaboration rows,
+    // which are client-side state. The merged `unreadCount` cannot stand in
+    // for them - it deliberately reads 0 while either summary is null, so a
+    // cloud feed that has not produced a snapshot yet would disable a button
+    // whose host leg is fully actionable.
+    const cloudIndependentWork =
+      actionableHostAttention +
+      (input.hasActiveHost ? input.hostUnreadCount : 0) +
+      input.appLocalUnreadCount +
+      input.globalUnreadCount;
+    if (input.unreadCount === 0 && cloudIndependentWork === 0) return true;
+    // Only the cloud LEG needs its connection: with no cloud-independent work
+    // left, a disconnected relay is the one thing standing between the click
+    // and a no-op.
     return (
-      input.unreadCount > 0 &&
-      input.appLocalUnreadCount === 0 &&
-      input.cloudConnectionState !== "connected"
+      cloudIndependentWork === 0 && input.cloudConnectionState !== "connected"
     );
   }
   return input.unreadCount === 0 && actionableHostAttention === 0;
@@ -183,6 +197,11 @@ export function NotificationsPopover(
   const recentIds = useRecentNotificationIds();
   const unreadCount = useMergedNotificationUnreadCount();
   const appLocalUnreadCount = useAppLocalNotificationUnreadCount();
+  // The cloud-independent planes, read raw for the Mark-all gate: the merged
+  // count deliberately reads 0 while either summary is null, which must not
+  // disable a button whose host/global/app-local legs are fully actionable.
+  const hostUnreadCount = useHostNotificationUnreadCount();
+  const globalUnreadCount = useNotificationUnreadCount();
   const actions = useMergedNotificationsActions();
   const [clearAllConfirmOpen, setClearAllConfirmOpen] = useState(false);
   const hostState = useNotificationCenterHostState();
@@ -436,7 +455,9 @@ export function NotificationsPopover(
           isMarkAllReadDisabled={isMarkAllReadDisabled({
             unreadCount,
             loadedHostAttentionCount,
+            hostUnreadCount,
             appLocalUnreadCount,
+            globalUnreadCount,
             hasActiveHost: notificationHostId !== null,
             cloudConnectionState: cloudPresentationState,
           })}

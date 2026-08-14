@@ -1105,6 +1105,16 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
           // cloud-only early return below.
           appLocalMarkAllAsRead(Date.now());
           globalMarkAllAsRead();
+          // The HOST leg runs before that early return too, and for the same
+          // independence reason: the host plane is a separate origin store
+          // whose liveness is the notification host's, not the relay's. A
+          // mark-all issued while the cloud is reconnecting must still clear
+          // the live host's `home: local` partition, or those rows stay
+          // unread behind an enabled button. Marking read never resolves the
+          // underlying question or permission request.
+          if (client !== null && notificationHostId !== null) {
+            markHostAllRead.mutate({ beforeUpdatedAt: Date.now() });
+          }
           if (cloudConnectionState !== "connected" || cloudVersion === null) {
             return;
           }
@@ -1149,15 +1159,6 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
               if (!isHostUnsupportedError(error)) return;
               await fallBackToEntryMutations();
             });
-          // The cloud call above settles the CLOUD plane only. The host plane
-          // is a separate origin store with its own read state, so a
-          // mark-all issued while the cloud feed is rendered still has to
-          // clear the host side, or a feed-mode switch resurrects rows the
-          // user just cleared. Marking read never resolves the underlying
-          // question or permission request.
-          if (client !== null && notificationHostId !== null) {
-            markHostAllRead.mutate({ beforeUpdatedAt: Date.now() });
-          }
           return;
         }
         if (feedMode !== "local") return;
