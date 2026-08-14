@@ -8,14 +8,22 @@ import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { useCompactRelativeTime } from "@/lib/relative-time";
 import { useHostReachability } from "@/hooks/agent/use-host-reachability";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
-import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import {
+  useEpicCanvasStore,
+  useIsActiveEpicArtifact,
+  useIsActiveTile,
+} from "@/stores/epics/canvas/store";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
-import { makePublishedChatTileRef } from "@/stores/epics/canvas/tile-schema/published-chat-tile";
+import {
+  makePublishedChatTileRef,
+  publishedChatTileId,
+} from "@/stores/epics/canvas/tile-schema/published-chat-tile";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { TreeChevronSpacer } from "@/components/ui/tree-chevron";
 import {
   BASE_PAD_LEFT,
   INDENT_PX,
+  useNodeIconDisplay,
 } from "@/components/epic-canvas/sidebar/epic-sidebar-tree-shared";
 
 /**
@@ -65,6 +73,12 @@ export function EpicSidebarCloudChatRow(
   // byte pipe any reachable host can answer, and the tile the ref opens binds
   // its own tab's host for life regardless. The OWNING host below is metadata.
   const readingHostId = useReactiveActiveHostId() ?? UNKNOWN_HOST_PLACEHOLDER;
+  // The SAME tint rule a local chat row's idle glyph resolves (settings-driven
+  // per-type color, muted only when the user turns icon colors off). A
+  // hardcoded muted class here made the icon column encode row ORIGIN - local
+  // rows colored, cloud rows grey - when read-only-ness is the lock badge's
+  // job and provenance is nobody's.
+  const chatIconDisplay = useNodeIconDisplay("chat");
   const ownerReachability = useHostReachability(chat.ownerHostId);
   // The lock is the CHAT's state, not the row's category. A cloud row whose
   // owning host is reachable is an ordinary chat that simply is not on this
@@ -89,6 +103,23 @@ export function EpicSidebarCloudChatRow(
   const prepareOpenTileInTabFocusTarget = useEpicCanvasStore(
     (s) => s.prepareOpenTileInTabFocusTarget,
   );
+
+  // Whether this tab is showing THIS row's chat - in either of the two forms a
+  // click below can open it. A live open is an ordinary record-backed chat
+  // tile, so it matches by artifact id; the bare-chatId match shares the
+  // documented bounded same-minted-chatId collision the union byId already
+  // carries. A published copy is deliberately NOT record-backed, so the
+  // artifact selector reads null for it and only its composite tile id can
+  // match.
+  const isActiveLive = useIsActiveEpicArtifact(
+    props.tabId,
+    chat.identity.chatId,
+  );
+  const isActivePublished = useIsActiveTile(
+    props.tabId,
+    publishedChatTileId(chat.identity),
+  );
+  const isActive = isActiveLive || isActivePublished;
 
   const publishedTileRef = useCallback(
     () =>
@@ -156,7 +187,7 @@ export function EpicSidebarCloudChatRow(
   const ownerLabel = ownerReachability.hostLabel;
   const lockCopy = lockedRowCopy(ownerLabel);
   return (
-    <li role="treeitem" aria-selected={false}>
+    <li role="treeitem" aria-selected={isActive}>
       <button
         type="button"
         // The lock is state, not decoration, so it belongs in the row's
@@ -169,9 +200,12 @@ export function EpicSidebarCloudChatRow(
         data-owner-host-id={chat.ownerHostId}
         className={cn(
           "group/tree-item flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md py-1 pr-2",
-          "text-left text-ui-sm font-normal text-foreground/75 transition-colors",
-          "hover:bg-accent/70 hover:text-accent-foreground",
+          "text-left text-ui-sm font-normal transition-colors",
           "focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-2",
+          // The SAME two arms a tree row's chatRowClassName resolves, verbatim.
+          isActive
+            ? "bg-accent text-accent-foreground"
+            : "text-foreground/75 hover:bg-accent/70 hover:text-accent-foreground",
         )}
         style={{
           paddingLeft: `${props.depth * INDENT_PX + BASE_PAD_LEFT}px`,
@@ -180,12 +214,16 @@ export function EpicSidebarCloudChatRow(
         onDoubleClick={props.selectionMode ? undefined : openPermanent}
       >
         <TreeChevronSpacer />
-        {/* The SAME icon a local chat row renders. A distinct glyph for
-            "arrived via the cloud list" would re-encode the demolished "other
-            devices" section as iconography - provenance, not state. State is
-            the lock badge below; the cause stays in words (host chip, tooltip,
-            composer notice). */}
-        <ChatIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        {/* The SAME icon a local chat row renders - glyph AND tint. A distinct
+            glyph or a muted tint for "arrived via the cloud list" would
+            re-encode the demolished "other devices" section as iconography -
+            provenance, not state. State is the lock badge below; the cause
+            stays in words (host chip, tooltip, composer notice). */}
+        <ChatIcon
+          aria-hidden
+          className={chatIconDisplay.className}
+          style={chatIconDisplay.style}
+        />
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           <span className="min-w-0 flex-1 truncate">{title}</span>
           {/* The lock states what is true of the CHAT - its owner is out of

@@ -49,6 +49,7 @@ const localSnapshot: LocalHostSnapshot = {
   pid: 4242,
   systemHostName: "hardiks-macbook",
   displayName: "hardiks-macbook",
+  availability: "available",
 };
 const HOST_PICKER_TEST_TIMEOUT_MS = 30_000;
 
@@ -222,7 +223,7 @@ describe("<HostPicker /> directory-change reactivity", () => {
         kind: "remote",
         websocketUrl: "wss://relay.traycer.invalid/attach",
         version: localSnapshot.version,
-        status: "available",
+        transportDialability: "dialable",
       };
       render(
         <TraycerApp

@@ -80,8 +80,8 @@ import {
 } from "@/components/epic-canvas/canvas/tab-strip-context-menu";
 import { EpicNodeTabIcon } from "@/components/epic-canvas/epic-node-tab-icon";
 import { useHorizontalWheelScroll } from "@/hooks/use-horizontal-wheel-scroll";
-import { useNotificationIndicators } from "@/hooks/notifications/use-notification-indicators-query";
-import { NotificationIndicatorsProvider } from "@/components/notifications/notification-indicators-provider";
+import { ChatIndicatorHostScopes } from "@/components/notifications/chat-indicator-host-scopes";
+import { chatIndicatorHostScopes } from "@/lib/notifications/chat-indicator-scopes";
 import { useCanvasTabLeaderModifierForIndex } from "@/providers/keybinding-context";
 import { LeaderDigitBadge } from "@/components/ui/leader-digit-badge";
 import {
@@ -237,26 +237,39 @@ export function TabStrip(props: TabStripProps) {
   // Terminal-agent tabs are chat-scoped notification entities too: a TUI
   // agent's `agent.stopped` row is keyed by its agent id, and the tab icon
   // already reads `chats[tab.id]`.
-  const chatIds = useMemo(
+  //
+  // Grouped by the tab's OWN bound host, not asked of the app-wide active one.
+  // A strip can hold a retained cross-host tab beside a local one, and
+  // `indicatorState` only ever answers about the rows its own host holds: the
+  // active-host read left host B's `pendingFork` permanently dark and could
+  // light a tab from an unrelated chat on A that shares its host-minted id.
+  const indicatorScopes = useMemo(
     () =>
-      tabs.flatMap((tab) =>
-        tab.type === "chat" || tab.type === "terminal-agent" ? [tab.id] : [],
+      chatIndicatorHostScopes(
+        tabs.flatMap((tab) =>
+          tab.type === "chat" || tab.type === "terminal-agent"
+            ? [{ hostId: tab.hostId, chatId: tab.id }]
+            : [],
+        ),
       ),
     [tabs],
   );
+  // Every chat and terminal-agent tab on this strip belongs to the strip's
+  // epic; naming the owner lets each host layer ask for its exact
+  // `home: local` partition in mixed mode instead of the pendingFork-only
+  // import a whole-origin answer permits.
   const chatEpicIds = useMemo(
-    () => Object.fromEntries(chatIds.map((chatId) => [chatId, epicId])),
-    [chatIds, epicId],
+    () =>
+      Object.fromEntries(
+        indicatorScopes.flatMap((scope) =>
+          scope.chatIds.map((chatId) => [chatId, epicId]),
+        ),
+      ),
+    [indicatorScopes, epicId],
   );
-  const notificationIndicators = useNotificationIndicators({
-    epicIds: [],
-    chatIds,
-    chatEpicIds,
-    enabled: chatIds.length > 0,
-  });
 
   return (
-    <NotificationIndicatorsProvider indicators={notificationIndicators}>
+    <ChatIndicatorHostScopes scopes={indicatorScopes} chatEpicIds={chatEpicIds}>
       <div
         ref={stripRef}
         data-testid="tab-strip"
@@ -334,7 +347,7 @@ export function TabStrip(props: TabStripProps) {
           </Button>
         </div>
       </div>
-    </NotificationIndicatorsProvider>
+    </ChatIndicatorHostScopes>
   );
 }
 

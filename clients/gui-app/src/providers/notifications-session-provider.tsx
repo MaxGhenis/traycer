@@ -655,6 +655,14 @@ function NotificationsSessionBody(
     }
     if (notificationFeedMode === "cloud") {
       if (localStreamClient === null) return;
+      // The cloud feed owns host/agent rows only. Collaboration events are
+      // still written to the per-user Notifications room, so cloud mode must
+      // keep that replica live alongside the relay or sharing notifications
+      // disappear after the mode-transition reset below.
+      disposerRef.current = openNotificationsStream(
+        createNotificationsStream,
+        onAuthError,
+      );
       cloudDisposerRef.current = openCloudNotificationsStream(
         localStreamClient,
         onAuthError,
@@ -844,7 +852,18 @@ function NotificationsSessionBody(
       // is slow or offline. Dropping the replica makes the window a brief
       // empty rather than a confidently wrong merge.
       if (projectionChanged) resetHostProjection();
+      // A cloud-to-local capability change must never leave cloud rows on
+      // screen. Renderer-local failure rows survive either direction because
+      // no host or cloud feed can reproduce them.
       resetCloudRelaySession();
+      // Entering either cloud-facing state also discards the retained v1 room
+      // replica: the collaboration stream reopens in cloud mode and lands its
+      // own baseline snapshot, and global rows are part of the merged feed's
+      // local lane now - retained pre-transition rows would render as current
+      // until that baseline arrived.
+      if (notificationFeedMode !== "local") {
+        useNotificationsStore.getState().reset();
+      }
     }
     // A replaced stream client under the SAME host + user (the app-wide
     // liveness rebuild after the client was closed underneath the provider)

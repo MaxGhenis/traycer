@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import * as Y from "yjs";
 import { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import { mockLocalHostEntry } from "@traycer-clients/shared/host-client/mock/mock-host-directory";
@@ -710,7 +711,7 @@ describe("<NotificationsSessionProvider />", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses the dedicated host-selected activity stream while cloud relay owns notification rows", async () => {
+  it("keeps local failures and ingests collaboration rows alongside the cloud relay", async () => {
     const queryClient = new QueryClient();
     const streamClient = new MockWsStreamClient();
     hostState.id = mockLocalHostEntry.hostId;
@@ -722,6 +723,7 @@ describe("<NotificationsSessionProvider />", () => {
     emitTerminalCrashedNotification({
       instanceId: "terminal-before-cloud",
       hostId: "host-a",
+      terminalName: "Terminal before cloud",
       target: {
         kind: "terminal",
         epicId: "epic-1",
@@ -752,19 +754,43 @@ describe("<NotificationsSessionProvider />", () => {
       // not reopened as streams; retained store rows are ignored by merge.
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
       ]);
-      expect(streamClient.subscribedMethods).not.toContain(
-        "notifications.subscribe",
+      // App-local failure rows survive the transition (no feed can reproduce
+      // them); the v1 room replica is discarded and refilled by the reopened
+      // collaboration stream's own baseline below.
+      expect(useAppLocalNotificationsStore.getState().orderedIds).toHaveLength(
+        1,
+      );
+      expect(useNotificationsStore.getState().entryIds).toEqual([]);
+    });
+
+    const collaborationDoc = new Y.Doc();
+    collaborationDoc
+      .getArray<NotificationRoomEntryMap>(NOTIFICATIONS_ARRAY_KEY)
+      .push([
+        createNotificationRoomEntryMap(
+          invitedEntry("global-after-cloud", "epic-1"),
+        ),
+      ]);
+    act(() => {
+      streamClient.sessionFor("notifications.subscribe").emitBinaryServerFrame(
+        {
+          kind: "snapshot",
+          meta: { schemaVersion: "2" },
+          hasBinaryPayload: true,
+        },
+        Y.encodeStateAsUpdate(collaborationDoc),
       );
     });
-    // Pre-mixed local-only inventory may still sit in their stores; mixed
-    // mode no longer wipes them (the host feed survives the capability edge).
-    expect(
-      useAppLocalNotificationsStore.getState().orderedIds.length,
-    ).toBeGreaterThan(0);
-    expect(useNotificationsStore.getState().entryIds.length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(useNotificationsStore.getState().entryIds).toEqual([
+        "global-after-cloud",
+      ]);
+    });
+    collaborationDoc.destroy();
 
     act(() => {
       streamClient.sessionFor("agent.activity.subscribe").emitServerFrame({
@@ -778,6 +804,9 @@ describe("<NotificationsSessionProvider />", () => {
     });
 
     expect([...getEpicAgentActivity("epic-1").working]).toEqual(["agent-1"]);
+    expect(useNotificationsStore.getState().entryIds).toEqual([
+      "global-after-cloud",
+    ]);
 
     act(() => {
       streamClient.sessionFor("agent.activity.subscribe").emitStatus("closed");
@@ -810,6 +839,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(firstClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
       ]);
@@ -830,6 +860,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(secondClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
       ]);
@@ -844,6 +875,9 @@ describe("<NotificationsSessionProvider />", () => {
     expect(
       firstClient.sessionFor("host.notifications.feed.subscribe").closeCount,
     ).toBe(1);
+    expect(firstClient.sessionFor("notifications.subscribe").closeCount).toBe(
+      1,
+    );
   });
 
   it("opens both partitioned notification streams only after schema versions negotiate", async () => {
@@ -906,11 +940,11 @@ describe("<NotificationsSessionProvider />", () => {
         "agent.activity.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
+        // Mixed mode keeps the per-user Notifications room replica live -
+        // collaboration events are still written there, not to the relay.
+        "notifications.subscribe",
       ]);
     });
-    expect(completeClient.subscribedMethods).not.toContain(
-      "notifications.subscribe",
-    );
     streamState.useClientSupport = false;
   });
 
@@ -934,6 +968,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
       ]);
@@ -952,6 +987,7 @@ describe("<NotificationsSessionProvider />", () => {
       });
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
         "agent.activity.subscribe",
@@ -962,7 +998,9 @@ describe("<NotificationsSessionProvider />", () => {
           .emitClosed(fatalClose("INCOMPATIBLE"));
         vi.advanceTimersByTime(2 * HOST_STREAM_REOPEN_MAX_BACKOFF_MS);
       });
-      expect(streamClient.subscribedMethods).toHaveLength(4);
+      // The four initial streams plus the single recoverable reopen above -
+      // an INCOMPATIBLE close must add nothing more.
+      expect(streamClient.subscribedMethods).toHaveLength(5);
     } finally {
       vi.useRealTimers();
     }
@@ -988,6 +1026,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
       ]);
@@ -1249,6 +1288,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
       ]);
@@ -1289,9 +1329,11 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(streamClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
       ]);
@@ -1323,6 +1365,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(firstClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
       ]);
@@ -1345,6 +1388,7 @@ describe("<NotificationsSessionProvider />", () => {
     await waitFor(() => {
       expect(replacementClient.subscribedMethods).toEqual([
         "agent.activity.subscribe",
+        "notifications.subscribe",
         "host.notifications.cloudFeed.subscribe",
         "host.notifications.feed.subscribe",
       ]);
@@ -1541,6 +1585,7 @@ describe("<NotificationsSessionProvider />", () => {
     emitTerminalCrashedNotification({
       instanceId: "terminal-before-user-switch",
       hostId: "host-a",
+      terminalName: "Terminal before user switch",
       target: {
         kind: "terminal",
         epicId: "epic-alpha",
@@ -1627,6 +1672,7 @@ describe("<NotificationsSessionProvider />", () => {
     emitTerminalCrashedNotification({
       instanceId: "terminal-user-a",
       hostId: "host-a",
+      terminalName: "User A terminal",
       target: {
         kind: "terminal",
         epicId: "epic-alpha",
@@ -1716,6 +1762,7 @@ describe("<NotificationsSessionProvider />", () => {
     emitTerminalCrashedNotification({
       instanceId: "terminal-before-host-switch",
       hostId: "host-a",
+      terminalName: "Terminal before host switch",
       target: {
         kind: "terminal",
         epicId: "epic-alpha",
@@ -2051,6 +2098,7 @@ describe("<NotificationsSessionProvider />", () => {
     emitTerminalCrashedNotification({
       instanceId: "disconnect-system",
       hostId: "host-a",
+      terminalName: "Disconnected terminal",
       target: {
         kind: "terminal",
         epicId: "epic-alpha",
@@ -2701,6 +2749,7 @@ describe("<NotificationsSessionProvider />", () => {
       emitTerminalCrashedNotification({
         instanceId: "terminal-a-instance",
         hostId: mockLocalHostEntry.hostId,
+        terminalName: "Terminal A",
         target: {
           kind: "terminal",
           epicId: "epic-a",
@@ -2740,6 +2789,7 @@ describe("<NotificationsSessionProvider />", () => {
       emitTerminalCrashedNotification({
         instanceId: "terminal-a-on-host-b",
         hostId: "host-b",
+        terminalName: "Terminal A on host B",
         target: {
           kind: "terminal",
           epicId: "epic-a",
@@ -2777,6 +2827,7 @@ describe("<NotificationsSessionProvider />", () => {
       emitTerminalCrashedNotification({
         instanceId: "terminal-b-instance",
         hostId: "host-b",
+        terminalName: "Terminal B",
         target: {
           kind: "terminal",
           epicId: "epic-a",

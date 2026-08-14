@@ -1932,7 +1932,7 @@ describe("WsStreamClient", () => {
       kind: "local",
       websocketUrl: "ws://127.0.0.1:4917/rpc",
       version: "0.0.0-test",
-      status: "available",
+      transportDialability: "dialable",
     };
     const client = new WsStreamClient({
       registry: hostStreamRpcRegistry,
@@ -1966,7 +1966,7 @@ describe("WsStreamClient", () => {
       kind: "local",
       websocketUrl: "ws://127.0.0.1:4917/stream",
       version: "0.0.0-test",
-      status: "available",
+      transportDialability: "dialable",
     };
     const client = new WsStreamClient({
       registry: hostStreamRpcRegistry,
@@ -2875,7 +2875,7 @@ describe("WsStreamClient host credential provisioning", () => {
     kind: "local",
     websocketUrl: "ws://127.0.0.1:4917/rpc",
     version: "0.0.0-mock",
-    status: "available",
+    transportDialability: "dialable",
   };
   const HOST_B: HostDirectoryEntry = {
     hostId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -2883,7 +2883,7 @@ describe("WsStreamClient host credential provisioning", () => {
     kind: "remote",
     websocketUrl: "wss://mock-remote.traycer.invalid/rpc",
     version: "0.0.0-mock",
-    status: "available",
+    transportDialability: "dialable",
   };
 
   type Provisioned = Extract<

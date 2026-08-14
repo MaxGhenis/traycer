@@ -145,15 +145,13 @@ function remoteTarget(publicKey: string): RemoteHostDirectoryEntry {
     // same-URL event by construction, so this stays identical across A/B.
     websocketUrl: RELAY_URL,
     version: "1.0.0",
-    status: "available",
+    transportDialability: "dialable",
     publicKey,
+    relayFuseGrace: false,
     remoteStatus: {
-      presenceLease: "fresh",
-      hostRelayAttached: true,
+      connectivity: "connectable",
       viewerReachability: "ok",
       clientCloud: "ok",
-      busy: false,
-      busySessionCount: 0,
       updateState: "current",
       appVersion: null,
       lastSeenAt: null,
@@ -220,7 +218,8 @@ function remoteIdentity(publicKey: string): RemoteSessionIdentity {
 }
 
 const DEFAULT_PRESENTATION: DefaultHostReadinessPresentation = {
-  localTarget: false,
+  targetKind: "remote",
+  localBootIntent: false,
   localHostState: "unknown",
   stage: "loading",
   progress: null,
@@ -234,6 +233,10 @@ const DEFAULT_PRESENTATION: DefaultHostReadinessPresentation = {
   forceProvisioning: () => undefined,
   reinstall: () => undefined,
   configureShell: () => undefined,
+  refreshDirectory: () => undefined,
+  openHostPicker: () => undefined,
+  openSettings: () => undefined,
+  anyHostDialable: false,
   requestRespawn: () => undefined,
   respawnPending: false,
   compatibility: {
@@ -311,7 +314,7 @@ describe("HostStreamProvider", () => {
       hostClient.bind({
         ...mockLocalHostEntry,
         websocketUrl: "ws://127.0.0.1:4918/rpc",
-        status: "available",
+        transportDialability: "dialable",
       });
     });
 
@@ -448,7 +451,7 @@ describe("HostStreamProvider", () => {
       hostClient.bind({
         ...mockLocalHostEntry,
         websocketUrl: "ws://127.0.0.1:4918/rpc",
-        status: "available",
+        transportDialability: "dialable",
       });
     });
 
@@ -543,14 +546,54 @@ describe("HostStreamProvider", () => {
     expect(sessionForKeyB.closeCalls).toBe(0);
   });
 
-  it("stops stream work for a same-id unavailable host and recreates it only on recovery", () => {
+  it("stops stream work when the host is unbound and recreates it only on rebind", () => {
+    // The client is keyed on bound host identity (D5.3), not on default-host
+    // surface readiness. Unbinding drops the client; rebinding mints a fresh
+    // one. Same-id endpoint loss (websocketUrl null) is not an identity
+    // change for a local host - the client survives and re-dials via the
+    // live endpoint() callback, which is the whole point of holding the
+    // client across a restart so availability recovery can fire.
     const closeSpy = vi.spyOn(WsStreamClient.prototype, "close");
     const hostClient = buildClient();
     bindingRef.value = { hostClient };
     act(() => {
       hostClient.bind(mockLocalHostEntry);
     });
-    let controller = streamController(true);
+
+    const { result } = renderHook(() => useWsStreamClient(), { wrapper });
+    const first = result.current;
+    expect(first).toBeInstanceOf(WsStreamClient);
+    expect(streamFactorySpy.build).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      hostClient.bind(null);
+    });
+    expect(result.current).toBeNull();
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(closeSpy.mock.contexts[0]).toBe(first);
+
+    act(() => {
+      hostClient.bind(mockLocalHostEntry);
+    });
+    expect(result.current).toBeInstanceOf(WsStreamClient);
+    expect(result.current).not.toBe(first);
+    expect(streamFactorySpy.build).toHaveBeenCalledTimes(2);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("builds the stream client from the bound host identity even while default-host readiness is non-ready", () => {
+    // D5.3: availability recovery (notifyAvailabilityRecovered) is the only
+    // designed un-strand signal for host-scoped queries. Gating the stream
+    // client on default-host readiness inverted that dependency - the
+    // mechanism that restores readiness was disabled for exactly as long as
+    // readiness was broken. The client is built from the bound host identity;
+    // surface readiness must not withhold it.
+    const hostClient = buildClient();
+    bindingRef.value = { hostClient };
+    act(() => {
+      hostClient.bind(mockLocalHostEntry);
+    });
+    const controller = streamController(false);
     const readinessWrapper = (props: {
       readonly children: ReactNode;
     }): ReactNode => (
@@ -559,34 +602,10 @@ describe("HostStreamProvider", () => {
       </HostReadinessControllerContext.Provider>
     );
 
-    const { result, rerender } = renderHook(() => useWsStreamClient(), {
+    const { result } = renderHook(() => useWsStreamClient(), {
       wrapper: readinessWrapper,
     });
-    const first = result.current;
-    expect(first).toBeInstanceOf(WsStreamClient);
-    expect(streamFactorySpy.build).toHaveBeenCalledTimes(1);
-
-    controller = streamController(false);
-    act(() => {
-      hostClient.bind({
-        ...mockLocalHostEntry,
-        websocketUrl: null,
-        status: "unavailable",
-      });
-      rerender();
-    });
-    expect(result.current).toBeNull();
-    expect(closeSpy).toHaveBeenCalledTimes(1);
-    expect(closeSpy.mock.contexts[0]).toBe(first);
-
-    controller = streamController(true);
-    act(() => {
-      hostClient.bind(mockLocalHostEntry);
-      rerender();
-    });
     expect(result.current).toBeInstanceOf(WsStreamClient);
-    expect(result.current).not.toBe(first);
-    expect(streamFactorySpy.build).toHaveBeenCalledTimes(2);
-    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(streamFactorySpy.build).toHaveBeenCalledTimes(1);
   });
 });

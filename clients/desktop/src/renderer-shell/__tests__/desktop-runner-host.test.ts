@@ -79,6 +79,7 @@ function buildFakeBridge(
     validateAuthTokenIdentity: async () => ({ kind: "rejected" as const }),
     listRegisteredHosts: async () => ({ kind: "network-error" as const }),
     updateHostVersionPolicy: async () => ({ kind: "network-error" as const }),
+    deregisterHostFromAccount: async () => ({ kind: "network-error" as const }),
     tokenStore: ((): ITokenStore => {
       let stored: StoredCredentials | null = null;
       return {
@@ -571,6 +572,7 @@ const validSnapshot: LocalHostSnapshot = {
   pid: 1234,
   systemHostName: "desktop-1",
   displayName: "desktop-1",
+  availability: "available",
 };
 
 function buildDroppedFile(name: string, type: string, content: string): File {

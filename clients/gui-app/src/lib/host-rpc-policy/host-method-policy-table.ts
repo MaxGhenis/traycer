@@ -303,7 +303,41 @@ const LATEST_SCHEDULING = {
 } as const;
 
 export const HOST_METHOD_POLL_TABLE = {
-  "host.status": { ...LATEST_SCHEDULING, poll: null },
+  // Opt-in polling (`poll: true`), for one caller: the Overview's drain
+  // affordance. Its `busySessionCount` is the number "Apply now — ends N
+  // sessions" promises and then destroys, so the question is not whether the
+  // cached value may be reused but whether it is still TRUE. Going stale does
+  // not refetch on its own, so without a cadence a focused Overview served the
+  // count it read on mount indefinitely.
+  //
+  // Under the query's `staleTime` (30s), deliberately: this interval keeps a
+  // healthy read fresh while `isStale` demotes an unhealthy one to `null`. The
+  // two numbers are one mechanism and must move together.
+  "host.status": {
+    ...LATEST_SCHEDULING,
+    poll: { kind: "fixed", intervalMs: 10_000 },
+  },
+  // Restart commits host admission state before its deferred teardown.
+  "host.restart": { mode: "fifo", joinResponseTimeoutMs: null, poll: null },
+  // The host's own name: a bounded read that can coalesce. It has no poll —
+  // the host watches `host-name.json`, so a rename made anywhere else lands on
+  // the next read (or the next explicit invalidation) rather than needing one.
+  "host.identity.get": { ...LATEST_SCHEDULING, poll: null },
+  // Renaming persists a file the heartbeat then publishes; rapid edits must
+  // land in the order the user made them, so this is never coalesced.
+  "host.identity.set": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "host.doctor": { ...LATEST_SCHEDULING, poll: null },
+  "host.update.check": { ...LATEST_SCHEDULING, poll: null },
+  "host.update.install": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "host.getInstallationInfo": { ...LATEST_SCHEDULING, poll: null },
   "host.getRuntimeCapabilities": { ...LATEST_SCHEDULING, poll: null },
   // Explicit, state-changing local-store repair: rapid confirmation clicks
   // must stay ordered and must never be coalesced into one implicit claim.
@@ -349,7 +383,7 @@ export const HOST_METHOD_POLL_TABLE = {
     joinResponseTimeoutMs: null,
     poll: null,
   },
-  // Dismissing an attention row resolves it (persists the acknowledgement).
+  // Retained for compatible occurrence-scoped workflow resolution callers.
   "host.notifications.resolve": {
     mode: "fifo",
     joinResponseTimeoutMs: null,
@@ -693,6 +727,22 @@ export const HOST_METHOD_POLL_TABLE = {
     joinResponseTimeoutMs: null,
     poll: null,
   },
+  // Visibility mutations. Optional host capability. The coordinator's queue
+  // identity is method + full params, so these two methods never share a
+  // queue and two per-chat flips of different chats do not either. fifo
+  // only serializes identical retries of the SAME call. Cross-surface
+  // ordering (master toggle vs per-chat) is a client-side one-in-flight
+  // gate per (task, viewer) — subsequent requests are refused, not queued.
+  "epic.setCloudChatVisibility": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "epic.setChatSharingDefault": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
   "epic.prepareArtifactImage": {
     mode: "fifo",
     joinResponseTimeoutMs: null,
@@ -806,6 +856,32 @@ export const HOST_METHOD_POLL_TABLE = {
   // One-shot read: the doc content of an unreachable owner's chat cannot
   // change while its owner is away.
   "epic.chatReplicaRead": { ...LATEST_SCHEDULING, poll: null },
+  // The store-backed chat RECORD channel (chat-sync-v2 ticket 49).
+  //
+  // POLLED, at a cadence, and the reason is that there is no invalidation edge
+  // to ride. The facts this serves - a chat was created, renamed, re-parented,
+  // archived, deleted - are committed to the chat DATABASE and, since the
+  // single-write pivot, are written NOWHERE the renderer already listens: not
+  // into the epic Y.Doc (whose update stream is the only per-epic push channel
+  // a client has), and not into any per-epic frame on `epic.subscribe`. The
+  // host's registry does emit a change stream internally, but it has no wire
+  // surface, and giving it one is a new STREAM method - handshake-fatal against
+  // a released peer on a surface whose whole point here is to degrade quietly.
+  //
+  // A condition policy was the alternative and does not fit: `defineConditionPolicy`
+  // classifies from THIS method's own response, and nothing in a list of chat
+  // rows says whether another one is about to appear. The honest classification
+  // is "always maybe", which is a fixed interval wearing a lane's clothes.
+  //
+  // 20s: a local in-memory registry read, one per open epic. It bounds how long
+  // a chat created on ANOTHER device (or by an agent, or by the CLI) stays
+  // missing from this renderer's tree - the same staleness the sidebar's own
+  // cloud list already tolerates at 30s - and the client's own mutations do not
+  // wait for it, since they invalidate this key on success.
+  "epic.listChatRecords": {
+    ...LATEST_SCHEDULING,
+    poll: { kind: "fixed", intervalMs: 20 * SECOND_MS },
+  },
   // The publisher's own convergence sweep is 30s, so a 45s local read is
   // responsive without asking faster than the underlying state can change.
   "epic.chatBackupStatus": {
@@ -854,6 +930,15 @@ export const HOST_METHOD_POLL_TABLE = {
   // No poll: the PR detail stream is what notices a new push, and a re-render
   // off a changed `headRefOid` re-keys the query on its own.
   "pr.getLocalDiff": { ...LATEST_SCHEDULING, poll: null },
+  // The composer's PR/issue mention sections. Both are latest-wins with no
+  // poll: the menu is open for seconds at a time and drives every fetch
+  // explicitly (open, refresh click, filter change), so there is no cadence
+  // to keep - and a superseded read has nothing worth waiting for.
+  "mention.githubCatalog": { ...LATEST_SCHEDULING, poll: null },
+  // Latest-wins is load-bearing here rather than incidental: the section
+  // searches as the user types, and a queued query that has already been
+  // retyped past must not be the one that lands.
+  "mention.githubSearch": { ...LATEST_SCHEDULING, poll: null },
   // Creating a terminal allocates a host PTY session.
   "terminal.create": { mode: "fifo", joinResponseTimeoutMs: null, poll: null },
   // Killing a terminal terminates a host PTY session.
@@ -1218,6 +1303,43 @@ export const HOST_METHOD_POLL_TABLE = {
     joinResponseTimeoutMs: null,
     poll: null,
   },
+  // Config reads and bounded diagnostics reads can coalesce safely; config
+  // writes are ordered so rapid user changes are all persisted in sequence.
+  "config.shell.get": { ...LATEST_SCHEDULING, poll: null },
+  "config.shell.set": { mode: "fifo", joinResponseTimeoutMs: null, poll: null },
+  "config.shell.reset": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "config.shell.add": { mode: "fifo", joinResponseTimeoutMs: null, poll: null },
+  "config.shell.remove": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "config.shell.revertArgs": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "config.shell.listDetected": { ...LATEST_SCHEDULING, poll: null },
+  "config.shell.probe": { ...LATEST_SCHEDULING, poll: null },
+  "config.env.list": { ...LATEST_SCHEDULING, poll: null },
+  "config.env.set": { mode: "fifo", joinResponseTimeoutMs: null, poll: null },
+  "config.env.delete": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "config.logLevels.get": { ...LATEST_SCHEDULING, poll: null },
+  "config.logLevels.set": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "diagnostics.logs.list": { ...LATEST_SCHEDULING, poll: null },
+  "diagnostics.logs.tail": { ...LATEST_SCHEDULING, poll: null },
   // A bounded read over settled facts (Usage page + epic cost badge). The
   // Settings panel controls its own refetch (window/metric change, manual
   // retry) and opts out of polling; the ambient epic cost badge opts in

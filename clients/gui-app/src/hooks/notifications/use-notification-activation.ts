@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type { IHostDirectoryService } from "@traycer-clients/shared/host-client/host-runtime";
 import { useHostBinding } from "@/lib/host";
+import { dialableHostEndpoint } from "@/lib/host/transport-key";
 import {
   routeNotificationForHost,
   type NotificationNavigate,
@@ -55,7 +56,13 @@ function ensureOriginHostSelected(input: {
   }
   if (input.directory === null) return false;
   const origin = input.directory.findById(input.originHostId);
-  if (origin?.status !== "available") return false;
+  // Coarse read, through the canonical rule: this decides whether to SELECT the
+  // origin host and route to it, which is only worth doing if a client can be
+  // built for it — a pure yes/no about a route, with no per-reason copy hanging
+  // off it. Asking `dialableHostEndpoint` rather than the bit directly is what
+  // makes `indeterminate` route (the dial is attempted and fails recoverably)
+  // instead of silently refusing to open an approval the user just clicked.
+  if (origin === null || dialableHostEndpoint(origin) === null) return false;
   input.directory.selectById(origin.hostId);
   return true;
 }

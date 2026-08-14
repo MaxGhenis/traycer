@@ -163,7 +163,7 @@ describe("NotificationFocusBridge", () => {
             ...mockLocalHostEntry,
             hostId: "other-host",
             label: "Other Machine",
-            status: "unavailable",
+            transportDialability: "not-dialable",
           };
         }
         return null;

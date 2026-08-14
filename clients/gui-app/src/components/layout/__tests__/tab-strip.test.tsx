@@ -340,11 +340,18 @@ function buildHeaderEpicHandle(
   };
 }
 
+/** Chat sessions are keyed by (epic, chat, host); these fixtures all live on
+ *  one host, so the header's aggregate reads see them all. */
+const CHAT_SESSION_HOST = "host-1";
+
 function registerChatSession(epicId: string, chatId: string): void {
   __getChatSessionRegistryForTests().acquire(
-    epicId,
-    chatId,
-    `test:${epicId}:${chatId}`,
+    {
+      epicId,
+      chatId,
+      hostId: CHAT_SESSION_HOST,
+      scopeKey: `test:${epicId}:${chatId}`,
+    },
     (factoryEpicId, factoryChatId) =>
       createChatSessionStore({
         hostId: "host-a",
@@ -961,6 +968,7 @@ describe("<TabStrip />", () => {
     const handle = __getChatSessionRegistryForTests().peek(
       EPIC_A.id,
       "chat-background",
+      CHAT_SESSION_HOST,
     );
     if (handle === null) throw new Error("expected chat session handle");
     handle.store.setState({
@@ -999,10 +1007,12 @@ describe("<TabStrip />", () => {
     const backgroundHandle = __getChatSessionRegistryForTests().peek(
       EPIC_A.id,
       "chat-background",
+      CHAT_SESSION_HOST,
     );
     const turnHandle = __getChatSessionRegistryForTests().peek(
       EPIC_A.id,
       "chat-turn",
+      CHAT_SESSION_HOST,
     );
     if (backgroundHandle === null || turnHandle === null) {
       throw new Error("expected chat session handles");
@@ -1048,6 +1058,7 @@ describe("<TabStrip />", () => {
     const handle = __getChatSessionRegistryForTests().peek(
       EPIC_A.id,
       "chat-waiting",
+      CHAT_SESSION_HOST,
     );
     if (handle === null) throw new Error("expected chat session handle");
     handle.store.setState({
@@ -1066,6 +1077,7 @@ describe("<TabStrip />", () => {
     const handle = __getChatSessionRegistryForTests().peek(
       EPIC_A.id,
       "chat-permission",
+      CHAT_SESSION_HOST,
     );
     if (handle === null) throw new Error("expected chat session handle");
     handle.store.setState({

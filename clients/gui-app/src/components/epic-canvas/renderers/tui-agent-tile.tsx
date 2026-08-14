@@ -140,6 +140,7 @@ export function TuiAgentTile(props: TuiAgentTileProps) {
     emitTerminalCrashedNotification({
       instanceId: props.node.instanceId,
       hostId,
+      terminalName: props.node.name,
       target: {
         kind: "terminal",
         epicId,
@@ -155,6 +156,7 @@ export function TuiAgentTile(props: TuiAgentTileProps) {
     hostId,
     props.node.id,
     props.node.instanceId,
+    props.node.name,
     props.tileId,
     props.viewTabId,
   ]);
@@ -165,6 +167,7 @@ export function TuiAgentTile(props: TuiAgentTileProps) {
     emitTerminalCrashedNotification({
       instanceId: props.node.instanceId,
       hostId,
+      terminalName: props.node.name,
       target: {
         kind: "terminal",
         epicId,
@@ -180,6 +183,7 @@ export function TuiAgentTile(props: TuiAgentTileProps) {
     hostId,
     props.node.id,
     props.node.instanceId,
+    props.node.name,
     props.tileId,
     props.viewTabId,
   ]);
@@ -206,6 +210,10 @@ export function TuiAgentTile(props: TuiAgentTileProps) {
   }, [sessionId]);
   useEffect(() => {
     if (reachability.status !== "unreachable") return;
+    // Same reason gate as `terminal-tile`: a `plan-restricted` host is running,
+    // so nothing closed and a persisted "closed" entry would be a lie an
+    // upgrade immediately contradicts.
+    if (reachability.unavailability === "plan-restricted") return;
     emitTerminalClosedNotification({
       instanceId: props.node.instanceId,
       hostId,
@@ -222,6 +230,7 @@ export function TuiAgentTile(props: TuiAgentTileProps) {
   }, [
     reachability.status,
     reachability.hostLabel,
+    reachability.unavailability,
     epicId,
     hostId,
     props.node.id,
@@ -234,6 +243,7 @@ export function TuiAgentTile(props: TuiAgentTileProps) {
       <TerminalDeadTileBanner
         hostLabel={reachability.hostLabel}
         ownerKind="agent"
+        unavailability={reachability.unavailability}
         onClose={closeCanvasTile}
         testId={`terminal-agent-tile-${props.tileId}`}
       />

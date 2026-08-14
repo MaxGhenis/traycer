@@ -7,7 +7,8 @@ import type {
 } from "@traycer/protocol/host/notifications/contracts";
 import { HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP } from "@traycer/protocol/host/notifications/contracts";
 import type { HostRpcRegistry } from "@/lib/host";
-import { useNotificationHost } from "@/hooks/notifications/use-notification-host";
+import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
+import { useNotificationHostId } from "@/hooks/notifications/use-notification-host";
 import { useHostQueries } from "@/hooks/host/use-host-queries";
 import { notificationsQueryKeys } from "@/lib/query-keys";
 import { useAuthStore } from "@/stores/auth/auth-store";
@@ -18,6 +19,28 @@ const EMPTY_INDICATOR_STATE: HostNotificationsIndicatorStateResponse = {
 };
 
 export interface UseHostNotificationIndicatorsArgs {
+  /**
+   * The host to ASK. Required, and required to be explicit: this RPC is
+   * computed over ONE host's SQLite rows, so an answer is only about the
+   * entities that host owns. A caller that reaches for the app-wide active
+   * host because it is the easy one to get is exactly how a chat bound to
+   * another host ends up asking a machine that has never heard of it - and how
+   * a host-minted id that two hosts happen to share lights the wrong surface.
+   *
+   * `null` means the NOTIFICATION host - the machine whose feed the
+   * notification centre renders - which is the right answer only for a caller
+   * whose ids are EPIC ids: an Epic is a shared cloud entity rather than a
+   * host-owned record, so the question is "what does the centre's machine
+   * hold about it". Only when no local host exists does resolution fall back
+   * to the app-wide active client.
+   *
+   * Resolution stays INSIDE this hook rather than being hoisted to the caller,
+   * because this module is the seam every consuming surface's test already
+   * replaces. A caller that resolved its own client would reach the host
+   * runtime around that seam, and every suite rendering such a surface would
+   * have to start providing one.
+   */
+  readonly hostId: string | null;
   readonly epicIds: ReadonlyArray<string>;
   readonly chatIds: ReadonlyArray<string>;
   /** Chat ids do not encode durable home; callers that select a home provide
@@ -48,19 +71,26 @@ type CombinedIndicatorResults = Omit<HostNotificationIndicatorsQuery, "hostId">;
 
 /**
  * One surface-level indicator observer. The visible ids are canonicalized and
- * paired into cap-sized requests, so normal surfaces issue one RPC and very
- * large surfaces grow only by 500-id pages rather than one observer per row.
+ * split into cap-sized requests, so normal surfaces issue one RPC and very
+ * large surfaces grow by bounded pages rather than one observer per row.
+ * Epic chunks are crossed with chat chunks because every task aggregate must
+ * receive the complete live-chat whitelist.
  */
 export function useHostNotificationIndicators(
   args: UseHostNotificationIndicatorsArgs,
 ): HostNotificationIndicatorsQuery {
-  // The notification host, never the app-wide active one: this answers a
-  // `home: local` partition question ABOUT the machine whose feed the centre
-  // is rendering. Asked of a different host it describes that host's local
-  // partition instead, so indicators light for rows the feed does not hold and
-  // stay dark for rows it does.
-  const notificationHost = useNotificationHost();
-  const client = notificationHost.client;
+  // The caller-named owner when present; otherwise the NOTIFICATION host,
+  // never the app-wide active one. A `null` caller is asking about the feed
+  // the notification centre renders (`home: local` is a partition question
+  // ABOUT that machine), and that centre is pinned to the local host - asked
+  // of a different host it describes that host's local partition instead, so
+  // indicators light for rows the feed does not hold and stay dark for rows
+  // it does. The id-half hook keeps this null-safe in provider-less trees;
+  // only when no local host exists does the resolver fall back to the
+  // app-wide client, which is the pre-local-room behaviour.
+  const notificationHostId = useNotificationHostId();
+  const resolvedHostId = args.hostId ?? notificationHostId;
+  const client = useHostClientForHostId(resolvedHostId);
   const userId = useAuthStore((state) => state.contextMetadata?.userId ?? null);
   const requests = useMemo(
     () =>
@@ -104,8 +134,8 @@ export function useHostNotificationIndicators(
     }),
   });
   return useMemo(
-    () => ({ ...combined, hostId: notificationHost.hostId }),
-    [combined, notificationHost.hostId],
+    () => ({ ...combined, hostId: resolvedHostId }),
+    [combined, resolvedHostId],
   );
 }
 
@@ -117,9 +147,11 @@ export function indicatorRequests(
 ): ReadonlyArray<HostNotificationsIndicatorStateRequestV11> {
   const epicChunks = chunkIds(epicIds);
   const chatChunks = chunkIds(chatIds);
-  const count = Math.max(epicChunks.length, chatChunks.length);
-  return Array.from({ length: count }, (_value, index) => {
-    const chatIdsForRequest = [...(chatChunks[index] ?? [])];
+  const request = (
+    epicChunk: ReadonlyArray<string> | undefined,
+    chatChunk: ReadonlyArray<string> | undefined,
+  ): HostNotificationsIndicatorStateRequestV11 => {
+    const chatIdsForRequest = [...(chatChunk ?? [])];
     const chatEpicIdsForRequest = Object.fromEntries(
       chatIdsForRequest.flatMap((chatId) => {
         // `Object.hasOwn` rather than an `=== undefined` compare: the map is a
@@ -132,14 +164,27 @@ export function indicatorRequests(
       }),
     );
     return {
-      epicIds: [...(epicChunks[index] ?? [])],
+      epicIds: [...(epicChunk ?? [])],
       chatIds: chatIdsForRequest,
       ...(home === undefined ? {} : { home }),
       ...(Object.keys(chatEpicIdsForRequest).length === 0
         ? {}
         : { chatEpicIds: chatEpicIdsForRequest }),
     };
-  });
+  };
+  if (epicChunks.length === 0) {
+    return chatChunks.map((chatChunk) => request(undefined, chatChunk));
+  }
+  if (chatChunks.length === 0) {
+    return epicChunks.map((epicChunk) => request(epicChunk, undefined));
+  }
+  // Epic chunks are CROSSED with chat chunks rather than paired index-wise:
+  // every task aggregate must receive the complete live-chat whitelist, and a
+  // chat id landing in a request without its epic would silently narrow that
+  // epic's aggregate to the chats that happened to share its page.
+  return epicChunks.flatMap((epicChunk) =>
+    chatChunks.map((chatChunk) => request(epicChunk, chatChunk)),
+  );
 }
 
 function chunkIds(
@@ -174,11 +219,33 @@ function mergeIndicatorResponses(
   if (responses.length === 0) return EMPTY_INDICATOR_STATE;
   return responses.reduce<HostNotificationsIndicatorStateResponse>(
     (combined, response) => ({
-      epics: { ...combined.epics, ...response.epics },
-      chats: { ...combined.chats, ...response.chats },
+      epics: mergeEntityIndicatorStates(combined.epics, response.epics),
+      chats: mergeEntityIndicatorStates(combined.chats, response.chats),
     }),
     EMPTY_INDICATOR_STATE,
   );
+}
+
+function mergeEntityIndicatorStates(
+  left: HostNotificationsIndicatorStateResponse["epics"],
+  right: HostNotificationsIndicatorStateResponse["epics"],
+): HostNotificationsIndicatorStateResponse["epics"] {
+  const merged = { ...left };
+  for (const [entityId, state] of Object.entries(right)) {
+    if (!Object.hasOwn(merged, entityId)) {
+      merged[entityId] = state;
+      continue;
+    }
+    const prior = merged[entityId];
+    merged[entityId] = {
+      pendingApproval: prior.pendingApproval || state.pendingApproval,
+      pendingInterview: prior.pendingInterview || state.pendingInterview,
+      pendingFork: prior.pendingFork || state.pendingFork,
+      unreadFailure: prior.unreadFailure || state.unreadFailure,
+      unreadDone: prior.unreadDone || state.unreadDone,
+    };
+  }
+  return merged;
 }
 
 function firstSupportedHostError(

@@ -18,6 +18,11 @@ import {
   useEpicRenameChat,
 } from "@/hooks/epic/use-epic-chat-mutations";
 import { useChatArchiveSupported } from "@/hooks/epic/use-chat-archive-support";
+import { useCloudChatVisibilitySupported } from "@/hooks/epic/use-chat-sharing-support";
+import { useEpicSetCloudChatVisibility } from "@/hooks/epic/use-epic-chat-visibility-mutations";
+import { useEpicSessionHostClient } from "@/hooks/epic/use-epic-session-host-client";
+import { useChatSharingInFlight } from "@/lib/chats/chat-sharing-inflight";
+import { useEpicCollaboratorsQuery } from "@/hooks/epics/use-epic-collaborators-query";
 import {
   useEpicDeleteTuiAgent,
   useEpicRenameTuiAgent,
@@ -138,9 +143,17 @@ import {
   useChatPublicationTargets,
 } from "@/hooks/chats/use-chat-publication-targets";
 import {
+  indexOwnCloudChatsByLocalId,
   mergeChatListEntries,
   selectUnfoldedCloudChats,
 } from "@/lib/chats/unified-chat-list";
+import {
+  decideChatSharingMenuEntry,
+  shouldShowSharedWithTaskIndicator,
+  SHARED_WITH_TASK_TOOLTIP,
+  taskHasCollaborators,
+  type ChatSharingMenuDecision,
+} from "@/lib/chats/chat-sharing-ux";
 import { AgentRoleBadges } from "./agent-role-badges";
 import { AgentHoverTooltip } from "@/components/epic-canvas/sidebar/agent-hover-tooltip";
 import { isEditableRole } from "@/lib/epic-permissions";
@@ -155,6 +168,7 @@ import {
   Pencil,
   Plus,
   Trash2,
+  Users,
 } from "lucide-react";
 import {
   createContext,
@@ -177,6 +191,7 @@ import {
   INDENT_PX,
   anyMutationPending,
   nodePadRightClass,
+  useNodeIconDisplay,
 } from "./epic-sidebar-tree-shared";
 import { TreeGroupGuide } from "./epic-sidebar-tree-guide";
 import {
@@ -209,6 +224,7 @@ import { SidebarPanelEmptyState } from "@/components/epic-canvas/sidebar/sidebar
 import { resolveProfileAccentDot } from "@/components/worktree/worktree-owner-settings-model";
 import { harnessProfiles } from "@/components/worktree/worktree-owner-settings-profiles";
 import { useNotificationIndicators } from "@/hooks/notifications/use-notification-indicators-query";
+import { useEpicSessionHostId } from "@/hooks/epic/use-epic-session-host-id";
 import {
   SidebarContextMenuItems,
   SidebarDropdownMenuItems,
@@ -257,6 +273,26 @@ const SidebarViewerContext = createContext<boolean>(false);
  * hidden until a handshake proves the method present.
  */
 const SidebarArchiveSupportedContext = createContext<boolean>(false);
+
+interface SidebarChatSharingValue {
+  readonly visibilitySupported: boolean;
+  readonly ownCloudChatByLocalId: ReadonlyMap<string, CloudChatSummary>;
+  readonly hasCollaborators: boolean;
+}
+
+const EMPTY_OWN_CLOUD_CHATS: ReadonlyMap<string, CloudChatSummary> = new Map();
+
+/**
+ * Per-chat sharing facts that are identical for every row (capability, the
+ * fold of local ids onto cloud rows, whether this task has an audience).
+ * Resolved once in `ChatTreePanelBody` and read by the rows, matching
+ * {@link SidebarArchiveSupportedContext}.
+ */
+const SidebarChatSharingContext = createContext<SidebarChatSharingValue>({
+  visibilitySupported: false,
+  ownCloudChatByLocalId: EMPTY_OWN_CLOUD_CHATS,
+  hasCollaborators: false,
+});
 
 /** Frozen so an absent cloud list does not re-run the fold every render. */
 const EMPTY_CLOUD_CHATS: readonly CloudChatSummary[] = [];
@@ -586,6 +622,17 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
   const chatFilter = useChatFilter(epicId);
   const baseArchiveHiddenIds = useSidebarArchiveHiddenIds(epicId);
   const canArchive = useChatArchiveSupported();
+  const canSetVisibility = useCloudChatVisibilitySupported();
+  // Epic-session-bound like every other sharing fact in this tree: the
+  // shared-with-task glyph must reflect the tab's owning host, not whichever
+  // host the app is active on.
+  const sessionHostClient = useEpicSessionHostClient();
+  const collaboratorsQuery = useEpicCollaboratorsQuery(epicId, {
+    client: sessionHostClient,
+    poll: undefined,
+    staleTime: undefined,
+  });
+  const hasCollaborators = taskHasCollaborators(collaboratorsQuery.data);
   const originRootIds = useMemo(
     () => applyVisibleFilter(allRootIds, originVisibleIds),
     [allRootIds, originVisibleIds],
@@ -615,7 +662,15 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
       Object.fromEntries(indicatorChatIds.map((chatId) => [chatId, epicId])),
     [indicatorChatIds, epicId],
   );
+  const epicSessionHostId = useEpicSessionHostId();
   const notificationIndicators = useNotificationIndicators({
+    // The chats in this tree are THIS Epic session's, and the session's host is
+    // not necessarily the app-wide active one - a retained Epic tab keeps its
+    // binding while another host is selected. `indicatorState` is computed over
+    // one host's own rows, so the active host would answer about chats it does
+    // not own (see `EpicBackupStatusIndicator`, which scopes the same way for
+    // the same reason).
+    hostId: epicSessionHostId,
     epicIds: [],
     chatIds: indicatorChatIds,
     chatEpicIds: indicatorChatEpicIds,
@@ -694,6 +749,41 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
         ),
       }),
     [cloudChats.data, localChatIds, publicationTargets.data],
+  );
+  // Sharing fold, mutations, and cache keys all address the Epic session
+  // host. The v2 rendered list above stays on the app-wide client — that
+  // hook is shipped and is not this ticket. The redirect map is host-LOCAL
+  // (only the epic's host knows C1→C2), so reading it from the active host
+  // would make "Make private" mutate the wrong lineage after a fork.
+  const sharingCloudChats = useCloudChatList({
+    client: sessionHostClient,
+    taskId: epicId,
+    enabled: epicId.length > 0,
+  });
+  const sharingPublicationTargets = useChatPublicationTargets({
+    client: sessionHostClient,
+    epicId,
+    chatIds: localChatIds,
+    enabled: epicId.length > 0,
+  });
+  const ownCloudChatByLocalId = useMemo(
+    () =>
+      indexOwnCloudChatsByLocalId({
+        chats: sharingCloudChats.data?.chats ?? EMPTY_CLOUD_CHATS,
+        localChatIds,
+        publicationChatIdByChatId: publicationTargetMap(
+          sharingPublicationTargets.data,
+        ),
+      }),
+    [localChatIds, sharingCloudChats.data, sharingPublicationTargets.data],
+  );
+  const chatSharingValue = useMemo<SidebarChatSharingValue>(
+    () => ({
+      visibilitySupported: canSetVisibility,
+      ownCloudChatByLocalId,
+      hasCollaborators,
+    }),
+    [canSetVisibility, hasCollaborators, ownCloudChatByLocalId],
   );
   // The sidebar's own filters apply to cloud rows too. They were reaching only
   // the local tree, so an "Unarchived only" list still drew archived remote
@@ -1004,19 +1094,21 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
   return (
     <NotificationIndicatorsProvider indicators={notificationIndicators}>
       <SidebarArchiveSupportedContext.Provider value={canArchive}>
-        <SidebarViewerContext.Provider value={isViewer}>
-          <SidebarSortContext.Provider value={comparator}>
-            <SidebarFilterVisibilityContext.Provider value={visibleIds}>
-              <SidebarContent className="gap-0">
-                <SidebarGroup className="min-h-0 flex-1 px-2 py-1">
-                  <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
-                    {panelContent}
-                  </SidebarGroupContent>
-                </SidebarGroup>
-              </SidebarContent>
-            </SidebarFilterVisibilityContext.Provider>
-          </SidebarSortContext.Provider>
-        </SidebarViewerContext.Provider>
+        <SidebarChatSharingContext.Provider value={chatSharingValue}>
+          <SidebarViewerContext.Provider value={isViewer}>
+            <SidebarSortContext.Provider value={comparator}>
+              <SidebarFilterVisibilityContext.Provider value={visibleIds}>
+                <SidebarContent className="gap-0">
+                  <SidebarGroup className="min-h-0 flex-1 px-2 py-1">
+                    <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
+                      {panelContent}
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                </SidebarContent>
+              </SidebarFilterVisibilityContext.Provider>
+            </SidebarSortContext.Provider>
+          </SidebarViewerContext.Provider>
+        </SidebarChatSharingContext.Provider>
       </SidebarArchiveSupportedContext.Provider>
     </NotificationIndicatorsProvider>
   );
@@ -1405,6 +1497,7 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
       epicId={epicId}
       tabId={tabId}
       nodeId={nodeId}
+      ownerHostId={ownerHostId}
       nodeName={nodeName}
       artifactType={artifactType}
       depth={depth}
@@ -1450,6 +1543,9 @@ interface ChatNodeShellProps {
   readonly epicId: string;
   readonly tabId: string;
   readonly nodeId: string;
+  /** The row's OWN owner host, resolved once in `ChatNode` and threaded down
+   *  so the leading icon and the archive affordances read the same session. */
+  readonly ownerHostId: string | null;
   readonly nodeName: string;
   readonly artifactType: EpicNodeKind;
   readonly depth: number;
@@ -1524,6 +1620,7 @@ function ChatNodeShellArchivable(props: ChatNodeShellProps) {
   const status = useChatRowOwnStatusKind({
     epicId: props.epicId,
     nodeId: props.nodeId,
+    ownerHostId: props.ownerHostId,
     artifactType: props.artifactType,
   });
   return (
@@ -1551,6 +1648,7 @@ function ChatNodeShellBody(
     epicId,
     tabId,
     nodeId,
+    ownerHostId,
     nodeName,
     artifactType,
     depth,
@@ -1610,13 +1708,16 @@ function ChatNodeShellBody(
     });
   }, [canMutate, epicId, nodeId, openNewConversationModal, tabId]);
   const { decision } = props;
+  const sharing = useChatRowSharing(epicId, nodeId, artifactType, canMutate);
   const rowMenuEntries = chatRowMenuEntries({
     nodeId,
     canMutate,
     archiveEntry: decision.entry,
+    sharingEntry: sharing.entry,
     onNewChildAgent: handleNewChildAgent,
     onStartRename,
     onToggleArchive: archiveRow.onToggle,
+    onToggleSharing: sharing.onToggle,
     onPerformDelete,
   });
 
@@ -1646,6 +1747,7 @@ function ChatNodeShellBody(
           <ChatRenameRow
             epicId={epicId}
             depth={depth}
+            ownerHostId={ownerHostId}
             artifactType={artifactType}
             renameInputRef={renameInputRef}
             renameValue={renameValue}
@@ -1678,6 +1780,7 @@ function ChatNodeShellBody(
             onToggleSelection={onToggleSelection}
             isArchived={archiveRow.isArchived}
             reserveArchiveSlot={decision.showButton}
+            showSharedIndicator={sharing.showIndicator}
           />
         )}
 
@@ -1847,28 +1950,6 @@ function ChatRowLeadingIconSlot(props: { readonly children: ReactNode }) {
 }
 
 /**
- * Per-type icon color customization, read here rather than threaded from the
- * tree root so the leading icon stays a leaf concern. `ChatProgressIcon`
- * already subscribes to exactly these two settings internally for chat rows;
- * mirroring it here keeps a terminal-agent's bot glyph from staying muted
- * while chat glyphs pick up "color by type" in the same column.
- */
-function useNodeIconDisplay(artifactType: EpicNodeKind): {
-  readonly className: string;
-  readonly style: { color: string | undefined } | undefined;
-} {
-  const colorMode = useSettingsStore((s) => s.artifactIconColorMode);
-  const color = useSettingsStore((s) => s.artifactIconColors[artifactType]);
-  return {
-    className: cn(
-      "size-3.5 shrink-0",
-      colorMode === "none" && "text-muted-foreground/70",
-    ),
-    style: colorMode === "byType" ? { color } : undefined,
-  };
-}
-
-/**
  * Leading icon for a sidebar row - the row's single status surface now that no
  * trailing chip exists. A COLLAPSED PARENT resolves its hidden descendants'
  * rollup here too: that rollup used to live in the trailing slot, and dropping
@@ -1878,6 +1959,9 @@ function useNodeIconDisplay(artifactType: EpicNodeKind): {
 function ChatRowLeadingIcon(props: {
   readonly epicId: string;
   readonly nodeId: string;
+  /** The row's OWN owner host, off its projection row - see
+   *  {@link ChatRowOwnLeadingIcon}. */
+  readonly ownerHostId: string | null;
   readonly artifactType: EpicNodeKind;
   readonly hasChildren: boolean;
   readonly expanded: boolean;
@@ -1887,6 +1971,7 @@ function ChatRowLeadingIcon(props: {
       <ChatRowLeadingIconWithNestedRollup
         epicId={props.epicId}
         nodeId={props.nodeId}
+        ownerHostId={props.ownerHostId}
         artifactType={props.artifactType}
       />
     );
@@ -1895,6 +1980,7 @@ function ChatRowLeadingIcon(props: {
     <ChatRowOwnLeadingIcon
       epicId={props.epicId}
       nodeId={props.nodeId}
+      ownerHostId={props.ownerHostId}
       artifactType={props.artifactType}
     />
   );
@@ -1912,6 +1998,7 @@ const ChatRowLeadingIconWithNestedRollup = memo(
   function ChatRowLeadingIconWithNestedRollup(props: {
     readonly epicId: string;
     readonly nodeId: string;
+    readonly ownerHostId: string | null;
     readonly artifactType: EpicNodeKind;
   }) {
     const rollup = useChatDescendantStatus({
@@ -1937,6 +2024,7 @@ const ChatRowLeadingIconWithNestedRollup = memo(
       <ChatRowOwnLeadingIcon
         epicId={props.epicId}
         nodeId={props.nodeId}
+        ownerHostId={props.ownerHostId}
         artifactType={props.artifactType}
       />
     );
@@ -1951,6 +2039,14 @@ const ChatRowLeadingIconWithNestedRollup = memo(
 function ChatRowOwnLeadingIcon(props: {
   readonly epicId: string;
   readonly nodeId: string;
+  /**
+   * The row's OWN owner host, read off its projection row rather than from a
+   * tab binding: a sidebar row is not inside any `TabHostProvider`, and the
+   * tree deliberately lists chats owned by connected PEER hosts alongside
+   * this machine's. `chatId` is host-minted, so without the row's own host the
+   * status read could land on a same-id chat living on a different machine.
+   */
+  readonly ownerHostId: string | null;
   readonly artifactType: EpicNodeKind;
 }) {
   if (props.artifactType === "chat") {
@@ -1964,7 +2060,7 @@ function ChatRowOwnLeadingIcon(props: {
       <ChatProgressIcon
         epicId={props.epicId}
         chatId={props.nodeId}
-        originHostId={null}
+        hostId={props.ownerHostId}
         className={undefined}
         mutedClassName="text-muted-foreground/70"
         testId="chat-sidebar-spinner"
@@ -2127,6 +2223,7 @@ function StaticSidebarNodeIcon(props: { readonly artifactType: EpicNodeKind }) {
 interface ChatRenameRowProps {
   readonly epicId: string;
   readonly depth: number;
+  readonly ownerHostId: string | null;
   readonly artifactType: EpicNodeKind;
   readonly renameInputRef: React.RefObject<HTMLInputElement | null>;
   readonly renameValue: string;
@@ -2143,6 +2240,7 @@ function ChatRenameRow(props: ChatRenameRowProps) {
   const {
     epicId,
     depth,
+    ownerHostId,
     artifactType,
     renameInputRef,
     renameValue,
@@ -2174,6 +2272,7 @@ function ChatRenameRow(props: ChatRenameRowProps) {
         <ChatRowOwnLeadingIcon
           epicId={epicId}
           nodeId={nodeId}
+          ownerHostId={ownerHostId}
           artifactType={artifactType}
         />
       </ChatRowLeadingIconSlot>
@@ -2230,6 +2329,7 @@ interface ChatRowButtonProps {
    * clear of both instead of running underneath.
    */
   readonly reserveArchiveSlot: boolean;
+  readonly showSharedIndicator: boolean;
 }
 
 /**
@@ -2272,10 +2372,12 @@ function chatRowOpensPublishedCopy(input: {
 function chatRowAriaLabel(input: {
   readonly nodeName: string;
   readonly isArchived: boolean;
+  readonly sharedWithTask: boolean;
   readonly offlineHostLabel: string | null;
 }): string {
   const stateSuffix = [
     input.isArchived ? "archived" : null,
+    input.sharedWithTask ? "shared with task" : null,
     input.offlineHostLabel !== null
       ? `on ${input.offlineHostLabel}, offline, opens read-only`
       : null,
@@ -2358,6 +2460,7 @@ function ChatRowButton(props: ChatRowButtonProps) {
     onToggleSelection,
     isArchived,
     reserveArchiveSlot,
+    showSharedIndicator,
   } = props;
   const resourceOwnerKind = resourceOwnerKindForNode(artifactType);
   const roleClaims = useEpicAgentRoleClaims(nodeId);
@@ -2456,6 +2559,7 @@ function ChatRowButton(props: ChatRowButtonProps) {
           <ChatRowLeadingIcon
             epicId={epicId}
             nodeId={nodeId}
+            ownerHostId={ownerHostId}
             artifactType={artifactType}
             hasChildren={hasChildren}
             expanded={expanded}
@@ -2500,6 +2604,7 @@ function ChatRowButton(props: ChatRowButtonProps) {
       aria-label={chatRowAriaLabel({
         nodeName,
         isArchived,
+        sharedWithTask: showSharedIndicator,
         offlineHostLabel: showUnreachableLock
           ? ownerReachability.hostLabel
           : null,
@@ -2522,6 +2627,7 @@ function ChatRowButton(props: ChatRowButtonProps) {
         <ChatRowLeadingIcon
           epicId={epicId}
           nodeId={nodeId}
+          ownerHostId={ownerHostId}
           artifactType={artifactType}
           hasChildren={hasChildren}
           expanded={expanded}
@@ -2531,6 +2637,20 @@ function ChatRowButton(props: ChatRowButtonProps) {
         <span className="flex min-w-0 items-center gap-1.5">
           {isArchived ? <ArchivedTitlePrefix /> : null}
           <span className="min-w-0 flex-1 truncate">{nodeName}</span>
+          {showSharedIndicator ? (
+            <TooltipWrapper
+              label={SHARED_WITH_TASK_TOOLTIP}
+              side="top"
+              sideOffset={undefined}
+              align={undefined}
+            >
+              <Users
+                className="size-3 shrink-0 text-muted-foreground"
+                data-testid={`epic-sidebar-shared-${nodeId}`}
+                aria-hidden
+              />
+            </TooltipWrapper>
+          ) : null}
           {showUnreachableLock ? (
             <TooltipWrapper
               label={`Lives on ${ownerReachability.hostLabel}, which is offline. Opens read-only from the last published copy.`}
@@ -2971,9 +3091,11 @@ interface ChatRowMenuEntriesProps {
   readonly nodeId: string;
   readonly canMutate: boolean;
   readonly archiveEntry: ChatRowArchiveEntry | null;
+  readonly sharingEntry: ChatSharingMenuDecision;
   readonly onNewChildAgent: () => void;
   readonly onStartRename: () => void;
   readonly onToggleArchive: () => void;
+  readonly onToggleSharing: () => void;
   readonly onPerformDelete: () => void;
 }
 
@@ -3013,6 +3135,87 @@ function archiveMenuEntries(
   ];
 }
 
+/**
+ * The Share with task / Make private entry, or nothing at all. Same spread
+ * shape as {@link archiveMenuEntries} so both the ⋯ and right-click menus
+ * pick it up from one definition.
+ *
+ * The label is the ACTION, not the state: a task-visible row offers
+ * "Make private".
+ */
+function sharingMenuEntries(
+  props: ChatRowMenuEntriesProps,
+): ReadonlyArray<SidebarRowMenuEntry> {
+  const { sharingEntry } = props;
+  if (sharingEntry.kind === "hidden") return [];
+  const makePrivate = sharingEntry.action === "make-private";
+  return [
+    {
+      kind: "item",
+      id: "share",
+      label: makePrivate ? "Make private" : "Share with task",
+      icon: makePrivate ? (
+        <Lock className="size-3.5" />
+      ) : (
+        <Users className="size-3.5" />
+      ),
+      disabled: !props.canMutate || sharingEntry.disabled,
+      disabledTooltip: props.canMutate ? sharingEntry.disabledTooltip : null,
+      variant: "default",
+      testIds: {
+        dropdown: `epic-sidebar-share-item-${props.nodeId}`,
+        context: `epic-sidebar-context-share-${props.nodeId}`,
+      },
+      onSelect: props.onToggleSharing,
+    },
+  ];
+}
+
+function useChatRowSharing(
+  epicId: string,
+  nodeId: string,
+  artifactType: EpicNodeKind,
+  canMutate: boolean,
+): {
+  readonly entry: ChatSharingMenuDecision;
+  readonly onToggle: () => void;
+  readonly showIndicator: boolean;
+} {
+  const sharing = useContext(SidebarChatSharingContext);
+  const setVisibility = useEpicSetCloudChatVisibility();
+  const sharingInFlight = useChatSharingInFlight(epicId);
+  const cloudChat = sharing.ownCloudChatByLocalId.get(nodeId);
+  const visibility = cloudChat?.visibility ?? null;
+  return {
+    entry: decideChatSharingMenuEntry({
+      supported: sharing.visibilitySupported,
+      isChat: artifactType === "chat",
+      canMutate,
+      visibility,
+      pending: sharingInFlight,
+    }),
+    onToggle: () => {
+      if (
+        !canMutate ||
+        !sharing.visibilitySupported ||
+        sharingInFlight ||
+        cloudChat === undefined
+      ) {
+        return;
+      }
+      setVisibility.mutate({
+        taskId: cloudChat.identity.taskId,
+        chatId: cloudChat.identity.chatId,
+        visibility: cloudChat.visibility === "task" ? "private" : "task",
+      });
+    },
+    showIndicator: shouldShowSharedWithTaskIndicator({
+      visibility,
+      hasCollaborators: sharing.hasCollaborators,
+    }),
+  };
+}
+
 function chatRowMenuEntries(
   props: ChatRowMenuEntriesProps,
 ): ReadonlyArray<SidebarRowMenuEntry> {
@@ -3046,6 +3249,7 @@ function chatRowMenuEntries(
       onSelect: props.onStartRename,
     },
     ...archiveMenuEntries(props),
+    ...sharingMenuEntries(props),
     { kind: "separator", id: "before-delete" },
     {
       kind: "item",
@@ -3084,19 +3288,27 @@ function chatRowMenuEntries(
 function useChatRowOwnStatusKind(args: {
   readonly epicId: string;
   readonly nodeId: string;
+  /** The row's OWN owner host - same rule and same reason as
+   *  {@link ChatRowOwnLeadingIcon}'s, so the archive affordances and the
+   *  leading icon resolve the SAME session and cannot disagree. */
+  readonly ownerHostId: string | null;
   readonly artifactType: EpicNodeKind;
 }): ChatRowStatus {
-  const { epicId, nodeId, artifactType } = args;
+  const { epicId, nodeId, ownerHostId, artifactType } = args;
   const indicatorState = useSurfaceNotificationIndicatorState(
     { epicId, chatId: nodeId },
-    null,
+    ownerHostId,
   );
   const awarenessTier = useEpicAgentActivityTiers().get(nodeId);
   const isViewer = useContext(SidebarViewerContext);
   // Terminal-agent rows have no chat session and never carried a read-only
   // lock (their PTY runs host-side), so the viewer arm is chat-only.
   const isChat = artifactType === "chat";
-  const sessionHandle = useExistingChatSessionHandle(epicId, nodeId);
+  const sessionHandle = useExistingChatSessionHandle(
+    epicId,
+    nodeId,
+    ownerHostId,
+  );
   const subscribeSession = useMemo(
     () => (onChange: () => void) => {
       if (sessionHandle === null) return () => undefined;

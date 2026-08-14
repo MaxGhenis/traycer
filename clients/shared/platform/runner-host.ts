@@ -10,10 +10,12 @@ import type {
 } from "../auth/devices-sessions-fetcher";
 import type { MintHostCredentialRequest } from "@traycer/protocol/auth/devices-sessions";
 import type { HostListFetchResult } from "../host-client/remote-fetcher";
+import type { LiveHostAvailability } from "../host-client/host-directory";
 import type {
   UpdateHostVersionPolicyFetchResult,
   UpdateHostVersionPolicyInput,
 } from "../host-client/host-version-policy-fetcher";
+import type { DeregisterHostFetchResult } from "../host-client/host-deregister-fetcher";
 import type { StoredCredentials } from "@traycer/protocol/config/credentials";
 
 export type { StoredCredentials } from "@traycer/protocol/config/credentials";
@@ -186,6 +188,24 @@ export interface IRunnerHost {
     hostId: string,
     input: UpdateHostVersionPolicyInput,
   ): Promise<UpdateHostVersionPolicyFetchResult>;
+
+  /**
+   * "Remove from account" — `POST /api/v3/hosts/:hostId/deregister` with the
+   * user bearer. Desktop shells run this in Electron main for the same CORS
+   * reason as `listRegisteredHosts` / `updateHostVersionPolicy`; browser/dev
+   * shells may call the shared `deregisterHostViaHttp` helper directly. Never
+   * throws: transport failures collapse into the discriminated result.
+   *
+   * This is a REGISTRY-only write, like the version policy above and unlike
+   * anything on `IHostManagement`: it needs no route to the machine, nothing on
+   * the machine changes, and the removal is not permanent — see
+   * `host-deregister-fetcher.ts` for exactly what the route does and why the
+   * confirmation copy has to say a live host comes back.
+   */
+  deregisterHostFromAccount(
+    bearerToken: string,
+    hostId: string,
+  ): Promise<DeregisterHostFetchResult>;
 
   openExternalLink(url: string): Promise<void>;
 
@@ -1033,6 +1053,20 @@ export interface LocalHostSnapshot {
   readonly pid: number;
   readonly systemHostName: string;
   readonly displayName: string;
+  /**
+   * How well this host is answering right now - `available`, or `busy` when
+   * the shell proved the process is alive but its endpoint did not answer a
+   * probe in time.
+   *
+   * A snapshot means the host EXISTS; there is deliberately no third value for
+   * "gone", because absence is carried by the snapshot being `null`. Before
+   * this field that null was the shell's only vocabulary, so a live host that
+   * lost one loopback probe was indistinguishable from a machine with no host
+   * at all - and the renderer duly locked every chat on it read-only
+   * (2026-08-11). Consumers that ask "can I dial it" must accept both values;
+   * only the badge should narrow to `available`.
+   */
+  readonly availability: LiveHostAvailability;
 }
 
 /**
