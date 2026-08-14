@@ -839,6 +839,15 @@ export function findElectronBrowserTabBinding(
   return findElectronBrowserTabRecord(sessionId, tabId) ?? null;
 }
 
+export function findElectronBrowserTabIdForTile(
+  tileKey: BrowserViewTileKey,
+): string | null {
+  for (const record of recordsByRegistrationKey.values()) {
+    if (isChangeForTile(record.tileKey, tileKey)) return record.tabId;
+  }
+  return null;
+}
+
 export function useElectronBrowserTabBinding(
   sessionId: string,
   tabId: string,

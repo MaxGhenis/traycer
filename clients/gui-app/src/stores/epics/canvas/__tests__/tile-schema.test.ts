@@ -158,8 +158,13 @@ describe("parseTileRef / serializeTileRef", () => {
     });
 
     expect(first.id).not.toBe(url);
-    expect(first.id).toMatch(/^browser-/);
-    expect(second.id).toMatch(/^browser-/);
+    expect(first.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(first.id).not.toMatch(/^browser-/);
+    expect(second.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
     expect(second.id).not.toBe(first.id);
     expect(
       parseTileRef({
@@ -201,7 +206,10 @@ describe("parseTileRef / serializeTileRef", () => {
     const duplicate = cloneBrowserTileForNewPageSession(ref, "inst-browser-2");
 
     expect(duplicate.id).not.toBe(ref.id);
-    expect(duplicate.id).toMatch(/^browser-/);
+    expect(duplicate.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(duplicate.id).not.toMatch(/^browser-/);
     expect(duplicate.instanceId).toBe("inst-browser-2");
     expect(duplicate.url).toBe(ref.url);
     expect(duplicate.viewportPreset).toBe(ref.viewportPreset);

@@ -823,8 +823,13 @@ describe("Browser opener sub-page", () => {
     expect(first.ref.hostId).toBe("default-host");
     expect(first.ref.url).toBe(DEFAULT_BROWSER_TILE_URL);
     expect(first.ref.viewportPreset).toBe(DEFAULT_BROWSER_VIEWPORT_PRESET);
-    expect(first.ref.id).toMatch(/^browser-/);
-    expect(second.ref.id).toMatch(/^browser-/);
+    expect(first.ref.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(first.ref.id).not.toMatch(/^browser-/);
+    expect(second.ref.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
     expect(second.ref.id).not.toBe(first.ref.id);
   });
 });

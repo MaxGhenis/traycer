@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   browserContextAttachmentToWire,
@@ -11,6 +11,11 @@ import {
   registerBrowserContextAttachmentHandler,
   requestBrowserContextAttachment,
 } from "../browser-context-attachments";
+import {
+  handleElectronBrowserTabFrame,
+  registerElectronBrowserTab,
+  resetElectronBrowserTabStoreForTests,
+} from "../electron-browser-tab-store";
 import type {
   BrowserViewCapturePageResult,
   BrowserViewConsoleEntry,
@@ -339,6 +344,10 @@ describe("browser debug context attachment (ticket 22)", () => {
 });
 
 describe("browserContextAttachmentToWire (ticket 01)", () => {
+  afterEach(() => {
+    resetElectronBrowserTabStoreForTests();
+  });
+
   it("emits tabId from the tile key, not the retired tileInstanceId wire field", () => {
     const payload = createBrowserScreenshotAttachment({
       tile: TILE,
@@ -355,5 +364,51 @@ describe("browserContextAttachmentToWire (ticket 01)", () => {
     });
     expect(wire).not.toHaveProperty("tileInstanceId");
     expect(wire).not.toHaveProperty("handle");
+  });
+
+  it("prefers the host-minted durable tab id once the tile is registered", () => {
+    const dispose = { dispose: () => {} };
+    registerElectronBrowserTab({
+      epicId: "epic-1",
+      hostId: "host-1",
+      chatId: "chat-1",
+      registrationId: "reg-durable",
+      sessionId: "session-durable",
+      initialUrl: "http://localhost:3000/page",
+      title: null,
+      tileKey: TILE,
+      onRegistered: null,
+      bridge: {
+        registerDurableTab: () => Promise.resolve(),
+        releaseDurableTab: () => Promise.resolve(),
+        dispatchCdp: () =>
+          Promise.resolve({
+            kind: "cdpGetFrameTree",
+            ok: true,
+            frames: [],
+          }),
+        onStatusChange: () => dispose,
+        onCdpSessionEnded: () => dispose,
+        onCdpTargetAttached: () => dispose,
+        onTileHandoff: () => dispose,
+      },
+    });
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-durable",
+      registrationId: "reg-durable",
+      sessionId: "session-durable",
+      tabId: "durable-tab-1",
+    });
+
+    const payload = createBrowserElementAttachment({
+      tile: TILE,
+      pageUrl: "http://localhost:3000/page",
+      element: ELEMENT,
+    });
+    const wire = browserContextAttachmentToWire(payload);
+    expect(wire.tabId).toBe("durable-tab-1");
+    expect(wire.tabId).not.toBe(TILE.tileInstanceId);
   });
 });

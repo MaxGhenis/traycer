@@ -23,7 +23,7 @@ export const DEFAULT_BROWSER_TILE_URL = "about:blank";
 export const DEFAULT_BROWSER_VIEWPORT_PRESET = "responsive";
 
 function browserTilePageSessionId(): string {
-  return `browser-${uuidv4()}`;
+  return uuidv4();
 }
 
 export function makeBrowserTileRef(args: {

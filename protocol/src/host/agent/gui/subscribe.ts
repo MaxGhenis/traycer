@@ -954,10 +954,10 @@ const activeProfileUpdateClientFrameSchema = z.object({
 /**
  * Shared-browser-runtime ticket 01. The wire-only shape a `browser-context`
  * chat attachment sends: origin/pageUrl/composerText the model will
- * eventually see verbatim, plus `tabId` - the tile's own durable id (the
- * GUI's only reachable identity for it; ticket 13's opaque, chat-scoped
- * `handle` indirection is retired). The host's `send` handler resolves
- * `tabId` to its owning session (if one is registered) and forwards
+ * eventually see verbatim, plus `tabId` - the host-minted durable tab id
+ * once the GUI's registration has settled, with a tile-id fallback during
+ * that narrow race. The host's `send` handler resolves `tabId` to its owning
+ * session (if one is registered) and forwards
  * `{sessionId, tabId}` onto the persisted `browserContextAttachmentRecordSchema`
  * (`persistence/epic/messages.ts`) and into the prompt - never a raw
  * Chromium target id, and never anything the host must keep secret.

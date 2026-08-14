@@ -6,6 +6,7 @@ import type {
   BrowserViewTileKey,
 } from "@/lib/browser-view/desktop-browser-view";
 import type { BrowserContextAttachmentWire } from "@traycer/protocol/host/agent/gui/subscribe";
+import { findElectronBrowserTabIdForTile } from "./electron-browser-tab-store";
 
 export type BrowserContextAttachmentKind =
   | "browser-console-entry"
@@ -510,12 +511,9 @@ function originFromUrl(url: string): string {
 }
 
 /**
- * Shared-browser-runtime ticket 01. The wire shape a `send` frame carries for
- * this attachment: `tabId` is the tile's own durable id
- * (`BrowserViewTileKey.tileInstanceId`) - the host resolves it to an owning
- * session (if any) and persists `{sessionId, tabId}` directly. The chip is
- * disambiguation ("I mean this tab"), not authorization, so unlike ticket
- * 13's retired opaque handle there is no secrecy requirement here.
+ * The wire carries the host-minted durable tab id once registration has
+ * settled. A just-created tile can still race registration, so it retains the
+ * old tile-id fallback rather than blocking the user's whole chat send.
  */
 export function browserContextAttachmentToWire(
   payload: BrowserContextAttachmentPayload,
@@ -525,6 +523,8 @@ export function browserContextAttachmentToWire(
     origin: payload.source.origin,
     pageUrl: payload.source.pageUrl,
     composerText: payload.composerText,
-    tabId: payload.source.tile.tileInstanceId,
+    tabId:
+      findElectronBrowserTabIdForTile(payload.source.tile) ??
+      payload.source.tile.tileInstanceId,
   };
 }
