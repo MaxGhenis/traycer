@@ -256,12 +256,9 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       setStatus(change.status);
       setStatusReason(change.reason);
       setStatusUrl(change.url);
-      // Attempted URL wins only until status catches up. A permanent
-      // latch would upsert the submitted URL after a later live
-      // navigation (redirect, link, back/forward) and send the view back.
-      if (change.url.length > 0) {
-        setAttemptedUrl(null);
-      }
+      setAttemptedUrl((current) =>
+        nextAttemptedUrlAfterStatus(current, change.status, change.url),
+      );
       setCanGoBack(change.canGoBack);
       setCanGoForward(change.canGoForward);
       setZoomPercent(change.zoomPercent);
@@ -567,6 +564,33 @@ function readAgentViewportPreset(
     return value;
   }
   return "responsive";
+}
+
+/**
+ * Address submit latches the attempted URL so visibility/Retry keep
+ * upserting it. BrowserViewManager.navigate emits a synchronous
+ * `loading` status before loadURL, and that echo still carries
+ * `currentUrl` (the pre-submit page). Yielding to that echo would
+ * upsert the old page and cancel the in-flight navigation.
+ *
+ * Keep the latch while `loading` unless the status URL is already the
+ * attempt. Clear it on the first post-submit `ready` - that is the
+ * settled URL (the attempt, or a redirect target).
+ *
+ * `dead` keeps the latch: loadURL failed and `currentUrl` is still the
+ * pre-submit page, so Retry must re-attempt the submitted URL rather
+ * than the page that failed to leave.
+ */
+function nextAttemptedUrlAfterStatus(
+  attemptedUrl: string | null,
+  status: BrowserViewStatus,
+  url: string,
+): string | null {
+  if (attemptedUrl === null) return null;
+  if (status === "dead") return attemptedUrl;
+  if (status === "loading" && url !== attemptedUrl) return attemptedUrl;
+  if (url.length === 0) return attemptedUrl;
+  return null;
 }
 
 function ignoreAgentBrowserViewError(_error: unknown): void {}
