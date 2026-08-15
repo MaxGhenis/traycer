@@ -809,4 +809,118 @@ describe("<AgentBrowserTile />", () => {
 
     warn.mockRestore();
   });
+
+  it("does not upsert the stale canvas URL after address navigate then visibility or Retry", () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new FakeAgentBrowserViewBridge();
+      bridgeHarness.current = bridge;
+      const paneId = seedAgentBrowserCanvas();
+      const nextUrl = "https://next.example/";
+      const view = renderAgentBrowserTile(paneId);
+
+      expect(bridge.upsertCalls.length).toBeGreaterThanOrEqual(1);
+      expect(bridge.upsertCalls[0]?.url).toBe(NODE.url);
+
+      fireEvent.change(screen.getByLabelText("Browser address"), {
+        target: { value: nextUrl },
+      });
+      const addressForm = screen
+        .getByLabelText("Browser address")
+        .closest("form");
+      if (addressForm === null) {
+        throw new Error("browser address input must be wrapped in a form");
+      }
+      fireEvent.submit(addressForm);
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(nextUrl);
+
+      visibilityHarness.visible = false;
+      view.rerender(
+        <AgentBrowserTile
+          node={NODE}
+          viewTabId={VIEW_TAB_ID}
+          paneId={paneId}
+        />,
+      );
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(nextUrl);
+
+      visibilityHarness.visible = true;
+      view.rerender(
+        <AgentBrowserTile
+          node={NODE}
+          viewTabId={VIEW_TAB_ID}
+          paneId={paneId}
+        />,
+      );
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(nextUrl);
+
+      act(() => {
+        vi.advanceTimersByTime(12_001);
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(nextUrl);
+      expect(
+        bridge.upsertCalls
+          .slice(1)
+          .every((call) => call.url === nextUrl),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("upserts a persisted non-responsive viewport preset on remount", async () => {
+    const mobileNode: AgentBrowserTileRef = {
+      ...NODE,
+      viewportPreset: "mobile",
+    };
+    const bridge = new FakeAgentBrowserViewBridge();
+    bridgeHarness.current = bridge;
+    const canvas = createSingleTileCanvas(mobileNode);
+    if (canvas.root === null) throw new Error("expected canvas root");
+    const pane = collectPanes(canvas.root).at(0);
+    if (pane === undefined) throw new Error("expected a pane");
+    useEpicCanvasStore.setState({
+      tabsById: {
+        [VIEW_TAB_ID]: {
+          tabId: VIEW_TAB_ID,
+          epicId: "epic-1",
+          name: "Agent browser tab",
+        },
+      },
+      canvasByTabId: {
+        [VIEW_TAB_ID]: canvas,
+      },
+    });
+
+    const first = render(
+      <AgentBrowserTile
+        node={mobileNode}
+        viewTabId={VIEW_TAB_ID}
+        paneId={pane.id}
+      />,
+    );
+    await waitFor(() => {
+      expect(bridge.upsertCalls.length).toBeGreaterThanOrEqual(1);
+    });
+    expect(bridge.upsertCalls[0]?.viewportPreset).toBe("mobile");
+
+    first.unmount();
+    bridge.upsertCalls.length = 0;
+
+    render(
+      <AgentBrowserTile
+        node={mobileNode}
+        viewTabId={VIEW_TAB_ID}
+        paneId={pane.id}
+      />,
+    );
+    await waitFor(() => {
+      expect(bridge.upsertCalls.length).toBeGreaterThanOrEqual(1);
+    });
+    expect(bridge.upsertCalls[0]?.viewportPreset).toBe("mobile");
+    expect(
+      bridge.upsertCalls.every((call) => call.viewportPreset === "mobile"),
+    ).toBe(true);
+  });
 });

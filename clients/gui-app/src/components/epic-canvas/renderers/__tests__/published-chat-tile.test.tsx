@@ -475,6 +475,7 @@ describe("PublishedChatTile - doc-replica fallback", () => {
       <PublishedChatTile
         node={SAME_HOST_NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -519,6 +520,7 @@ describe("PublishedChatTile - dead-tile clone banner", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -543,6 +545,7 @@ describe("PublishedChatTile - dead-tile clone banner", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -575,6 +578,7 @@ describe("PublishedChatTile - dead-tile clone banner", () => {
       <PublishedChatTile
         node={NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
@@ -595,6 +599,7 @@ describe("PublishedChatTile - dead-tile clone banner", () => {
       <PublishedChatTile
         node={SAME_HOST_NODE}
         viewTabId="tab-1"
+        tileId="pane-1"
         isActive
         epicId="epic-1"
       />,
