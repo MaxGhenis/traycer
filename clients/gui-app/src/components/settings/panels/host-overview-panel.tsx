@@ -36,6 +36,7 @@ import {
 } from "@/components/settings/panels/my-hosts-model";
 import { persistedDraftFromIdentity } from "@/components/settings/panels/host-settings-panel-model";
 import { LocalPackageManagerUpgradeHint } from "@/components/settings/panels/host-settings-package-manager-upgrade-hint";
+import { ArtifactVersionSettingsSection } from "@/components/settings/panels/artifact-version-settings-section";
 import { useRunnerConvergeReady } from "@/hooks/runner/use-runner-converge-ready-mutation";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
@@ -692,6 +693,12 @@ export function HostOverviewPanel(props: {
             />
           )
         }
+      />
+
+      <ArtifactVersionSettingsSection
+        client={client}
+        hostId={scope.hostId}
+        enabled={usable}
       />
 
       {/* Local machine only, by the nature of the fact rather than a scope
