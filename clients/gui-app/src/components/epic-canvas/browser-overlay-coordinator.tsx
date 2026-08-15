@@ -174,10 +174,14 @@ function BrowserOverlayCoordinator(props: {
 
     const unsubscribeLayout = subscribeBrowserOverlayLayout(scheduleScan);
     const invalidationSubscription = browserView.onSnapshotInvalidated(
-      (change) => {
-        markBrowserViewSnapshotStale(change);
-      },
+      markBrowserViewSnapshotStale,
     );
+    const agentInvalidationSubscription =
+      agentBrowserView === null
+        ? { dispose: () => undefined }
+        : agentBrowserView.onSnapshotInvalidated(
+            markBrowserViewSnapshotStale,
+          );
     const mutationObserver = new MutationObserver(scheduleScan);
     mutationObserver.observe(document.body, {
       subtree: true,
@@ -202,6 +206,7 @@ function BrowserOverlayCoordinator(props: {
       if (frameId !== null) window.cancelAnimationFrame(frameId);
       unsubscribeLayout();
       invalidationSubscription.dispose();
+      agentInvalidationSubscription.dispose();
       mutationObserver.disconnect();
       window.removeEventListener("resize", scheduleScan);
       window.removeEventListener("scroll", scheduleScan, true);

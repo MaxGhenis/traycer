@@ -185,6 +185,10 @@ class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
     };
   }
 
+  onSnapshotInvalidated(): { dispose: () => void } {
+    return { dispose: () => undefined };
+  }
+
   onCdpSessionEnded(
     _handler: (change: AgentBrowserViewCdpSessionEndedChange) => void,
   ): { dispose: () => void } {

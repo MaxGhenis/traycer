@@ -1,12 +1,9 @@
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ComponentType,
-  type RefObject,
   type SyntheticEvent,
 } from "react";
 import {
@@ -39,15 +36,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import {
-  BROWSER_VIEW_SURFACE_ATTRIBUTE,
-  getBrowserViewSnapshot,
-  rectFromDomRect,
-  registerBrowserOverlayTile,
-  subscribeBrowserViewSnapshot,
-  updateBrowserOverlayTileRect,
-  type BrowserViewSnapshotState,
-} from "@/lib/browser-view/browser-overlay-coordinator";
+import { BROWSER_VIEW_SURFACE_ATTRIBUTE } from "@/lib/browser-view/browser-overlay-coordinator";
 import { browserCookieDegradedMessage } from "@/lib/browser-view/browser-cookie-degraded-message";
 import { selectSiblingChatIdForBrowserTile } from "@/lib/browser-view/browser-tile-chat-routing";
 import {
@@ -55,7 +44,6 @@ import {
   updateElectronBrowserTabView,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import {
-  type BrowserViewBounds,
   type BrowserViewCertificateErrorChange,
   type BrowserViewDownloadChange,
   type BrowserViewStatus,
@@ -63,7 +51,6 @@ import {
   type BrowserViewViewportPresetId,
   type BrowserCookieCryptoState,
   type BrowserViewControlActionResult,
-  type DesktopBrowserViewBridge,
   resolveDesktopBrowserViewBridge,
 } from "@/lib/browser-view/desktop-browser-view";
 import {
@@ -81,7 +68,6 @@ import {
   type BrowserTileActiveControl,
   type BrowserTileControlActionRequest,
 } from "@/lib/browser-view/browser-tile-control-store";
-import { PANEL_RESIZING_CLASS_NAME } from "@/lib/layout/panel-resizing-class";
 import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import { useSettingsStore } from "@/stores/settings/settings-store";
@@ -95,6 +81,9 @@ import {
 import { useBrowserElementPicker } from "@/components/epic-canvas/renderers/use-browser-element-picker";
 import { BrowserTileFindAdapterBridge } from "@/components/epic-canvas/renderers/browser-tile-find-adapter";
 import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
+import { BrowserViewSnapshotLayer } from "@/components/epic-canvas/renderers/browser-view-snapshot-layer";
+import { useBrowserViewSnapshot } from "@/components/epic-canvas/renderers/use-browser-view-snapshot";
+import { useBrowserViewBoundsBridge } from "@/components/epic-canvas/renderers/use-browser-view-bounds-bridge";
 import {
   BrowserTileCertificateInterstitial,
   BrowserTileDownloadStrip,
@@ -1172,120 +1161,6 @@ function BrowserViewportPresetMenu(props: {
   );
 }
 
-interface UseBrowserViewBoundsBridgeArgs {
-  readonly browserView: DesktopBrowserViewBridge | null;
-  readonly surfaceRef: RefObject<HTMLDivElement | null>;
-  readonly tileKey: BrowserViewTileKey;
-  readonly visible: boolean;
-}
-
-function useBrowserViewBoundsBridge(
-  args: UseBrowserViewBoundsBridgeArgs,
-): void {
-  const { browserView, surfaceRef, tileKey, visible } = args;
-
-  useEffect(() => {
-    const surface = surfaceRef.current;
-    if (browserView === null || surface === null || !visible) return;
-    const unregisterOverlayTile = registerBrowserOverlayTile({
-      key: tileKey,
-      rect: rectFromDomRect(surface.getBoundingClientRect()),
-    });
-
-    let frameId: number | null = null;
-    let frozen = document.documentElement.classList.contains(
-      PANEL_RESIZING_CLASS_NAME,
-    );
-
-    const sendBounds = (force: boolean): void => {
-      const rect = surface.getBoundingClientRect();
-      const bounds = readElementBounds(rect);
-      if (bounds.width <= 0 || bounds.height <= 0) return;
-      if (frozen && !force) return;
-      updateBrowserOverlayTileRect(tileKey, rectFromDomRect(rect));
-      if (frameId !== null) window.cancelAnimationFrame(frameId);
-      frameId = window.requestAnimationFrame(() => {
-        frameId = null;
-        void browserView
-          .updateBounds({ ...tileKey, bounds })
-          .catch(ignoreBrowserViewError);
-      });
-    };
-
-    const resizeObserver = new ResizeObserver(() => {
-      sendBounds(false);
-    });
-    const mutationObserver = new MutationObserver(() => {
-      const nextFrozen = document.documentElement.classList.contains(
-        PANEL_RESIZING_CLASS_NAME,
-      );
-      if (frozen && !nextFrozen) {
-        frozen = false;
-        sendBounds(true);
-        return;
-      }
-      frozen = nextFrozen;
-    });
-    resizeObserver.observe(surface);
-    mutationObserver.observe(document.documentElement, {
-      attributeFilter: ["class"],
-      attributes: true,
-    });
-    window.addEventListener("resize", handleWindowResize, { passive: true });
-    sendBounds(false);
-
-    function handleWindowResize(): void {
-      sendBounds(false);
-    }
-
-    return () => {
-      if (frameId !== null) window.cancelAnimationFrame(frameId);
-      resizeObserver.disconnect();
-      mutationObserver.disconnect();
-      window.removeEventListener("resize", handleWindowResize);
-      unregisterOverlayTile();
-    };
-  }, [browserView, surfaceRef, tileKey, visible]);
-}
-
-function useBrowserViewSnapshot(
-  tileKey: BrowserViewTileKey,
-): BrowserViewSnapshotState | null {
-  const subscribe = useCallback(
-    (listener: () => void) => subscribeBrowserViewSnapshot(tileKey, listener),
-    [tileKey],
-  );
-  const readSnapshot = useCallback(
-    () => getBrowserViewSnapshot(tileKey),
-    [tileKey],
-  );
-  return useSyncExternalStore(subscribe, readSnapshot, () => null);
-}
-
-function BrowserViewSnapshotLayer(props: {
-  readonly snapshot: BrowserViewSnapshotState | null;
-}) {
-  const snapshot = props.snapshot;
-  if (snapshot === null) return null;
-  return (
-    <div
-      className="pointer-events-none absolute inset-0 z-10 bg-background"
-      data-browser-view-snapshot=""
-      data-stale={snapshot.stale ? "true" : "false"}
-    >
-      {snapshot.dataUrl === null || snapshot.stale ? null : (
-        <img
-          src={snapshot.dataUrl}
-          alt=""
-          aria-hidden
-          className="h-full w-full object-fill"
-          draggable={false}
-        />
-      )}
-    </div>
-  );
-}
-
 function BrowserSiteInfoButton(props: {
   readonly url: string;
   readonly cookieCryptoState: BrowserCookieCryptoState | null;
@@ -1395,15 +1270,6 @@ function readBrowserViewportPreset(value: string): BrowserViewViewportPresetId {
     return value;
   }
   return "responsive";
-}
-
-function readElementBounds(rect: DOMRectReadOnly): BrowserViewBounds {
-  return {
-    x: rect.left,
-    y: rect.top,
-    width: rect.width,
-    height: rect.height,
-  };
 }
 
 function upsertDownload(

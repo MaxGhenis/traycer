@@ -568,6 +568,9 @@ function buildFakeBridge(
       releaseTile: async () => undefined,
       onStatusChange: (_handler) => ({ dispose: () => undefined }),
       onOpenTileRequest: (_handler) => ({ dispose: () => undefined }),
+      onSnapshotInvalidated: (_handler) => ({ dispose: () => undefined }),
+      occludeForOverlay: async () => ({ snapshots: [], restoredTiles: [] }),
+      releaseOverlay: async () => ({ restoredTiles: [] }),
       dispatchCdp: async () => ({
         kind: "cdpGetFrameTree" as const,
         ok: true as const,

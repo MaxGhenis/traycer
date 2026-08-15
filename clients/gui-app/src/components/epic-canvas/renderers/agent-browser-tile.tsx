@@ -1,23 +1,15 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
+import { BrowserViewSnapshotLayer } from "@/components/epic-canvas/renderers/browser-view-snapshot-layer";
+import { useBrowserViewSnapshot } from "@/components/epic-canvas/renderers/use-browser-view-snapshot";
 import { useCloseCanvasTileWithNestedFocus } from "@/components/epic-canvas/renderers/use-close-canvas-tile-with-nested-focus";
+import { useBrowserViewBoundsBridge } from "@/components/epic-canvas/renderers/use-browser-view-bounds-bridge";
 import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
-import {
-  rectFromDomRect,
-  registerBrowserOverlayTile,
-  updateBrowserOverlayTileRect,
-} from "@/lib/browser-view/browser-overlay-coordinator";
+import { BROWSER_VIEW_SURFACE_ATTRIBUTE } from "@/lib/browser-view/browser-overlay-coordinator";
 import {
   resolveDesktopAgentBrowserViewBridge,
   type AgentBrowserViewTileKey,
@@ -33,7 +25,6 @@ import {
   updateElectronBrowserTabView,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import { openFreshAgentBrowserTileFromBrowserPage } from "@/lib/browser-view/browser-link-routing-core";
-import { PANEL_RESIZING_CLASS_NAME } from "@/lib/layout/panel-resizing-class";
 import { appLogger } from "@/lib/logger";
 import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
@@ -60,13 +51,10 @@ export interface AgentBrowserTileProps {
 
 /**
  * The agent's own browser tile: a real `WebContentsView` in a
- * credential-free partition. Ticket 03 wires the typed CDP bridge's
- * transport mechanics here (forwarding enumerated commands to the electron
- * preload and back) - it does not decide what gets sent or why, that is
- * ticket 04+'s runtime adapter and REPL surface. Deliberately does not reuse
- * `BrowserTile`'s chrome (address bar, zoom, find, devtools,
- * download/certificate UI, overlay-occlusion snapshotting): those are
- * driving/UX concerns this ticket does not build, not things forgotten.
+ * credential-free partition. Occlusion and snapshotting share the same
+ * surface as user tiles so overlays punch through correctly. Chrome
+ * (address bar, zoom, find, DevTools) mounts later via the shared
+ * capability-gated toolbar.
  */
 export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const hostId = useTabHostId();
@@ -87,7 +75,11 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       releaseTile: (input) => primary.releaseTile(input),
       onStatusChange: (handler) => primary.onStatusChange(handler),
       onOpenTileRequest: (handler) => primary.onOpenTileRequest(handler),
+      onSnapshotInvalidated: (handler) =>
+        primary.onSnapshotInvalidated(handler),
       dispatchCdp: (input) => primary.dispatchCdp(input),
+      occludeForOverlay: (input) => primary.occludeForOverlay(input),
+      releaseOverlay: (input) => primary.releaseOverlay(input),
       onCdpSessionEnded: (handler) => primary.onCdpSessionEnded(handler),
       onCdpTargetAttached: (handler) => primary.onCdpTargetAttached(handler),
       onTileHandoff: (handler) => primary.onTileHandoff(handler),
@@ -293,19 +285,24 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     tileKey,
   ]);
 
-  useAgentBrowserViewBoundsBridge({
+  useBrowserViewBoundsBridge({
     browserView,
     surfaceRef,
     tileKey,
     visible,
   });
+  const snapshot = useBrowserViewSnapshot(tileKey);
 
   return (
     <div
       className="flex h-full w-full flex-col bg-canvas text-foreground"
       data-testid={`agent-browser-tile-${props.node.instanceId}`}
     >
-      <div ref={surfaceRef} className="relative min-h-0 flex-1 bg-background">
+      <div
+        ref={surfaceRef}
+        className="relative min-h-0 flex-1 bg-background"
+        {...{ [BROWSER_VIEW_SURFACE_ATTRIBUTE]: "" }}
+      >
         <div
           className={cn(
             "absolute inset-0 flex min-h-0 flex-col items-center justify-center gap-3 px-4 text-center",
@@ -332,6 +329,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
             onClose={closeCanvasTile}
           />
         </div>
+        <BrowserViewSnapshotLayer snapshot={snapshot} />
       </div>
     </div>
   );
@@ -423,6 +421,8 @@ function AgentBrowserTileReason(props: {
   );
 }
 
+function ignoreAgentBrowserViewError(_error: unknown): void {}
+
 function isChangeForTile(
   change: AgentBrowserViewTileKey,
   key: AgentBrowserViewTileKey,
@@ -433,89 +433,4 @@ function isChangeForTile(
     change.tileInstanceId === key.tileInstanceId &&
     change.pageSessionId === key.pageSessionId
   );
-}
-
-function ignoreAgentBrowserViewError(_error: unknown): void {}
-
-interface UseAgentBrowserViewBoundsBridgeArgs {
-  readonly browserView: DesktopAgentBrowserViewBridge | null;
-  readonly surfaceRef: RefObject<HTMLDivElement | null>;
-  readonly tileKey: AgentBrowserViewTileKey;
-  readonly visible: boolean;
-}
-
-function useAgentBrowserViewBoundsBridge(
-  args: UseAgentBrowserViewBoundsBridgeArgs,
-): void {
-  const { browserView, surfaceRef, tileKey, visible } = args;
-
-  useEffect(() => {
-    const surface = surfaceRef.current;
-    if (browserView === null || surface === null || !visible) return;
-    const unregisterOverlayTile = registerBrowserOverlayTile({
-      key: tileKey,
-      rect: rectFromDomRect(surface.getBoundingClientRect()),
-    });
-
-    let frameId: number | null = null;
-    let frozen = document.documentElement.classList.contains(
-      PANEL_RESIZING_CLASS_NAME,
-    );
-
-    const sendBounds = (force: boolean): void => {
-      const rect = surface.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      if (frozen && !force) return;
-      updateBrowserOverlayTileRect(tileKey, rectFromDomRect(rect));
-      if (frameId !== null) window.cancelAnimationFrame(frameId);
-      frameId = window.requestAnimationFrame(() => {
-        frameId = null;
-        void browserView
-          .updateBounds({
-            ...tileKey,
-            bounds: {
-              x: rect.left,
-              y: rect.top,
-              width: rect.width,
-              height: rect.height,
-            },
-          })
-          .catch(ignoreAgentBrowserViewError);
-      });
-    };
-
-    const resizeObserver = new ResizeObserver(() => {
-      sendBounds(false);
-    });
-    const mutationObserver = new MutationObserver(() => {
-      const nextFrozen = document.documentElement.classList.contains(
-        PANEL_RESIZING_CLASS_NAME,
-      );
-      if (frozen && !nextFrozen) {
-        frozen = false;
-        sendBounds(true);
-        return;
-      }
-      frozen = nextFrozen;
-    });
-    resizeObserver.observe(surface);
-    mutationObserver.observe(document.documentElement, {
-      attributeFilter: ["class"],
-      attributes: true,
-    });
-    window.addEventListener("resize", handleWindowResize, { passive: true });
-    sendBounds(false);
-
-    function handleWindowResize(): void {
-      sendBounds(false);
-    }
-
-    return () => {
-      if (frameId !== null) window.cancelAnimationFrame(frameId);
-      resizeObserver.disconnect();
-      mutationObserver.disconnect();
-      window.removeEventListener("resize", handleWindowResize);
-      unregisterOverlayTile();
-    };
-  }, [browserView, surfaceRef, tileKey, visible]);
 }

@@ -400,6 +400,8 @@ export const RunnerHostEvent = {
     "runnerHost:event:agentBrowserView:statusChange",
   agentBrowserViewOpenTileRequest:
     "runnerHost:event:agentBrowserView:openTileRequest",
+  agentBrowserViewSnapshotInvalidated:
+    "runnerHost:event:agentBrowserView:snapshotInvalidated",
   // Fired the moment the agent tile's CDP debugger detaches for a reason
   // outside our control (target destroyed, renderer crash, explicit
   // detach) - ends the agent's access rather than only logging it. Opening

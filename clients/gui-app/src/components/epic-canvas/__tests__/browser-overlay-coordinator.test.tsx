@@ -356,6 +356,9 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
 class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
   readonly occludeCalls: BrowserViewOverlayOcclusion[] = [];
   readonly releaseCalls: BrowserViewOverlayRelease[] = [];
+  private readonly snapshotInvalidationHandlers = new Set<
+    (change: BrowserViewSnapshotInvalidatedChange) => void
+  >();
 
   upsertTile(_input: AgentBrowserViewTileUpsert): Promise<void> {
     return Promise.resolve();
@@ -385,6 +388,19 @@ class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
     dispose: () => void;
   } {
     return { dispose: () => undefined };
+  }
+
+  onSnapshotInvalidated(
+    handler: (change: BrowserViewSnapshotInvalidatedChange) => void,
+  ): {
+    dispose: () => void;
+  } {
+    this.snapshotInvalidationHandlers.add(handler);
+    return {
+      dispose: () => {
+        this.snapshotInvalidationHandlers.delete(handler);
+      },
+    };
   }
 
   dispatchCdp(

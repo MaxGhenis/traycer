@@ -13,6 +13,7 @@ import type {
   BrowserViewDurableTabRegistration,
   BrowserViewOpenTileRequest,
   BrowserViewOverlayOcclusion,
+  BrowserViewSnapshotInvalidatedChange,
   BrowserViewOverlayOcclusionResult,
   BrowserViewOverlayRelease,
   BrowserViewOverlayReleaseResult,
@@ -31,6 +32,9 @@ export interface AgentBrowserViewBridgeSurface {
     onStatusChange(handler: Listener<BrowserViewStatusChange>): Disposable;
     onOpenTileRequest(
       handler: Listener<BrowserViewOpenTileRequest>,
+    ): Disposable;
+    onSnapshotInvalidated(
+      handler: Listener<BrowserViewSnapshotInvalidatedChange>,
     ): Disposable;
     dispatchCdp(
       input: AgentBrowserViewCdpDispatch,
@@ -84,6 +88,11 @@ export function buildAgentBrowserViewBridge(): AgentBrowserViewBridgeSurface {
       onOpenTileRequest: (handler) =>
         subscribe<BrowserViewOpenTileRequest>(
           RunnerHostEvent.agentBrowserViewOpenTileRequest,
+          handler,
+        ),
+      onSnapshotInvalidated: (handler) =>
+        subscribe<BrowserViewSnapshotInvalidatedChange>(
+          RunnerHostEvent.agentBrowserViewSnapshotInvalidated,
           handler,
         ),
       dispatchCdp: (input) =>

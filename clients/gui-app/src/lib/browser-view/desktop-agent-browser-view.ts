@@ -4,6 +4,7 @@ import type {
   BrowserViewDurableTabRegistration,
   BrowserViewOpenTileRequest,
   BrowserViewOverlayOcclusion,
+  BrowserViewSnapshotInvalidatedChange,
   BrowserViewOverlayOcclusionResult,
   BrowserViewOverlayRelease,
   BrowserViewOverlayReleaseResult,
@@ -217,6 +218,11 @@ export interface DesktopAgentBrowserViewBridge {
   onOpenTileRequest(handler: (change: BrowserViewOpenTileRequest) => void): {
     dispose: () => void;
   };
+  onSnapshotInvalidated(
+    handler: (change: BrowserViewSnapshotInvalidatedChange) => void,
+  ): {
+    dispose: () => void;
+  };
   dispatchCdp(
     input: AgentBrowserViewCdpDispatch,
   ): Promise<AgentBrowserViewCdpResult>;
@@ -259,6 +265,7 @@ const REQUIRED_AGENT_BROWSER_VIEW_BRIDGE_METHODS = [
   "releaseTile",
   "onStatusChange",
   "onOpenTileRequest",
+  "onSnapshotInvalidated",
   "dispatchCdp",
   "occludeForOverlay",
   "releaseOverlay",
@@ -283,6 +290,8 @@ export function resolveDesktopAgentBrowserViewBridge(
       readDisposable(methods.onStatusChange.call(value, handler)),
     onOpenTileRequest: (handler) =>
       readDisposable(methods.onOpenTileRequest.call(value, handler)),
+    onSnapshotInvalidated: (handler) =>
+      readDisposable(methods.onSnapshotInvalidated.call(value, handler)),
     dispatchCdp: (input) =>
       Promise.resolve(
         methods.dispatchCdp.call(value, input),
@@ -324,6 +333,7 @@ function readAgentBrowserViewBridgeMethods(
     releaseTile: readBridgeMethod(value, "releaseTile"),
     onStatusChange: readBridgeMethod(value, "onStatusChange"),
     onOpenTileRequest: readBridgeMethod(value, "onOpenTileRequest"),
+    onSnapshotInvalidated: readBridgeMethod(value, "onSnapshotInvalidated"),
     dispatchCdp: readBridgeMethod(value, "dispatchCdp"),
     occludeForOverlay: readBridgeMethod(value, "occludeForOverlay"),
     releaseOverlay: readBridgeMethod(value, "releaseOverlay"),

@@ -46,8 +46,9 @@ const AGENT_BROWSER_VIEW_RELEASE_GRACE_MS = 500;
  * position, show and release a tile in `AGENT_BROWSER_VIEW_PARTITION` -
  * driving (control grant/action), storage-state lending, find, zoom and
  * devtools belong to later tickets (03+) that build the agent's actual
- * REPL-driven surface, so they are not wired here. Popups are still routed
- * through the agent partition (never the user's) since that is a
+ * REPL-driven surface, so they are not wired here. Snapshot invalidation
+ * is wired so the overlay coordinator can stale agent-tile bitmaps.
+ * Popups stay in the agent partition (never the user's) since that is a
  * containment property, not a driving feature.
  */
 export function registerAgentBrowserViewIpc(
@@ -90,7 +91,13 @@ export function registerAgentBrowserViewIpc(
         change satisfies BrowserViewOpenTileRequest,
       );
     },
-    notifySnapshotInvalidated: () => {},
+    notifySnapshotInvalidated: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.agentBrowserViewSnapshotInvalidated,
+        change,
+      );
+    },
     notifyDebugSnapshot: () => {},
     notifyControlRevoked: () => {},
     notifyCdpSessionEnded: (windowId, change) => {

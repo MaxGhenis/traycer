@@ -129,6 +129,10 @@ class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
     };
   }
 
+  onSnapshotInvalidated(): { dispose: () => void } {
+    return { dispose: () => undefined };
+  }
+
   emitOpenTileRequest(change: BrowserViewOpenTileRequest): void {
     this.openTileHandlers.forEach((handler) => handler(change));
   }
