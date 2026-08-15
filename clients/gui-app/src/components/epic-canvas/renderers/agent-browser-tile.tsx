@@ -256,6 +256,12 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       setStatus(change.status);
       setStatusReason(change.reason);
       setStatusUrl(change.url);
+      // Attempted URL wins only until status catches up. A permanent
+      // latch would upsert the submitted URL after a later live
+      // navigation (redirect, link, back/forward) and send the view back.
+      if (change.url.length > 0) {
+        setAttemptedUrl(null);
+      }
       setCanGoBack(change.canGoBack);
       setCanGoForward(change.canGoForward);
       setZoomPercent(change.zoomPercent);
