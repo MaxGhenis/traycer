@@ -92,6 +92,37 @@ const bindingState = vi.hoisted(() => {
   };
 });
 
+const clientState = vi.hoisted(() => {
+  const defaultClient = { instanceId: "pip-test-headless-client" };
+  const listeners = new Set<() => void>();
+  const state: {
+    readonly defaultClient: { readonly instanceId: string };
+    value: { readonly instanceId: string } | null;
+    set(next: { readonly instanceId: string } | null): void;
+    subscribe(listener: () => void): () => void;
+    reset(): void;
+  } = {
+    defaultClient,
+    value: defaultClient,
+    set(next) {
+      state.value = next;
+      listeners.forEach((listener) => {
+        listener();
+      });
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    reset() {
+      state.value = defaultClient;
+    },
+  };
+  return state;
+});
+
 const headlessStreamState = vi.hoisted(() => ({
   openCount: 0,
   closeCount: 0,
@@ -174,7 +205,12 @@ vi.mock("@/lib/host/stream-auth-revalidator", () => ({
 }));
 
 vi.mock("@/hooks/host/use-host-stream-client-for", () => ({
-  useHostStreamClientFor: () => ({ instanceId: "pip-test-headless-client" }),
+  useHostStreamClientFor: () =>
+    useSyncExternalStore(
+      (listener) => clientState.subscribe(listener),
+      () => clientState.value,
+      () => clientState.value,
+    ),
 }));
 
 vi.mock("@/lib/browser-view/pip-headless-stream", async (importOriginal) => {
@@ -331,6 +367,7 @@ describe("AgentBrowserPip", () => {
     seedCanvasTab();
     seedSessions();
     bindingState.set(null);
+    clientState.reset();
     headlessStreamState.reset();
     pipCaptureState.reset();
     navigateNested.mockClear();
@@ -691,6 +728,72 @@ describe("AgentBrowserPip", () => {
     expect(pipCaptureState.start).toHaveBeenCalled();
   });
 
+  it("opens one capture per mount and does not thrash when the host client appears", async () => {
+    vi.useRealTimers();
+    clientState.set(null);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    renderPip();
+    expect(headlessStreamState.openCount).toBe(0);
+    expect(headlessStreamState.closeCount).toBe(0);
+
+    clientState.set(clientState.defaultClient);
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(headlessStreamState.openCount).toBe(1);
+    expect(headlessStreamState.closeCount).toBe(0);
+
+    clientState.set({ instanceId: "pip-test-headless-client" });
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Opening example.net",
+    });
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(headlessStreamState.openCount).toBe(1);
+    expect(headlessStreamState.closeCount).toBe(0);
+  });
+
+  it("does not stop native capture when the unused host client appears", async () => {
+    vi.useRealTimers();
+    clientState.set(null);
+    bindingState.set({ tileKey: TILE_KEY });
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    renderPip();
+    expect(pipCaptureState.start).toHaveBeenCalledTimes(1);
+    expect(pipCaptureState.stop).not.toHaveBeenCalled();
+    expect(headlessStreamState.openCount).toBe(0);
+
+    clientState.set(clientState.defaultClient);
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(pipCaptureState.start).toHaveBeenCalledTimes(1);
+    expect(pipCaptureState.stop).not.toHaveBeenCalled();
+    expect(headlessStreamState.openCount).toBe(0);
+    expect(headlessStreamState.closeCount).toBe(0);
+  });
+
   it("shows the host label when the displayed burst is not on the active host", () => {
     const hostB = session({
       sessionId: "s-b",
@@ -810,6 +913,7 @@ describe("AgentBrowserPip captions", () => {
     seedCanvasTab();
     seedSessions();
     bindingState.set(null);
+    clientState.reset();
     headlessStreamState.reset();
     pipCaptureState.reset();
     navigateNested.mockClear();

@@ -726,42 +726,107 @@ function usePipOwnedFrame(
   const useHeadless = !useNative && client !== null;
   const retain = shouldRetainPipFrame(snapshot.phase, burstId);
   const { owned, setOwned } = usePipFrameOwner(burstId, retain);
-
-  useEffect(() => {
-    if (snapshot.phase !== "live" || burstId === null) return;
-    if (sessionId.length === 0 || tabId.length === 0) return;
-    return startPipCapture({
-      binding,
-      bridge,
-      burstId,
-      client,
-      epicId,
-      onUrl: (src) => {
-        setOwned((prev) => {
-          if (prev !== null && prev.src !== src) URL.revokeObjectURL(prev.src);
-          return { burstId, src };
-        });
-      },
-      sessionId,
-      tabId,
-      useHeadless,
-      useNative,
-    });
-  }, [
+  const sourceKey = pipCaptureSourceKey({
+    binding,
+    burstId,
+    client,
+    phase: snapshot.phase,
+    sessionId,
+    tabId,
+    useHeadless,
+    useNative,
+  });
+  const captureArgsRef = useRef({
     binding,
     bridge,
     burstId,
     client,
     epicId,
     sessionId,
-    snapshot.phase,
-    tabId,
     setOwned,
+    tabId,
     useHeadless,
     useNative,
-  ]);
+  });
+
+  useEffect(() => {
+    captureArgsRef.current = {
+      binding,
+      bridge,
+      burstId,
+      client,
+      epicId,
+      sessionId,
+      setOwned,
+      tabId,
+      useHeadless,
+      useNative,
+    };
+  });
+
+  useEffect(() => {
+    if (sourceKey === null) return;
+    const args = captureArgsRef.current;
+    const liveBurstId = args.burstId;
+    if (liveBurstId === null) return;
+    return startPipCapture({
+      binding: args.binding,
+      bridge: args.bridge,
+      burstId: liveBurstId,
+      client: args.client,
+      epicId: args.epicId,
+      onUrl: (src) => {
+        args.setOwned((prev) => {
+          if (prev !== null && prev.src !== src) URL.revokeObjectURL(prev.src);
+          return { burstId: liveBurstId, src };
+        });
+      },
+      sessionId: args.sessionId,
+      tabId: args.tabId,
+      useHeadless: args.useHeadless,
+      useNative: args.useNative,
+    });
+  }, [sourceKey]);
 
   return frameSrcFor(owned, burstId, retain);
+}
+
+function pipCaptureSourceKey(input: {
+  readonly phase: PipSnapshot["phase"];
+  readonly burstId: string | null;
+  readonly sessionId: string;
+  readonly tabId: string;
+  readonly useNative: boolean;
+  readonly useHeadless: boolean;
+  readonly binding: ElectronBrowserTabRegistration | null;
+  readonly client: IHostStreamClient<HostStreamRpcRegistry> | null;
+}): string | null {
+  if (input.phase !== "live" || input.burstId === null) return null;
+  if (input.sessionId.length === 0 || input.tabId.length === 0) return null;
+  if (input.useNative && input.binding !== null) {
+    const tileKey = input.binding.tileKey;
+    return [
+      "native",
+      input.binding.registrationId,
+      tileKey.viewTabId,
+      tileKey.paneId,
+      tileKey.tileInstanceId,
+      tileKey.pageSessionId,
+      input.sessionId,
+      input.tabId,
+      input.burstId,
+    ].join("\u001f");
+  }
+  if (input.useHeadless && input.client !== null) {
+    return [
+      "headless",
+      input.client.instanceId,
+      input.sessionId,
+      input.tabId,
+      input.burstId,
+    ].join("\u001f");
+  }
+  return null;
 }
 
 function shouldRetainPipFrame(
