@@ -15,7 +15,7 @@ import {
 import { BrowserTileToolbar } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
 import { BrowserViewSnapshotLayer } from "@/components/epic-canvas/renderers/browser-view-snapshot-layer";
 import {
-  ISOLATED_TILE_CHROME_CAPABILITIES,
+  isolatedTileChromeCapabilitiesFromSurface,
   PRIMARY_TILE_CHROME_CAPABILITIES,
 } from "@/components/epic-canvas/renderers/tile-controller";
 import { useBrowserElementPicker } from "@/components/epic-canvas/renderers/use-browser-element-picker";
@@ -27,6 +27,7 @@ import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
 import { BROWSER_VIEW_SURFACE_ATTRIBUTE } from "@/lib/browser-view/browser-overlay-coordinator";
 import { selectSiblingChatIdForBrowserTile } from "@/lib/browser-view/browser-tile-chat-routing";
 import {
+  probeAgentBrowserViewOptionalSurface,
   resolveDesktopAgentBrowserViewBridge,
   type AgentBrowserViewTileKey,
 } from "@/lib/browser-view/desktop-agent-browser-view";
@@ -42,6 +43,7 @@ import { openFreshElectronTileFromBrowserPage } from "@/lib/browser-view/browser
 import { useBrowserCookieCryptoState } from "@/lib/browser-view/use-browser-cookie-crypto-state";
 import { appLogger } from "@/lib/logger";
 import { cn } from "@/lib/utils";
+import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import type { AgentBrowserTileRef } from "@/stores/epics/canvas/types";
@@ -53,6 +55,20 @@ import type { AgentBrowserTileRef } from "@/stores/epics/canvas/types";
  * loading/ready/dead), so this is a client-side ceiling, not a host signal.
  */
 const AGENT_BROWSER_UNREACHABLE_TIMEOUT_MS = 12_000;
+
+const UNAVAILABLE_ISOLATED_CHROME_SURFACE = {
+  goBack: false,
+  goForward: false,
+  reloadTile: false,
+  zoomIn: false,
+  zoomOut: false,
+  resetZoom: false,
+  setViewportPreset: false,
+  openDevTools: false,
+  findInPage: false,
+  stopFindInPage: false,
+  onFindChange: false,
+} as const;
 
 export interface AgentBrowserTileProps {
   readonly node: AgentBrowserTileRef;
@@ -75,7 +91,10 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const runnerHost = useRunnerHost();
   const visible = useTileBodyVisible();
   const paneFocused = usePaneFocused();
-  const usePrimaryProfileRuntime = props.usePrimaryProfileRuntime === true;
+  const usePrimaryProfileRuntime = resolvePrimaryProfileRuntime(
+    props.usePrimaryProfileRuntime,
+    props.node.runtime,
+  );
   const primaryBridge = useMemo(
     () =>
       usePrimaryProfileRuntime
@@ -94,7 +113,8 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<BrowserViewStatus>("loading");
   const [statusReason, setStatusReason] = useState<string | null>(null);
-  const [statusUrl, setStatusUrl] = useState(props.node.url);
+  const [statusUrl, setStatusUrl] = useState("");
+  const [attemptedUrl, setAttemptedUrl] = useState<string | null>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const [zoomPercent, setZoomPercent] = useState(100);
@@ -167,34 +187,6 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       void browserView.releaseTile(tileKey).catch(ignoreAgentBrowserViewError);
     };
   }, [browserView, tileKey]);
-
-  useEffect(() => {
-    if (
-      browserView === null ||
-      (props.activateBeforeNativeView === true && durableTabId === null)
-    ) {
-      return;
-    }
-    void browserView
-      .upsertTile({
-        ...tileKey,
-        url: props.node.url,
-        visible,
-        viewportPreset: "responsive",
-      })
-      .catch(ignoreAgentBrowserViewError);
-    // `retryNonce` is otherwise unused inside the effect - its only job is to
-    // force this upsert to re-fire when the user clicks Retry on an
-    // unreachable session, since there is no dedicated reload RPC.
-  }, [
-    browserView,
-    durableTabId,
-    props.activateBeforeNativeView,
-    tileKey,
-    props.node.url,
-    visible,
-    retryNonce,
-  ]);
 
   useEffect(() => {
     if (browserView === null || epicId === null) return;
@@ -324,14 +316,16 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const persistViewportPreset = useEpicCanvasStore(
     (state) => state.updateBrowserTileViewportPresetInTab,
   );
+  const chromeCapabilities = useAgentTileChromeCapabilities(
+    runnerHost,
+    usePrimaryProfileRuntime,
+  );
   const chrome = useElectronTileChrome({
     chromeView: browserView,
     tileKey,
     initialUrl: props.node.url,
     visible,
-    capabilities: usePrimaryProfileRuntime
-      ? PRIMARY_TILE_CHROME_CAPABILITIES
-      : ISOLATED_TILE_CHROME_CAPABILITIES,
+    capabilities: chromeCapabilities,
     elementPicker,
     cookieCryptoState,
     statusUrl,
@@ -346,7 +340,36 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       );
     },
     initialViewportPreset: readAgentViewportPreset(props.node.viewportPreset),
+    onAttemptedUrl: setAttemptedUrl,
   });
+  const lifecycleUrl =
+    attemptedUrl ?? (statusUrl.length > 0 ? statusUrl : props.node.url);
+
+  useEffect(() => {
+    if (
+      browserView === null ||
+      (props.activateBeforeNativeView === true && durableTabId === null)
+    ) {
+      return;
+    }
+    void browserView
+      .upsertTile({
+        ...tileKey,
+        url: lifecycleUrl,
+        visible,
+        viewportPreset: chrome.viewportPreset,
+      })
+      .catch(ignoreAgentBrowserViewError);
+  }, [
+    browserView,
+    durableTabId,
+    props.activateBeforeNativeView,
+    tileKey,
+    lifecycleUrl,
+    visible,
+    retryNonce,
+    chrome.viewportPreset,
+  ]);
 
   return (
     <div
@@ -498,6 +521,30 @@ function AgentBrowserTileReason(props: {
 }
 
 /** Canvas node id is the Electron tile key's pageSessionId, not host sessionId. */
+function resolvePrimaryProfileRuntime(
+  requested: boolean | undefined,
+  nodeRuntime: AgentBrowserTileRef["runtime"],
+): boolean {
+  return requested === true || nodeRuntime === "primary";
+}
+
+function useAgentTileChromeCapabilities(
+  runnerHost: IRunnerHost,
+  usePrimaryProfileRuntime: boolean,
+) {
+  const isolatedSurface = useMemo(
+    () =>
+      usePrimaryProfileRuntime
+        ? null
+        : probeAgentBrowserViewOptionalSurface(runnerHost),
+    [runnerHost, usePrimaryProfileRuntime],
+  );
+  if (usePrimaryProfileRuntime) return PRIMARY_TILE_CHROME_CAPABILITIES;
+  return isolatedTileChromeCapabilitiesFromSurface(
+    isolatedSurface ?? UNAVAILABLE_ISOLATED_CHROME_SURFACE,
+  );
+}
+
 function pageSessionIdForAgentTile(nodeId: string): string {
   return nodeId;
 }

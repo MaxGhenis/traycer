@@ -285,18 +285,41 @@ type AgentBrowserViewBridgeMethod = (
   ...args: unknown[]
 ) => unknown;
 type AgentBrowserViewBridgeSource = Record<string, unknown>;
+type AgentBrowserViewRequiredMethod =
+  (typeof REQUIRED_AGENT_BROWSER_VIEW_BRIDGE_METHODS)[number];
+type AgentBrowserViewOptionalMethod =
+  (typeof OPTIONAL_AGENT_BROWSER_VIEW_BRIDGE_METHODS)[number];
 type AgentBrowserViewBridgeMethodSet = {
-  readonly [
-    MethodName in keyof DesktopAgentBrowserViewBridge
-  ]: AgentBrowserViewBridgeMethod;
+  readonly [MethodName in AgentBrowserViewRequiredMethod]: AgentBrowserViewBridgeMethod;
+} & {
+  readonly [MethodName in AgentBrowserViewOptionalMethod]:
+    | AgentBrowserViewBridgeMethod
+    | undefined;
 };
 
-const REQUIRED_AGENT_BROWSER_VIEW_BRIDGE_METHODS = [
+/**
+ * Strict preload gate: only the pre-chrome agent surface. A renderer newer
+ * than its preload (desktop hot-reload) must still resolve a working
+ * lifecycle/CDP/occlusion bridge. Every chrome method added in the
+ * unification work degrades independently.
+ */
+export const REQUIRED_AGENT_BROWSER_VIEW_BRIDGE_METHODS = [
   "upsertTile",
   "registerDurableTab",
   "updateBounds",
-  "setViewportPreset",
   "releaseTile",
+  "onStatusChange",
+  "onOpenTileRequest",
+  "dispatchCdp",
+  "occludeForOverlay",
+  "releaseOverlay",
+  "onCdpSessionEnded",
+  "onCdpTargetAttached",
+  "onTileHandoff",
+] as const satisfies readonly (keyof DesktopAgentBrowserViewBridge)[];
+
+export const OPTIONAL_AGENT_BROWSER_VIEW_BRIDGE_METHODS = [
+  "setViewportPreset",
   "reloadTile",
   "goBack",
   "goForward",
@@ -308,19 +331,30 @@ const REQUIRED_AGENT_BROWSER_VIEW_BRIDGE_METHODS = [
   "zoomOut",
   "resetZoom",
   "openDevTools",
-  "onStatusChange",
   "onFindChange",
   "onDownloadChange",
   "onCertificateError",
-  "onOpenTileRequest",
   "onSnapshotInvalidated",
-  "dispatchCdp",
-  "occludeForOverlay",
-  "releaseOverlay",
-  "onCdpSessionEnded",
-  "onCdpTargetAttached",
-  "onTileHandoff",
-] satisfies readonly (keyof DesktopAgentBrowserViewBridge)[];
+] as const satisfies readonly (keyof DesktopAgentBrowserViewBridge)[];
+
+export interface AgentBrowserViewOptionalSurface {
+  readonly setViewportPreset: boolean;
+  readonly reloadTile: boolean;
+  readonly goBack: boolean;
+  readonly goForward: boolean;
+  readonly findInPage: boolean;
+  readonly stopFindInPage: boolean;
+  readonly cancelDownload: boolean;
+  readonly trustCertificate: boolean;
+  readonly zoomIn: boolean;
+  readonly zoomOut: boolean;
+  readonly resetZoom: boolean;
+  readonly openDevTools: boolean;
+  readonly onFindChange: boolean;
+  readonly onDownloadChange: boolean;
+  readonly onCertificateError: boolean;
+  readonly onSnapshotInvalidated: boolean;
+}
 
 export function resolveDesktopAgentBrowserViewBridge(
   runnerHost: IRunnerHost,
@@ -334,35 +368,39 @@ export function resolveDesktopAgentBrowserViewBridge(
       callBridgeVoid(value, methods.registerDurableTab, input),
     updateBounds: (input) => callBridgeVoid(value, methods.updateBounds, input),
     setViewportPreset: (input) =>
-      callBridgeVoid(value, methods.setViewportPreset, input),
+      callOptionalBridgeVoid(value, methods.setViewportPreset, input),
     releaseTile: (input) => callBridgeVoid(value, methods.releaseTile, input),
-    reloadTile: (input) => callBridgeVoid(value, methods.reloadTile, input),
-    goBack: (input) => callBridgeVoid(value, methods.goBack, input),
-    goForward: (input) => callBridgeVoid(value, methods.goForward, input),
-    findInPage: (input) => callBridgeVoid(value, methods.findInPage, input),
+    reloadTile: (input) =>
+      callOptionalBridgeVoid(value, methods.reloadTile, input),
+    goBack: (input) => callOptionalBridgeVoid(value, methods.goBack, input),
+    goForward: (input) =>
+      callOptionalBridgeVoid(value, methods.goForward, input),
+    findInPage: (input) =>
+      callOptionalBridgeVoid(value, methods.findInPage, input),
     stopFindInPage: (input) =>
-      callBridgeVoid(value, methods.stopFindInPage, input),
+      callOptionalBridgeVoid(value, methods.stopFindInPage, input),
     cancelDownload: (input) =>
-      callBridgeVoid(value, methods.cancelDownload, input),
+      callOptionalBridgeVoid(value, methods.cancelDownload, input),
     trustCertificate: (input) =>
-      callBridgeVoid(value, methods.trustCertificate, input),
-    zoomIn: (input) => callBridgeVoid(value, methods.zoomIn, input),
-    zoomOut: (input) => callBridgeVoid(value, methods.zoomOut, input),
-    resetZoom: (input) => callBridgeVoid(value, methods.resetZoom, input),
+      callOptionalBridgeVoid(value, methods.trustCertificate, input),
+    zoomIn: (input) => callOptionalBridgeVoid(value, methods.zoomIn, input),
+    zoomOut: (input) => callOptionalBridgeVoid(value, methods.zoomOut, input),
+    resetZoom: (input) =>
+      callOptionalBridgeVoid(value, methods.resetZoom, input),
     openDevTools: (input) =>
-      callBridgeVoid(value, methods.openDevTools, input),
+      callOptionalBridgeVoid(value, methods.openDevTools, input),
     onStatusChange: (handler) =>
       readDisposable(methods.onStatusChange.call(value, handler)),
     onFindChange: (handler) =>
-      readDisposable(methods.onFindChange.call(value, handler)),
+      readOptionalDisposable(value, methods.onFindChange, handler),
     onDownloadChange: (handler) =>
-      readDisposable(methods.onDownloadChange.call(value, handler)),
+      readOptionalDisposable(value, methods.onDownloadChange, handler),
     onCertificateError: (handler) =>
-      readDisposable(methods.onCertificateError.call(value, handler)),
+      readOptionalDisposable(value, methods.onCertificateError, handler),
     onOpenTileRequest: (handler) =>
       readDisposable(methods.onOpenTileRequest.call(value, handler)),
     onSnapshotInvalidated: (handler) =>
-      readDisposable(methods.onSnapshotInvalidated.call(value, handler)),
+      readOptionalDisposable(value, methods.onSnapshotInvalidated, handler),
     dispatchCdp: (input) =>
       Promise.resolve(
         methods.dispatchCdp.call(value, input),
@@ -401,25 +439,28 @@ function readAgentBrowserViewBridgeMethods(
     upsertTile: readBridgeMethod(value, "upsertTile"),
     registerDurableTab: readBridgeMethod(value, "registerDurableTab"),
     updateBounds: readBridgeMethod(value, "updateBounds"),
-    setViewportPreset: readBridgeMethod(value, "setViewportPreset"),
+    setViewportPreset: readOptionalBridgeMethod(value, "setViewportPreset"),
     releaseTile: readBridgeMethod(value, "releaseTile"),
-    reloadTile: readBridgeMethod(value, "reloadTile"),
-    goBack: readBridgeMethod(value, "goBack"),
-    goForward: readBridgeMethod(value, "goForward"),
-    findInPage: readBridgeMethod(value, "findInPage"),
-    stopFindInPage: readBridgeMethod(value, "stopFindInPage"),
-    cancelDownload: readBridgeMethod(value, "cancelDownload"),
-    trustCertificate: readBridgeMethod(value, "trustCertificate"),
-    zoomIn: readBridgeMethod(value, "zoomIn"),
-    zoomOut: readBridgeMethod(value, "zoomOut"),
-    resetZoom: readBridgeMethod(value, "resetZoom"),
-    openDevTools: readBridgeMethod(value, "openDevTools"),
+    reloadTile: readOptionalBridgeMethod(value, "reloadTile"),
+    goBack: readOptionalBridgeMethod(value, "goBack"),
+    goForward: readOptionalBridgeMethod(value, "goForward"),
+    findInPage: readOptionalBridgeMethod(value, "findInPage"),
+    stopFindInPage: readOptionalBridgeMethod(value, "stopFindInPage"),
+    cancelDownload: readOptionalBridgeMethod(value, "cancelDownload"),
+    trustCertificate: readOptionalBridgeMethod(value, "trustCertificate"),
+    zoomIn: readOptionalBridgeMethod(value, "zoomIn"),
+    zoomOut: readOptionalBridgeMethod(value, "zoomOut"),
+    resetZoom: readOptionalBridgeMethod(value, "resetZoom"),
+    openDevTools: readOptionalBridgeMethod(value, "openDevTools"),
     onStatusChange: readBridgeMethod(value, "onStatusChange"),
-    onFindChange: readBridgeMethod(value, "onFindChange"),
-    onDownloadChange: readBridgeMethod(value, "onDownloadChange"),
-    onCertificateError: readBridgeMethod(value, "onCertificateError"),
+    onFindChange: readOptionalBridgeMethod(value, "onFindChange"),
+    onDownloadChange: readOptionalBridgeMethod(value, "onDownloadChange"),
+    onCertificateError: readOptionalBridgeMethod(value, "onCertificateError"),
     onOpenTileRequest: readBridgeMethod(value, "onOpenTileRequest"),
-    onSnapshotInvalidated: readBridgeMethod(value, "onSnapshotInvalidated"),
+    onSnapshotInvalidated: readOptionalBridgeMethod(
+      value,
+      "onSnapshotInvalidated",
+    ),
     dispatchCdp: readBridgeMethod(value, "dispatchCdp"),
     occludeForOverlay: readBridgeMethod(value, "occludeForOverlay"),
     releaseOverlay: readBridgeMethod(value, "releaseOverlay"),
@@ -437,9 +478,34 @@ function hasRequiredAgentBrowserViewBridgeMethods(
   );
 }
 
+export function probeAgentBrowserViewOptionalSurface(
+  runnerHost: IRunnerHost,
+): AgentBrowserViewOptionalSurface | null {
+  const value = readAgentBrowserViewSource(runnerHost);
+  if (value === null) return null;
+  return {
+    setViewportPreset: isBridgeMethod(value.setViewportPreset),
+    reloadTile: isBridgeMethod(value.reloadTile),
+    goBack: isBridgeMethod(value.goBack),
+    goForward: isBridgeMethod(value.goForward),
+    findInPage: isBridgeMethod(value.findInPage),
+    stopFindInPage: isBridgeMethod(value.stopFindInPage),
+    cancelDownload: isBridgeMethod(value.cancelDownload),
+    trustCertificate: isBridgeMethod(value.trustCertificate),
+    zoomIn: isBridgeMethod(value.zoomIn),
+    zoomOut: isBridgeMethod(value.zoomOut),
+    resetZoom: isBridgeMethod(value.resetZoom),
+    openDevTools: isBridgeMethod(value.openDevTools),
+    onFindChange: isBridgeMethod(value.onFindChange),
+    onDownloadChange: isBridgeMethod(value.onDownloadChange),
+    onCertificateError: isBridgeMethod(value.onCertificateError),
+    onSnapshotInvalidated: isBridgeMethod(value.onSnapshotInvalidated),
+  };
+}
+
 function readBridgeMethod(
   value: AgentBrowserViewBridgeSource,
-  name: keyof DesktopAgentBrowserViewBridge,
+  name: AgentBrowserViewRequiredMethod,
 ): AgentBrowserViewBridgeMethod {
   const method = value[name];
   if (isBridgeMethod(method)) return method;
@@ -448,6 +514,37 @@ function readBridgeMethod(
       `Desktop agent browser view bridge method ${name} is missing.`,
     );
   };
+}
+
+function readOptionalBridgeMethod(
+  value: AgentBrowserViewBridgeSource,
+  name: AgentBrowserViewOptionalMethod,
+): AgentBrowserViewBridgeMethod | undefined {
+  const method = value[name];
+  if (isBridgeMethod(method)) return method;
+  return undefined;
+}
+
+function callOptionalBridgeVoid(
+  value: AgentBrowserViewBridgeSource,
+  method: AgentBrowserViewBridgeMethod | undefined,
+  input: unknown,
+): Promise<void> {
+  if (method === undefined) {
+    return Promise.reject(
+      new Error("Desktop agent browser view chrome method is unavailable."),
+    );
+  }
+  return callBridgeVoid(value, method, input);
+}
+
+function readOptionalDisposable(
+  value: AgentBrowserViewBridgeSource,
+  method: AgentBrowserViewBridgeMethod | undefined,
+  handler: unknown,
+): { dispose: () => void } {
+  if (method === undefined) return { dispose: () => undefined };
+  return readDisposable(method.call(value, handler));
 }
 
 function isBridgeMethod(value: unknown): value is AgentBrowserViewBridgeMethod {

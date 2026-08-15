@@ -193,7 +193,8 @@ export interface BrowserSessionTileRef {
  * `AGENT_BROWSER_VIEW_PARTITION`, never `persist:traycer-browser`.
  * `id` is the page-session id used as the Electron tile key's
  * `pageSessionId`. `sessionId` is the host browser session. Do not
- * swap those when wiring chrome.
+ * swap those when wiring chrome. `runtime` is the partition/bridge
+ * this tile should attach to, not who created it.
  */
 export interface AgentBrowserTileRef {
   readonly id: string;
@@ -204,6 +205,7 @@ export interface AgentBrowserTileRef {
   readonly hostId: string;
   readonly url: string;
   readonly viewportPreset: string;
+  readonly runtime: "primary" | "isolated";
 }
 
 export function makeOpenableNodeRef(args: {

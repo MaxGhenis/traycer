@@ -77,3 +77,31 @@ export const ISOLATED_TILE_CHROME_CAPABILITIES: TileChromeCapabilities = {
   siteInfo: false,
   elementPicker: false,
 };
+
+export function isolatedTileChromeCapabilitiesFromSurface(surface: {
+  readonly goBack: boolean;
+  readonly goForward: boolean;
+  readonly reloadTile: boolean;
+  readonly zoomIn: boolean;
+  readonly zoomOut: boolean;
+  readonly resetZoom: boolean;
+  readonly setViewportPreset: boolean;
+  readonly openDevTools: boolean;
+  readonly findInPage: boolean;
+  readonly stopFindInPage: boolean;
+  readonly onFindChange: boolean;
+}): TileChromeCapabilities {
+  return {
+    navigate: true,
+    back: surface.goBack,
+    forward: surface.goForward,
+    reload: surface.reloadTile,
+    zoom: surface.zoomIn && surface.zoomOut && surface.resetZoom,
+    viewportPreset: surface.setViewportPreset,
+    devtools: surface.openDevTools,
+    find:
+      surface.findInPage && surface.stopFindInPage && surface.onFindChange,
+    siteInfo: false,
+    elementPicker: false,
+  };
+}

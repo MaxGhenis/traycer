@@ -154,6 +154,7 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
     hostId: props.node.hostId,
     url: tab.url,
     viewportPreset: "responsive",
+    runtime: binding?.background === true ? "primary" : "isolated",
   };
   return (
     <AgentBrowserTile

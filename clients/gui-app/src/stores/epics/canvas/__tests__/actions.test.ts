@@ -1133,6 +1133,7 @@ describe("updateBrowserTileViewportPreset", () => {
       hostId: TEST_HOST_ID,
       url: "https://example.com",
       viewportPreset: "responsive",
+      runtime: "isolated",
     };
     const state = openPinned(createEmptyCanvas(), agent);
     const updated = updateBrowserTileViewportPreset(

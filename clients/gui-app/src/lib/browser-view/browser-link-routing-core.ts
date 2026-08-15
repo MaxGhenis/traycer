@@ -125,8 +125,11 @@ export function openFreshElectronTileFromBrowserPage(request: {
   if (canvas === undefined || canvas.root === null) return null;
   const targetPane = findPaneById(canvas.root, request.paneId);
   if (targetPane === null) return null;
+  // Children opened from an agent session keep that session identity so
+  // pending-create keys match AgentBrowserTile registration
+  // (sessionId, node.id). User-tile children stay BrowserTileRef.
   const tile =
-    request.runtime === "primary"
+    request.sessionId === null
       ? makeBrowserTileRef({
           name: browserTileNameForUrl(request.url),
           hostId: request.hostId,
@@ -139,6 +142,7 @@ export function openFreshElectronTileFromBrowserPage(request: {
           url: request.url,
           sessionId: request.sessionId,
           viewportPreset: DEFAULT_AGENT_BROWSER_VIEWPORT_PRESET,
+          runtime: request.runtime,
         });
   store.splitPaneWithNode(request.viewTabId, request.paneId, "right", tile);
   const nextCanvas =

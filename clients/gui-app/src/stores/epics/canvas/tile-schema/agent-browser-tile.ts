@@ -23,6 +23,7 @@ export function makeAgentBrowserTileRef(args: {
   readonly url: string;
   readonly sessionId: string | null;
   readonly viewportPreset: string;
+  readonly runtime: "primary" | "isolated";
 }): AgentBrowserTileRef {
   const id = agentBrowserTilePageSessionId();
   return {
@@ -34,6 +35,7 @@ export function makeAgentBrowserTileRef(args: {
     hostId: args.hostId,
     url: args.url,
     viewportPreset: args.viewportPreset,
+    runtime: args.runtime,
   };
 }
 
@@ -64,6 +66,7 @@ function parseAgentBrowserTileRef(value: unknown): AgentBrowserTileRef | null {
       typeof value.viewportPreset === "string"
         ? value.viewportPreset
         : DEFAULT_AGENT_BROWSER_VIEWPORT_PRESET,
+    runtime: value.runtime === "primary" ? "primary" : "isolated",
   };
 }
 
@@ -79,6 +82,7 @@ function serializeAgentBrowserTileRef(
     hostId: ref.hostId,
     url: ref.url,
     viewportPreset: ref.viewportPreset,
+    runtime: ref.runtime,
   };
 }
 

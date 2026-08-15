@@ -37,6 +37,7 @@ interface UseElectronTileChromeArgs {
     preset: BrowserViewViewportPresetId,
   ) => void;
   readonly initialViewportPreset: BrowserViewViewportPresetId;
+  readonly onAttemptedUrl: (url: string) => void;
 }
 
 export interface ElectronTileChrome {
@@ -46,6 +47,7 @@ export interface ElectronTileChrome {
   readonly certificateProceeding: boolean;
   readonly cancelDownload: (downloadId: string) => void;
   readonly proceedCertificate: () => void;
+  readonly viewportPreset: BrowserViewViewportPresetId;
 }
 
 /**
@@ -70,6 +72,7 @@ export function useElectronTileChrome(
     zoomPercent,
     persistViewportPreset,
     initialViewportPreset,
+    onAttemptedUrl,
   } = args;
   const [addressDraft, setAddressDraft] = useState<AddressDraft>({
     sourceUrl: null,
@@ -119,6 +122,7 @@ export function useElectronTileChrome(
       certificateProceeding: false,
       cancelDownload: ignoreChromeAction,
       proceedCertificate: ignoreChromeAction,
+      viewportPreset,
     };
   }
 
@@ -129,6 +133,7 @@ export function useElectronTileChrome(
     const nextUrl = normalizeBrowserAddressInput(addressValue);
     setAddressDraft({ sourceUrl: nextUrl, value: nextUrl });
     if (nextUrl === liveUrl) return;
+    onAttemptedUrl(nextUrl);
     setCertificateError(null);
     setCertificateProceeding(false);
     void chromeView
@@ -231,6 +236,7 @@ export function useElectronTileChrome(
     certificateProceeding,
     cancelDownload,
     proceedCertificate,
+    viewportPreset,
   };
 }
 

@@ -28,6 +28,7 @@ describe("makeAgentBrowserTileRef", () => {
       url,
       sessionId: null,
       viewportPreset: "responsive",
+      runtime: "isolated",
     });
     const second = makeAgentBrowserTileRef({
       name: "Agent browser",
@@ -35,6 +36,7 @@ describe("makeAgentBrowserTileRef", () => {
       url,
       sessionId: "shared-session",
       viewportPreset: "responsive",
+      runtime: "isolated",
     });
 
     expect(first.type).toBe(TILE_KIND_AGENT_BROWSER);
@@ -65,6 +67,7 @@ describe("agentBrowserTileSchema / parseTileRef", () => {
       hostId: HOST,
       url: "https://example.com/docs",
       viewportPreset: "responsive",
+      runtime: "isolated",
     };
 
     expect(
@@ -131,6 +134,7 @@ describe("isAgentBrowserTileRef", () => {
       hostId: HOST,
       url: "about:blank",
       viewportPreset: "responsive",
+      runtime: "isolated",
     };
     const browser: BrowserTileRef = {
       id: "browser-1",
