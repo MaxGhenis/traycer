@@ -602,6 +602,11 @@ function buildFakeBridge(
       onCdpTargetAttached: (_handler) => ({ dispose: () => undefined }),
       onTileHandoff: (_handler) => ({ dispose: () => undefined }),
     },
+    pipCapture: {
+      start: async () => undefined,
+      stop: async () => undefined,
+      onFrame: (_handler) => ({ dispose: () => undefined }),
+    },
     hostManagement: {
       getHostControllerStatus: async () => {
         throw new Error("getHostControllerStatus not used in test");

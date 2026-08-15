@@ -357,7 +357,7 @@ export interface AgentBrowserViewOptionalSurface {
 }
 
 export function resolveDesktopAgentBrowserViewBridge(
-  runnerHost: IRunnerHost,
+  runnerHost: IRunnerHost | object,
 ): DesktopAgentBrowserViewBridge | null {
   const value = readAgentBrowserViewSource(runnerHost);
   if (value === null) return null;
@@ -423,7 +423,7 @@ export function resolveDesktopAgentBrowserViewBridge(
 }
 
 function readAgentBrowserViewSource(
-  runnerHost: IRunnerHost,
+  runnerHost: IRunnerHost | object,
 ): AgentBrowserViewBridgeSource | null {
   if (!isRecord(runnerHost)) return null;
   const value = runnerHost.agentBrowserView;
@@ -479,7 +479,7 @@ function hasRequiredAgentBrowserViewBridgeMethods(
 }
 
 export function probeAgentBrowserViewOptionalSurface(
-  runnerHost: IRunnerHost,
+  runnerHost: IRunnerHost | object,
 ): AgentBrowserViewOptionalSurface | null {
   const value = readAgentBrowserViewSource(runnerHost);
   if (value === null) return null;

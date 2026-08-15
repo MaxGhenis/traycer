@@ -29,6 +29,7 @@ import {
 import { buildZoomBridge } from "./zoom-bridge";
 import { buildBrowserViewBridge } from "./browser-view-bridge";
 import { buildAgentBrowserViewBridge } from "./agent-browser-view-bridge";
+import { buildPipCaptureBridge } from "./pip-capture-bridge";
 import { readSyncString } from "./sync-bootstrap";
 
 /**
@@ -82,6 +83,7 @@ contextBridge.exposeInMainWorld("runnerHost", {
   ...buildZoomBridge(),
   ...buildBrowserViewBridge(),
   ...buildAgentBrowserViewBridge(),
+  ...buildPipCaptureBridge(),
   hostManagement: buildHostManagementBridge(),
   hostTray: buildHostTrayCommandSubscriber(),
   hostControllerStatus: buildHostControllerStatusSubscriber(),

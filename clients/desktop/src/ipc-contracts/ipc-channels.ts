@@ -346,6 +346,10 @@ export const RunnerHostInvoke = {
   // Ticket 03's typed CDP bridge: one invoke carrying an enumerated command
   // (see `AgentBrowserViewCdpCommand`), never a generic method/params pair.
   agentBrowserViewCdpDispatch: "runnerHost:agentBrowserView:cdp:dispatch",
+  // Native-tab PiP capture (agent-browser-pip ticket 02). Rides the existing
+  // debugger attach; frames are pushed on `pipCaptureFrame`.
+  pipCaptureStart: "runnerHost:pipCapture:start",
+  pipCaptureStop: "runnerHost:pipCapture:stop",
 } as const;
 
 export const RunnerHostEvent = {
@@ -436,6 +440,8 @@ export const RunnerHostEvent = {
   // Ticket 12 / ticket 10's design. Fired once, just before the agent tile
   // dies for any teardown reason, carrying captured `{url, storageState}`.
   agentBrowserViewTileHandoff: "runnerHost:event:agentBrowserView:tileHandoff",
+  // Native-tab PiP capture frames (`started` / `frame` / `stalled`).
+  pipCaptureFrame: "runnerHost:event:pipCapture:frame",
   globalShortcutsChange: "runnerHost:event:globalShortcuts:change",
 } as const;
 

@@ -161,6 +161,7 @@ import type {
 } from "../ipc-contracts/window-types";
 import type { ZoomPercent } from "../ipc-contracts/zoom-types";
 import type { AgentBrowserViewBridgeSurface } from "../electron-preload/agent-browser-view-bridge";
+import type { PipCaptureBridgeSurface } from "../electron-preload/pip-capture-bridge";
 
 /**
  * Shape of the `window.runnerHost` object installed by the Electron preload
@@ -272,6 +273,7 @@ export interface DesktopPreloadBridge {
   zoom: DesktopZoomBridge;
   browserView: DesktopBrowserViewBridge;
   agentBrowserView: AgentBrowserViewBridgeSurface["agentBrowserView"];
+  pipCapture: PipCaptureBridgeSurface["pipCapture"];
   hostManagement: DesktopHostManagementBridge;
   hostTray: DesktopHostTrayBridge;
   hostControllerStatus: DesktopHostControllerStatusBridge;
@@ -707,6 +709,7 @@ export class DesktopRunnerHost implements IRunnerHost {
   readonly zoom: IZoomHost;
   readonly browserView: DesktopBrowserViewBridge;
   readonly agentBrowserView: AgentBrowserViewBridgeSurface["agentBrowserView"];
+  readonly pipCapture: PipCaptureBridgeSurface["pipCapture"];
   readonly hostManagement: IHostManagement;
   readonly hostTray: IHostTray;
   readonly hostControllerStatus: DesktopHostControllerStatusBridge;
@@ -734,6 +737,7 @@ export class DesktopRunnerHost implements IRunnerHost {
     this.power = options.bridge.power;
     this.browserView = options.bridge.browserView;
     this.agentBrowserView = options.bridge.agentBrowserView;
+    this.pipCapture = options.bridge.pipCapture;
     this.zoom = {
       ladder: options.bridge.zoom.ladder,
       get: () => options.bridge.zoom.get(),

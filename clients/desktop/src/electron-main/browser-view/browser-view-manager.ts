@@ -48,6 +48,7 @@ import type {
   BrowserViewViewportPresetChange,
   BrowserViewViewportPresetId,
 } from "../../ipc-contracts/browser-view-types";
+import type { PipCaptureIpcPayload } from "../../ipc-contracts/pip-capture-types";
 import type {
   BrowserPrimaryProfileOriginSnapshot,
   BrowserStorageCaptureWebContents,
@@ -562,6 +563,7 @@ export class BrowserViewManager {
   private readonly recentPrimaryProfileOrigins: BrowserPrimaryProfileRecentOrigin[] =
     [];
   private primaryProfileVisitSequence = 0;
+  private pipCaptureEntry: BrowserViewEntry | null = null;
 
   constructor(options: BrowserViewManagerOptions) {
     this.createView = options.createView;
@@ -1153,6 +1155,50 @@ export class BrowserViewManager {
     return {
       restoredTiles: this.releaseOverlayEntries(input.overlayId, keyIds),
     };
+  }
+
+  async startPipCapture(
+    windowId: string,
+    input: {
+      readonly tileKey: BrowserViewTileKey;
+      readonly maxWidth: number;
+      readonly maxHeight: number;
+      readonly quality: number;
+    },
+    onFrame: (payload: PipCaptureIpcPayload) => void,
+  ): Promise<boolean> {
+    const entry = this.entriesByKey.get(
+      entryKeyId({ ...input.tileKey, windowId }),
+    );
+    if (entry === undefined) return false;
+    this.stopPipCapture();
+    const session = this.ensureDebugSession(entry);
+    this.pipCaptureEntry = entry;
+    try {
+      await session.startPipCapture({
+        maxWidth: input.maxWidth,
+        maxHeight: input.maxHeight,
+        quality: input.quality,
+        onFrame,
+      });
+    } catch (err) {
+      if (this.pipCaptureEntry === entry) this.pipCaptureEntry = null;
+      throw err;
+    }
+    if (!session.isPipCapturing() && this.pipCaptureEntry === entry) {
+      this.pipCaptureEntry = null;
+    }
+    return session.isPipCapturing();
+  }
+
+  stopPipCapture(): void {
+    const entry = this.pipCaptureEntry;
+    this.pipCaptureEntry = null;
+    entry?.debugSession?.stopPipCapture();
+  }
+
+  isPipCapturing(): boolean {
+    return this.pipCaptureEntry !== null;
   }
 
   async capturePage(
@@ -2039,6 +2085,7 @@ export class BrowserViewManager {
       reason,
       webContentsId: entry.view.webContents.id,
     });
+    if (this.pipCaptureEntry === entry) this.pipCaptureEntry = null;
     if (entry.control !== null) {
       this.cancelControl(entry, `debugger detached: ${reason}`, null);
     }
@@ -2460,6 +2507,7 @@ export class BrowserViewManager {
     webContents.off("render-process-gone", entry.listeners.renderProcessGone);
     entry.pickerSession?.dispose();
     entry.pickerSession = null;
+    if (this.pipCaptureEntry === entry) this.pipCaptureEntry = null;
     entry.debugSession?.dispose();
     entry.debugSession = null;
     entry.view.setVisible(false);

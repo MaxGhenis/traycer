@@ -7,6 +7,11 @@ import type {
   BrowserViewStackFrame,
 } from "../../ipc-contracts/browser-view-types";
 import type {
+  PipCaptureFrameMetadata,
+  PipCaptureIpcPayload,
+  PipCaptureServerFrame,
+} from "../../ipc-contracts/pip-capture-types";
+import type {
   BrowserViewDebugger,
   BrowserViewWebContents,
 } from "./browser-view-manager";
@@ -46,6 +51,13 @@ interface CdpEvent {
   readonly sessionId: string | undefined;
 }
 
+export interface BrowserPipCaptureStartInput {
+  readonly maxWidth: number;
+  readonly maxHeight: number;
+  readonly quality: number;
+  readonly onFrame: (payload: PipCaptureIpcPayload) => void;
+}
+
 export class BrowserDebugSession {
   private readonly webContents: BrowserViewWebContents;
   private readonly onSnapshotChange: () => void;
@@ -62,11 +74,22 @@ export class BrowserDebugSession {
   private readonly detachListener = (...args: unknown[]) => {
     this.handleDebuggerDetach(args);
   };
+  // Isolated from the console/network message listener and from the CDP
+  // bridge's request/response bookkeeping. Capture only looks at
+  // `Page.screencastFrame` and acks fire-and-forget.
+  private readonly pipCaptureMessageListener = (...args: unknown[]) => {
+    this.handlePipCaptureMessage(args);
+  };
+  private readonly pipCaptureDetachListener = (...args: unknown[]) => {
+    this.handlePipCaptureDetach(args);
+  };
   private enabled = false;
   private enableStarted = false;
   private attachedBySession = false;
   private disposed = false;
   private nextConsoleId = 1;
+  private pipCapture: ActivePipCapture | null = null;
+  private pipCaptureEpoch = 0;
 
   constructor(options: BrowserDebugSessionOptions) {
     this.webContents = options.webContents;
@@ -173,6 +196,84 @@ export class BrowserDebugSession {
       });
   }
 
+  async startPipCapture(input: BrowserPipCaptureStartInput): Promise<void> {
+    if (this.disposed) throw new Error("Browser debug session is disposed");
+    this.stopPipCapture();
+    const epoch = this.pipCaptureEpoch + 1;
+    this.pipCaptureEpoch = epoch;
+    const browserDebugger = this.webContents.debugger;
+    try {
+      if (!browserDebugger.isAttached()) {
+        browserDebugger.attach("1.3");
+        this.attachedBySession = true;
+      }
+      browserDebugger.on("message", this.pipCaptureMessageListener);
+      browserDebugger.on("detach", this.pipCaptureDetachListener);
+    } catch (err) {
+      log.warn("[browser-view] pip capture attach failed", {
+        error: describeLogError(err),
+      });
+      throw err;
+    }
+
+    const capture: ActivePipCapture = {
+      epoch,
+      onFrame: input.onFrame,
+      nextSequence: 0,
+      frameForwardOpen: true,
+    };
+    this.pipCapture = capture;
+
+    try {
+      await sendDebuggerCommand(
+        browserDebugger,
+        "Page.enable",
+        {},
+        undefined,
+      );
+      if (!this.isCurrentPipCapture(epoch)) return;
+      await sendDebuggerCommand(
+        browserDebugger,
+        "Page.startScreencast",
+        {
+          format: "jpeg",
+          quality: input.quality,
+          maxWidth: input.maxWidth,
+          maxHeight: input.maxHeight,
+        },
+        undefined,
+      );
+    } catch (err) {
+      if (this.isCurrentPipCapture(epoch)) {
+        this.teardownPipCapture("failed");
+      }
+      log.warn("[browser-view] pip capture start failed", {
+        error: describeLogError(err),
+      });
+      throw err;
+    }
+
+    if (!this.isCurrentPipCapture(epoch)) return;
+    this.emitPipFrame(
+      {
+        kind: "started",
+        hasBinaryPayload: false,
+        frameWidth: input.maxWidth,
+        frameHeight: input.maxHeight,
+        deviceScaleFactor: 1,
+      },
+      null,
+    );
+  }
+
+  stopPipCapture(): void {
+    this.teardownPipCapture("stop");
+  }
+
+  isPipCapturing(): boolean {
+    return this.pipCapture !== null;
+  }
+
   clear(): void {
     this.consoleEntries.splice(0);
     this.networkEntriesById.clear();
@@ -191,6 +292,7 @@ export class BrowserDebugSession {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.teardownPipCapture(this.pipCapture === null ? "stop" : "stalled");
     const browserDebugger = this.webContents.debugger;
     browserDebugger.off("message", this.messageListener);
     browserDebugger.off("detach", this.detachListener);
@@ -262,6 +364,81 @@ export class BrowserDebugSession {
     this.attachedBySession = false;
     this.childSessionIds.clear();
     this.onDetached(reason ?? "Debugger detached");
+  }
+
+  private handlePipCaptureMessage(args: readonly unknown[]): void {
+    const event = readCdpEvent(args);
+    if (event === null) return;
+    // Root-page frames only. Child-target sessionId is a string; the
+    // screencast ack id lives on params.sessionId as a number.
+    if (event.sessionId !== undefined) return;
+    if (event.method !== "Page.screencastFrame") return;
+    const capture = this.pipCapture;
+    if (capture === null) return;
+    const ackId = numberValue(event.params.sessionId);
+    if (ackId !== null) {
+      sendCaptureCommand(this.webContents.debugger, "Page.screencastFrameAck", {
+        sessionId: ackId,
+      });
+    }
+    if (!capture.frameForwardOpen) return;
+    const metadata = readPipCaptureMetadata(event.params.metadata);
+    const jpegBytes = readJpegBytes(event.params.data);
+    if (metadata === null || jpegBytes === null) return;
+    capture.frameForwardOpen = false;
+    queueMicrotask(() => {
+      if (this.pipCapture === capture) capture.frameForwardOpen = true;
+    });
+    const sequence = capture.nextSequence;
+    capture.nextSequence += 1;
+    this.emitPipFrame(
+      {
+        kind: "frame",
+        hasBinaryPayload: true,
+        sequence,
+        metadata,
+      },
+      jpegBytes,
+    );
+  }
+
+  private handlePipCaptureDetach(_args: readonly unknown[]): void {
+    this.teardownPipCapture("stalled");
+  }
+
+  private isCurrentPipCapture(epoch: number): boolean {
+    return this.pipCapture !== null && this.pipCapture.epoch === epoch;
+  }
+
+  private teardownPipCapture(reason: "stop" | "stalled" | "failed"): void {
+    const capture = this.pipCapture;
+    if (capture === null) {
+      this.pipCaptureEpoch += 1;
+      return;
+    }
+    this.pipCapture = null;
+    this.pipCaptureEpoch += 1;
+    const browserDebugger = this.webContents.debugger;
+    browserDebugger.off("message", this.pipCaptureMessageListener);
+    browserDebugger.off("detach", this.pipCaptureDetachListener);
+    if (reason !== "stalled" && browserDebugger.isAttached()) {
+      sendCaptureCommand(browserDebugger, "Page.stopScreencast", {});
+    }
+    if (reason === "stalled") {
+      capture.onFrame({
+        frame: { kind: "stalled", hasBinaryPayload: false },
+        jpegBytes: null,
+      });
+    }
+  }
+
+  private emitPipFrame(
+    frame: PipCaptureServerFrame,
+    jpegBytes: Uint8Array | null,
+  ): void {
+    const capture = this.pipCapture;
+    if (capture === null) return;
+    capture.onFrame({ frame, jpegBytes });
   }
 
   private handleTargetAttached(params: Record<string, unknown>): void {
@@ -500,6 +677,13 @@ export class BrowserDebugSession {
   }
 }
 
+interface ActivePipCapture {
+  readonly epoch: number;
+  readonly onFrame: (payload: PipCaptureIpcPayload) => void;
+  nextSequence: number;
+  frameForwardOpen: boolean;
+}
+
 function sendDebuggerCommand(
   browserDebugger: BrowserViewDebugger,
   method: string,
@@ -507,6 +691,55 @@ function sendDebuggerCommand(
   sessionId: string | undefined,
 ): Promise<unknown> {
   return browserDebugger.sendCommand(method, params, sessionId);
+}
+
+function sendCaptureCommand(
+  browserDebugger: BrowserViewDebugger,
+  method: string,
+  params: Record<string, unknown>,
+): void {
+  void browserDebugger.sendCommand(method, params, undefined).catch(() => {
+    // Fire-and-forget: a late ack/stop after detach is expected.
+  });
+}
+
+function readPipCaptureMetadata(value: unknown): PipCaptureFrameMetadata | null {
+  const record = recordValue(value);
+  if (record === null) return null;
+  const offsetTop = numberValue(record.offsetTop);
+  const pageScaleFactor = numberValue(record.pageScaleFactor);
+  const deviceWidth = numberValue(record.deviceWidth);
+  const deviceHeight = numberValue(record.deviceHeight);
+  const scrollOffsetX = numberValue(record.scrollOffsetX);
+  const scrollOffsetY = numberValue(record.scrollOffsetY);
+  if (
+    offsetTop === null ||
+    pageScaleFactor === null ||
+    deviceWidth === null ||
+    deviceHeight === null ||
+    scrollOffsetX === null ||
+    scrollOffsetY === null
+  ) {
+    return null;
+  }
+  return {
+    offsetTop,
+    pageScaleFactor,
+    deviceWidth,
+    deviceHeight,
+    scrollOffsetX,
+    scrollOffsetY,
+    timestamp: numberValue(record.timestamp) ?? 0,
+  };
+}
+
+function readJpegBytes(value: unknown): Uint8Array | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  try {
+    return new Uint8Array(Buffer.from(value, "base64"));
+  } catch {
+    return null;
+  }
 }
 
 function readCdpEvent(args: readonly unknown[]): CdpEvent | null {

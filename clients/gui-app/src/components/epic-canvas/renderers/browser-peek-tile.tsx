@@ -184,6 +184,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       maxHeight: DEFAULT_MAX_HEIGHT,
       quality: DEFAULT_QUALITY,
       format: "jpeg",
+      role: "tile",
     });
     sessionRef.current = session;
     session.onStatusChange((status, reason) => {

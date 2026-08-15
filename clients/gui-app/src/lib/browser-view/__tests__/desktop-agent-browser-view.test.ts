@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
 import {
   OPTIONAL_AGENT_BROWSER_VIEW_BRIDGE_METHODS,
   REQUIRED_AGENT_BROWSER_VIEW_BRIDGE_METHODS,
@@ -32,8 +31,8 @@ function agentViewMissingOptional(
 
 function hostWithAgentView(
   agentBrowserView: Record<string, unknown>,
-): IRunnerHost {
-  return { agentBrowserView } as IRunnerHost;
+): object {
+  return { agentBrowserView };
 }
 
 describe("resolveDesktopAgentBrowserViewBridge older-preload gate", () => {

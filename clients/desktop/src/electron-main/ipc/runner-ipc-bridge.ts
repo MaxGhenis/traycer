@@ -85,6 +85,7 @@ import { registerGlobalShortcutsIpc } from "./global-shortcuts-ipc";
 import { registerZoomIpc } from "./zoom-ipc";
 import { registerBrowserViewIpc } from "./browser-view-ipc";
 import { registerAgentBrowserViewIpc } from "./agent-browser-view-ipc";
+import { registerPipCaptureIpc } from "./pip-capture-ipc";
 import type { BrowserViewManager } from "../browser-view/browser-view-manager";
 import { registerMenuIpc } from "./menu-ipc";
 import { getAppUpdateSnapshot } from "../app/updater";
@@ -529,6 +530,7 @@ export class RunnerIpcBridge {
     registerZoomIpc(this);
     this.browserViewManagers.push(registerBrowserViewIpc(this));
     this.browserViewManagers.push(registerAgentBrowserViewIpc(this));
+    registerPipCaptureIpc(this, this.browserViewManagers);
     registerMenuIpc(this);
     // Power IPC (renderer-driven sleep prevention) registers a `disposeFn`
     // that releases the OS power-save blocker on teardown.
