@@ -6,6 +6,7 @@ import {
 import {
   applyPipBurstEnded,
   applyPipBurstStarted,
+  applyPipCaption,
   applyPipHostLifecycle,
   applyPipStreamHealth,
   dismissPip,
@@ -503,5 +504,146 @@ describe("pip-store lifecycle", () => {
     expect(getPipSnapshot(EPIC).phase).toBe("live");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
     expect(getPipDismissalsForTests(EPIC).has("b1")).toBe(true);
+  });
+});
+
+describe("pip-store captions", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetPipStoreForTests();
+    resetVisibleBrowserTileRegistryForTests();
+    setPipNowForTests(() => Date.now());
+    setPipActiveHostId("host-a");
+  });
+
+  afterEach(() => {
+    resetPipStoreForTests();
+    resetVisibleBrowserTileRegistryForTests();
+    vi.useRealTimers();
+  });
+
+  it("exposes the displayed live tab caption in the snapshot", () => {
+    setPipNowForTests(() => 1_000);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: undefined,
+      chatId: undefined,
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Filling checkout form",
+    });
+
+    expect(getPipSnapshot(EPIC).phase).toBe("live");
+    expect(getPipSnapshot(EPIC).caption).toEqual({
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Filling checkout form",
+      arrivedAt: 1_000,
+    });
+  });
+
+  it("does not replace the displayed caption with another tab's caption", () => {
+    setPipNowForTests(() => 1_000);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: undefined,
+      chatId: undefined,
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Filling checkout form",
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s2",
+      tabId: "t2",
+      burstId: "b2",
+      cellTitle: "Other tab cell",
+    });
+
+    expect(getPipSnapshot(EPIC).target?.tabId).toBe("t1");
+    expect(getPipSnapshot(EPIC).caption).toEqual({
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Filling checkout form",
+      arrivedAt: 1_000,
+    });
+  });
+
+  it("clears the snapshot caption when the burst ends", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: undefined,
+      chatId: undefined,
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Filling checkout form",
+    });
+    expect(getPipSnapshot(EPIC).caption?.cellTitle).toBe(
+      "Filling checkout form",
+    );
+
+    endBurst("b1", "finished", 10);
+    expect(getPipSnapshot(EPIC).phase).toBe("finished");
+    expect(getPipSnapshot(EPIC).caption).toBeNull();
+  });
+
+  it("replaces the displayed caption when a new one arrives on the same tab", () => {
+    setPipNowForTests(() => 1_000);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: undefined,
+      chatId: undefined,
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Filling checkout form",
+    });
+    expect(getPipSnapshot(EPIC).caption?.arrivedAt).toBe(1_000);
+
+    setPipNowForTests(() => 2_000);
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Submitting payment",
+    });
+
+    expect(getPipSnapshot(EPIC).caption).toEqual({
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Submitting payment",
+      arrivedAt: 2_000,
+    });
   });
 });

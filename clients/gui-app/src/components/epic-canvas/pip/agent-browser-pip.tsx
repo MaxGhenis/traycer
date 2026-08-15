@@ -35,9 +35,12 @@ import {
   dismissPip,
   dismissPipChip,
   getPipSnapshot,
+  PIP_CAPTION_FADE_MS,
+  PIP_CAPTION_HOLD_MS,
   reexpandPip,
   setPipActiveHostId,
   usePipSnapshot,
+  type PipCaption,
   type PipSnapshot,
   type PipTarget,
 } from "@/lib/browser-view/pip-store";
@@ -460,7 +463,7 @@ function PipExpanded(props: {
         {snapshot.streamHealth === "stale" ? (
           <span
             data-testid="agent-browser-pip-stale"
-            className="absolute bottom-2 left-2 rounded-md bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
+            className="absolute top-2 left-2 rounded-md bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
           >
             Stale
           </span>
@@ -468,11 +471,12 @@ function PipExpanded(props: {
         {snapshot.streamHealth === "disconnected" ? (
           <span
             data-testid="agent-browser-pip-disconnected"
-            className="absolute bottom-2 left-2 rounded-md bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
+            className="absolute top-2 left-2 rounded-md bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
           >
             Disconnected
           </span>
         ) : null}
+        <PipCaptionBadge caption={snapshot.caption} />
         {gone ? (
           <span
             data-testid="agent-browser-pip-gone"
@@ -497,6 +501,47 @@ function PipExpanded(props: {
         onPointerDown={props.onResizePointerDown}
       />
     </div>
+  );
+}
+
+function PipCaptionBadge(props: {
+  readonly caption: PipCaption | null;
+}): ReactElement | null {
+  const { caption } = props;
+  const [seen, setSeen] = useState<PipCaption | null>(null);
+  const [phase, setPhase] = useState<"in" | "out" | "gone">("gone");
+  if (caption !== seen) {
+    setSeen(caption);
+    setPhase(caption === null ? "gone" : "in");
+  }
+
+  useEffect(() => {
+    if (caption === null) return;
+    const hide = window.setTimeout(() => {
+      setPhase("out");
+    }, PIP_CAPTION_HOLD_MS);
+    const remove = window.setTimeout(() => {
+      setPhase("gone");
+    }, PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS);
+    return () => {
+      window.clearTimeout(hide);
+      window.clearTimeout(remove);
+    };
+  }, [caption]);
+
+  if (caption === null || phase === "gone") return null;
+  const visible = phase === "in";
+  return (
+    <span
+      data-testid="agent-browser-pip-caption"
+      data-pip-caption-visible={visible ? "true" : "false"}
+      className={cn(
+        "pointer-events-none absolute bottom-2 left-2 max-w-[min(85%,20rem)] truncate rounded-md bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground transition-opacity duration-300",
+        visible ? "opacity-90" : "opacity-0",
+      )}
+    >
+      {caption.cellTitle}
+    </span>
   );
 }
 

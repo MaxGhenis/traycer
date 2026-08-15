@@ -18,7 +18,10 @@ import type { BrowserViewTileKey } from "@/lib/browser-view/desktop-browser-view
 import {
   applyPipBurstEnded,
   applyPipBurstStarted,
+  applyPipCaption,
   getPipSnapshot,
+  PIP_CAPTION_FADE_MS,
+  PIP_CAPTION_HOLD_MS,
   PIP_LINGER_MS,
   resetPipStoreForTests,
   setPipActiveHostId,
@@ -472,5 +475,156 @@ describe("AgentBrowserPip", () => {
     const image = frame.querySelector("img");
     expect(image?.getAttribute("src")).toBe("blob:pip-frame");
     expect(pipCaptureState.start).toHaveBeenCalled();
+  });
+});
+
+describe("AgentBrowserPip captions", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetPipStoreForTests();
+    resetVisibleBrowserTileRegistryForTests();
+    setPipNowForTests(() => Date.now());
+    setPipActiveHostId("host-a");
+    seedCanvasTab();
+    seedSessions();
+    bindingState.value = null;
+    pipCaptureState.reset();
+    navigateNested.mockClear();
+    URL.createObjectURL = vi.fn(() => "blob:pip-frame");
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  afterEach(() => {
+    cleanup();
+    resetPipStoreForTests();
+    resetVisibleBrowserTileRegistryForTests();
+    useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
+    vi.useRealTimers();
+  });
+
+  it("fades the caption in when one arrives for the displayed tab", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Filling checkout form",
+    });
+    renderPip();
+
+    const caption = screen.getByTestId("agent-browser-pip-caption");
+    expect(caption.textContent).toBe("Filling checkout form");
+    expect(caption.getAttribute("data-pip-caption-visible")).toBe("true");
+  });
+
+  it("fades the caption out after HOLD and unmounts after HOLD+FADE", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Filling checkout form",
+    });
+    renderPip();
+    expect(
+      screen.getByTestId("agent-browser-pip-caption").getAttribute(
+        "data-pip-caption-visible",
+      ),
+    ).toBe("true");
+
+    act(() => {
+      vi.advanceTimersByTime(PIP_CAPTION_HOLD_MS);
+    });
+    const fading = screen.getByTestId("agent-browser-pip-caption");
+    expect(fading.textContent).toBe("Filling checkout form");
+    expect(fading.getAttribute("data-pip-caption-visible")).toBe("false");
+
+    act(() => {
+      vi.advanceTimersByTime(PIP_CAPTION_FADE_MS);
+    });
+    expect(screen.queryByTestId("agent-browser-pip-caption")).toBeNull();
+  });
+
+  it("swaps the visible caption when a new one is applied", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Filling checkout form",
+    });
+    renderPip();
+    expect(screen.getByTestId("agent-browser-pip-caption").textContent).toBe(
+      "Filling checkout form",
+    );
+
+    act(() => {
+      applyPipCaption({
+        epicId: EPIC,
+        sessionId: "s1",
+        tabId: "t1",
+        burstId: "b1",
+        cellTitle: "Submitting payment",
+      });
+    });
+
+    const caption = screen.getByTestId("agent-browser-pip-caption");
+    expect(caption.textContent).toBe("Submitting payment");
+    expect(caption.getAttribute("data-pip-caption-visible")).toBe("true");
+    expect(screen.queryByText("Filling checkout form")).toBeNull();
+  });
+
+  it("clears the caption immediately when the burst ends", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Filling checkout form",
+    });
+    renderPip();
+    expect(screen.getByTestId("agent-browser-pip-caption")).toBeTruthy();
+
+    act(() => {
+      endBurst("b1", "finished", 2);
+    });
+    expect(screen.queryByTestId("agent-browser-pip-caption")).toBeNull();
+  });
+
+  it("shows no caption when none has been applied", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    renderPip();
+
+    expect(screen.getByTestId("agent-browser-pip")).toBeTruthy();
+    expect(screen.queryByTestId("agent-browser-pip-caption")).toBeNull();
   });
 });

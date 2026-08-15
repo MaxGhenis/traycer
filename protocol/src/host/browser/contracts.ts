@@ -642,8 +642,9 @@ export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
     reason: z.string(),
   }),
   z.object({
-    // Agent-browser PiP ticket 01. Stream-only: never persisted. `caption`
-    // is schema-only until ticket 06 emits it.
+    // Agent-browser PiP tickets 01 and 06. Stream-only: never persisted
+    // and never replayed on subscribe. `caption` is one frame per
+    // (cell, tab) when the cell's first action lands on that tab.
     kind: z.literal("burstStarted"),
     ...textFrameFields,
     sessionId: z.string(),
