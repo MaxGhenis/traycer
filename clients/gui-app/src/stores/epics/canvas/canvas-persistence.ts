@@ -9,7 +9,7 @@ import {
   isEpicNodeKind,
   type EpicNodeRecord,
 } from "@/lib/artifacts/node-display";
-import type { EpicCanvasState, EpicViewTab } from "./types";
+import type { EpicCanvasState, EpicPipGeometry, EpicViewTab } from "./types";
 import { createEmptyCanvas } from "./canvas-state";
 import { parseEpicCanvasState } from "./migrate-canvas";
 
@@ -31,6 +31,9 @@ export interface PersistedCanvasStatePatch {
   >;
   readonly artifactTreeByEpicId: Readonly<
     Record<string, ReadonlyArray<EpicNodeRecord> | undefined>
+  >;
+  readonly pipGeometryByEpicId: Readonly<
+    Record<string, EpicPipGeometry | undefined>
   >;
 }
 
@@ -55,6 +58,9 @@ export function sanitizePersistedCanvasState(
     artifactTreeByEpicId: readPersistedArtifactTreeByEpicId(
       value.artifactTreeByEpicId,
     ),
+    pipGeometryByEpicId: readPersistedPipGeometryByEpicId(
+      value.pipGeometryByEpicId,
+    ),
   };
 }
 
@@ -66,6 +72,7 @@ function emptyPersistedCanvasStatePatch(): PersistedCanvasStatePatch {
     activeTabId: null,
     mostRecentTabIdByEpicId: {},
     artifactTreeByEpicId: EMPTY_TREES,
+    pipGeometryByEpicId: {},
   };
 }
 
@@ -218,5 +225,39 @@ function parsePersistedEpicNodeRecord(value: unknown): EpicNodeRecord | null {
     name: value.name,
     type: value.type,
     hostId: value.hostId,
+  };
+}
+
+function readPersistedPipGeometryByEpicId(
+  value: unknown,
+): Readonly<Record<string, EpicPipGeometry | undefined>> {
+  if (!isRecord(value)) return {};
+  const out: Record<string, EpicPipGeometry> = {};
+  for (const [epicId, raw] of Object.entries(value)) {
+    const geometry = parsePersistedPipGeometry(raw);
+    if (geometry !== null) out[epicId] = geometry;
+  }
+  return out;
+}
+
+function parsePersistedPipGeometry(value: unknown): EpicPipGeometry | null {
+  if (!isRecord(value)) return null;
+  if (
+    typeof value.x !== "number" ||
+    typeof value.y !== "number" ||
+    typeof value.width !== "number" ||
+    typeof value.height !== "number" ||
+    !Number.isFinite(value.x) ||
+    !Number.isFinite(value.y) ||
+    !Number.isFinite(value.width) ||
+    !Number.isFinite(value.height)
+  ) {
+    return null;
+  }
+  return {
+    x: value.x,
+    y: value.y,
+    width: value.width,
+    height: value.height,
   };
 }

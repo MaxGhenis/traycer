@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
+import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
 import {
   BrowserElementPickerResultPanel,
 } from "@/components/epic-canvas/renderers/browser-element-picker";
@@ -121,6 +122,12 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const [canGoForward, setCanGoForward] = useState(false);
   const [zoomPercent, setZoomPercent] = useState(100);
   const [durableTabId, setDurableTabId] = useState<string | null>(null);
+  useRegisterVisibleBrowserTile({
+    hostId,
+    sessionId: props.node.sessionId,
+    tabId: durableTabId ?? props.requestedTabId ?? null,
+    visible,
+  });
   const [unreachable, setUnreachable] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
   const registrationChatId = useEpicCanvasStore((state) =>

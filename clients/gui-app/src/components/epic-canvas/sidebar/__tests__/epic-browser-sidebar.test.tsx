@@ -25,6 +25,12 @@ import {
 } from "@/stores/epics/canvas/store";
 import { makeBrowserSessionTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
 import {
+  applyPipBurstStarted,
+  dismissPip,
+  getPipSnapshot,
+  resetPipStoreForTests,
+} from "@/lib/browser-view/pip-store";
+import {
   findElectronBrowserTabBinding,
   handleElectronBrowserTabFrame,
   registerElectronBrowserTab,
@@ -237,6 +243,7 @@ describe("BrowsersPanelBody", () => {
     cleanup();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     resetElectronBrowserTabStoreForTests();
+    resetPipStoreForTests();
   });
 
   it("lists sessions by their active tab's title, with dormant styling and isolated-only badges", () => {
@@ -639,6 +646,46 @@ describe("BrowsersPanelBody", () => {
     expect(
       screen.getByRole("button", { name: "Add browser" }),
     ).toBeTruthy();
+  });
+
+  it("watch recalls PiP and leaves row-click open-tile behavior unchanged", () => {
+    resetPipStoreForTests();
+    applyPipBurstStarted({
+      epicId: "epic-1",
+      hostId: "host-1",
+      sessionId: "sess-primary",
+      tabId: "tab-live",
+      burstId: "b-watch",
+      chatId: "chat-driver",
+      startedAt: 1,
+    });
+    dismissPip("epic-1");
+    expect(getPipSnapshot("epic-1").phase).toBe("dismissed-burst");
+
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+
+    const watch = screen.getByRole("button", {
+      name: "Watch Live page in picture in picture",
+    });
+    expect(watch.getAttribute("data-testid")).toBe("epic-browsers-watch");
+    fireEvent.click(watch);
+
+    const recalled = getPipSnapshot("epic-1");
+    expect(recalled.phase).toBe("live");
+    expect(recalled.pinned).toBe(true);
+    expect(recalled.target?.burstId).toBe("b-watch");
+    const expected = makeBrowserSessionTileRef({
+      name: "Live page",
+      hostId: "host-1",
+      sessionId: "sess-primary",
+      tabId: "tab-live",
+    });
+    expect(findOpenArtifactInTab("view-tab-1", expected.id)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Live page/i }));
+    const open = findOpenArtifactInTab("view-tab-1", expected.id);
+    expect(open).not.toBeNull();
+    resetPipStoreForTests();
   });
 });
 

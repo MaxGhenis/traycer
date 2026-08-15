@@ -63,6 +63,18 @@ export const isRecordBackedEpicNodeKind =
     review: true,
   });
 
+/**
+ * Per-epic remembered PiP position and size. Persisted with the canvas
+ * store so geometry survives GUI relaunch; everything else about the PiP
+ * is in-memory and resets.
+ */
+export interface EpicPipGeometry {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 export const WORKSPACE_FILE_TAB_KIND = "workspace-file" as const;
 export type WorkspaceFileTabKind = typeof WORKSPACE_FILE_TAB_KIND;
 export type OpenableCanvasTabKind = OpenableEpicNodeKind | WorkspaceFileTabKind;

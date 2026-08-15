@@ -9,6 +9,7 @@ import {
 import { EpicViewTabContext } from "@/components/epic-canvas/view-tab-context";
 import { useTabSurfaceActivity } from "@/components/layout/tab-surface-activity-hooks";
 import { EpicSessionProvider } from "@/providers/epic-session-provider";
+import { AgentBrowserPip } from "@/components/epic-canvas/pip/agent-browser-pip";
 import { BrowserSessionsProvider } from "@/components/epic-canvas/renderers/browser-session-dock";
 import {
   BrowserSessionsContext,
@@ -64,6 +65,11 @@ export function EpicSurface(props: EpicSurfaceProps) {
                     focusThreadId={activeSearch?.focusThreadId}
                     focusPaneId={activeSearch?.focusPaneId}
                     focusTileInstanceId={activeSearch?.focusTileInstanceId}
+                  />
+                  <AgentBrowserPip
+                    epicId={props.epicId}
+                    viewTabId={props.tabId}
+                    surfaceVisible={activity.visible}
                   />
                 </div>
               </div>

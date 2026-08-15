@@ -71,6 +71,11 @@ import {
   type EpicCanvasState,
 } from "@/stores/epics/canvas/types";
 import {
+  applyPipBurstEnded,
+  applyPipBurstStarted,
+  applyPipHostLifecycle,
+} from "@/lib/browser-view/pip-store";
+import {
   BrowserSessionsContext,
   useBrowserSessionsContext,
   type BrowserSessionsLifecycle,
@@ -795,10 +800,12 @@ function useBrowserSessions(
           );
         }
       }
+      const lifecycle = browserSessionsLifecycle(status, reason);
+      applyPipHostLifecycle(epicId, hostId, lifecycle);
       setStreamState((current) => ({
         client,
         items: current.client === client ? current.items : [],
-        lifecycle: browserSessionsLifecycle(status, reason),
+        lifecycle,
         errorMessage: browserSessionsError(status, reason),
       }));
     });
@@ -808,6 +815,8 @@ function useBrowserSessions(
       const parsed = browserSessionsServerFrameSchema.safeParse(envelope);
       if (!parsed.success) return;
       handleBrowserSessionsFrame({
+        epicId,
+        hostId,
         frame: parsed.data,
         setItems: (value) => {
           setStreamState((current) => {
@@ -937,7 +946,87 @@ function useBrowserSessions(
   };
 }
 
+function handleBrowserSessionRequestFrame(args: {
+  readonly frame: BrowserSessionsServerFrame;
+  readonly pendingPromotes: Map<
+    string,
+    {
+      readonly resolve: (frame: PromoteStateFrame) => void;
+      readonly reject: (error: Error) => void;
+    }
+  >;
+  readonly pendingLends: Map<
+    string,
+    {
+      readonly resolve: (frame: LendResultFrame) => void;
+      readonly reject: (error: Error) => void;
+    }
+  >;
+}): boolean {
+  if (args.frame.kind === "promoteState") {
+    const pending = args.pendingPromotes.get(args.frame.requestId);
+    if (pending === undefined) return true;
+    args.pendingPromotes.delete(args.frame.requestId);
+    pending.resolve(args.frame);
+    return true;
+  }
+  if (args.frame.kind === "lendResult") {
+    const pending = args.pendingLends.get(args.frame.requestId);
+    if (pending === undefined) return true;
+    args.pendingLends.delete(args.frame.requestId);
+    pending.resolve(args.frame);
+    return true;
+  }
+  if (args.frame.kind === "actionAck" && !args.frame.ok) {
+    const pending = args.pendingPromotes.get(args.frame.requestId);
+    if (pending !== undefined) {
+      args.pendingPromotes.delete(args.frame.requestId);
+      pending.reject(new Error(args.frame.reason ?? "Browser action failed."));
+    }
+    const pendingLend = args.pendingLends.get(args.frame.requestId);
+    if (pendingLend !== undefined) {
+      args.pendingLends.delete(args.frame.requestId);
+      pendingLend.reject(
+        new Error(args.frame.reason ?? "Browser action failed."),
+      );
+    }
+    return true;
+  }
+  return false;
+}
+
+function handlePipBurstFrame(
+  epicId: string,
+  hostId: string,
+  frame: BrowserSessionsServerFrame,
+): boolean {
+  if (frame.kind === "burstStarted") {
+    applyPipBurstStarted({
+      epicId,
+      hostId,
+      sessionId: frame.sessionId,
+      tabId: frame.tabId,
+      burstId: frame.burstId,
+      chatId: frame.chatId,
+      startedAt: undefined,
+    });
+    return true;
+  }
+  if (frame.kind === "burstEnded") {
+    applyPipBurstEnded({
+      epicId,
+      burstId: frame.burstId,
+      outcome: frame.outcome,
+      endedAt: undefined,
+    });
+    return true;
+  }
+  return false;
+}
+
 function handleBrowserSessionsFrame(args: {
+  readonly epicId: string;
+  readonly hostId: string;
   readonly frame: BrowserSessionsServerFrame;
   readonly setItems: Dispatch<SetStateAction<readonly BrowserSessionInfo[]>>;
   readonly pendingPromotes: Map<
@@ -957,6 +1046,7 @@ function handleBrowserSessionsFrame(args: {
   readonly browserView: DesktopBrowserViewBridge | null;
   readonly sendClientFrame: (frame: BrowserSessionsClientFrame) => void;
 }): void {
+  if (handlePipBurstFrame(args.epicId, args.hostId, args.frame)) return;
   if (handleElectronBrowserTabFrame(args.frame)) return;
   if (
     handlePrimaryProfileCaptureFrame({
@@ -975,35 +1065,7 @@ function handleBrowserSessionsFrame(args: {
   ) {
     return;
   }
-  if (args.frame.kind === "promoteState") {
-    const pending = args.pendingPromotes.get(args.frame.requestId);
-    if (pending === undefined) return;
-    args.pendingPromotes.delete(args.frame.requestId);
-    pending.resolve(args.frame);
-    return;
-  }
-  if (args.frame.kind === "lendResult") {
-    const pending = args.pendingLends.get(args.frame.requestId);
-    if (pending === undefined) return;
-    args.pendingLends.delete(args.frame.requestId);
-    pending.resolve(args.frame);
-    return;
-  }
-  if (args.frame.kind === "actionAck" && !args.frame.ok) {
-    const pending = args.pendingPromotes.get(args.frame.requestId);
-    if (pending !== undefined) {
-      args.pendingPromotes.delete(args.frame.requestId);
-      pending.reject(new Error(args.frame.reason ?? "Browser action failed."));
-    }
-    const pendingLend = args.pendingLends.get(args.frame.requestId);
-    if (pendingLend !== undefined) {
-      args.pendingLends.delete(args.frame.requestId);
-      pendingLend.reject(
-        new Error(args.frame.reason ?? "Browser action failed."),
-      );
-    }
-    return;
-  }
+  if (handleBrowserSessionRequestFrame(args)) return;
   if (
     handleVisibleTileControlFrame({
       frame: args.frame,

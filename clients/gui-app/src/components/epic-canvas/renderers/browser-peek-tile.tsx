@@ -24,6 +24,7 @@ import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/h
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
+import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
 import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
@@ -75,6 +76,12 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const auth = useStreamAuthRevalidator();
   const client = useHostStreamClientFor(hostEntry, auth);
   const visible = useTileBodyVisible();
+  useRegisterVisibleBrowserTile({
+    hostId: tabHostId,
+    sessionId: props.node.sessionId,
+    tabId: props.node.tabId,
+    visible,
+  });
   const sessionRef = useRef<{
     sendClientFrame: (
       frame: BrowserScreencastClientFrame,
