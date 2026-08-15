@@ -1197,10 +1197,6 @@ export class BrowserViewManager {
     entry?.debugSession?.stopPipCapture();
   }
 
-  isPipCapturing(): boolean {
-    return this.pipCaptureEntry !== null;
-  }
-
   async capturePage(
     windowId: string,
     input: BrowserViewTileKey,

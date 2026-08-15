@@ -1121,6 +1121,7 @@ describe("DesktopRunnerHost.onLocalHostChange", () => {
     // Production adapter must assign the exact preload property. A missing
     // constructor line leaves this undefined; a re-wrap would break identity.
     expect(host.agentBrowserView).toBe(fake.bridge.agentBrowserView);
+    expect(host.pipCapture).toBe(fake.bridge.pipCapture);
 
     await expect(
       host.agentBrowserView.dispatchCdp({

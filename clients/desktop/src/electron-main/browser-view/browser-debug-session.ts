@@ -89,7 +89,6 @@ export class BrowserDebugSession {
   private disposed = false;
   private nextConsoleId = 1;
   private pipCapture: ActivePipCapture | null = null;
-  private pipCaptureEpoch = 0;
 
   constructor(options: BrowserDebugSessionOptions) {
     this.webContents = options.webContents;
@@ -199,8 +198,6 @@ export class BrowserDebugSession {
   async startPipCapture(input: BrowserPipCaptureStartInput): Promise<void> {
     if (this.disposed) throw new Error("Browser debug session is disposed");
     this.stopPipCapture();
-    const epoch = this.pipCaptureEpoch + 1;
-    this.pipCaptureEpoch = epoch;
     const browserDebugger = this.webContents.debugger;
     try {
       if (!browserDebugger.isAttached()) {
@@ -216,11 +213,12 @@ export class BrowserDebugSession {
       throw err;
     }
 
+    // Forwarding stays closed until startScreencast succeeds and `started`
+    // is emitted. Early Page.screencastFrame events are still acked.
     const capture: ActivePipCapture = {
-      epoch,
       onFrame: input.onFrame,
       nextSequence: 0,
-      frameForwardOpen: true,
+      frameForwardOpen: false,
     };
     this.pipCapture = capture;
 
@@ -231,7 +229,7 @@ export class BrowserDebugSession {
         {},
         undefined,
       );
-      if (!this.isCurrentPipCapture(epoch)) return;
+      if (this.pipCapture !== capture) return;
       await sendDebuggerCommand(
         browserDebugger,
         "Page.startScreencast",
@@ -244,7 +242,7 @@ export class BrowserDebugSession {
         undefined,
       );
     } catch (err) {
-      if (this.isCurrentPipCapture(epoch)) {
+      if (this.pipCapture === capture) {
         this.teardownPipCapture("failed");
       }
       log.warn("[browser-view] pip capture start failed", {
@@ -253,7 +251,7 @@ export class BrowserDebugSession {
       throw err;
     }
 
-    if (!this.isCurrentPipCapture(epoch)) return;
+    if (this.pipCapture !== capture) return;
     this.emitPipFrame(
       {
         kind: "started",
@@ -264,6 +262,7 @@ export class BrowserDebugSession {
       },
       null,
     );
+    capture.frameForwardOpen = true;
   }
 
   stopPipCapture(): void {
@@ -406,18 +405,10 @@ export class BrowserDebugSession {
     this.teardownPipCapture("stalled");
   }
 
-  private isCurrentPipCapture(epoch: number): boolean {
-    return this.pipCapture !== null && this.pipCapture.epoch === epoch;
-  }
-
   private teardownPipCapture(reason: "stop" | "stalled" | "failed"): void {
     const capture = this.pipCapture;
-    if (capture === null) {
-      this.pipCaptureEpoch += 1;
-      return;
-    }
+    if (capture === null) return;
     this.pipCapture = null;
-    this.pipCaptureEpoch += 1;
     const browserDebugger = this.webContents.debugger;
     browserDebugger.off("message", this.pipCaptureMessageListener);
     browserDebugger.off("detach", this.pipCaptureDetachListener);
@@ -678,7 +669,6 @@ export class BrowserDebugSession {
 }
 
 interface ActivePipCapture {
-  readonly epoch: number;
   readonly onFrame: (payload: PipCaptureIpcPayload) => void;
   nextSequence: number;
   frameForwardOpen: boolean;

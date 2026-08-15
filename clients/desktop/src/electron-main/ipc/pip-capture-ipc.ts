@@ -65,7 +65,7 @@ function readSenderWindowId(
 function parsePipCaptureStart(value: unknown): PipCaptureStartInput {
   const record = assertRecord(value, "Pip capture start payload");
   return {
-    tileKey: parseTileKey(record.tileKey ?? record),
+    tileKey: parseTileKey(record.tileKey),
     maxWidth: readPositiveInt(record.maxWidth, "maxWidth"),
     maxHeight: readPositiveInt(record.maxHeight, "maxHeight"),
     quality: readQuality(record.quality),

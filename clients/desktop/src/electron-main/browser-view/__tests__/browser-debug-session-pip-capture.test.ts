@@ -43,7 +43,9 @@ interface RecordedCommand {
 
 class FakeDebugger implements BrowserViewDebugger {
   attached = false;
+  deferCommands = false;
   readonly commands: RecordedCommand[] = [];
+  readonly commandResolvers: Array<(value: unknown) => void> = [];
   private readonly events = new EventEmitter();
 
   isAttached(): boolean {
@@ -64,7 +66,19 @@ class FakeDebugger implements BrowserViewDebugger {
     sessionId: string | undefined,
   ): Promise<unknown> {
     this.commands.push({ method, params: commandParams, sessionId });
+    if (this.deferCommands) {
+      return new Promise((resolve) => {
+        this.commandResolvers.push(resolve);
+      });
+    }
     return Promise.resolve(null);
+  }
+
+  resolveDeferredCommands(): void {
+    const resolvers = this.commandResolvers.splice(0);
+    for (const resolve of resolvers) {
+      resolve(null);
+    }
   }
 
   on(event: string, listener: (...args: unknown[]) => void): void {
@@ -483,6 +497,56 @@ describe("BrowserDebugSession PiP capture", () => {
     );
     expect(harness.snapshot.changes).toBe(changesAfterStart + 1);
     expect(harness.session.snapshot().networkEntries).toHaveLength(1);
+  });
+
+  it("acks early frames but emits started before any forwarded frame", async () => {
+    const harness = createHarness();
+    harness.dbg.deferCommands = true;
+
+    const start = startCapture(harness);
+    emitScreencastFrame(harness.dbg, 11, [1, 2, 3], undefined);
+
+    expect(harness.frames).toEqual([]);
+    expect(
+      harness.dbg.commands.filter(
+        (command) => command.method === "Page.screencastFrameAck",
+      ),
+    ).toEqual([
+      {
+        method: "Page.screencastFrameAck",
+        params: { sessionId: 11 },
+        sessionId: undefined,
+      },
+    ]);
+
+    harness.dbg.deferCommands = false;
+    harness.dbg.resolveDeferredCommands();
+    await start;
+
+    expect(harness.frames).toEqual([
+      {
+        frame: {
+          kind: "started",
+          hasBinaryPayload: false,
+          frameWidth: CAPTURE_MAX_WIDTH,
+          frameHeight: CAPTURE_MAX_HEIGHT,
+          deviceScaleFactor: 1,
+        },
+        jpegBytes: null,
+      },
+    ]);
+    expect(harness.session.isPipCapturing()).toBe(true);
+
+    emitScreencastFrame(harness.dbg, 12, [4, 5, 6], undefined);
+    expect(harness.frames[1]).toEqual({
+      frame: {
+        kind: "frame",
+        hasBinaryPayload: true,
+        sequence: 0,
+        metadata: FRAME_METADATA,
+      },
+      jpegBytes: Uint8Array.from([4, 5, 6]),
+    });
   });
 
   it("ignores child-target Page.screencastFrame events", async () => {
