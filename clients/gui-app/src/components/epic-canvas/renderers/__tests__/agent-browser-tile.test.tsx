@@ -32,8 +32,11 @@ import {
   resetElectronBrowserTabStoreForTests,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import {
+  BROWSER_VIEW_SURFACE_ATTRIBUTE,
+  getBrowserViewSnapshot,
   listBrowserOverlayTiles,
   resetBrowserOverlayCoordinatorForTests,
+  setBrowserViewSnapshot,
 } from "@/lib/browser-view/browser-overlay-coordinator";
 import { appLogger } from "@/lib/logger";
 import { createSingleTileCanvas } from "@/stores/epics/canvas/actions";
@@ -46,8 +49,22 @@ import {
 } from "@/stores/epics/canvas/types";
 
 const bridgeHarness = vi.hoisted<{
+  host: { agentBrowserView: DesktopAgentBrowserViewBridge | null };
   current: DesktopAgentBrowserViewBridge | null;
-}>(() => ({ current: null }));
+}>(() => {
+  const host: { agentBrowserView: DesktopAgentBrowserViewBridge | null } = {
+    agentBrowserView: null,
+  };
+  return {
+    host,
+    get current() {
+      return host.agentBrowserView;
+    },
+    set current(value: DesktopAgentBrowserViewBridge | null) {
+      host.agentBrowserView = value;
+    },
+  };
+});
 
 const visibilityHarness = vi.hoisted<{ visible: boolean }>(() => ({
   visible: true,
@@ -62,7 +79,7 @@ vi.mock("@/components/epic-canvas/hooks/use-tile-body-visible", () => ({
 }));
 
 vi.mock("@/providers/use-runner-host", () => ({
-  useRunnerHost: () => ({ agentBrowserView: bridgeHarness.current }),
+  useRunnerHost: () => bridgeHarness.host,
 }));
 
 const NODE: AgentBrowserTileRef = {
@@ -399,6 +416,49 @@ describe("<AgentBrowserTile />", () => {
     view.unmount();
 
     expect(listBrowserOverlayTiles()).toEqual([]);
+  });
+
+  it("mounts a view surface and renders a registered overlay snapshot", async () => {
+    const bridge = new FakeAgentBrowserViewBridge();
+    bridgeHarness.current = bridge;
+    const paneId = seedAgentBrowserCanvas();
+    const key = tileKey(paneId);
+
+    renderAgentBrowserTile(paneId);
+
+    await waitFor(() => {
+      expect(
+        listBrowserOverlayTiles().some(
+          (tile) =>
+            tile.key.viewTabId === key.viewTabId &&
+            tile.key.paneId === key.paneId &&
+            tile.key.tileInstanceId === key.tileInstanceId &&
+            tile.key.pageSessionId === key.pageSessionId,
+        ),
+      ).toBe(true);
+    });
+    expect(
+      document.querySelector(`[${BROWSER_VIEW_SURFACE_ATTRIBUTE}]`),
+    ).not.toBeNull();
+    expect(document.querySelector("[data-browser-view-snapshot]")).toBeNull();
+
+    act(() => {
+      setBrowserViewSnapshot({
+        ...key,
+        dataUrl: "data:image/png;base64,abc",
+        stale: false,
+      });
+    });
+
+    expect(getBrowserViewSnapshot(key)).toEqual({
+      dataUrl: "data:image/png;base64,abc",
+      stale: false,
+    });
+    await waitFor(() => {
+      expect(
+        document.querySelector("[data-browser-view-snapshot]"),
+      ).not.toBeNull();
+    });
   });
 
   it("renders a dead state when the agent browser bridge is unavailable", () => {

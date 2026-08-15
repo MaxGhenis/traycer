@@ -47,6 +47,7 @@ function makeUnusedWebContentsStub(): BrowserViewWebContents {
 
 const captured = vi.hoisted(() => ({
   managerOptions: null as BrowserViewManagerOptions | null,
+  lastManager: null as { readonly reloadTile: ReturnType<typeof vi.fn> } | null,
 }));
 
 vi.mock("electron", () => {
@@ -100,8 +101,10 @@ vi.mock("../../app/logger", () => ({
 
 vi.mock("../../browser-view/browser-view-manager", () => ({
   BrowserViewManager: class {
+    readonly reloadTile = vi.fn();
     constructor(options: BrowserViewManagerOptions) {
       captured.managerOptions = options;
+      captured.lastManager = this;
     }
     dispose(): void {}
   },
@@ -126,9 +129,27 @@ function makeBridge() {
   };
 }
 
+function findInvokeHandler(
+  bridge: ReturnType<typeof makeBridge>,
+  channel: string,
+): (event: unknown, payload: unknown) => unknown {
+  const match = bridge.handleInvoke.mock.calls.find(
+    (call) => call[0] === channel,
+  );
+  if (match === undefined) {
+    throw new Error(`No invoke handler registered for ${channel}`);
+  }
+  const handler = match[1];
+  if (typeof handler !== "function") {
+    throw new Error(`Invoke handler for ${channel} is not a function`);
+  }
+  return handler;
+}
+
 describe("registerAgentBrowserViewIpc", () => {
   beforeEach(() => {
     captured.managerOptions = null;
+    captured.lastManager = null;
     vi.clearAllMocks();
   });
 
@@ -236,5 +257,32 @@ describe("registerAgentBrowserViewIpc", () => {
         makeUnusedWebContentsStub(),
       ),
     ).rejects.toThrow(/not supported on the agent browser partition/i);
+  });
+
+  it("invokes manager.reloadTile from the agent reload channel", async () => {
+    const { registerAgentBrowserViewIpc } =
+      await import("../agent-browser-view-ipc");
+    const { RunnerHostInvoke } =
+      await import("../../../ipc-contracts/ipc-channels");
+
+    const bridge = makeBridge();
+    registerAgentBrowserViewIpc(bridge as never);
+
+    const payload = {
+      viewTabId: "view-tab-1",
+      paneId: "pane-1",
+      tileInstanceId: "tile-1",
+      pageSessionId: "page-1",
+    };
+    findInvokeHandler(bridge, RunnerHostInvoke.agentBrowserViewReload)(
+      {},
+      payload,
+    );
+
+    const manager = captured.lastManager;
+    if (manager === null) {
+      throw new Error("BrowserViewManager was not constructed");
+    }
+    expect(manager.reloadTile).toHaveBeenCalledWith("window-1", payload);
   });
 });

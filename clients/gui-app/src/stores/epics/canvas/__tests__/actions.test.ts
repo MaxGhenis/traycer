@@ -24,12 +24,15 @@ import {
   toggleGitDiffBundleFileCollapsed,
   toggleSnapshotDiffBundleFileCollapsed,
   updateBrowserTileUrl,
+  updateBrowserTileViewportPreset,
   updateGitDiffTileView,
 } from "@/stores/epics/canvas/actions";
 import { createEmptyCanvas } from "@/stores/epics/canvas/canvas-state";
 import { collectPanes, findPaneById } from "@/stores/epics/canvas/tile-tree";
 import type { TilePane } from "@/stores/epics/canvas/tile-tree";
 import type {
+  AgentBrowserTileRef,
+  BrowserSessionTileRef,
   BrowserTileRef,
   EpicCanvasState,
   EpicCanvasTileRef,
@@ -1116,6 +1119,60 @@ describe("cloneEpicCanvasState", () => {
       ),
     ).toBe(updated);
     expectCanvasInvariants(updated);
+  });
+});
+
+describe("updateBrowserTileViewportPreset", () => {
+  it("writes viewportPreset on an AgentBrowserTileRef", () => {
+    const agent: AgentBrowserTileRef = {
+      id: "agent-browser-1",
+      sessionId: "agent-session-1",
+      instanceId: "inst-agent-1",
+      type: "agent-browser",
+      name: "Agent browser",
+      hostId: TEST_HOST_ID,
+      url: "https://example.com",
+      viewportPreset: "responsive",
+    };
+    const state = openPinned(createEmptyCanvas(), agent);
+    const updated = updateBrowserTileViewportPreset(
+      state,
+      agent.instanceId,
+      "mobile",
+    );
+    const ref = updated.tilesByInstanceId[agent.instanceId];
+
+    expect(ref).toMatchObject({
+      id: agent.id,
+      instanceId: agent.instanceId,
+      type: "agent-browser",
+      viewportPreset: "mobile",
+    });
+    expect(
+      updateBrowserTileViewportPreset(updated, agent.instanceId, "mobile"),
+    ).toBe(updated);
+    expectCanvasInvariants(updated);
+  });
+
+  it("no-ops a browser-session pointer", () => {
+    const pointer: BrowserSessionTileRef = {
+      id: "browser-session:s:t",
+      instanceId: "inst-session-1",
+      type: "browser-session",
+      name: "Session",
+      hostId: TEST_HOST_ID,
+      sessionId: "s",
+      tabId: "t",
+    };
+    const state = openPinned(createEmptyCanvas(), pointer);
+    const next = updateBrowserTileViewportPreset(
+      state,
+      pointer.instanceId,
+      "mobile",
+    );
+
+    expect(next).toBe(state);
+    expect(state.tilesByInstanceId[pointer.instanceId]).toEqual(pointer);
   });
 });
 
