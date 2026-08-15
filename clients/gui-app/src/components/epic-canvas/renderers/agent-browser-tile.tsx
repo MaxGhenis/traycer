@@ -4,27 +4,39 @@ import { Button } from "@/components/ui/button";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
+import {
+  BrowserElementPickerResultPanel,
+} from "@/components/epic-canvas/renderers/browser-element-picker";
+import { BrowserTileFindAdapterBridge } from "@/components/epic-canvas/renderers/browser-tile-find-adapter";
+import {
+  BrowserTileCertificateInterstitial,
+  BrowserTileDownloadStrip,
+} from "@/components/epic-canvas/renderers/browser-tile-status-panels";
+import { BrowserTileToolbar } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
 import { BrowserViewSnapshotLayer } from "@/components/epic-canvas/renderers/browser-view-snapshot-layer";
+import { PRIMARY_TILE_CHROME_CAPABILITIES } from "@/components/epic-canvas/renderers/tile-controller";
+import { useBrowserElementPicker } from "@/components/epic-canvas/renderers/use-browser-element-picker";
 import { useBrowserViewSnapshot } from "@/components/epic-canvas/renderers/use-browser-view-snapshot";
 import { useCloseCanvasTileWithNestedFocus } from "@/components/epic-canvas/renderers/use-close-canvas-tile-with-nested-focus";
 import { useBrowserViewBoundsBridge } from "@/components/epic-canvas/renderers/use-browser-view-bounds-bridge";
+import { useElectronTileChrome } from "@/components/epic-canvas/renderers/use-electron-tile-chrome";
 import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
 import { BROWSER_VIEW_SURFACE_ATTRIBUTE } from "@/lib/browser-view/browser-overlay-coordinator";
+import { selectSiblingChatIdForBrowserTile } from "@/lib/browser-view/browser-tile-chat-routing";
 import {
   resolveDesktopAgentBrowserViewBridge,
   type AgentBrowserViewTileKey,
-  type DesktopAgentBrowserViewBridge,
 } from "@/lib/browser-view/desktop-agent-browser-view";
 import {
   resolveDesktopBrowserViewBridge,
   type BrowserViewStatus,
 } from "@/lib/browser-view/desktop-browser-view";
-import { selectSiblingChatIdForBrowserTile } from "@/lib/browser-view/browser-tile-chat-routing";
 import {
   registerElectronBrowserTab,
   updateElectronBrowserTabView,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import { openFreshAgentBrowserTileFromBrowserPage } from "@/lib/browser-view/browser-link-routing-core";
+import { useBrowserCookieCryptoState } from "@/lib/browser-view/use-browser-cookie-crypto-state";
 import { appLogger } from "@/lib/logger";
 import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
@@ -50,44 +62,39 @@ export interface AgentBrowserTileProps {
 }
 
 /**
- * The agent's own browser tile: a real `WebContentsView` in a
- * credential-free partition. Occlusion and snapshotting share the same
- * surface as user tiles so overlays punch through correctly. Chrome
- * (address bar, zoom, find, DevTools) mounts later via the shared
- * capability-gated toolbar.
+ * Electron tile used for agent-created pages and native session tabs.
+ * Primary-profile session tiles keep the full PRIMARY bridge so chrome
+ * is capability-gated, not creator-gated. Isolated-partition tiles stay
+ * on the agent bridge until that surface grows the same chrome invokes.
  */
 export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const hostId = useTabHostId();
   const runnerHost = useRunnerHost();
   const visible = useTileBodyVisible();
   const paneFocused = usePaneFocused();
-  const browserView = useMemo<DesktopAgentBrowserViewBridge | null>(() => {
-    if (props.usePrimaryProfileRuntime !== true) {
-      return resolveDesktopAgentBrowserViewBridge(runnerHost);
-    }
-    const primary = resolveDesktopBrowserViewBridge(runnerHost);
-    if (primary === null) return null;
-    return {
-      upsertTile: (input) =>
-        primary.upsertTile({ ...input, viewportPreset: "responsive" }),
-      registerDurableTab: (input) => primary.registerDurableTab(input),
-      updateBounds: (input) => primary.updateBounds(input),
-      releaseTile: (input) => primary.releaseTile(input),
-      onStatusChange: (handler) => primary.onStatusChange(handler),
-      onOpenTileRequest: (handler) => primary.onOpenTileRequest(handler),
-      onSnapshotInvalidated: (handler) =>
-        primary.onSnapshotInvalidated(handler),
-      dispatchCdp: (input) => primary.dispatchCdp(input),
-      occludeForOverlay: (input) => primary.occludeForOverlay(input),
-      releaseOverlay: (input) => primary.releaseOverlay(input),
-      onCdpSessionEnded: (handler) => primary.onCdpSessionEnded(handler),
-      onCdpTargetAttached: (handler) => primary.onCdpTargetAttached(handler),
-      onTileHandoff: (handler) => primary.onTileHandoff(handler),
-    };
-  }, [props.usePrimaryProfileRuntime, runnerHost]);
+  const usePrimaryProfileRuntime = props.usePrimaryProfileRuntime === true;
+  const primaryBridge = useMemo(
+    () =>
+      usePrimaryProfileRuntime
+        ? resolveDesktopBrowserViewBridge(runnerHost)
+        : null,
+    [runnerHost, usePrimaryProfileRuntime],
+  );
+  const agentBridge = useMemo(
+    () =>
+      usePrimaryProfileRuntime
+        ? null
+        : resolveDesktopAgentBrowserViewBridge(runnerHost),
+    [runnerHost, usePrimaryProfileRuntime],
+  );
+  const browserView = primaryBridge ?? agentBridge;
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<BrowserViewStatus>("loading");
   const [statusReason, setStatusReason] = useState<string | null>(null);
+  const [statusUrl, setStatusUrl] = useState(props.node.url);
+  const [canGoBack, setCanGoBack] = useState(false);
+  const [canGoForward, setCanGoForward] = useState(false);
+  const [zoomPercent, setZoomPercent] = useState(100);
   const [durableTabId, setDurableTabId] = useState<string | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -164,9 +171,20 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     ) {
       return;
     }
-    void browserView
-      .upsertTile({ ...tileKey, url: props.node.url, visible })
-      .catch(ignoreAgentBrowserViewError);
+    if (primaryBridge !== null) {
+      void primaryBridge
+        .upsertTile({
+          ...tileKey,
+          url: props.node.url,
+          visible,
+          viewportPreset: "responsive",
+        })
+        .catch(ignoreAgentBrowserViewError);
+    } else {
+      void browserView
+        .upsertTile({ ...tileKey, url: props.node.url, visible })
+        .catch(ignoreAgentBrowserViewError);
+    }
     // `retryNonce` is otherwise unused inside the effect - its only job is to
     // force this upsert to re-fire when the user clicks Retry on an
     // unreachable session, since there is no dedicated reload RPC.
@@ -176,6 +194,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     props.activateBeforeNativeView,
     tileKey,
     props.node.url,
+    primaryBridge,
     visible,
     retryNonce,
   ]);
@@ -195,7 +214,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       bridge: browserView,
       onRegistered: setDurableTabId,
       onActivatedHeadless: props.onActivatedHeadless,
-      background: props.usePrimaryProfileRuntime === true,
+      background: usePrimaryProfileRuntime,
     });
   }, [
     browserView,
@@ -207,7 +226,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     props.node.url,
     props.requestedTabId,
     props.onActivatedHeadless,
-    props.usePrimaryProfileRuntime,
+    usePrimaryProfileRuntime,
     registrationChatId,
     tileKey,
   ]);
@@ -247,6 +266,10 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       if (!isChangeForTile(change, tileKey)) return;
       setStatus(change.status);
       setStatusReason(change.reason);
+      setStatusUrl(change.url);
+      setCanGoBack(change.canGoBack);
+      setCanGoForward(change.canGoForward);
+      setZoomPercent(change.zoomPercent);
     });
     return () => {
       subscription.dispose();
@@ -292,12 +315,41 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     visible,
   });
   const snapshot = useBrowserViewSnapshot(tileKey);
+  const cookieCryptoState = useBrowserCookieCryptoState(primaryBridge);
+  const elementPicker = useBrowserElementPicker({
+    browserView: primaryBridge,
+    tileKey,
+    status: effectiveStatus,
+    targetChatId: registrationChatId,
+  });
+  const chrome = useElectronTileChrome({
+    chromeView: primaryBridge,
+    tileKey,
+    initialUrl: props.node.url,
+    visible,
+    capabilities: PRIMARY_TILE_CHROME_CAPABILITIES,
+    elementPicker,
+    cookieCryptoState,
+    statusUrl,
+    canGoBack,
+    canGoForward,
+    zoomPercent,
+  });
 
   return (
     <div
       className="flex h-full w-full flex-col bg-canvas text-foreground"
       data-testid={`agent-browser-tile-${props.node.instanceId}`}
     >
+      {chrome.controller !== null ? (
+        <BrowserTileFindAdapterBridge
+          browserView={primaryBridge}
+          tileKey={tileKey}
+        />
+      ) : null}
+      {chrome.controller !== null ? (
+        <BrowserTileToolbar controller={chrome.controller} />
+      ) : null}
       <div
         ref={surfaceRef}
         className="relative min-h-0 flex-1 bg-background"
@@ -330,7 +382,19 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
           />
         </div>
         <BrowserViewSnapshotLayer snapshot={snapshot} />
+        <BrowserTileDownloadStrip
+          downloads={chrome.downloads}
+          onCancel={chrome.cancelDownload}
+        />
+        <BrowserTileCertificateInterstitial
+          certificateError={chrome.certificateError}
+          proceeding={chrome.certificateProceeding}
+          onProceed={chrome.proceedCertificate}
+        />
       </div>
+      {chrome.controller !== null ? (
+        <BrowserElementPickerResultPanel controller={elementPicker} />
+      ) : null}
     </div>
   );
 }
