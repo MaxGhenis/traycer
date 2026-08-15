@@ -31,6 +31,7 @@ import type {
   BrowserViewTileKey,
   BrowserViewTileUpsert,
 } from "../../../ipc-contracts/browser-view-types";
+import type { PipCaptureIpcPayload } from "../../../ipc-contracts/pip-capture-types";
 import type {
   BrowserViewCertificateErrorChange as BrowserSessionCertificateErrorChange,
   BrowserViewDownloadChange as BrowserSessionDownloadChange,
@@ -1315,6 +1316,59 @@ describe("BrowserViewManager", () => {
     expect(view.webContents.backgroundThrottlingStates).toEqual([false, true]);
     view.webContents.emit("did-finish-load");
     await creation;
+  });
+
+  it("binds a never-shown background tab before pip capture so Chromium can composite", async () => {
+    const harness = createHarness();
+    const creation = harness.manager.createBackgroundTab("window-1", {
+      ...BASE_KEY,
+      sessionId: "session-pip-hidden",
+      tabId: "tab-pip-hidden",
+      url: "https://example.com/hidden",
+    });
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected background view");
+    view.webContents.emit(
+      "did-frame-navigate",
+      {},
+      "https://example.com/hidden",
+      200,
+      "OK",
+      true,
+    );
+    await creation;
+
+    const window = harness.windows.get("window-1");
+    if (window === undefined) throw new Error("expected window");
+    expect(window.contentView.children).toEqual([]);
+    expect(view.bounds).toEqual([]);
+
+    const frames: PipCaptureIpcPayload[] = [];
+    const started = await harness.manager.startPipCapture(
+      "window-1",
+      {
+        tileKey: BASE_KEY,
+        maxWidth: 320,
+        maxHeight: 180,
+        quality: 70,
+      },
+      (payload) => {
+        frames.push(payload);
+      },
+    );
+
+    expect(started).toBe(true);
+    expect(window.contentView.children).toEqual([view]);
+    expect(view.bounds.at(-1)).toEqual({
+      x: 0,
+      y: 0,
+      width: 320,
+      height: 180,
+    });
+    expect(view.visible).toBe(false);
+    expect(view.webContents.backgroundThrottlingStates.at(-1)).toBe(false);
+    expect(view.webContents.lifecycle).toContain("Page.startScreencast");
+    expect(frames[0]?.frame.kind).toBe("started");
   });
 
   it("reparents the same view across panes and windows without reloading", () => {

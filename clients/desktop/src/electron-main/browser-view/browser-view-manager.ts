@@ -1167,11 +1167,16 @@ export class BrowserViewManager {
     },
     onFrame: (payload: PipCaptureIpcPayload) => void,
   ): Promise<boolean> {
-    const entry = this.entriesByKey.get(
-      entryKeyId({ ...input.tileKey, windowId }),
-    );
-    if (entry === undefined) return false;
+    const key = { ...input.tileKey, windowId };
+    const entry =
+      this.entriesByKey.get(entryKeyId(key)) ??
+      this.findTransferableEntry(key);
+    if (entry === null || entry === undefined) return false;
     this.stopPipCapture();
+    this.prepareEntryForPipCapture(entry, {
+      width: input.maxWidth,
+      height: input.maxHeight,
+    });
     const session = this.ensureDebugSession(entry);
     this.pipCaptureEntry = entry;
     try {
@@ -2265,6 +2270,39 @@ export class BrowserViewManager {
   private setEntryZoomFactor(entry: BrowserViewEntry, factor: number): void {
     entry.view.webContents.setZoomFactor(factor);
     this.emitStatus(entry);
+  }
+
+  /**
+   * Hidden agent-driven tabs are created unbound and without bounds.
+   * Chromium will not emit Page.screencastFrame until the view is in a
+   * window and has a compositor size. Keep the view invisible.
+   */
+  private prepareEntryForPipCapture(
+    entry: BrowserViewEntry,
+    size: { readonly width: number; readonly height: number },
+  ): void {
+    this.attachToCurrentWindow(entry);
+    const hasUsableBounds =
+      entry.bounds !== null &&
+      entry.bounds.width > 0 &&
+      entry.bounds.height > 0;
+    if (!hasUsableBounds) {
+      entry.bounds = {
+        x: 0,
+        y: 0,
+        width: size.width,
+        height: size.height,
+      };
+      this.applyEntryBounds(entry);
+    }
+    entry.view.webContents.setBackgroundThrottling(false);
+    this.applyEntryVisibility(entry);
+    log.info("[browser-view] pip capture prepared", {
+      keyId: entryKeyId(entry.key),
+      attached: entry.parentWindowId !== null,
+      bounds: entry.bounds,
+      visible: false,
+    });
   }
 
   private attachToCurrentWindow(entry: BrowserViewEntry): void {
