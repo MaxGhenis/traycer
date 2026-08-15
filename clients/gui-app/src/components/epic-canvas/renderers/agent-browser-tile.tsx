@@ -329,6 +329,11 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     usePrimaryProfileRuntime,
   );
   const latchAttemptedUrl = useCallback((url: string) => {
+    const current = attemptedNavigationRef.current;
+    // Same URL as the in-flight attempt: keep echoSeen. The manager
+    // skips navigate when requestedUrl already matches, so a reset
+    // would wait for an echo that never comes.
+    if (current !== null && current.url === url) return;
     const next: AttemptedNavigation = { url, echoSeen: false };
     attemptedNavigationRef.current = next;
     setAttemptedNavigation(next);
@@ -591,21 +596,33 @@ interface AttemptedNavigation {
  * (newest submit wins; do not let it replace the latch or feed
  * lifecycleUrl).
  *
+ * A submit whose URL equals the active latch is a no-op (echoSeen
+ * stays). That matches the manager skipping navigate when
+ * requestedUrl already equals the upsert. Resetting would mint a
+ * phantom attempt that never gets an echo.
+ *
  * `dead` keeps the latch so a later Retry still upserts the submitted
  * URL rather than the pre-submit page. Residual B: the dead branch
  * currently has no Retry button; if Retry is ever exposed there it
  * must force reload (user-tile `reloadTile`), not rely on upsert
  * identity - manager already set requestedUrl to the attempt before
  * loadURL failed.
+ *
+ * Same root cause (submit-via-upsert-identity): if B settled via
+ * redirect to C (latch cleared) and the user resubmits B, the
+ * manager may skip navigate (requestedUrl still B) and emit nothing.
+ * A fresh {B, echoSeen:false} then sits inert. Do not patch the
+ * latch; the honest fix is a force-navigate submit path
+ * (reloadTile-style), which is shared manager semantics.
  */
 function nextAttemptedNavigationAfterStatus(
   current: AttemptedNavigation | null,
   status: BrowserViewStatus,
 ): AttemptedNavigation | null {
   if (current === null) return null;
-  // Residual B: keep latch. Dead-state Retry, if ever exposed, must
-  // use a forced reload path like the user tile's reloadTile, not
-  // upsert identity.
+  // Residual B + redirected-away resubmit: keep latch. Both are
+  // submit-via-upsert-identity. Dead-state Retry, if ever exposed,
+  // must use a forced reload path like the user tile's reloadTile.
   if (status === "dead") return current;
   if (status === "loading") {
     if (current.echoSeen) return current;
