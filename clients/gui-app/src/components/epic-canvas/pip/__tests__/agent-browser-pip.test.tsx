@@ -6,6 +6,7 @@ import {
   render,
   screen,
 } from "@testing-library/react";
+import { useSyncExternalStore } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserScreencastServerFrame } from "@traycer/protocol/host/browser/contracts";
 import type {
@@ -69,8 +70,43 @@ const navigateNested = vi.hoisted(() =>
   vi.fn((_epicId: string, _tabId: string, prepare: () => unknown) => prepare()),
 );
 
-const bindingState = vi.hoisted(() => ({
-  value: null as { readonly tileKey: BrowserViewTileKey } | null,
+const revokeObjectURL = vi.hoisted(() => vi.fn<(url: string) => void>());
+
+const bindingState = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  return {
+    value: null as { readonly tileKey: BrowserViewTileKey } | null,
+    set(next: { readonly tileKey: BrowserViewTileKey } | null): void {
+      bindingState.value = next;
+      listeners.forEach((listener) => {
+        listener();
+      });
+    },
+    subscribe(listener: () => void): () => void {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+});
+
+const headlessStreamState = vi.hoisted(() => ({
+  openCount: 0,
+  closeCount: 0,
+  open: vi.fn(() => {
+    headlessStreamState.openCount += 1;
+    return {
+      close: () => {
+        headlessStreamState.closeCount += 1;
+      },
+    };
+  }),
+  reset(): void {
+    headlessStreamState.openCount = 0;
+    headlessStreamState.closeCount = 0;
+    headlessStreamState.open.mockClear();
+  },
 }));
 
 const pipCaptureState = vi.hoisted(() => {
@@ -137,8 +173,19 @@ vi.mock("@/lib/host/stream-auth-revalidator", () => ({
 }));
 
 vi.mock("@/hooks/host/use-host-stream-client-for", () => ({
-  useHostStreamClientFor: () => null,
+  useHostStreamClientFor: () => ({ instanceId: "pip-test-headless-client" }),
 }));
+
+vi.mock("@/lib/browser-view/pip-headless-stream", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/lib/browser-view/pip-headless-stream")
+    >();
+  return {
+    ...actual,
+    openPipHeadlessStream: () => headlessStreamState.open(),
+  };
+});
 
 vi.mock("@/providers/use-runner-host", () => ({
   useRunnerHostOrNull: () => ({ pipCapture: pipCaptureState }),
@@ -146,6 +193,12 @@ vi.mock("@/providers/use-runner-host", () => ({
 
 vi.mock("@/lib/browser-view/electron-browser-tab-store", () => ({
   findElectronBrowserTabBinding: () => bindingState.value,
+  useElectronBrowserTabBinding: () =>
+    useSyncExternalStore(
+      (listener) => bindingState.subscribe(listener),
+      () => bindingState.value,
+      () => bindingState.value,
+    ),
 }));
 
 function tab(
@@ -276,11 +329,13 @@ describe("AgentBrowserPip", () => {
     setPipActiveHostId("host-a");
     seedCanvasTab();
     seedSessions();
-    bindingState.value = null;
+    bindingState.set(null);
+    headlessStreamState.reset();
     pipCaptureState.reset();
     navigateNested.mockClear();
     URL.createObjectURL = vi.fn(() => "blob:pip-frame");
-    URL.revokeObjectURL = vi.fn();
+    revokeObjectURL.mockReset();
+    URL.revokeObjectURL = revokeObjectURL;
   });
 
   afterEach(() => {
@@ -465,7 +520,7 @@ describe("AgentBrowserPip", () => {
   });
 
   it("paints a fake pipCapture frame when a native binding exists", () => {
-    bindingState.value = { tileKey: TILE_KEY };
+    bindingState.set({ tileKey: TILE_KEY });
     startBurst({
       burstId: "b1",
       sessionId: "s1",
@@ -497,6 +552,117 @@ describe("AgentBrowserPip", () => {
     const frame = screen.getByTestId("agent-browser-pip-frame");
     const image = frame.querySelector("img");
     expect(image?.getAttribute("src")).toBe("blob:pip-frame");
+    expect(pipCaptureState.start).toHaveBeenCalled();
+  });
+
+  it("keeps the keyed live frame through finished, chip, and re-expand", () => {
+    let nextFrame = 0;
+    URL.createObjectURL = vi.fn(() => {
+      nextFrame += 1;
+      return `blob:pip-frame-${String(nextFrame)}`;
+    });
+    bindingState.set({ tileKey: TILE_KEY });
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    renderPip();
+    act(() => {
+      pipCaptureState.emit(
+        {
+          kind: "frame",
+          hasBinaryPayload: true,
+          sequence: 1,
+          metadata: {
+            offsetTop: 0,
+            pageScaleFactor: 1,
+            deviceWidth: 320,
+            deviceHeight: 200,
+            scrollOffsetX: 0,
+            scrollOffsetY: 0,
+            timestamp: 1,
+          },
+        },
+        new Uint8Array([1, 2, 3]),
+      );
+    });
+    expect(
+      screen.getByTestId("agent-browser-pip-frame").querySelector("img")
+        ?.getAttribute("src"),
+    ).toBe("blob:pip-frame-1");
+
+    act(() => {
+      endBurst("b1", "finished", 2);
+    });
+    expect(
+      screen.getByTestId("agent-browser-pip-frame").querySelector("img")
+        ?.getAttribute("src"),
+    ).toBe("blob:pip-frame-1");
+
+    act(() => {
+      pipCaptureState.emit(
+        {
+          kind: "frame",
+          hasBinaryPayload: true,
+          sequence: 2,
+          metadata: {
+            offsetTop: 0,
+            pageScaleFactor: 1,
+            deviceWidth: 320,
+            deviceHeight: 200,
+            scrollOffsetX: 0,
+            scrollOffsetY: 0,
+            timestamp: 2,
+          },
+        },
+        new Uint8Array([4, 5, 6]),
+      );
+    });
+    expect(
+      screen.getByTestId("agent-browser-pip-frame").querySelector("img")
+        ?.getAttribute("src"),
+    ).toBe("blob:pip-frame-1");
+    expect(
+      revokeObjectURL.mock.calls.some((call) => call[0] === "blob:pip-frame-1"),
+    ).toBe(false);
+
+    act(() => {
+      vi.advanceTimersByTime(PIP_LINGER_MS);
+    });
+    expect(screen.getByTestId("agent-browser-pip").getAttribute("data-pip-phase")).toBe(
+      "chip",
+    );
+    expect(
+      revokeObjectURL.mock.calls.some((call) => call[0] === "blob:pip-frame-1"),
+    ).toBe(false);
+
+    fireEvent.click(screen.getByTestId("agent-browser-pip-chip"));
+    expect(screen.getByTestId("agent-browser-pip").getAttribute("data-pip-phase")).toBe(
+      "finished",
+    );
+    expect(
+      screen.getByTestId("agent-browser-pip-frame").querySelector("img")
+        ?.getAttribute("src"),
+    ).toBe("blob:pip-frame-1");
+  });
+
+  it("closes the headless source when a native binding appears mid-open", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    renderPip();
+    expect(headlessStreamState.openCount).toBe(1);
+    expect(pipCaptureState.start).not.toHaveBeenCalled();
+
+    act(() => {
+      bindingState.set({ tileKey: TILE_KEY });
+    });
+    expect(headlessStreamState.closeCount).toBe(1);
     expect(pipCaptureState.start).toHaveBeenCalled();
   });
 
@@ -618,11 +784,13 @@ describe("AgentBrowserPip captions", () => {
     setPipActiveHostId("host-a");
     seedCanvasTab();
     seedSessions();
-    bindingState.value = null;
+    bindingState.set(null);
+    headlessStreamState.reset();
     pipCaptureState.reset();
     navigateNested.mockClear();
     URL.createObjectURL = vi.fn(() => "blob:pip-frame");
-    URL.revokeObjectURL = vi.fn();
+    revokeObjectURL.mockReset();
+    URL.revokeObjectURL = revokeObjectURL;
   });
 
   afterEach(() => {
@@ -756,6 +924,28 @@ describe("AgentBrowserPip captions", () => {
     });
     renderPip();
 
+    expect(screen.getByTestId("agent-browser-pip")).toBeTruthy();
+    expect(screen.queryByTestId("agent-browser-pip-caption")).toBeNull();
+  });
+
+  it("does not revive a caption that expired while the PiP was hidden", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      sessionId: "s1",
+      tabId: "t1",
+      burstId: "b1",
+      cellTitle: "Filling checkout form",
+    });
+    act(() => {
+      vi.advanceTimersByTime(PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS);
+    });
+    renderPip();
     expect(screen.getByTestId("agent-browser-pip")).toBeTruthy();
     expect(screen.queryByTestId("agent-browser-pip-caption")).toBeNull();
   });

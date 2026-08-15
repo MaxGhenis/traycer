@@ -4,12 +4,17 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
+  type Dispatch,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
+  type SetStateAction,
 } from "react";
 import { Maximize2, X } from "lucide-react";
 import type { BrowserScreencastServerFrame } from "@traycer/protocol/host/browser/contracts";
+import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/host-stream-client";
+import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
@@ -20,7 +25,11 @@ import {
   browserTabHostname,
   resolveTabTitle,
 } from "@/lib/browser-view/browser-tab-display";
-import { findElectronBrowserTabBinding } from "@/lib/browser-view/electron-browser-tab-store";
+import {
+  findElectronBrowserTabBinding,
+  useElectronBrowserTabBinding,
+  type ElectronBrowserTabRegistration,
+} from "@/lib/browser-view/electron-browser-tab-store";
 import {
   clampPipGeometry,
   defaultPipGeometry,
@@ -49,13 +58,15 @@ import {
   type PipSnapshot,
   type PipTarget,
 } from "@/lib/browser-view/pip-store";
-import { resolveDesktopPipCaptureBridge } from "@/lib/browser-view/desktop-pip-capture";
+import {
+  resolveDesktopPipCaptureBridge,
+  type DesktopPipCaptureBridge,
+} from "@/lib/browser-view/desktop-pip-capture";
 import {
   openPipHeadlessStream,
   PIP_HEADLESS_MAX_HEIGHT,
   PIP_HEADLESS_MAX_WIDTH,
   PIP_HEADLESS_QUALITY,
-  selectPipStreamSource,
 } from "@/lib/browser-view/pip-headless-stream";
 import { cn } from "@/lib/utils";
 import { useEpicChatRecords } from "@/lib/epic-selectors";
@@ -90,7 +101,6 @@ export function AgentBrowserPip(props: {
       epicId={props.epicId}
       viewTabId={props.viewTabId}
       snapshot={snapshot}
-      activeHostId={activeHostId}
     />
   );
 }
@@ -99,9 +109,9 @@ function AgentBrowserPipSurface(props: {
   readonly epicId: string;
   readonly viewTabId: string;
   readonly snapshot: PipSnapshot;
-  readonly activeHostId: string | null;
 }): ReactElement {
   const { epicId, snapshot } = props;
+  const frameSrc = usePipOwnedFrame(epicId, snapshot);
   const persisted = useEpicCanvasStore(
     (state) => state.pipGeometryByEpicId[epicId],
   );
@@ -319,7 +329,7 @@ function AgentBrowserPipSurface(props: {
           epicId={epicId}
           viewTabId={props.viewTabId}
           snapshot={snapshot}
-          activeHostId={props.activeHostId}
+          frameSrc={frameSrc}
           dragMoved={() => dragRef.current?.moved === true}
           onHeaderPointerDown={(event) => handlePointerDown(event, "move")}
           onResizePointerDown={(event) => handlePointerDown(event, "resize")}
@@ -374,15 +384,14 @@ function PipExpanded(props: {
   readonly epicId: string;
   readonly viewTabId: string;
   readonly snapshot: PipSnapshot;
-  readonly activeHostId: string | null;
+  readonly frameSrc: string | null;
   readonly dragMoved: () => boolean;
   readonly onHeaderPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onResizePointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
 }): ReactElement {
-  const { snapshot } = props;
+  const { snapshot, frameSrc } = props;
   const meta = usePipTargetMeta(props.epicId, snapshot.target);
-  const frameSrc = usePipFrame(props.epicId, snapshot);
   const openTile = useOpenPipTarget(props.epicId, props.viewTabId);
   const livePulse =
     snapshot.phase === "live" && snapshot.streamHealth === "live";
@@ -468,47 +477,11 @@ function PipExpanded(props: {
             draggable={false}
           />
         )}
-        {snapshot.moreLiveCount > 0 ? (
-          <span
-            data-testid="agent-browser-pip-more"
-            className="absolute top-2 right-2 rounded-full bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
-          >
-            {snapshot.moreLiveCount} more active
-          </span>
-        ) : null}
-        {snapshot.streamHealth === "stale" ? (
-          <span
-            data-testid="agent-browser-pip-stale"
-            className="absolute top-2 left-2 rounded-md bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
-          >
-            Stale
-          </span>
-        ) : null}
-        {snapshot.streamHealth === "disconnected" ? (
-          <span
-            data-testid="agent-browser-pip-disconnected"
-            className="absolute top-2 left-2 rounded-md bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
-          >
-            Disconnected
-          </span>
-        ) : null}
-        <PipCaptionBadge caption={snapshot.caption} />
-        {gone ? (
-          <span
-            data-testid="agent-browser-pip-gone"
-            className="absolute inset-x-2 bottom-2 rounded-md bg-background/85 px-2 py-1 text-center text-ui-xs text-muted-foreground"
-          >
-            {pipGoneTabCopy()}
-          </span>
-        ) : null}
-        {snapshot.phase === "finished" && snapshot.outcome !== null && !gone ? (
-          <span
-            data-testid="agent-browser-pip-finished"
-            className="absolute inset-x-2 bottom-2 rounded-md bg-background/85 px-2 py-1 text-center text-ui-xs text-muted-foreground"
-          >
-            {pipOutcomeLine(snapshot.outcome, meta.site)}
-          </span>
-        ) : null}
+        <PipFrameOverlays
+          snapshot={snapshot}
+          gone={gone}
+          site={meta.site}
+        />
       </button>
       <button
         type="button"
@@ -520,45 +493,103 @@ function PipExpanded(props: {
   );
 }
 
+function PipFrameOverlays(props: {
+  readonly snapshot: PipSnapshot;
+  readonly gone: boolean;
+  readonly site: string | null;
+}): ReactElement {
+  const { snapshot, gone, site } = props;
+  return (
+    <>
+      {snapshot.moreLiveCount > 0 ? (
+        <span
+          data-testid="agent-browser-pip-more"
+          className="absolute top-2 right-2 rounded-full bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
+        >
+          {snapshot.moreLiveCount} more active
+        </span>
+      ) : null}
+      {snapshot.streamHealth === "stale" ? (
+        <span
+          data-testid="agent-browser-pip-stale"
+          className="absolute top-2 left-2 rounded-md bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
+        >
+          Stale
+        </span>
+      ) : null}
+      {snapshot.streamHealth === "disconnected" ? (
+        <span
+          data-testid="agent-browser-pip-disconnected"
+          className="absolute top-2 left-2 rounded-md bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
+        >
+          Disconnected
+        </span>
+      ) : null}
+      <PipCaptionBadge
+        key={
+          snapshot.caption === null
+            ? "none"
+            : String(snapshot.caption.arrivedAt)
+        }
+        caption={snapshot.caption}
+      />
+      {gone ? (
+        <span
+          data-testid="agent-browser-pip-gone"
+          className="absolute inset-x-2 bottom-2 rounded-md bg-background/85 px-2 py-1 text-center text-ui-xs text-muted-foreground"
+        >
+          {pipGoneTabCopy()}
+        </span>
+      ) : null}
+      {snapshot.phase === "finished" && snapshot.outcome !== null && !gone ? (
+        <span
+          data-testid="agent-browser-pip-finished"
+          className="absolute inset-x-2 bottom-2 rounded-md bg-background/85 px-2 py-1 text-center text-ui-xs text-muted-foreground"
+        >
+          {pipOutcomeLine(snapshot.outcome, site)}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
 function PipCaptionBadge(props: {
   readonly caption: PipCaption | null;
 }): ReactElement | null {
   const { caption } = props;
-  const [seen, setSeen] = useState<PipCaption | null>(null);
-  const [phase, setPhase] = useState<"in" | "out" | "gone">("gone");
-  if (caption !== seen) {
-    setSeen(caption);
-    setPhase(caption === null ? "gone" : "in");
-  }
-
-  useEffect(() => {
-    if (caption === null) return;
-    const hide = window.setTimeout(() => {
-      setPhase("out");
-    }, PIP_CAPTION_HOLD_MS);
-    const remove = window.setTimeout(() => {
-      setPhase("gone");
-    }, PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS);
-    return () => {
-      window.clearTimeout(hide);
-      window.clearTimeout(remove);
-    };
-  }, [caption]);
-
-  if (caption === null || phase === "gone") return null;
-  const visible = phase === "in";
+  const now = useSyncExternalStore(
+    subscribeCaptionClock,
+    readCaptionClock,
+    readCaptionClock,
+  );
+  if (caption === null) return null;
+  const elapsed = now - caption.arrivedAt;
+  const totalMs = PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS;
+  if (elapsed >= totalMs) return null;
+  const fading = elapsed >= PIP_CAPTION_HOLD_MS;
   return (
     <span
       data-testid="agent-browser-pip-caption"
-      data-pip-caption-visible={visible ? "true" : "false"}
+      data-pip-caption-visible={fading ? "false" : "true"}
       className={cn(
         "pointer-events-none absolute bottom-2 left-2 max-w-[min(85%,20rem)] truncate rounded-md bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground transition-opacity duration-300",
-        visible ? "opacity-90" : "opacity-0",
+        fading ? "opacity-0" : "opacity-90",
       )}
     >
       {caption.cellTitle}
     </span>
   );
+}
+
+function subscribeCaptionClock(onStoreChange: () => void): () => void {
+  const id = window.setInterval(onStoreChange, 50);
+  return () => {
+    window.clearInterval(id);
+  };
+}
+
+function readCaptionClock(): number {
+  return Date.now();
 }
 
 function PipFavicon(props: { readonly url: string | null }): ReactElement {
@@ -659,87 +690,177 @@ function useOpenPipTarget(epicId: string, viewTabId: string): () => void {
   }, [epicId, items, navigateNested, prepareFocus, prepareOpen, viewTabId]);
 }
 
-function usePipFrame(epicId: string, snapshot: PipSnapshot): string | null {
+interface OwnedPipFrame {
+  readonly burstId: string;
+  readonly src: string;
+}
+
+function usePipOwnedFrame(
+  epicId: string,
+  snapshot: PipSnapshot,
+): string | null {
   const runnerHost = useRunnerHostOrNull();
-  const targetHostId = snapshot.target?.hostId ?? null;
-  const hostEntry = useHostDirectoryEntry(targetHostId ?? "");
+  const target = snapshot.target;
+  const sessionId = target?.sessionId ?? "";
+  const tabId = target?.tabId ?? "";
+  const burstId = target?.burstId ?? null;
+  const binding = useElectronBrowserTabBinding(sessionId, tabId);
+  const hostEntry = useHostDirectoryEntry(target?.hostId ?? "");
   const auth = useStreamAuthRevalidator();
   const client = useHostStreamClientFor(
-    targetHostId === null ? null : hostEntry,
+    target === null ? null : hostEntry,
     auth,
   );
-  const [src, setSrc] = useState<string | null>(null);
-  const target = snapshot.target;
-  const sessionId = target?.sessionId ?? null;
-  const tabId = target?.tabId ?? null;
-  const burstId = target?.burstId ?? null;
-  const streaming =
-    (snapshot.phase === "live" || snapshot.phase === "finished") &&
-    sessionId !== null &&
-    tabId !== null;
+  const bridge = useMemo(
+    () =>
+      runnerHost === null ? null : resolveDesktopPipCaptureBridge(runnerHost),
+    [runnerHost],
+  );
+  const useNative = binding !== null && bridge !== null;
+  const useHeadless = !useNative && client !== null;
+  const retain = shouldRetainPipFrame(snapshot.phase, burstId);
+  const { owned, setOwned } = usePipFrameOwner(burstId, retain);
 
   useEffect(() => {
-    if (!streaming) return;
-    const binding = findElectronBrowserTabBinding(sessionId, tabId);
-    const bridge =
-      runnerHost === null ? null : resolveDesktopPipCaptureBridge(runnerHost);
-    const source = selectPipStreamSource({
-      hasNativeBinding: binding !== null,
-      hasNativeCapture: bridge !== null,
-      hasHeadlessClient: client !== null,
-    });
-    if (source === null) return;
-
-    let disposed = false;
-    let objectUrl: string | null = null;
-    const applyFrame = (
-      frame: BrowserScreencastServerFrame,
-      jpegBytes: Uint8Array | null,
-    ): void => {
-      if (disposed) return;
-      applyCaptureFrame(epicId, frame, jpegBytes, (nextUrl) => {
-        if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
-        objectUrl = nextUrl;
-        setSrc(nextUrl);
-      });
-    };
-
-    if (source === "native" && binding !== null && bridge !== null) {
-      const subscription = bridge.onFrame(applyFrame);
-      void bridge.start(
-        binding.tileKey,
-        PIP_HEADLESS_MAX_WIDTH,
-        PIP_HEADLESS_MAX_HEIGHT,
-        PIP_HEADLESS_QUALITY,
-      );
-      return () => {
-        disposed = true;
-        subscription.dispose();
-        void bridge.stop();
-        if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
-      };
-    }
-
-    if (source !== "headless" || client === null) return;
-    const stream = openPipHeadlessStream({
+    if (snapshot.phase !== "live" || burstId === null) return;
+    if (sessionId.length === 0 || tabId.length === 0) return;
+    return startPipCapture({
+      binding,
+      bridge,
+      burstId,
       client,
       epicId,
+      onUrl: (src) => {
+        setOwned((prev) => {
+          if (prev !== null && prev.src !== src) URL.revokeObjectURL(prev.src);
+          return { burstId, src };
+        });
+      },
       sessionId,
       tabId,
-      maxWidth: PIP_HEADLESS_MAX_WIDTH,
-      maxHeight: PIP_HEADLESS_MAX_HEIGHT,
-      quality: PIP_HEADLESS_QUALITY,
-      onFrame: applyFrame,
+      useHeadless,
+      useNative,
     });
+  }, [
+    binding,
+    bridge,
+    burstId,
+    client,
+    epicId,
+    sessionId,
+    snapshot.phase,
+    tabId,
+    setOwned,
+    useHeadless,
+    useNative,
+  ]);
+
+  return frameSrcFor(owned, burstId, retain);
+}
+
+function shouldRetainPipFrame(
+  phase: PipSnapshot["phase"],
+  burstId: string | null,
+): boolean {
+  if (burstId === null) return false;
+  return phase === "live" || phase === "finished" || phase === "chip";
+}
+
+function frameSrcFor(
+  owned: OwnedPipFrame | null,
+  burstId: string | null,
+  retain: boolean,
+): string | null {
+  if (!retain || owned === null || burstId === null) return null;
+  if (owned.burstId !== burstId) return null;
+  return owned.src;
+}
+
+function usePipFrameOwner(
+  burstId: string | null,
+  retain: boolean,
+): {
+  readonly owned: OwnedPipFrame | null;
+  readonly setOwned: Dispatch<SetStateAction<OwnedPipFrame | null>>;
+} {
+  const [owned, setOwned] = useState<OwnedPipFrame | null>(null);
+  const ownedRef = useRef<OwnedPipFrame | null>(null);
+
+  useEffect(() => {
+    ownedRef.current = owned;
+  }, [owned]);
+
+  useEffect(() => {
+    const current = ownedRef.current;
+    if (current === null) return;
+    if (retain && current.burstId === burstId) return;
+    URL.revokeObjectURL(current.src);
+    ownedRef.current = null;
+    setOwned(null);
+  }, [burstId, retain, setOwned]);
+
+  useEffect(() => {
+    return () => {
+      const current = ownedRef.current;
+      if (current !== null) URL.revokeObjectURL(current.src);
+    };
+  }, []);
+
+  return { owned, setOwned };
+}
+
+function startPipCapture(input: {
+  readonly binding: ElectronBrowserTabRegistration | null;
+  readonly bridge: DesktopPipCaptureBridge | null;
+  readonly burstId: string;
+  readonly client: IHostStreamClient<HostStreamRpcRegistry> | null;
+  readonly epicId: string;
+  readonly onUrl: (src: string) => void;
+  readonly sessionId: string;
+  readonly tabId: string;
+  readonly useHeadless: boolean;
+  readonly useNative: boolean;
+}): (() => void) | undefined {
+  let disposed = false;
+  const applyFrame = (
+    frame: BrowserScreencastServerFrame,
+    jpegBytes: Uint8Array | null,
+  ): void => {
+    if (disposed) return;
+    applyCaptureFrame(input.epicId, frame, jpegBytes, input.onUrl);
+  };
+  if (input.useNative) {
+    const binding = input.binding;
+    const bridge = input.bridge;
+    if (binding === null || bridge === null) return;
+    const subscription = bridge.onFrame(applyFrame);
+    void bridge.start(
+      binding.tileKey,
+      PIP_HEADLESS_MAX_WIDTH,
+      PIP_HEADLESS_MAX_HEIGHT,
+      PIP_HEADLESS_QUALITY,
+    );
     return () => {
       disposed = true;
-      stream.close();
-      if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
+      subscription.dispose();
+      void bridge.stop();
     };
-  }, [burstId, client, epicId, runnerHost, sessionId, streaming, tabId]);
-
-  if (!streaming) return null;
-  return src;
+  }
+  if (!input.useHeadless || input.client === null) return;
+  const stream = openPipHeadlessStream({
+    client: input.client,
+    epicId: input.epicId,
+    sessionId: input.sessionId,
+    tabId: input.tabId,
+    maxWidth: PIP_HEADLESS_MAX_WIDTH,
+    maxHeight: PIP_HEADLESS_MAX_HEIGHT,
+    quality: PIP_HEADLESS_QUALITY,
+    onFrame: applyFrame,
+  });
+  return () => {
+    disposed = true;
+    stream.close();
+  };
 }
 
 function applyCaptureFrame(

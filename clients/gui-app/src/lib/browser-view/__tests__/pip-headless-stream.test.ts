@@ -7,10 +7,7 @@ import type {
   StreamFrameEnvelope,
 } from "@traycer-clients/shared/host-transport/i-stream-session";
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
-import {
-  openPipHeadlessStream,
-  selectPipStreamSource,
-} from "../pip-headless-stream";
+import { openPipHeadlessStream } from "../pip-headless-stream";
 
 function unusedClientMethod(): never {
   throw new Error("not exercised by this test");
@@ -91,60 +88,8 @@ function createScreencastClientHarness(): {
   };
 }
 
-describe("selectPipStreamSource", () => {
-  it("picks native when a binding and capture are both present", () => {
-    expect(
-      selectPipStreamSource({
-        hasNativeBinding: true,
-        hasNativeCapture: true,
-        hasHeadlessClient: false,
-      }),
-    ).toBe("native");
-  });
-
-  it("falls back to headless when a binding exists without capture", () => {
-    expect(
-      selectPipStreamSource({
-        hasNativeBinding: true,
-        hasNativeCapture: false,
-        hasHeadlessClient: true,
-      }),
-    ).toBe("headless");
-  });
-
-  it("uses the headless client when there is no native binding", () => {
-    expect(
-      selectPipStreamSource({
-        hasNativeBinding: false,
-        hasNativeCapture: false,
-        hasHeadlessClient: true,
-      }),
-    ).toBe("headless");
-  });
-
-  it("returns null when neither native capture nor a headless client exists", () => {
-    expect(
-      selectPipStreamSource({
-        hasNativeBinding: false,
-        hasNativeCapture: false,
-        hasHeadlessClient: false,
-      }),
-    ).toBeNull();
-  });
-
-  it("never chooses both: native+capture wins even when a client is present", () => {
-    expect(
-      selectPipStreamSource({
-        hasNativeBinding: true,
-        hasNativeCapture: true,
-        hasHeadlessClient: true,
-      }),
-    ).toBe("native");
-  });
-});
-
 describe("openPipHeadlessStream", () => {
-  it("subscribes as role pip, gates pause, closes, and forwards jpeg frames", () => {
+  it("subscribes as role pip, closes, and forwards jpeg frames", () => {
     const harness = createScreencastClientHarness();
     const received: Array<{
       readonly frame: BrowserScreencastServerFrame;
@@ -177,19 +122,6 @@ describe("openPipHeadlessStream", () => {
           format: "jpeg",
           role: "pip",
         },
-      },
-    ]);
-
-    handle.setPaused(true);
-    handle.setPaused(false);
-    expect(harness.sentClientFrames).toEqual([
-      {
-        envelope: { kind: "setPaused", hasBinaryPayload: false, paused: true },
-        binaryPayload: null,
-      },
-      {
-        envelope: { kind: "setPaused", hasBinaryPayload: false, paused: false },
-        binaryPayload: null,
       },
     ]);
 

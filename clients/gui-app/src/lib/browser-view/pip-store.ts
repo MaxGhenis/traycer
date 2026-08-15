@@ -105,14 +105,12 @@ interface EpicPipState {
   dismissedAt: number | null;
   dismissedBurstId: string | null;
   streamHealth: PipStreamHealth;
-  hostLifecycle: PipHostLifecycle;
 }
 
 const epics = new Map<string, EpicPipState>();
 const liveBursts = new Map<string, PipBurst>();
 const finishedBursts = new Map<string, FinishedPipBurst>();
 const captionsByTab = new Map<string, PipCaption>();
-const lastFinishedByEpic = new Map<string, string>();
 const dismissals = new Map<string, Set<string>>();
 interface PipTimerHandle {
   readonly cancel: () => void;
@@ -187,7 +185,6 @@ export function applyPipBurstEnded(input: {
       endedAt,
     };
     finishedBursts.set(input.burstId, finished);
-    lastFinishedByEpic.set(input.epicId, input.burstId);
   }
   dropCaptionsForBurst(input.burstId);
   const epic = getOrCreateEpic(input.epicId);
@@ -216,7 +213,6 @@ export function applyPipHostLifecycle(
   hostLifecycles.set(hostLifecycleKey(epicId, hostId), lifecycle);
   const epic = getOrCreateEpic(epicId);
   if (epic.target !== null && epic.target.hostId === hostId) {
-    epic.hostLifecycle = lifecycle;
     epic.streamHealth = lifecycle === "live" ? "live" : "disconnected";
   }
   emit();
@@ -264,7 +260,12 @@ export function applyPipStreamHealth(
   const epic = epics.get(epicId);
   if (epic === undefined) return;
   if (epic.streamHealth === health) return;
-  if (epic.hostLifecycle !== "live" && health !== "disconnected") return;
+  const targetHostId = epic.target?.hostId;
+  const lifecycle =
+    targetHostId === undefined
+      ? "live"
+      : (hostLifecycles.get(hostLifecycleKey(epicId, targetHostId)) ?? "live");
+  if (lifecycle !== "live" && health !== "disconnected") return;
   epic.streamHealth = health;
   emit();
 }
@@ -396,7 +397,6 @@ export function resetPipStoreForTests(): void {
   liveBursts.clear();
   finishedBursts.clear();
   captionsByTab.clear();
-  lastFinishedByEpic.clear();
   dismissals.clear();
   snapshotCache.clear();
   hostLifecycles.clear();
@@ -543,9 +543,6 @@ function goLive(epicId: string, burst: PipBurst): void {
   epic.dismissedAt = null;
   epic.dismissedBurstId = null;
   if (switched) {
-    const lifecycle =
-      hostLifecycles.get(hostLifecycleKey(epicId, burst.hostId)) ?? "live";
-    epic.hostLifecycle = lifecycle;
     epic.streamHealth = hostHealthFor(epicId, burst.hostId);
   }
   clearLinger(epicId);
@@ -753,7 +750,6 @@ function getOrCreateEpic(epicId: string): EpicPipState {
     dismissedAt: null,
     dismissedBurstId: null,
     streamHealth: "live",
-    hostLifecycle: "live",
   };
   epics.set(epicId, created);
   return created;

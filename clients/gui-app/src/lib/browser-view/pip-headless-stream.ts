@@ -9,30 +9,13 @@ export const PIP_HEADLESS_MAX_WIDTH = 480;
 export const PIP_HEADLESS_MAX_HEIGHT = 360;
 export const PIP_HEADLESS_QUALITY = 50;
 
-export type PipStreamSourceKind = "native" | "headless";
-
 export interface PipHeadlessStreamHandle {
   close(): void;
-  setPaused(paused: boolean): void;
-}
-
-/**
- * Native binding + desktop capture wins. Otherwise the tab-host stream
- * client opens a `role: "pip"` screencast. Never both.
- */
-export function selectPipStreamSource(input: {
-  readonly hasNativeBinding: boolean;
-  readonly hasNativeCapture: boolean;
-  readonly hasHeadlessClient: boolean;
-}): PipStreamSourceKind | null {
-  if (input.hasNativeBinding && input.hasNativeCapture) return "native";
-  if (input.hasHeadlessClient) return "headless";
-  return null;
 }
 
 /**
  * Same transport as the peek tile, without visibility registration, input
- * arming, or tile-open resume. Pause only gates frames.
+ * arming, or tile-open resume.
  */
 export function openPipHeadlessStream(input: {
   readonly client: IHostStreamClient<HostStreamRpcRegistry>;
@@ -65,12 +48,6 @@ export function openPipHeadlessStream(input: {
   return {
     close: () => {
       session.close();
-    },
-    setPaused: (paused: boolean) => {
-      session.sendClientFrame(
-        { kind: "setPaused", hasBinaryPayload: false, paused },
-        null,
-      );
     },
   };
 }
