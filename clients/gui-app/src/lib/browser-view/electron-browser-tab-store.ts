@@ -292,12 +292,19 @@ export function handleElectronBrowserTabFrame(
   });
   record.tabId = frame.tabId;
   notifyBindingListeners();
+  const key = registrationKey(frame.sessionId, frame.registrationId);
+  const createRequest = createRequestsByRegistrationKey.get(key);
   const durableStartedAt = Date.now();
-  const durableRegistration = record.bridge.registerDurableTab({
-    ...record.tileKey,
-    sessionId: frame.sessionId,
-    tabId: frame.tabId,
-  });
+  const registerDurableTab = (): Promise<void> =>
+    record.bridge.registerDurableTab({
+      ...record.tileKey,
+      sessionId: frame.sessionId,
+      tabId: frame.tabId,
+    });
+  const durableRegistration =
+    createRequest === undefined
+      ? registerDurableTab()
+      : createRequest.ready.then(registerDurableTab);
   void durableRegistration.then(
     () => {
       appLogger.info("Electron background tab create stage", {
@@ -351,10 +358,8 @@ export function handleElectronBrowserTabFrame(
   void durableRegistration.catch(ignoreRegistrationError);
   record.onRegistered?.(frame.tabId);
   publishState(record);
-  const key = registrationKey(frame.sessionId, frame.registrationId);
-  const createRequest = createRequestsByRegistrationKey.get(key);
   if (createRequest !== undefined) {
-    void Promise.all([durableRegistration, createRequest.ready]).then(() => {
+    void durableRegistration.then(() => {
       if (createRequestsByRegistrationKey.get(key) !== createRequest) return;
       createRequestsByRegistrationKey.delete(key);
       const sent = sendForRecord(record, {

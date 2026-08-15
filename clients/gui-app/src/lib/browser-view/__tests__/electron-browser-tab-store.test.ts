@@ -1634,12 +1634,16 @@ describe("electron-browser-tab-store createElectronTab (ticket 14)", () => {
     expect(findElectronBrowserTabBinding(sessionId, "tab-minted")).not.toBe(
       null,
     );
+    expect(bridge.registerDurableTabCalls).toEqual([]);
     expect(frames.some((frame) => frame.kind === "electronTabCreated")).toBe(
       false,
     );
 
     resolveCreation();
     await vi.waitFor(() => {
+      expect(bridge.registerDurableTabCalls).toEqual([
+        expect.objectContaining({ sessionId, tabId: "tab-minted" }),
+      ]);
       expect(frames).toContainEqual({
         kind: "electronTabCreated",
         hasBinaryPayload: false,
