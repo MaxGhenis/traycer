@@ -1218,6 +1218,35 @@ describe("<AgentBrowserTile />", () => {
     }
   });
 
+  it("lets ready settle after a same-URL resubmit of the in-flight attempt", () => {
+    const bridge = new FakeAgentBrowserViewBridge();
+    bridgeHarness.current = bridge;
+    const paneId = seedAgentBrowserCanvas();
+    const key = tileKey(paneId);
+    const attemptedUrl = "https://next.example/";
+    const view = renderAgentBrowserTile(paneId);
+
+    submitAddress(attemptedUrl);
+    act(() => {
+      emitManagerStatus(bridge, key, "loading", NODE.url);
+    });
+    submitAddress(attemptedUrl);
+    act(() => {
+      emitManagerStatus(bridge, key, "ready", attemptedUrl);
+    });
+
+    expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
+    expect(
+      screen.getByText("Reconnecting to this session").parentElement
+        ?.className ?? "",
+    ).toContain("opacity-0");
+
+    rerenderVisibility(view, paneId, false);
+    expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
+    rerenderVisibility(view, paneId, true);
+    expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
+  });
+
   it("upserts a persisted non-responsive viewport preset on remount", async () => {
     const mobileNode: AgentBrowserTileRef = {
       ...NODE,
