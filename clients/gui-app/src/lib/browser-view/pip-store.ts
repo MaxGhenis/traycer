@@ -6,10 +6,11 @@ import {
 } from "./visible-tile-registry";
 
 /**
- * Quiet window from the core-flows defaults. Also the finished-frame linger
- * and the linger-rejoin window.
+ * How long the finished frame stays expanded before collapsing to the chip.
+ * A few seconds (F1). The host-side quiet/rejoin window is consumed before
+ * `burstEnded` fires and is not this constant.
  */
-export const PIP_LINGER_MS = 30_000;
+export const PIP_LINGER_MS = 5_000;
 
 /**
  * Minimum dwell on the displayed target before auto-follow may switch.
