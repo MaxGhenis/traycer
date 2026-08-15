@@ -213,7 +213,7 @@ export function applyPipHostLifecycle(
   hostLifecycles.set(hostLifecycleKey(epicId, hostId), lifecycle);
   const epic = getOrCreateEpic(epicId);
   if (epic.target !== null && epic.target.hostId === hostId) {
-    epic.streamHealth = lifecycle === "live" ? "live" : "disconnected";
+    epic.streamHealth = hostHealthFor(epicId, hostId);
   }
   emit();
 }
@@ -265,7 +265,9 @@ export function applyPipStreamHealth(
     targetHostId === undefined
       ? "live"
       : (hostLifecycles.get(hostLifecycleKey(epicId, targetHostId)) ?? "live");
-  if (lifecycle !== "live" && health !== "disconnected") return;
+  // Frames arriving is stronger than a connecting/reconnecting sessions
+  // slot. Only a dead host may refuse a live/stale upgrade.
+  if (isDeadHostLifecycle(lifecycle) && health !== "disconnected") return;
   epic.streamHealth = health;
   emit();
 }
@@ -328,7 +330,9 @@ export function recallPip(input: {
   if (target === undefined) return;
   removeDismissal(epicId, target.burstId);
   const epic = getOrCreateEpic(epicId);
-  epic.pinnedBurstId = target.burstId;
+  // Pin only a still-live burst. A finished recall has already ended, so
+  // F4.5 auto-follow must be free to follow the next live burst.
+  epic.pinnedBurstId = live !== undefined ? target.burstId : null;
   if (live !== undefined && !tileIsVisible(live)) {
     goLive(epicId, live);
     emit();
@@ -473,13 +477,21 @@ function recomputeFinished(
     clearLinger(epicId);
     return;
   }
-  if (epic.lingerEndsAt !== null && nowFn() >= epic.lingerEndsAt) {
-    const next = selectFollowTarget(epic, eligible);
-    if (next !== null) goLive(epicId, next);
-    else goChip(epic);
+  const next = selectFollowTarget(epic, eligible);
+  const lingerPending =
+    epic.lingerEndsAt !== null && nowFn() < epic.lingerEndsAt;
+  if (lingerPending) {
+    scheduleLinger(epicId);
     return;
   }
-  scheduleLinger(epicId);
+  if (next !== null && next.burstId !== epic.target?.burstId) {
+    goLive(epicId, next);
+    return;
+  }
+  if (epic.lingerEndsAt !== null) {
+    goChip(epic);
+    return;
+  }
 }
 
 function recomputeHidden(
@@ -810,8 +822,13 @@ function toTarget(burst: PipTarget): PipTarget {
 
 function hostHealthFor(epicId: string, hostId: string): PipStreamHealth {
   const lifecycle = hostLifecycles.get(hostLifecycleKey(epicId, hostId));
-  if (lifecycle === undefined || lifecycle === "live") return "live";
+  if (lifecycle === undefined) return "live";
+  if (lifecycle === "live" || lifecycle === "connecting") return "live";
   return "disconnected";
+}
+
+function isDeadHostLifecycle(lifecycle: PipHostLifecycle): boolean {
+  return lifecycle === "closed" || lifecycle === "failed";
 }
 
 function scheduleLinger(epicId: string): void {

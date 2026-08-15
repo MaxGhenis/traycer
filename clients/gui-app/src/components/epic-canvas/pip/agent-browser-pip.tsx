@@ -163,6 +163,12 @@ function AgentBrowserPipSurface(props: {
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLElement>, mode: "move" | "resize") => {
       if (event.button !== 0) return;
+      if (
+        event.target instanceof Element &&
+        event.target.closest("button") !== null
+      ) {
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       const origin = geometry;

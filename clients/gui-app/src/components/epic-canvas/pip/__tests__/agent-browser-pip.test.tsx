@@ -2,6 +2,7 @@ import "../../../../../__tests__/test-browser-apis";
 import {
   act,
   cleanup,
+  createEvent,
   fireEvent,
   render,
   screen,
@@ -500,6 +501,30 @@ describe("AgentBrowserPip", () => {
     fireEvent.click(screen.getByTestId("agent-browser-pip-close"));
     expect(getPipSnapshot(EPIC).phase).toBe("dismissed-burst");
     expect(screen.queryByTestId("agent-browser-pip")).toBeNull();
+  });
+
+  it("pointerdown on chrome buttons is not captured as a drag", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    renderPip();
+
+    const open = screen.getByTestId("agent-browser-pip-open");
+    const openDown = createEvent.pointerDown(open, { button: 0 });
+    fireEvent(open, openDown);
+    expect(openDown.defaultPrevented).toBe(false);
+    fireEvent.click(open);
+    expect(navigateNested).toHaveBeenCalled();
+
+    const close = screen.getByTestId("agent-browser-pip-close");
+    const closeDown = createEvent.pointerDown(close, { button: 0 });
+    fireEvent(close, closeDown);
+    expect(closeDown.defaultPrevented).toBe(false);
+    fireEvent.click(close);
+    expect(getPipSnapshot(EPIC).phase).toBe("dismissed-burst");
   });
 
   it("does not render when the surface is hidden", () => {

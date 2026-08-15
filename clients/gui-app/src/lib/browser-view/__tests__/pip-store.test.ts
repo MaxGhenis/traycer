@@ -336,6 +336,81 @@ describe("pip-store lifecycle", () => {
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
   });
 
+  it("after linger, leaves a finished target for a newer live burst", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: undefined,
+      chatId: undefined,
+    });
+    endBurst("b1", "finished", 2);
+    expect(getPipSnapshot(EPIC).phase).toBe("finished");
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: Date.now(),
+      hostId: undefined,
+      chatId: undefined,
+    });
+    expect(getPipSnapshot(EPIC).phase).toBe("finished");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
+    expect(getPipSnapshot(EPIC).moreLiveCount).toBe(1);
+    vi.advanceTimersByTime(PIP_LINGER_MS);
+    expect(getPipSnapshot(EPIC).phase).toBe("live");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
+  });
+
+  it("does not let a recalled finished target block a newer live burst", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: undefined,
+      chatId: undefined,
+    });
+    endBurst("b1", "finished", 2);
+    vi.advanceTimersByTime(PIP_LINGER_MS);
+    expect(getPipSnapshot(EPIC).phase).toBe("chip");
+    reexpandPip(EPIC);
+    expect(getPipSnapshot(EPIC).phase).toBe("finished");
+    expect(getPipSnapshot(EPIC).pinned).toBe(false);
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: Date.now(),
+      hostId: undefined,
+      chatId: undefined,
+    });
+    expect(getPipSnapshot(EPIC).phase).toBe("live");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
+  });
+
+  it("lets arriving frames mark live even while the sessions slot is connecting", () => {
+    applyPipHostLifecycle(EPIC, "host-a", "connecting");
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: undefined,
+      chatId: undefined,
+    });
+    expect(getPipSnapshot(EPIC).streamHealth).toBe("live");
+    applyPipStreamHealth(EPIC, "stale");
+    expect(getPipSnapshot(EPIC).streamHealth).toBe("stale");
+    applyPipStreamHealth(EPIC, "live");
+    expect(getPipSnapshot(EPIC).streamHealth).toBe("live");
+    applyPipHostLifecycle(EPIC, "host-a", "closed");
+    expect(getPipSnapshot(EPIC).streamHealth).toBe("disconnected");
+    applyPipStreamHealth(EPIC, "live");
+    expect(getPipSnapshot(EPIC).streamHealth).toBe("disconnected");
+  });
+
   it("latches the displayed target during dwell so click-through stays on the old burst", () => {
     startBurst({
       burstId: "b1",
