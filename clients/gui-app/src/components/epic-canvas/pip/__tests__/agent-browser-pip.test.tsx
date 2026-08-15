@@ -132,6 +132,14 @@ vi.mock("@/hooks/host/use-host-directory-entry", () => ({
   useHostDirectoryEntry: () => ({ hostId: "host-b", label: "devbox" }),
 }));
 
+vi.mock("@/lib/host/stream-auth-revalidator", () => ({
+  useStreamAuthRevalidator: () => null,
+}));
+
+vi.mock("@/hooks/host/use-host-stream-client-for", () => ({
+  useHostStreamClientFor: () => null,
+}));
+
 vi.mock("@/providers/use-runner-host", () => ({
   useRunnerHostOrNull: () => ({ pipCapture: pipCaptureState }),
 }));

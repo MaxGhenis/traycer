@@ -12,7 +12,9 @@ import { Maximize2, X } from "lucide-react";
 import type { BrowserScreencastServerFrame } from "@traycer/protocol/host/browser/contracts";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
+import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
 import {
   browserTabFaviconUrl,
   browserTabHostname,
@@ -48,6 +50,13 @@ import {
   type PipTarget,
 } from "@/lib/browser-view/pip-store";
 import { resolveDesktopPipCaptureBridge } from "@/lib/browser-view/desktop-pip-capture";
+import {
+  openPipHeadlessStream,
+  PIP_HEADLESS_MAX_HEIGHT,
+  PIP_HEADLESS_MAX_WIDTH,
+  PIP_HEADLESS_QUALITY,
+  selectPipStreamSource,
+} from "@/lib/browser-view/pip-headless-stream";
 import { cn } from "@/lib/utils";
 import { useEpicChatRecords } from "@/lib/epic-selectors";
 import { useRunnerHostOrNull } from "@/providers/use-runner-host";
@@ -58,9 +67,6 @@ import {
 import { makeBrowserSessionTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
 import type { EpicPipGeometry } from "@/stores/epics/canvas/types";
 
-const PIP_CAPTURE_MAX_WIDTH = 480;
-const PIP_CAPTURE_MAX_HEIGHT = 360;
-const PIP_CAPTURE_QUALITY = 50;
 const PIP_DRAG_CLICK_SLOP_PX = 4;
 const PIP_OVERLAY_KIND = "pip";
 
@@ -376,7 +382,7 @@ function PipExpanded(props: {
 }): ReactElement {
   const { snapshot } = props;
   const meta = usePipTargetMeta(props.epicId, snapshot.target);
-  const frameSrc = usePipNativeFrame(props.epicId, snapshot);
+  const frameSrc = usePipFrame(props.epicId, snapshot);
   const openTile = useOpenPipTarget(props.epicId, props.viewTabId);
   const livePulse =
     snapshot.phase === "live" && snapshot.streamHealth === "live";
@@ -653,11 +659,15 @@ function useOpenPipTarget(epicId: string, viewTabId: string): () => void {
   }, [epicId, items, navigateNested, prepareFocus, prepareOpen, viewTabId]);
 }
 
-function usePipNativeFrame(
-  epicId: string,
-  snapshot: PipSnapshot,
-): string | null {
+function usePipFrame(epicId: string, snapshot: PipSnapshot): string | null {
   const runnerHost = useRunnerHostOrNull();
+  const targetHostId = snapshot.target?.hostId ?? null;
+  const hostEntry = useHostDirectoryEntry(targetHostId ?? "");
+  const auth = useStreamAuthRevalidator();
+  const client = useHostStreamClientFor(
+    targetHostId === null ? null : hostEntry,
+    auth,
+  );
   const [src, setSrc] = useState<string | null>(null);
   const target = snapshot.target;
   const sessionId = target?.sessionId ?? null;
@@ -666,39 +676,67 @@ function usePipNativeFrame(
   const streaming =
     (snapshot.phase === "live" || snapshot.phase === "finished") &&
     sessionId !== null &&
-    tabId !== null &&
-    runnerHost !== null;
+    tabId !== null;
 
   useEffect(() => {
     if (!streaming) return;
     const binding = findElectronBrowserTabBinding(sessionId, tabId);
-    const bridge = resolveDesktopPipCaptureBridge(runnerHost);
-    if (binding === null || bridge === null) return;
+    const bridge =
+      runnerHost === null ? null : resolveDesktopPipCaptureBridge(runnerHost);
+    const source = selectPipStreamSource({
+      hasNativeBinding: binding !== null,
+      hasNativeCapture: bridge !== null,
+      hasHeadlessClient: client !== null,
+    });
+    if (source === null) return;
 
     let disposed = false;
     let objectUrl: string | null = null;
-    const subscription = bridge.onFrame((frame, jpegBytes) => {
+    const applyFrame = (
+      frame: BrowserScreencastServerFrame,
+      jpegBytes: Uint8Array | null,
+    ): void => {
       if (disposed) return;
       applyCaptureFrame(epicId, frame, jpegBytes, (nextUrl) => {
         if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
         objectUrl = nextUrl;
         setSrc(nextUrl);
       });
-    });
-    void bridge.start(
-      binding.tileKey,
-      PIP_CAPTURE_MAX_WIDTH,
-      PIP_CAPTURE_MAX_HEIGHT,
-      PIP_CAPTURE_QUALITY,
-    );
+    };
 
+    if (source === "native" && binding !== null && bridge !== null) {
+      const subscription = bridge.onFrame(applyFrame);
+      void bridge.start(
+        binding.tileKey,
+        PIP_HEADLESS_MAX_WIDTH,
+        PIP_HEADLESS_MAX_HEIGHT,
+        PIP_HEADLESS_QUALITY,
+      );
+      return () => {
+        disposed = true;
+        subscription.dispose();
+        void bridge.stop();
+        if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
+      };
+    }
+
+    if (source !== "headless" || client === null) return;
+    const stream = openPipHeadlessStream({
+      client,
+      epicId,
+      sessionId,
+      tabId,
+      maxWidth: PIP_HEADLESS_MAX_WIDTH,
+      maxHeight: PIP_HEADLESS_MAX_HEIGHT,
+      quality: PIP_HEADLESS_QUALITY,
+      onFrame: applyFrame,
+    });
     return () => {
       disposed = true;
-      subscription.dispose();
-      void bridge.stop();
+      stream.close();
       if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
     };
-  }, [burstId, epicId, runnerHost, sessionId, streaming, tabId]);
+  }, [burstId, client, epicId, runnerHost, sessionId, streaming, tabId]);
 
   if (!streaming) return null;
   return src;
