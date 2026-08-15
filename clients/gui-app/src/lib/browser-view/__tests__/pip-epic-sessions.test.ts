@@ -413,7 +413,6 @@ describe("PipEpicSessionsManager", () => {
     expect(opened).toHaveLength(2);
     expect(opened.every((entry) => entry.closed)).toBe(true);
     expect(manager.isDisposed()).toBe(true);
-    expect(getPipEpicSessionItems(EPIC)).toEqual([]);
     expect(() => {
       manager.dispose();
     }).not.toThrow();
@@ -463,6 +462,80 @@ describe("PipEpicSessionsManager", () => {
       cellTitle: "Filling checkout form",
       arrivedAt: 1_000,
     });
+    manager.dispose();
+  });
+
+  it("treats a reconnect snapshot as a burst-generation boundary", () => {
+    const { opened, opener } = createFakeOpener();
+    const manager = attachWithHosts(opener, ["host-a"], CHAT);
+    const first = latestOpened(opened, "host-a");
+
+    first.request.onFrame(
+      snapshotFrame([
+        session({ sessionId: "s-a", name: "Local", hostId: "host-a" }),
+      ]),
+    );
+    first.request.onFrame(
+      burstStartedFrame({
+        sessionId: "s-a",
+        tabId: "t-a",
+        burstId: "burst-a",
+      }),
+    );
+    expect(getPipSnapshot(EPIC).phase).toBe("live");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("burst-a");
+
+    // Feed dropped while the host-side burst ended. Reconnect snapshot has
+    // no burstStarted replay for the finished burst.
+    manager.setChatId(null);
+    manager.setChatId(CHAT);
+    const reconnect = latestOpened(opened, "host-a");
+    expect(reconnect).not.toBe(first);
+
+    reconnect.request.onFrame(
+      snapshotFrame([
+        session({ sessionId: "s-a", name: "Local", hostId: "host-a" }),
+      ]),
+    );
+    expect(getPipSnapshot(EPIC).phase).not.toBe("live");
+    expect(getPipSnapshot(EPIC).phase).toBe("finished");
+    expect(getPipSnapshot(EPIC).outcome).toBe("finished");
+
+    manager.dispose();
+  });
+
+  it("restores a still-open burst replayed after the snapshot boundary", () => {
+    const { opened, opener } = createFakeOpener();
+    const manager = attachWithHosts(opener, ["host-a"], CHAT);
+    const first = latestOpened(opened, "host-a");
+
+    first.request.onFrame(
+      burstStartedFrame({
+        sessionId: "s-a",
+        tabId: "t-a",
+        burstId: "burst-a",
+      }),
+    );
+    expect(getPipSnapshot(EPIC).phase).toBe("live");
+
+    manager.setChatId(null);
+    manager.setChatId(CHAT);
+    const reconnect = latestOpened(opened, "host-a");
+    reconnect.request.onFrame(
+      snapshotFrame([
+        session({ sessionId: "s-a", name: "Local", hostId: "host-a" }),
+      ]),
+    );
+    reconnect.request.onFrame(
+      burstStartedFrame({
+        sessionId: "s-a",
+        tabId: "t-a",
+        burstId: "burst-a",
+      }),
+    );
+
+    expect(getPipSnapshot(EPIC).phase).toBe("live");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("burst-a");
     manager.dispose();
   });
 

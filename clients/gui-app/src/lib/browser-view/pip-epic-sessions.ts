@@ -22,6 +22,7 @@ import {
   applyPipCaption,
   applyPipHostLifecycle,
   dropPipHostLiveBursts,
+  getPipSnapshot,
   type PipHostLifecycle,
 } from "./pip-store";
 
@@ -185,7 +186,7 @@ interface HostSlot {
 
 export class PipEpicSessionsManager {
   private readonly epicId: string;
-  private opener: PipEpicSessionsOpener;
+  private readonly opener: PipEpicSessionsOpener;
   private readonly hosts = new Map<string, HostSlot>();
   private desiredHostIds: readonly string[] = [];
   private chatId: string | null = null;
@@ -194,10 +195,6 @@ export class PipEpicSessionsManager {
 
   constructor(epicId: string, opener: PipEpicSessionsOpener) {
     this.epicId = epicId;
-    this.opener = opener;
-  }
-
-  setOpener(opener: PipEpicSessionsOpener): void {
     this.opener = opener;
   }
 
@@ -340,6 +337,7 @@ export class PipEpicSessionsManager {
       return;
     }
     if (frame.kind === "snapshot") {
+      this.resetHostBurstGeneration(slot.hostId);
       slot.items = frame.sessions.map((session) =>
         tagSession(slot.hostId, session),
       );
@@ -360,6 +358,35 @@ export class PipEpicSessionsManager {
       );
       this.publishMergedItems();
     }
+  }
+
+  /**
+   * A host snapshot is a burst-generation boundary. Late subscribers only
+   * hear still-open bursts as a following `burstStarted` replay; anything
+   * that ended while we were unmounted never arrives. Drop this host's prior
+   * live bursts, then finish a leftover live target on this host so it cannot
+   * pose as live until a replay restores it.
+   *
+   * `dropPipHostLiveBursts` keeps the displayed target (last-frame +
+   * disconnected). That leftover is finished here because the store has no
+   * hide-current-target API and this file must not edit pip-store.
+   */
+  private resetHostBurstGeneration(hostId: string): void {
+    const pip = getPipSnapshot(this.epicId);
+    dropPipHostLiveBursts(this.epicId, hostId);
+    if (
+      pip.phase !== "live" ||
+      pip.target === null ||
+      pip.target.hostId !== hostId
+    ) {
+      return;
+    }
+    applyPipBurstEnded({
+      epicId: this.epicId,
+      burstId: pip.target.burstId,
+      outcome: "finished",
+      endedAt: undefined,
+    });
   }
 
   private dropHost(slot: HostSlot): void {
