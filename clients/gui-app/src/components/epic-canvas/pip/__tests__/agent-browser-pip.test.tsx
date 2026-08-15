@@ -16,6 +16,10 @@ import type {
 } from "@traycer/protocol/host/browser/contracts";
 import type { BrowserSessionsState } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import { AgentBrowserPip } from "@/components/epic-canvas/pip/agent-browser-pip";
+import {
+  getPipHeadlessArmRunsForTests,
+  resetPipCaptureArmCountsForTests,
+} from "@/lib/browser-view/pip-capture-arm-counts";
 import type { BrowserViewTileKey } from "@/lib/browser-view/desktop-browser-view";
 import {
   applyPipBurstEnded,
@@ -356,6 +360,15 @@ function renderPip(): void {
   render(<AgentBrowserPip epicId={EPIC} viewTabId={VIEW_TAB} surfaceVisible />);
 }
 
+async function flushMacrotasks(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
 describe("AgentBrowserPip", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -368,6 +381,7 @@ describe("AgentBrowserPip", () => {
     seedSessions();
     bindingState.set(null);
     clientState.reset();
+    resetPipCaptureArmCountsForTests();
     headlessStreamState.reset();
     pipCaptureState.reset();
     navigateNested.mockClear();
@@ -728,45 +742,7 @@ describe("AgentBrowserPip", () => {
     expect(pipCaptureState.start).toHaveBeenCalled();
   });
 
-  it("opens one capture per mount and does not thrash when the host client appears", async () => {
-    vi.useRealTimers();
-    clientState.set(null);
-    startBurst({
-      burstId: "b1",
-      sessionId: "s1",
-      tabId: "t1",
-      startedAt: 1,
-    });
-    renderPip();
-    expect(headlessStreamState.openCount).toBe(0);
-    expect(headlessStreamState.closeCount).toBe(0);
-
-    clientState.set(clientState.defaultClient);
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    });
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    });
-    expect(headlessStreamState.openCount).toBe(1);
-    expect(headlessStreamState.closeCount).toBe(0);
-
-    clientState.set({ instanceId: "pip-test-headless-client" });
-    applyPipCaption({
-      epicId: EPIC,
-      sessionId: "s1",
-      tabId: "t1",
-      burstId: "b1",
-      cellTitle: "Opening example.net",
-    });
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    });
-    expect(headlessStreamState.openCount).toBe(1);
-    expect(headlessStreamState.closeCount).toBe(0);
-  });
-
-  it("does not stop native capture when the unused host client appears", async () => {
+  it("keeps native capture at one start when a new host client instance appears", async () => {
     vi.useRealTimers();
     clientState.set(null);
     bindingState.set({ tileKey: TILE_KEY });
@@ -779,19 +755,68 @@ describe("AgentBrowserPip", () => {
     renderPip();
     expect(pipCaptureState.start).toHaveBeenCalledTimes(1);
     expect(pipCaptureState.stop).not.toHaveBeenCalled();
-    expect(headlessStreamState.openCount).toBe(0);
 
-    clientState.set(clientState.defaultClient);
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    });
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    });
+    clientState.set({ instanceId: "host-client-cold-mount" });
+    await flushMacrotasks();
     expect(pipCaptureState.start).toHaveBeenCalledTimes(1);
     expect(pipCaptureState.stop).not.toHaveBeenCalled();
     expect(headlessStreamState.openCount).toBe(0);
+  });
+
+  it("waits for the headless client inside one arm run and reconnects on instance replace", async () => {
+    vi.useRealTimers();
+    clientState.set(null);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    renderPip();
+    await flushMacrotasks();
+    expect(headlessStreamState.openCount).toBe(0);
+    expect(getPipHeadlessArmRunsForTests()).toBe(1);
+
+    clientState.set({ instanceId: "headless-a" });
+    await flushMacrotasks();
+    expect(headlessStreamState.openCount).toBe(1);
     expect(headlessStreamState.closeCount).toBe(0);
+    expect(getPipHeadlessArmRunsForTests()).toBe(1);
+
+    clientState.set({ instanceId: "headless-b" });
+    await flushMacrotasks();
+    expect(headlessStreamState.openCount).toBe(2);
+    expect(headlessStreamState.closeCount).toBe(1);
+    expect(getPipHeadlessArmRunsForTests()).toBe(1);
+  });
+
+  it("switches sources once per native/headless branch flip", async () => {
+    vi.useRealTimers();
+    bindingState.set({ tileKey: TILE_KEY });
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    renderPip();
+    await flushMacrotasks();
+    expect(pipCaptureState.start).toHaveBeenCalledTimes(1);
+    expect(pipCaptureState.stop).not.toHaveBeenCalled();
+    expect(headlessStreamState.openCount).toBe(0);
+
+    bindingState.set(null);
+    await flushMacrotasks();
+    expect(pipCaptureState.stop).toHaveBeenCalledTimes(1);
+    expect(headlessStreamState.openCount).toBe(1);
+    expect(headlessStreamState.closeCount).toBe(0);
+
+    bindingState.set({ tileKey: TILE_KEY });
+    await flushMacrotasks();
+    expect(pipCaptureState.start).toHaveBeenCalledTimes(2);
+    expect(pipCaptureState.stop).toHaveBeenCalledTimes(1);
+    expect(headlessStreamState.closeCount).toBe(1);
+    expect(headlessStreamState.openCount).toBe(1);
   });
 
   it("shows the host label when the displayed burst is not on the active host", () => {
@@ -914,6 +939,7 @@ describe("AgentBrowserPip captions", () => {
     seedSessions();
     bindingState.set(null);
     clientState.reset();
+    resetPipCaptureArmCountsForTests();
     headlessStreamState.reset();
     pipCaptureState.reset();
     navigateNested.mockClear();
