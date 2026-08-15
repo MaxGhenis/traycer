@@ -111,7 +111,7 @@ import {
   type RateLimitPopoverTab,
 } from "@/stores/rate-limits/rate-limit-popover-store";
 import { useRegisteredHostsPollLiveness } from "@/hooks/auth/use-registered-hosts-query";
-import { useSettingsHostScopeStore } from "@/stores/settings/settings-host-scope-store";
+import { carryViewedHostIntoSettingsScope } from "@/components/settings/host-scope/carry-viewed-host-into-settings";
 import { useProvidersFocusStore } from "@/stores/settings/providers-focus-store";
 import { cn } from "@/lib/utils";
 
@@ -772,7 +772,7 @@ function RateLimitPopoverScopedBody({
     const focus = useProvidersFocusStore.getState();
     focus.setFocusHarnessId("opencode");
     focus.setFocusTab("modelProviders");
-    carryUsageHostIntoSettingsScope(displayedHostId);
+    carryViewedHostIntoSettingsScope(displayedHostId);
     openSettings({ section: "providers", resetToGeneral: false });
   }, [displayedHostId, onClose, openSettings]);
 
@@ -925,7 +925,7 @@ function RateLimitHostPickerRow({
             onClose();
             // The displayed host travels with the jump - one rule, one
             // implementation, shared with the provider CTAs.
-            carryUsageHostIntoSettingsScope(scope.hostId);
+            carryViewedHostIntoSettingsScope(scope.hostId);
             openSettings({ section: "host", resetToGeneral: false });
           },
         }}
@@ -1050,7 +1050,7 @@ function RateLimitRail({
   const { openSettings } = useSystemTabModalActions();
   const openProviderSettings = (): void => {
     onClose();
-    carryUsageHostIntoSettingsScope(displayedHostId);
+    carryViewedHostIntoSettingsScope(displayedHostId);
     openSettings({ section: "providers", resetToGeneral: false });
   };
   return (
@@ -2403,7 +2403,7 @@ function RateLimitZeroState({
   const { openSettings } = useSystemTabModalActions();
   const openProviderSettings = (): void => {
     onClose();
-    carryUsageHostIntoSettingsScope(displayedHostId);
+    carryViewedHostIntoSettingsScope(displayedHostId);
     openSettings({ section: "providers", resetToGeneral: false });
   };
   return (
@@ -2420,23 +2420,4 @@ function RateLimitZeroState({
       </button>
     </div>
   );
-}
-
-/**
- * The usage view's explicit host pin travels with the jump into Settings.
- *
- * Without this, scoping Usage to host B and pressing Provider settings opens
- * controls for whatever host Settings last showed - the action was invoked
- * FROM B's numbers, so provider changes made next would target the wrong
- * machine. Only an explicit pin transfers: `null` means "follow the active
- * host", and both surfaces already agree on that default.
- */
-function carryUsageHostIntoSettingsScope(displayedHostId: string | null): void {
-  // The DISPLAYED host, pinned or followed. An earlier version transferred
-  // only an explicit pin, reasoning that null means both surfaces agree on
-  // "follow" - but Settings can hold a stale explicit pin of its own, and the
-  // Providers panel resolves through Settings' scope, so the followed case
-  // landed on the wrong machine all the same.
-  if (displayedHostId === null) return;
-  useSettingsHostScopeStore.getState().setScopedHostId(displayedHostId);
 }
