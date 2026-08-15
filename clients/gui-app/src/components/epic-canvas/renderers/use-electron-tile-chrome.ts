@@ -2,6 +2,7 @@ import { useEffect, useState, type SyntheticEvent } from "react";
 import type { TileChromeCapabilities, TileController } from "@/components/epic-canvas/renderers/tile-controller";
 import type { BrowserElementPickerController } from "@/components/epic-canvas/renderers/use-browser-element-picker";
 import { normalizeBrowserAddressInput } from "@/lib/browser-view/browser-link-routing-core";
+import type { DesktopAgentBrowserViewBridge } from "@/lib/browser-view/desktop-agent-browser-view";
 import type {
   BrowserCookieCryptoState,
   BrowserViewCertificateErrorChange,
@@ -11,13 +12,17 @@ import type {
   DesktopBrowserViewBridge,
 } from "@/lib/browser-view/desktop-browser-view";
 
+export type ElectronTileChromeView =
+  | DesktopBrowserViewBridge
+  | DesktopAgentBrowserViewBridge;
+
 interface AddressDraft {
   readonly sourceUrl: string | null;
   readonly value: string;
 }
 
 interface UseElectronTileChromeArgs {
-  readonly chromeView: DesktopBrowserViewBridge | null;
+  readonly chromeView: ElectronTileChromeView | null;
   readonly tileKey: BrowserViewTileKey;
   readonly initialUrl: string;
   readonly visible: boolean;

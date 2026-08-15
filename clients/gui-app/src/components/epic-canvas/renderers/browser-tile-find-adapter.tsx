@@ -2,9 +2,18 @@ import { useEffect, useMemo, type ReactNode } from "react";
 import { useRegisterTileFindAdapter } from "@/components/epic-canvas/tile-find/tile-find-adapter-context";
 import type {
   BrowserViewFindChange,
+  BrowserViewFindRequest,
+  BrowserViewFindStop,
   BrowserViewTileKey,
-  DesktopBrowserViewBridge,
 } from "@/lib/browser-view/desktop-browser-view";
+
+export interface BrowserTileFindView {
+  findInPage(input: BrowserViewFindRequest): Promise<void>;
+  stopFindInPage(input: BrowserViewFindStop): Promise<void>;
+  onFindChange(handler: (change: BrowserViewFindChange) => void): {
+    dispose: () => void;
+  };
+}
 import type {
   TileFindAdapter,
   TileFindCapability,
@@ -13,7 +22,7 @@ import type {
 } from "@/stores/tile-find";
 
 interface BrowserTileFindAdapterBridgeProps {
-  readonly browserView: DesktopBrowserViewBridge | null;
+  readonly browserView: BrowserTileFindView | null;
   readonly tileKey: BrowserViewTileKey;
 }
 
@@ -52,7 +61,7 @@ export function BrowserTileFindAdapterBridge(
 }
 
 function createBrowserTileFindAdapter(args: {
-  readonly browserView: DesktopBrowserViewBridge | null;
+  readonly browserView: BrowserTileFindView | null;
   readonly tileKey: BrowserViewTileKey;
 }): BrowserTileFindAdapter {
   const listeners = new Set<() => void>();

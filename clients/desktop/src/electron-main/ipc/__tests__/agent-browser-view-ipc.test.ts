@@ -168,7 +168,7 @@ describe("registerAgentBrowserViewIpc", () => {
     );
   });
 
-  it("registers only the seven agent browser invoke channels", async () => {
+  it("registers the agent browser invoke channels including chrome", async () => {
     const { registerAgentBrowserViewIpc } =
       await import("../agent-browser-view-ipc");
     const { RunnerHostInvoke } =
@@ -185,14 +185,21 @@ describe("registerAgentBrowserViewIpc", () => {
       RunnerHostInvoke.agentBrowserViewRegisterDurableTab,
       RunnerHostInvoke.agentBrowserViewUpdateBounds,
       RunnerHostInvoke.agentBrowserViewRelease,
-      // Ticket 03's typed CDP bridge. This assertion is an allowlist, not a
-      // count - it exists so a new channel onto the agent's tile has to be
-      // added here deliberately, which is the whole point of it being exact.
       RunnerHostInvoke.agentBrowserViewCdpDispatch,
-      // Fix round 3 (native-view overlay bug): the renderer broadcasts
-      // occlude/release to both the primary and agent managers.
       RunnerHostInvoke.agentBrowserViewOccludeForOverlay,
       RunnerHostInvoke.agentBrowserViewReleaseOverlay,
+      RunnerHostInvoke.agentBrowserViewSetViewportPreset,
+      RunnerHostInvoke.agentBrowserViewReload,
+      RunnerHostInvoke.agentBrowserViewGoBack,
+      RunnerHostInvoke.agentBrowserViewGoForward,
+      RunnerHostInvoke.agentBrowserViewFindInPage,
+      RunnerHostInvoke.agentBrowserViewStopFindInPage,
+      RunnerHostInvoke.agentBrowserViewCancelDownload,
+      RunnerHostInvoke.agentBrowserViewTrustCertificate,
+      RunnerHostInvoke.agentBrowserViewZoomIn,
+      RunnerHostInvoke.agentBrowserViewZoomOut,
+      RunnerHostInvoke.agentBrowserViewResetZoom,
+      RunnerHostInvoke.agentBrowserViewOpenDevTools,
     ]);
   });
 

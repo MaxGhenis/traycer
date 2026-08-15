@@ -12,12 +12,18 @@ import type {
   AgentBrowserViewCdpDispatch,
   BrowserViewBounds,
   BrowserViewBoundsUpdate,
+  BrowserViewCertificateTrust,
+  BrowserViewDownloadCancel,
   BrowserViewDurableTabRegistration,
+  BrowserViewFindRequest,
+  BrowserViewFindStop,
   BrowserViewOpenTileRequest,
   BrowserViewOverlayOcclusion,
   BrowserViewOverlayRelease,
   BrowserViewTileKey,
   BrowserViewTileUpsert,
+  BrowserViewViewportPresetChange,
+  BrowserViewViewportPresetId,
 } from "../../ipc-contracts/browser-view-types";
 import {
   BrowserViewManager,
@@ -28,12 +34,16 @@ import {
   type ManagedContentView,
 } from "../browser-view/browser-view-manager";
 import {
+  cancelBrowserViewDownload,
+  clearBrowserViewPendingCertificateError,
   createAgentBrowserViewWebPreferences,
   ensureAgentBrowserViewSession,
   onBrowserViewCertificateError,
   onBrowserViewDownloadChange,
+  readBrowserViewPendingCertificateError,
   registerBrowserViewWebContents,
 } from "../browser-view/browser-session";
+import { trustBrowserCertificate } from "../app/cert-trust";
 import { applyAgentBrowserBackgroundPosture } from "../browser-view/agent-browser-posture";
 import { parseBrowserViewCdpCommand } from "./browser-view-cdp-payload";
 import type { RunnerIpcBridge } from "./runner-ipc-bridge";
@@ -81,9 +91,27 @@ export function registerAgentBrowserViewIpc(
         change,
       );
     },
-    notifyFind: () => {},
-    notifyDownload: () => {},
-    notifyCertificateError: () => {},
+    notifyFind: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.agentBrowserViewFindChange,
+        change,
+      );
+    },
+    notifyDownload: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.agentBrowserViewDownloadChange,
+        change,
+      );
+    },
+    notifyCertificateError: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.agentBrowserViewCertificateError,
+        change,
+      );
+    },
     notifyOpenTileRequest: (windowId, change) => {
       bridge.safeSendToWindow(
         windowId,
@@ -208,6 +236,115 @@ export function registerAgentBrowserViewIpc(
     },
   );
 
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewSetViewportPreset,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.setViewportPreset(windowId, parseViewportPresetChange(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewReload,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.reloadTile(windowId, parseTileKey(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewGoBack,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.goBack(windowId, parseTileKey(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewGoForward,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.goForward(windowId, parseTileKey(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewFindInPage,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.findInPage(windowId, parseFindRequest(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewStopFindInPage,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.stopFindInPage(windowId, parseFindStop(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewCancelDownload,
+    (_event, payload) => {
+      cancelBrowserViewDownload(parseDownloadCancel(payload).downloadId);
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewTrustCertificate,
+    async (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      const input = parseCertificateTrust(payload);
+      if (!manager.canTrustCertificateError(windowId, input)) {
+        throw new Error(
+          "Agent browser certificate error is not active for this tile",
+        );
+      }
+      const pending = readBrowserViewPendingCertificateError(
+        input.certificateErrorId,
+      );
+      if (pending === null) {
+        throw new Error("Agent browser certificate error is no longer pending");
+      }
+      await trustBrowserCertificate(pending.hostname, pending.certificate);
+      clearBrowserViewPendingCertificateError(input.certificateErrorId);
+      manager.clearCertificateError(windowId, input);
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewZoomIn,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.zoomIn(windowId, parseTileKey(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewZoomOut,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.zoomOut(windowId, parseTileKey(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewResetZoom,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.resetZoom(windowId, parseTileKey(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewOpenDevTools,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.openDevTools(windowId, parseTileKey(payload));
+    },
+  );
+
   bridge.disposeFns.push(() => {
     manager.dispose();
   });
@@ -282,10 +419,7 @@ function parseTileUpsert(value: unknown): BrowserViewTileUpsert {
     ...parseTileKey(record),
     url: readString(record.url, "url"),
     visible: readBoolean(record.visible, "visible"),
-    // Viewport presets (mobile/tablet/desktop chrome) are a driving/chrome
-    // concern out of scope for ticket 02 - the agent tile always fills its
-    // tile at "responsive".
-    viewportPreset: "responsive",
+    viewportPreset: readViewportPresetId(record.viewportPreset),
   };
 }
 
@@ -335,6 +469,75 @@ function parseDurableTabRegistration(
     sessionId: readString(record.sessionId, "sessionId"),
     tabId: readString(record.tabId, "tabId"),
   };
+}
+
+function parseViewportPresetChange(
+  value: unknown,
+): BrowserViewViewportPresetChange {
+  const record = assertRecord(
+    value,
+    "Agent browser view viewport preset payload",
+  );
+  return {
+    ...parseTileKey(record),
+    viewportPreset: readViewportPresetId(record.viewportPreset),
+  };
+}
+
+function parseFindRequest(value: unknown): BrowserViewFindRequest {
+  const record = assertRecord(value, "Agent browser view find payload");
+  return {
+    ...parseTileKey(record),
+    requestId: readFiniteNumber(record.requestId, "requestId"),
+    query: readString(record.query, "query"),
+    matchCase: readBoolean(record.matchCase, "matchCase"),
+    forward: readBoolean(record.forward, "forward"),
+    findNext: readBoolean(record.findNext, "findNext"),
+  };
+}
+
+function parseFindStop(value: unknown): BrowserViewFindStop {
+  const record = assertRecord(value, "Agent browser view find stop payload");
+  return {
+    ...parseTileKey(record),
+    requestId: readFiniteNumber(record.requestId, "requestId"),
+  };
+}
+
+function parseDownloadCancel(value: unknown): BrowserViewDownloadCancel {
+  const record = assertRecord(
+    value,
+    "Agent browser view download cancel payload",
+  );
+  return {
+    downloadId: readString(record.downloadId, "downloadId"),
+  };
+}
+
+function parseCertificateTrust(value: unknown): BrowserViewCertificateTrust {
+  const record = assertRecord(
+    value,
+    "Agent browser view certificate trust payload",
+  );
+  return {
+    ...parseTileKey(record),
+    certificateErrorId: readString(
+      record.certificateErrorId,
+      "certificateErrorId",
+    ),
+  };
+}
+
+function readViewportPresetId(value: unknown): BrowserViewViewportPresetId {
+  if (
+    value === "responsive" ||
+    value === "mobile" ||
+    value === "tablet" ||
+    value === "desktop"
+  ) {
+    return value;
+  }
+  throw new Error("Agent browser view viewportPreset is invalid");
 }
 
 function parseCdpDispatch(value: unknown): AgentBrowserViewCdpDispatch {

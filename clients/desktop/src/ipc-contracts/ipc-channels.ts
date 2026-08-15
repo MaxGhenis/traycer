@@ -329,6 +329,20 @@ export const RunnerHostInvoke = {
   agentBrowserViewOccludeForOverlay:
     "runnerHost:agentBrowserView:occludeForOverlay",
   agentBrowserViewReleaseOverlay: "runnerHost:agentBrowserView:releaseOverlay",
+  agentBrowserViewSetViewportPreset:
+    "runnerHost:agentBrowserView:setViewportPreset",
+  agentBrowserViewReload: "runnerHost:agentBrowserView:reload",
+  agentBrowserViewGoBack: "runnerHost:agentBrowserView:goBack",
+  agentBrowserViewGoForward: "runnerHost:agentBrowserView:goForward",
+  agentBrowserViewFindInPage: "runnerHost:agentBrowserView:findInPage",
+  agentBrowserViewStopFindInPage: "runnerHost:agentBrowserView:stopFindInPage",
+  agentBrowserViewCancelDownload: "runnerHost:agentBrowserView:cancelDownload",
+  agentBrowserViewTrustCertificate:
+    "runnerHost:agentBrowserView:trustCertificate",
+  agentBrowserViewZoomIn: "runnerHost:agentBrowserView:zoomIn",
+  agentBrowserViewZoomOut: "runnerHost:agentBrowserView:zoomOut",
+  agentBrowserViewResetZoom: "runnerHost:agentBrowserView:resetZoom",
+  agentBrowserViewOpenDevTools: "runnerHost:agentBrowserView:openDevTools",
   // Ticket 03's typed CDP bridge: one invoke carrying an enumerated command
   // (see `AgentBrowserViewCdpCommand`), never a generic method/params pair.
   agentBrowserViewCdpDispatch: "runnerHost:agentBrowserView:cdp:dispatch",
@@ -402,6 +416,11 @@ export const RunnerHostEvent = {
     "runnerHost:event:agentBrowserView:openTileRequest",
   agentBrowserViewSnapshotInvalidated:
     "runnerHost:event:agentBrowserView:snapshotInvalidated",
+  agentBrowserViewFindChange: "runnerHost:event:agentBrowserView:findChange",
+  agentBrowserViewDownloadChange:
+    "runnerHost:event:agentBrowserView:downloadChange",
+  agentBrowserViewCertificateError:
+    "runnerHost:event:agentBrowserView:certificateError",
   // Fired the moment the agent tile's CDP debugger detaches for a reason
   // outside our control (target destroyed, renderer crash, explicit
   // detach) - ends the agent's access rather than only logging it. Opening

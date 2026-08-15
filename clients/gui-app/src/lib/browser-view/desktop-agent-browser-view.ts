@@ -1,7 +1,14 @@
 import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
 import type {
   BrowserViewBoundsUpdate,
+  BrowserViewCertificateErrorChange,
+  BrowserViewCertificateTrust,
+  BrowserViewDownloadCancel,
+  BrowserViewDownloadChange,
   BrowserViewDurableTabRegistration,
+  BrowserViewFindChange,
+  BrowserViewFindRequest,
+  BrowserViewFindStop,
   BrowserViewOpenTileRequest,
   BrowserViewOverlayOcclusion,
   BrowserViewSnapshotInvalidatedChange,
@@ -10,6 +17,8 @@ import type {
   BrowserViewOverlayReleaseResult,
   BrowserViewStatusChange,
   BrowserViewTileKey,
+  BrowserViewViewportPresetChange,
+  BrowserViewViewportPresetId,
 } from "./desktop-browser-view";
 
 export type {
@@ -22,6 +31,7 @@ export type {
 export interface AgentBrowserViewTileUpsert extends BrowserViewTileKey {
   readonly url: string;
   readonly visible: boolean;
+  readonly viewportPreset: BrowserViewViewportPresetId;
 }
 
 /**
@@ -211,8 +221,31 @@ export interface DesktopAgentBrowserViewBridge {
   upsertTile(input: AgentBrowserViewTileUpsert): Promise<void>;
   registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
   updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
+  setViewportPreset(input: BrowserViewViewportPresetChange): Promise<void>;
   releaseTile(input: BrowserViewTileKey): Promise<void>;
+  reloadTile(input: BrowserViewTileKey): Promise<void>;
+  goBack(input: BrowserViewTileKey): Promise<void>;
+  goForward(input: BrowserViewTileKey): Promise<void>;
+  findInPage(input: BrowserViewFindRequest): Promise<void>;
+  stopFindInPage(input: BrowserViewFindStop): Promise<void>;
+  cancelDownload(input: BrowserViewDownloadCancel): Promise<void>;
+  trustCertificate(input: BrowserViewCertificateTrust): Promise<void>;
+  zoomIn(input: BrowserViewTileKey): Promise<void>;
+  zoomOut(input: BrowserViewTileKey): Promise<void>;
+  resetZoom(input: BrowserViewTileKey): Promise<void>;
+  openDevTools(input: BrowserViewTileKey): Promise<void>;
   onStatusChange(handler: (change: BrowserViewStatusChange) => void): {
+    dispose: () => void;
+  };
+  onFindChange(handler: (change: BrowserViewFindChange) => void): {
+    dispose: () => void;
+  };
+  onDownloadChange(handler: (change: BrowserViewDownloadChange) => void): {
+    dispose: () => void;
+  };
+  onCertificateError(
+    handler: (change: BrowserViewCertificateErrorChange) => void,
+  ): {
     dispose: () => void;
   };
   onOpenTileRequest(handler: (change: BrowserViewOpenTileRequest) => void): {
@@ -262,8 +295,23 @@ const REQUIRED_AGENT_BROWSER_VIEW_BRIDGE_METHODS = [
   "upsertTile",
   "registerDurableTab",
   "updateBounds",
+  "setViewportPreset",
   "releaseTile",
+  "reloadTile",
+  "goBack",
+  "goForward",
+  "findInPage",
+  "stopFindInPage",
+  "cancelDownload",
+  "trustCertificate",
+  "zoomIn",
+  "zoomOut",
+  "resetZoom",
+  "openDevTools",
   "onStatusChange",
+  "onFindChange",
+  "onDownloadChange",
+  "onCertificateError",
   "onOpenTileRequest",
   "onSnapshotInvalidated",
   "dispatchCdp",
@@ -285,9 +333,32 @@ export function resolveDesktopAgentBrowserViewBridge(
     registerDurableTab: (input) =>
       callBridgeVoid(value, methods.registerDurableTab, input),
     updateBounds: (input) => callBridgeVoid(value, methods.updateBounds, input),
+    setViewportPreset: (input) =>
+      callBridgeVoid(value, methods.setViewportPreset, input),
     releaseTile: (input) => callBridgeVoid(value, methods.releaseTile, input),
+    reloadTile: (input) => callBridgeVoid(value, methods.reloadTile, input),
+    goBack: (input) => callBridgeVoid(value, methods.goBack, input),
+    goForward: (input) => callBridgeVoid(value, methods.goForward, input),
+    findInPage: (input) => callBridgeVoid(value, methods.findInPage, input),
+    stopFindInPage: (input) =>
+      callBridgeVoid(value, methods.stopFindInPage, input),
+    cancelDownload: (input) =>
+      callBridgeVoid(value, methods.cancelDownload, input),
+    trustCertificate: (input) =>
+      callBridgeVoid(value, methods.trustCertificate, input),
+    zoomIn: (input) => callBridgeVoid(value, methods.zoomIn, input),
+    zoomOut: (input) => callBridgeVoid(value, methods.zoomOut, input),
+    resetZoom: (input) => callBridgeVoid(value, methods.resetZoom, input),
+    openDevTools: (input) =>
+      callBridgeVoid(value, methods.openDevTools, input),
     onStatusChange: (handler) =>
       readDisposable(methods.onStatusChange.call(value, handler)),
+    onFindChange: (handler) =>
+      readDisposable(methods.onFindChange.call(value, handler)),
+    onDownloadChange: (handler) =>
+      readDisposable(methods.onDownloadChange.call(value, handler)),
+    onCertificateError: (handler) =>
+      readDisposable(methods.onCertificateError.call(value, handler)),
     onOpenTileRequest: (handler) =>
       readDisposable(methods.onOpenTileRequest.call(value, handler)),
     onSnapshotInvalidated: (handler) =>
@@ -330,8 +401,23 @@ function readAgentBrowserViewBridgeMethods(
     upsertTile: readBridgeMethod(value, "upsertTile"),
     registerDurableTab: readBridgeMethod(value, "registerDurableTab"),
     updateBounds: readBridgeMethod(value, "updateBounds"),
+    setViewportPreset: readBridgeMethod(value, "setViewportPreset"),
     releaseTile: readBridgeMethod(value, "releaseTile"),
+    reloadTile: readBridgeMethod(value, "reloadTile"),
+    goBack: readBridgeMethod(value, "goBack"),
+    goForward: readBridgeMethod(value, "goForward"),
+    findInPage: readBridgeMethod(value, "findInPage"),
+    stopFindInPage: readBridgeMethod(value, "stopFindInPage"),
+    cancelDownload: readBridgeMethod(value, "cancelDownload"),
+    trustCertificate: readBridgeMethod(value, "trustCertificate"),
+    zoomIn: readBridgeMethod(value, "zoomIn"),
+    zoomOut: readBridgeMethod(value, "zoomOut"),
+    resetZoom: readBridgeMethod(value, "resetZoom"),
+    openDevTools: readBridgeMethod(value, "openDevTools"),
     onStatusChange: readBridgeMethod(value, "onStatusChange"),
+    onFindChange: readBridgeMethod(value, "onFindChange"),
+    onDownloadChange: readBridgeMethod(value, "onDownloadChange"),
+    onCertificateError: readBridgeMethod(value, "onCertificateError"),
     onOpenTileRequest: readBridgeMethod(value, "onOpenTileRequest"),
     onSnapshotInvalidated: readBridgeMethod(value, "onSnapshotInvalidated"),
     dispatchCdp: readBridgeMethod(value, "dispatchCdp"),

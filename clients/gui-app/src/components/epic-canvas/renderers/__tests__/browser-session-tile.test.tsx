@@ -189,6 +189,66 @@ class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
     return { dispose: () => undefined };
   }
 
+  setViewportPreset(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  reloadTile(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  goBack(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  goForward(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  findInPage(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  stopFindInPage(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  cancelDownload(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  trustCertificate(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  zoomIn(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  zoomOut(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  resetZoom(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  openDevTools(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  onFindChange(): { dispose: () => void } {
+    return { dispose: () => undefined };
+  }
+
+  onDownloadChange(): { dispose: () => void } {
+    return { dispose: () => undefined };
+  }
+
+  onCertificateError(): { dispose: () => void } {
+    return { dispose: () => undefined };
+  }
+
   onCdpSessionEnded(
     _handler: (change: AgentBrowserViewCdpSessionEndedChange) => void,
   ): { dispose: () => void } {

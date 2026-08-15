@@ -60,3 +60,20 @@ export const PRIMARY_TILE_CHROME_CAPABILITIES: TileChromeCapabilities = {
   siteInfo: true,
   elementPicker: true,
 };
+
+/**
+ * Isolated agent-partition chrome: nav/zoom/viewport/devtools/find.
+ * Site-info and element picker stay primary-only.
+ */
+export const ISOLATED_TILE_CHROME_CAPABILITIES: TileChromeCapabilities = {
+  navigate: true,
+  back: true,
+  forward: true,
+  reload: true,
+  zoom: true,
+  viewportPreset: true,
+  devtools: true,
+  find: true,
+  siteInfo: false,
+  elementPicker: false,
+};

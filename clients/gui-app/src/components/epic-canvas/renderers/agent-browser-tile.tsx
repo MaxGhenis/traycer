@@ -14,7 +14,10 @@ import {
 } from "@/components/epic-canvas/renderers/browser-tile-status-panels";
 import { BrowserTileToolbar } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
 import { BrowserViewSnapshotLayer } from "@/components/epic-canvas/renderers/browser-view-snapshot-layer";
-import { PRIMARY_TILE_CHROME_CAPABILITIES } from "@/components/epic-canvas/renderers/tile-controller";
+import {
+  ISOLATED_TILE_CHROME_CAPABILITIES,
+  PRIMARY_TILE_CHROME_CAPABILITIES,
+} from "@/components/epic-canvas/renderers/tile-controller";
 import { useBrowserElementPicker } from "@/components/epic-canvas/renderers/use-browser-element-picker";
 import { useBrowserViewSnapshot } from "@/components/epic-canvas/renderers/use-browser-view-snapshot";
 import { useCloseCanvasTileWithNestedFocus } from "@/components/epic-canvas/renderers/use-close-canvas-tile-with-nested-focus";
@@ -171,20 +174,14 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     ) {
       return;
     }
-    if (primaryBridge !== null) {
-      void primaryBridge
-        .upsertTile({
-          ...tileKey,
-          url: props.node.url,
-          visible,
-          viewportPreset: "responsive",
-        })
-        .catch(ignoreAgentBrowserViewError);
-    } else {
-      void browserView
-        .upsertTile({ ...tileKey, url: props.node.url, visible })
-        .catch(ignoreAgentBrowserViewError);
-    }
+    void browserView
+      .upsertTile({
+        ...tileKey,
+        url: props.node.url,
+        visible,
+        viewportPreset: "responsive",
+      })
+      .catch(ignoreAgentBrowserViewError);
     // `retryNonce` is otherwise unused inside the effect - its only job is to
     // force this upsert to re-fire when the user clicks Retry on an
     // unreachable session, since there is no dedicated reload RPC.
@@ -194,7 +191,6 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     props.activateBeforeNativeView,
     tileKey,
     props.node.url,
-    primaryBridge,
     visible,
     retryNonce,
   ]);
@@ -323,11 +319,13 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     targetChatId: registrationChatId,
   });
   const chrome = useElectronTileChrome({
-    chromeView: primaryBridge,
+    chromeView: browserView,
     tileKey,
     initialUrl: props.node.url,
     visible,
-    capabilities: PRIMARY_TILE_CHROME_CAPABILITIES,
+    capabilities: usePrimaryProfileRuntime
+      ? PRIMARY_TILE_CHROME_CAPABILITIES
+      : ISOLATED_TILE_CHROME_CAPABILITIES,
     elementPicker,
     cookieCryptoState,
     statusUrl,
@@ -343,7 +341,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     >
       {chrome.controller !== null ? (
         <BrowserTileFindAdapterBridge
-          browserView={primaryBridge}
+          browserView={browserView}
           tileKey={tileKey}
         />
       ) : null}
