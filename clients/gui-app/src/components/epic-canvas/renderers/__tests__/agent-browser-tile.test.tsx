@@ -386,9 +386,25 @@ function emitStatus(
   status: BrowserViewStatusChange["status"],
   reason: string | null,
 ): void {
+  emitManagerStatus(bridge, key, status, NODE.url, reason);
+}
+
+/**
+ * Mirrors BrowserViewManager.emitStatus: url is entry.currentUrl, not
+ * the in-flight requestedUrl. navigate() emits loading with the
+ * pre-submit currentUrl before loadURL; commit then emits ready with
+ * the settled URL.
+ */
+function emitManagerStatus(
+  bridge: FakeAgentBrowserViewBridge,
+  key: BrowserViewTileKey,
+  status: BrowserViewStatusChange["status"],
+  url: string,
+  reason: string | null = null,
+): void {
   bridge.emitStatus({
     ...key,
-    url: NODE.url,
+    url,
     title: "Example",
     status,
     reason,
@@ -396,6 +412,30 @@ function emitStatus(
     canGoForward: false,
     zoomPercent: 100,
   });
+}
+
+function submitAddress(url: string): void {
+  fireEvent.change(screen.getByLabelText("Browser address"), {
+    target: { value: url },
+  });
+  const addressForm = screen
+    .getByLabelText("Browser address")
+    .closest("form");
+  if (addressForm === null) {
+    throw new Error("browser address input must be wrapped in a form");
+  }
+  fireEvent.submit(addressForm);
+}
+
+function rerenderVisibility(
+  view: RenderResult,
+  paneId: string,
+  visible: boolean,
+): void {
+  visibilityHarness.visible = visible;
+  view.rerender(
+    <AgentBrowserTile node={NODE} viewTabId={VIEW_TAB_ID} paneId={paneId} />,
+  );
 }
 
 function emptyDisposable(): { dispose: () => void } {
@@ -1011,127 +1051,120 @@ describe("<AgentBrowserTile />", () => {
     warn.mockRestore();
   });
 
-  it("does not upsert the stale canvas URL after address navigate then visibility or Retry", () => {
+  it("keeps the attempted URL through the pre-loadURL loading echo", () => {
     vi.useFakeTimers();
     try {
       const bridge = new FakeAgentBrowserViewBridge();
       bridgeHarness.current = bridge;
       const paneId = seedAgentBrowserCanvas();
-      const nextUrl = "https://next.example/";
+      const key = tileKey(paneId);
+      const attemptedUrl = "https://next.example/";
       const view = renderAgentBrowserTile(paneId);
 
-      expect(bridge.upsertCalls.length).toBeGreaterThanOrEqual(1);
       expect(bridge.upsertCalls[0]?.url).toBe(NODE.url);
+      submitAddress(attemptedUrl);
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
 
-      fireEvent.change(screen.getByLabelText("Browser address"), {
-        target: { value: nextUrl },
+      act(() => {
+        emitManagerStatus(bridge, key, "loading", NODE.url);
       });
-      const addressForm = screen
-        .getByLabelText("Browser address")
-        .closest("form");
-      if (addressForm === null) {
-        throw new Error("browser address input must be wrapped in a form");
-      }
-      fireEvent.submit(addressForm);
-      expect(bridge.upsertCalls.at(-1)?.url).toBe(nextUrl);
 
-      visibilityHarness.visible = false;
-      view.rerender(
-        <AgentBrowserTile
-          node={NODE}
-          viewTabId={VIEW_TAB_ID}
-          paneId={paneId}
-        />,
-      );
-      expect(bridge.upsertCalls.at(-1)?.url).toBe(nextUrl);
-
-      visibilityHarness.visible = true;
-      view.rerender(
-        <AgentBrowserTile
-          node={NODE}
-          viewTabId={VIEW_TAB_ID}
-          paneId={paneId}
-        />,
-      );
-      expect(bridge.upsertCalls.at(-1)?.url).toBe(nextUrl);
+      rerenderVisibility(view, paneId, false);
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
+      rerenderVisibility(view, paneId, true);
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
 
       act(() => {
         vi.advanceTimersByTime(12_001);
       });
       fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-      expect(bridge.upsertCalls.at(-1)?.url).toBe(nextUrl);
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
       expect(
         bridge.upsertCalls
           .slice(1)
-          .every((call) => call.url === nextUrl),
+          .every((call) => call.url === attemptedUrl),
       ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
-      const liveUrl = "https://live.example/";
-      const afterSubmitCount = bridge.upsertCalls.length;
+  it("yields the latch to a ready redirect URL after the loading echo", () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new FakeAgentBrowserViewBridge();
+      bridgeHarness.current = bridge;
+      const paneId = seedAgentBrowserCanvas();
+      const key = tileKey(paneId);
+      const attemptedUrl = "https://next.example/";
+      const redirectUrl = "https://live.example/";
+      const view = renderAgentBrowserTile(paneId);
+
+      submitAddress(attemptedUrl);
       act(() => {
-        bridge.emitStatus({
-          ...tileKey(paneId),
-          url: liveUrl,
-          title: "Live",
-          status: "ready",
-          reason: null,
-          canGoBack: true,
-          canGoForward: false,
-          zoomPercent: 100,
-        });
+        emitManagerStatus(bridge, key, "loading", NODE.url);
       });
-      expect(bridge.upsertCalls.at(-1)?.url).toBe(liveUrl);
+      const afterEchoCount = bridge.upsertCalls.length;
+      act(() => {
+        emitManagerStatus(bridge, key, "ready", redirectUrl);
+      });
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(redirectUrl);
 
-      visibilityHarness.visible = false;
-      view.rerender(
-        <AgentBrowserTile
-          node={NODE}
-          viewTabId={VIEW_TAB_ID}
-          paneId={paneId}
-        />,
-      );
-      expect(bridge.upsertCalls.at(-1)?.url).toBe(liveUrl);
-
-      visibilityHarness.visible = true;
-      view.rerender(
-        <AgentBrowserTile
-          node={NODE}
-          viewTabId={VIEW_TAB_ID}
-          paneId={paneId}
-        />,
-      );
-      expect(bridge.upsertCalls.at(-1)?.url).toBe(liveUrl);
+      rerenderVisibility(view, paneId, false);
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(redirectUrl);
+      rerenderVisibility(view, paneId, true);
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(redirectUrl);
 
       act(() => {
-        bridge.emitStatus({
-          ...tileKey(paneId),
-          url: liveUrl,
-          title: "Live",
-          status: "loading",
-          reason: null,
-          canGoBack: true,
-          canGoForward: false,
-          zoomPercent: 100,
-        });
+        emitManagerStatus(bridge, key, "loading", redirectUrl);
       });
       act(() => {
         vi.advanceTimersByTime(12_001);
       });
       fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-      expect(bridge.upsertCalls.at(-1)?.url).toBe(liveUrl);
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(redirectUrl);
       expect(
         bridge.upsertCalls
-          .slice(afterSubmitCount)
-          .every((call) => call.url === liveUrl),
+          .slice(afterEchoCount)
+          .every((call) => call.url === redirectUrl),
       ).toBe(true);
       expect(
         bridge.upsertCalls
-          .slice(afterSubmitCount)
-          .some((call) => call.url === nextUrl || call.url === NODE.url),
+          .slice(afterEchoCount)
+          .some(
+            (call) =>
+              call.url === attemptedUrl || call.url === NODE.url,
+          ),
       ).toBe(false);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("stays on the attempted URL when ready reports no redirect", () => {
+    const bridge = new FakeAgentBrowserViewBridge();
+    bridgeHarness.current = bridge;
+    const paneId = seedAgentBrowserCanvas();
+    const key = tileKey(paneId);
+    const attemptedUrl = "https://next.example/";
+    const view = renderAgentBrowserTile(paneId);
+
+    submitAddress(attemptedUrl);
+    act(() => {
+      emitManagerStatus(bridge, key, "loading", NODE.url);
+    });
+    act(() => {
+      emitManagerStatus(bridge, key, "ready", attemptedUrl);
+    });
+    expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
+
+    rerenderVisibility(view, paneId, false);
+    expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
+    rerenderVisibility(view, paneId, true);
+    expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
+    expect(
+      bridge.upsertCalls.slice(1).every((call) => call.url === attemptedUrl),
+    ).toBe(true);
   });
 
   it("upserts a persisted non-responsive viewport preset on remount", async () => {
