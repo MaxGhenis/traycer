@@ -114,7 +114,9 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const [status, setStatus] = useState<BrowserViewStatus>("loading");
   const [statusReason, setStatusReason] = useState<string | null>(null);
   const [statusUrl, setStatusUrl] = useState("");
-  const [attemptedUrl, setAttemptedUrl] = useState<string | null>(null);
+  const [attemptedNavigation, setAttemptedNavigation] =
+    useState<AttemptedNavigation | null>(null);
+  const attemptedNavigationRef = useRef<AttemptedNavigation | null>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const [zoomPercent, setZoomPercent] = useState(100);
@@ -253,15 +255,18 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     if (browserView === null) return;
     const subscription = browserView.onStatusChange((change) => {
       if (!isChangeForTile(change, tileKey)) return;
-      setStatus(change.status);
-      setStatusReason(change.reason);
-      setStatusUrl(change.url);
-      setAttemptedUrl((current) =>
-        nextAttemptedUrlAfterStatus(current, change.status, change.url),
-      );
-      setCanGoBack(change.canGoBack);
-      setCanGoForward(change.canGoForward);
-      setZoomPercent(change.zoomPercent);
+      const current = attemptedNavigationRef.current;
+      if (!isStaleSettleBeforeEcho(current, change.status)) {
+        setStatus(change.status);
+        setStatusReason(change.reason);
+        setStatusUrl(change.url);
+        setCanGoBack(change.canGoBack);
+        setCanGoForward(change.canGoForward);
+        setZoomPercent(change.zoomPercent);
+      }
+      const next = nextAttemptedNavigationAfterStatus(current, change.status);
+      attemptedNavigationRef.current = next;
+      setAttemptedNavigation(next);
     });
     return () => {
       subscription.dispose();
@@ -323,6 +328,11 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     runnerHost,
     usePrimaryProfileRuntime,
   );
+  const latchAttemptedUrl = useCallback((url: string) => {
+    const next: AttemptedNavigation = { url, echoSeen: false };
+    attemptedNavigationRef.current = next;
+    setAttemptedNavigation(next);
+  }, []);
   const chrome = useElectronTileChrome({
     chromeView: browserView,
     tileKey,
@@ -343,10 +353,11 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       );
     },
     initialViewportPreset: readAgentViewportPreset(props.node.viewportPreset),
-    onAttemptedUrl: setAttemptedUrl,
+    onAttemptedUrl: latchAttemptedUrl,
   });
   const lifecycleUrl =
-    attemptedUrl ?? (statusUrl.length > 0 ? statusUrl : props.node.url);
+    attemptedNavigation?.url ??
+    (statusUrl.length > 0 ? statusUrl : props.node.url);
 
   useEffect(() => {
     if (
@@ -566,31 +577,49 @@ function readAgentViewportPreset(
   return "responsive";
 }
 
+interface AttemptedNavigation {
+  readonly url: string;
+  readonly echoSeen: boolean;
+}
+
 /**
- * Address submit latches the attempted URL so visibility/Retry keep
- * upserting it. BrowserViewManager.navigate emits a synchronous
- * `loading` status before loadURL, and that echo still carries
- * `currentUrl` (the pre-submit page). Yielding to that echo would
- * upsert the old page and cancel the in-flight navigation.
+ * Address submit latches {url, echoSeen:false}. navigate() emits a
+ * synchronous `loading` echo before loadURL, so the first loading
+ * status after a submit is this attempt's echo (echoSeen=true). A
+ * later `ready` then clears the latch. A `ready` that arrives before
+ * that echo is a stale settle from a previous attempt - ignore it
+ * (newest submit wins; do not let it replace the latch or feed
+ * lifecycleUrl).
  *
- * Keep the latch while `loading` unless the status URL is already the
- * attempt. Clear it on the first post-submit `ready` - that is the
- * settled URL (the attempt, or a redirect target).
- *
- * `dead` keeps the latch: loadURL failed and `currentUrl` is still the
- * pre-submit page, so Retry must re-attempt the submitted URL rather
- * than the page that failed to leave.
+ * `dead` keeps the latch so a later Retry still upserts the submitted
+ * URL rather than the pre-submit page. Residual B: the dead branch
+ * currently has no Retry button; if Retry is ever exposed there it
+ * must force reload (user-tile `reloadTile`), not rely on upsert
+ * identity - manager already set requestedUrl to the attempt before
+ * loadURL failed.
  */
-function nextAttemptedUrlAfterStatus(
-  attemptedUrl: string | null,
+function nextAttemptedNavigationAfterStatus(
+  current: AttemptedNavigation | null,
   status: BrowserViewStatus,
-  url: string,
-): string | null {
-  if (attemptedUrl === null) return null;
-  if (status === "dead") return attemptedUrl;
-  if (status === "loading" && url !== attemptedUrl) return attemptedUrl;
-  if (url.length === 0) return attemptedUrl;
+): AttemptedNavigation | null {
+  if (current === null) return null;
+  // Residual B: keep latch. Dead-state Retry, if ever exposed, must
+  // use a forced reload path like the user tile's reloadTile, not
+  // upsert identity.
+  if (status === "dead") return current;
+  if (status === "loading") {
+    if (current.echoSeen) return current;
+    return { url: current.url, echoSeen: true };
+  }
+  if (!current.echoSeen) return current;
   return null;
+}
+
+function isStaleSettleBeforeEcho(
+  current: AttemptedNavigation | null,
+  status: BrowserViewStatus,
+): boolean {
+  return current !== null && status === "ready" && !current.echoSeen;
 }
 
 function ignoreAgentBrowserViewError(_error: unknown): void {}
