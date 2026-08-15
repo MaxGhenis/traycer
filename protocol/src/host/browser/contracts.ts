@@ -4,7 +4,8 @@
  *
  * These are intentionally stream-only additions. Once shipped, both methods
  * stay on major 1 forever; future changes must be additive minors because the
- * stream transport has no cross-major bridge.
+ * stream transport has no cross-major bridge. Until then the whole browser
+ * protocol is branch-only and extends in place at 1.0.
  */
 import { z } from "zod";
 import { defineStreamRpcContract } from "@traycer/protocol/framework/versioned-stream-rpc";
@@ -567,6 +568,14 @@ const browserSessionsServerFrameSchemaV13 = z.discriminatedUnion("kind", [
  * frames; registry-level schema additivity makes projection possible but is
  * not a substitute for it. Tracked separately, with its own owner.
  */
+export const browserBurstOutcomeSchema = z.enum([
+  "finished",
+  "closed",
+  "crashed",
+  "suspended",
+]);
+export type BrowserBurstOutcome = z.infer<typeof browserBurstOutcomeSchema>;
+
 export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
   ...browserSessionsServerFrameSchemaV13.def.options,
   z.object({
@@ -631,6 +640,32 @@ export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
     tileInstanceId: z.string(),
     attachmentId: z.string(),
     reason: z.string(),
+  }),
+  z.object({
+    // Agent-browser PiP ticket 01. Stream-only: never persisted. `caption`
+    // is schema-only until ticket 06 emits it.
+    kind: z.literal("burstStarted"),
+    ...textFrameFields,
+    sessionId: z.string(),
+    tabId: z.string(),
+    burstId: z.string(),
+    chatId: z.string(),
+  }),
+  z.object({
+    kind: z.literal("burstEnded"),
+    ...textFrameFields,
+    sessionId: z.string(),
+    tabId: z.string(),
+    burstId: z.string(),
+    outcome: browserBurstOutcomeSchema,
+  }),
+  z.object({
+    kind: z.literal("caption"),
+    ...textFrameFields,
+    sessionId: z.string(),
+    tabId: z.string(),
+    burstId: z.string(),
+    cellTitle: z.string(),
   }),
 ]);
 export type BrowserSessionsServerFrame = z.infer<
@@ -935,7 +970,8 @@ export type BrowserSessionsClientFrame = z.infer<
  * separate frozen contracts) is collapsed into one fresh `@1.0` carrying
  * every frame kind this file defines - no projection machinery and no
  * frozen-minor exports to preserve, since nothing has shipped for them to
- * stay compatible with.
+ * stay compatible with. Agent-browser PiP ticket 01 extends that same 1.0
+ * in place (`burstStarted` / `burstEnded` / `caption`).
  */
 export const browserSessionsV1 = defineStreamRpcContract({
   method: "browser.sessions",
@@ -950,10 +986,19 @@ export type BrowserScreencastFormat = z.infer<
   typeof browserScreencastFormatSchema
 >;
 
+export const browserScreencastViewerRoleSchema = z.enum(["tile", "pip"]);
+export type BrowserScreencastViewerRole = z.infer<
+  typeof browserScreencastViewerRoleSchema
+>;
+
 /**
  * Epic-authorized and tab-addressed: a session can carry more than one tab
  * (settled decision 5), so screencast names both the epic boundary and the
  * page it mirrors.
+ *
+ * Agent-browser PiP ticket 01 adds `role` in place (schema only until
+ * ticket 04). `.default("tile")` (not `.optional`) so omitted frames read
+ * as `"tile"` and nothing changes for them.
  */
 export const browserScreencastOpenRequestSchema = z.object({
   epicId: z.string(),
@@ -963,6 +1008,7 @@ export const browserScreencastOpenRequestSchema = z.object({
   maxHeight: z.number().int().positive(),
   quality: z.number().int().min(0).max(100),
   format: browserScreencastFormatSchema,
+  role: browserScreencastViewerRoleSchema.default("tile"),
 });
 export type BrowserScreencastOpenRequest = z.infer<
   typeof browserScreencastOpenRequestSchema

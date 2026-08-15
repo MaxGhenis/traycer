@@ -7835,7 +7835,8 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       // Shared-browser-runtime ticket 01: `browser.sessions` never shipped,
       // so its prior in-repo minor history (@1.0-@1.4) is collapsed into one
       // fresh @1.0 baseline carrying every frame kind - see the doc comment
-      // on `browserSessionsV1` in `contracts.ts`.
+      // on `browserSessionsV1` in `contracts.ts`. Agent-browser PiP ticket 01
+      // extends that same 1.0 in place.
       latestMinor: 0,
       versions: {
         0: {
