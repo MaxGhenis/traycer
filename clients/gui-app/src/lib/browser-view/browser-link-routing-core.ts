@@ -12,7 +12,10 @@ import {
   DEFAULT_BROWSER_VIEWPORT_PRESET,
   makeBrowserTileRef,
 } from "@/stores/epics/canvas/tile-schema/browser-tile";
-import { makeAgentBrowserTileRef } from "@/stores/epics/canvas/tile-schema/agent-browser-tile";
+import {
+  DEFAULT_AGENT_BROWSER_VIEWPORT_PRESET,
+  makeAgentBrowserTileRef,
+} from "@/stores/epics/canvas/tile-schema/agent-browser-tile";
 import {
   useSettingsStore,
   type BrowserLinkOpenMode,
@@ -107,56 +110,36 @@ export function browserTileNameForUrl(url: string): string {
   return DEFAULT_BROWSER_TILE_NAME;
 }
 
-export function openFreshBrowserTileFromBrowserPage(
-  request: BrowserPageOpenTileRequest,
-): boolean {
-  const store = useEpicCanvasStore.getState();
-  const canvas = store.canvasByTabId[request.viewTabId];
-  if (canvas === undefined || canvas.root === null) return false;
-  const targetPane = findPaneById(canvas.root, request.paneId);
-  if (targetPane === null) return false;
-  const browserTile = makeBrowserTileRef({
-    name: browserTileNameForUrl(request.url),
-    hostId: request.hostId,
-    url: request.url,
-    viewportPreset: DEFAULT_BROWSER_VIEWPORT_PRESET,
-  });
-  store.splitPaneWithNode(
-    request.viewTabId,
-    request.paneId,
-    "right",
-    browserTile,
-  );
-  const nextCanvas =
-    useEpicCanvasStore.getState().canvasByTabId[request.viewTabId];
-  if (
-    nextCanvas !== undefined &&
-    nextCanvas.tilesByInstanceId[browserTile.instanceId] !== undefined
-  ) {
-    return true;
-  }
-  store.openTileInPane(request.viewTabId, request.paneId, browserTile);
-  return true;
-}
+export type ElectronTileOpenRuntime = "primary" | "isolated";
 
-export function openFreshAgentBrowserTileFromBrowserPage(request: {
+export function openFreshElectronTileFromBrowserPage(request: {
   readonly viewTabId: string;
   readonly paneId: string;
   readonly hostId: string;
-  readonly sessionId: string;
   readonly url: string;
-}): AgentBrowserTileRef | null {
+  readonly runtime: ElectronTileOpenRuntime;
+  readonly sessionId: string | null;
+}): BrowserTileRef | AgentBrowserTileRef | null {
   const store = useEpicCanvasStore.getState();
   const canvas = store.canvasByTabId[request.viewTabId];
   if (canvas === undefined || canvas.root === null) return null;
   const targetPane = findPaneById(canvas.root, request.paneId);
   if (targetPane === null) return null;
-  const tile = makeAgentBrowserTileRef({
-    name: browserTileNameForUrl(request.url),
-    hostId: request.hostId,
-    url: request.url,
-    sessionId: request.sessionId,
-  });
+  const tile =
+    request.runtime === "primary"
+      ? makeBrowserTileRef({
+          name: browserTileNameForUrl(request.url),
+          hostId: request.hostId,
+          url: request.url,
+          viewportPreset: DEFAULT_BROWSER_VIEWPORT_PRESET,
+        })
+      : makeAgentBrowserTileRef({
+          name: browserTileNameForUrl(request.url),
+          hostId: request.hostId,
+          url: request.url,
+          sessionId: request.sessionId,
+          viewportPreset: DEFAULT_AGENT_BROWSER_VIEWPORT_PRESET,
+        });
   store.splitPaneWithNode(request.viewTabId, request.paneId, "right", tile);
   const nextCanvas =
     useEpicCanvasStore.getState().canvasByTabId[request.viewTabId];
@@ -167,6 +150,40 @@ export function openFreshAgentBrowserTileFromBrowserPage(request: {
     return tile;
   }
   store.openTileInPane(request.viewTabId, request.paneId, tile);
+  return tile;
+}
+
+export function openFreshBrowserTileFromBrowserPage(
+  request: BrowserPageOpenTileRequest,
+): boolean {
+  return (
+    openFreshElectronTileFromBrowserPage({
+      viewTabId: request.viewTabId,
+      paneId: request.paneId,
+      hostId: request.hostId,
+      url: request.url,
+      runtime: "primary",
+      sessionId: null,
+    }) !== null
+  );
+}
+
+export function openFreshAgentBrowserTileFromBrowserPage(request: {
+  readonly viewTabId: string;
+  readonly paneId: string;
+  readonly hostId: string;
+  readonly sessionId: string;
+  readonly url: string;
+}): AgentBrowserTileRef | null {
+  const tile = openFreshElectronTileFromBrowserPage({
+    viewTabId: request.viewTabId,
+    paneId: request.paneId,
+    hostId: request.hostId,
+    url: request.url,
+    runtime: "isolated",
+    sessionId: request.sessionId,
+  });
+  if (tile === null || tile.type !== "agent-browser") return null;
   return tile;
 }
 

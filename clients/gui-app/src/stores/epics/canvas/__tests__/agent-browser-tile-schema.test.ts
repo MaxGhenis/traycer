@@ -27,12 +27,14 @@ describe("makeAgentBrowserTileRef", () => {
       hostId: HOST,
       url,
       sessionId: null,
+      viewportPreset: "responsive",
     });
     const second = makeAgentBrowserTileRef({
       name: "Agent browser",
       hostId: HOST,
       url,
       sessionId: "shared-session",
+      viewportPreset: "responsive",
     });
 
     expect(first.type).toBe(TILE_KIND_AGENT_BROWSER);
@@ -43,7 +45,7 @@ describe("makeAgentBrowserTileRef", () => {
     expect(first.sessionId).toBe(first.id);
     expect(second.sessionId).toBe("shared-session");
     expect(first.url).toBe(url);
-    expect(first).not.toHaveProperty("viewportPreset");
+    expect(first.viewportPreset).toBe("responsive");
   });
 
   it("exposes the ticket defaults for name and blank URL", () => {
@@ -62,6 +64,7 @@ describe("agentBrowserTileSchema / parseTileRef", () => {
       name: "Agent browser",
       hostId: HOST,
       url: "https://example.com/docs",
+      viewportPreset: "responsive",
     };
 
     expect(
@@ -127,6 +130,7 @@ describe("isAgentBrowserTileRef", () => {
       name: "Agent browser",
       hostId: HOST,
       url: "about:blank",
+      viewportPreset: "responsive",
     };
     const browser: BrowserTileRef = {
       id: "browser-1",

@@ -73,6 +73,7 @@ const NODE: AgentBrowserTileRef = {
   name: "Agent browser",
   hostId: "host-test",
   url: "https://example.com",
+  viewportPreset: "responsive",
 };
 
 class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {

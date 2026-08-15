@@ -33,6 +33,10 @@ interface UseElectronTileChromeArgs {
   readonly canGoBack: boolean;
   readonly canGoForward: boolean;
   readonly zoomPercent: number;
+  readonly persistViewportPreset: (
+    preset: BrowserViewViewportPresetId,
+  ) => void;
+  readonly initialViewportPreset: BrowserViewViewportPresetId;
 }
 
 export interface ElectronTileChrome {
@@ -64,13 +68,15 @@ export function useElectronTileChrome(
     canGoBack,
     canGoForward,
     zoomPercent,
+    persistViewportPreset,
+    initialViewportPreset,
   } = args;
   const [addressDraft, setAddressDraft] = useState<AddressDraft>({
     sourceUrl: null,
     value: "",
   });
   const [viewportPreset, setViewportPreset] =
-    useState<BrowserViewViewportPresetId>("responsive");
+    useState<BrowserViewViewportPresetId>(initialViewportPreset);
   const [downloads, setDownloads] = useState<
     readonly BrowserViewDownloadChange[]
   >([]);
@@ -157,6 +163,7 @@ export function useElectronTileChrome(
 
   const applyViewportPreset = (preset: BrowserViewViewportPresetId): void => {
     setViewportPreset(preset);
+    persistViewportPreset(preset);
     void chromeView
       .setViewportPreset({ ...tileKey, viewportPreset: preset })
       .catch(ignoreChromeError);

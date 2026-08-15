@@ -153,6 +153,7 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
     name: tab.title ?? props.node.name,
     hostId: props.node.hostId,
     url: tab.url,
+    viewportPreset: "responsive",
   };
   return (
     <AgentBrowserTile

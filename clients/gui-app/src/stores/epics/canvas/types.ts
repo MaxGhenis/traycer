@@ -161,8 +161,9 @@ export interface BrowserTileRef {
 }
 
 /**
- * Read-only mirror of a host-owned headless browser session. `sessionId` is the
- * authoritative headless session handle; the tile never forwards page input.
+ * Screencast mirror of a host-owned headless browser session. `sessionId` is
+ * the authoritative headless session handle. The tile can arm page input
+ * over the screencast contract; it is not a read-only surface.
  */
 export interface BrowserPeekTileRef {
   readonly id: string;
@@ -189,10 +190,10 @@ export interface BrowserSessionTileRef {
 
 /**
  * The agent's own browser tab: a real `WebContentsView` in
- * `AGENT_BROWSER_VIEW_PARTITION`, never `persist:traycer-browser`. Unlike
- * `BrowserTileRef`, there is no `viewportPreset` - device-emulation chrome is
- * a driving concern for a later ticket, and this tile always fills its tile
- * at "responsive".
+ * `AGENT_BROWSER_VIEW_PARTITION`, never `persist:traycer-browser`.
+ * `id` is the page-session id used as the Electron tile key's
+ * `pageSessionId`. `sessionId` is the host browser session. Do not
+ * swap those when wiring chrome.
  */
 export interface AgentBrowserTileRef {
   readonly id: string;
@@ -202,6 +203,7 @@ export interface AgentBrowserTileRef {
   readonly name: string;
   readonly hostId: string;
   readonly url: string;
+  readonly viewportPreset: string;
 }
 
 export function makeOpenableNodeRef(args: {

@@ -1,7 +1,6 @@
 /**
  * Schema + factory for the agent's own browser tile. Mirrors `browser-tile.ts`
- * minus `viewportPreset` - device-emulation chrome is a driving concern out
- * of scope until the agent's REPL surface (ticket 04+) exists.
+ * including `viewportPreset` so the shared toolbar can persist device chrome.
  */
 import { v4 as uuidv4 } from "uuid";
 import type { DesktopJsonValue } from "@/lib/windows/types";
@@ -12,6 +11,7 @@ import { readTileInstanceId } from "./instance-id";
 
 export const DEFAULT_AGENT_BROWSER_TILE_NAME = "Agent browser";
 export const DEFAULT_AGENT_BROWSER_TILE_URL = "about:blank";
+export const DEFAULT_AGENT_BROWSER_VIEWPORT_PRESET = "responsive";
 
 function agentBrowserTilePageSessionId(): string {
   return `agent-browser-${uuidv4()}`;
@@ -22,6 +22,7 @@ export function makeAgentBrowserTileRef(args: {
   readonly hostId: string;
   readonly url: string;
   readonly sessionId: string | null;
+  readonly viewportPreset: string;
 }): AgentBrowserTileRef {
   const id = agentBrowserTilePageSessionId();
   return {
@@ -32,6 +33,7 @@ export function makeAgentBrowserTileRef(args: {
     name: args.name,
     hostId: args.hostId,
     url: args.url,
+    viewportPreset: args.viewportPreset,
   };
 }
 
@@ -58,6 +60,10 @@ function parseAgentBrowserTileRef(value: unknown): AgentBrowserTileRef | null {
     name: value.name,
     hostId: value.hostId,
     url: value.url,
+    viewportPreset:
+      typeof value.viewportPreset === "string"
+        ? value.viewportPreset
+        : DEFAULT_AGENT_BROWSER_VIEWPORT_PRESET,
   };
 }
 
@@ -72,6 +78,7 @@ function serializeAgentBrowserTileRef(
     name: ref.name,
     hostId: ref.hostId,
     url: ref.url,
+    viewportPreset: ref.viewportPreset,
   };
 }
 

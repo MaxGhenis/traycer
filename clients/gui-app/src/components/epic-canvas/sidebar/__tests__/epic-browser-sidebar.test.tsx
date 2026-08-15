@@ -609,6 +609,7 @@ describe("BrowsersPanelBody", () => {
       name: "Live page",
       hostId: "host-1",
       url: "https://app.example/live",
+      viewportPreset: "responsive",
     });
     const beforeCount = Object.keys(
       useEpicCanvasStore.getState().canvasByTabId["view-tab-1"]

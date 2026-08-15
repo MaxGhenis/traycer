@@ -38,7 +38,7 @@ import {
   registerElectronBrowserTab,
   updateElectronBrowserTabView,
 } from "@/lib/browser-view/electron-browser-tab-store";
-import { openFreshAgentBrowserTileFromBrowserPage } from "@/lib/browser-view/browser-link-routing-core";
+import { openFreshElectronTileFromBrowserPage } from "@/lib/browser-view/browser-link-routing-core";
 import { useBrowserCookieCryptoState } from "@/lib/browser-view/use-browser-cookie-crypto-state";
 import { appLogger } from "@/lib/logger";
 import { cn } from "@/lib/utils";
@@ -116,7 +116,8 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
       viewTabId: props.viewTabId,
       paneId: props.paneId,
       tileInstanceId: props.node.instanceId,
-      pageSessionId: props.node.id,
+      // pageSessionId is the canvas node id, never host sessionId.
+      pageSessionId: pageSessionIdForAgentTile(props.node.id),
     }),
     [props.viewTabId, props.paneId, props.node.instanceId, props.node.id],
   );
@@ -283,12 +284,13 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
         );
         return;
       }
-      openFreshAgentBrowserTileFromBrowserPage({
+      openFreshElectronTileFromBrowserPage({
         viewTabId: props.viewTabId,
         paneId: props.paneId,
         hostId: props.node.hostId,
         sessionId: props.node.sessionId,
         url: change.url,
+        runtime: usePrimaryProfileRuntime ? "primary" : "isolated",
       });
     });
     return () => {
@@ -302,6 +304,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     props.paneId,
     props.viewTabId,
     tileKey,
+    usePrimaryProfileRuntime,
   ]);
 
   useBrowserViewBoundsBridge({
@@ -318,6 +321,9 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     status: effectiveStatus,
     targetChatId: registrationChatId,
   });
+  const persistViewportPreset = useEpicCanvasStore(
+    (state) => state.updateBrowserTileViewportPresetInTab,
+  );
   const chrome = useElectronTileChrome({
     chromeView: browserView,
     tileKey,
@@ -332,6 +338,14 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     canGoBack,
     canGoForward,
     zoomPercent,
+    persistViewportPreset: (preset) => {
+      persistViewportPreset(
+        props.viewTabId,
+        props.node.instanceId,
+        preset,
+      );
+    },
+    initialViewportPreset: readAgentViewportPreset(props.node.viewportPreset),
   });
 
   return (
@@ -481,6 +495,25 @@ function AgentBrowserTileReason(props: {
       </TooltipWrapper>
     </div>
   );
+}
+
+/** Canvas node id is the Electron tile key's pageSessionId, not host sessionId. */
+function pageSessionIdForAgentTile(nodeId: string): string {
+  return nodeId;
+}
+
+function readAgentViewportPreset(
+  value: string,
+): "responsive" | "mobile" | "tablet" | "desktop" {
+  if (
+    value === "responsive" ||
+    value === "mobile" ||
+    value === "tablet" ||
+    value === "desktop"
+  ) {
+    return value;
+  }
+  return "responsive";
 }
 
 function ignoreAgentBrowserViewError(_error: unknown): void {}

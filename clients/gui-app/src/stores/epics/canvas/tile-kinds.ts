@@ -12,7 +12,7 @@ export const TILE_KIND_BROWSER_SESSION = "browser-session";
 // The agent's own browser tile: a real WebContentsView in a separate,
 // credential-free partition (never `persist:traycer-browser`). Distinct from
 // `browser` (the user's tile, drivable via the old control-grant surface)
-// and `browser-peek` (a read-only screencast mirror).
+// and `browser-peek` (a screencast mirror that can arm page input).
 export const TILE_KIND_AGENT_BROWSER = "agent-browser";
 const TILE_KIND_WORKSPACE_FILE = "workspace-file";
 export const TILE_KIND_GIT_DIFF = "git-diff";

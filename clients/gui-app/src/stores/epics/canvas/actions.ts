@@ -30,6 +30,7 @@ import type {
   TilesByInstanceId,
 } from "./types";
 import {
+  isAgentBrowserTileRef,
   isBlankTileRef,
   isBrowserTileRef,
   isCommGraphTileRef,
@@ -1422,7 +1423,9 @@ export function updateBrowserTileViewportPreset(
 ): EpicCanvasState {
   const current = state.tilesByInstanceId[tileInstanceId];
   if (current === undefined) return state;
-  if (!isBrowserTileRef(current)) return state;
+  if (!isBrowserTileRef(current) && !isAgentBrowserTileRef(current)) {
+    return state;
+  }
   if (current.viewportPreset === viewportPreset) return state;
   return {
     ...state,

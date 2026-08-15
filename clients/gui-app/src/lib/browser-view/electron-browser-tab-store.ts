@@ -9,7 +9,7 @@ import {
   buildCdpResultFrame,
   registerAgentBrowserCdpHandler,
 } from "./agent-browser-cdp-store";
-import { openFreshAgentBrowserTileFromBrowserPage } from "./browser-link-routing-core";
+import { openFreshElectronTileFromBrowserPage } from "./browser-link-routing-core";
 import type {
   AgentBrowserViewCdpDispatch,
   AgentBrowserViewCdpResult,
@@ -231,41 +231,7 @@ export function handleElectronBrowserTabFrame(
     return true;
   }
   if (frame.kind === "createElectronTab") {
-    if (frame.background === true) {
-      return handleBackgroundElectronTabCreate(frame);
-    }
-    const source = findElectronBrowserTabBinding(
-      frame.sessionId,
-      frame.sourceTabId,
-    );
-    if (source === null) return false;
-    const tile = openFreshAgentBrowserTileFromBrowserPage({
-      viewTabId: source.tileKey.viewTabId,
-      paneId: source.tileKey.paneId,
-      hostId: source.hostId,
-      sessionId: frame.sessionId,
-      url: frame.url,
-    });
-    if (tile === null) {
-      sendForRecord(source, {
-        kind: "electronTabCreated",
-        hasBinaryPayload: false,
-        requestId: frame.requestId,
-        sessionId: frame.sessionId,
-        tabId: null,
-        reason: "The source browser tile is no longer available.",
-      });
-      return true;
-    }
-    createRequestsByRegistrationKey.set(
-      registrationKey(frame.sessionId, tile.id),
-      {
-        requestId: frame.requestId,
-        ready: Promise.resolve(),
-        startedAt: Date.now(),
-      },
-    );
-    return true;
+    return handleCreateElectronTab(frame);
   }
   if (frame.kind === "releaseElectronTab") {
     releaseElectronTab(frame);
@@ -457,6 +423,47 @@ function handleElectronTabRegistrationFailed(
     }
   }
   record?.onActivatedHeadless?.(frame.tabId);
+}
+
+function handleCreateElectronTab(
+  frame: Extract<BrowserSessionsServerFrame, { kind: "createElectronTab" }>,
+): boolean {
+  if (frame.background === true) {
+    return handleBackgroundElectronTabCreate(frame);
+  }
+  const source = findElectronBrowserTabBinding(
+    frame.sessionId,
+    frame.sourceTabId,
+  );
+  if (source === null) return false;
+  const tile = openFreshElectronTileFromBrowserPage({
+    viewTabId: source.tileKey.viewTabId,
+    paneId: source.tileKey.paneId,
+    hostId: source.hostId,
+    sessionId: frame.sessionId,
+    url: frame.url,
+    runtime: source.background === true ? "primary" : "isolated",
+  });
+  if (tile === null) {
+    sendForRecord(source, {
+      kind: "electronTabCreated",
+      hasBinaryPayload: false,
+      requestId: frame.requestId,
+      sessionId: frame.sessionId,
+      tabId: null,
+      reason: "The source browser tile is no longer available.",
+    });
+    return true;
+  }
+  createRequestsByRegistrationKey.set(
+    registrationKey(frame.sessionId, tile.id),
+    {
+      requestId: frame.requestId,
+      ready: Promise.resolve(),
+      startedAt: Date.now(),
+    },
+  );
+  return true;
 }
 
 function handleBackgroundElectronTabCreate(
