@@ -71,11 +71,6 @@ import {
   type EpicCanvasState,
 } from "@/stores/epics/canvas/types";
 import {
-  applyPipBurstEnded,
-  applyPipBurstStarted,
-  applyPipHostLifecycle,
-} from "@/lib/browser-view/pip-store";
-import {
   BrowserSessionsContext,
   useBrowserSessionsContext,
   type BrowserSessionsLifecycle,
@@ -717,20 +712,24 @@ function useBrowserSessions(
       binaryPayload: Uint8Array | null,
     ) => void;
   } | null>(null);
-  const pendingPromotesRef = useRef<Map<
-    string,
-    {
-      readonly resolve: (frame: PromoteStateFrame) => void;
-      readonly reject: (error: Error) => void;
-    }
-  >>(new Map());
-  const pendingLendsRef = useRef<Map<
-    string,
-    {
-      readonly resolve: (frame: LendResultFrame) => void;
-      readonly reject: (error: Error) => void;
-    }
-  >>(new Map());
+  const pendingPromotesRef = useRef<
+    Map<
+      string,
+      {
+        readonly resolve: (frame: PromoteStateFrame) => void;
+        readonly reject: (error: Error) => void;
+      }
+    >
+  >(new Map());
+  const pendingLendsRef = useRef<
+    Map<
+      string,
+      {
+        readonly resolve: (frame: LendResultFrame) => void;
+        readonly reject: (error: Error) => void;
+      }
+    >
+  >(new Map());
   const [streamState, setStreamState] = useState<BrowserSessionsRenderState>(
     () => ({
       client: null,
@@ -741,11 +740,7 @@ function useBrowserSessions(
   );
 
   useEffect(() => {
-    if (
-      hostId === null ||
-      chatId === null ||
-      readyOwner?.hostId !== hostId
-    ) {
+    if (hostId === null || chatId === null || readyOwner?.hostId !== hostId) {
       sessionRef.current = null;
       return;
     }
@@ -801,7 +796,6 @@ function useBrowserSessions(
         }
       }
       const lifecycle = browserSessionsLifecycle(status, reason);
-      applyPipHostLifecycle(epicId, hostId, lifecycle);
       setStreamState((current) => ({
         client,
         items: current.client === client ? current.items : [],
@@ -815,8 +809,6 @@ function useBrowserSessions(
       const parsed = browserSessionsServerFrameSchema.safeParse(envelope);
       if (!parsed.success) return;
       handleBrowserSessionsFrame({
-        epicId,
-        hostId,
         frame: parsed.data,
         setItems: (value) => {
           setStreamState((current) => {
@@ -995,38 +987,7 @@ function handleBrowserSessionRequestFrame(args: {
   return false;
 }
 
-function handlePipBurstFrame(
-  epicId: string,
-  hostId: string,
-  frame: BrowserSessionsServerFrame,
-): boolean {
-  if (frame.kind === "burstStarted") {
-    applyPipBurstStarted({
-      epicId,
-      hostId,
-      sessionId: frame.sessionId,
-      tabId: frame.tabId,
-      burstId: frame.burstId,
-      chatId: frame.chatId,
-      startedAt: undefined,
-    });
-    return true;
-  }
-  if (frame.kind === "burstEnded") {
-    applyPipBurstEnded({
-      epicId,
-      burstId: frame.burstId,
-      outcome: frame.outcome,
-      endedAt: undefined,
-    });
-    return true;
-  }
-  return false;
-}
-
 function handleBrowserSessionsFrame(args: {
-  readonly epicId: string;
-  readonly hostId: string;
   readonly frame: BrowserSessionsServerFrame;
   readonly setItems: Dispatch<SetStateAction<readonly BrowserSessionInfo[]>>;
   readonly pendingPromotes: Map<
@@ -1046,7 +1007,6 @@ function handleBrowserSessionsFrame(args: {
   readonly browserView: DesktopBrowserViewBridge | null;
   readonly sendClientFrame: (frame: BrowserSessionsClientFrame) => void;
 }): void {
-  if (handlePipBurstFrame(args.epicId, args.hostId, args.frame)) return;
   if (handleElectronBrowserTabFrame(args.frame)) return;
   if (
     handlePrimaryProfileCaptureFrame({

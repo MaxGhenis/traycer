@@ -63,6 +63,11 @@ vi.mock("@/providers/epic-session-provider", () => ({
  * Ready-scope BrowserSessionsProvider stand-in: proves ReadyEpicBrowserSessionsScope
  * mounts it (and can publish sessions) without pulling in the host stream stack.
  */
+vi.mock("@/lib/browser-view/use-pip-epic-sessions", () => ({
+  PipEpicSessionsFeed: () => null,
+  usePipEpicSessionsFeed: () => undefined,
+}));
+
 vi.mock("@/components/epic-canvas/renderers/browser-session-dock", async () => {
   const { BrowserSessionsContext } =
     await import("@/components/epic-canvas/renderers/browser-sessions-context");

@@ -56,6 +56,11 @@ const activeHostClient = vi.hoisted(() => ({
     hostId === activeHostEntry.hostId ? activeHostEntry : null,
 }));
 
+vi.mock("@/lib/browser-view/use-pip-epic-sessions", () => ({
+  PipEpicSessionsFeed: () => null,
+  usePipEpicSessionsFeed: () => undefined,
+}));
+
 vi.mock("@/lib/host/use-durable-stream-transport", () => ({
   useDurableStreamTransportFactory: () => () => {
     throw new Error("the Epic stream override must prevent socket creation");

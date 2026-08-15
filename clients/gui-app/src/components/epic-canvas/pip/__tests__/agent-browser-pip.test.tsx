@@ -27,8 +27,17 @@ import {
   setPipActiveHostId,
   setPipNowForTests,
 } from "@/lib/browser-view/pip-store";
+import {
+  getPipEpicSessionItems,
+  resetPipEpicSessionsForTests,
+  setPipEpicSessionItemsForTests,
+} from "@/lib/browser-view/pip-epic-sessions";
 import { resetVisibleBrowserTileRegistryForTests } from "@/lib/browser-view/visible-tile-registry";
-import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import {
+  findOpenArtifactInTab,
+  useEpicCanvasStore,
+} from "@/stores/epics/canvas/store";
+import { makeBrowserSessionTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
 
 const EPIC = "epic-1";
 const VIEW_TAB = "view-tab-1";
@@ -160,44 +169,46 @@ function session(
 }
 
 function seedSessions(): void {
+  const items = [
+    session({
+      sessionId: "s1",
+      name: "Main",
+      tabs: [
+        tab({
+          tabId: "t1",
+          url: "https://checkout.stripe.com/pay",
+          title: "Checkout - Stripe",
+        }),
+      ],
+    }),
+    session({
+      sessionId: "s2",
+      name: "Other",
+      tabs: [
+        tab({
+          tabId: "t2",
+          url: "https://app.example/other",
+          title: "Other tab",
+        }),
+      ],
+    }),
+    session({
+      sessionId: "s3",
+      name: "Third",
+      tabs: [
+        tab({
+          tabId: "t3",
+          url: "https://app.example/third",
+          title: "Third tab",
+        }),
+      ],
+    }),
+  ];
   sessionsState.value = {
     ...sessionsState.value,
-    items: [
-      session({
-        sessionId: "s1",
-        name: "Main",
-        tabs: [
-          tab({
-            tabId: "t1",
-            url: "https://checkout.stripe.com/pay",
-            title: "Checkout - Stripe",
-          }),
-        ],
-      }),
-      session({
-        sessionId: "s2",
-        name: "Other",
-        tabs: [
-          tab({
-            tabId: "t2",
-            url: "https://app.example/other",
-            title: "Other tab",
-          }),
-        ],
-      }),
-      session({
-        sessionId: "s3",
-        name: "Third",
-        tabs: [
-          tab({
-            tabId: "t3",
-            url: "https://app.example/third",
-            title: "Third tab",
-          }),
-        ],
-      }),
-    ],
+    items,
   };
+  setPipEpicSessionItemsForTests(EPIC, items);
 }
 
 function startBurst(input: {
@@ -244,15 +255,14 @@ function seedCanvasTab(): void {
 }
 
 function renderPip(): void {
-  render(
-    <AgentBrowserPip epicId={EPIC} viewTabId={VIEW_TAB} surfaceVisible />,
-  );
+  render(<AgentBrowserPip epicId={EPIC} viewTabId={VIEW_TAB} surfaceVisible />);
 }
 
 describe("AgentBrowserPip", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     resetPipStoreForTests();
+    resetPipEpicSessionsForTests();
     resetVisibleBrowserTileRegistryForTests();
     setPipNowForTests(() => Date.now());
     setPipActiveHostId("host-a");
@@ -268,6 +278,7 @@ describe("AgentBrowserPip", () => {
   afterEach(() => {
     cleanup();
     resetPipStoreForTests();
+    resetPipEpicSessionsForTests();
     resetVisibleBrowserTileRegistryForTests();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     vi.useRealTimers();
@@ -292,7 +303,9 @@ describe("AgentBrowserPip", () => {
     expect(screen.getByText("Checkout - Stripe")).toBeTruthy();
     expect(screen.getByText("fix-billing")).toBeTruthy();
     expect(
-      screen.getByTestId("agent-browser-pip-pulse").getAttribute("data-pip-pulse"),
+      screen
+        .getByTestId("agent-browser-pip-pulse")
+        .getAttribute("data-pip-pulse"),
     ).toBe("live");
   });
 
@@ -313,7 +326,9 @@ describe("AgentBrowserPip", () => {
       "Agent finished on checkout.stripe.com",
     );
     expect(
-      screen.getByTestId("agent-browser-pip-pulse").getAttribute("data-pip-pulse"),
+      screen
+        .getByTestId("agent-browser-pip-pulse")
+        .getAttribute("data-pip-pulse"),
     ).toBe("off");
   });
 
@@ -338,9 +353,9 @@ describe("AgentBrowserPip", () => {
 
     fireEvent.click(screen.getByTestId("agent-browser-pip-chip"));
     expect(getPipSnapshot(EPIC).phase).toBe("finished");
-    expect(screen.getByTestId("agent-browser-pip").getAttribute("data-pip-phase")).toBe(
-      "finished",
-    );
+    expect(
+      screen.getByTestId("agent-browser-pip").getAttribute("data-pip-phase"),
+    ).toBe("finished");
   });
 
   it("dismisses the chip", () => {
@@ -476,12 +491,120 @@ describe("AgentBrowserPip", () => {
     expect(image?.getAttribute("src")).toBe("blob:pip-frame");
     expect(pipCaptureState.start).toHaveBeenCalled();
   });
+
+  it("shows the host label when the displayed burst is not on the active host", () => {
+    const hostB = session({
+      sessionId: "s-b",
+      name: "Remote",
+      hostId: "host-b",
+      tabs: [
+        tab({
+          tabId: "t-b",
+          url: "https://devbox.example/pay",
+          title: "Remote checkout",
+        }),
+      ],
+    });
+    setPipEpicSessionItemsForTests(EPIC, [
+      ...getPipEpicSessionItems(EPIC),
+      hostB,
+    ]);
+    applyPipBurstStarted({
+      epicId: EPIC,
+      hostId: "host-b",
+      sessionId: "s-b",
+      tabId: "t-b",
+      burstId: "burst-b",
+      chatId: "chat-1",
+      startedAt: 1,
+    });
+    renderPip();
+
+    const root = screen.getByTestId("agent-browser-pip");
+    expect(root.getAttribute("data-pip-host-id")).toBe("host-b");
+    expect(screen.getByText("Remote checkout")).toBeTruthy();
+    expect(screen.getByText("fix-billing · devbox")).toBeTruthy();
+  });
+
+  it("does not show a host label for an active-host burst", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    renderPip();
+
+    expect(
+      screen.getByTestId("agent-browser-pip").getAttribute("data-pip-host-id"),
+    ).toBe("host-a");
+    expect(screen.getByText("fix-billing")).toBeTruthy();
+    expect(screen.queryByText(/devbox/)).toBeNull();
+  });
+
+  it("opens a canvas tile bound to the burst host on click-through", () => {
+    const hostB = session({
+      sessionId: "s-b",
+      name: "Remote",
+      hostId: "host-b",
+      tabs: [
+        tab({
+          tabId: "t-b",
+          url: "https://devbox.example/pay",
+          title: "Remote checkout",
+        }),
+      ],
+    });
+    setPipEpicSessionItemsForTests(EPIC, [
+      ...getPipEpicSessionItems(EPIC),
+      hostB,
+    ]);
+    applyPipBurstStarted({
+      epicId: EPIC,
+      hostId: "host-b",
+      sessionId: "s-b",
+      tabId: "t-b",
+      burstId: "burst-b",
+      chatId: "chat-1",
+      startedAt: 1,
+    });
+    renderPip();
+
+    fireEvent.click(screen.getByTestId("agent-browser-pip-open"));
+
+    expect(navigateNested).toHaveBeenCalledWith(
+      EPIC,
+      VIEW_TAB,
+      expect.any(Function),
+    );
+    const expected = makeBrowserSessionTileRef({
+      name: "Remote checkout",
+      hostId: "host-b",
+      sessionId: "s-b",
+      tabId: "t-b",
+    });
+    const opened = findOpenArtifactInTab(VIEW_TAB, expected.id);
+    expect(opened).not.toBeNull();
+    if (opened === null) throw new Error("expected open browser pointer");
+    const tile =
+      useEpicCanvasStore.getState().canvasByTabId[VIEW_TAB]?.tilesByInstanceId[
+        opened.instanceId
+      ];
+    expect(tile).toMatchObject({
+      type: "browser-session",
+      hostId: "host-b",
+      sessionId: "s-b",
+      tabId: "t-b",
+      id: expected.id,
+    });
+  });
 });
 
 describe("AgentBrowserPip captions", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     resetPipStoreForTests();
+    resetPipEpicSessionsForTests();
     resetVisibleBrowserTileRegistryForTests();
     setPipNowForTests(() => Date.now());
     setPipActiveHostId("host-a");
@@ -497,6 +620,7 @@ describe("AgentBrowserPip captions", () => {
   afterEach(() => {
     cleanup();
     resetPipStoreForTests();
+    resetPipEpicSessionsForTests();
     resetVisibleBrowserTileRegistryForTests();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     vi.useRealTimers();
@@ -539,9 +663,9 @@ describe("AgentBrowserPip captions", () => {
     });
     renderPip();
     expect(
-      screen.getByTestId("agent-browser-pip-caption").getAttribute(
-        "data-pip-caption-visible",
-      ),
+      screen
+        .getByTestId("agent-browser-pip-caption")
+        .getAttribute("data-pip-caption-visible"),
     ).toBe("true");
 
     act(() => {

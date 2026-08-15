@@ -10,7 +10,6 @@ import {
 } from "react";
 import { Maximize2, X } from "lucide-react";
 import type { BrowserScreencastServerFrame } from "@traycer/protocol/host/browser/contracts";
-import { useBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
@@ -29,6 +28,10 @@ import {
   PIP_RESIZE_STEP_PX,
   readViewportSize,
 } from "@/lib/browser-view/pip-geometry";
+import {
+  findPipEpicSession,
+  usePipEpicSessionItems,
+} from "@/lib/browser-view/pip-epic-sessions";
 import { pipGoneTabCopy, pipOutcomeLine } from "@/lib/browser-view/pip-copy";
 import {
   applyPipStreamHealth,
@@ -99,8 +102,7 @@ function AgentBrowserPipSurface(props: {
   const setPipGeometry = useEpicCanvasStore((state) => state.setPipGeometry);
   const [viewport, setViewport] = useState(readViewportSize);
   const geometry = useMemo(
-    () =>
-      clampPipGeometry(persisted ?? defaultPipGeometry(viewport), viewport),
+    () => clampPipGeometry(persisted ?? defaultPipGeometry(viewport), viewport),
     [persisted, viewport],
   );
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -128,16 +130,19 @@ function AgentBrowserPipSurface(props: {
     [epicId, setPipGeometry],
   );
 
-  const applyLiveGeometry = useCallback((next: EpicPipGeometry) => {
-    const node = rootRef.current;
-    if (node === null) return;
-    const clamped = clampPipGeometry(next, readViewportSize());
-    node.style.left = `${String(clamped.x)}px`;
-    node.style.top = `${String(clamped.y)}px`;
-    node.style.width = `${String(clamped.width)}px`;
-    node.style.height =
-      snapshot.phase === "chip" ? "auto" : `${String(clamped.height)}px`;
-  }, [snapshot.phase]);
+  const applyLiveGeometry = useCallback(
+    (next: EpicPipGeometry) => {
+      const node = rootRef.current;
+      if (node === null) return;
+      const clamped = clampPipGeometry(next, readViewportSize());
+      node.style.left = `${String(clamped.x)}px`;
+      node.style.top = `${String(clamped.y)}px`;
+      node.style.width = `${String(clamped.width)}px`;
+      node.style.height =
+        snapshot.phase === "chip" ? "auto" : `${String(clamped.height)}px`;
+    },
+    [snapshot.phase],
+  );
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLElement>, mode: "move" | "resize") => {
@@ -164,7 +169,10 @@ function AgentBrowserPipSurface(props: {
       if (drag === null || drag.pointerId !== event.pointerId) return;
       const dx = event.clientX - drag.startX;
       const dy = event.clientY - drag.startY;
-      if (Math.abs(dx) > PIP_DRAG_CLICK_SLOP_PX || Math.abs(dy) > PIP_DRAG_CLICK_SLOP_PX) {
+      if (
+        Math.abs(dx) > PIP_DRAG_CLICK_SLOP_PX ||
+        Math.abs(dy) > PIP_DRAG_CLICK_SLOP_PX
+      ) {
         drag.moved = true;
       }
       if (drag.mode === "move") {
@@ -213,9 +221,7 @@ function AgentBrowserPipSurface(props: {
       if (event.key === "Home") {
         event.preventDefault();
         const corner = nextPipCorner(geometry, readViewportSize());
-        commitGeometry(
-          geometryForCorner(corner, geometry, readViewportSize()),
-        );
+        commitGeometry(geometryForCorner(corner, geometry, readViewportSize()));
         return;
       }
       if (event.key === "Escape") {
@@ -274,6 +280,7 @@ function AgentBrowserPipSurface(props: {
       data-browser-overlay-id={overlayId}
       data-pip-phase={snapshot.phase}
       data-pip-burst-id={snapshot.target?.burstId ?? ""}
+      data-pip-host-id={snapshot.target?.hostId ?? ""}
       data-pip-outcome={snapshot.outcome ?? ""}
       data-pip-health={snapshot.streamHealth}
       data-pip-open-enabled={snapshot.openTileEnabled ? "true" : "false"}
@@ -323,7 +330,7 @@ function PipChip(props: {
   readonly onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
 }): ReactElement {
-  const meta = usePipTargetMeta(props.snapshot.target);
+  const meta = usePipTargetMeta(props.epicId, props.snapshot.target);
   const line = pipOutcomeLine(props.snapshot.outcome, meta.site);
   return (
     <div className="flex items-center gap-1.5 py-1 pr-1 pl-2">
@@ -339,7 +346,9 @@ function PipChip(props: {
         }}
       >
         <PipFavicon url={meta.faviconUrl} />
-        <span className="truncate text-ui-xs text-muted-foreground">{line}</span>
+        <span className="truncate text-ui-xs text-muted-foreground">
+          {line}
+        </span>
       </button>
       <button
         type="button"
@@ -366,10 +375,11 @@ function PipExpanded(props: {
   readonly onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
 }): ReactElement {
   const { snapshot } = props;
-  const meta = usePipTargetMeta(snapshot.target);
+  const meta = usePipTargetMeta(props.epicId, snapshot.target);
   const frameSrc = usePipNativeFrame(props.epicId, snapshot);
   const openTile = useOpenPipTarget(props.epicId, props.viewTabId);
-  const livePulse = snapshot.phase === "live" && snapshot.streamHealth === "live";
+  const livePulse =
+    snapshot.phase === "live" && snapshot.streamHealth === "live";
   const attribution = [meta.agentName, meta.hostLabel].filter(
     (part): part is string => part !== null && part.length > 0,
   );
@@ -442,7 +452,7 @@ function PipExpanded(props: {
       >
         {frameSrc === null ? (
           <div className="flex h-full items-center justify-center text-ui-xs text-muted-foreground">
-            {gone ? pipGoneTabCopy() : meta.site ?? "Waiting for frames"}
+            {gone ? pipGoneTabCopy() : (meta.site ?? "Waiting for frames")}
           </div>
         ) : (
           <img
@@ -566,34 +576,36 @@ function PipFavicon(props: { readonly url: string | null }): ReactElement {
   );
 }
 
-function usePipTargetMeta(target: PipTarget | null): {
+function usePipTargetMeta(
+  epicId: string,
+  target: PipTarget | null,
+): {
   readonly title: string;
   readonly site: string | null;
   readonly faviconUrl: string | null;
   readonly agentName: string;
   readonly hostLabel: string | null;
 } {
-  const sessions = useBrowserSessionsContext();
+  const items = usePipEpicSessionItems(epicId);
   const chats = useEpicChatRecords();
   const activeHostId = useReactiveActiveHostId();
   const hostEntry = useHostDirectoryEntry(target?.hostId ?? "");
   const tab =
     target === null
       ? undefined
-      : sessions.items
-          .find((session) => session.sessionId === target.sessionId)
-          ?.tabs.find((item) => item.tabId === target.tabId);
+      : findPipEpicSession(items, target.hostId, target.sessionId)?.tabs.find(
+          (item) => item.tabId === target.tabId,
+        );
   const title = tab === undefined ? "Browser" : resolveTabTitle(tab);
   const site = tab === undefined ? null : browserTabHostname(tab.url);
   const faviconUrl = tab === undefined ? null : browserTabFaviconUrl(tab.url);
   const chatTitle =
     target === null
       ? ""
-      : (chats.find((chat) => chat.id === target.chatId)?.title ?? target.chatId);
+      : (chats.find((chat) => chat.id === target.chatId)?.title ??
+        target.chatId);
   const hostLabel =
-    target !== null &&
-    activeHostId !== null &&
-    target.hostId !== activeHostId
+    target !== null && activeHostId !== null && target.hostId !== activeHostId
       ? (hostEntry?.label ?? target.hostId)
       : null;
   return {
@@ -605,10 +617,7 @@ function usePipTargetMeta(target: PipTarget | null): {
   };
 }
 
-function useOpenPipTarget(
-  epicId: string,
-  viewTabId: string,
-): () => void {
+function useOpenPipTarget(epicId: string, viewTabId: string): () => void {
   const navigateNested = useEpicNestedFocusNavigation();
   const prepareOpen = useEpicCanvasStore(
     (state) => state.prepareOpenTileInTabFocusTarget,
@@ -616,29 +625,23 @@ function useOpenPipTarget(
   const prepareFocus = useEpicCanvasStore(
     (state) => state.prepareSetActiveTileTabFocusTarget,
   );
-  const sessions = useBrowserSessionsContext();
+  const items = usePipEpicSessionItems(epicId);
   return useCallback(() => {
     const latch = getPipSnapshot(epicId).target;
     if (latch === null) return;
     if (!getPipSnapshot(epicId).openTileEnabled) return;
-    const session = sessions.items.find(
-      (item) => item.sessionId === latch.sessionId,
-    );
+    const session = findPipEpicSession(items, latch.hostId, latch.sessionId);
     const tab = session?.tabs.find((item) => item.tabId === latch.tabId);
-    if (session === undefined || tab === undefined) return;
-    const binding = findElectronBrowserTabBinding(
-      latch.sessionId,
-      latch.tabId,
-    );
+    const binding = findElectronBrowserTabBinding(latch.sessionId, latch.tabId);
     const existingNative =
       binding === null
         ? null
         : findOpenArtifactInTab(viewTabId, binding.registrationId);
     const tile = makeBrowserSessionTileRef({
-      name: tab.title ?? session.name,
-      hostId: session.hostId,
-      sessionId: session.sessionId,
-      tabId: tab.tabId,
+      name: tab?.title ?? session?.name ?? "Browser",
+      hostId: latch.hostId,
+      sessionId: latch.sessionId,
+      tabId: latch.tabId,
     });
     const existingPointer = findOpenArtifactInTab(viewTabId, tile.id);
     const existing = existingNative ?? existingPointer;
@@ -647,14 +650,7 @@ function useOpenPipTarget(
         ? prepareOpen(viewTabId, tile)
         : prepareFocus(viewTabId, existing.paneId, existing.instanceId),
     );
-  }, [
-    epicId,
-    navigateNested,
-    prepareFocus,
-    prepareOpen,
-    sessions.items,
-    viewTabId,
-  ]);
+  }, [epicId, items, navigateNested, prepareFocus, prepareOpen, viewTabId]);
 }
 
 function usePipNativeFrame(

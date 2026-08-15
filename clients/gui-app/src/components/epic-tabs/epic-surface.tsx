@@ -10,6 +10,7 @@ import { EpicViewTabContext } from "@/components/epic-canvas/view-tab-context";
 import { useTabSurfaceActivity } from "@/components/layout/tab-surface-activity-hooks";
 import { EpicSessionProvider } from "@/providers/epic-session-provider";
 import { AgentBrowserPip } from "@/components/epic-canvas/pip/agent-browser-pip";
+import { PipEpicSessionsFeed } from "@/lib/browser-view/use-pip-epic-sessions";
 import { BrowserSessionsProvider } from "@/components/epic-canvas/renderers/browser-session-dock";
 import {
   BrowserSessionsContext,
@@ -129,6 +130,7 @@ function ReadyEpicBrowserSessionsScope(props: {
       epicId={props.epicId}
       routingChatId={routingChatId}
     >
+      <PipEpicSessionsFeed epicId={props.epicId} />
       {props.children}
     </BrowserSessionsProvider>
   );
