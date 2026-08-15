@@ -3,39 +3,16 @@ import {
   useMemo,
   useRef,
   useState,
-  type ComponentType,
   type SyntheticEvent,
 } from "react";
 import {
   AlertTriangle,
-  ArrowLeft,
-  ArrowRight,
-  Bug,
-  Info,
-  Monitor,
-  RotateCw,
   ShieldCheck,
-  Smartphone,
   Square,
-  Tablet,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-react";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { BROWSER_VIEW_SURFACE_ATTRIBUTE } from "@/lib/browser-view/browser-overlay-coordinator";
 import { browserCookieDegradedMessage } from "@/lib/browser-view/browser-cookie-degraded-message";
 import { selectSiblingChatIdForBrowserTile } from "@/lib/browser-view/browser-tile-chat-routing";
@@ -74,12 +51,11 @@ import { useSettingsStore } from "@/stores/settings/settings-store";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import type { BrowserTileRef } from "@/stores/epics/canvas/types";
 import { BrowserDebugPanels } from "@/components/epic-canvas/renderers/browser-debug-panels";
-import {
-  BrowserElementPickerResultPanel,
-  BrowserElementPickerToggle,
-} from "@/components/epic-canvas/renderers/browser-element-picker";
+import { BrowserElementPickerResultPanel } from "@/components/epic-canvas/renderers/browser-element-picker";
+import { BrowserTileToolbar } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
 import { useBrowserElementPicker } from "@/components/epic-canvas/renderers/use-browser-element-picker";
 import { BrowserTileFindAdapterBridge } from "@/components/epic-canvas/renderers/browser-tile-find-adapter";
+import { PRIMARY_TILE_CHROME_CAPABILITIES } from "@/components/epic-canvas/renderers/tile-controller";
 import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
 import { BrowserViewSnapshotLayer } from "@/components/epic-canvas/renderers/browser-view-snapshot-layer";
 import { useBrowserViewSnapshot } from "@/components/epic-canvas/renderers/use-browser-view-snapshot";
@@ -119,38 +95,6 @@ type BrowserTileSensitiveActionPrompt = {
  */
 /** Exported for tests that assert the local approval window stays under host wait. */
 export const SENSITIVE_ACTION_APPROVAL_WINDOW_MS = 20_000;
-
-const BROWSER_VIEWPORT_PRESETS: ReadonlyArray<{
-  readonly id: BrowserViewViewportPresetId;
-  readonly label: string;
-  readonly description: string;
-  readonly Icon: ComponentType<{ readonly className?: string }>;
-}> = [
-  {
-    id: "responsive",
-    label: "Responsive",
-    description: "Fill tile",
-    Icon: Monitor,
-  },
-  {
-    id: "mobile",
-    label: "Mobile",
-    description: "390 x 844",
-    Icon: Smartphone,
-  },
-  {
-    id: "tablet",
-    label: "Tablet",
-    description: "820 x 1180",
-    Icon: Tablet,
-  },
-  {
-    id: "desktop",
-    label: "Desktop",
-    description: "1440 x 900",
-    Icon: Monitor,
-  },
-];
 
 export function BrowserTile(props: BrowserTileProps) {
   const hostId = useTabHostId();
@@ -774,112 +718,35 @@ export function BrowserTile(props: BrowserTileProps) {
         browserView={browserView}
         tileKey={tileKey}
       />
-      <div className="flex min-h-0 items-center gap-2 border-b border-border px-2 py-1.5 text-ui-sm">
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Back"
-            disabled={browserView === null || !canGoBack}
-            onClick={goBack}
-          >
-            <ArrowLeft />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Forward"
-            disabled={browserView === null || !canGoForward}
-            onClick={goForward}
-          >
-            <ArrowRight />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Reload"
-            disabled={browserView === null}
-            onClick={reload}
-          >
-            <RotateCw />
-          </Button>
-        </div>
-        <form
-          className="flex min-w-0 flex-1 items-center gap-2"
-          onSubmit={navigateToAddress}
-        >
-          <BrowserSiteInfoButton
-            url={props.node.url}
-            cookieCryptoState={cookieCryptoState}
-          />
-          <Input
-            aria-label="Browser address"
-            value={addressValue}
-            onChange={(event) => {
-              setAddressDraft({
-                sourceUrl: props.node.url,
-                value: event.target.value,
-              });
-            }}
-            className="h-7 min-w-0 flex-1 truncate font-mono text-ui-sm"
-            spellCheck={false}
-          />
-        </form>
-        <div className="flex shrink-0 items-center gap-1 border-l border-border pl-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Zoom out"
-            disabled={browserView === null}
-            onClick={zoomOut}
-          >
-            <ZoomOut />
-          </Button>
-          <button
-            type="button"
-            aria-label="Reset zoom"
-            className="w-12 rounded-sm px-1 py-1 text-center text-ui-xs tabular-nums text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-            disabled={browserView === null}
-            onClick={resetZoom}
-          >
-            {zoomPercent}%
-          </button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Zoom in"
-            disabled={browserView === null}
-            onClick={zoomIn}
-          >
-            <ZoomIn />
-          </Button>
-        </div>
-        <div className="flex shrink-0 items-center gap-1 border-l border-border pl-2">
-          <BrowserViewportPresetMenu
-            value={readBrowserViewportPreset(props.node.viewportPreset)}
-            disabled={browserView === null}
-            onChange={setViewportPreset}
-          />
-          <BrowserElementPickerToggle controller={elementPicker} />
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1.5 px-2 text-ui-xs"
-            aria-label="Open browser DevTools"
-            disabled={browserView === null}
-            onClick={openDevTools}
-          >
-            <Bug className="size-3.5" />
-            DevTools
-          </Button>
-        </div>
-      </div>
+      <BrowserTileToolbar
+        controller={{
+          capabilities: PRIMARY_TILE_CHROME_CAPABILITIES,
+          url: props.node.url,
+          addressValue,
+          canGoBack,
+          canGoForward,
+          zoomPercent,
+          viewportPreset: readBrowserViewportPreset(props.node.viewportPreset),
+          disabled: browserView === null,
+          cookieCryptoState,
+          elementPicker,
+          onNavigate: navigateToAddress,
+          onAddressChange: (value) => {
+            setAddressDraft({
+              sourceUrl: props.node.url,
+              value,
+            });
+          },
+          onBack: goBack,
+          onForward: goForward,
+          onReload: reload,
+          onZoomOut: zoomOut,
+          onZoomIn: zoomIn,
+          onResetZoom: resetZoom,
+          onViewportPresetChange: setViewportPreset,
+          onOpenDevTools: openDevTools,
+        }}
+      />
       {cookieCryptoState?.mode === "degraded" ? (
         <BrowserCookieDegradedBanner cryptoState={cookieCryptoState} />
       ) : null}
@@ -1109,143 +976,6 @@ function BrowserTileControlBanner(props: {
       </Button>
     </div>
   );
-}
-
-function BrowserViewportPresetMenu(props: {
-  readonly value: BrowserViewViewportPresetId;
-  readonly disabled: boolean;
-  readonly onChange: (preset: BrowserViewViewportPresetId) => void;
-}) {
-  const current =
-    BROWSER_VIEWPORT_PRESETS.find((preset) => preset.id === props.value) ??
-    BROWSER_VIEWPORT_PRESETS[0];
-  const CurrentIcon = current.Icon;
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 gap-1.5 px-2 text-ui-xs"
-          aria-label="Browser viewport preset"
-          disabled={props.disabled}
-        >
-          <CurrentIcon className="size-3.5" />
-          <span className="hidden sm:inline">{current.label}</span>
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[min(80vw,13rem)]">
-        {BROWSER_VIEWPORT_PRESETS.map((preset) => {
-          const Icon = preset.Icon;
-          return (
-            <DropdownMenuItem
-              key={preset.id}
-              className="gap-2"
-              onSelect={() => props.onChange(preset.id)}
-            >
-              <Icon className="size-4" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-ui-sm">
-                  {preset.label}
-                </span>
-                <span className="block truncate text-ui-xs text-muted-foreground">
-                  {preset.description}
-                </span>
-              </span>
-            </DropdownMenuItem>
-          );
-        })}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function BrowserSiteInfoButton(props: {
-  readonly url: string;
-  readonly cookieCryptoState: BrowserCookieCryptoState | null;
-}) {
-  const isWebOrigin = isWebOriginUrl(props.url);
-  const inAppBrowserBetaEnabled = useSettingsStore(
-    (state) => state.inAppBrowserBetaEnabled,
-  );
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Site information"
-          className="shrink-0"
-        >
-          <Info />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 space-y-3 text-ui-sm">
-        <BrowserSiteInfoRow
-          title={isWebOrigin ? "Web page" : "Local page"}
-          detail={
-            isWebOrigin
-              ? "Served over the network from this page's origin."
-              : "Not loaded from a web address (for example, a blank tab or an internal page)."
-          }
-        />
-        {props.cookieCryptoState === null ? null : (
-          <BrowserSiteInfoRow
-            title={cookieCryptoHeadline(props.cookieCryptoState)}
-            detail={cookieCryptoDetail(
-              props.cookieCryptoState,
-              inAppBrowserBetaEnabled,
-            )}
-          />
-        )}
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function BrowserSiteInfoRow(props: {
-  readonly title: string;
-  readonly detail: string;
-}) {
-  return (
-    <div>
-      <div className="font-medium text-foreground">{props.title}</div>
-      <div className="mt-0.5 text-ui-xs text-muted-foreground">
-        {props.detail}
-      </div>
-    </div>
-  );
-}
-
-function isWebOriginUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function cookieCryptoHeadline(state: BrowserCookieCryptoState): string {
-  if (state.persistence === "ephemeral") return "Logins aren't saved";
-  return state.mode === "real"
-    ? "Logins saved securely"
-    : "Logins saved with basic protection";
-}
-
-function cookieCryptoDetail(
-  state: BrowserCookieCryptoState,
-  inAppBrowserBetaEnabled: boolean,
-): string {
-  if (state.mode === "degraded" || state.persistence === "ephemeral") {
-    return browserCookieDegradedMessage(state, inAppBrowserBetaEnabled);
-  }
-  if (state.mode === "real") {
-    return "Cookies and saved logins on this page are encrypted by your operating system.";
-  }
-  return "Cookies and saved logins on this page use basic, less secure encryption.";
 }
 
 function originFromUrl(url: string): string {
