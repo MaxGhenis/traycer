@@ -87,13 +87,19 @@ import {
   agentGetProviderProfileRateLimitsDowngradeV40ToV10,
   agentGetProviderProfileRateLimitsDowngradeV40ToV20,
   agentGetProviderProfileRateLimitsDowngradeV40ToV30,
+  agentGetProviderProfileRateLimitsDowngradeV50ToV10,
+  agentGetProviderProfileRateLimitsDowngradeV50ToV20,
+  agentGetProviderProfileRateLimitsDowngradeV50ToV30,
+  agentGetProviderProfileRateLimitsDowngradeV50ToV40,
   agentGetProviderProfileRateLimitsV10,
   agentGetProviderProfileRateLimitsV20,
   agentGetProviderProfileRateLimitsV30,
   agentGetProviderProfileRateLimitsV40,
+  agentGetProviderProfileRateLimitsV50,
   agentGetProviderProfileRateLimitsUpgradeV10ToV20,
   agentGetProviderProfileRateLimitsUpgradeV20ToV30,
   agentGetProviderProfileRateLimitsUpgradeV30ToV40,
+  agentGetProviderProfileRateLimitsUpgradeV40ToV50,
   agentListProviderProfilesDowngradeV20ToV10,
   agentListProviderProfilesDowngradeV30ToV10,
   agentListProviderProfilesDowngradeV30ToV20,
@@ -256,18 +262,24 @@ import {
   hostGetRateLimitUsageV21,
   hostGetRateLimitUsageV30,
   hostGetRateLimitUsageV40,
+  hostGetRateLimitUsageV50,
   hostGetRateLimitUsageUpgradeV10ToV11,
   hostGetRateLimitUsageUpgradeV11ToV12,
   hostGetRateLimitUsageUpgradeV12ToV20,
   hostGetRateLimitUsageUpgradeV20ToV21,
   hostGetRateLimitUsageUpgradeV21ToV30,
   hostGetRateLimitUsageUpgradeV30ToV40,
+  hostGetRateLimitUsageUpgradeV40ToV50,
   hostGetRateLimitUsageDowngradeV2ToV1,
   hostGetRateLimitUsageDowngradeV3ToV2,
   hostGetRateLimitUsageDowngradeV3ToV1,
   hostGetRateLimitUsageDowngradeV4ToV1,
   hostGetRateLimitUsageDowngradeV4ToV2,
   hostGetRateLimitUsageDowngradeV4ToV3,
+  hostGetRateLimitUsageDowngradeV5ToV1,
+  hostGetRateLimitUsageDowngradeV5ToV2,
+  hostGetRateLimitUsageDowngradeV5ToV3,
+  hostGetRateLimitUsageDowngradeV5ToV4,
   providersConsumeRateLimitResetCreditV10,
 } from "@traycer/protocol/host/rate-limit/contracts";
 import {
@@ -293,11 +305,13 @@ import {
   epicChatBackupStatusV10,
   epicChatReplicaReadV10,
   epicListChatRecordsV10,
+  epicGetChatRunSettingsV10,
   epicListChatPublicationTargetsV10,
   epicListCloudChatPayloadsV10,
   epicListCloudChatsV10,
   epicListCollaboratorsV10,
   epicListCommentThreadsV10,
+  epicReadChatAttachmentV10,
   epicReadCloudChatPartV10,
   epicReadCloudChatPayloadV10,
   epicResolveCloudChatHeadV10,
@@ -461,6 +475,12 @@ import {
   prSubscribeListForEpicV10,
   prSubscribeDetailV10,
   prGetLocalDiffV10,
+  prGetLocalDiffSummaryV10,
+  prGetLocalDiffSummaryV11,
+  prGetLocalDiffSummaryUpgradeV10ToV11,
+  prGetLocalFileDiffV10,
+  prGetLocalFileDiffV11,
+  prGetLocalFileDiffUpgradeV10ToV11,
 } from "@traycer/protocol/host/pr-contracts";
 import {
   mentionGithubCatalogV10,
@@ -4177,6 +4197,21 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
         3: hostGetRateLimitUsageDowngradeV4ToV3,
       },
     },
+    5: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: hostGetRateLimitUsageV50,
+          upgradeFromPreviousVersion: hostGetRateLimitUsageUpgradeV40ToV50,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: hostGetRateLimitUsageDowngradeV5ToV1,
+        2: hostGetRateLimitUsageDowngradeV5ToV2,
+        3: hostGetRateLimitUsageDowngradeV5ToV3,
+        4: hostGetRateLimitUsageDowngradeV5ToV4,
+      },
+    },
   },
   "providers.consumeRateLimitResetCredit": {
     degrade: { kind: "unsupported" },
@@ -6083,6 +6118,46 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
     },
     degrade: { kind: "unsupported" },
   },
+  // One chat image attachment's bytes off the CHAT plane, resolved by the
+  // viewer's tab host (its own disk store, else a bearer pass-through to the
+  // published cloud blob). Optional for the usual reason - a new method name is
+  // handshake-fatal against a released peer - and the degrade needs no surface
+  // at all: a host without it is a host whose images only ever lived in the
+  // epic doc, and the client's doc-replica fallback is exactly what it already
+  // did. `chatId` rides the request so a LOCAL hit can be gated by the same
+  // per-chat visibility rule as live viewing; see `epic/chat-attachment.ts`.
+  "epic.readChatAttachment": {
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: epicReadChatAttachmentV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+    degrade: { kind: "unsupported" },
+  },
+  // The per-chat run-settings tuple the record row above summarises down to a
+  // harness id. Optional and host-LOCAL for the same reason as the list - it
+  // answers out of this host's own chat store, the only place the tuple lives
+  // once the single-write pivot stopped writing doc chat entries. A client
+  // talking to a host without it renders the harness mark alone, which is what
+  // that host's client already showed.
+  "epic.getChatRunSettings": {
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: epicGetChatRunSettingsV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+    degrade: { kind: "unsupported" },
+  },
   "editor.openPaths": {
     1: {
       latestMinor: 0,
@@ -6670,6 +6745,22 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
         3: agentGetProviderProfileRateLimitsDowngradeV40ToV30,
       },
     },
+    5: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: agentGetProviderProfileRateLimitsV50,
+          upgradeFromPreviousVersion:
+            agentGetProviderProfileRateLimitsUpgradeV40ToV50,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: agentGetProviderProfileRateLimitsDowngradeV50ToV10,
+        2: agentGetProviderProfileRateLimitsDowngradeV50ToV20,
+        3: agentGetProviderProfileRateLimitsDowngradeV50ToV30,
+        4: agentGetProviderProfileRateLimitsDowngradeV50ToV40,
+      },
+    },
   },
   "agent.configure": {
     degrade: { kind: "unsupported" },
@@ -6735,6 +6826,51 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
         0: {
           contract: prGetLocalDiffV10,
           upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  // The split form of `pr.getLocalDiff` - a cheap metadata frame plus one
+  // patch per file, fetched per visible row. Same optional-capability posture
+  // as the monolith above (and always registered together with it): a client
+  // that finds these missing calls `pr.getLocalDiff` instead, so neither
+  // touches the released floor / baseline surface.
+  "pr.getLocalDiffSummary": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 1,
+      versions: {
+        0: {
+          contract: prGetLocalDiffSummaryV10,
+          upgradeFromPreviousVersion: null,
+        },
+        // 1.1: byte-path sidecars (`pathBytes`/`previousPathBytes`) on every
+        // file row, so non-UTF-8 paths survive the summary -> per-file round
+        // trip. The 1.0-caller response fold (rows, not fields) lives host-
+        // side at emission; the bridge here only fills request-side nulls.
+        1: {
+          contract: prGetLocalDiffSummaryV11,
+          upgradeFromPreviousVersion: prGetLocalDiffSummaryUpgradeV10ToV11,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "pr.getLocalFileDiff": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 1,
+      versions: {
+        0: {
+          contract: prGetLocalFileDiffV10,
+          upgradeFromPreviousVersion: null,
+        },
+        // 1.1: the request echoes the summary row's byte-path sidecars per
+        // side; bridge-filled `null` = "legacy peer", identical to clean.
+        1: {
+          contract: prGetLocalFileDiffV11,
+          upgradeFromPreviousVersion: prGetLocalFileDiffUpgradeV10ToV11,
         },
       },
       downgradePathsFromLatest: {},

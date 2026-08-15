@@ -51,6 +51,10 @@ import {
   type ChatPlanActionsContextValue,
 } from "@/components/chat/chat-plan-actions-context";
 import {
+  ChatAttachmentScopeContext,
+  type ChatAttachmentScopeValue,
+} from "@/components/chat/chat-attachment-scope-context";
+import {
   WorkingVerbContext,
   pickWorkingVerb,
 } from "@/components/chat/working-verb";
@@ -109,18 +113,20 @@ import {
   promoteQueuedMessageToFront,
 } from "@/lib/chats/compact-conversation";
 import { useSlashCommands } from "@/hooks/composer/use-slash-commands";
+import { chatTileActivationQueryPolicy } from "./chat-tile-activation-query-policy";
 import {
   ChatDeadTileBanner,
   ChatHostStartingBanner,
   type ChatDeadTileBannerReason,
 } from "./dead-tile-banner";
 import { useHostQuery } from "@/hooks/host/use-host-query";
+import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
 import { useCloudChatList } from "@/hooks/chats/use-cloud-chat-queries";
 import { cloudRowIsViewersOwn } from "@/lib/chats/unified-chat-list";
 import { flattenCollaborators } from "@/hooks/epics/use-epic-collaborators-query";
 import {
-  useGuiHarnessCatalog,
+  useGuiHarnessCatalogForClient,
   type GuiHarnessCatalogEntry,
 } from "@/hooks/harnesses/use-gui-harness-catalog";
 import { useInitialChatHandoffDriver } from "@/hooks/chats/use-initial-chat-handoff-driver";
@@ -130,7 +136,7 @@ import { useSetupTerminalListRefreshDriver } from "@/hooks/chats/use-setup-termi
 import { useSetupTerminalTabRegisterDriver } from "@/hooks/chats/use-setup-terminal-tab-register-driver";
 import { useCloneSourceOwnerUserId } from "@/hooks/chats/use-clone-source-owner";
 import { type InitialChatHandoffScope } from "@/stores/epics/initial-chat-handoff-store";
-import { contentBlocksText } from "@/lib/chat/content-block-text";
+import { contentBlocksPreview } from "@/lib/chat/content-block-text";
 import {
   buildSubmittedChatJSONContent,
   type SlashCommandCatalog,
@@ -786,6 +792,32 @@ function transcriptJumpCardKind(
 export function ChatTileSessionView(props: ChatTileSessionViewProps) {
   const view = useChatTileSessionViewModel(props);
   const hostId = useTabHostId();
+  // Chat image byte reads are scoped here, once per tile, rather than per
+  // rendered image: resolving the routed client is a directory-query
+  // subscription, and a transcript can hold a hundred thumbnails. Covers the
+  // transcript AND the composer/lower surfaces below.
+  const attachmentHostClient = useTabHostClient();
+  // The BUILD, not just the id: a host can be upgraded in place under the same
+  // `hostId`, and the attachment fetcher remembers its "predates
+  // `epic.readChatAttachment`" verdict per build so the upgrade re-probes.
+  const attachmentHostEntry = useHostDirectoryEntry(hostId);
+  const attachmentHostVersion = attachmentHostEntry?.version ?? null;
+  const attachmentScope = useMemo<ChatAttachmentScopeValue>(
+    () => ({
+      epicId: view.currentEpicId,
+      chatId: view.node.id,
+      hostId,
+      hostVersion: attachmentHostVersion,
+      client: attachmentHostClient,
+    }),
+    [
+      attachmentHostClient,
+      attachmentHostVersion,
+      hostId,
+      view.currentEpicId,
+      view.node.id,
+    ],
+  );
   const systemOverlayActive = useAnySystemOverlayActive();
   const tileNavigation = useEpicTileNavigation();
   const [backgroundScrollRequest, setBackgroundScrollRequest] =
@@ -992,121 +1024,124 @@ export function ChatTileSessionView(props: ChatTileSessionViewProps) {
   );
 
   return (
-    <ChatDiffTargetContext.Provider value={diffOpener}>
-      <ChatScrollToBlockContext.Provider value={scrollToBlock}>
-        <div
-          data-testid="chat-tile"
-          data-node-id={view.node.id}
-          data-chat-keyboard-scroll-scope=""
-          data-active={props.isActive ? "true" : "false"}
-          className="flex h-full min-h-0 flex-col"
-        >
-          {/* A flex CONTAINER (not just an item): ChatSessionMessagesSurface's
-           * transcript root relies on `flex-1` from ITS immediate parent to
-           * get a definite height (h-full on LegendList needs a real
-           * containing block all the way up). The overlay dock below is
-           * absolutely positioned, so it does not participate in this flex
-           * layout regardless. */}
-          <div className="relative flex min-h-0 flex-1 flex-col">
-            <ChatSessionMessagesSurface
-              snapshotLoaded={view.snapshotLoaded}
-              fatalClose={view.fatalClose}
-              onRetry={view.onChatRetry}
-              restoreContext={view.restoreContext}
-              node={view.node}
-              epicId={view.currentEpicId}
-              viewTabId={view.viewTabId}
-              tabHostId={view.tabHostId}
-              workspaceRoots={view.linkResolutionRoots}
-              messages={view.messages}
-              backgroundItems={view.lower.backgroundItems}
-              scrollRequest={backgroundScrollRequest}
-              surfaceVisible={view.surfaceVisible}
-              systemOverlayActive={systemOverlayActive}
-              getMessageActions={view.getMessageActions}
-              nextStepActions={view.nextStepActions}
-              planActions={view.planActions}
-              composerOverlayHeight={
-                lowerSurfacesElement === null ? 0 : lowerSurfacesHeight
-              }
-            />
-            {/*
-             * SurfaceActivityProvider narrows catalog/provider query subscriptions
-             * to the one focused pane+tab. A visible split partner keeps rendering
-             * its transcript and scroll state, but releases catalog/provider query
-             * observers and cannot own palette/composer-global work.
-             *
-             * Absolutely overlays the transcript (decision log #3) instead of
-             * pushing its height via flex, so streamed replies flow visually
-             * behind it; `lowerSurfacesHeight` (measured here) feeds the
-             * transcript's bottom content inset. The full-width positioning
-             * layer must remain both pointer- and paint-transparent so it
-             * cannot cover the transcript scrollbar or its edge lanes.
-             * Centered lower surfaces opt back into pointer handling and own
-             * their opaque backplates (including the bottom seam seal), so
-             * transcript content cannot show through the actual chrome.
-             */}
-            {view.snapshotLoaded ? (
-              <div
-                ref={setLowerSurfacesElement}
-                className="pointer-events-none absolute inset-x-0 bottom-0 z-10"
-                data-chat-lower-surfaces-overlay=""
-              >
-                <div className="pointer-events-none">
-                  <SurfaceActivityProvider active={view.surfaceFocused}>
-                    <ChatLowerInteractionSurfaces
-                      epicId={view.currentEpicId}
-                      viewTabId={view.viewTabId}
-                      chatId={view.node.id}
-                      hostId={hostId}
-                      runtime={view.lower.runtime}
-                      access={view.lower.access}
-                      turn={view.lower.turn}
-                      interview={view.lower.interview}
-                      approvals={view.lower.approvals}
-                      queue={view.lower.queue}
-                      composer={view.lower.composer}
-                      todo={view.todo}
-                      restoreContext={view.restoreContext}
-                      backgroundItems={view.lower.backgroundItems}
-                      backgroundStopPendingTaskIds={
-                        view.lower.backgroundStopPendingTaskIds
-                      }
-                      backgroundStopAllPending={
-                        view.lower.backgroundStopAllPending
-                      }
-                      onBackgroundItemClick={scrollToBackgroundItem}
-                    />
-                  </SurfaceActivityProvider>
+    <ChatAttachmentScopeContext.Provider value={attachmentScope}>
+      <ChatDiffTargetContext.Provider value={diffOpener}>
+        <ChatScrollToBlockContext.Provider value={scrollToBlock}>
+          <div
+            data-testid="chat-tile"
+            data-node-id={view.node.id}
+            data-chat-keyboard-scroll-scope=""
+            data-active={props.isActive ? "true" : "false"}
+            className="flex h-full min-h-0 flex-col"
+          >
+            {/* A flex CONTAINER (not just an item): ChatSessionMessagesSurface's
+             * transcript root relies on `flex-1` from ITS immediate parent to
+             * get a definite height (h-full on LegendList needs a real
+             * containing block all the way up). The overlay dock below is
+             * absolutely positioned, so it does not participate in this flex
+             * layout regardless. */}
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              <ChatSessionMessagesSurface
+                snapshotLoaded={view.snapshotLoaded}
+                fatalClose={view.fatalClose}
+                onRetry={view.onChatRetry}
+                restoreContext={view.restoreContext}
+                node={view.node}
+                epicId={view.currentEpicId}
+                viewTabId={view.viewTabId}
+                tabHostId={view.tabHostId}
+                workspaceRoots={view.linkResolutionRoots}
+                messages={view.messages}
+                baselineEpoch={view.transcriptBaselineEpoch}
+                backgroundItems={view.lower.backgroundItems}
+                scrollRequest={backgroundScrollRequest}
+                surfaceVisible={view.surfaceVisible}
+                systemOverlayActive={systemOverlayActive}
+                getMessageActions={view.getMessageActions}
+                nextStepActions={view.nextStepActions}
+                planActions={view.planActions}
+                composerOverlayHeight={
+                  lowerSurfacesElement === null ? 0 : lowerSurfacesHeight
+                }
+              />
+              {/*
+               * SurfaceActivityProvider narrows catalog/provider query subscriptions
+               * to the one focused pane+tab. A visible split partner keeps rendering
+               * its transcript and scroll state, but releases catalog/provider query
+               * observers and cannot own palette/composer-global work.
+               *
+               * Absolutely overlays the transcript (decision log #3) instead of
+               * pushing its height via flex, so streamed replies flow visually
+               * behind it; `lowerSurfacesHeight` (measured here) feeds the
+               * transcript's bottom content inset. The full-width positioning
+               * layer must remain both pointer- and paint-transparent so it
+               * cannot cover the transcript scrollbar or its edge lanes.
+               * Centered lower surfaces opt back into pointer handling and own
+               * their opaque backplates (including the bottom seam seal), so
+               * transcript content cannot show through the actual chrome.
+               */}
+              {view.snapshotLoaded ? (
+                <div
+                  ref={setLowerSurfacesElement}
+                  className="pointer-events-none absolute inset-x-0 bottom-0 z-10"
+                  data-chat-lower-surfaces-overlay=""
+                >
+                  <div className="pointer-events-none">
+                    <SurfaceActivityProvider active={view.surfaceFocused}>
+                      <ChatLowerInteractionSurfaces
+                        epicId={view.currentEpicId}
+                        viewTabId={view.viewTabId}
+                        chatId={view.node.id}
+                        hostId={hostId}
+                        runtime={view.lower.runtime}
+                        access={view.lower.access}
+                        turn={view.lower.turn}
+                        interview={view.lower.interview}
+                        approvals={view.lower.approvals}
+                        queue={view.lower.queue}
+                        composer={view.lower.composer}
+                        todo={view.todo}
+                        restoreContext={view.restoreContext}
+                        backgroundItems={view.lower.backgroundItems}
+                        backgroundStopPendingTaskIds={
+                          view.lower.backgroundStopPendingTaskIds
+                        }
+                        backgroundStopAllPending={
+                          view.lower.backgroundStopAllPending
+                        }
+                        onBackgroundItemClick={scrollToBackgroundItem}
+                      />
+                    </SurfaceActivityProvider>
+                  </div>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
+            </div>
+            <ChatTileErrorNoticeToasts handle={view.handle} />
+            <ChatTileRestoreResultToasts handle={view.handle} />
+            <RevertOnEditDialog
+              open={view.revertOnEdit.open}
+              onOpenChange={view.revertOnEdit.onOpenChange}
+              onRevert={view.revertOnEdit.onRevert}
+              onDontRevert={view.revertOnEdit.onDontRevert}
+              artifactCount={view.revertOnEdit.artifactCount}
+            />
+            <SteerSettingsConflictDialog
+              open={view.steerRestart.open}
+              onOpenChange={view.steerRestart.onOpenChange}
+              onRestart={view.steerRestart.onRestart}
+              changed={view.steerRestart.changed}
+            />
+            <ChatForkDialog
+              open={view.fork.open}
+              target={view.fork.target}
+              epicId={view.currentEpicId}
+              tabId={view.viewTabId}
+              onOpenChange={view.fork.onOpenChange}
+            />
           </div>
-          <ChatTileErrorNoticeToasts handle={view.handle} />
-          <ChatTileRestoreResultToasts handle={view.handle} />
-          <RevertOnEditDialog
-            open={view.revertOnEdit.open}
-            onOpenChange={view.revertOnEdit.onOpenChange}
-            onRevert={view.revertOnEdit.onRevert}
-            onDontRevert={view.revertOnEdit.onDontRevert}
-            artifactCount={view.revertOnEdit.artifactCount}
-          />
-          <SteerSettingsConflictDialog
-            open={view.steerRestart.open}
-            onOpenChange={view.steerRestart.onOpenChange}
-            onRestart={view.steerRestart.onRestart}
-            changed={view.steerRestart.changed}
-          />
-          <ChatForkDialog
-            open={view.fork.open}
-            target={view.fork.target}
-            epicId={view.currentEpicId}
-            tabId={view.viewTabId}
-            onOpenChange={view.fork.onOpenChange}
-          />
-        </div>
-      </ChatScrollToBlockContext.Provider>
-    </ChatDiffTargetContext.Provider>
+        </ChatScrollToBlockContext.Provider>
+      </ChatDiffTargetContext.Provider>
+    </ChatAttachmentScopeContext.Provider>
   );
 }
 
@@ -1183,17 +1218,28 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     ),
   );
   const collaborators = useCachedCollaborators(currentEpicId);
-  // Label-only, cache-only projection: the focused composer's toolbar and the
-  // app-wide `HarnessCatalogPrefetcher` own the fetch; this reads the same
-  // host-keyed cache (never fetches) so ANY visible transcript — including a
-  // restored terminal-focused split with an inactive chat and no live catalog
-  // publisher — renders friendly model/reasoning labels immediately, and a
-  // host/user switch re-keys the query and swaps labels. Detaches when hidden.
-  const modelCatalog = useGuiHarnessCatalog(null, {
-    enabled: false,
-    subscribed: surfaceVisible,
-  });
-  const displayCatalog = modelCatalog.harnesses;
+  // Label-only, cache-only projection: this tile's own composer (which fetches
+  // the TAB host's catalog) owns the fetch; this reads that host-keyed cache
+  // (never fetches) so ANY visible transcript — including a restored
+  // terminal-focused split with an inactive chat and no live catalog publisher
+  // — renders friendly model/reasoning labels immediately, and a host/user
+  // switch re-keys the queries and swaps labels. Detaches when hidden.
+  //
+  // ONE slot, the tab host's - never layered over the default host's. This
+  // transcript describes turns that ran on the TAB host, so a slug that host
+  // does not advertise must degrade to the raw slug rather than borrow a label
+  // (or a reasoning-effort label, which is version-specific) from a host that
+  // never served the turn. On a default-host tab this is the slot the
+  // app-load prefetcher already filled, so nothing changes there; on a
+  // remote-host tab the labels appear once anything warms that host's catalog
+  // — opening this tile's own composer picker does exactly that.
+  const tabHostCatalogClient = useTabHostClient();
+  const tabModelCatalog = useGuiHarnessCatalogForClient(
+    tabHostCatalogClient,
+    null,
+    { enabled: false, subscribed: surfaceVisible },
+  );
+  const displayCatalog = tabModelCatalog.harnesses;
   const modelLabels = useMemo<ReadonlyMap<string, string>>(
     () =>
       new Map(
@@ -1227,6 +1273,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       connectionStatus: s.connectionStatus,
       fatalClose: s.fatalClose,
       snapshotLoaded: s.snapshotLoaded,
+      transcriptBaselineEpoch: s.transcriptBaselineEpoch,
       chat: s.chat,
       access: s.access,
       messages: s.messages,
@@ -1349,18 +1396,24 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     state.snapshotLoaded,
     effectiveMissingPaths,
   );
+  const activationQueries = chatTileActivationQueryPolicy({
+    readOnlyNotice: props.readOnlyNotice,
+    surfaceVisible,
+    surfaceFocused,
+    tileActive: isActive,
+    hasWorktreeBinding:
+      state.worktreeBinding !== null &&
+      state.worktreeBinding.entries.length > 0,
+  });
   // Pair the missing-folder send-disable with an on-focus / pane-activation
   // re-check so restoring a deleted folder clears the disable without a send or
-  // reload. Syncs the fresh server-side missing set into the same store field
-  // the gate (and the recovery toast) read.
+  // reload. A locked published copy has no send gate to recover, so its retained
+  // surface never enables this activation query.
   useChatMissingWorktreeFocusRefresh({
     handle,
     epicId: currentEpicId,
     chatId: node.id,
-    surfaceVisible,
-    hasBinding:
-      state.worktreeBinding !== null &&
-      state.worktreeBinding.entries.length > 0,
+    enabled: activationQueries.refreshMissingWorktreePaths,
   });
 
   const displayContext = useMemo<SenderDisplayContext>(
@@ -1375,7 +1428,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
         resolveAgentSenderDisplay(sender, displayContext),
       resolveAgentReasoningLabel: (sender, reasoningEffort) =>
         resolveAgentReasoningLabel(sender, reasoningEffort, displayContext),
-      contentBlocksText,
+      contentBlocksPreview,
     }),
     [displayContext],
   );
@@ -1587,9 +1640,10 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
   // The tile's own send paths - next steps, compact, inline edit - never touch
   // the composer, so they cannot read the catalog off its picker store. Subscribe
   // to the same query under the SAME `surfaceFocused` predicate the composer uses
-  // (`chatComposerFocused` → `chatTileCatalogActivity`): identical gating means an
-  // off-screen tile still adds no `agent.gui.listCommands` subscription, and when
-  // both are on, TanStack Query dedupes the two subscribers into one fetch.
+  // (`chatComposerFocused` → `chatTileCatalogActivity`). Locked published copies
+  // cannot invoke those actions and stay detached. For live surfaces, identical
+  // gating means an off-screen tile adds no `agent.gui.listCommands` subscription,
+  // and when both are on, TanStack Query dedupes the subscribers into one fetch.
   const tabHostClient = useTabHostClient();
   const {
     data: slashCommands,
@@ -1603,7 +1657,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     // and the raw set opens a SECOND, narrower cache entry - losing the dedupe
     // and resolving against a catalog the composer never saw.
     workingDirectories: resolvedComposerMentionRoots,
-    enabled: surfaceFocused,
+    enabled: activationQueries.discoverActionSlashCommands,
   });
   // Null until loaded, which makes a `$` prompt stay plain text rather than
   // chip against a catalog we have not seen yet.
@@ -1615,7 +1669,9 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
   // resolves lexically; the cost is the pill, never the skill.
   const slashCatalog = useMemo<SlashCommandCatalog | null>(
     () =>
-      surfaceFocused && !slashCommandsLoading && slashCommandsError === null
+      activationQueries.discoverActionSlashCommands &&
+      !slashCommandsLoading &&
+      slashCommandsError === null
         ? new Map(
             slashCommands.map((command) => [
               command.name.toLowerCase(),
@@ -1623,7 +1679,12 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
             ]),
           )
         : null,
-    [surfaceFocused, slashCommands, slashCommandsLoading, slashCommandsError],
+    [
+      activationQueries.discoverActionSlashCommands,
+      slashCommands,
+      slashCommandsLoading,
+      slashCommandsError,
+    ],
   );
   const canModifyMessages = canModifyChatMessages({ canAct, state });
   const activeInlineEdit = normalizeInlineEditForSession(
@@ -1812,6 +1873,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       activeEditingQueueItemId,
       canAct,
       chatActions,
+      dispatchUi,
       node.id,
       node.name,
       profile,
@@ -2014,9 +2076,12 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     setEpicRunSettings,
     persistChatRunSettings,
   });
-  const handleForkOpenChange = useCallback((open: boolean): void => {
-    if (!open) setForkTarget(null);
-  }, []);
+  const handleForkOpenChange = useCallback(
+    (open: boolean): void => {
+      if (!open) setForkTarget(null);
+    },
+    [setForkTarget],
+  );
   // The chip renders as a sibling block below the composer (mirroring
   // the landing page) so the input box stays focused on prompt editing
   // and the binding affordances live alongside it. The selector reads
@@ -2068,7 +2133,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
         handle={handle}
         harnessId={currentComposerSettings.harnessId}
         workingDirectories={resolvedComposerMentionRoots}
-        isActive={isActive}
+        commandsEnabled={activationQueries.discoverCompactSlashCommands}
         onCompact={canSendNextStep ? compactConversation : null}
       />
     ),
@@ -2078,7 +2143,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       resolvedComposerMentionRoots,
       currentComposerSettings.harnessId,
       handle,
-      isActive,
+      activationQueries.discoverCompactSlashCommands,
     ],
   );
   const browserContextChip = useMemo(
@@ -2230,11 +2295,35 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     ],
   );
 
+  // A worktree-creating send holds the host's per-chat serializer so the
+  // final workspace binding is established before later queue actions run.
+  // Keep both sides of a reversible resume visible while their action
+  // acknowledgements wait behind serialized host work. A normal pause of a
+  // running queue is not "Keep paused"; the authoritative paused rows make
+  // this specifically the superseding action for a pending resume.
+  const pendingQueueIntent = useMemo(() => {
+    const pendingActions = Object.values(state.pendingActions);
+    const resumeRequested = pendingActions.some(
+      (action) => action.action === "resumeQueue",
+    );
+    const pauseRequested = pendingActions.some(
+      (action) => action.action === "pauseQueue",
+    );
+    return {
+      resumeRequested,
+      keepPausedRequested:
+        pauseRequested &&
+        state.queue.items.some((item) => item.status === "paused"),
+    };
+  }, [state.pendingActions, state.queue.items]);
+
   const lowerQueue = useMemo(
     () => ({
       editingItem: editingQueueItem,
       editingItemId: activeEditingQueueItemId,
       value: state.queue,
+      resumeRequested: pendingQueueIntent.resumeRequested,
+      keepPausedRequested: pendingQueueIntent.keepPausedRequested,
       onPause: chatActions.pauseQueue,
       onResume: chatActions.resumeQueue,
       onEdit: editQueuedItem,
@@ -2250,6 +2339,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       editingQueueItem,
       activeEditingQueueItemId,
       state.queue,
+      pendingQueueIntent,
       chatActions.pauseQueue,
       chatActions.resumeQueue,
       editQueuedItem,
@@ -2313,6 +2403,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     linkResolutionRoots,
     currentEpicId,
     snapshotLoaded: state.snapshotLoaded,
+    transcriptBaselineEpoch: state.transcriptBaselineEpoch,
     fatalClose: state.fatalClose,
     onChatRetry: () => handle.store.getState().retry(),
     restoreContext,
@@ -2359,6 +2450,8 @@ interface ChatSessionMessagesSurfaceProps {
   readonly tabHostId: string | null;
   readonly workspaceRoots: ReadonlyArray<string>;
   readonly messages: ReadonlyArray<ChatMessageModel>;
+  /** Which connection's snapshot established `messages`; see `ChatMessages`. */
+  readonly baselineEpoch: number;
   readonly backgroundItems: ReadonlyArray<BackgroundItem> | undefined;
   readonly scrollRequest: ChatMessageScrollRequest | null;
   readonly surfaceVisible: boolean;
@@ -2402,7 +2495,7 @@ function ContextUsageChipForChat(props: {
   readonly handle: ChatSessionStoreHandle;
   readonly harnessId: GuiHarnessId;
   readonly workingDirectories: ReadonlyArray<string>;
-  readonly isActive: boolean;
+  readonly commandsEnabled: boolean;
   readonly onCompact: ((commandName: string) => void) | null;
 }): ReactNode {
   const usage = useStore(props.handle.store, selectContextUsage);
@@ -2411,14 +2504,14 @@ function ContextUsageChipForChat(props: {
   // (`resolvedComposerMentionRoots` in the parent), not the raw chat binding -
   // that's what makes this the SAME `agent.gui.listCommands` cache entry
   // `useKnownSlashCommandNames` already warms, not just a query sharing its
-  // `enabled: isActive` gate. An active tile therefore pays no extra RPC, and
+  // activation gate. An actionable tile therefore pays no extra RPC, and
   // an inactive one still fetches nothing and shows no compact affordance - it
   // also has no focusable composer to compact from.
   const { data: commands } = useSlashCommands("", {
     hostClient: client,
     harnessId: props.harnessId,
     workingDirectories: props.workingDirectories,
-    enabled: props.isActive,
+    enabled: props.commandsEnabled,
   });
   const compactCommand = findManualCompactCommand(commands);
   const requestCompact = props.onCompact;
@@ -2469,6 +2562,7 @@ function ChatSessionMessagesSurface(
               epicId={props.epicId}
               hostId={props.tabHostId}
               messages={props.messages}
+              baselineEpoch={props.baselineEpoch}
               backgroundItems={props.backgroundItems}
               scrollRequest={props.scrollRequest}
               getMessageActions={props.getMessageActions}
@@ -2540,14 +2634,14 @@ function useChatTileComposerSettingsSeeds(input: {
  * `enabled` gate so backgrounded keep-alive chats - including a non-front tab
  * stacked in the same visible pane - don't all re-stat on every window focus;
  * selecting the tab re-enables the query (with `staleTime: 0`) and refetches,
- * which doubles as the surface-activation re-check.
+ * which doubles as the surface-activation re-check. Explicit locked copies stay
+ * disabled because they have no composer send gate to recover.
  */
 function useChatMissingWorktreeFocusRefresh(args: {
   readonly handle: ChatSessionStoreHandle;
   readonly epicId: string;
   readonly chatId: string;
-  readonly surfaceVisible: boolean;
-  readonly hasBinding: boolean;
+  readonly enabled: boolean;
 }): void {
   const client = useTabHostClient();
   const bindingQuery = useHostQuery({
@@ -2556,7 +2650,7 @@ function useChatMissingWorktreeFocusRefresh(args: {
     method: "worktree.getBinding",
     params: { epicId: args.epicId, ownerId: args.chatId, ownerKind: "chat" },
     options: {
-      enabled: args.hasBinding && args.surfaceVisible,
+      enabled: args.enabled,
       poll: false,
       staleTime: 0,
       refetchOnWindowFocus: true,

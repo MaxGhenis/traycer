@@ -689,6 +689,17 @@ export const epicSchemaSurfaceBaseline = {
                                   "claudeMessageUuid": {
                                     "type": "string"
                                   },
+                                  "turnTailUuid": {
+                                    "default": null,
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
                                   "createdAt": {
                                     "type": "number"
                                   },
@@ -7974,6 +7985,17 @@ export const epicSchemaSurfaceBaseline = {
                                   "claudeMessageUuid": {
                                     "type": "string"
                                   },
+                                  "turnTailUuid": {
+                                    "default": null,
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
                                   "createdAt": {
                                     "type": "number"
                                   },
@@ -8039,6 +8061,7 @@ export const epicSchemaSurfaceBaseline = {
                                   "sessionId",
                                   "sessionWorkspaceSnapshot",
                                   "claudeMessageUuid",
+                                  "turnTailUuid",
                                   "createdAt",
                                   "coveredUntilMessageId",
                                   "profileId",

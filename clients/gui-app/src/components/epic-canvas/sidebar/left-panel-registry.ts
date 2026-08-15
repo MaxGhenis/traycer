@@ -71,7 +71,7 @@ export const LEFT_PANEL_DEFINITIONS: ReadonlyArray<LeftPanelMetadataDefinition> 
       icon: MessagesSquare,
       isAutoVisible: () => true,
       forcedOnHint: null,
-      supportsHeaderSearch: false,
+      supportsHeaderSearch: true,
     },
     {
       id: "terminals",

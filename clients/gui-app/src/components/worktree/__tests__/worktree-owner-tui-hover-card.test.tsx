@@ -51,7 +51,10 @@ vi.mock("@/hooks/host/use-host-client-for-host-id", () => ({
   useHostClientForHostId: () => ({ getActiveHostId: () => "host-1" }),
 }));
 vi.mock("@/hooks/harnesses/use-gui-harness-catalog", () => ({
-  useGuiHarnessCatalog: () => ({
+  // The header resolves the catalog through the owner's host client; this
+  // suite is about hover-card identity, not host scoping (covered by
+  // `worktree-owner-settings-header.test.tsx`), so it answers for any client.
+  useGuiHarnessCatalogForClient: () => ({
     harnesses: [
       {
         id: "claude",
@@ -79,6 +82,13 @@ vi.mock("@/hooks/providers/use-providers-list-query", () => ({
       ],
     },
   }),
+}));
+// Terminal agents keep their settings on the store projection, so this read is
+// disabled for every owner in this suite. Mocked rather than provided for: the
+// real hook needs a `QueryClientProvider`, and standing one up here would be
+// scaffolding for a query that is never issued.
+vi.mock("@/hooks/chats/use-chat-run-settings-query", () => ({
+  useChatRunSettings: () => ({ data: undefined }),
 }));
 vi.mock("@/hooks/worktree/use-worktree-owner-metadata-query", () => ({
   useWorktreeOwnerMetadata: () => ({
