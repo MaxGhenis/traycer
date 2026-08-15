@@ -49,11 +49,18 @@ import {
 } from "@/stores/epics/canvas/types";
 
 const bridgeHarness = vi.hoisted<{
-  host: { agentBrowserView: DesktopAgentBrowserViewBridge | null };
+  host: {
+    agentBrowserView: DesktopAgentBrowserViewBridge | null;
+    browserView: Record<string, unknown> | null;
+  };
   current: DesktopAgentBrowserViewBridge | null;
 }>(() => {
-  const host: { agentBrowserView: DesktopAgentBrowserViewBridge | null } = {
+  const host: {
+    agentBrowserView: DesktopAgentBrowserViewBridge | null;
+    browserView: Record<string, unknown> | null;
+  } = {
     agentBrowserView: null,
+    browserView: null,
   };
   return {
     host,
@@ -93,6 +100,55 @@ const NODE: AgentBrowserTileRef = {
   viewportPreset: "responsive",
   runtime: "isolated",
 };
+
+const PRIMARY_NODE: AgentBrowserTileRef = {
+  ...NODE,
+  runtime: "primary",
+};
+
+const PRIMARY_BRIDGE_REQUIRED_METHODS = [
+  "upsertTile",
+  "registerDurableTab",
+  "updateBounds",
+  "setViewportPreset",
+  "releaseTile",
+  "reloadTile",
+  "goBack",
+  "goForward",
+  "findInPage",
+  "stopFindInPage",
+  "cancelDownload",
+  "trustCertificate",
+  "zoomIn",
+  "zoomOut",
+  "resetZoom",
+  "capturePage",
+  "getDebugSnapshot",
+  "clearDebugEvents",
+  "pickElement",
+  "cancelElementPick",
+  "openDevTools",
+  "occludeForOverlay",
+  "releaseOverlay",
+  "getCookieCryptoState",
+  "setLabsState",
+  "applyStorageState",
+  "captureStorageState",
+  "grantControl",
+  "revokeControl",
+  "executeControlAction",
+  "onStatusChange",
+  "onFindChange",
+  "onDownloadChange",
+  "onCertificateError",
+  "onOpenTileRequest",
+  "onSnapshotInvalidated",
+  "onDebugSnapshotChange",
+  "onControlRevoked",
+  "onCdpSessionEnded",
+  "onCdpTargetAttached",
+  "onTileHandoff",
+] as const;
 
 class FakeAgentBrowserViewBridge implements DesktopAgentBrowserViewBridge {
   readonly upsertCalls: AgentBrowserViewTileUpsert[] = [];
@@ -342,8 +398,73 @@ function emitStatus(
   });
 }
 
-function seedAgentBrowserCanvas(): string {
-  const canvas = createSingleTileCanvas(NODE);
+function emptyDisposable(): { dispose: () => void } {
+  return { dispose: () => undefined };
+}
+
+function createPrimaryBridgeSource(): {
+  readonly source: Record<string, unknown>;
+  readonly registerDurableTabCalls: BrowserViewDurableTabRegistration[];
+  emitOpenTileRequest(change: BrowserViewOpenTileRequest): void;
+  readonly openTileHandlerCount: number;
+} {
+  const openTileHandlers = new Set<
+    (change: BrowserViewOpenTileRequest) => void
+  >();
+  const registerDurableTabCalls: BrowserViewDurableTabRegistration[] = [];
+  const source: Record<string, unknown> = {};
+  for (const methodName of PRIMARY_BRIDGE_REQUIRED_METHODS) {
+    source[methodName] = () => Promise.resolve();
+  }
+  source.onStatusChange = () => emptyDisposable();
+  source.onFindChange = () => emptyDisposable();
+  source.onDownloadChange = () => emptyDisposable();
+  source.onCertificateError = () => emptyDisposable();
+  source.onSnapshotInvalidated = () => emptyDisposable();
+  source.onDebugSnapshotChange = () => emptyDisposable();
+  source.onControlRevoked = () => emptyDisposable();
+  source.onCdpSessionEnded = () => emptyDisposable();
+  source.onCdpTargetAttached = () => emptyDisposable();
+  source.onTileHandoff = () => emptyDisposable();
+  source.onOpenTileRequest = (
+    handler: (change: BrowserViewOpenTileRequest) => void,
+  ) => {
+    openTileHandlers.add(handler);
+    return {
+      dispose: () => {
+        openTileHandlers.delete(handler);
+      },
+    };
+  };
+  source.registerDurableTab = (input: BrowserViewDurableTabRegistration) => {
+    registerDurableTabCalls.push(input);
+    return Promise.resolve();
+  };
+  source.getCookieCryptoState = () =>
+    Promise.resolve({
+      mode: "degraded",
+      persistence: "ephemeral",
+      reason: "unresolved",
+      storageBackend: null,
+      encryptionAvailable: false,
+      mockKeychainEnabled: false,
+    });
+  return {
+    source,
+    registerDurableTabCalls,
+    emitOpenTileRequest(change) {
+      openTileHandlers.forEach((handler) => handler(change));
+    },
+    get openTileHandlerCount() {
+      return openTileHandlers.size;
+    },
+  };
+}
+
+function seedAgentBrowserCanvas(
+  node: AgentBrowserTileRef = NODE,
+): string {
+  const canvas = createSingleTileCanvas(node);
   if (canvas.root === null) throw new Error("expected canvas root");
   const pane = collectPanes(canvas.root).at(0);
   if (pane === undefined) throw new Error("expected a pane");
@@ -371,15 +492,19 @@ function agentBrowserTilesOnCanvas(): AgentBrowserTileRef[] {
   );
 }
 
-function renderAgentBrowserTile(paneId: string): RenderResult {
+function renderAgentBrowserTile(
+  paneId: string,
+  node: AgentBrowserTileRef = NODE,
+): RenderResult {
   return render(
-    <AgentBrowserTile node={NODE} viewTabId={VIEW_TAB_ID} paneId={paneId} />,
+    <AgentBrowserTile node={node} viewTabId={VIEW_TAB_ID} paneId={paneId} />,
   );
 }
 
 describe("<AgentBrowserTile />", () => {
   beforeEach(() => {
     bridgeHarness.current = null;
+    bridgeHarness.host.browserView = null;
     visibilityHarness.visible = true;
     resetElectronBrowserTabStoreForTests();
     resetBrowserOverlayCoordinatorForTests();
@@ -806,6 +931,82 @@ describe("<AgentBrowserTile />", () => {
     expect(popup).toBeDefined();
     expect(popup?.sessionId).toBe(NODE.sessionId);
     expect(popup?.url).toBe("https://example.com/popup-after-ack");
+    expect(popup?.runtime).toBe("isolated");
+
+    warn.mockRestore();
+  });
+
+  it("adopts a primary-runtime popup as an AgentBrowserTileRef with the originating session", async () => {
+    const primary = createPrimaryBridgeSource();
+    bridgeHarness.host.browserView = primary.source;
+    const paneId = seedAgentBrowserCanvas(PRIMARY_NODE);
+    const key = tileKey(paneId);
+    const warn = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
+
+    renderAgentBrowserTile(paneId, PRIMARY_NODE);
+    await waitFor(() => {
+      expect(primary.openTileHandlerCount).toBe(1);
+    });
+    expect(agentBrowserTilesOnCanvas()).toHaveLength(1);
+
+    act(() => {
+      primary.emitOpenTileRequest({
+        ...key,
+        url: "https://example.com/primary-popup-before-ack",
+        disposition: "foreground-tab",
+      });
+    });
+    expect(agentBrowserTilesOnCanvas()).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(
+      "[agent-browser] popup dropped before durable tab registration",
+      { url: "https://example.com/primary-popup-before-ack" },
+    );
+
+    act(() => {
+      handleElectronBrowserTabFrame({
+        kind: "electronTabRegistered",
+        hasBinaryPayload: false,
+        requestId: "req-reg-primary-1",
+        registrationId: PRIMARY_NODE.id,
+        sessionId: PRIMARY_NODE.sessionId,
+        tabId: "host-minted-primary-tab-1",
+      });
+    });
+    await waitFor(() => {
+      expect(primary.registerDurableTabCalls).toEqual([
+        {
+          ...key,
+          sessionId: PRIMARY_NODE.sessionId,
+          tabId: "host-minted-primary-tab-1",
+        },
+      ]);
+    });
+    await waitFor(() => {
+      expect(primary.openTileHandlerCount).toBe(1);
+    });
+
+    act(() => {
+      primary.emitOpenTileRequest({
+        ...key,
+        url: "https://example.com/primary-popup-after-ack",
+        disposition: "foreground-tab",
+      });
+    });
+
+    await waitFor(() => {
+      expect(agentBrowserTilesOnCanvas()).toHaveLength(2);
+    });
+    const tiles = agentBrowserTilesOnCanvas();
+    const popup = tiles.find(
+      (tile) => tile.instanceId !== PRIMARY_NODE.instanceId,
+    );
+    if (popup === undefined) {
+      throw new Error("expected a primary-runtime popup tile");
+    }
+    expect(isAgentBrowserTileRef(popup)).toBe(true);
+    expect(popup.sessionId).toBe(PRIMARY_NODE.sessionId);
+    expect(popup.runtime).toBe("primary");
+    expect(popup.url).toBe("https://example.com/primary-popup-after-ack");
 
     warn.mockRestore();
   });
@@ -864,6 +1065,70 @@ describe("<AgentBrowserTile />", () => {
           .slice(1)
           .every((call) => call.url === nextUrl),
       ).toBe(true);
+
+      const liveUrl = "https://live.example/";
+      const afterSubmitCount = bridge.upsertCalls.length;
+      act(() => {
+        bridge.emitStatus({
+          ...tileKey(paneId),
+          url: liveUrl,
+          title: "Live",
+          status: "ready",
+          reason: null,
+          canGoBack: true,
+          canGoForward: false,
+          zoomPercent: 100,
+        });
+      });
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(liveUrl);
+
+      visibilityHarness.visible = false;
+      view.rerender(
+        <AgentBrowserTile
+          node={NODE}
+          viewTabId={VIEW_TAB_ID}
+          paneId={paneId}
+        />,
+      );
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(liveUrl);
+
+      visibilityHarness.visible = true;
+      view.rerender(
+        <AgentBrowserTile
+          node={NODE}
+          viewTabId={VIEW_TAB_ID}
+          paneId={paneId}
+        />,
+      );
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(liveUrl);
+
+      act(() => {
+        bridge.emitStatus({
+          ...tileKey(paneId),
+          url: liveUrl,
+          title: "Live",
+          status: "loading",
+          reason: null,
+          canGoBack: true,
+          canGoForward: false,
+          zoomPercent: 100,
+        });
+      });
+      act(() => {
+        vi.advanceTimersByTime(12_001);
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(liveUrl);
+      expect(
+        bridge.upsertCalls
+          .slice(afterSubmitCount)
+          .every((call) => call.url === liveUrl),
+      ).toBe(true);
+      expect(
+        bridge.upsertCalls
+          .slice(afterSubmitCount)
+          .some((call) => call.url === nextUrl || call.url === NODE.url),
+      ).toBe(false);
     } finally {
       vi.useRealTimers();
     }
