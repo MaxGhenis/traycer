@@ -1167,6 +1167,57 @@ describe("<AgentBrowserTile />", () => {
     ).toBe(true);
   });
 
+  it("keeps the newest submit when a stale ready arrives before that submit's echo", () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new FakeAgentBrowserViewBridge();
+      bridgeHarness.current = bridge;
+      const paneId = seedAgentBrowserCanvas();
+      const key = tileKey(paneId);
+      const firstUrl = "https://next.example/";
+      const newestUrl = "https://newest.example/";
+      const view = renderAgentBrowserTile(paneId);
+
+      submitAddress(firstUrl);
+      act(() => {
+        emitManagerStatus(bridge, key, "loading", NODE.url);
+      });
+      submitAddress(newestUrl);
+      const afterNewestSubmit = bridge.upsertCalls.length;
+      act(() => {
+        emitManagerStatus(bridge, key, "ready", firstUrl);
+      });
+
+      rerenderVisibility(view, paneId, false);
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(newestUrl);
+      rerenderVisibility(view, paneId, true);
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(newestUrl);
+
+      act(() => {
+        vi.advanceTimersByTime(12_001);
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(newestUrl);
+
+      act(() => {
+        emitManagerStatus(bridge, key, "loading", firstUrl);
+      });
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(newestUrl);
+
+      act(() => {
+        emitManagerStatus(bridge, key, "ready", newestUrl);
+      });
+      expect(bridge.upsertCalls.at(-1)?.url).toBe(newestUrl);
+      expect(
+        bridge.upsertCalls
+          .slice(afterNewestSubmit)
+          .every((call) => call.url === newestUrl),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("upserts a persisted non-responsive viewport preset on remount", async () => {
     const mobileNode: AgentBrowserTileRef = {
       ...NODE,
