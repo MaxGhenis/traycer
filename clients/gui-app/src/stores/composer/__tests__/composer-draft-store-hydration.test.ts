@@ -40,6 +40,7 @@ const MENTION_DRAFT: DraftState = {
     ],
   },
   selection: null,
+  browserAnnotations: [],
   resetEpoch: 0,
   revision: 0,
 };
@@ -165,6 +166,7 @@ describe("composer draft store hydration", () => {
     expect(useComposerDraftStore.getState().drafts).toEqual({
       legacy: {
         ...legacyDraft,
+        browserAnnotations: [],
         resetEpoch: 1,
       },
     });

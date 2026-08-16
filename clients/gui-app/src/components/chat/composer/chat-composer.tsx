@@ -52,6 +52,7 @@ import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { redactEmail } from "@/lib/providers/redact-email";
 
 import type { ComposerPromptEditorHandle } from "./composer-prompt-editor";
+import { BrowserAnnotationCards } from "./browser-annotation-cards";
 import { ChatComposerAttachmentsStrip } from "./chat-composer-attachments-strip";
 import { ChatComposerEditorSlot } from "./chat-composer-editor-slot";
 import { ChatComposerToolbarSlot } from "./chat-composer-toolbar-slot";
@@ -596,6 +597,7 @@ function ChatComposerImpl(props: ChatComposerProps) {
             )}
           >
             <ComposerUtilityClearanceFill visible={utilityClearanceVisible} />
+            <BrowserAnnotationCards taskId={taskId} />
             <ComposerAttachmentDropZone
               viewTabId={viewTabId}
               hostId={tabHostId}
