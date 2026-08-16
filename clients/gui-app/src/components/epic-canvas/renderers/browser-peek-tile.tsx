@@ -466,6 +466,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         button: pointerButton(pointerEvent?.button ?? -1),
         buttons: event.buttons,
         modifiers: inputModifiers(event),
+        clickCount: 0,
         deltaX: "deltaX" in event ? event.deltaX : 0,
         deltaY: "deltaY" in event ? event.deltaY : 0,
       });
@@ -611,6 +612,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               code: event.code,
               key: event.key,
               modifiers: inputModifiers(event),
+              autoRepeat: false,
             });
             if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) {
               sendInput({
@@ -619,6 +621,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
                 code: event.code,
                 key: event.key,
                 modifiers: inputModifiers(event),
+                autoRepeat: false,
               });
             }
           }}
@@ -633,6 +636,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               code: event.code,
               key: event.key,
               modifiers: inputModifiers(event),
+              autoRepeat: false,
             });
           }}
           onCompositionStart={() => {

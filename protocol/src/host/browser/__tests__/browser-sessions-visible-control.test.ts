@@ -137,6 +137,7 @@ describe("browser.screencast@1.0 control frames", () => {
         button: "left",
         buttons: 1,
         modifiers: 2,
+        clickCount: 1,
         deltaX: 0,
         deltaY: 0,
       },
@@ -149,6 +150,7 @@ describe("browser.screencast@1.0 control frames", () => {
         code: "KeyA",
         key: "a",
         modifiers: 0,
+        autoRepeat: false,
       },
       {
         kind: "insertText",
