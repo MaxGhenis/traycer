@@ -1,4 +1,4 @@
-import { describe, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { z } from "zod";
 import {
   defineDowngradePath,
@@ -8,6 +8,8 @@ import {
   defineUpgradePath,
   defineVersionedRpcRegistry,
   getLatestContract,
+  isRpcErrorCode,
+  RPC_ERROR_CODES,
   validateVersionedRpcRegistry,
   type DowngradeResult,
   type LatestContract,
@@ -170,6 +172,11 @@ function makeUncheckedRegistry(): UncheckedVersionedRpcRegistry {
 }
 
 describe("Versioned RPC typing", () => {
+  it("recognizes VERB_NOT_ALLOWED as a typed RPC error", () => {
+    expect(RPC_ERROR_CODES).toContain("VERB_NOT_ALLOWED");
+    expect(isRpcErrorCode("VERB_NOT_ALLOWED")).toBe(true);
+  });
+
   it("pairs request envelopes to the contract request type", () => {
     type EchoRequest = RpcRequestFor<typeof echoV21>;
 
