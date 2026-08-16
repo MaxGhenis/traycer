@@ -561,6 +561,7 @@ function buildFakeBridge(
       onSnapshotInvalidated: (_handler) => ({ dispose: () => undefined }),
       onDebugSnapshotChange: (_handler) => ({ dispose: () => undefined }),
       onAnnotationEvent: (_handler) => ({ dispose: () => undefined }),
+      onAnnotationAttached: (_handler) => ({ dispose: () => undefined }),
     },
     // Ticket 09 scenario-7: agent browser tile seam must be present on the
     // preload bridge so DesktopRunnerHost can forward it without re-wrapping.

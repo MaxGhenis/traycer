@@ -33,7 +33,11 @@ import type {
   BrowserViewTileUpsert,
 } from "../../../ipc-contracts/browser-view-types";
 import type { PipCaptureIpcPayload } from "../../../ipc-contracts/pip-capture-types";
-import type { BrowserAnnotationSessionIpcEvent } from "../../../ipc-contracts/browser-annotation-types";
+import type {
+  BrowserAnnotationAttachedIpcEvent,
+  BrowserAnnotationSessionIpcEvent,
+} from "../../../ipc-contracts/browser-annotation-types";
+import { ANNOTATION_BINDING_NAME } from "../browser-annotation-overlay-script";
 import type {
   BrowserViewCertificateErrorChange as BrowserSessionCertificateErrorChange,
   BrowserViewDownloadChange as BrowserSessionDownloadChange,
@@ -140,8 +144,14 @@ class FakeDebugger implements BrowserViewDebugger {
         },
       };
     }
-    if (expression.includes("getBoundingClientRect")) {
+    if (
+      expression.includes("getBoundingClientRect") &&
+      !expression.includes("__traycerAnnotation")
+    ) {
       return { result: { value: { x: 10, y: 10 } } };
+    }
+    if (expression.includes("traycerAnnotationViewport")) {
+      return { result: { value: { width: 320, height: 180 } } };
     }
     return { result: { value: true } };
   }
@@ -209,6 +219,7 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
   destroyed = false;
   zoomFactor = 1;
   title = "";
+  emptyCapture = false;
   devToolsWebContentsId: number | null = null;
   openDevToolsCalls: unknown[] = [];
   windowOpenHandler:
@@ -252,11 +263,28 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
   capturePage(): Promise<BrowserViewCapturedImage> {
     this.lifecycle.push("capturePage");
     this.captureVisibleStates.push(this.readVisible());
-    return Promise.resolve({
+    if (this.emptyCapture) {
+      const emptyBytes = new Uint8Array();
+      const empty: BrowserViewCapturedImage = {
+        getSize: () => ({ width: 0, height: 0 }),
+        toJPEG: () => emptyBytes,
+        toDataURL: () => "",
+        isEmpty: () => true,
+        crop: () => empty,
+        toPNG: () => emptyBytes,
+      };
+      return Promise.resolve(empty);
+    }
+    const bytes: Uint8Array = Uint8Array.from([1, 2, 3]);
+    const image: BrowserViewCapturedImage = {
       getSize: () => ({ width: 320, height: 180 }),
-      toJPEG: () => Uint8Array.from([1, 2, 3]),
+      toJPEG: () => bytes,
       toDataURL: () => `data:image/png;base64,${this.id}`,
-    });
+      isEmpty: () => false,
+      crop: () => image,
+      toPNG: () => bytes,
+    };
+    return Promise.resolve(image);
   }
 
   getURL(): string {
@@ -503,6 +531,7 @@ interface Harness {
   readonly tileHandoffNotifications: AgentBrowserViewTileHandoffChange[];
   readonly snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[];
   readonly annotationEvents: BrowserAnnotationSessionIpcEvent[];
+  readonly annotationAttached: BrowserAnnotationAttachedIpcEvent[];
   readonly storageStateApplications: BrowserViewStorageStateApply[];
   readonly storageStateCaptures: BrowserViewStorageStateCapture[];
   readonly primaryProfileCaptureSourceOrigins: string[][];
@@ -554,6 +583,7 @@ function createHarnessWithOptions(
   const tileHandoffNotifications: AgentBrowserViewTileHandoffChange[] = [];
   const snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[] = [];
   const annotationEvents: BrowserAnnotationSessionIpcEvent[] = [];
+  const annotationAttached: BrowserAnnotationAttachedIpcEvent[] = [];
   const storageStateApplications: BrowserViewStorageStateApply[] = [];
   const storageStateCaptures: BrowserViewStorageStateCapture[] = [];
   const primaryProfileCaptureSourceOrigins: string[][] = [];
@@ -637,6 +667,9 @@ function createHarnessWithOptions(
     notifyAnnotationEvent: (_windowId, change) => {
       annotationEvents.push(change);
     },
+    notifyAnnotationAttached: (_windowId, change) => {
+      annotationAttached.push(change);
+    },
     scheduleDebugSnapshot: (callback) => {
       const timer = setTimeout(callback, 16);
       return {
@@ -703,6 +736,7 @@ function createHarnessWithOptions(
     tileHandoffNotifications,
     snapshotInvalidations,
     annotationEvents,
+    annotationAttached,
     storageStateApplications,
     storageStateCaptures,
     primaryProfileCaptureSourceOrigins,
@@ -4162,5 +4196,118 @@ describe("BrowserViewManager annotation session", () => {
     expect(annotationEventTypes(cancelHarness)).toEqual([
       { type: "cancelled" },
     ]);
+  });
+
+  const VALID_UNION = { x: 1, y: 2, width: 10, height: 20 };
+
+  const VALID_ATTACH_PAYLOAD = {
+    marks: [
+      {
+        id: "m1",
+        kind: "element" as const,
+        bounds: VALID_UNION,
+        selector: "button#go",
+      },
+    ],
+    elements: [
+      {
+        selector: "button#go",
+        tagName: "BUTTON",
+        elementId: "go",
+        classNames: ["primary"],
+        outerHtml: "<button>Go</button>",
+        outerHtmlTruncated: false,
+        textPreview: "Go",
+        ariaRole: "button",
+        accessibleName: "Go",
+        boundingBox: {
+          x: 1,
+          y: 2,
+          width: 10,
+          height: 20,
+          top: 2,
+          right: 11,
+          bottom: 22,
+          left: 1,
+        },
+      },
+    ],
+    comment: "look here",
+    unionRect: VALID_UNION,
+  };
+
+  function flush(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  function emitAnnotationBinding(
+    view: FakeBrowserView,
+    payload: unknown,
+    executionContextId: number | undefined,
+  ): void {
+    const params: Record<string, unknown> = {
+      name: ANNOTATION_BINDING_NAME,
+      payload: typeof payload === "string" ? payload : JSON.stringify(payload),
+    };
+    if (executionContextId !== undefined) {
+      params.executionContextId = executionContextId;
+    }
+    view.webContents.debugger.emitMessage(
+      "Runtime.bindingCalled",
+      params,
+      undefined,
+    );
+  }
+
+  it("forwards a successful attachRequested capture as annotationAttached and does not emit the guest event", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+
+    expect(harness.annotationAttached).toHaveLength(1);
+    expect(
+      annotationEventTypes(harness).some(
+        (event) => event.type === "attachRequested",
+      ),
+    ).toBe(false);
+    const attached = harness.annotationAttached[0];
+    expect(attached?.payload.annotationId.startsWith("ann-")).toBe(true);
+    expect(attached?.pngBytes.byteLength).toBeGreaterThan(0);
+    expect(attached).toMatchObject(BASE_KEY);
+  });
+
+  it("emits no annotationAttached on empty capture and leaves the session cancellable", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    view.webContents.emptyCapture = true;
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+
+    expect(harness.annotationAttached).toEqual([]);
+    expect(
+      annotationEventTypes(harness).some(
+        (event) => event.type === "attachRequested",
+      ),
+    ).toBe(false);
+
+    harness.manager.cancelAnnotation("window-1", BASE_KEY);
+    expect(annotationEventTypes(harness)).toEqual([{ type: "cancelled" }]);
   });
 });

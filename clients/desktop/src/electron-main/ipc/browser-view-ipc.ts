@@ -186,6 +186,13 @@ export function registerBrowserViewIpc(
         change,
       );
     },
+    notifyAnnotationAttached: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.browserViewAnnotationAttached,
+        change,
+      );
+    },
     scheduleDebugSnapshot: scheduleBrowserViewDebugSnapshot,
     applyStorageState: applyBrowserViewStorageState,
     captureStorageState: captureBrowserViewStorageState,

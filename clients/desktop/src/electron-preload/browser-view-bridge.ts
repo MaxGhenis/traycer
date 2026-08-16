@@ -48,6 +48,7 @@ import type {
   BrowserViewViewportPresetChange,
 } from "../ipc-contracts/browser-view-types";
 import type {
+  BrowserAnnotationAttachedIpcEvent,
   BrowserAnnotationSessionIpcEvent,
   BrowserAnnotationStartResult,
 } from "../ipc-contracts/browser-annotation-types";
@@ -135,6 +136,9 @@ export interface BrowserViewBridgeSurface {
     ): Disposable;
     onAnnotationEvent(
       handler: Listener<BrowserAnnotationSessionIpcEvent>,
+    ): Disposable;
+    onAnnotationAttached(
+      handler: Listener<BrowserAnnotationAttachedIpcEvent>,
     ): Disposable;
     // Durable user-tab driving over the same typed CDP bridge as agent tabs.
     dispatchCdp(
@@ -376,6 +380,11 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
       onAnnotationEvent: (handler) =>
         subscribe<BrowserAnnotationSessionIpcEvent>(
           RunnerHostEvent.browserViewAnnotationEvent,
+          handler,
+        ),
+      onAnnotationAttached: (handler) =>
+        subscribe<BrowserAnnotationAttachedIpcEvent>(
+          RunnerHostEvent.browserViewAnnotationAttached,
           handler,
         ),
       dispatchCdp: (input) =>

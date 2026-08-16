@@ -23,6 +23,19 @@ export const ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION =
   "(function(){var fn=globalThis.__traycerAnnotationResetAfterAttach;" +
   "if(typeof fn==='function'){try{fn();}catch(e){}}return true;})()";
 
+export const ANNOTATION_CAPTURE_FAILED_EXPRESSION =
+  "(function(){var fn=globalThis.__traycerAnnotationCaptureFailed;" +
+  "if(typeof fn==='function'){try{fn();}catch(e){}}return true;})()";
+
+export const ANNOTATION_VIEWPORT_SIZE_EXPRESSION =
+  "(function(){return {width:window.innerWidth,height:window.innerHeight,traycerAnnotationViewport:1};})()";
+
+export const ANNOTATION_WAIT_FOR_PAINT_EXPRESSION =
+  "(function(){return new Promise(function(resolve){" +
+  "requestAnimationFrame(function(){" +
+  "requestAnimationFrame(function(){resolve(true);});" +
+  "});});})()";
+
 export const ANNOTATION_LIMITS = {
   comment: 4000,
   markCount: 64,
@@ -38,6 +51,16 @@ export function buildAnnotationSetMarkCountExpression(count: number): string {
     "(function(){var fn=globalThis.__traycerAnnotationSetMarkCount;" +
     "if(typeof fn==='function'){try{fn(" +
     safe +
+    ");}catch(e){}}return true;})()"
+  );
+}
+
+export function buildAnnotationSetTargetChatLabelExpression(label: string): string {
+  const encoded = JSON.stringify(label).replace(/</g, "\\u003c");
+  return (
+    "(function(){var fn=globalThis.__traycerAnnotationSetTargetChatLabel;" +
+    "if(typeof fn==='function'){try{fn(" +
+    encoded +
     ");}catch(e){}}return true;})()"
   );
 }
@@ -207,8 +230,14 @@ const ANNOTATION_OVERLAY_BODY = [
   "function resetAfterAttach() {",
   "  chromeHidden = false;",
   "  pill.style.visibility = '';",
+  "  host.removeAttribute('data-traycer-capture-failed');",
   "  markCount = 0;",
   "  emitState();",
+  "}",
+  "function captureFailed() {",
+  "  chromeHidden = false;",
+  "  pill.style.visibility = '';",
+  "  host.setAttribute('data-traycer-capture-failed', 'true');",
   "}",
   "function teardown() {",
   "  if (done) { return; }",
@@ -226,6 +255,7 @@ const ANNOTATION_OVERLAY_BODY = [
   "  try { delete W.__traycerAnnotationCancel; } catch (e) { W.__traycerAnnotationCancel = null; }",
   "  try { delete W.__traycerAnnotationHideChromeForCapture; } catch (e) { W.__traycerAnnotationHideChromeForCapture = null; }",
   "  try { delete W.__traycerAnnotationResetAfterAttach; } catch (e) { W.__traycerAnnotationResetAfterAttach = null; }",
+  "  try { delete W.__traycerAnnotationCaptureFailed; } catch (e) { W.__traycerAnnotationCaptureFailed = null; }",
   "  try { delete W.__traycerAnnotationSetMarkCount; } catch (e) { W.__traycerAnnotationSetMarkCount = null; }",
   "}",
   "function finishCancelled() {",
@@ -237,6 +267,7 @@ const ANNOTATION_OVERLAY_BODY = [
   "W.__traycerAnnotationCancel = finishCancelled;",
   "W.__traycerAnnotationHideChromeForCapture = hideChromeForCapture;",
   "W.__traycerAnnotationResetAfterAttach = resetAfterAttach;",
+  "W.__traycerAnnotationCaptureFailed = captureFailed;",
   "W.__traycerAnnotationSetMarkCount = setMarkCount;",
   "W.addEventListener('mousedown', onPagePointer, true);",
   "W.addEventListener('mouseup', onPagePointer, true);",

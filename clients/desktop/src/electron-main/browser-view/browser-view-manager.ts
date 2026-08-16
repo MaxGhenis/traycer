@@ -49,6 +49,7 @@ import type {
   BrowserViewViewportPresetId,
 } from "../../ipc-contracts/browser-view-types";
 import type {
+  BrowserAnnotationAttachedIpcEvent,
   BrowserAnnotationEndReason,
   BrowserAnnotationSessionIpcEvent,
   BrowserAnnotationStartResult,
@@ -167,10 +168,20 @@ export type BrowserViewWindowOpenResult =
       readonly outlivesOpener: boolean;
     };
 
+export interface BrowserViewCropRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 export interface BrowserViewCapturedImage {
   getSize(): { readonly width: number; readonly height: number };
   toJPEG(quality: number): Uint8Array;
   toDataURL(): string;
+  isEmpty(): boolean;
+  crop(rect: BrowserViewCropRect): BrowserViewCapturedImage;
+  toPNG(): Uint8Array;
 }
 
 export interface BrowserViewDevToolsWebContents {
@@ -316,6 +327,10 @@ export interface BrowserViewManagerOptions {
   readonly notifyAnnotationEvent: (
     windowId: string,
     change: BrowserAnnotationSessionIpcEvent,
+  ) => void;
+  readonly notifyAnnotationAttached: (
+    windowId: string,
+    change: BrowserAnnotationAttachedIpcEvent,
   ) => void;
   readonly scheduleDebugSnapshot: (
     callback: () => void,
@@ -534,6 +549,10 @@ export class BrowserViewManager {
     windowId: string,
     change: BrowserAnnotationSessionIpcEvent,
   ) => void;
+  private readonly notifyAnnotationAttached: (
+    windowId: string,
+    change: BrowserAnnotationAttachedIpcEvent,
+  ) => void;
   private readonly scheduleDebugSnapshot: (
     callback: () => void,
   ) => BrowserViewScheduledTask;
@@ -600,6 +619,7 @@ export class BrowserViewManager {
     this.notifyCdpTargetAttached = options.notifyCdpTargetAttached;
     this.notifyTileHandoff = options.notifyTileHandoff;
     this.notifyAnnotationEvent = options.notifyAnnotationEvent;
+    this.notifyAnnotationAttached = options.notifyAnnotationAttached;
     this.scheduleDebugSnapshot = options.scheduleDebugSnapshot;
     this.applyStorageStateToBrowser = options.applyStorageState;
     this.captureStorageStateFromBrowser = options.captureStorageState;
@@ -1323,11 +1343,24 @@ export class BrowserViewManager {
     this.endAnnotationSession(entry, "replaced");
     const session = new BrowserAnnotationSession({
       webContents: entry.view.webContents,
+      identity: {
+        tabId: entry.runtimeTabId ?? entry.key.pageSessionId,
+        sessionId: entry.runtimeSessionId,
+      },
       onEvent: (event) => {
         if (entry.annotationSession !== session) return;
+        if (event.type === "attachRequested") return;
         this.notifyAnnotationEvent(entry.key.windowId, {
           ...toTileKey(entry.key),
           event,
+        });
+      },
+      onAttached: (result) => {
+        if (entry.annotationSession !== session) return;
+        this.notifyAnnotationAttached(entry.key.windowId, {
+          ...toTileKey(entry.key),
+          payload: result.payload,
+          pngBytes: result.pngBytes,
         });
       },
     });

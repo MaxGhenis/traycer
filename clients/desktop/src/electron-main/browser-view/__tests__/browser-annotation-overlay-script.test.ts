@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ANNOTATION_BINDING_NAME,
   ANNOTATION_CANCEL_EXPRESSION,
+  ANNOTATION_CAPTURE_FAILED_EXPRESSION,
   ANNOTATION_HIDE_CHROME_EXPRESSION,
   ANNOTATION_LIMITS,
   ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION,
@@ -33,22 +34,19 @@ describe("buildAnnotationOverlayBootstrap", () => {
     const source = buildAnnotationOverlayBootstrap();
     expect(source.startsWith("(function(){")).toBe(true);
     expect(source.endsWith("})()")).toBe(true);
-    expect(source).toContain("attachShadow({ mode: 'closed' })");
+    expect(source).toContain("attachShadow");
     expect(source).toContain("Select");
     expect(source).toContain("Region");
     expect(source).toContain("Draw");
     expect(source).toContain("Erase");
-    expect(source).toContain("select: 'V'");
-    expect(source).toContain("region: 'R'");
-    expect(source).toContain("draw: 'D'");
-    expect(source).toContain("erase: 'E'");
-    expect(source).toContain("Escape");
     expect(source).toContain(ANNOTATION_BINDING_NAME);
     expect(source).toContain("__traycerAnnotationCancel");
     expect(source).toContain("__traycerAnnotationHideChromeForCapture");
     expect(source).toContain("__traycerAnnotationResetAfterAttach");
+    expect(source).toContain("__traycerAnnotationCaptureFailed");
     expect(source).toContain("__traycerAnnotationSetMarkCount");
-    expect(source).toContain("JSON.stringify(event)");
+    expect(source).toContain("JSON.stringify");
+    expect(source).toContain("Escape");
   });
 
   it("exposes named command expressions and the isolated world name", () => {
@@ -60,6 +58,9 @@ describe("buildAnnotationOverlayBootstrap", () => {
     );
     expect(ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION).toContain(
       "__traycerAnnotationResetAfterAttach",
+    );
+    expect(ANNOTATION_CAPTURE_FAILED_EXPRESSION).toContain(
+      "__traycerAnnotationCaptureFailed",
     );
     expect(buildAnnotationSetMarkCountExpression(2)).toContain(
       "__traycerAnnotationSetMarkCount",

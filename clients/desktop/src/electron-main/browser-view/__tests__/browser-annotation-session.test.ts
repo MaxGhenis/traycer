@@ -4,14 +4,24 @@ import type { BrowserAnnotationSessionEvent } from "../../../ipc-contracts/brows
 import {
   ANNOTATION_BINDING_NAME,
   ANNOTATION_CANCEL_EXPRESSION,
+  ANNOTATION_CAPTURE_FAILED_EXPRESSION,
   ANNOTATION_HIDE_CHROME_EXPRESSION,
   ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION,
+  ANNOTATION_VIEWPORT_SIZE_EXPRESSION,
+  ANNOTATION_WAIT_FOR_PAINT_EXPRESSION,
   ANNOTATION_WORLD_NAME,
   buildAnnotationOverlayBootstrap,
   buildAnnotationSetMarkCountExpression,
 } from "../browser-annotation-overlay-script";
-import { BrowserAnnotationSession } from "../browser-annotation-session";
-import type { BrowserViewDebugger } from "../browser-view-manager";
+import {
+  BrowserAnnotationSession,
+  type BrowserAnnotationAttachedResult,
+} from "../browser-annotation-session";
+import type {
+  BrowserViewCapturedImage,
+  BrowserViewCropRect,
+  BrowserViewDebugger,
+} from "../browser-view-manager";
 
 vi.mock("../../app/logger", () => ({
   log: {
@@ -82,6 +92,15 @@ class FakeDebugger implements BrowserViewDebugger {
           exceptionDetails: { text: "inject failed" },
         });
       }
+      const expression =
+        typeof commandParams.expression === "string"
+          ? commandParams.expression
+          : "";
+      if (expression.includes("traycerAnnotationViewport")) {
+        return Promise.resolve({
+          result: { value: { width: 800, height: 600 } },
+        });
+      }
       return Promise.resolve({ result: { value: true } });
     }
     return Promise.resolve({});
@@ -124,11 +143,69 @@ class FakeDebugger implements BrowserViewDebugger {
   }
 }
 
+class FakeCapturedImage implements BrowserViewCapturedImage {
+  constructor(
+    private readonly width: number,
+    private readonly height: number,
+    private readonly bytes: Uint8Array,
+  ) {}
+
+  getSize(): { readonly width: number; readonly height: number } {
+    return { width: this.width, height: this.height };
+  }
+
+  toJPEG(): Uint8Array {
+    return this.bytes;
+  }
+
+  toDataURL(): string {
+    return "";
+  }
+
+  isEmpty(): boolean {
+    return this.width <= 0 || this.height <= 0 || this.bytes.byteLength === 0;
+  }
+
+  crop(rect: BrowserViewCropRect): BrowserViewCapturedImage {
+    return new FakeCapturedImage(rect.width, rect.height, this.bytes);
+  }
+
+  toPNG(): Uint8Array {
+    return this.bytes;
+  }
+}
+
 class FakeWebContents {
   readonly id = 9;
   readonly debugger: FakeDebugger;
+  captureCount = 0;
+  emptyCapture = false;
+  failCapture = false;
+  expressionsAtCapture: string[] = [];
   constructor(attached: boolean) {
     this.debugger = new FakeDebugger(attached);
+  }
+
+  capturePage(): Promise<BrowserViewCapturedImage> {
+    this.captureCount += 1;
+    this.expressionsAtCapture = evaluateExpressions(this.debugger);
+    if (this.failCapture) {
+      return Promise.reject(new Error("capture failed"));
+    }
+    if (this.emptyCapture) {
+      return Promise.resolve(new FakeCapturedImage(0, 0, new Uint8Array()));
+    }
+    return Promise.resolve(
+      new FakeCapturedImage(800, 600, Uint8Array.from([0x89, 0x50, 0x4e, 0x47])),
+    );
+  }
+
+  getURL(): string {
+    return "https://example.com/";
+  }
+
+  getTitle(): string {
+    return "Example Domain";
   }
 }
 
@@ -136,22 +213,36 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function evaluateExpressions(debuggerInstance: FakeDebugger): string[] {
+  return debuggerInstance.finds("Runtime.evaluate").map((command) =>
+    typeof command.params.expression === "string"
+      ? command.params.expression
+      : "",
+  );
+}
+
 interface SessionHarness {
   readonly session: BrowserAnnotationSession;
   readonly webContents: FakeWebContents;
   readonly events: BrowserAnnotationSessionEvent[];
+  readonly attached: BrowserAnnotationAttachedResult[];
 }
 
 function createHarness(attached: boolean): SessionHarness {
   const webContents = new FakeWebContents(attached);
   const events: BrowserAnnotationSessionEvent[] = [];
+  const attachedEvents: BrowserAnnotationAttachedResult[] = [];
   const session = new BrowserAnnotationSession({
     webContents,
+    identity: { tabId: "tab-1", sessionId: "session-1" },
     onEvent: (event) => {
       events.push(event);
     },
+    onAttached: (result) => {
+      attachedEvents.push(result);
+    },
   });
-  return { session, webContents, events };
+  return { session, webContents, events, attached: attachedEvents };
 }
 
 const VALID_UNION = { x: 1, y: 2, width: 10, height: 20 };
@@ -207,7 +298,7 @@ function emitBinding(
   debuggerInstance.emitMessage("Runtime.bindingCalled", params, undefined);
 }
 
-describe("BrowserAnnotationSession", () => {
+describe("BrowserAnnotationSession annotation overlay", () => {
   it("injects the isolated world and binding once on start", async () => {
     const harness = createHarness(true);
     await expect(harness.session.start()).resolves.toEqual({ ok: true });
@@ -330,7 +421,7 @@ describe("BrowserAnnotationSession", () => {
     expect(harness.events).toEqual([]);
   });
 
-  it("accepts a valid attachRequested envelope from the binding", async () => {
+  it("consumes a valid attachRequested envelope and does not emit it as a session event", async () => {
     const harness = createHarness(true);
     await harness.session.start();
     emitBinding(
@@ -338,48 +429,93 @@ describe("BrowserAnnotationSession", () => {
       { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
       77,
     );
-    expect(harness.events).toEqual([
-      {
-        type: "attachRequested",
-        payload: {
-          marks: [
-            {
-              id: "m1",
-              kind: "element",
-              bounds: VALID_UNION,
-              selector: "button#go",
-            },
-          ],
-          elements: [
-            {
-              selector: "button#go",
-              tagName: "button",
-              elementId: "go",
-              classNames: ["primary"],
-              attributes: [],
-              outerHtml: "<button>Go</button>",
-              outerHtmlTruncated: false,
-              textPreview: "Go",
-              ariaRole: "button",
-              accessibleName: "Go",
-              boundingBox: {
-                x: 1,
-                y: 2,
-                width: 10,
-                height: 20,
-                top: 2,
-                right: 11,
-                bottom: 22,
-                left: 1,
-              },
-              computedStyles: [],
-            },
-          ],
-          comment: "look here",
-          unionRect: VALID_UNION,
-        },
-      },
-    ]);
+    await flush();
+
+    const expressions = evaluateExpressions(harness.webContents.debugger);
+    const hideIdx = expressions.indexOf(ANNOTATION_HIDE_CHROME_EXPRESSION);
+    const waitIdx = expressions.indexOf(ANNOTATION_WAIT_FOR_PAINT_EXPRESSION);
+    const viewportIdx = expressions.indexOf(ANNOTATION_VIEWPORT_SIZE_EXPRESSION);
+    const resetIdx = expressions.indexOf(
+      ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION,
+    );
+    expect(hideIdx).toBeGreaterThan(-1);
+    expect(waitIdx).toBeGreaterThan(hideIdx);
+    expect(viewportIdx).toBeGreaterThan(waitIdx);
+    expect(resetIdx).toBeGreaterThan(viewportIdx);
+    expect(expressions).not.toContain(ANNOTATION_CAPTURE_FAILED_EXPRESSION);
+
+    const waitForPaint = harness.webContents.debugger
+      .finds("Runtime.evaluate")
+      .find(
+        (command) =>
+          command.params.expression === ANNOTATION_WAIT_FOR_PAINT_EXPRESSION,
+      );
+    expect(waitForPaint?.params.awaitPromise).toBe(true);
+
+    expect(harness.webContents.captureCount).toBe(1);
+    expect(harness.webContents.expressionsAtCapture).toContain(
+      ANNOTATION_HIDE_CHROME_EXPRESSION,
+    );
+    expect(harness.webContents.expressionsAtCapture).not.toContain(
+      ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION,
+    );
+
+    expect(harness.session.isActive()).toBe(true);
+    expect(harness.events).toEqual([]);
+    expect(harness.attached).toHaveLength(1);
+    const payload = harness.attached[0]?.payload;
+    expect(payload?.annotationId.startsWith("ann-")).toBe(true);
+    expect(payload?.tabId).toBe("tab-1");
+    expect(payload?.sessionId).toBe("session-1");
+    expect(payload?.origin).toBe("https://example.com");
+    expect(payload?.pageUrl).toBe("https://example.com/");
+    expect(payload?.pageTitle).toBe("Example Domain");
+    expect(payload?.comment).toBe("look here");
+    expect(payload?.counts).toEqual({
+      elements: 1,
+      regions: 0,
+      strokes: 0,
+    });
+    expect(payload?.elements).toHaveLength(1);
+    expect(harness.attached[0]?.pngBytes.byteLength).toBeGreaterThan(0);
+  });
+
+  it("keeps the session active and evaluates captureFailed when capturePage returns an empty image", async () => {
+    const harness = createHarness(true);
+    harness.webContents.emptyCapture = true;
+    await harness.session.start();
+    emitBinding(
+      harness.webContents.debugger,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+
+    const expressions = evaluateExpressions(harness.webContents.debugger);
+    expect(harness.session.isActive()).toBe(true);
+    expect(harness.attached).toEqual([]);
+    expect(harness.events).toEqual([]);
+    expect(expressions).toContain(ANNOTATION_CAPTURE_FAILED_EXPRESSION);
+    expect(expressions).not.toContain(ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION);
+  });
+
+  it("keeps the session active and evaluates captureFailed when capturePage throws", async () => {
+    const harness = createHarness(true);
+    harness.webContents.failCapture = true;
+    await harness.session.start();
+    emitBinding(
+      harness.webContents.debugger,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+
+    const expressions = evaluateExpressions(harness.webContents.debugger);
+    expect(harness.session.isActive()).toBe(true);
+    expect(harness.attached).toEqual([]);
+    expect(harness.events).toEqual([]);
+    expect(expressions).toContain(ANNOTATION_CAPTURE_FAILED_EXPRESSION);
+    expect(expressions).not.toContain(ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION);
   });
 
   it("rejects a guest-supplied annotationId or screenshot nested under payload", async () => {
@@ -410,6 +546,8 @@ describe("BrowserAnnotationSession", () => {
       77,
     );
     expect(harness.events).toEqual([]);
+    expect(harness.webContents.captureCount).toBe(0);
+    expect(harness.attached).toEqual([]);
   });
 
   it("rejects a guest-supplied annotationId or screenshot on attachRequested", async () => {
@@ -434,6 +572,8 @@ describe("BrowserAnnotationSession", () => {
       77,
     );
     expect(harness.events).toEqual([]);
+    expect(harness.webContents.captureCount).toBe(0);
+    expect(harness.attached).toEqual([]);
   });
 
   it("cancel evaluates the cancel hook, removes the listener, and emits cancelled after start", async () => {
@@ -499,9 +639,11 @@ describe("BrowserAnnotationSession", () => {
     const firstEvents: BrowserAnnotationSessionEvent[] = [];
     const first = new BrowserAnnotationSession({
       webContents,
+      identity: { tabId: "tab-1", sessionId: "session-1" },
       onEvent: (event) => {
         firstEvents.push(event);
       },
+      onAttached: () => undefined,
     });
     await first.start();
     expect(webContents.debugger.listenerCount("message")).toBe(1);
@@ -511,9 +653,11 @@ describe("BrowserAnnotationSession", () => {
     const secondEvents: BrowserAnnotationSessionEvent[] = [];
     const second = new BrowserAnnotationSession({
       webContents,
+      identity: { tabId: "tab-1", sessionId: "session-1" },
       onEvent: (event) => {
         secondEvents.push(event);
       },
+      onAttached: () => undefined,
     });
     await second.start();
     expect(webContents.debugger.listenerCount("message")).toBe(1);
@@ -532,12 +676,13 @@ describe("BrowserAnnotationSession", () => {
     expect(webContents.debugger.listenerCount("message")).toBe(0);
   });
 
-  it("evaluates hideChromeForCapture, resetAfterAttach, and setMarkCountForTests", async () => {
+  it("evaluates hideChromeForCapture, resetAfterAttach, captureFailed, and setMarkCountForTests", async () => {
     const harness = createHarness(true);
     await harness.session.start();
 
     await harness.session.hideChromeForCapture();
     await harness.session.resetAfterAttach();
+    await harness.session.captureFailed();
     await harness.session.setMarkCountForTests(3);
 
     const expressions = harness.webContents.debugger
@@ -545,6 +690,7 @@ describe("BrowserAnnotationSession", () => {
       .map((command) => command.params.expression);
     expect(expressions).toContain(ANNOTATION_HIDE_CHROME_EXPRESSION);
     expect(expressions).toContain(ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION);
+    expect(expressions).toContain(ANNOTATION_CAPTURE_FAILED_EXPRESSION);
     expect(expressions).toContain(buildAnnotationSetMarkCountExpression(3));
     expect(buildAnnotationSetMarkCountExpression(3)).toContain(
       "__traycerAnnotationSetMarkCount",

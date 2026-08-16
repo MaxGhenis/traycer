@@ -410,6 +410,8 @@ export const RunnerHostEvent = {
     "runnerHost:event:browserView:debugSnapshotChange",
   browserViewControlRevoked: "runnerHost:event:browserView:controlRevoked",
   browserViewAnnotationEvent: "runnerHost:event:browserView:annotation",
+  browserViewAnnotationAttached:
+    "runnerHost:event:browserView:annotationAttached",
   // Durable user-tab counterparts of the agent-tab events below.
   browserViewCdpSessionEnded: "runnerHost:event:browserView:cdp:sessionEnded",
   browserViewCdpTargetAttached:

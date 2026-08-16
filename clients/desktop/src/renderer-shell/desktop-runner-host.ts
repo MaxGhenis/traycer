@@ -136,6 +136,7 @@ import type {
   BrowserViewViewportPresetChange,
 } from "../ipc-contracts/browser-view-types";
 import type {
+  BrowserAnnotationAttachedIpcEvent,
   BrowserAnnotationSessionIpcEvent,
   BrowserAnnotationStartResult,
 } from "../ipc-contracts/browser-annotation-types";
@@ -551,6 +552,11 @@ export interface DesktopBrowserViewBridge {
   };
   onAnnotationEvent(
     handler: (change: BrowserAnnotationSessionIpcEvent) => void,
+  ): {
+    dispose: () => void;
+  };
+  onAnnotationAttached(
+    handler: (change: BrowserAnnotationAttachedIpcEvent) => void,
   ): {
     dispose: () => void;
   };

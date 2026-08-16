@@ -76,6 +76,18 @@ class FakeCapturedImage implements BrowserViewCapturedImage {
   toDataURL(): string {
     return "";
   }
+
+  isEmpty(): boolean {
+    return this.bytes.byteLength === 0;
+  }
+
+  crop(_rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }): BrowserViewCapturedImage {
+    return this;
+  }
+
+  toPNG(): Uint8Array {
+    return this.bytes;
+  }
 }
 
 class FakeWebContents implements BrowserViewWebContents {
@@ -85,7 +97,7 @@ class FakeWebContents implements BrowserViewWebContents {
   readonly qualities: number[] = [];
   captureCount = 0;
   deferCaptures = false;
-  private bytes = Uint8Array.from([1, 2, 3]);
+  private bytes: Uint8Array = Uint8Array.from([1, 2, 3]);
   private readonly captureResolvers: Array<
     (image: BrowserViewCapturedImage) => void
   > = [];

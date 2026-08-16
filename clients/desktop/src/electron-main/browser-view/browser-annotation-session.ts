@@ -1,29 +1,58 @@
 import type {
+  BrowserAnnotationAttachPayload,
+  BrowserAnnotationAttachRequest,
   BrowserAnnotationEndReason,
   BrowserAnnotationSessionEvent,
   BrowserAnnotationStartResult,
 } from "../../ipc-contracts/browser-annotation-types";
 import { describeLogError, log } from "../app/logger";
 import {
+  buildAnnotationAttachPayload,
+  cropAnnotationPng,
+  mintAnnotationId,
+} from "./browser-annotation-crop";
+import {
   ANNOTATION_BINDING_NAME,
   ANNOTATION_CANCEL_EXPRESSION,
+  ANNOTATION_CAPTURE_FAILED_EXPRESSION,
   ANNOTATION_HIDE_CHROME_EXPRESSION,
   ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION,
+  ANNOTATION_VIEWPORT_SIZE_EXPRESSION,
+  ANNOTATION_WAIT_FOR_PAINT_EXPRESSION,
   ANNOTATION_WORLD_NAME,
   buildAnnotationOverlayBootstrap,
   buildAnnotationSetMarkCountExpression,
+  buildAnnotationSetTargetChatLabelExpression,
   sanitizeAnnotationBindingPayload,
 } from "./browser-annotation-overlay-script";
-import type { BrowserViewDebugger } from "./browser-view-manager";
+import type {
+  BrowserViewCapturedImage,
+  BrowserViewDebugger,
+} from "./browser-view-manager";
 
 export interface BrowserAnnotationWebContents {
   readonly id: number;
   readonly debugger: BrowserViewDebugger;
+  capturePage(): Promise<BrowserViewCapturedImage>;
+  getURL(): string;
+  getTitle(): string;
+}
+
+export interface BrowserAnnotationSessionIdentity {
+  readonly tabId: string;
+  readonly sessionId: string;
+}
+
+export interface BrowserAnnotationAttachedResult {
+  readonly payload: BrowserAnnotationAttachPayload;
+  readonly pngBytes: Uint8Array;
 }
 
 export interface BrowserAnnotationSessionOptions {
   readonly webContents: BrowserAnnotationWebContents;
+  readonly identity: BrowserAnnotationSessionIdentity;
   readonly onEvent: (event: BrowserAnnotationSessionEvent) => void;
+  readonly onAttached: (result: BrowserAnnotationAttachedResult) => void;
 }
 
 /**
@@ -34,7 +63,9 @@ export interface BrowserAnnotationSessionOptions {
  */
 export class BrowserAnnotationSession {
   private readonly webContents: BrowserAnnotationWebContents;
+  private readonly identity: BrowserAnnotationSessionIdentity;
   private readonly onEvent: (event: BrowserAnnotationSessionEvent) => void;
+  private readonly onAttached: (result: BrowserAnnotationAttachedResult) => void;
   private readonly messageListener = (...args: unknown[]) => {
     this.handleDebuggerMessage(args);
   };
@@ -42,10 +73,13 @@ export class BrowserAnnotationSession {
   private ended = false;
   private started = false;
   private listening = false;
+  private capturing = false;
 
   constructor(options: BrowserAnnotationSessionOptions) {
     this.webContents = options.webContents;
+    this.identity = options.identity;
     this.onEvent = options.onEvent;
+    this.onAttached = options.onAttached;
   }
 
   isActive(): boolean {
@@ -136,15 +170,29 @@ export class BrowserAnnotationSession {
   }
 
   hideChromeForCapture(): Promise<void> {
-    return this.evaluateNamed(ANNOTATION_HIDE_CHROME_EXPRESSION);
+    return this.evaluateCommand(ANNOTATION_HIDE_CHROME_EXPRESSION, false);
   }
 
   resetAfterAttach(): Promise<void> {
-    return this.evaluateNamed(ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION);
+    return this.evaluateCommand(ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION, false);
+  }
+
+  captureFailed(): Promise<void> {
+    return this.evaluateCommand(ANNOTATION_CAPTURE_FAILED_EXPRESSION, false);
   }
 
   setMarkCountForTests(count: number): Promise<void> {
-    return this.evaluateNamed(buildAnnotationSetMarkCountExpression(count));
+    return this.evaluateCommand(
+      buildAnnotationSetMarkCountExpression(count),
+      false,
+    );
+  }
+
+  setTargetChatLabel(label: string): Promise<void> {
+    return this.evaluateCommand(
+      buildAnnotationSetTargetChatLabelExpression(label),
+      false,
+    );
   }
 
   private end(reason: BrowserAnnotationEndReason): void {
@@ -192,11 +240,15 @@ export class BrowserAnnotationSession {
       this.end("cancelled");
       return;
     }
+    if (sanitized.type === "attachRequested") {
+      void this.captureAttach(sanitized.payload);
+      return;
+    }
     this.onEvent(sanitized);
   }
 
   private sendCancel(): void {
-    void this.evaluateNamed(ANNOTATION_CANCEL_EXPRESSION);
+    void this.evaluateCommand(ANNOTATION_CANCEL_EXPRESSION, false);
   }
 
   private removeBinding(): void {
@@ -211,22 +263,100 @@ export class BrowserAnnotationSession {
       .catch(() => undefined);
   }
 
-  private async evaluateNamed(expression: string): Promise<void> {
-    if (this.contextId === null) return;
-    const browserDebugger = this.webContents.debugger;
-    if (!browserDebugger.isAttached()) return;
+  private async captureAttach(
+    request: BrowserAnnotationAttachRequest,
+  ): Promise<void> {
+    if (!this.isActive() || this.capturing) return;
+    this.capturing = true;
     try {
-      await browserDebugger.sendCommand(
+      await this.hideChromeForCapture();
+      await this.evaluateCommand(ANNOTATION_WAIT_FOR_PAINT_EXPRESSION, true);
+      const viewport = await this.readViewportCssSize();
+      const image = await this.webContents.capturePage();
+      const pngBytes =
+        viewport === null
+          ? null
+          : cropAnnotationPng(image, request.unionRect, viewport);
+      if (pngBytes === null) {
+        if (this.isActive()) await this.captureFailed();
+        return;
+      }
+      if (!this.isActive()) return;
+      const payload = buildAnnotationAttachPayload({
+        annotationId: mintAnnotationId(),
+        tabId: this.identity.tabId,
+        sessionId: this.identity.sessionId,
+        pageUrl: this.webContents.getURL(),
+        pageTitle: this.webContents.getTitle(),
+        capturedAt: Date.now(),
+        comment: request.comment,
+        marks: request.marks,
+        elements: request.elements,
+      });
+      await this.resetAfterAttach();
+      if (!this.isActive()) return;
+      this.onAttached({ payload, pngBytes });
+    } catch (err) {
+      log.warn("[browser-view] annotation capture failed", {
+        error: describeLogError(err),
+        webContentsId: this.webContents.id,
+      });
+      if (this.isActive()) {
+        await this.captureFailed();
+      }
+    } finally {
+      this.capturing = false;
+    }
+  }
+
+  private async readViewportCssSize(): Promise<{
+    readonly width: number;
+    readonly height: number;
+  } | null> {
+    const evaluation = await this.evaluateRaw(
+      ANNOTATION_VIEWPORT_SIZE_EXPRESSION,
+      false,
+    );
+    const value = readEvaluateValue(evaluation);
+    if (!isRecord(value)) return null;
+    const width = value.width;
+    const height = value.height;
+    if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) {
+      return null;
+    }
+    if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) {
+      return null;
+    }
+    return { width, height };
+  }
+
+  private async evaluateCommand(
+    expression: string,
+    awaitPromise: boolean,
+  ): Promise<void> {
+    await this.evaluateRaw(expression, awaitPromise);
+  }
+
+  private async evaluateRaw(
+    expression: string,
+    awaitPromise: boolean,
+  ): Promise<unknown> {
+    if (this.contextId === null) return undefined;
+    const browserDebugger = this.webContents.debugger;
+    if (!browserDebugger.isAttached()) return undefined;
+    try {
+      return await browserDebugger.sendCommand(
         "Runtime.evaluate",
         {
           expression,
           contextId: this.contextId,
           returnByValue: true,
+          awaitPromise,
         },
         undefined,
       );
     } catch {
-      return;
+      return undefined;
     }
   }
 }
@@ -264,6 +394,14 @@ function evaluateFailed(value: unknown): boolean {
   const result = value.result;
   if (!isRecord(result)) return true;
   return result.value !== true;
+}
+
+function readEvaluateValue(value: unknown): unknown {
+  if (!isRecord(value)) return null;
+  if (isRecord(value.exceptionDetails)) return null;
+  const result = value.result;
+  if (!isRecord(result)) return null;
+  return result.value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

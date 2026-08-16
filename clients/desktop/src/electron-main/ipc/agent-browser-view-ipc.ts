@@ -150,6 +150,7 @@ export function registerAgentBrowserViewIpc(
       );
     },
     notifyAnnotationEvent: () => {},
+    notifyAnnotationAttached: () => {},
     scheduleDebugSnapshot: scheduleBrowserViewDebugSnapshot,
     applyStorageState: () =>
       Promise.reject(

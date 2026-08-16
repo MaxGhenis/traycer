@@ -48,6 +48,42 @@ export interface BrowserAnnotationAttachRequest {
   readonly unionRect: BrowserAnnotationCssRect;
 }
 
+/**
+ * Counts minted by main from the sanitized mark list. Ticket 04's composer
+ * record uses the same shape.
+ */
+export interface BrowserAnnotationCounts {
+  readonly elements: number;
+  readonly regions: number;
+  readonly strokes: number;
+}
+
+/**
+ * Main-owned attach payload after a successful crop. `annotationId` is minted
+ * here; the guest never supplies ids or pixels.
+ */
+export interface BrowserAnnotationAttachPayload {
+  readonly annotationId: string;
+  readonly tabId: string;
+  readonly sessionId: string;
+  readonly origin: string;
+  readonly pageUrl: string;
+  readonly pageTitle: string;
+  readonly capturedAt: number;
+  readonly comment: string;
+  readonly counts: BrowserAnnotationCounts;
+  readonly elements: readonly BrowserViewElementCapture[];
+}
+
+/**
+ * IPC event for a successful attach. Failure never emits this (bundle stays
+ * open; guest `captureFailed()` notice only).
+ */
+export interface BrowserAnnotationAttachedIpcEvent extends BrowserViewTileKey {
+  readonly payload: BrowserAnnotationAttachPayload;
+  readonly pngBytes: Uint8Array;
+}
+
 export type BrowserAnnotationEndReason =
   | "cancelled"
   | "navigation"
