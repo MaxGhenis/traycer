@@ -21,6 +21,7 @@ import {
   resetPipCaptureArmCountsForTests,
 } from "@/lib/browser-view/pip-capture-arm-counts";
 import type { BrowserViewTileKey } from "@/lib/browser-view/desktop-browser-view";
+import { PIP_MIN_HEIGHT } from "@/lib/browser-view/pip-geometry";
 import {
   applyPipBurstEnded,
   applyPipBurstStarted,
@@ -42,6 +43,7 @@ import {
 import { resetVisibleBrowserTileRegistryForTests } from "@/lib/browser-view/visible-tile-registry";
 import {
   findOpenArtifactInTab,
+  findOpenTileInTab,
   useEpicCanvasStore,
 } from "@/stores/epics/canvas/store";
 import { makeBrowserSessionTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
@@ -80,9 +82,14 @@ const revokeObjectURL = vi.hoisted(() => vi.fn<(url: string) => void>());
 
 const bindingState = vi.hoisted(() => {
   const listeners = new Set<() => void>();
+  type TestBinding = {
+    readonly hostId: string;
+    readonly registrationId: string;
+    readonly tileKey: BrowserViewTileKey;
+  };
   return {
-    value: null as { readonly tileKey: BrowserViewTileKey } | null,
-    set(next: { readonly tileKey: BrowserViewTileKey } | null): void {
+    value: null as TestBinding | null,
+    set(next: TestBinding | null): void {
       bindingState.value = next;
       listeners.forEach((listener) => {
         listener();
@@ -324,15 +331,38 @@ function startBurst(input: {
   readonly tabId: string;
   readonly startedAt: number;
 }): void {
+  startBurstOnHost("host-a", input);
+}
+
+function startBurstOnHost(
+  hostId: string,
+  input: {
+    readonly burstId: string;
+    readonly sessionId: string;
+    readonly tabId: string;
+    readonly startedAt: number;
+  },
+): void {
   applyPipBurstStarted({
     epicId: EPIC,
-    hostId: "host-a",
+    hostId,
     sessionId: input.sessionId,
     tabId: input.tabId,
     burstId: input.burstId,
     chatId: "chat-1",
     startedAt: input.startedAt,
   });
+}
+
+function testBinding(
+  hostId: string,
+  registrationId: string,
+): {
+  readonly hostId: string;
+  readonly registrationId: string;
+  readonly tileKey: BrowserViewTileKey;
+} {
+  return { hostId, registrationId, tileKey: TILE_KEY };
 }
 
 function endBurst(
@@ -365,10 +395,7 @@ function renderPip(): void {
   render(<AgentBrowserPip epicId={EPIC} viewTabId={VIEW_TAB} surfaceVisible />);
 }
 
-function setViewport(
-  width: number,
-  height: number,
-): () => void {
+function setViewport(width: number, height: number): () => void {
   const previousWidth = window.innerWidth;
   const previousHeight = window.innerHeight;
   Object.defineProperty(window, "innerWidth", {
@@ -567,14 +594,14 @@ describe("AgentBrowserPip", () => {
     renderPip();
 
     expect(
-      screen.getByTestId("agent-browser-pip-row-b2").getAttribute(
-        "data-pip-row-kind",
-      ),
+      screen
+        .getByTestId("agent-browser-pip-row-b2")
+        .getAttribute("data-pip-row-kind"),
     ).toBe("live");
     expect(
-      screen.getByTestId("agent-browser-pip-row-b3").getAttribute(
-        "data-pip-row-kind",
-      ),
+      screen
+        .getByTestId("agent-browser-pip-row-b3")
+        .getAttribute("data-pip-row-kind"),
     ).toBe("live");
   });
 
@@ -640,9 +667,7 @@ describe("AgentBrowserPip", () => {
     expect(row.getAttribute("data-pip-row-kind")).toBe("lingering");
     expect(row.getAttribute("role")).toBeNull();
     expect(row.getAttribute("tabindex")).toBe("0");
-    expect(
-      row.querySelector('button[aria-label^="Show "]'),
-    ).toBeNull();
+    expect(row.querySelector('button[aria-label^="Show "]')).toBeNull();
     expect(row.textContent).toContain("Agent finished on app.example");
   });
 
@@ -692,9 +717,9 @@ describe("AgentBrowserPip", () => {
     const snapshot = getPipSnapshot(EPIC);
     expect(snapshot.target?.burstId).toBe("b2");
     expect(snapshot.targetEverStreamed).toBe(false);
-    expect(screen.getByTestId("agent-browser-pip-outcome-only").textContent).toBe(
-      "Agent finished on app.example",
-    );
+    expect(
+      screen.getByTestId("agent-browser-pip-outcome-only").textContent,
+    ).toBe("Agent finished on app.example");
     expect(
       screen
         .getByTestId("agent-browser-pip-frame")
@@ -715,13 +740,212 @@ describe("AgentBrowserPip", () => {
       }
       renderPip();
 
-      expect(screen.getByTestId("agent-browser-pip-row-more").textContent).toBe(
-        "5 more",
+      const root = screen.getByTestId("agent-browser-pip");
+      expect(root.style.getPropertyValue("--pip-preview-height")).toBe(
+        `${String(PIP_MIN_HEIGHT)}px`,
       );
-      expect(screen.queryByTestId("agent-browser-pip-row-b2")).toBeNull();
+      expect(screen.getByTestId("agent-browser-pip-row-b2")).toBeTruthy();
+      expect(screen.getByTestId("agent-browser-pip-row-more").textContent).toBe(
+        "4 more",
+      );
     } finally {
       restoreViewport();
     }
+  });
+
+  it("keeps raw preview size through row-fit, resize, and move", () => {
+    const restoreViewport = setViewport(1024, 300);
+    try {
+      useEpicCanvasStore.getState().setPipGeometry(EPIC, {
+        anchorX: 900,
+        anchorY: 700,
+        previewWidth: 320,
+        previewHeight: 200,
+      });
+      startBurst({
+        burstId: "b1",
+        sessionId: "s1",
+        tabId: "t1",
+        startedAt: 1,
+      });
+      startBurst({
+        burstId: "b2",
+        sessionId: "s2",
+        tabId: "t2",
+        startedAt: 2,
+      });
+      renderPip();
+
+      expect(
+        useEpicCanvasStore.getState().pipGeometryByEpicId[EPIC]?.previewHeight,
+      ).toBe(200);
+
+      setViewport(1024, 768);
+      act(() => {
+        window.dispatchEvent(new Event("resize"));
+      });
+      expect(
+        useEpicCanvasStore.getState().pipGeometryByEpicId[EPIC]?.previewHeight,
+      ).toBe(200);
+
+      const root = screen.getByTestId("agent-browser-pip");
+      const toolbar = screen.getByRole("toolbar", {
+        name: "Agent browser picture in picture",
+      });
+      fireEvent.pointerDown(toolbar, {
+        button: 0,
+        pointerId: 1,
+        clientX: 100,
+        clientY: 100,
+      });
+      fireEvent.pointerMove(root, {
+        pointerId: 1,
+        clientX: 110,
+        clientY: 110,
+      });
+      fireEvent.pointerUp(root, {
+        pointerId: 1,
+        clientX: 110,
+        clientY: 110,
+      });
+      expect(
+        useEpicCanvasStore.getState().pipGeometryByEpicId[EPIC]?.previewHeight,
+      ).toBe(200);
+
+      const resize = screen.getByRole("button", {
+        name: "Resize picture in picture",
+      });
+      fireEvent.pointerDown(resize, {
+        button: 0,
+        pointerId: 2,
+        clientX: 200,
+        clientY: 200,
+      });
+      fireEvent.pointerMove(root, {
+        pointerId: 2,
+        clientX: 220,
+        clientY: 220,
+      });
+      fireEvent.pointerUp(root, {
+        pointerId: 2,
+        clientX: 220,
+        clientY: 220,
+      });
+      expect(
+        useEpicCanvasStore.getState().pipGeometryByEpicId[EPIC],
+      ).toMatchObject({
+        previewWidth: 340,
+        previewHeight: 220,
+      });
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  it("moves the bottom-right resize handle with the pointer", () => {
+    useEpicCanvasStore.getState().setPipGeometry(EPIC, {
+      anchorX: 500,
+      anchorY: 500,
+      previewWidth: 320,
+      previewHeight: 200,
+    });
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    renderPip();
+
+    const root = screen.getByTestId("agent-browser-pip");
+    const resize = screen.getByRole("button", {
+      name: "Resize picture in picture",
+    });
+    fireEvent.pointerDown(resize, {
+      button: 0,
+      pointerId: 3,
+      clientX: 400,
+      clientY: 400,
+    });
+    fireEvent.pointerMove(root, {
+      pointerId: 3,
+      clientX: 430,
+      clientY: 450,
+    });
+    expect(root.style.left).toBe("180px");
+    expect(root.style.top).toBe("300px");
+    fireEvent.pointerUp(root, {
+      pointerId: 3,
+      clientX: 430,
+      clientY: 450,
+    });
+
+    expect(useEpicCanvasStore.getState().pipGeometryByEpicId[EPIC]).toEqual({
+      anchorX: 530,
+      anchorY: 550,
+      previewWidth: 350,
+      previewHeight: 250,
+    });
+  });
+
+  it("positions a legacy-migrated chip from its bottom-right anchor", () => {
+    useEpicCanvasStore.getState().setPipGeometry(EPIC, {
+      anchorX: 420,
+      anchorY: 320,
+      previewWidth: 320,
+      previewHeight: 200,
+    });
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    endBurst("b1", "finished", 2);
+    act(() => {
+      vi.advanceTimersByTime(PIP_LINGER_MS);
+    });
+    renderPip();
+
+    const root = screen.getByTestId("agent-browser-pip");
+    expect(root.getAttribute("data-pip-phase")).toBe("chip");
+    expect(root.style.left).toBe("100px");
+    expect(root.style.top).toBe("120px");
+  });
+
+  it("uses anchor minus preview size for a live migrated-geometry drag", () => {
+    useEpicCanvasStore.getState().setPipGeometry(EPIC, {
+      anchorX: 420,
+      anchorY: 320,
+      previewWidth: 320,
+      previewHeight: 200,
+    });
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    renderPip();
+
+    const root = screen.getByTestId("agent-browser-pip");
+    const toolbar = screen.getByRole("toolbar", {
+      name: "Agent browser picture in picture",
+    });
+    fireEvent.pointerDown(toolbar, {
+      button: 0,
+      pointerId: 4,
+      clientX: 100,
+      clientY: 100,
+    });
+    fireEvent.pointerMove(root, {
+      pointerId: 4,
+      clientX: 110,
+      clientY: 120,
+    });
+
+    expect(root.style.left).toBe("110px");
+    expect(root.style.top).toBe("140px");
   });
 
   it("header X dismisses the displayed target and every rendered row", () => {
@@ -847,7 +1071,7 @@ describe("AgentBrowserPip", () => {
   });
 
   it("paints a fake pipCapture frame when a native binding exists", () => {
-    bindingState.set({ tileKey: TILE_KEY });
+    bindingState.set(testBinding("host-a", "native-registration"));
     startBurst({
       burstId: "b1",
       sessionId: "s1",
@@ -888,7 +1112,7 @@ describe("AgentBrowserPip", () => {
       nextFrame += 1;
       return `blob:pip-frame-${String(nextFrame)}`;
     });
-    bindingState.set({ tileKey: TILE_KEY });
+    bindingState.set(testBinding("host-a", "native-registration"));
     startBurst({
       burstId: "b1",
       sessionId: "s1",
@@ -916,7 +1140,9 @@ describe("AgentBrowserPip", () => {
       );
     });
     expect(
-      screen.getByTestId("agent-browser-pip-frame").querySelector("img")
+      screen
+        .getByTestId("agent-browser-pip-frame")
+        .querySelector("img")
         ?.getAttribute("src"),
     ).toBe("blob:pip-frame-1");
 
@@ -924,7 +1150,9 @@ describe("AgentBrowserPip", () => {
       endBurst("b1", "finished", 2);
     });
     expect(
-      screen.getByTestId("agent-browser-pip-frame").querySelector("img")
+      screen
+        .getByTestId("agent-browser-pip-frame")
+        .querySelector("img")
         ?.getAttribute("src"),
     ).toBe("blob:pip-frame-1");
 
@@ -948,7 +1176,9 @@ describe("AgentBrowserPip", () => {
       );
     });
     expect(
-      screen.getByTestId("agent-browser-pip-frame").querySelector("img")
+      screen
+        .getByTestId("agent-browser-pip-frame")
+        .querySelector("img")
         ?.getAttribute("src"),
     ).toBe("blob:pip-frame-1");
     expect(
@@ -958,19 +1188,21 @@ describe("AgentBrowserPip", () => {
     act(() => {
       vi.advanceTimersByTime(PIP_LINGER_MS);
     });
-    expect(screen.getByTestId("agent-browser-pip").getAttribute("data-pip-phase")).toBe(
-      "chip",
-    );
+    expect(
+      screen.getByTestId("agent-browser-pip").getAttribute("data-pip-phase"),
+    ).toBe("chip");
     expect(
       revokeObjectURL.mock.calls.some((call) => call[0] === "blob:pip-frame-1"),
     ).toBe(false);
 
     fireEvent.click(screen.getByTestId("agent-browser-pip-chip"));
-    expect(screen.getByTestId("agent-browser-pip").getAttribute("data-pip-phase")).toBe(
-      "finished",
-    );
     expect(
-      screen.getByTestId("agent-browser-pip-frame").querySelector("img")
+      screen.getByTestId("agent-browser-pip").getAttribute("data-pip-phase"),
+    ).toBe("finished");
+    expect(
+      screen
+        .getByTestId("agent-browser-pip-frame")
+        .querySelector("img")
         ?.getAttribute("src"),
     ).toBe("blob:pip-frame-1");
   });
@@ -987,7 +1219,7 @@ describe("AgentBrowserPip", () => {
     expect(pipCaptureState.start).not.toHaveBeenCalled();
 
     act(() => {
-      bindingState.set({ tileKey: TILE_KEY });
+      bindingState.set(testBinding("host-a", "native-registration"));
     });
     expect(headlessStreamState.closeCount).toBe(1);
     expect(pipCaptureState.start).toHaveBeenCalled();
@@ -996,7 +1228,7 @@ describe("AgentBrowserPip", () => {
   it("keeps native capture at one start when a new host client instance appears", async () => {
     vi.useRealTimers();
     clientState.set(null);
-    bindingState.set({ tileKey: TILE_KEY });
+    bindingState.set(testBinding("host-a", "native-registration"));
     startBurst({
       burstId: "b1",
       sessionId: "s1",
@@ -1043,7 +1275,7 @@ describe("AgentBrowserPip", () => {
 
   it("switches sources once per native/headless branch flip", async () => {
     vi.useRealTimers();
-    bindingState.set({ tileKey: TILE_KEY });
+    bindingState.set(testBinding("host-a", "native-registration"));
     startBurst({
       burstId: "b1",
       sessionId: "s1",
@@ -1062,7 +1294,7 @@ describe("AgentBrowserPip", () => {
     expect(headlessStreamState.openCount).toBe(1);
     expect(headlessStreamState.closeCount).toBe(0);
 
-    bindingState.set({ tileKey: TILE_KEY });
+    bindingState.set(testBinding("host-a", "native-registration"));
     await flushMacrotasks();
     expect(pipCaptureState.start).toHaveBeenCalledTimes(2);
     expect(pipCaptureState.stop).toHaveBeenCalledTimes(1);
@@ -1176,6 +1408,88 @@ describe("AgentBrowserPip", () => {
       id: expected.id,
     });
   });
+
+  it("opens a row against its host when session and tab ids collide", () => {
+    const sharedHostA = session({
+      sessionId: "shared-session",
+      name: "Host A",
+      hostId: "host-a",
+      tabs: [
+        tab({
+          tabId: "shared-tab",
+          url: "https://host-a.example/shared",
+          title: "Host A page",
+        }),
+      ],
+    });
+    const sharedHostB = session({
+      sessionId: "shared-session",
+      name: "Host B",
+      hostId: "host-b",
+      tabs: [
+        tab({
+          tabId: "shared-tab",
+          url: "https://host-b.example/shared",
+          title: "Host B page",
+        }),
+      ],
+    });
+    const items = [...getPipEpicSessionItems(EPIC), sharedHostA, sharedHostB];
+    sessionsState.value = { ...sessionsState.value, items };
+    setPipEpicSessionItemsForTests(EPIC, items);
+
+    const hostATile = makeBrowserSessionTileRef({
+      name: "Host A page",
+      hostId: "host-a",
+      sessionId: "shared-session",
+      tabId: "shared-tab",
+    });
+    const hostBTile = makeBrowserSessionTileRef({
+      name: "Host B page",
+      hostId: "host-b",
+      sessionId: "shared-session",
+      tabId: "shared-tab",
+    });
+    useEpicCanvasStore.getState().openTileInTab(VIEW_TAB, hostATile);
+    useEpicCanvasStore.getState().openTileInTab(VIEW_TAB, hostBTile);
+    bindingState.set(testBinding("host-a", hostATile.id));
+    startBurst({
+      burstId: "shared-a",
+      sessionId: "shared-session",
+      tabId: "shared-tab",
+      startedAt: 1,
+    });
+    startBurstOnHost("host-b", {
+      burstId: "shared-b",
+      sessionId: "shared-session",
+      tabId: "shared-tab",
+      startedAt: 2,
+    });
+    renderPip();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Show Host B page in picture in picture",
+      }),
+    );
+
+    expect(
+      findOpenTileInTab(VIEW_TAB, {
+        id: hostATile.id,
+        hostId: "host-a",
+      })?.instanceId,
+    ).toBe(hostATile.instanceId);
+    expect(
+      findOpenTileInTab(VIEW_TAB, {
+        id: hostBTile.id,
+        hostId: "host-b",
+      })?.instanceId,
+    ).toBe(hostBTile.instanceId);
+    const root = useEpicCanvasStore.getState().canvasByTabId[VIEW_TAB]?.root;
+    expect(root?.kind).toBe("pane");
+    if (root?.kind !== "pane") throw new Error("expected a canvas pane");
+    expect(root.activeTabId).toBe(hostBTile.instanceId);
+  });
 });
 
 describe("AgentBrowserPip captions", () => {
@@ -1228,6 +1542,45 @@ describe("AgentBrowserPip captions", () => {
     const caption = screen.getByTestId("agent-browser-pip-caption");
     expect(caption.textContent).toBe("Filling checkout form");
     expect(caption.getAttribute("data-pip-caption-visible")).toBe("true");
+  });
+
+  it("falls back to the chat title when a row caption ages out", async () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 2,
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 1,
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      hostId: "host-a",
+      sessionId: "s2",
+      tabId: "t2",
+      burstId: "b2",
+      cellTitle: "Searching hotels",
+    });
+    renderPip();
+
+    const row = screen.getByTestId("agent-browser-pip-row-b2");
+    expect(row.textContent).toContain("Searching hotels");
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(
+        PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS + 1_000,
+      );
+    });
+    await Promise.resolve();
+
+    expect(row.textContent).not.toContain("Searching hotels");
+    expect(row.textContent).toContain("fix-billing");
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("fades the caption out after HOLD and unmounts after HOLD+FADE", () => {

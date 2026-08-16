@@ -79,7 +79,7 @@ import { useEpicChatRecords } from "@/lib/epic-selectors";
 import { useRunnerHostOrNull } from "@/providers/use-runner-host";
 import { useMaybeOpenEpicHandle } from "@/providers/use-open-epic-handle";
 import {
-  findOpenArtifactInTab,
+  findOpenTileInTab,
   useEpicCanvasStore,
 } from "@/stores/epics/canvas/store";
 import { makeBrowserSessionTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
@@ -139,37 +139,48 @@ function AgentBrowserPipSurface(props: {
     [rawGeometry, rows.length, viewport],
   );
   const { geometry, rowLayout } = stack;
+  const chipGeometry = useMemo(
+    () => clampPipGeometry(rawGeometry, viewport, rawGeometry.previewHeight),
+    [rawGeometry, viewport],
+  );
+  const isChip = snapshot.phase === "chip";
+  const interactionGeometry = useMemo(
+    () => ({
+      ...rawGeometry,
+      anchorX: isChip ? chipGeometry.anchorX : geometry.anchorX,
+      anchorY: isChip ? chipGeometry.anchorY : geometry.anchorY,
+    }),
+    [chipGeometry, geometry, isChip, rawGeometry],
+  );
   const visibleRows = rows.slice(0, rowLayout.visibleCount);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<PipPointerSession | null>(null);
+  const dragMovedRef = useRef(false);
 
   useEffect(() => {
     const onResize = (): void => {
-      const nextViewport = readViewportSize();
-      setViewport(nextViewport);
-      const current =
-        useEpicCanvasStore.getState().pipGeometryByEpicId[epicId] ??
-        defaultPipGeometry(nextViewport);
-      setPipGeometry(
-        epicId,
-        layoutPipStack(current, rows.length, nextViewport).geometry,
-      );
+      setViewport(readViewportSize());
     };
     window.addEventListener("resize", onResize);
     return () => {
       window.removeEventListener("resize", onResize);
     };
-  }, [epicId, rows.length, setPipGeometry]);
+  }, []);
 
   const commitGeometry = useCallback(
-    (next: EpicPipGeometry) => {
+    (next: EpicPipGeometry, resize: boolean) => {
       const nextViewport = readViewportSize();
       setPipGeometry(
         epicId,
-        layoutPipStack(next, rows.length, nextViewport).geometry,
+        persistedPipGeometry(
+          next,
+          isChip ? 0 : rows.length,
+          nextViewport,
+          resize,
+        ),
       );
     },
-    [epicId, rows.length, setPipGeometry],
+    [epicId, isChip, rows.length, setPipGeometry],
   );
 
   const applyLiveGeometry = useCallback(
@@ -177,19 +188,20 @@ function AgentBrowserPipSurface(props: {
       const node = rootRef.current;
       if (node === null) return;
       const nextViewport = readViewportSize();
-      const nextStack = layoutPipStack(next, rows.length, nextViewport);
-      const clamped = nextStack.geometry;
       if (snapshot.phase === "chip") {
-        node.style.left = "auto";
-        node.style.top = "auto";
-        node.style.right = `${String(nextViewport.width - clamped.anchorX)}px`;
-        node.style.bottom = `${String(nextViewport.height - clamped.anchorY)}px`;
+        const clamped = clampPipGeometry(
+          next,
+          nextViewport,
+          next.previewHeight,
+        );
+        node.style.left = `${String(clamped.anchorX - clamped.previewWidth)}px`;
+        node.style.top = `${String(clamped.anchorY - clamped.previewHeight)}px`;
         node.style.width = "auto";
         node.style.height = "auto";
         return;
       }
-      node.style.right = "auto";
-      node.style.bottom = "auto";
+      const nextStack = layoutPipStack(next, rows.length, nextViewport);
+      const clamped = nextStack.geometry;
       node.style.left = `${String(clamped.anchorX - clamped.previewWidth)}px`;
       node.style.top = `${String(clamped.anchorY - nextStack.rowLayout.outerHeight)}px`;
       node.style.width = `${String(clamped.previewWidth)}px`;
@@ -206,6 +218,8 @@ function AgentBrowserPipSurface(props: {
     (event: ReactPointerEvent<HTMLElement>, mode: "move" | "resize") => {
       if (event.button !== 0) return;
       if (
+        mode === "move" &&
+        !isChip &&
         event.target instanceof Element &&
         event.target.closest("button") !== null
       ) {
@@ -213,18 +227,18 @@ function AgentBrowserPipSurface(props: {
       }
       event.preventDefault();
       event.stopPropagation();
-      const origin = geometry;
+      dragMovedRef.current = false;
+      const origin = interactionGeometry;
       dragRef.current = {
         pointerId: event.pointerId,
         mode,
         startX: event.clientX,
         startY: event.clientY,
         origin,
-        moved: false,
       };
       event.currentTarget.setPointerCapture(event.pointerId);
     },
-    [geometry],
+    [interactionGeometry, isChip],
   );
 
   const handlePointerMove = useCallback(
@@ -237,7 +251,7 @@ function AgentBrowserPipSurface(props: {
         Math.abs(dx) > PIP_DRAG_CLICK_SLOP_PX ||
         Math.abs(dy) > PIP_DRAG_CLICK_SLOP_PX
       ) {
-        drag.moved = true;
+        if (isChip) dragMovedRef.current = true;
       }
       if (drag.mode === "move") {
         applyLiveGeometry({
@@ -249,11 +263,13 @@ function AgentBrowserPipSurface(props: {
       }
       applyLiveGeometry({
         ...drag.origin,
+        anchorX: drag.origin.anchorX + dx,
+        anchorY: drag.origin.anchorY + dy,
         previewWidth: drag.origin.previewWidth + dx,
         previewHeight: drag.origin.previewHeight + dy,
       });
     },
-    [applyLiveGeometry],
+    [applyLiveGeometry, isChip],
   );
 
   const handlePointerUp = useCallback(
@@ -272,10 +288,12 @@ function AgentBrowserPipSurface(props: {
             }
           : {
               ...drag.origin,
+              anchorX: drag.origin.anchorX + dx,
+              anchorY: drag.origin.anchorY + dy,
               previewWidth: drag.origin.previewWidth + dx,
               previewHeight: drag.origin.previewHeight + dy,
             };
-      commitGeometry(next);
+      commitGeometry(next, drag.mode === "resize");
     },
     [commitGeometry],
   );
@@ -289,13 +307,19 @@ function AgentBrowserPipSurface(props: {
           readViewportSize(),
           rowLayout.outerHeight,
         );
+        const next = geometryForCorner(
+          corner,
+          rawGeometry,
+          readViewportSize(),
+          rowLayout.outerHeight,
+        );
         commitGeometry(
-          geometryForCorner(
-            corner,
-            geometry,
-            readViewportSize(),
-            rowLayout.outerHeight,
-          ),
+          {
+            ...rawGeometry,
+            anchorX: next.anchorX,
+            anchorY: next.anchorY,
+          },
+          false,
         );
         return;
       }
@@ -310,10 +334,14 @@ function AgentBrowserPipSurface(props: {
         commitGeometry(
           event.shiftKey
             ? {
-                ...geometry,
-                previewWidth: geometry.previewWidth - step,
+                ...interactionGeometry,
+                previewWidth: rawGeometry.previewWidth - step,
               }
-            : { ...geometry, anchorX: geometry.anchorX - step },
+            : {
+                ...interactionGeometry,
+                anchorX: interactionGeometry.anchorX - step,
+              },
+          event.shiftKey,
         );
         return;
       }
@@ -322,10 +350,14 @@ function AgentBrowserPipSurface(props: {
         commitGeometry(
           event.shiftKey
             ? {
-                ...geometry,
-                previewWidth: geometry.previewWidth + step,
+                ...interactionGeometry,
+                previewWidth: rawGeometry.previewWidth + step,
               }
-            : { ...geometry, anchorX: geometry.anchorX + step },
+            : {
+                ...interactionGeometry,
+                anchorX: interactionGeometry.anchorX + step,
+              },
+          event.shiftKey,
         );
         return;
       }
@@ -334,10 +366,14 @@ function AgentBrowserPipSurface(props: {
         commitGeometry(
           event.shiftKey
             ? {
-                ...geometry,
-                previewHeight: geometry.previewHeight - step,
+                ...interactionGeometry,
+                previewHeight: rawGeometry.previewHeight - step,
               }
-            : { ...geometry, anchorY: geometry.anchorY - step },
+            : {
+                ...interactionGeometry,
+                anchorY: interactionGeometry.anchorY - step,
+              },
+          event.shiftKey,
         );
         return;
       }
@@ -346,24 +382,44 @@ function AgentBrowserPipSurface(props: {
         commitGeometry(
           event.shiftKey
             ? {
-                ...geometry,
-                previewHeight: geometry.previewHeight + step,
+                ...interactionGeometry,
+                previewHeight: rawGeometry.previewHeight + step,
               }
-            : { ...geometry, anchorY: geometry.anchorY + step },
+            : {
+                ...interactionGeometry,
+                anchorY: interactionGeometry.anchorY + step,
+              },
+          event.shiftKey,
         );
       }
     },
-    [commitGeometry, epicId, geometry, rowLayout.outerHeight, rows, snapshot],
+    [
+      commitGeometry,
+      epicId,
+      geometry,
+      interactionGeometry,
+      rawGeometry,
+      rowLayout.outerHeight,
+      rows,
+      snapshot,
+    ],
   );
 
+  const consumeChipDragClick = useCallback((): boolean => {
+    const moved = dragMovedRef.current;
+    dragMovedRef.current = false;
+    return moved;
+  }, []);
+
   const overlayId = `agent-browser-pip-${epicId}`;
-  const isChip = snapshot.phase === "chip";
   const rootStyle: PipRootStyle = {
     "--pip-preview-height": `${String(geometry.previewHeight)}px`,
-    left: isChip ? undefined : geometry.anchorX - geometry.previewWidth,
-    top: isChip ? undefined : geometry.anchorY - rowLayout.outerHeight,
-    right: isChip ? viewport.width - geometry.anchorX : undefined,
-    bottom: isChip ? viewport.height - geometry.anchorY : undefined,
+    left: isChip
+      ? chipGeometry.anchorX - chipGeometry.previewWidth
+      : geometry.anchorX - geometry.previewWidth,
+    top: isChip
+      ? chipGeometry.anchorY - chipGeometry.previewHeight
+      : geometry.anchorY - rowLayout.outerHeight,
     width: isChip ? "auto" : geometry.previewWidth,
     height: isChip ? "auto" : rowLayout.outerHeight,
     maxWidth: isChip ? "min(24rem, calc(100vw - 2rem))" : undefined,
@@ -396,6 +452,7 @@ function AgentBrowserPipSurface(props: {
         <PipChip
           epicId={epicId}
           snapshot={snapshot}
+          dragMoved={consumeChipDragClick}
           onPointerDown={(event) => handlePointerDown(event, "move")}
           onKeyDown={handleKeyDown}
         />
@@ -408,7 +465,6 @@ function AgentBrowserPipSurface(props: {
           rows={visibleRows}
           allRows={rows}
           hiddenRowCount={rowLayout.hiddenCount}
-          dragMoved={() => dragRef.current?.moved === true}
           onHeaderPointerDown={(event) => handlePointerDown(event, "move")}
           onResizePointerDown={(event) => handlePointerDown(event, "resize")}
           onKeyDown={handleKeyDown}
@@ -425,6 +481,7 @@ type PipRootStyle = CSSProperties & {
 function PipChip(props: {
   readonly epicId: string;
   readonly snapshot: PipSnapshot;
+  readonly dragMoved: () => boolean;
   readonly onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
 }): ReactElement {
@@ -440,6 +497,7 @@ function PipChip(props: {
         onPointerDown={props.onPointerDown}
         onKeyDown={props.onKeyDown}
         onClick={() => {
+          if (props.dragMoved()) return;
           reexpandPip(props.epicId);
         }}
       >
@@ -470,7 +528,6 @@ function PipExpanded(props: {
   readonly rows: readonly PipRowView[];
   readonly allRows: readonly PipRowView[];
   readonly hiddenRowCount: number;
-  readonly dragMoved: () => boolean;
   readonly onHeaderPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onResizePointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
@@ -551,7 +608,7 @@ function PipExpanded(props: {
           data-testid="agent-browser-pip-frame"
           className="relative min-h-0 flex-1 overflow-hidden bg-muted/40 outline-none disabled:cursor-not-allowed"
           onClick={() => {
-            if (props.dragMoved() || snapshot.target === null) return;
+            if (snapshot.target === null) return;
             openTile(snapshot.target, snapshot.openTileEnabled);
           }}
         >
@@ -766,7 +823,7 @@ function PipCaptionBadge(props: {
 }): ReactElement | null {
   const { caption } = props;
   const now = useSyncExternalStore(
-    subscribeCaptionClock,
+    caption === null ? subscribeNoop : subscribeCaptionClock,
     readCaptionClock,
     readCaptionClock,
   );
@@ -794,6 +851,10 @@ function subscribeCaptionClock(onStoreChange: () => void): () => void {
   return () => {
     window.clearInterval(id);
   };
+}
+
+function subscribeNoop(): () => void {
+  return () => undefined;
 }
 
 function readCaptionClock(): number {
@@ -874,19 +935,22 @@ function usePipRows(epicId: string, rows: readonly PipRow[]): PipRowView[] {
   const items = usePipEpicSessionItems(epicId);
   const chats = useEpicChatRecords();
   const [now, setNow] = useState(Date.now);
-  const hasActiveLingering = rows.some(
-    (row) => row.expiresAt !== null && row.expiresAt > now,
+  const captionLifetime = PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS;
+  const hasActiveDeadline = rows.some(
+    (row) =>
+      (row.expiresAt !== null && row.expiresAt > now) ||
+      (row.caption !== null && row.caption.arrivedAt + captionLifetime > now),
   );
 
   useEffect(() => {
-    if (!hasActiveLingering) return;
+    if (!hasActiveDeadline) return;
     const id = window.setInterval(() => {
       setNow(Date.now());
     }, PIP_ROWS_CLOCK_MS);
     return () => {
       window.clearInterval(id);
     };
-  }, [hasActiveLingering]);
+  }, [hasActiveDeadline]);
 
   return rows.flatMap((row) => {
     if (row.expiresAt !== null && row.expiresAt <= now) return [];
@@ -898,7 +962,10 @@ function usePipRows(epicId: string, rows: readonly PipRow[]): PipRowView[] {
     const tab = session?.tabs.find((item) => item.tabId === row.target.tabId);
     const chatTitle =
       chats.find((chat) => chat.id === row.chatId)?.title.trim() ?? "";
-    const caption = row.caption?.cellTitle.trim() ?? "";
+    const caption =
+      row.caption !== null && row.caption.arrivedAt + captionLifetime > now
+        ? row.caption.cellTitle.trim()
+        : "";
     return [
       {
         row,
@@ -933,34 +1000,41 @@ function layoutPipStack(
   rowCount: number,
   viewport: { readonly width: number; readonly height: number },
 ): PipStackLayout {
-  const maxPreviewHeight =
-    rowCount === 0
-      ? geometry.previewHeight
-      : Math.max(
-          PIP_MIN_HEIGHT,
-          viewport.height -
-            PIP_VIEWPORT_MARGIN * 2 -
-            PIP_MORE_HEIGHT_PX -
-            PIP_ROW_GAP_PX,
-        );
-  const fitted = {
-    ...geometry,
-    previewHeight: Math.min(geometry.previewHeight, maxPreviewHeight),
-  };
+  const raw = clampPipGeometry(geometry, viewport, geometry.previewHeight);
   const initialRows = pipRowLayout(
+    rowCount,
+    raw.previewHeight,
+    viewport.height,
+  );
+  const fitted = {
+    ...raw,
+    previewHeight:
+      initialRows.hiddenCount === 0 ? raw.previewHeight : PIP_MIN_HEIGHT,
+  };
+  const rowLayout = pipRowLayout(
     rowCount,
     fitted.previewHeight,
     viewport.height,
   );
-  const clamped = clampPipGeometry(fitted, viewport, initialRows.outerHeight);
-  const rowLayout = pipRowLayout(
-    rowCount,
-    clamped.previewHeight,
-    viewport.height,
-  );
   return {
-    geometry: clampPipGeometry(clamped, viewport, rowLayout.outerHeight),
+    geometry: clampPipGeometry(fitted, viewport, rowLayout.outerHeight),
     rowLayout,
+  };
+}
+
+function persistedPipGeometry(
+  geometry: EpicPipGeometry,
+  rowCount: number,
+  viewport: { readonly width: number; readonly height: number },
+  resize: boolean,
+): EpicPipGeometry {
+  const raw = clampPipGeometry(geometry, viewport, geometry.previewHeight);
+  const rendered = layoutPipStack(geometry, rowCount, viewport).geometry;
+  return {
+    anchorX: rendered.anchorX,
+    anchorY: rendered.anchorY,
+    previewWidth: resize ? raw.previewWidth : geometry.previewWidth,
+    previewHeight: resize ? raw.previewHeight : geometry.previewHeight,
   };
 }
 
@@ -1043,16 +1117,22 @@ function useOpenPipTarget(
         latch.tabId,
       );
       const existingNative =
-        binding === null
+        binding === null || binding.hostId !== latch.hostId
           ? null
-          : findOpenArtifactInTab(viewTabId, binding.registrationId);
+          : findOpenTileInTab(viewTabId, {
+              id: binding.registrationId,
+              hostId: latch.hostId,
+            });
       const tile = makeBrowserSessionTileRef({
         name: tab?.title ?? session?.name ?? "Browser",
         hostId: latch.hostId,
         sessionId: latch.sessionId,
         tabId: latch.tabId,
       });
-      const existingPointer = findOpenArtifactInTab(viewTabId, tile.id);
+      const existingPointer = findOpenTileInTab(viewTabId, {
+        id: tile.id,
+        hostId: latch.hostId,
+      });
       const existing = existingNative ?? existingPointer;
       navigateNested(epicId, viewTabId, () =>
         existing === null
@@ -1397,5 +1477,4 @@ interface PipPointerSession {
   readonly startX: number;
   readonly startY: number;
   readonly origin: EpicPipGeometry;
-  moved: boolean;
 }
