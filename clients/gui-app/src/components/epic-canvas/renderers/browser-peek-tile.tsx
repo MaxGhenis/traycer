@@ -5,7 +5,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
   type CompositionEvent as ReactCompositionEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
@@ -44,9 +46,11 @@ import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
 import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
 import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
+import { hasPlatformModKey } from "@/lib/keybindings/chord";
 import { cn } from "@/lib/utils";
 import { wheelDeltaToPixels } from "@/lib/wheel-delta-to-pixels";
 import type { BrowserPeekTileRef } from "@/stores/epics/canvas/types";
+import { useScreencastArmedStore } from "@/stores/screencast-armed-store";
 
 const DEFAULT_MAX_WIDTH = 1280;
 const DEFAULT_MAX_HEIGHT = 720;
@@ -242,6 +246,17 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const armedEpoch = armedState?.client === client ? armedState.epoch : null;
   const presentedArmedEpoch = visible ? armedEpoch : null;
   const dialog = dialogForClient(dialogState, client);
+
+  // Single write site for the app-wide armed flag. Every disarm path
+  // (revoke, hide, release, Escape-free blur, close/unmount) either
+  // clears presentedArmedEpoch or unmounts this effect.
+  useLayoutEffect(() => {
+    const setArmed = useScreencastArmedStore.getState().setArmed;
+    setArmed(presentedArmedEpoch !== null);
+    return () => {
+      setArmed(false);
+    };
+  }, [presentedArmedEpoch]);
 
   const setLifecycle = useCallback(
     (value: SetStateAction<PeekLifecycle>) => {
@@ -610,6 +625,45 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       requestNav({ kind: "reload" });
     },
   });
+
+  useEffect(() => {
+    const tile = tileRef.current;
+    if (tile === null || presentedArmedEpoch === null) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (isScreencastModChord(event, "l")) {
+        event.preventDefault();
+        event.stopPropagation();
+        // Release page input first: lift any modifier the IME already
+        // forwarded, then move focus to the address bar so later keys
+        // stay in chrome.
+        if (document.activeElement === imeInputRef.current) {
+          releaseForwardedModKeys(event, sendInput);
+        }
+        focusScreencastAddressBar(tile);
+        return;
+      }
+      if (isScreencastModChord(event, "r")) {
+        event.preventDefault();
+        event.stopPropagation();
+        requestNav({ kind: "reload" });
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent): void => {
+      if (
+        isScreencastModChord(event, "l") ||
+        isScreencastModChord(event, "r")
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    tile.addEventListener("keydown", onKeyDown, true);
+    tile.addEventListener("keyup", onKeyUp, true);
+    return () => {
+      tile.removeEventListener("keydown", onKeyDown, true);
+      tile.removeEventListener("keyup", onKeyUp, true);
+    };
+  }, [presentedArmedEpoch, requestNav, sendInput]);
 
   const respondToDialog = useCallback(
     (generation: number, accept: boolean, promptText: string | null) => {
@@ -1035,10 +1089,14 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           className="pointer-events-none absolute left-0 top-0 size-px opacity-0"
           onFocus={arm}
           onBlur={(event) => handleFocusExit(event.relatedTarget)}
-          onKeyDown={(event) => {
+          onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
             if (activeDialogRef.current !== null) return;
             if (event.nativeEvent.isComposing || composingRef.current) return;
             if (activeArmEpochRef.current === null) return;
+            if (isScreencastModChord(event.nativeEvent, "v")) {
+              event.preventDefault();
+              return;
+            }
             event.preventDefault();
             sendInput({
               kind: "keyboard",
@@ -1059,10 +1117,14 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               });
             }
           }}
-          onKeyUp={(event) => {
+          onKeyUp={(event: ReactKeyboardEvent<HTMLInputElement>) => {
             if (activeDialogRef.current !== null) return;
             if (event.nativeEvent.isComposing || composingRef.current) return;
             if (activeArmEpochRef.current === null) return;
+            if (isScreencastModChord(event.nativeEvent, "v")) {
+              event.preventDefault();
+              return;
+            }
             event.preventDefault();
             sendInput({
               kind: "keyboard",
@@ -1072,6 +1134,14 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               modifiers: inputModifiers(event),
               autoRepeat: event.repeat,
             });
+          }}
+          onPaste={(event: ReactClipboardEvent<HTMLInputElement>) => {
+            if (activeArmEpochRef.current === null) return;
+            if (!visible) return;
+            const text = event.clipboardData.getData("text/plain");
+            event.preventDefault();
+            if (text === "") return;
+            sendInput({ kind: "insertText", text });
           }}
           onCompositionStart={() => {
             composingRef.current = true;
@@ -1442,6 +1512,47 @@ function isBrowserAddressInput(target: EventTarget | null): boolean {
     target instanceof HTMLInputElement &&
     target.getAttribute("aria-label") === "Browser address"
   );
+}
+
+function isScreencastModChord(event: KeyboardEvent, key: string): boolean {
+  return (
+    hasPlatformModKey(event) &&
+    !event.altKey &&
+    !event.shiftKey &&
+    event.key.toLowerCase() === key
+  );
+}
+
+function focusScreencastAddressBar(tile: HTMLElement): void {
+  const input = tile.querySelector('input[aria-label="Browser address"]');
+  if (!(input instanceof HTMLInputElement)) return;
+  input.focus();
+}
+
+function releaseForwardedModKeys(
+  event: KeyboardEvent,
+  send: (frame: PeekKeyboardInput) => void,
+): void {
+  if (event.metaKey) {
+    send({
+      kind: "keyboard",
+      type: "keyUp",
+      code: "MetaLeft",
+      key: "Meta",
+      modifiers: 0,
+      autoRepeat: false,
+    });
+  }
+  if (event.ctrlKey) {
+    send({
+      kind: "keyboard",
+      type: "keyUp",
+      code: "ControlLeft",
+      key: "Control",
+      modifiers: 0,
+      autoRepeat: false,
+    });
+  }
 }
 
 function sendPeekFrame(
