@@ -25,6 +25,7 @@ import {
   applyPipBurstEnded,
   applyPipBurstStarted,
   applyPipCaption,
+  getPipDismissalsForTests,
   getPipSnapshot,
   PIP_CAPTION_FADE_MS,
   PIP_CAPTION_HOLD_MS,
@@ -204,6 +205,10 @@ vi.mock("@/hooks/host/use-host-directory-entry", () => ({
   useHostDirectoryEntry: () => ({ hostId: "host-b", label: "devbox" }),
 }));
 
+vi.mock("@/providers/use-open-epic-handle", () => ({
+  useMaybeOpenEpicHandle: () => ({ epicId: "epic-1" }),
+}));
+
 vi.mock("@/lib/host/stream-auth-revalidator", () => ({
   useStreamAuthRevalidator: () => null,
 }));
@@ -360,6 +365,32 @@ function renderPip(): void {
   render(<AgentBrowserPip epicId={EPIC} viewTabId={VIEW_TAB} surfaceVisible />);
 }
 
+function setViewport(
+  width: number,
+  height: number,
+): () => void {
+  const previousWidth = window.innerWidth;
+  const previousHeight = window.innerHeight;
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: width,
+  });
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: height,
+  });
+  return () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: previousWidth,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: previousHeight,
+    });
+  };
+}
+
 async function flushMacrotasks(): Promise<void> {
   await new Promise<void>((resolve) => {
     setTimeout(resolve, 0);
@@ -514,7 +545,7 @@ describe("AgentBrowserPip", () => {
     );
   });
 
-  it("shows the more-active badge for other live bursts", () => {
+  it("shows rows for other live bursts", () => {
     startBurst({
       burstId: "b1",
       sessionId: "s1",
@@ -535,9 +566,229 @@ describe("AgentBrowserPip", () => {
     });
     renderPip();
 
-    expect(screen.getByTestId("agent-browser-pip-more").textContent).toBe(
-      "2 more active",
+    expect(
+      screen.getByTestId("agent-browser-pip-row-b2").getAttribute(
+        "data-pip-row-kind",
+      ),
+    ).toBe("live");
+    expect(
+      screen.getByTestId("agent-browser-pip-row-b3").getAttribute(
+        "data-pip-row-kind",
+      ),
+    ).toBe("live");
+  });
+
+  it("renders live rows with metadata and hover/focus actions", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      hostId: "host-a",
+      sessionId: "s2",
+      tabId: "t2",
+      burstId: "b2",
+      cellTitle: "Searching hotels",
+    });
+    renderPip();
+
+    const row = screen.getByTestId("agent-browser-pip-row-b2");
+    expect(row.getAttribute("data-pip-row-kind")).toBe("live");
+    expect(screen.getByText("Other tab")).toBeTruthy();
+    expect(screen.getByText("Searching hotels")).toBeTruthy();
+    const actions = row.querySelector("div.invisible");
+    expect(actions?.className).toContain("group-hover:visible");
+    expect(actions?.className).toContain("group-focus-within:visible");
+
+    fireEvent.mouseEnter(row);
+    const open = screen.getByRole("button", { name: "Open Other tab" });
+    expect(
+      screen.getByRole("button", {
+        name: "Hide Other tab from picture in picture",
+      }),
+    ).toBeTruthy();
+    open.focus();
+    expect(document.activeElement).toBe(open);
+  });
+
+  it("renders lingering rows without a live-row button", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+    });
+    endBurst("b2", "finished", Date.now());
+    renderPip();
+
+    const row = screen.getByTestId("agent-browser-pip-row-b2");
+    expect(row.getAttribute("data-pip-row-kind")).toBe("lingering");
+    expect(row.getAttribute("role")).toBeNull();
+    expect(row.getAttribute("tabindex")).toBe("0");
+    expect(
+      row.querySelector('button[aria-label^="Show "]'),
+    ).toBeNull();
+    expect(row.textContent).toContain("Agent finished on app.example");
+  });
+
+  it("clicking a live row switches the preview and pins that burst", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+    });
+    renderPip();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Show Other tab in picture in picture",
+      }),
     );
+
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
+    expect(getPipSnapshot(EPIC).pinned).toBe(true);
+    expect(screen.getByText("Other tab")).toBeTruthy();
+  });
+
+  it("shows an outcome-only preview for a terminal row that never streamed", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+    });
+    endBurst("b1", "finished", 3);
+    endBurst("b2", "finished", 4);
+    renderPip();
+
+    const snapshot = getPipSnapshot(EPIC);
+    expect(snapshot.target?.burstId).toBe("b2");
+    expect(snapshot.targetEverStreamed).toBe(false);
+    expect(screen.getByTestId("agent-browser-pip-outcome-only").textContent).toBe(
+      "Agent finished on app.example",
+    );
+    expect(
+      screen
+        .getByTestId("agent-browser-pip-frame")
+        .querySelector("img.object-cover"),
+    ).toBeNull();
+  });
+
+  it("shows the overflow count for rows hidden by the viewport cap", () => {
+    const restoreViewport = setViewport(1024, 300);
+    try {
+      for (let index = 1; index <= 6; index += 1) {
+        startBurst({
+          burstId: `b${String(index)}`,
+          sessionId: "s1",
+          tabId: "t1",
+          startedAt: index,
+        });
+      }
+      renderPip();
+
+      expect(screen.getByTestId("agent-browser-pip-row-more").textContent).toBe(
+        "5 more",
+      );
+      expect(screen.queryByTestId("agent-browser-pip-row-b2")).toBeNull();
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  it("header X dismisses the displayed target and every rendered row", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+    });
+    startBurst({
+      burstId: "b3",
+      sessionId: "s3",
+      tabId: "t3",
+      startedAt: 3,
+    });
+    renderPip();
+
+    fireEvent.click(screen.getByTestId("agent-browser-pip-close"));
+
+    expect([...getPipDismissalsForTests(EPIC)].sort()).toEqual([
+      "b1",
+      "b2",
+      "b3",
+    ]);
+    expect(getPipSnapshot(EPIC).phase).toBe("hidden");
+  });
+
+  it("Escape uses the same whole-stack dismissal as header X", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+    });
+    startBurst({
+      burstId: "b3",
+      sessionId: "s3",
+      tabId: "t3",
+      startedAt: 3,
+    });
+    renderPip();
+
+    fireEvent.keyDown(
+      screen.getByRole("toolbar", {
+        name: "Agent browser picture in picture",
+      }),
+      { key: "Escape" },
+    );
+
+    expect([...getPipDismissalsForTests(EPIC)].sort()).toEqual([
+      "b1",
+      "b2",
+      "b3",
+    ]);
+    expect(getPipSnapshot(EPIC).phase).toBe("hidden");
   });
 
   it("close dismisses the live PiP", () => {

@@ -242,22 +242,46 @@ function readPersistedPipGeometryByEpicId(
 
 function parsePersistedPipGeometry(value: unknown): EpicPipGeometry | null {
   if (!isRecord(value)) return null;
-  if (
-    typeof value.x !== "number" ||
-    typeof value.y !== "number" ||
-    typeof value.width !== "number" ||
-    typeof value.height !== "number" ||
-    !Number.isFinite(value.x) ||
-    !Number.isFinite(value.y) ||
-    !Number.isFinite(value.width) ||
-    !Number.isFinite(value.height)
-  ) {
-    return null;
+  const anchored = readFourFiniteNumbers([
+    value.anchorX,
+    value.anchorY,
+    value.previewWidth,
+    value.previewHeight,
+  ]);
+  if (anchored !== null) {
+    return {
+      anchorX: anchored[0],
+      anchorY: anchored[1],
+      previewWidth: anchored[2],
+      previewHeight: anchored[3],
+    };
   }
+  const legacy = readFourFiniteNumbers([
+    value.x,
+    value.y,
+    value.width,
+    value.height,
+  ]);
+  if (legacy === null) return null;
   return {
-    x: value.x,
-    y: value.y,
-    width: value.width,
-    height: value.height,
+    anchorX: legacy[0] + legacy[2],
+    anchorY: legacy[1] + legacy[3],
+    previewWidth: legacy[2],
+    previewHeight: legacy[3],
   };
+}
+
+function readFourFiniteNumbers(
+  values: readonly [unknown, unknown, unknown, unknown],
+): readonly [number, number, number, number] | null {
+  const [first, second, third, fourth] = values;
+  if (!isFiniteNumber(first)) return null;
+  if (!isFiniteNumber(second)) return null;
+  if (!isFiniteNumber(third)) return null;
+  if (!isFiniteNumber(fourth)) return null;
+  return [first, second, third, fourth];
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }

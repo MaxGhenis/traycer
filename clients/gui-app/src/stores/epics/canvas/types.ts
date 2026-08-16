@@ -69,10 +69,10 @@ export const isRecordBackedEpicNodeKind =
  * is in-memory and resets.
  */
 export interface EpicPipGeometry {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
+  readonly anchorX: number;
+  readonly anchorY: number;
+  readonly previewWidth: number;
+  readonly previewHeight: number;
 }
 
 export const WORKSPACE_FILE_TAB_KIND = "workspace-file" as const;

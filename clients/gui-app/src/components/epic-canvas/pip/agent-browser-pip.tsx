@@ -6,6 +6,7 @@ import {
   useState,
   useSyncExternalStore,
   type Dispatch,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
@@ -35,8 +36,10 @@ import {
   defaultPipGeometry,
   geometryForCorner,
   nextPipCorner,
+  PIP_MIN_HEIGHT,
   PIP_NUDGE_PX,
   PIP_RESIZE_STEP_PX,
+  PIP_VIEWPORT_MARGIN,
   readViewportSize,
 } from "@/lib/browser-view/pip-geometry";
 import {
@@ -48,15 +51,17 @@ import {
   applyPipStreamHealth,
   dismissPip,
   dismissPipChip,
-  getPipSnapshot,
+  dismissPipRowSet,
   PIP_CAPTION_FADE_MS,
   PIP_CAPTION_HOLD_MS,
   reexpandPip,
+  selectPipRow,
   setPipActiveHostId,
   usePipSnapshot,
   type PipCaption,
   type PipSnapshot,
   type PipTarget,
+  type PipRow,
 } from "@/lib/browser-view/pip-store";
 import {
   resolveDesktopPipCaptureBridge,
@@ -82,6 +87,10 @@ import type { EpicPipGeometry } from "@/stores/epics/canvas/types";
 
 const PIP_DRAG_CLICK_SLOP_PX = 4;
 const PIP_OVERLAY_KIND = "pip";
+const PIP_ROW_HEIGHT_PX = 44;
+const PIP_ROW_GAP_PX = 6;
+const PIP_MORE_HEIGHT_PX = 20;
+const PIP_ROWS_CLOCK_MS = 1_000;
 
 export function AgentBrowserPip(props: {
   readonly epicId: string;
@@ -115,15 +124,22 @@ function AgentBrowserPipSurface(props: {
 }): ReactElement {
   const { epicId, snapshot } = props;
   const frameSrc = usePipOwnedFrame(epicId, snapshot);
+  const rows = usePipRows(epicId, snapshot.rows);
   const persisted = useEpicCanvasStore(
     (state) => state.pipGeometryByEpicId[epicId],
   );
   const setPipGeometry = useEpicCanvasStore((state) => state.setPipGeometry);
   const [viewport, setViewport] = useState(readViewportSize);
-  const geometry = useMemo(
-    () => clampPipGeometry(persisted ?? defaultPipGeometry(viewport), viewport),
+  const rawGeometry = useMemo(
+    () => persisted ?? defaultPipGeometry(viewport),
     [persisted, viewport],
   );
+  const stack = useMemo(
+    () => layoutPipStack(rawGeometry, rows.length, viewport),
+    [rawGeometry, rows.length, viewport],
+  );
+  const { geometry, rowLayout } = stack;
+  const visibleRows = rows.slice(0, rowLayout.visibleCount);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<PipPointerSession | null>(null);
 
@@ -134,33 +150,56 @@ function AgentBrowserPipSurface(props: {
       const current =
         useEpicCanvasStore.getState().pipGeometryByEpicId[epicId] ??
         defaultPipGeometry(nextViewport);
-      setPipGeometry(epicId, clampPipGeometry(current, nextViewport));
+      setPipGeometry(
+        epicId,
+        layoutPipStack(current, rows.length, nextViewport).geometry,
+      );
     };
     window.addEventListener("resize", onResize);
     return () => {
       window.removeEventListener("resize", onResize);
     };
-  }, [epicId, setPipGeometry]);
+  }, [epicId, rows.length, setPipGeometry]);
 
   const commitGeometry = useCallback(
     (next: EpicPipGeometry) => {
-      setPipGeometry(epicId, clampPipGeometry(next, readViewportSize()));
+      const nextViewport = readViewportSize();
+      setPipGeometry(
+        epicId,
+        layoutPipStack(next, rows.length, nextViewport).geometry,
+      );
     },
-    [epicId, setPipGeometry],
+    [epicId, rows.length, setPipGeometry],
   );
 
   const applyLiveGeometry = useCallback(
     (next: EpicPipGeometry) => {
       const node = rootRef.current;
       if (node === null) return;
-      const clamped = clampPipGeometry(next, readViewportSize());
-      node.style.left = `${String(clamped.x)}px`;
-      node.style.top = `${String(clamped.y)}px`;
-      node.style.width = `${String(clamped.width)}px`;
-      node.style.height =
-        snapshot.phase === "chip" ? "auto" : `${String(clamped.height)}px`;
+      const nextViewport = readViewportSize();
+      const nextStack = layoutPipStack(next, rows.length, nextViewport);
+      const clamped = nextStack.geometry;
+      if (snapshot.phase === "chip") {
+        node.style.left = "auto";
+        node.style.top = "auto";
+        node.style.right = `${String(nextViewport.width - clamped.anchorX)}px`;
+        node.style.bottom = `${String(nextViewport.height - clamped.anchorY)}px`;
+        node.style.width = "auto";
+        node.style.height = "auto";
+        return;
+      }
+      node.style.right = "auto";
+      node.style.bottom = "auto";
+      node.style.left = `${String(clamped.anchorX - clamped.previewWidth)}px`;
+      node.style.top = `${String(clamped.anchorY - nextStack.rowLayout.outerHeight)}px`;
+      node.style.width = `${String(clamped.previewWidth)}px`;
+      node.style.height = `${String(nextStack.rowLayout.outerHeight)}px`;
+      node.style.setProperty(
+        "--pip-preview-height",
+        `${String(clamped.previewHeight)}px`,
+      );
     },
-    [snapshot.phase],
+    [rows.length, snapshot.phase],
   );
 
   const handlePointerDown = useCallback(
@@ -203,15 +242,15 @@ function AgentBrowserPipSurface(props: {
       if (drag.mode === "move") {
         applyLiveGeometry({
           ...drag.origin,
-          x: drag.origin.x + dx,
-          y: drag.origin.y + dy,
+          anchorX: drag.origin.anchorX + dx,
+          anchorY: drag.origin.anchorY + dy,
         });
         return;
       }
       applyLiveGeometry({
         ...drag.origin,
-        width: drag.origin.width + dx,
-        height: drag.origin.height + dy,
+        previewWidth: drag.origin.previewWidth + dx,
+        previewHeight: drag.origin.previewHeight + dy,
       });
     },
     [applyLiveGeometry],
@@ -228,13 +267,13 @@ function AgentBrowserPipSurface(props: {
         drag.mode === "move"
           ? {
               ...drag.origin,
-              x: drag.origin.x + dx,
-              y: drag.origin.y + dy,
+              anchorX: drag.origin.anchorX + dx,
+              anchorY: drag.origin.anchorY + dy,
             }
           : {
               ...drag.origin,
-              width: drag.origin.width + dx,
-              height: drag.origin.height + dy,
+              previewWidth: drag.origin.previewWidth + dx,
+              previewHeight: drag.origin.previewHeight + dy,
             };
       commitGeometry(next);
     },
@@ -245,13 +284,24 @@ function AgentBrowserPipSurface(props: {
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
       if (event.key === "Home") {
         event.preventDefault();
-        const corner = nextPipCorner(geometry, readViewportSize());
-        commitGeometry(geometryForCorner(corner, geometry, readViewportSize()));
+        const corner = nextPipCorner(
+          geometry,
+          readViewportSize(),
+          rowLayout.outerHeight,
+        );
+        commitGeometry(
+          geometryForCorner(
+            corner,
+            geometry,
+            readViewportSize(),
+            rowLayout.outerHeight,
+          ),
+        );
         return;
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        dismissPip(epicId);
+        dismissRenderedPip(epicId, snapshot, rows);
         return;
       }
       const step = event.shiftKey ? PIP_RESIZE_STEP_PX : PIP_NUDGE_PX;
@@ -259,8 +309,11 @@ function AgentBrowserPipSurface(props: {
         event.preventDefault();
         commitGeometry(
           event.shiftKey
-            ? { ...geometry, width: geometry.width - step }
-            : { ...geometry, x: geometry.x - step },
+            ? {
+                ...geometry,
+                previewWidth: geometry.previewWidth - step,
+              }
+            : { ...geometry, anchorX: geometry.anchorX - step },
         );
         return;
       }
@@ -268,8 +321,11 @@ function AgentBrowserPipSurface(props: {
         event.preventDefault();
         commitGeometry(
           event.shiftKey
-            ? { ...geometry, width: geometry.width + step }
-            : { ...geometry, x: geometry.x + step },
+            ? {
+                ...geometry,
+                previewWidth: geometry.previewWidth + step,
+              }
+            : { ...geometry, anchorX: geometry.anchorX + step },
         );
         return;
       }
@@ -277,8 +333,11 @@ function AgentBrowserPipSurface(props: {
         event.preventDefault();
         commitGeometry(
           event.shiftKey
-            ? { ...geometry, height: geometry.height - step }
-            : { ...geometry, y: geometry.y - step },
+            ? {
+                ...geometry,
+                previewHeight: geometry.previewHeight - step,
+              }
+            : { ...geometry, anchorY: geometry.anchorY - step },
         );
         return;
       }
@@ -286,16 +345,29 @@ function AgentBrowserPipSurface(props: {
         event.preventDefault();
         commitGeometry(
           event.shiftKey
-            ? { ...geometry, height: geometry.height + step }
-            : { ...geometry, y: geometry.y + step },
+            ? {
+                ...geometry,
+                previewHeight: geometry.previewHeight + step,
+              }
+            : { ...geometry, anchorY: geometry.anchorY + step },
         );
       }
     },
-    [commitGeometry, epicId, geometry],
+    [commitGeometry, epicId, geometry, rowLayout.outerHeight, rows, snapshot],
   );
 
   const overlayId = `agent-browser-pip-${epicId}`;
   const isChip = snapshot.phase === "chip";
+  const rootStyle: PipRootStyle = {
+    "--pip-preview-height": `${String(geometry.previewHeight)}px`,
+    left: isChip ? undefined : geometry.anchorX - geometry.previewWidth,
+    top: isChip ? undefined : geometry.anchorY - rowLayout.outerHeight,
+    right: isChip ? viewport.width - geometry.anchorX : undefined,
+    bottom: isChip ? viewport.height - geometry.anchorY : undefined,
+    width: isChip ? "auto" : geometry.previewWidth,
+    height: isChip ? "auto" : rowLayout.outerHeight,
+    maxWidth: isChip ? "min(24rem, calc(100vw - 2rem))" : undefined,
+  };
 
   return (
     <div
@@ -313,15 +385,9 @@ function AgentBrowserPipSurface(props: {
         "fixed z-40",
         isChip
           ? "overflow-hidden rounded-full border border-border/80 bg-popover/95 shadow-lg backdrop-blur-sm"
-          : "overflow-hidden rounded-lg border border-border/80 bg-popover/95 shadow-xl backdrop-blur-sm",
+          : "flex flex-col gap-1.5",
       )}
-      style={{
-        left: geometry.x,
-        top: geometry.y,
-        width: isChip ? "auto" : geometry.width,
-        height: isChip ? "auto" : geometry.height,
-        maxWidth: isChip ? "min(24rem, calc(100vw - 2rem))" : undefined,
-      }}
+      style={rootStyle}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
@@ -339,6 +405,9 @@ function AgentBrowserPipSurface(props: {
           viewTabId={props.viewTabId}
           snapshot={snapshot}
           frameSrc={frameSrc}
+          rows={visibleRows}
+          allRows={rows}
+          hiddenRowCount={rowLayout.hiddenCount}
           dragMoved={() => dragRef.current?.moved === true}
           onHeaderPointerDown={(event) => handlePointerDown(event, "move")}
           onResizePointerDown={(event) => handlePointerDown(event, "resize")}
@@ -348,6 +417,10 @@ function AgentBrowserPipSurface(props: {
     </div>
   );
 }
+
+type PipRootStyle = CSSProperties & {
+  readonly "--pip-preview-height": string;
+};
 
 function PipChip(props: {
   readonly epicId: string;
@@ -378,7 +451,7 @@ function PipChip(props: {
       <button
         type="button"
         aria-label="Dismiss finished browser"
-        className="flex size-6 items-center justify-center rounded-full text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex size-6 items-center justify-center rounded-full text-muted-foreground outline-none hover:bg-foreground/8 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         onClick={() => {
           dismissPipChip(props.epicId);
         }}
@@ -394,6 +467,9 @@ function PipExpanded(props: {
   readonly viewTabId: string;
   readonly snapshot: PipSnapshot;
   readonly frameSrc: string | null;
+  readonly rows: readonly PipRowView[];
+  readonly allRows: readonly PipRowView[];
+  readonly hiddenRowCount: number;
   readonly dragMoved: () => boolean;
   readonly onHeaderPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onResizePointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
@@ -408,96 +484,227 @@ function PipExpanded(props: {
     (part): part is string => part !== null && part.length > 0,
   );
   const gone = !snapshot.openTileEnabled;
+  const outcomeOnly =
+    snapshot.phase === "finished" && !snapshot.targetEverStreamed;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div
-        role="toolbar"
-        tabIndex={0}
-        aria-label="Agent browser picture in picture"
-        className="flex min-h-8 shrink-0 items-center gap-2 px-2 py-1 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        onPointerDown={props.onHeaderPointerDown}
-        onKeyDown={props.onKeyDown}
-      >
-        <PipFavicon url={meta.faviconUrl} />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-ui-xs font-medium text-foreground">
-            {meta.title}
+    <>
+      <div className="relative flex h-(--pip-preview-height) min-h-0 shrink-0 flex-col overflow-hidden rounded-lg border border-border/80 bg-popover/95 shadow-xl backdrop-blur-sm">
+        <div
+          role="toolbar"
+          tabIndex={0}
+          aria-label="Agent browser picture in picture"
+          className="flex min-h-8 shrink-0 items-center gap-2 px-2 py-1 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onPointerDown={props.onHeaderPointerDown}
+          onKeyDown={props.onKeyDown}
+        >
+          <PipFavicon url={meta.faviconUrl} />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-ui-xs font-medium text-foreground">
+              {meta.title}
+            </div>
+            <div className="flex min-w-0 items-center gap-1.5 text-[0.625rem] leading-none text-muted-foreground">
+              <span
+                aria-hidden
+                data-testid="agent-browser-pip-pulse"
+                data-pip-pulse={livePulse ? "live" : "off"}
+                className={cn(
+                  "size-1.5 shrink-0 rounded-full",
+                  livePulse
+                    ? "bg-emerald-400 shadow-[0_0_6px_color-mix(in_oklch,var(--color-emerald-400)_70%,transparent)]"
+                    : "bg-muted-foreground/40",
+                )}
+              />
+              <span className="truncate">{attribution.join(" · ")}</span>
+            </div>
           </div>
-          <div className="flex min-w-0 items-center gap-1.5 text-[0.625rem] leading-none text-muted-foreground">
-            <span
-              aria-hidden
-              data-testid="agent-browser-pip-pulse"
-              data-pip-pulse={livePulse ? "live" : "off"}
-              className={cn(
-                "size-1.5 shrink-0 rounded-full",
-                livePulse
-                  ? "bg-emerald-400 shadow-[0_0_6px_color-mix(in_oklch,var(--color-emerald-400)_70%,transparent)]"
-                  : "bg-muted-foreground/40",
-              )}
-            />
-            <span className="truncate">{attribution.join(" · ")}</span>
-          </div>
+          <button
+            type="button"
+            aria-label={gone ? pipGoneTabCopy() : "Open browser tile"}
+            disabled={gone}
+            data-testid="agent-browser-pip-open"
+            className="flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-foreground/8 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={() => {
+              if (snapshot.target !== null) {
+                openTile(snapshot.target, snapshot.openTileEnabled);
+              }
+            }}
+          >
+            <Maximize2 className="size-3.5" aria-hidden />
+          </button>
+          <button
+            type="button"
+            aria-label="Close picture in picture"
+            data-testid="agent-browser-pip-close"
+            className="flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-foreground/8 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => {
+              dismissRenderedPip(props.epicId, snapshot, props.allRows);
+            }}
+          >
+            <X className="size-3.5" aria-hidden />
+          </button>
         </div>
         <button
           type="button"
           aria-label={gone ? pipGoneTabCopy() : "Open browser tile"}
           disabled={gone}
-          data-testid="agent-browser-pip-open"
-          className="flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+          data-testid="agent-browser-pip-frame"
+          className="relative min-h-0 flex-1 overflow-hidden bg-muted/40 outline-none disabled:cursor-not-allowed"
           onClick={() => {
-            openTile();
+            if (props.dragMoved() || snapshot.target === null) return;
+            openTile(snapshot.target, snapshot.openTileEnabled);
+          }}
+        >
+          <PipFrameContent
+            frameSrc={frameSrc}
+            gone={gone}
+            meta={meta}
+            outcome={snapshot.outcome}
+            outcomeOnly={outcomeOnly}
+          />
+          {outcomeOnly ? null : (
+            <PipFrameOverlays
+              snapshot={snapshot}
+              gone={gone}
+              site={meta.site}
+            />
+          )}
+        </button>
+        <button
+          type="button"
+          aria-label="Resize picture in picture"
+          className="absolute right-0 bottom-0 size-3 cursor-se-resize"
+          onPointerDown={props.onResizePointerDown}
+        />
+      </div>
+      {props.rows.map((row) => (
+        <PipSessionRow
+          key={row.row.target.burstId}
+          row={row}
+          openTile={openTile}
+        />
+      ))}
+      {props.hiddenRowCount > 0 ? (
+        <div
+          data-testid="agent-browser-pip-row-more"
+          className="flex h-5 shrink-0 items-center justify-center text-[0.625rem] text-muted-foreground"
+        >
+          {props.hiddenRowCount} more
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function PipFrameContent(props: {
+  readonly frameSrc: string | null;
+  readonly gone: boolean;
+  readonly meta: {
+    readonly faviconUrl: string | null;
+    readonly site: string | null;
+  };
+  readonly outcome: PipSnapshot["outcome"];
+  readonly outcomeOnly: boolean;
+}): ReactElement {
+  if (props.outcomeOnly) {
+    return (
+      <div
+        data-testid="agent-browser-pip-outcome-only"
+        className="flex size-full flex-col items-center justify-center gap-2 px-4 text-center text-ui-xs text-muted-foreground"
+      >
+        <PipFavicon url={props.meta.faviconUrl} />
+        <span>{pipOutcomeLine(props.outcome, props.meta.site)}</span>
+      </div>
+    );
+  }
+  if (props.frameSrc === null) {
+    return (
+      <div className="flex h-full items-center justify-center text-ui-xs text-muted-foreground">
+        {props.gone
+          ? pipGoneTabCopy()
+          : (props.meta.site ?? "Waiting for frames")}
+      </div>
+    );
+  }
+  return (
+    <img
+      src={props.frameSrc}
+      alt=""
+      className="size-full object-cover"
+      draggable={false}
+    />
+  );
+}
+
+function PipSessionRow(props: {
+  readonly row: PipRowView;
+  readonly openTile: (target: PipTarget, enabled: boolean) => void;
+}): ReactElement {
+  const { row } = props;
+  const live = row.row.kind === "live";
+  const openEnabled = row.row.outcome !== "closed";
+  const outcome = pipOutcomeLine(row.row.outcome, row.site);
+  const activate = (): void => {
+    if (live) selectPipRow(row.row.target);
+  };
+  return (
+    <div
+      tabIndex={live ? undefined : 0}
+      data-testid={`agent-browser-pip-row-${row.row.target.burstId}`}
+      data-pip-row-kind={row.row.kind}
+      className={cn(
+        "group relative flex h-11 shrink-0 items-center gap-2 rounded-lg border border-border/70 bg-popover/95 px-2.5 shadow-lg outline-none backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-ring",
+        live ? undefined : "text-muted-foreground",
+      )}
+    >
+      {live ? (
+        <button
+          type="button"
+          aria-label={`Show ${row.title} in picture in picture`}
+          className="absolute inset-0 cursor-pointer rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={activate}
+        />
+      ) : null}
+      <span className="pointer-events-none relative flex">
+        <PipFavicon url={row.faviconUrl} />
+      </span>
+      <div className="pointer-events-none relative min-w-0 flex-1">
+        <div className="truncate text-ui-xs font-medium">{row.title}</div>
+        <div className="truncate text-[0.625rem] text-muted-foreground">
+          {live ? row.activity : outcome}
+        </div>
+      </div>
+      <div className="invisible relative flex shrink-0 gap-0.5 group-hover:visible group-focus-within:visible">
+        <button
+          type="button"
+          aria-label={openEnabled ? `Open ${row.title}` : outcome}
+          disabled={!openEnabled}
+          className="flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-foreground/8 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={(event) => {
+            event.stopPropagation();
+            props.openTile(row.row.target, openEnabled);
           }}
         >
           <Maximize2 className="size-3.5" aria-hidden />
         </button>
         <button
           type="button"
-          aria-label="Close picture in picture"
-          data-testid="agent-browser-pip-close"
-          className="flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => {
-            dismissPip(props.epicId);
+          aria-label={`Hide ${row.title} from picture in picture`}
+          className="flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-foreground/8 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={(event) => {
+            event.stopPropagation();
+            dismissPipRowSet([row.row.target.burstId]);
           }}
         >
           <X className="size-3.5" aria-hidden />
         </button>
       </div>
-      <button
-        type="button"
-        aria-label={gone ? pipGoneTabCopy() : "Open browser tile"}
-        disabled={gone}
-        data-testid="agent-browser-pip-frame"
-        className="relative min-h-0 flex-1 overflow-hidden bg-muted/40 outline-none disabled:cursor-not-allowed"
-        onClick={() => {
-          if (props.dragMoved()) return;
-          openTile();
-        }}
-      >
-        {frameSrc === null ? (
-          <div className="flex h-full items-center justify-center text-ui-xs text-muted-foreground">
-            {gone ? pipGoneTabCopy() : (meta.site ?? "Waiting for frames")}
-          </div>
-        ) : (
-          <img
-            src={frameSrc}
-            alt=""
-            className="size-full object-cover"
-            draggable={false}
-          />
-        )}
-        <PipFrameOverlays
-          snapshot={snapshot}
-          gone={gone}
-          site={meta.site}
+      {live ? (
+        <span
+          aria-hidden
+          className="pointer-events-none relative size-1.5 shrink-0 rounded-full bg-emerald-400 shadow-[0_0_6px_color-mix(in_oklch,var(--color-emerald-400)_70%,transparent)]"
         />
-      </button>
-      <button
-        type="button"
-        aria-label="Resize picture in picture"
-        className="absolute right-0 bottom-0 size-3 cursor-se-resize"
-        onPointerDown={props.onResizePointerDown}
-      />
+      ) : null}
     </div>
   );
 }
@@ -510,14 +717,6 @@ function PipFrameOverlays(props: {
   const { snapshot, gone, site } = props;
   return (
     <>
-      {snapshot.moreLiveCount > 0 ? (
-        <span
-          data-testid="agent-browser-pip-more"
-          className="absolute top-2 right-2 rounded-full bg-background/80 px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
-        >
-          {snapshot.moreLiveCount} more active
-        </span>
-      ) : null}
       {snapshot.streamHealth === "stale" ? (
         <span
           data-testid="agent-browser-pip-stale"
@@ -663,7 +862,169 @@ function usePipTargetMeta(
   };
 }
 
-function useOpenPipTarget(epicId: string, viewTabId: string): () => void {
+interface PipRowView {
+  readonly row: PipRow;
+  readonly title: string;
+  readonly site: string | null;
+  readonly faviconUrl: string | null;
+  readonly activity: string;
+}
+
+function usePipRows(epicId: string, rows: readonly PipRow[]): PipRowView[] {
+  const items = usePipEpicSessionItems(epicId);
+  const chats = useEpicChatRecords();
+  const [now, setNow] = useState(Date.now);
+  const hasActiveLingering = rows.some(
+    (row) => row.expiresAt !== null && row.expiresAt > now,
+  );
+
+  useEffect(() => {
+    if (!hasActiveLingering) return;
+    const id = window.setInterval(() => {
+      setNow(Date.now());
+    }, PIP_ROWS_CLOCK_MS);
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [hasActiveLingering]);
+
+  return rows.flatMap((row) => {
+    if (row.expiresAt !== null && row.expiresAt <= now) return [];
+    const session = findPipEpicSession(
+      items,
+      row.target.hostId,
+      row.target.sessionId,
+    );
+    const tab = session?.tabs.find((item) => item.tabId === row.target.tabId);
+    const chatTitle =
+      chats.find((chat) => chat.id === row.chatId)?.title.trim() ?? "";
+    const caption = row.caption?.cellTitle.trim() ?? "";
+    return [
+      {
+        row,
+        title: tab === undefined ? "Browser" : resolveTabTitle(tab),
+        site: tab === undefined ? null : browserTabHostname(tab.url),
+        faviconUrl: tab === undefined ? null : browserTabFaviconUrl(tab.url),
+        activity: pipRowActivity(caption, chatTitle),
+      },
+    ];
+  });
+}
+
+function pipRowActivity(caption: string, chatTitle: string): string {
+  if (caption.length > 0) return caption;
+  if (chatTitle.length > 0) return chatTitle;
+  return "Agent browsing";
+}
+
+interface PipRowLayout {
+  readonly visibleCount: number;
+  readonly hiddenCount: number;
+  readonly outerHeight: number;
+}
+
+interface PipStackLayout {
+  readonly geometry: EpicPipGeometry;
+  readonly rowLayout: PipRowLayout;
+}
+
+function layoutPipStack(
+  geometry: EpicPipGeometry,
+  rowCount: number,
+  viewport: { readonly width: number; readonly height: number },
+): PipStackLayout {
+  const maxPreviewHeight =
+    rowCount === 0
+      ? geometry.previewHeight
+      : Math.max(
+          PIP_MIN_HEIGHT,
+          viewport.height -
+            PIP_VIEWPORT_MARGIN * 2 -
+            PIP_MORE_HEIGHT_PX -
+            PIP_ROW_GAP_PX,
+        );
+  const fitted = {
+    ...geometry,
+    previewHeight: Math.min(geometry.previewHeight, maxPreviewHeight),
+  };
+  const initialRows = pipRowLayout(
+    rowCount,
+    fitted.previewHeight,
+    viewport.height,
+  );
+  const clamped = clampPipGeometry(fitted, viewport, initialRows.outerHeight);
+  const rowLayout = pipRowLayout(
+    rowCount,
+    clamped.previewHeight,
+    viewport.height,
+  );
+  return {
+    geometry: clampPipGeometry(clamped, viewport, rowLayout.outerHeight),
+    rowLayout,
+  };
+}
+
+function pipRowLayout(
+  rowCount: number,
+  previewHeight: number,
+  viewportHeight: number,
+): PipRowLayout {
+  if (rowCount === 0) {
+    return { visibleCount: 0, hiddenCount: 0, outerHeight: previewHeight };
+  }
+  const available = Math.max(
+    0,
+    viewportHeight - previewHeight - PIP_VIEWPORT_MARGIN * 2,
+  );
+  const allRowsHeight =
+    rowCount * PIP_ROW_HEIGHT_PX + rowCount * PIP_ROW_GAP_PX;
+  if (allRowsHeight <= available) {
+    return {
+      visibleCount: rowCount,
+      hiddenCount: 0,
+      outerHeight: previewHeight + allRowsHeight,
+    };
+  }
+  const visibleCount = Math.max(
+    0,
+    Math.min(
+      rowCount - 1,
+      Math.floor(
+        (available - PIP_MORE_HEIGHT_PX - PIP_ROW_GAP_PX) /
+          (PIP_ROW_HEIGHT_PX + PIP_ROW_GAP_PX),
+      ),
+    ),
+  );
+  return {
+    visibleCount,
+    hiddenCount: rowCount - visibleCount,
+    outerHeight:
+      previewHeight +
+      visibleCount * PIP_ROW_HEIGHT_PX +
+      (visibleCount + 1) * PIP_ROW_GAP_PX +
+      PIP_MORE_HEIGHT_PX,
+  };
+}
+
+function dismissRenderedPip(
+  epicId: string,
+  snapshot: PipSnapshot,
+  rows: readonly PipRowView[],
+): void {
+  if (rows.length === 0) {
+    dismissPip(epicId);
+    return;
+  }
+  dismissPipRowSet([
+    ...(snapshot.target === null ? [] : [snapshot.target.burstId]),
+    ...rows.map((row) => row.row.target.burstId),
+  ]);
+}
+
+function useOpenPipTarget(
+  epicId: string,
+  viewTabId: string,
+): (target: PipTarget, enabled: boolean) => void {
   const navigateNested = useEpicNestedFocusNavigation();
   const prepareOpen = useEpicCanvasStore(
     (state) => state.prepareOpenTileInTabFocusTarget,
@@ -672,31 +1033,35 @@ function useOpenPipTarget(epicId: string, viewTabId: string): () => void {
     (state) => state.prepareSetActiveTileTabFocusTarget,
   );
   const items = usePipEpicSessionItems(epicId);
-  return useCallback(() => {
-    const latch = getPipSnapshot(epicId).target;
-    if (latch === null) return;
-    if (!getPipSnapshot(epicId).openTileEnabled) return;
-    const session = findPipEpicSession(items, latch.hostId, latch.sessionId);
-    const tab = session?.tabs.find((item) => item.tabId === latch.tabId);
-    const binding = findElectronBrowserTabBinding(latch.sessionId, latch.tabId);
-    const existingNative =
-      binding === null
-        ? null
-        : findOpenArtifactInTab(viewTabId, binding.registrationId);
-    const tile = makeBrowserSessionTileRef({
-      name: tab?.title ?? session?.name ?? "Browser",
-      hostId: latch.hostId,
-      sessionId: latch.sessionId,
-      tabId: latch.tabId,
-    });
-    const existingPointer = findOpenArtifactInTab(viewTabId, tile.id);
-    const existing = existingNative ?? existingPointer;
-    navigateNested(epicId, viewTabId, () =>
-      existing === null
-        ? prepareOpen(viewTabId, tile)
-        : prepareFocus(viewTabId, existing.paneId, existing.instanceId),
-    );
-  }, [epicId, items, navigateNested, prepareFocus, prepareOpen, viewTabId]);
+  return useCallback(
+    (latch: PipTarget, enabled: boolean) => {
+      if (!enabled) return;
+      const session = findPipEpicSession(items, latch.hostId, latch.sessionId);
+      const tab = session?.tabs.find((item) => item.tabId === latch.tabId);
+      const binding = findElectronBrowserTabBinding(
+        latch.sessionId,
+        latch.tabId,
+      );
+      const existingNative =
+        binding === null
+          ? null
+          : findOpenArtifactInTab(viewTabId, binding.registrationId);
+      const tile = makeBrowserSessionTileRef({
+        name: tab?.title ?? session?.name ?? "Browser",
+        hostId: latch.hostId,
+        sessionId: latch.sessionId,
+        tabId: latch.tabId,
+      });
+      const existingPointer = findOpenArtifactInTab(viewTabId, tile.id);
+      const existing = existingNative ?? existingPointer;
+      navigateNested(epicId, viewTabId, () =>
+        existing === null
+          ? prepareOpen(viewTabId, tile)
+          : prepareFocus(viewTabId, existing.paneId, existing.instanceId),
+      );
+    },
+    [epicId, items, navigateNested, prepareFocus, prepareOpen, viewTabId],
+  );
 }
 
 interface OwnedPipFrame {
@@ -789,9 +1154,7 @@ function usePipHostClientHandle(
   return handle;
 }
 
-function nativeTileBindingKey(
-  binding: ElectronBrowserTabRegistration,
-): string {
+function nativeTileBindingKey(binding: ElectronBrowserTabRegistration): string {
   const tileKey = binding.tileKey;
   return [
     binding.registrationId,
@@ -822,7 +1185,11 @@ function usePipNativeCaptureArm(input: {
   useEffect(() => {
     if (tileKey === null) return;
     const args = argsRef.current;
-    if (args.binding === null || args.bridge === null || args.burstId === null) {
+    if (
+      args.binding === null ||
+      args.bridge === null ||
+      args.burstId === null
+    ) {
       return;
     }
     const liveBurstId = args.burstId;
@@ -881,7 +1248,8 @@ function usePipHeadlessCaptureArm(input: {
         epicId: args.epicId,
         onUrl: (src) => {
           args.setOwned((prev) => {
-            if (prev !== null && prev.src !== src) URL.revokeObjectURL(prev.src);
+            if (prev !== null && prev.src !== src)
+              URL.revokeObjectURL(prev.src);
             return { burstId: liveBurstId, src };
           });
         },
