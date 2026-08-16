@@ -1,5 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+import type { SyntheticEvent } from "react";
 import {
   useScreencastTileChrome,
   type ScreencastNavState,
@@ -10,6 +11,7 @@ const INITIAL_URL = "http://localhost:3000";
 const URL_A = "https://example.com/a";
 const URL_B = "https://example.com/b";
 const DRAFT_URL = "https://draft.example/path";
+const SUBMITTED_URL = "https://submitted.example/";
 
 interface ChromeHookProps {
   readonly navState: ScreencastNavState;
@@ -56,6 +58,12 @@ function renderChrome(
     { initialProps: { navState, initialUrl } },
   );
   return { ...view, onNavigateUrl, onBack, onForward, onReload };
+}
+
+function submitEvent(): SyntheticEvent<HTMLFormElement, SubmitEvent> {
+  return {
+    preventDefault: () => undefined,
+  } as SyntheticEvent<HTMLFormElement, SubmitEvent>;
 }
 
 afterEach(() => {
@@ -125,12 +133,10 @@ describe("useScreencastTileChrome", () => {
     const { result, rerender } = renderChrome(idleNav(URL_A), INITIAL_URL);
 
     expect(result.current.controller.addressValue).toBe(URL_A);
-    expect(result.current.addressFocused).toBe(false);
 
     act(() => {
       result.current.onAddressFocusChange(true);
     });
-    expect(result.current.addressFocused).toBe(true);
     expect(result.current.controller.addressValue).toBe(URL_A);
 
     act(() => {
@@ -139,15 +145,33 @@ describe("useScreencastTileChrome", () => {
     expect(result.current.controller.addressValue).toBe(DRAFT_URL);
 
     rerender({ navState: idleNav(URL_B), initialUrl: INITIAL_URL });
-    expect(result.current.liveUrl).toBe(URL_B);
     expect(result.current.controller.url).toBe(URL_B);
-    expect(result.current.addressFocused).toBe(true);
     expect(result.current.controller.addressValue).toBe(DRAFT_URL);
 
     act(() => {
       result.current.onAddressFocusChange(false);
     });
-    expect(result.current.addressFocused).toBe(false);
+    expect(result.current.controller.addressValue).toBe(URL_B);
+  });
+
+  it("yields a submitted draft to the next navState", () => {
+    const { result, rerender, onNavigateUrl } = renderChrome(
+      idleNav(URL_A),
+      INITIAL_URL,
+    );
+
+    act(() => {
+      result.current.onAddressFocusChange(true);
+      result.current.controller.onAddressChange(SUBMITTED_URL);
+    });
+    act(() => {
+      result.current.controller.onNavigate(submitEvent());
+    });
+    expect(onNavigateUrl).toHaveBeenCalledWith(SUBMITTED_URL);
+    expect(result.current.controller.addressValue).toBe(SUBMITTED_URL);
+
+    rerender({ navState: idleNav(URL_B), initialUrl: INITIAL_URL });
+    expect(result.current.controller.url).toBe(URL_B);
     expect(result.current.controller.addressValue).toBe(URL_B);
   });
 
@@ -171,9 +195,7 @@ describe("useScreencastTileChrome", () => {
   it("falls back to initialUrl when navState.url is empty", () => {
     const { result } = renderChrome(idleNav(""), INITIAL_URL);
 
-    expect(result.current.liveUrl).toBe(INITIAL_URL);
     expect(result.current.controller.url).toBe(INITIAL_URL);
-    expect(result.current.addressFocused).toBe(false);
     expect(result.current.controller.addressValue).toBe(INITIAL_URL);
   });
 });

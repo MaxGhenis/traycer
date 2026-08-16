@@ -22,7 +22,7 @@ export const EMPTY_SCREENCAST_NAV_STATE: ScreencastNavState = {
   loading: false,
 };
 
-export const SCREENCAST_TILE_CHROME_CAPABILITIES: TileChromeCapabilities = {
+const SCREENCAST_TILE_CHROME_CAPABILITIES: TileChromeCapabilities = {
   navigate: true,
   back: true,
   forward: true,
@@ -35,7 +35,7 @@ export const SCREENCAST_TILE_CHROME_CAPABILITIES: TileChromeCapabilities = {
   elementPicker: false,
 };
 
-export const SCREENCAST_UNSUPPORTED_INTERACTION_TOASTS = {
+const SCREENCAST_UNSUPPORTED_INTERACTION_TOASTS = {
   fileUpload: "File upload not supported",
   download: "Download saved on the host",
 } as const;
@@ -44,8 +44,15 @@ const UNUSED_VIEWPORT_PRESET: BrowserViewViewportPresetId = "responsive";
 
 interface AddressDraft {
   readonly focused: boolean;
+  readonly submitted: boolean;
   readonly value: string;
 }
+
+const EMPTY_DRAFT: AddressDraft = {
+  focused: false,
+  submitted: false,
+  value: "",
+};
 
 interface UseScreencastTileChromeArgs {
   readonly navState: ScreencastNavState;
@@ -59,8 +66,6 @@ interface UseScreencastTileChromeArgs {
 
 export interface ScreencastTileChrome {
   readonly controller: TileController;
-  readonly liveUrl: string;
-  readonly addressFocused: boolean;
   readonly onAddressFocusChange: (focused: boolean) => void;
 }
 
@@ -70,17 +75,11 @@ export function toastScreencastUnsupportedInteraction(
   toast(SCREENCAST_UNSUPPORTED_INTERACTION_TOASTS[feature]);
 }
 
-export function screencastLiveUrl(
-  navState: ScreencastNavState,
-  initialUrl: string,
-): string {
-  return navState.url.length > 0 ? navState.url : initialUrl;
-}
-
 /**
  * Shared-toolbar controller for a headless screencast tile. Capabilities
  * are nav-only; the address draft stays owned by focus, so an in-flight
  * agent navigation cannot clobber a URL the user is still editing.
+ * A submitted draft yields to the next navState so redirects land.
  */
 export function useScreencastTileChrome(
   args: UseScreencastTileChromeArgs,
@@ -94,20 +93,25 @@ export function useScreencastTileChrome(
     onForward,
     onReload,
   } = args;
-  const [draft, setDraft] = useState<AddressDraft>({
-    focused: false,
-    value: "",
-  });
-  const liveUrl = screencastLiveUrl(navState, initialUrl);
-  const addressValue = draft.focused ? draft.value : liveUrl;
+  const [draft, setDraft] = useState<AddressDraft>(EMPTY_DRAFT);
+  const liveUrl = navState.url.length > 0 ? navState.url : initialUrl;
+  const [seenNavState, setSeenNavState] = useState(navState);
+  if (seenNavState !== navState) {
+    setSeenNavState(navState);
+    if (draft.submitted) {
+      setDraft(EMPTY_DRAFT);
+    }
+  }
+  const addressValue =
+    draft.focused || draft.submitted ? draft.value : liveUrl;
 
   const onAddressFocusChange = (focused: boolean): void => {
     setDraft((current) => {
       if (focused) {
         if (current.focused) return current;
-        return { focused: true, value: liveUrl };
+        return { focused: true, submitted: false, value: liveUrl };
       }
-      return { focused: false, value: "" };
+      return EMPTY_DRAFT;
     });
   };
 
@@ -125,13 +129,11 @@ export function useScreencastTileChrome(
     onNavigate: (event: SyntheticEvent<HTMLFormElement, SubmitEvent>) => {
       event.preventDefault();
       const url = normalizeBrowserAddressInput(addressValue);
-      setDraft((current) =>
-        current.focused ? { focused: true, value: url } : current,
-      );
+      setDraft({ focused: true, submitted: true, value: url });
       onNavigateUrl(url);
     },
     onAddressChange: (value) => {
-      setDraft({ focused: true, value });
+      setDraft({ focused: true, submitted: false, value });
     },
     onBack: () => {
       if (!navState.canGoBack) return;
@@ -151,8 +153,6 @@ export function useScreencastTileChrome(
 
   return {
     controller,
-    liveUrl,
-    addressFocused: draft.focused,
     onAddressFocusChange,
   };
 }

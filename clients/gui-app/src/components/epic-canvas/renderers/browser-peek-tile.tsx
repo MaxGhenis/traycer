@@ -213,7 +213,10 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const resetTransientInputRef = useRef<() => void>(() => {});
   const deliverArmBufferRef = useRef<() => void>(() => {});
   const flushPendingNavRef = useRef<() => void>(() => {});
-  const pendingNavRef = useRef<PeekNavInput | null>(null);
+  const clearLocalArmRef = useRef<(notifyHost: boolean) => void>(() => {});
+  const pendingNavRef = useRef<PeekNavInput[]>([]);
+  const forwardedKeyDownsRef = useRef(new Map<string, PeekKeyboardInput>());
+  const claimedLocalCodesRef = useRef(new Set<string>());
   const [armedState, setArmedState] = useState<{
     readonly client: IHostStreamClient<HostStreamRpcRegistry>;
     readonly epoch: number;
@@ -247,12 +250,12 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const presentedArmedEpoch = visible ? armedEpoch : null;
   const dialog = dialogForClient(dialogState, client);
 
-  // Single write site for the app-wide armed flag. Every disarm path
-  // (revoke, hide, release, Escape-free blur, close/unmount) either
-  // clears presentedArmedEpoch or unmounts this effect.
+  // Only an actually-armed, visible tile participates. An unarmed
+  // sibling must never write false and clobber another tile's flag.
   useLayoutEffect(() => {
+    if (presentedArmedEpoch === null) return;
     const setArmed = useScreencastArmedStore.getState().setArmed;
-    setArmed(presentedArmedEpoch !== null);
+    setArmed(true);
     return () => {
       setArmed(false);
     };
@@ -307,10 +310,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     composingRef.current = false;
     if (client === null) {
       sessionRef.current = null;
-      desiredArmEpochRef.current = null;
-      activeArmEpochRef.current = null;
-      activeDialogRef.current = null;
-      resetTransientInputRef.current();
+      clearLocalArmRef.current(false);
       return;
     }
 
@@ -328,14 +328,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     session.onStatusChange((status, reason) => {
       if (status !== "open") {
         presentedSequenceRef.current = null;
-        desiredArmEpochRef.current = null;
-        activeArmEpochRef.current = null;
-        activeDialogRef.current = null;
-        composingRef.current = false;
-        resetTransientInputRef.current();
-        setArmedState(null);
-        setDialogState(null);
-        setComposing(false);
+        clearLocalArmRef.current(false);
       } else if (
         viewportRef.current?.contains(document.activeElement) === true
       ) {
@@ -394,20 +387,18 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       } else if (parsed.data.kind === "unsupportedInteraction") {
         toastScreencastUnsupportedInteraction(parsed.data.feature);
       }
-      if (parsed.data.kind === "armed") {
-        if (desiredArmEpochRef.current !== parsed.data.armEpoch) return;
+      const control = applyScreencastControlFrame({
+        frame: parsed.data,
+        desiredEpoch: desiredArmEpochRef.current,
+        activeEpoch: activeArmEpochRef.current,
+      });
+      if (control === "teardown") {
+        clearLocalArmRef.current(false);
+      } else if (control === "armed" && parsed.data.kind === "armed") {
         activeArmEpochRef.current = parsed.data.armEpoch;
         setArmedState({ client, epoch: parsed.data.armEpoch });
         deliverArmBufferRef.current();
         flushPendingNavRef.current();
-      } else if (parsed.data.kind === "revoked") {
-        if (activeArmEpochRef.current !== parsed.data.armEpoch) return;
-        desiredArmEpochRef.current = null;
-        activeArmEpochRef.current = null;
-        resetTransientInputRef.current();
-        setArmedState(null);
-        activeDialogRef.current = null;
-        setDialogState(null);
       } else {
         handleDialogServerFrame({
           frame: parsed.data,
@@ -429,12 +420,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       if (sessionRef.current === session) {
         sessionRef.current = null;
       }
-      desiredArmEpochRef.current = null;
-      activeArmEpochRef.current = null;
       presentedSequenceRef.current = null;
-      activeDialogRef.current = null;
-      composingRef.current = false;
-      resetTransientInputRef.current();
+      clearLocalArmRef.current(false);
       session.close();
     };
   }, [
@@ -530,39 +517,52 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
 
   const resetTransientInput = useCallback(() => {
     armBuffer.drop();
-    pendingNavRef.current = null;
+    pendingNavRef.current = [];
+    forwardedKeyDownsRef.current.clear();
+    claimedLocalCodesRef.current.clear();
     suppressPointerIdRef.current = null;
     acceptedPointerDownRef.current = null;
     cancelPendingMove();
     releaseCapturedPointer();
   }, [armBuffer, cancelPendingMove, releaseCapturedPointer]);
 
-  const disarm = useCallback(() => {
+  const resetLocalArmRefs = useCallback((): number | null => {
     const armEpoch = activeArmEpochRef.current ?? desiredArmEpochRef.current;
     desiredArmEpochRef.current = null;
     activeArmEpochRef.current = null;
     activeDialogRef.current = null;
     composingRef.current = false;
     resetTransientInput();
+    return armEpoch;
+  }, [resetTransientInput]);
+
+  const resetLocalArmState = useCallback(() => {
     setComposing(false);
     setDialogState(null);
     setArmedState(null);
-    if (armEpoch === null) return;
-    sendPeekFrame(sessionRef.current, {
-      kind: "disarm",
-      hasBinaryPayload: false,
-      armEpoch,
-    });
-  }, [resetTransientInput]);
+  }, []);
+
+  const clearLocalArm = useCallback(
+    (notifyHost: boolean) => {
+      const armEpoch = resetLocalArmRefs();
+      resetLocalArmState();
+      if (!notifyHost || armEpoch === null) return;
+      sendPeekFrame(sessionRef.current, {
+        kind: "disarm",
+        hasBinaryPayload: false,
+        armEpoch,
+      });
+    },
+    [resetLocalArmRefs, resetLocalArmState],
+  );
+
+  const disarm = useCallback(() => {
+    clearLocalArm(true);
+  }, [clearLocalArm]);
 
   useEffect(() => {
     if (visible) return;
-    const armEpoch = activeArmEpochRef.current ?? desiredArmEpochRef.current;
-    desiredArmEpochRef.current = null;
-    activeArmEpochRef.current = null;
-    activeDialogRef.current = null;
-    composingRef.current = false;
-    resetTransientInput();
+    const armEpoch = resetLocalArmRefs();
     if (armEpoch !== null) {
       sendPeekFrame(sessionRef.current, {
         kind: "disarm",
@@ -571,15 +571,20 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       });
     }
     queueMicrotask(() => {
-      setComposing(false);
-      setDialogState(null);
-      setArmedState(null);
+      resetLocalArmState();
     });
-  }, [resetTransientInput, visible]);
+  }, [resetLocalArmRefs, resetLocalArmState, visible]);
 
   const sendInput = useCallback((frame: PeekInputFrame) => {
     const armEpoch = activeArmEpochRef.current;
     if (armEpoch === null) return;
+    if (frame.kind === "keyboard") {
+      if (frame.type === "rawKeyDown") {
+        forwardedKeyDownsRef.current.set(frame.code, frame);
+      } else if (frame.type === "keyUp") {
+        forwardedKeyDownsRef.current.delete(frame.code);
+      }
+    }
     sendPeekFrame(sessionRef.current, {
       ...frame,
       hasBinaryPayload: false,
@@ -589,11 +594,23 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     inputSequenceRef.current += 1;
   }, []);
 
+  const releaseForwardedPageKeys = useCallback(() => {
+    const held = Array.from(forwardedKeyDownsRef.current.values());
+    for (const frame of held) {
+      sendInput({
+        ...frame,
+        type: "keyUp",
+        autoRepeat: false,
+      });
+    }
+  }, [sendInput]);
+
   const flushPendingNav = useCallback(() => {
     const pending = pendingNavRef.current;
-    pendingNavRef.current = null;
-    if (pending === null) return;
-    sendInput(pending);
+    pendingNavRef.current = [];
+    for (const frame of pending) {
+      sendInput(frame);
+    }
   }, [sendInput]);
 
   const requestNav = useCallback(
@@ -602,7 +619,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         sendInput(frame);
         return;
       }
-      pendingNavRef.current = frame;
+      pendingNavRef.current = [...pendingNavRef.current, frame];
       arm();
     },
     [arm, sendInput],
@@ -626,6 +643,11 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     },
   });
 
+  const onAddressFocusChange = (focused: boolean): void => {
+    if (focused) releaseForwardedPageKeys();
+    chrome.onAddressFocusChange(focused);
+  };
+
   useEffect(() => {
     const tile = tileRef.current;
     if (tile === null || presentedArmedEpoch === null) return;
@@ -633,11 +655,9 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       if (isScreencastModChord(event, "l")) {
         event.preventDefault();
         event.stopPropagation();
-        // Release page input first: lift any modifier the IME already
-        // forwarded, then move focus to the address bar so later keys
-        // stay in chrome.
+        claimedLocalCodesRef.current.add(event.code);
         if (document.activeElement === imeInputRef.current) {
-          releaseForwardedModKeys(event, sendInput);
+          releaseForwardedPageKeys();
         }
         focusScreencastAddressBar(tile);
         return;
@@ -645,25 +665,27 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       if (isScreencastModChord(event, "r")) {
         event.preventDefault();
         event.stopPropagation();
+        claimedLocalCodesRef.current.add(event.code);
         requestNav({ kind: "reload" });
       }
     };
     const onKeyUp = (event: KeyboardEvent): void => {
-      if (
-        isScreencastModChord(event, "l") ||
-        isScreencastModChord(event, "r")
-      ) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
+      if (!claimedLocalCodesRef.current.delete(event.code)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    const onWindowBlur = (): void => {
+      claimedLocalCodesRef.current.clear();
     };
     tile.addEventListener("keydown", onKeyDown, true);
     tile.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("blur", onWindowBlur);
     return () => {
       tile.removeEventListener("keydown", onKeyDown, true);
       tile.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("blur", onWindowBlur);
     };
-  }, [presentedArmedEpoch, requestNav, sendInput]);
+  }, [presentedArmedEpoch, releaseForwardedPageKeys, requestNav]);
 
   const respondToDialog = useCallback(
     (generation: number, accept: boolean, promptText: string | null) => {
@@ -1005,15 +1027,20 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     flushPendingNavRef.current = flushPendingNav;
   }, [flushPendingNav]);
 
+  useLayoutEffect(() => {
+    clearLocalArmRef.current = clearLocalArm;
+  }, [clearLocalArm]);
+
   return (
     <div
       ref={tileRef}
       className="flex h-full w-full flex-col bg-canvas text-foreground"
       data-testid={`browser-peek-tile-${node.instanceId}`}
+      onBlurCapture={(event) => handleFocusExit(event.relatedTarget)}
     >
       <ScreencastPeekChromeBar
         controller={chrome.controller}
-        onAddressFocusChange={chrome.onAddressFocusChange}
+        onAddressFocusChange={onAddressFocusChange}
         loading={navState.loading}
         armed={presentedArmedEpoch !== null}
         status={status}
@@ -1033,7 +1060,6 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           className="absolute inset-0 h-full w-full cursor-default overflow-hidden bg-background p-0 text-left outline-none"
           aria-label="Browser screencast controls"
           onFocus={() => imeInputRef.current?.focus()}
-          onBlur={(event) => handleFocusExit(event.relatedTarget)}
           onPointerDown={handleOverlayPointerDown}
           onPointerMove={handleOverlayPointerMove}
           onPointerUp={handleOverlayPointerUp}
@@ -1088,13 +1114,12 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           autoComplete="off"
           className="pointer-events-none absolute left-0 top-0 size-px opacity-0"
           onFocus={arm}
-          onBlur={(event) => handleFocusExit(event.relatedTarget)}
           onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
             if (activeDialogRef.current !== null) return;
             if (event.nativeEvent.isComposing || composingRef.current) return;
             if (activeArmEpochRef.current === null) return;
             if (isScreencastModChord(event.nativeEvent, "v")) {
-              event.preventDefault();
+              claimedLocalCodesRef.current.add(event.code);
               return;
             }
             event.preventDefault();
@@ -1120,11 +1145,11 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           onKeyUp={(event: ReactKeyboardEvent<HTMLInputElement>) => {
             if (activeDialogRef.current !== null) return;
             if (event.nativeEvent.isComposing || composingRef.current) return;
-            if (activeArmEpochRef.current === null) return;
-            if (isScreencastModChord(event.nativeEvent, "v")) {
+            if (claimedLocalCodesRef.current.delete(event.code)) {
               event.preventDefault();
               return;
             }
+            if (activeArmEpochRef.current === null) return;
             event.preventDefault();
             sendInput({
               kind: "keyboard",
@@ -1174,7 +1199,6 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
             key={dialog.generation}
             dialog={dialog}
             onRespond={respondToDialog}
-            onFocusExit={handleFocusExit}
           />
         )}
       </div>
@@ -1263,7 +1287,6 @@ function BrowserDialogOverlay(props: {
     accept: boolean,
     promptText: string | null,
   ) => void;
-  readonly onFocusExit: (relatedTarget: EventTarget | null) => void;
 }) {
   const [promptText, setPromptText] = useState(props.dialog.defaultValue);
   const isAlert = props.dialog.type === "alert";
@@ -1289,7 +1312,6 @@ function BrowserDialogOverlay(props: {
             className="mt-3 w-full rounded border border-input bg-background px-3 py-2 text-ui-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
             value={promptText}
             onChange={(event) => setPromptText(event.currentTarget.value)}
-            onBlur={(event) => props.onFocusExit(event.relatedTarget)}
           />
         ) : null}
         <div className="mt-4 flex justify-end gap-2">
@@ -1300,7 +1322,6 @@ function BrowserDialogOverlay(props: {
               onClick={() =>
                 props.onRespond(props.dialog.generation, false, null)
               }
-              onBlur={(event) => props.onFocusExit(event.relatedTarget)}
             >
               Cancel
             </button>
@@ -1315,7 +1336,6 @@ function BrowserDialogOverlay(props: {
                 isPrompt ? promptText : null,
               )
             }
-            onBlur={(event) => props.onFocusExit(event.relatedTarget)}
           >
             OK
           </button>
@@ -1507,6 +1527,29 @@ function useScreencastViewportBridge(
   }, [ref, sendViewport, visible]);
 }
 
+type ScreencastControlResult = "armed" | "teardown" | "ignore";
+
+function applyScreencastControlFrame(input: {
+  readonly frame: BrowserScreencastServerFrame;
+  readonly desiredEpoch: number | null;
+  readonly activeEpoch: number | null;
+}): ScreencastControlResult {
+  if (input.frame.kind === "failed" || input.frame.kind === "complete") {
+    return "teardown";
+  }
+  if (input.frame.kind === "armed") {
+    return input.desiredEpoch === input.frame.armEpoch ? "armed" : "ignore";
+  }
+  if (input.frame.kind !== "revoked") return "ignore";
+  if (
+    input.activeEpoch !== input.frame.armEpoch &&
+    input.desiredEpoch !== input.frame.armEpoch
+  ) {
+    return "ignore";
+  }
+  return "teardown";
+}
+
 function isBrowserAddressInput(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLInputElement &&
@@ -1527,32 +1570,7 @@ function focusScreencastAddressBar(tile: HTMLElement): void {
   const input = tile.querySelector('input[aria-label="Browser address"]');
   if (!(input instanceof HTMLInputElement)) return;
   input.focus();
-}
-
-function releaseForwardedModKeys(
-  event: KeyboardEvent,
-  send: (frame: PeekKeyboardInput) => void,
-): void {
-  if (event.metaKey) {
-    send({
-      kind: "keyboard",
-      type: "keyUp",
-      code: "MetaLeft",
-      key: "Meta",
-      modifiers: 0,
-      autoRepeat: false,
-    });
-  }
-  if (event.ctrlKey) {
-    send({
-      kind: "keyboard",
-      type: "keyUp",
-      code: "ControlLeft",
-      key: "Control",
-      modifiers: 0,
-      autoRepeat: false,
-    });
-  }
+  input.select();
 }
 
 function sendPeekFrame(

@@ -181,13 +181,16 @@ function firePlatformModKey(
   type: "keydown" | "keyup",
   key: string,
   code: string,
-): void {
-  const eventType = type === "keydown" ? "keyDown" : "keyUp";
-  fireEvent[eventType](target, {
+): KeyboardEvent {
+  const event = new KeyboardEvent(type, {
+    bubbles: true,
+    cancelable: true,
     key,
     code,
     ...platformModKeys(),
   });
+  target.dispatchEvent(event);
+  return event;
 }
 
 function pastePlainText(target: HTMLElement, text: string): void {
@@ -236,10 +239,11 @@ describe("BrowserPeekTile shortcuts and paste", () => {
     await flushMacrotask();
 
     const ime = imeInput();
-    firePlatformModKey(ime, "keydown", "v", "KeyV");
+    const keydown = firePlatformModKey(ime, "keydown", "v", "KeyV");
     pastePlainText(ime, PASTE_TEXT);
     firePlatformModKey(ime, "keyup", "v", "KeyV");
 
+    expect(keydown.defaultPrevented).toBe(false);
     expect(framesOfKind(stream, "insertText")).toEqual([
       {
         kind: "insertText",
@@ -303,7 +307,7 @@ describe("BrowserPeekTile shortcuts and paste", () => {
     await flushMacrotask();
 
     firePlatformModKey(imeInput(), "keydown", "r", "KeyR");
-    firePlatformModKey(imeInput(), "keyup", "r", "KeyR");
+    fireEvent.keyUp(imeInput(), { key: "r", code: "KeyR" });
 
     expect(framesOfKind(stream, "reload")).toEqual([
       {
@@ -396,5 +400,167 @@ describe("BrowserPeekTile shortcuts and paste", () => {
     await flushMacrotask();
 
     expect(useScreencastArmedStore.getState().armed).toBe(false);
+  });
+
+  it("does not preventDefault the V keydown of a paste chord", async () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    await flushMacrotask();
+
+    const keydown = firePlatformModKey(imeInput(), "keydown", "v", "KeyV");
+    expect(keydown.defaultPrevented).toBe(false);
+    expect(keyboardFramesFor(stream, "v", "KeyV")).toEqual([]);
+  });
+
+  it("suppresses the V keyup after the modifier is released first", async () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    await flushMacrotask();
+
+    firePlatformModKey(imeInput(), "keydown", "v", "KeyV");
+    fireEvent.keyUp(imeInput(), { key: "v", code: "KeyV" });
+
+    expect(keyboardFramesFor(stream, "v", "KeyV")).toEqual([]);
+  });
+
+  it("releases forwarded page keys when the address bar takes focus", async () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    await flushMacrotask();
+
+    fireEvent.keyDown(imeInput(), { key: "a", code: "KeyA" });
+    expect(keyboardFramesFor(stream, "a", "KeyA")).toEqual([
+      expect.objectContaining({
+        type: "rawKeyDown",
+        key: "a",
+        code: "KeyA",
+      }),
+      expect.objectContaining({
+        type: "char",
+        key: "a",
+        code: "KeyA",
+      }),
+    ]);
+
+    fireEvent.focus(addressInput());
+    fireEvent.focusIn(addressInput());
+    await flushMacrotask();
+
+    expect(keyboardFramesFor(stream, "a", "KeyA")).toEqual([
+      expect.objectContaining({ type: "rawKeyDown", code: "KeyA" }),
+      expect.objectContaining({ type: "char", code: "KeyA" }),
+      expect.objectContaining({ type: "keyUp", code: "KeyA", seq: 2 }),
+    ]);
+  });
+
+  it("selects the address on Cmd+L even when it is already focused", async () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    await flushMacrotask();
+
+    const input = addressInput();
+    fireEvent.focus(input);
+    fireEvent.focusIn(input);
+    input.setSelectionRange(1, 1);
+    expect(input.selectionStart).toBe(1);
+
+    firePlatformModKey(input, "keydown", "l", "KeyL");
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(input.value.length);
+  });
+
+  it("clears the armed flag on a failed stream frame", async () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    await flushMacrotask();
+    expect(useScreencastArmedStore.getState().armed).toBe(true);
+
+    act(() => {
+      stream.emit(
+        {
+          kind: "failed",
+          hasBinaryPayload: false,
+          reason: "session gone",
+        },
+        null,
+      );
+    });
+    await flushMacrotask();
+
+    expect(useScreencastArmedStore.getState().armed).toBe(false);
+    expect(screen.queryByText("Controlling")).toBeNull();
+  });
+
+  it("clears the armed flag on a complete stream frame", async () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    await flushMacrotask();
+    expect(useScreencastArmedStore.getState().armed).toBe(true);
+
+    act(() => {
+      stream.emit({ kind: "complete", hasBinaryPayload: false }, null);
+    });
+    await flushMacrotask();
+
+    expect(useScreencastArmedStore.getState().armed).toBe(false);
+    expect(screen.queryByText("Controlling")).toBeNull();
+  });
+
+  it("does not let an unarmed sibling tile clear another tile's armed flag", async () => {
+    const sibling: BrowserPeekTileRef = {
+      ...PEEK_NODE,
+      instanceId: "peek-instance-2",
+      tabId: "headless-tab-2",
+    };
+    const view = render(
+      <div>
+        <BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />
+      </div>,
+    );
+    const client = hookState.streamClient;
+    if (client === null) {
+      throw new Error("expected a stream client");
+    }
+    const armedStream = client.sessions[0];
+    const firstOverlay = screen
+      .getByTestId(`browser-peek-tile-${PEEK_NODE.instanceId}`)
+      .querySelector('[aria-label="Browser screencast controls"]');
+    if (!(firstOverlay instanceof HTMLElement)) {
+      throw new Error("expected the first overlay");
+    }
+    fireEvent.focus(firstOverlay);
+    act(() => {
+      armedStream.emit(
+        { kind: "armed", hasBinaryPayload: false, armEpoch: 1 },
+        null,
+      );
+    });
+    await flushMacrotask();
+    expect(useScreencastArmedStore.getState().armed).toBe(true);
+
+    view.rerender(
+      <div>
+        <BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />
+        <BrowserPeekTile epicId="epic-1" node={sibling} />
+      </div>,
+    );
+    await flushMacrotask();
+    expect(useScreencastArmedStore.getState().armed).toBe(true);
+
+    view.rerender(
+      <div>
+        <BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />
+      </div>,
+    );
+    await flushMacrotask();
+    expect(useScreencastArmedStore.getState().armed).toBe(true);
+    expect(screen.getByText("Controlling")).not.toBeNull();
   });
 });
