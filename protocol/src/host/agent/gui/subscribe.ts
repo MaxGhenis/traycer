@@ -1115,13 +1115,6 @@ const chatSubscribeClientFrameSchemaBeforeV13Options = [
     // gating on setup - mirroring how the landing page bundles the intent
     // with `epic.create`. `null` for an ordinary send.
     worktreeIntent: worktreeIntentSchemaV10.nullable().default(null),
-    // Tiles the user attached in chat (ticket 13) - empty for every send
-    // before this shipped and for one with nothing attached. Same additive
-    // treatment as `worktreeIntent` above: `.default([])`, no separate
-    // versioned tier, since an older host simply never reads the key.
-    browserContextAttachments: z
-      .array(browserContextAttachmentWireSchema)
-      .default([]),
   }),
   z.object({
     kind: z.literal("deleteMessageSuffix"),
@@ -1316,9 +1309,12 @@ const [
 const chatSubscribeClientFrameSchemaOptions = [
   chatSubscribeClientFrameSchemaBeforeV13Options[0].extend({
     worktreeIntent: worktreeIntentSchema.nullable().default(null),
-    // Browser-annotations ticket 05. Live send only - frozen 1.0–1.6
-    // client frames keep the pre-annotation send shape. `.default([])`
-    // so an older client that has not yet learned the key still parses.
+    // Ticket 13 / 05: live `chat.subscribe@1.7` only. Frozen 1.0–1.6
+    // send frames (BeforeV13 / V10) keep the pre-ticket-13 shape so the
+    // released 1.6 surface matches main's freeze.
+    browserContextAttachments: z
+      .array(browserContextAttachmentWireSchema)
+      .default([]),
     browserAnnotations: z.array(browserAnnotationRecordSchema).default([]),
   }),
   deleteMessageSuffixClientFrameSchema,
@@ -1547,9 +1543,6 @@ const chatSubscribeClientFrameSchemaV10 = z.discriminatedUnion("kind", [
     accountContext: accountContextSchema,
     deliveryPolicy: chatQueueDeliveryPolicySchema.default("auto"),
     worktreeIntent: worktreeIntentSchemaV10.nullable().default(null),
-    browserContextAttachments: z
-      .array(browserContextAttachmentWireSchema)
-      .default([]),
   }),
   z.object({
     kind: z.literal("deleteMessageSuffix"),

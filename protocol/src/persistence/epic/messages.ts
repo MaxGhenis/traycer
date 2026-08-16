@@ -159,9 +159,23 @@ export const agentUserMessageSchema = z.object({
   ]),
 });
 
-const userAuthoredMessageBaseFields = {
+const userAuthoredMessagePreTicket13Fields = {
   kind: z.literal("user"),
   content: jsonContentSchema,
+} as const;
+
+/**
+ * Frozen user-authored payload as shipped on `chat.subscribe@1.0–1.6`
+ * (main's 1.6 freeze). Ticket 13's `browserContextAttachments` and ticket
+ * 05's `browserAnnotations` are live-1.7-only: they must not leak onto a
+ * released snapshot / `messageAccepted` / queue item.
+ */
+export const userAuthoredMessageSchemaPreAnnotation = z.object(
+  userAuthoredMessagePreTicket13Fields,
+);
+
+export const userAuthoredMessageSchema = z.object({
+  ...userAuthoredMessagePreTicket13Fields,
   /**
    * Empty for every message before ticket 13 and for one with no browser
    * tile attached - `.default([])` rather than `.optional()` so an already-
@@ -175,29 +189,17 @@ const userAuthoredMessageBaseFields = {
    * message that sits in the queue before its turn starts. This is also why
    * the handle inside each record is minted once, at accept time, and never
    * re-derived at drain - see `mintBrowserContextAttachmentRecords`.
+   *
+   * Wire: live `chat.subscribe@1.7` only. Frozen 1.0–1.6 copies omit it.
    */
   browserContextAttachments: z
     .array(browserContextAttachmentRecordSchema)
     .default([]),
-} as const;
-
-/**
- * Frozen user-authored payload as shipped on `chat.subscribe@1.0–1.6`.
- * Bound to those lines so the live `browserAnnotations` field cannot leak
- * onto a released snapshot / `messageAccepted` / queue item.
- */
-export const userAuthoredMessageSchemaPreAnnotation = z.object(
-  userAuthoredMessageBaseFields,
-);
-
-export const userAuthoredMessageSchema = z.object({
-  ...userAuthoredMessageBaseFields,
   /**
    * Browser-annotations ticket 05. Empty for every message before this
    * shipped and for one with no annotation attached. `.default([])` so
    * already-persisted records parse cleanly. Same drain-time reason as
-   * `browserContextAttachments`: the queued prompt is re-derived from
-   * THIS persisted message, not the original send frame.
+   * `browserContextAttachments`. Wire: live `chat.subscribe@1.7` only.
    */
   browserAnnotations: z.array(browserAnnotationRecordSchema).default([]),
 });
