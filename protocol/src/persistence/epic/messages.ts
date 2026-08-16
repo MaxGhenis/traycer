@@ -76,9 +76,9 @@ export type BrowserContextAttachmentRecord = z.infer<
  * The old `browser-element` kind stays parseable on that enum.
  */
 export const browserAnnotationCountsSchema = z.object({
-  elements: z.number(),
-  regions: z.number(),
-  strokes: z.number(),
+  elements: z.number().int().nonnegative(),
+  regions: z.number().int().nonnegative(),
+  strokes: z.number().int().nonnegative(),
 });
 export type BrowserAnnotationCounts = z.infer<
   typeof browserAnnotationCountsSchema
