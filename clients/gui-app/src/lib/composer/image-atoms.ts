@@ -29,6 +29,61 @@ export function collectImageAtoms(
 export function containsImageAtoms(content: JsonContent): boolean {
   return walk(content, (node) => node.type === "imageAttachment");
 }
+
+export function appendImageAttachmentAtoms(
+  content: JsonContent,
+  atoms: ReadonlyArray<{
+    readonly id: string;
+    readonly fileName: string;
+    readonly mimeType: string;
+    readonly size: number | null;
+    readonly b64content: string;
+  }>,
+): JsonContent {
+  if (atoms.length === 0) return content;
+  const nodes: JsonContent[] = atoms.map((atom) => ({
+    type: "imageAttachment",
+    attrs: {
+      id: atom.id,
+      fileName: atom.fileName,
+      mimeType: atom.mimeType,
+      size: atom.size,
+      b64content: atom.b64content,
+    },
+  }));
+  const children = content.content ?? [];
+  return {
+    ...content,
+    content: [...children, ...nodes],
+  };
+}
+
+export function omitImageAtomsByFileName(
+  content: JsonContent,
+  fileNames: ReadonlySet<string>,
+): JsonContent {
+  if (fileNames.size === 0) return content;
+  if (content.type === "imageAttachment") {
+    const fileName = stringValue(content.attrs?.fileName);
+    if (fileName !== null && fileNames.has(fileName)) return { type: "text" };
+  }
+  const children = content.content;
+  if (children === undefined) return content;
+  const next = children
+    .map((child) => omitImageAtomsByFileName(child, fileNames))
+    .filter((child) => child.type !== "text" || child.text !== undefined);
+  if (next.length === children.length) {
+    let unchanged = true;
+    for (let index = 0; index < next.length; index += 1) {
+      if (next[index] !== children[index]) {
+        unchanged = false;
+        break;
+      }
+    }
+    if (unchanged) return content;
+  }
+  return { ...content, content: next };
+}
 function walk(
   node: JsonContent,
   visit: (node: JsonContent) => boolean,

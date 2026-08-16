@@ -426,7 +426,12 @@ describe("useRenderedMessages assistant image echo dedup", () => {
     };
     const steered: Message = {
       ...userMessage("message-queue-img"),
-      message: { kind: "user", content, browserContextAttachments: [] },
+      message: {
+        kind: "user",
+        content,
+        browserContextAttachments: [],
+        browserAnnotations: [],
+      },
       timestamp: 2002,
     };
 

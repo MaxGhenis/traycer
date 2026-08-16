@@ -54,6 +54,7 @@ import type {
   Attachment,
   BrowserContextAttachment,
 } from "@/lib/composer/types";
+import { toBrowserAnnotationWire } from "@/lib/browser-view/browser-annotation-wire";
 import { browserContextAttachmentToWire } from "@/lib/browser-view/browser-context-attachments";
 import type {
   RuntimeApprovalDecision,
@@ -1948,6 +1949,16 @@ export function createChatSessionStoreWithNotificationDependencies(
           .map((attachment) =>
             browserContextAttachmentToWire(attachment.payload),
           );
+        const browserAnnotations = input.attachments
+          .filter(
+            (
+              attachment,
+            ): attachment is Extract<
+              Attachment,
+              { readonly kind: "browser-annotation" }
+            > => attachment.kind === "browser-annotation",
+          )
+          .map((attachment) => toBrowserAnnotationWire(attachment.record));
         const frame: ChatOwnerActionFrame = {
           kind: "send",
           hasBinaryPayload: false,
@@ -1962,6 +1973,7 @@ export function createChatSessionStoreWithNotificationDependencies(
           deliveryPolicy: input.deliveryPolicy,
           worktreeIntent,
           browserContextAttachments,
+          browserAnnotations,
         };
         // Consume before dispatch so the pending action captures precisely the
         // revision it may later restore. A synchronous action rejection cannot
@@ -2093,6 +2105,7 @@ export function createChatSessionStoreWithNotificationDependencies(
           worktreeIntent: null,
           // The landing page's composer has no browser tile to attach from.
           browserContextAttachments: [],
+          browserAnnotations: [],
         };
         const sentClientActionId = sendAction({
           set,
@@ -3123,6 +3136,7 @@ function optimisticQueuedItemForSend(
       // Optimistic local echo only - the real `queue.added` event (carrying
       // the host-minted handles) reconciles this row once it arrives.
       browserContextAttachments: [],
+      browserAnnotations: [],
     },
     sender: input.sender,
     settings: input.settings,

@@ -8,7 +8,17 @@ import type {
 
 import { useChatStore } from "@/stores/composer/chat-store";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
-import { containsImageAtoms } from "@/lib/composer/image-atoms";
+import {
+  appendImageAttachmentAtoms,
+  containsImageAtoms,
+} from "@/lib/composer/image-atoms";
+import { bytesToBase64 } from "@/lib/composer/image-base64";
+import {
+  getImageBytes,
+  sessionImageBytes,
+} from "@/lib/composer/landing-image-store";
+import type { BrowserAnnotationRecord } from "@/lib/browser-view/browser-annotation-record";
+import { v4 as uuidv4 } from "uuid";
 import {
   buildAttachmentsFromJSONContent,
   buildSubmittedChatJSONContent,
@@ -210,6 +220,7 @@ export function useChatComposerSubmit(
       // editor finishes initializing from that same stale initial content.
       if (editor === null || !editor.isReady()) return;
       const draft = useComposerDraftStore.getState().drafts[taskId];
+      const annotationRecords = draft?.browserAnnotations ?? [];
       const browserContextAttachments =
         draft?.browserContextAttachments?.map((payload) => ({
           kind: "browser-context" as const,
@@ -223,71 +234,68 @@ export function useChatComposerSubmit(
       if (
         trimmed.length === 0 &&
         !hasImages &&
-        browserContextAttachments.length === 0
+        browserContextAttachments.length === 0 &&
+        annotationRecords.length === 0
       ) {
         return;
       }
 
-      // `toolbar.serviceTier` is already clamped to the selected model in the
-      // toolbar store (the single site shared with the picker display), so a tier
-      // the model doesn't advertise never reaches the wire or the recorded turn.
-      // The raw preference stays sticky in the store's `values` for a later model
-      // that honors it, and the codex-adapter still re-filters against the
-      // model's authoritative supportedServiceTiers at thread/start.
-      const settings = buildChatRunSettings({
-        selection: toolbar.selection,
-        permission: toolbar.permission,
-        reasoning: toolbar.reasoning,
-        serviceTier: toolbar.serviceTier,
-      });
-
-      const submittedContent = buildSubmittedChatJSONContent(
-        editorContent,
-        pickerStore.getState().knownSlashCommands,
-      );
-      const attachments: ReadonlyArray<Attachment> = [
-        ...buildAttachmentsFromJSONContent(submittedContent),
-        ...browserContextAttachments,
-      ];
-      const deliveryPolicy = resolveSubmitDeliveryPolicy({
-        source,
-        activeTurnStatus,
-        steerEnabled,
-        steerProtocolSupported,
-      });
-
-      // The drift confirmation is a capability-gated affordance: only a
-      // steer-capable harness can actually restart-under-new-settings, so only it
-      // asks. On an unsupported harness the `after_safe_point` send goes straight
-      // through and the host records the benign fallback ("After turn") row.
-      if (deliveryPolicy === "after_safe_point" && steerCapable) {
-        // A turn-start-baked setting (harness/model/reasoning/tier/agent-mode/
-        // profile - never permissionMode) differing from the running turn can't
-        // fold in silently: confirm ending the turn first (decision 6). The host
-        // owns the actual safe-point-vs-interrupt-restart promotion; this is the
-        // renderer's consent gate. Keep the composer text until the user acts.
-        const originTurn = getActiveTurnForSteer();
-        const decision = decideSteerSettings(originTurn, settings);
-        if (decision.kind === "interrupt_restart") {
-          setPendingConflict({
-            content: submittedContent,
-            contentText,
-            attachments,
-            settings: decision.newSettings,
-            changed: decision.changed,
-            originTurnId: originTurn?.turnId ?? null,
-          });
-          return;
+      void (async () => {
+        const annotationImages = await resolveAnnotationImageAtoms(
+          annotationRecords,
+        );
+        if (annotationImages === null) return;
+        if (submitBlocked()) return;
+        const settings = buildChatRunSettings({
+          selection: toolbar.selection,
+          permission: toolbar.permission,
+          reasoning: toolbar.reasoning,
+          serviceTier: toolbar.serviceTier,
+        });
+        const submittedContent = appendImageAttachmentAtoms(
+          buildSubmittedChatJSONContent(
+            editorContent,
+            pickerStore.getState().knownSlashCommands,
+          ),
+          annotationImages,
+        );
+        const attachments: ReadonlyArray<Attachment> = [
+          ...buildAttachmentsFromJSONContent(submittedContent),
+          ...browserContextAttachments,
+          ...annotationRecords.map((record) => ({
+            kind: "browser-annotation" as const,
+            record,
+          })),
+        ];
+        const deliveryPolicy = resolveSubmitDeliveryPolicy({
+          source,
+          activeTurnStatus,
+          steerEnabled,
+          steerProtocolSupported,
+        });
+        if (deliveryPolicy === "after_safe_point" && steerCapable) {
+          const originTurn = getActiveTurnForSteer();
+          const decision = decideSteerSettings(originTurn, settings);
+          if (decision.kind === "interrupt_restart") {
+            setPendingConflict({
+              content: submittedContent,
+              contentText,
+              attachments,
+              settings: decision.newSettings,
+              changed: decision.changed,
+              originTurnId: originTurn?.turnId ?? null,
+            });
+            return;
+          }
         }
-      }
-
-      finalizeSend({
-        content: submittedContent,
-        contentText,
-        attachments,
-        settings,
-        deliveryPolicy,
-      });
+        finalizeSend({
+          content: submittedContent,
+          contentText,
+          attachments,
+          settings,
+          deliveryPolicy,
+        });
+      })();
     },
     [
       activeTurnStatus,
@@ -370,4 +378,38 @@ export function useChatComposerSubmit(
       onRestart,
     },
   };
+}
+
+async function resolveAnnotationImageAtoms(
+  records: ReadonlyArray<BrowserAnnotationRecord>,
+): Promise<
+  | ReadonlyArray<{
+      readonly id: string;
+      readonly fileName: string;
+      readonly mimeType: string;
+      readonly size: number | null;
+      readonly b64content: string;
+    }>
+  | null
+> {
+  const atoms: Array<{
+    readonly id: string;
+    readonly fileName: string;
+    readonly mimeType: string;
+    readonly size: number | null;
+    readonly b64content: string;
+  }> = [];
+  for (const record of records) {
+    const sessionBytes = sessionImageBytes(record.imageHash);
+    const bytes = sessionBytes ?? (await getImageBytes(record.imageHash)) ?? null;
+    if (bytes === null) return null;
+    atoms.push({
+      id: uuidv4(),
+      fileName: record.imageFileName,
+      mimeType: "image/png",
+      size: bytes.byteLength,
+      b64content: bytesToBase64(bytes),
+    });
+  }
+  return atoms;
 }

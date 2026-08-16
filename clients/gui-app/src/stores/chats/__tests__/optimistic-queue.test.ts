@@ -104,6 +104,7 @@ function optimisticPromptItem(clientActionId: string): ChatQueuedPromptItem {
       kind: "user",
       content: CONTENT,
       browserContextAttachments: [],
+      browserAnnotations: [],
     },
     sender: SENDER,
     settings: SETTINGS,

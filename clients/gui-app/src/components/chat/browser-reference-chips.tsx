@@ -1,9 +1,14 @@
 import { Globe2 } from "lucide-react";
 import { useMemo } from "react";
-import type { BrowserContextAttachmentRecord } from "@traycer/protocol/persistence/epic/schemas";
+import type {
+  BrowserAnnotationRecord,
+  BrowserContextAttachmentRecord,
+} from "@traycer/protocol/persistence/epic/schemas";
 import type { BrowserTabInfo } from "@traycer/protocol/host/browser/contracts";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useMaybeBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
+import { BrowserAnnotationCard } from "@/components/chat/composer/browser-annotation-card";
+import { toComposerAnnotationRecord } from "@/lib/browser-view/browser-annotation-wire";
 import {
   browserTabFaviconUrl,
   resolveTabTitle,
@@ -11,12 +16,32 @@ import {
 
 export function BrowserReferenceChips(props: {
   readonly references: ReadonlyArray<BrowserContextAttachmentRecord>;
+  readonly annotations: ReadonlyArray<BrowserAnnotationRecord>;
 }) {
-  // Every other message renders this unconditionally with an empty array, so
+  // Every other message renders this unconditionally with empty arrays, so
   // the common case must not require BrowserSessionsProvider to be mounted -
   // only messages that actually reference a browser tab need the live lookup.
-  if (props.references.length === 0) return null;
-  return <BrowserReferenceChipsLive references={props.references} />;
+  if (props.references.length === 0 && props.annotations.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mb-2 flex w-full min-w-0 flex-col gap-1.5">
+      {props.annotations.length > 0 ? (
+        <div className="flex w-full min-w-0 flex-col gap-1.5">
+          {props.annotations.map((annotation) => (
+            <BrowserAnnotationCard
+              key={annotation.annotationId}
+              record={toComposerAnnotationRecord(annotation)}
+              onRemove={null}
+            />
+          ))}
+        </div>
+      ) : null}
+      {props.references.length > 0 ? (
+        <BrowserReferenceChipsLive references={props.references} />
+      ) : null}
+    </div>
+  );
 }
 
 function BrowserReferenceChipsLive(props: {
@@ -34,7 +59,7 @@ function BrowserReferenceChipsLive(props: {
   }, [sessions?.items]);
 
   return (
-    <div className="mb-2 flex max-w-full flex-wrap justify-start gap-1.5">
+    <div className="flex max-w-full flex-wrap justify-start gap-1.5">
       {props.references.map((reference) => {
         const tab = tabByReferenceKey.get(
           `${reference.sessionId}:${reference.tabId}`,

@@ -16,6 +16,7 @@ import { commonRecordRegistry } from "@traycer/protocol/common/registry";
 import { getRecordSchema } from "@traycer/protocol/framework/index";
 import { defineStreamRpcContract } from "@traycer/protocol/framework/versioned-stream-rpc";
 import {
+  browserAnnotationRecordSchema,
   browserContextAttachmentKindSchema,
   chatEventSchema,
   chatEventSchemaPreInReplyTo,
@@ -26,7 +27,9 @@ import {
   chatSchemaV14,
   chatSchemaV15,
   userMessagePayloadSchema,
+  userMessagePayloadSchemaPreAnnotation,
   userMessageSchema,
+  userMessageSchemaPreAnnotation,
   userMessageSchemaPreInReplyTo,
   userMessageSchemaPreTurnTail,
   userMessageSenderSchema,
@@ -438,6 +441,36 @@ export const chatQueueStateSchema = z.object({
 });
 export type ChatQueueState = z.infer<typeof chatQueueStateSchema>;
 
+// Frozen `prompt | managed-command` queue as `chat.subscribe@1.6` shipped
+// it: same union, but the prompt arm cannot declare `browserAnnotations`.
+// Bound to 1.6 snapshot + common frames so that released line stays exact.
+const chatQueuedPromptItemSchemaPreAnnotation = z.object({
+  kind: z.literal("prompt").default("prompt"),
+  queueItemId: z.string(),
+  messageId: z.string(),
+  message: userMessagePayloadSchemaPreAnnotation,
+  sender: userMessageSenderSchema,
+  settings: chatRunSettingsSchema,
+  accountContext: accountContextSchema.default(DEFAULT_ACCOUNT_CONTEXT),
+  delivery: chatQueueItemDeliverySchema.default("next_turn"),
+  status: chatQueueItemStatusSchema.default("pending"),
+  targetTurnId: z.string().nullable().default(null),
+  steerRequest: chatQueueSteerRequestSchema.nullable().default(null),
+  fallbackReason: z.string().nullable().default(null),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+
+const chatQueuedItemSchemaPreAnnotation = z.union([
+  chatQueuedManagedCommandItemSchema,
+  chatQueuedPromptItemSchemaPreAnnotation,
+]);
+
+const chatQueueStateSchemaPreAnnotation = z.object({
+  status: z.enum(["idle", "running", "paused"]),
+  items: z.array(chatQueuedItemSchemaPreAnnotation),
+});
+
 // Wire-freeze copies with the queue item's `sender` swapped for its
 // pre-`inReplyTo` freeze. Bound to the released `chat.subscribe@1.0–1.3`
 // snapshot + `queueChanged` serverFrames. `message` reuses the live
@@ -446,7 +479,7 @@ export type ChatQueueState = z.infer<typeof chatQueueStateSchema>;
 const chatQueuedItemSchemaPreInReplyTo = z.object({
   queueItemId: z.string(),
   messageId: z.string(),
-  message: userMessagePayloadSchema,
+  message: userMessagePayloadSchemaPreAnnotation,
   sender: userMessageSenderSchemaPreInReplyTo,
   settings: chatRunSettingsSchema,
   accountContext: accountContextSchema.default(DEFAULT_ACCOUNT_CONTEXT),
@@ -480,7 +513,7 @@ const chatQueueStateSchemaPreInReplyTo = z.object({
 const chatQueuedItemSchemaPreManagedCommand = z.object({
   queueItemId: z.string(),
   messageId: z.string(),
-  message: userMessagePayloadSchema,
+  message: userMessagePayloadSchemaPreAnnotation,
   sender: userMessageSenderSchema,
   settings: chatRunSettingsSchema,
   accountContext: accountContextSchema.default(DEFAULT_ACCOUNT_CONTEXT),
@@ -918,7 +951,7 @@ const chatSubscribeCommonServerFrameSchemasPreInReplyTo =
 const chatSubscribeCommonServerFrameSchemasPreTurnTail =
   buildChatSubscribeCommonServerFrameSchemas({
     message: userMessageSchemaPreTurnTail,
-    queue: chatQueueStateSchema,
+    queue: chatQueueStateSchemaPreAnnotation,
     event: chatEventSchema,
   });
 
@@ -927,7 +960,7 @@ const chatSubscribeCommonServerFrameSchemasPreTurnTail =
 // 1.4/1.5 `queueChanged` frame can never carry a managed-command item.
 const chatSubscribeCommonServerFrameSchemasPreManagedCommand =
   buildChatSubscribeCommonServerFrameSchemas({
-    message: userMessageSchema,
+    message: userMessageSchemaPreAnnotation,
     queue: chatQueueStateSchemaPreManagedCommand,
     event: chatEventSchema,
   });
@@ -1058,6 +1091,11 @@ export const browserContextAttachmentWireSchema = z.object({
 export type BrowserContextAttachmentWire = z.infer<
   typeof browserContextAttachmentWireSchema
 >;
+
+export {
+  browserAnnotationRecordSchema,
+  type BrowserAnnotationRecord,
+} from "@traycer/protocol/persistence/epic/schemas";
 
 const chatSubscribeClientFrameSchemaBeforeV13Options = [
   z.object({
@@ -1278,6 +1316,10 @@ const [
 const chatSubscribeClientFrameSchemaOptions = [
   chatSubscribeClientFrameSchemaBeforeV13Options[0].extend({
     worktreeIntent: worktreeIntentSchema.nullable().default(null),
+    // Browser-annotations ticket 05. Live send only - frozen 1.0–1.6
+    // client frames keep the pre-annotation send shape. `.default([])`
+    // so an older client that has not yet learned the key still parses.
+    browserAnnotations: z.array(browserAnnotationRecordSchema).default([]),
   }),
   deleteMessageSuffixClientFrameSchema,
   chatSubscribeClientFrameSchemaBeforeV13Options[2].extend({
@@ -1961,7 +2003,7 @@ export const chatSubscribeV15 = defineStreamRpcContract({
 const chatSnapshotSchemaV16 = z.object({
   chat: chatSchemaPreImage,
   access: chatAccessSchema,
-  queue: chatQueueStateSchema,
+  queue: chatQueueStateSchemaPreAnnotation,
   runStatus: chatRunStatusSchema,
   activeTurn: chatActiveTurnSchema.nullable(),
   pendingApprovals: z.array(chatApprovalStateSchema),

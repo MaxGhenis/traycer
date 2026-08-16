@@ -21,7 +21,7 @@ const VISIBLE_TAG_COUNT = 2;
 
 export function BrowserAnnotationCard(props: {
   readonly record: BrowserAnnotationRecord;
-  readonly onRemove: (annotationId: string) => void;
+  readonly onRemove: ((annotationId: string) => void) | null;
 }) {
   const { record, onRemove } = props;
   const sessions = useMaybeBrowserSessionsContext();
@@ -90,16 +90,18 @@ export function BrowserAnnotationCard(props: {
           ) : null}
         </div>
       </div>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-xs"
-        aria-label="Remove annotation"
-        className="shrink-0 text-muted-foreground"
-        onClick={() => onRemove(record.annotationId)}
-      >
-        <X />
-      </Button>
+      {onRemove === null ? null : (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Remove annotation"
+          className="shrink-0 text-muted-foreground"
+          onClick={() => onRemove(record.annotationId)}
+        >
+          <X />
+        </Button>
+      )}
     </div>
   );
 }

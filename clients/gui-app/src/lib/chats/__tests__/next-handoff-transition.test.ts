@@ -130,6 +130,7 @@ describe("nextHandoffTransition", () => {
         kind: "user",
         content: CONTENT,
         browserContextAttachments: [],
+        browserAnnotations: [],
       },
       timestamp: 1000,
       sessionAnchor: null,
