@@ -1,14 +1,16 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CompositionEvent as ReactCompositionEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactElement,
   type RefObject,
   type SetStateAction,
-  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { AlertTriangle, Pause, Radio, WifiOff } from "lucide-react";
 import {
@@ -24,11 +26,16 @@ import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/h
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
+import {
+  createScreencastArmBuffer,
+  type ScreencastArmBuffer,
+} from "@/components/epic-canvas/renderers/screencast-arm-buffer";
 import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
 import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
 import { cn } from "@/lib/utils";
+import { wheelDeltaToPixels } from "@/lib/wheel-delta-to-pixels";
 import type { BrowserPeekTileRef } from "@/stores/epics/canvas/types";
 
 const DEFAULT_MAX_WIDTH = 1280;
@@ -36,6 +43,69 @@ const DEFAULT_MAX_HEIGHT = 720;
 const DEFAULT_QUALITY = 70;
 const STALE_WITHOUT_FRAME_MS = 8_000;
 const VIEWPORT_DEBOUNCE_MS = 200;
+const POINTER_CLICK_COUNT_MAX = 8;
+const WHEEL_LINE_HEIGHT_PX = 16;
+
+type PeekPointerInput = Omit<
+  Extract<BrowserScreencastClientFrame, { readonly kind: "pointer" }>,
+  "armEpoch" | "seq" | "hasBinaryPayload"
+>;
+
+type PeekKeyboardInput = Omit<
+  Extract<BrowserScreencastClientFrame, { readonly kind: "keyboard" }>,
+  "armEpoch" | "seq" | "hasBinaryPayload"
+>;
+
+type PeekInsertTextInput = Omit<
+  Extract<BrowserScreencastClientFrame, { readonly kind: "insertText" }>,
+  "armEpoch" | "seq" | "hasBinaryPayload"
+>;
+
+type PeekInputFrame =
+  PeekPointerInput | PeekKeyboardInput | PeekInsertTextInput;
+
+interface CapturedPointer {
+  readonly element: HTMLElement;
+  readonly pointerId: number;
+}
+
+interface PointerLike {
+  readonly clientX: number;
+  readonly clientY: number;
+  readonly button: number;
+  readonly buttons: number;
+  readonly altKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+  readonly shiftKey: boolean;
+  readonly detail: number;
+}
+
+interface PointerFrameRequest {
+  readonly event: PointerLike;
+  readonly type: PeekPointerInput["type"];
+  readonly clampToEdge: boolean;
+  readonly deltaX: number;
+  readonly deltaY: number;
+}
+
+interface NormalizedPointerRequest {
+  readonly clientX: number;
+  readonly clientY: number;
+  readonly image: HTMLImageElement | null;
+  readonly frameSize: {
+    readonly width: number;
+    readonly height: number;
+  } | null;
+  readonly clampToEdge: boolean;
+}
+
+interface BrowserPeekStatus {
+  readonly label: string;
+  readonly overlay: string | null;
+  readonly tone: "live" | "muted" | "bad";
+  readonly Icon: typeof Radio;
+}
 
 type PeekLifecycle =
   | "connecting"
@@ -71,6 +141,7 @@ export interface BrowserPeekTileProps {
 }
 
 export function BrowserPeekTile(props: BrowserPeekTileProps) {
+  const { epicId, node, onMigrated } = props;
   const tabHostId = useTabHostId();
   const hostEntry = useHostDirectoryEntry(tabHostId);
   const auth = useStreamAuthRevalidator();
@@ -78,8 +149,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const visible = useTileBodyVisible();
   useRegisterVisibleBrowserTile({
     hostId: tabHostId,
-    sessionId: props.node.sessionId,
-    tabId: props.node.tabId,
+    sessionId: node.sessionId,
+    tabId: node.tabId,
     visible,
   });
   const sessionRef = useRef<{
@@ -89,6 +160,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     ) => void;
   } | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const overlayButtonRef = useRef<HTMLButtonElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const imeInputRef = useRef<HTMLInputElement | null>(null);
   const lastFrameAtRef = useRef<number | null>(null);
@@ -99,6 +171,24 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const presentedSequenceRef = useRef<number | null>(null);
   const activeDialogRef = useRef<BrowserPeekDialog | null>(null);
   const composingRef = useRef(false);
+  const frameSizeRef = useRef<{
+    readonly width: number;
+    readonly height: number;
+  } | null>(null);
+  const capturedPointerRef = useRef<CapturedPointer | null>(null);
+  const suppressPointerIdRef = useRef<number | null>(null);
+  const pendingMoveRef = useRef<PeekPointerInput | null>(null);
+  const moveRafRef = useRef<number | null>(null);
+  const [armBuffer] = useState<ScreencastArmBuffer<PeekPointerInput>>(() =>
+    createScreencastArmBuffer({
+      setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+      clearTimeout: (id) => {
+        window.clearTimeout(id);
+      },
+    }),
+  );
+  const resetTransientInputRef = useRef<() => void>(() => {});
+  const deliverArmBufferRef = useRef<() => void>(() => {});
   const [armedState, setArmedState] = useState<{
     readonly client: IHostStreamClient<HostStreamRpcRegistry>;
     readonly epoch: number;
@@ -122,10 +212,10 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const image = stateMatchesClient ? streamState.image : null;
   const lifecycle = stateMatchesClient ? streamState.lifecycle : "connecting";
   const details = peekDetailsForRender(stateMatchesClient, streamState, client);
-  const migrationPending =
-    stateMatchesClient && streamState.migrationPending;
+  const migrationPending = stateMatchesClient && streamState.migrationPending;
   const frameSize = stateMatchesClient ? streamState.frameSize : null;
   const armedEpoch = armedState?.client === client ? armedState.epoch : null;
+  const presentedArmedEpoch = visible ? armedEpoch : null;
   const dialog = dialogForClient(dialogState, client);
 
   const setLifecycle = useCallback(
@@ -180,13 +270,14 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       desiredArmEpochRef.current = null;
       activeArmEpochRef.current = null;
       activeDialogRef.current = null;
+      resetTransientInputRef.current();
       return;
     }
 
     const session = client.subscribe("browser.screencast", {
-      epicId: props.epicId,
-      sessionId: props.node.sessionId,
-      tabId: props.node.tabId,
+      epicId,
+      sessionId: node.sessionId,
+      tabId: node.tabId,
       maxWidth: DEFAULT_MAX_WIDTH,
       maxHeight: DEFAULT_MAX_HEIGHT,
       quality: DEFAULT_QUALITY,
@@ -201,6 +292,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         activeArmEpochRef.current = null;
         activeDialogRef.current = null;
         composingRef.current = false;
+        resetTransientInputRef.current();
         setArmedState(null);
         setDialogState(null);
         setComposing(false);
@@ -238,11 +330,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         setDetails,
         setFrameSize,
       });
-      if (
-        parsed.data.kind === "complete" &&
-        parsed.data.cause === "migrated"
-      ) {
-        props.onMigrated?.();
+      if (parsed.data.kind === "complete" && parsed.data.cause === "migrated") {
+        onMigrated?.();
       }
       if (parsed.data.kind === "migrationPending") {
         const pending = parsed.data.pending;
@@ -255,10 +344,12 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         if (desiredArmEpochRef.current !== parsed.data.armEpoch) return;
         activeArmEpochRef.current = parsed.data.armEpoch;
         setArmedState({ client, epoch: parsed.data.armEpoch });
+        deliverArmBufferRef.current();
       } else if (parsed.data.kind === "revoked") {
         if (activeArmEpochRef.current !== parsed.data.armEpoch) return;
         desiredArmEpochRef.current = null;
         activeArmEpochRef.current = null;
+        resetTransientInputRef.current();
         setArmedState(null);
         activeDialogRef.current = null;
         setDialogState(null);
@@ -288,14 +379,15 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       presentedSequenceRef.current = null;
       activeDialogRef.current = null;
       composingRef.current = false;
+      resetTransientInputRef.current();
       session.close();
     };
   }, [
     client,
-    props.epicId,
-    props.node.sessionId,
-    props.node.tabId,
-    props.onMigrated,
+    epicId,
+    node.sessionId,
+    node.tabId,
+    onMigrated,
     setDetails,
     setFrameSize,
     setImage,
@@ -363,12 +455,38 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     });
   }, []);
 
+  const releaseCapturedPointer = useCallback(() => {
+    const captured = capturedPointerRef.current;
+    capturedPointerRef.current = null;
+    if (captured === null) return;
+    try {
+      captured.element.releasePointerCapture(captured.pointerId);
+    } catch {
+      // Already released or the node is gone.
+    }
+  }, []);
+
+  const cancelPendingMove = useCallback(() => {
+    pendingMoveRef.current = null;
+    if (moveRafRef.current === null) return;
+    window.cancelAnimationFrame(moveRafRef.current);
+    moveRafRef.current = null;
+  }, []);
+
+  const resetTransientInput = useCallback(() => {
+    armBuffer.drop();
+    suppressPointerIdRef.current = null;
+    cancelPendingMove();
+    releaseCapturedPointer();
+  }, [armBuffer, cancelPendingMove, releaseCapturedPointer]);
+
   const disarm = useCallback(() => {
     const armEpoch = activeArmEpochRef.current ?? desiredArmEpochRef.current;
     desiredArmEpochRef.current = null;
     activeArmEpochRef.current = null;
     activeDialogRef.current = null;
     composingRef.current = false;
+    resetTransientInput();
     setComposing(false);
     setDialogState(null);
     setArmedState(null);
@@ -378,42 +496,41 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       hasBinaryPayload: false,
       armEpoch,
     });
-  }, []);
+  }, [resetTransientInput]);
 
-  const sendInput = useCallback(
-    (
-      frame:
-        | Omit<
-            Extract<BrowserScreencastClientFrame, { readonly kind: "pointer" }>,
-            "armEpoch" | "seq" | "hasBinaryPayload"
-          >
-        | Omit<
-            Extract<
-              BrowserScreencastClientFrame,
-              { readonly kind: "keyboard" }
-            >,
-            "armEpoch" | "seq" | "hasBinaryPayload"
-          >
-        | Omit<
-            Extract<
-              BrowserScreencastClientFrame,
-              { readonly kind: "insertText" }
-            >,
-            "armEpoch" | "seq" | "hasBinaryPayload"
-          >,
-    ) => {
-      const armEpoch = activeArmEpochRef.current;
-      if (armEpoch === null) return;
+  useEffect(() => {
+    if (visible) return;
+    const armEpoch = activeArmEpochRef.current ?? desiredArmEpochRef.current;
+    desiredArmEpochRef.current = null;
+    activeArmEpochRef.current = null;
+    activeDialogRef.current = null;
+    composingRef.current = false;
+    resetTransientInput();
+    if (armEpoch !== null) {
       sendPeekFrame(sessionRef.current, {
-        ...frame,
+        kind: "disarm",
         hasBinaryPayload: false,
         armEpoch,
-        seq: inputSequenceRef.current,
       });
-      inputSequenceRef.current += 1;
-    },
-    [],
-  );
+    }
+    queueMicrotask(() => {
+      setComposing(false);
+      setDialogState(null);
+      setArmedState(null);
+    });
+  }, [resetTransientInput, visible]);
+
+  const sendInput = useCallback((frame: PeekInputFrame) => {
+    const armEpoch = activeArmEpochRef.current;
+    if (armEpoch === null) return;
+    sendPeekFrame(sessionRef.current, {
+      ...frame,
+      hasBinaryPayload: false,
+      armEpoch,
+      seq: inputSequenceRef.current,
+    });
+    inputSequenceRef.current += 1;
+  }, []);
 
   const respondToDialog = useCallback(
     (generation: number, accept: boolean, promptText: string | null) => {
@@ -442,37 +559,255 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     [],
   );
 
-  const sendPointer = useCallback(
-    (
-      event:
-        | ReactPointerEvent<HTMLButtonElement>
-        | ReactWheelEvent<HTMLButtonElement>,
-      type: "move" | "down" | "up" | "wheel",
-    ) => {
+  const buildPointerFrame = useCallback(
+    (request: PointerFrameRequest): PeekPointerInput | null => {
       const castSequence = presentedSequenceRef.current;
-      const normalized = normalizedPointerPosition(
-        event.clientX,
-        event.clientY,
-        imageRef.current,
-        frameSize,
-      );
-      if (castSequence === null || normalized === null) return;
-      const pointerEvent = "button" in event ? event : null;
-      sendInput({
+      const normalized = normalizedPointerPosition({
+        clientX: request.event.clientX,
+        clientY: request.event.clientY,
+        image: imageRef.current,
+        frameSize: frameSizeRef.current,
+        clampToEdge: request.clampToEdge,
+      });
+      if (castSequence === null || normalized === null) return null;
+      return {
         kind: "pointer",
-        type,
+        type: request.type,
         castSequence,
         ...normalized,
-        button: pointerButton(pointerEvent?.button ?? -1),
-        buttons: event.buttons,
-        modifiers: inputModifiers(event),
-        clickCount: 0,
-        deltaX: "deltaX" in event ? event.deltaX : 0,
-        deltaY: "deltaY" in event ? event.deltaY : 0,
+        button:
+          request.type === "wheel"
+            ? "none"
+            : pointerButton(request.event.button),
+        buttons: request.event.buttons,
+        modifiers: inputModifiers(request.event),
+        clickCount:
+          request.type === "down" || request.type === "up"
+            ? clampClickCount(request.event.detail)
+            : 0,
+        deltaX: request.deltaX,
+        deltaY: request.deltaY,
+      };
+    },
+    [],
+  );
+
+  const flushPendingMove = useCallback(() => {
+    const pending = pendingMoveRef.current;
+    pendingMoveRef.current = null;
+    if (moveRafRef.current !== null) {
+      window.cancelAnimationFrame(moveRafRef.current);
+      moveRafRef.current = null;
+    }
+    if (pending === null) return;
+    sendInput(pending);
+  }, [sendInput]);
+
+  const scheduleMove = useCallback(
+    (frame: PeekPointerInput) => {
+      pendingMoveRef.current = frame;
+      if (moveRafRef.current !== null) return;
+      moveRafRef.current = window.requestAnimationFrame(() => {
+        moveRafRef.current = null;
+        const pending = pendingMoveRef.current;
+        pendingMoveRef.current = null;
+        if (pending === null) return;
+        sendInput(pending);
       });
     },
-    [frameSize, sendInput],
+    [sendInput],
   );
+
+  const sendDiscretePointer = useCallback(
+    (frame: PeekPointerInput) => {
+      flushPendingMove();
+      sendInput(frame);
+    },
+    [flushPendingMove, sendInput],
+  );
+
+  const deliverArmBuffer = useCallback(() => {
+    const hadPending = armBuffer.hasPending();
+    const gesture = armBuffer.takeIfCurrent(presentedSequenceRef.current);
+    if (gesture === null) {
+      const captured = capturedPointerRef.current;
+      if (hadPending && captured !== null) {
+        suppressPointerIdRef.current = captured.pointerId;
+      }
+      return;
+    }
+    sendDiscretePointer(gesture.down);
+    if (gesture.up !== null) sendDiscretePointer(gesture.up);
+  }, [armBuffer, sendDiscretePointer]);
+
+  const capturePointer = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        capturedPointerRef.current = {
+          element: event.currentTarget,
+          pointerId: event.pointerId,
+        };
+      } catch {
+        capturedPointerRef.current = {
+          element: event.currentTarget,
+          pointerId: event.pointerId,
+        };
+      }
+    },
+    [],
+  );
+
+  const handleOverlayPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      capturePointer(event);
+      const armed = activeArmEpochRef.current !== null;
+      const arming = desiredArmEpochRef.current !== null;
+      if (armed) {
+        const frame = buildPointerFrame({
+          event,
+          type: "down",
+          clampToEdge: false,
+          deltaX: 0,
+          deltaY: 0,
+        });
+        if (frame !== null) sendDiscretePointer(frame);
+      } else if (!arming) {
+        arm();
+        const frame = buildPointerFrame({
+          event,
+          type: "down",
+          clampToEdge: false,
+          deltaX: 0,
+          deltaY: 0,
+        });
+        if (frame !== null) {
+          armBuffer.storeDown({
+            payload: frame,
+            castSequence: frame.castSequence,
+            clientX: event.clientX,
+            clientY: event.clientY,
+          });
+        }
+      }
+      imeInputRef.current?.focus();
+    },
+    [arm, armBuffer, buildPointerFrame, capturePointer, sendDiscretePointer],
+  );
+
+  const handleOverlayPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (armBuffer.hasPending()) {
+        armBuffer.noteMove(event.clientX, event.clientY);
+        if (!armBuffer.hasPending()) {
+          suppressPointerIdRef.current = event.pointerId;
+        }
+        return;
+      }
+      if (suppressPointerIdRef.current === event.pointerId) return;
+      if (activeArmEpochRef.current === null) return;
+      const clampToEdge = event.buttons !== 0;
+      const frame = buildPointerFrame({
+        event,
+        type: "move",
+        clampToEdge,
+        deltaX: 0,
+        deltaY: 0,
+      });
+      if (frame === null) return;
+      scheduleMove(frame);
+    },
+    [armBuffer, buildPointerFrame, scheduleMove],
+  );
+
+  const handleOverlayPointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (armBuffer.hasPending()) {
+        const frame = buildPointerFrame({
+          event,
+          type: "up",
+          clampToEdge: true,
+          deltaX: 0,
+          deltaY: 0,
+        });
+        if (frame !== null) {
+          armBuffer.storeMatchingUp({
+            payload: frame,
+            isPrimary: event.button === 0,
+            clientX: event.clientX,
+            clientY: event.clientY,
+          });
+        }
+        releaseCapturedPointer();
+        return;
+      }
+      if (suppressPointerIdRef.current === event.pointerId) {
+        suppressPointerIdRef.current = null;
+        releaseCapturedPointer();
+        return;
+      }
+      if (activeArmEpochRef.current !== null) {
+        const frame = buildPointerFrame({
+          event,
+          type: "up",
+          clampToEdge: true,
+          deltaX: 0,
+          deltaY: 0,
+        });
+        if (frame !== null) sendDiscretePointer(frame);
+      }
+      releaseCapturedPointer();
+    },
+    [armBuffer, buildPointerFrame, releaseCapturedPointer, sendDiscretePointer],
+  );
+
+  const handleOverlayPointerCancel = useCallback(() => {
+    armBuffer.drop();
+    suppressPointerIdRef.current = null;
+    cancelPendingMove();
+    releaseCapturedPointer();
+  }, [armBuffer, cancelPendingMove, releaseCapturedPointer]);
+
+  const handleOverlayContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>) => {
+      if (activeArmEpochRef.current === null) return;
+      event.preventDefault();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const button = overlayButtonRef.current;
+    if (button === null || presentedArmedEpoch === null) return;
+    const onWheel = (event: WheelEvent): void => {
+      if (activeArmEpochRef.current === null) return;
+      event.preventDefault();
+      const frame = buildPointerFrame({
+        event,
+        type: "wheel",
+        clampToEdge: false,
+        deltaX: wheelDeltaToPixels(
+          event.deltaX,
+          event.deltaMode,
+          button.clientWidth,
+          WHEEL_LINE_HEIGHT_PX,
+        ),
+        deltaY: wheelDeltaToPixels(
+          event.deltaY,
+          event.deltaMode,
+          button.clientHeight,
+          WHEEL_LINE_HEIGHT_PX,
+        ),
+      });
+      if (frame === null) return;
+      sendDiscretePointer(frame);
+    };
+    button.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      button.removeEventListener("wheel", onWheel);
+    };
+  }, [buildPointerFrame, presentedArmedEpoch, sendDiscretePointer]);
 
   const handleFocusExit = useCallback(
     (relatedTarget: EventTarget | null) => {
@@ -487,63 +822,59 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     [disarm],
   );
 
+  useLayoutEffect(() => {
+    frameSizeRef.current = frameSize;
+  }, [frameSize]);
+
+  useLayoutEffect(() => {
+    resetTransientInputRef.current = resetTransientInput;
+  }, [resetTransientInput]);
+
+  useLayoutEffect(() => {
+    deliverArmBufferRef.current = deliverArmBuffer;
+  }, [deliverArmBuffer]);
+
   return (
     <div
       className="flex h-full w-full flex-col bg-canvas text-foreground"
-      data-testid={`browser-peek-tile-${props.node.instanceId}`}
+      data-testid={`browser-peek-tile-${node.instanceId}`}
     >
       <div className="flex min-h-0 items-center gap-2 border-b border-border px-3 py-2 text-ui-sm">
         <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">{props.node.name}</div>
+          <div className="truncate font-medium">{node.name}</div>
           <div className="truncate font-mono text-ui-xs text-muted-foreground">
-            {props.node.initialUrl}
+            {node.initialUrl}
           </div>
           {migrationPending ? (
-            <div className="truncate text-ui-xs text-muted-foreground" aria-live="polite">
+            <div
+              className="truncate text-ui-xs text-muted-foreground"
+              aria-live="polite"
+            >
               Will go native when the agent pauses
             </div>
           ) : null}
         </div>
-        <div
-          className={cn(
-            "flex shrink-0 items-center gap-1.5 rounded-sm border px-2 py-1 text-ui-xs",
-            status.tone === "live" &&
-              "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-            status.tone === "muted" &&
-              "border-border bg-muted text-muted-foreground",
-            status.tone === "bad" &&
-              "border-destructive/30 bg-destructive/10 text-destructive",
-          )}
-        >
-          <status.Icon className="size-3.5" aria-hidden />
-          <span>{status.label}</span>
-        </div>
+        <BrowserPeekStatusChip status={status} />
       </div>
       <div
         ref={viewportRef}
         className={cn(
           "relative min-h-0 flex-1 cursor-default overflow-hidden bg-background p-0 text-left outline-none",
-          armedEpoch !== null && "ring-2 ring-primary ring-inset",
+          presentedArmedEpoch !== null && "ring-2 ring-primary ring-inset",
         )}
       >
         <button
+          ref={overlayButtonRef}
           type="button"
           className="absolute inset-0 h-full w-full cursor-default overflow-hidden bg-background p-0 text-left outline-none"
           aria-label="Browser screencast controls"
           onFocus={() => imeInputRef.current?.focus()}
           onBlur={(event) => handleFocusExit(event.relatedTarget)}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            imeInputRef.current?.focus();
-            sendPointer(event, "down");
-          }}
-          onPointerMove={(event) => sendPointer(event, "move")}
-          onPointerUp={(event) => sendPointer(event, "up")}
-          onWheel={(event) => {
-            if (activeArmEpochRef.current === null) return;
-            event.preventDefault();
-            sendPointer(event, "wheel");
-          }}
+          onPointerDown={handleOverlayPointerDown}
+          onPointerMove={handleOverlayPointerMove}
+          onPointerUp={handleOverlayPointerUp}
+          onPointerCancel={handleOverlayPointerCancel}
+          onContextMenu={handleOverlayContextMenu}
         >
           {image === null ? (
             <div className="absolute inset-0 flex items-center justify-center px-4 text-center">
@@ -558,7 +889,6 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
             </div>
           ) : (
             <img
-              key={image.sequence}
               ref={imageRef}
               src={image.src}
               alt="Browser screencast"
@@ -598,12 +928,6 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           onKeyDown={(event) => {
             if (activeDialogRef.current !== null) return;
             if (event.nativeEvent.isComposing || composingRef.current) return;
-            if (event.key === "Escape") {
-              event.preventDefault();
-              disarm();
-              event.currentTarget.blur();
-              return;
-            }
             if (activeArmEpochRef.current === null) return;
             event.preventDefault();
             sendInput({
@@ -612,7 +936,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               code: event.code,
               key: event.key,
               modifiers: inputModifiers(event),
-              autoRepeat: false,
+              autoRepeat: event.repeat,
             });
             if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) {
               sendInput({
@@ -621,7 +945,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
                 code: event.code,
                 key: event.key,
                 modifiers: inputModifiers(event),
-                autoRepeat: false,
+                autoRepeat: event.repeat,
               });
             }
           }}
@@ -636,7 +960,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               code: event.code,
               key: event.key,
               modifiers: inputModifiers(event),
-              autoRepeat: false,
+              autoRepeat: event.repeat,
             });
           }}
           onCompositionStart={() => {
@@ -913,8 +1237,11 @@ function useScreencastViewportBridge(
         });
       }, VIEWPORT_DEBOUNCE_MS);
     };
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry !== undefined) emit(entry.contentRect.width, entry.contentRect.height);
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        emit(entry.contentRect.width, entry.contentRect.height);
+        break;
+      }
     });
     observer.observe(element);
     emit(element.clientWidth, element.clientHeight);
@@ -937,16 +1264,33 @@ function sendPeekFrame(
   session?.sendClientFrame(frame, null);
 }
 
+function BrowserPeekStatusChip(props: {
+  readonly status: BrowserPeekStatus;
+}): ReactElement {
+  const { status } = props;
+  return (
+    <div
+      className={cn(
+        "flex shrink-0 items-center gap-1.5 rounded-sm border px-2 py-1 text-ui-xs",
+        status.tone === "live" &&
+          "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+        status.tone === "muted" &&
+          "border-border bg-muted text-muted-foreground",
+        status.tone === "bad" &&
+          "border-destructive/30 bg-destructive/10 text-destructive",
+      )}
+    >
+      <status.Icon className="size-3.5" aria-hidden />
+      <span>{status.label}</span>
+    </div>
+  );
+}
+
 function browserPeekStatus(
   lifecycle: PeekLifecycle,
   visible: boolean,
   details: string | null,
-): {
-  readonly label: string;
-  readonly overlay: string | null;
-  readonly tone: "live" | "muted" | "bad";
-  readonly Icon: typeof Radio;
-} {
+): BrowserPeekStatus {
   if (!visible) {
     return {
       label: "Paused off-screen",
@@ -1035,23 +1379,29 @@ function pointerButton(
   return "none";
 }
 
+function clampClickCount(detail: number): number {
+  if (!Number.isFinite(detail)) return 0;
+  return Math.min(POINTER_CLICK_COUNT_MAX, Math.max(0, Math.trunc(detail)));
+}
+
 function normalizedPointerPosition(
-  clientX: number,
-  clientY: number,
-  image: HTMLImageElement | null,
-  frameSize: { readonly width: number; readonly height: number } | null,
+  request: NormalizedPointerRequest,
 ): { readonly normalizedX: number; readonly normalizedY: number } | null {
-  if (image === null || frameSize === null) return null;
-  const rect = image.getBoundingClientRect();
+  if (request.image === null || request.frameSize === null) return null;
+  const rect = request.image.getBoundingClientRect();
   const scale = Math.min(
-    rect.width / frameSize.width,
-    rect.height / frameSize.height,
+    rect.width / request.frameSize.width,
+    rect.height / request.frameSize.height,
   );
   if (!Number.isFinite(scale) || scale <= 0) return null;
-  const width = frameSize.width * scale;
-  const height = frameSize.height * scale;
-  const x = clientX - rect.left - (rect.width - width) / 2;
-  const y = clientY - rect.top - (rect.height - height) / 2;
-  if (x < 0 || x > width || y < 0 || y > height) return null;
+  const width = request.frameSize.width * scale;
+  const height = request.frameSize.height * scale;
+  const rawX = request.clientX - rect.left - (rect.width - width) / 2;
+  const rawY = request.clientY - rect.top - (rect.height - height) / 2;
+  const x = request.clampToEdge ? Math.min(width, Math.max(0, rawX)) : rawX;
+  const y = request.clampToEdge ? Math.min(height, Math.max(0, rawY)) : rawY;
+  if (!request.clampToEdge && (x < 0 || x > width || y < 0 || y > height)) {
+    return null;
+  }
   return { normalizedX: x / width, normalizedY: y / height };
 }
