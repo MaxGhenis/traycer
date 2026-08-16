@@ -13,6 +13,7 @@ import {
   type InitialChatHandoffScope,
 } from "@/stores/epics/initial-chat-handoff-store";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
+import { restoreAttachedBrowserAnnotations } from "@/lib/browser-view/browser-annotation-attach";
 import {
   nextHandoffTransition,
   type HandoffStep,
@@ -184,6 +185,10 @@ function applyInitialChatHandoffStep(
     }
     case "restoreAndAckFailed": {
       input.replaceDraftContent(input.nodeId, input.step.content, null);
+      restoreAttachedBrowserAnnotations(
+        input.nodeId,
+        input.step.browserAnnotations,
+      );
       input.state.ackFailedSendRestoration(input.step.clientActionId);
       return;
     }

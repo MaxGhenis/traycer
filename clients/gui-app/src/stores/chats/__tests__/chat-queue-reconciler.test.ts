@@ -56,6 +56,7 @@ function createPendingAction(
     interviewBlockId: null,
     messageId,
     restoreContent: isSendOrEdit ? CONTENT : null,
+    restoreBrowserAnnotations: [],
     sender: isSendOrEdit ? SENDER : null,
     settings: isSendOrEdit ? SETTINGS : null,
     restoreWorktreeIntent: null,
@@ -91,6 +92,8 @@ function createPendingUserMessage(
     sender: SENDER,
     settings: SETTINGS,
     timestamp: 1000,
+    restoreContent: CONTENT,
+    restoreBrowserAnnotations: [],
   };
 }
 
@@ -187,6 +190,7 @@ describe("chat-queue-reconciler", () => {
         interviewBlockId: null,
         messageId: "msg-2",
         restoreContent: CONTENT_2,
+        restoreBrowserAnnotations: [],
         sender: SENDER,
         settings: SETTINGS,
         restoreWorktreeIntent: null,
@@ -202,6 +206,8 @@ describe("chat-queue-reconciler", () => {
         sender: SENDER,
         settings: SETTINGS,
         timestamp: 1000,
+        restoreContent: CONTENT_2,
+        restoreBrowserAnnotations: [],
       };
       const input: ReconcileQueueInput = {
         pendingActions: { "action-1": action1, "action-2": action2 },
@@ -245,6 +251,7 @@ describe("chat-queue-reconciler", () => {
         interviewBlockId: null,
         messageId: "msg-2",
         restoreContent: CONTENT_2,
+        restoreBrowserAnnotations: [],
         sender: SENDER,
         settings: SETTINGS,
         restoreWorktreeIntent: null,
@@ -268,6 +275,8 @@ describe("chat-queue-reconciler", () => {
             sender: SENDER,
             settings: SETTINGS,
             timestamp: 1000,
+            restoreContent: CONTENT_2,
+            restoreBrowserAnnotations: [],
           },
         ],
         queue: {
@@ -356,12 +365,14 @@ describe("chat-queue-reconciler", () => {
       expect(result.failedSendRestoration).not.toBeNull();
       expect(result.failedSendRestoration?.clientActionId).toBe("action-1");
       expect(result.failedSendRestoration?.content).toEqual(CONTENT);
+      expect(result.failedSendRestoration?.browserAnnotations).toEqual([]);
     });
 
     it("preserves existing failedSendRestoration and does not overwrite", () => {
       const existingRestore = {
         clientActionId: "action-0",
         content: CONTENT,
+        browserAnnotations: [],
         reason: "Prior failure",
       };
       const pendingAction = createPendingAction("action-1", "msg-1", "send");
@@ -404,6 +415,7 @@ describe("chat-queue-reconciler", () => {
         interviewBlockId: null,
         messageId: "msg-2",
         restoreContent: CONTENT_2,
+        restoreBrowserAnnotations: [],
         sender: SENDER,
         settings: SETTINGS,
         restoreWorktreeIntent: null,
@@ -435,6 +447,8 @@ describe("chat-queue-reconciler", () => {
             sender: SENDER,
             settings: SETTINGS,
             timestamp: 1000,
+            restoreContent: CONTENT_2,
+            restoreBrowserAnnotations: [],
           },
         ],
         messages: [confirmedMessage],
@@ -493,6 +507,7 @@ describe("chat-queue-reconciler", () => {
         interviewBlockId: null,
         messageId: "msg-1",
         restoreContent: null, // null restore content
+        restoreBrowserAnnotations: [],
         sender: SENDER,
         settings: SETTINGS,
         restoreWorktreeIntent: null,
@@ -798,6 +813,62 @@ describe("chat-queue-reconciler", () => {
       expect(result.failedSendRestoration).toEqual({
         clientActionId: "action-1",
         content: CONTENT,
+        browserAnnotations: [],
+        reason: "The message was not recorded before the turn stopped.",
+      });
+    });
+
+    it("restores pre-submit content and annotation records, not wire crop atoms", () => {
+      const editorContent: JsonContent = {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "editor" }] },
+        ],
+      };
+      const wireContent: JsonContent = {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "wire" }] },
+        ],
+      };
+      const annotations = [
+        {
+          annotationId: "ann-restore",
+          tabId: "tab-1",
+          sessionId: "session-1",
+          origin: "https://example.com",
+          pageUrl: "https://example.com/",
+          pageTitle: "Example",
+          capturedAt: 1,
+          comment: "restore me",
+          counts: { elements: 1, regions: 0, strokes: 0 },
+          elements: [],
+          imageFileName: "browser-annotation-ann-restore.png",
+          imageHash: "hash-restore",
+        },
+      ];
+      const result = reconcileTurnSettled(
+        true,
+        settledInput({
+          pendingUserMessages: [
+            {
+              clientActionId: "action-ann",
+              messageId: "msg-ann",
+              content: wireContent,
+              sender: SENDER,
+              settings: SETTINGS,
+              timestamp: 1000,
+              restoreContent: editorContent,
+              restoreBrowserAnnotations: annotations,
+            },
+          ],
+        }),
+      );
+
+      expect(result.failedSendRestoration).toEqual({
+        clientActionId: "action-ann",
+        content: editorContent,
+        browserAnnotations: annotations,
         reason: "The message was not recorded before the turn stopped.",
       });
     });
@@ -869,6 +940,8 @@ describe("chat-queue-reconciler", () => {
         sender: SENDER,
         settings: SETTINGS,
         timestamp: 1000,
+        restoreContent: CONTENT_2,
+        restoreBrowserAnnotations: [],
       };
       const result = reconcileTurnSettled(
         true,
@@ -885,6 +958,7 @@ describe("chat-queue-reconciler", () => {
       expect(result.failedSendRestoration).toEqual({
         clientActionId: "action-2",
         content: CONTENT_2,
+        browserAnnotations: [],
         reason: "The message was not recorded before the turn stopped.",
       });
     });
@@ -902,6 +976,7 @@ describe("chat-queue-reconciler", () => {
       const occupied = {
         clientActionId: "action-0",
         content: CONTENT_2,
+        browserAnnotations: [],
         reason: "Message was not accepted.",
       };
       const result = reconcileTurnSettled(

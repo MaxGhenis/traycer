@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useMaybeBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
-import { useLandingImageFetcher } from "@/hooks/composer/use-landing-image-fetcher";
+import { type ImageBytesFetcher } from "@/lib/attachments/image-blob-cache";
 import { useImageBlobUrl } from "@/lib/attachments/use-image-blob-url";
 import {
   annotationTagLabels,
@@ -14,7 +14,6 @@ import {
   ANNOTATION_STALENESS_COPY,
   annotationStalenessHint,
 } from "@/lib/browser-view/browser-annotation-staleness";
-import { sessionObjectUrl } from "@/lib/composer/landing-image-store";
 import { cn } from "@/lib/utils";
 
 const VISIBLE_TAG_COUNT = 2;
@@ -22,12 +21,13 @@ const VISIBLE_TAG_COUNT = 2;
 export function BrowserAnnotationCard(props: {
   readonly record: BrowserAnnotationRecord;
   readonly onRemove: ((annotationId: string) => void) | null;
+  readonly imageFetcher: ImageBytesFetcher;
+  readonly sessionObjectUrl: (hash: string) => string | null;
 }) {
-  const { record, onRemove } = props;
+  const { record, onRemove, imageFetcher } = props;
   const sessions = useMaybeBrowserSessionsContext();
-  const fetcher = useLandingImageFetcher();
-  const sessionUrl = sessionObjectUrl(record.imageHash);
-  const blobUrl = useImageBlobUrl(record.imageHash, "image/png", fetcher);
+  const sessionUrl = props.sessionObjectUrl(record.imageHash);
+  const blobUrl = useImageBlobUrl(record.imageHash, "image/png", imageFetcher);
   const src = sessionUrl ?? blobUrl;
   const tags = annotationTagLabels(record.elements);
   const visibleElements = record.elements.slice(0, VISIBLE_TAG_COUNT);

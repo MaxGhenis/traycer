@@ -151,6 +151,7 @@ describe("nextHandoffTransition", () => {
       failedSendRestoration: {
         clientActionId: "action-1",
         content: CONTENT,
+        browserAnnotations: [],
         reason: "Rejected",
       },
     });
@@ -170,6 +171,7 @@ describe("nextHandoffTransition", () => {
       failedSendRestoration: {
         clientActionId: "action-1",
         content: CONTENT,
+        browserAnnotations: [],
         reason: "Rejected",
       },
     });
@@ -177,6 +179,7 @@ describe("nextHandoffTransition", () => {
       kind: "restoreAndAckFailed",
       clientActionId: "action-1",
       content: CONTENT,
+      browserAnnotations: [],
     });
   });
 
@@ -185,6 +188,7 @@ describe("nextHandoffTransition", () => {
       failedSendRestoration: {
         clientActionId: "action-1",
         content: CONTENT,
+        browserAnnotations: [],
         reason: "Rejected",
       },
     });
@@ -192,6 +196,7 @@ describe("nextHandoffTransition", () => {
       kind: "restoreAndAckFailed",
       clientActionId: "action-1",
       content: CONTENT,
+      browserAnnotations: [],
     });
   });
 });

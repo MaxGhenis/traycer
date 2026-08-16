@@ -10,7 +10,7 @@ import { createComposerPickerStore } from "@/components/chat/composer/picker/com
 import { useChatComposerDraft } from "@/components/chat/composer/use-chat-composer-draft";
 import type { ModelOption } from "@/components/home/data/landing-options";
 import type { BrowserAnnotationRecord } from "@/lib/browser-view/browser-annotation-record";
-import { STUB_ANNOTATION_ELEMENT } from "@/lib/browser-view/browser-annotation-stub";
+import { STUB_ANNOTATION_ELEMENT } from "@/lib/browser-view/__tests__/browser-annotation-fixtures";
 import { selectedModelRejectsImageAttachments } from "@/lib/composer/chat-run-settings";
 import { collectImageAtoms } from "@/lib/composer/image-atoms";
 import { createComposerToolbarStore } from "@/stores/composer/composer-toolbar-store";
@@ -217,6 +217,9 @@ describe("useChatComposerSubmit browser annotations", () => {
     expect(atoms[0]?.b64content).toBe(btoa(String.fromCharCode(...CROP_BYTES)));
     expect(imageStoreMocks.sessionImageBytes).toHaveBeenCalledWith(IMAGE_HASH);
     expect(imageStoreMocks.getImageBytes).not.toHaveBeenCalled();
+    expect(input.restoreContent).toEqual(EMPTY_DOC);
+    expect(collectImageAtoms(input.restoreContent)).toHaveLength(0);
+    expect(input.restoreBrowserAnnotations).toEqual([record]);
   });
 
   it("falls back to getImageBytes when the session cache misses", async () => {
@@ -273,6 +276,81 @@ describe("useChatComposerSubmit browser annotations", () => {
     expect(submit).not.toHaveBeenCalled();
     expect(imageStoreMocks.sessionImageBytes).toHaveBeenCalledWith(IMAGE_HASH);
     expect(imageStoreMocks.getImageBytes).toHaveBeenCalledWith(IMAGE_HASH);
+  });
+
+  it("single-flights a second submit while crop bytes are still resolving", async () => {
+    const taskId = "chat-ann-double";
+    useComposerDraftStore
+      .getState()
+      .addBrowserAnnotation(taskId, annotationRecord(null));
+    imageStoreMocks.sessionImageBytes.mockReturnValue(null);
+    let release: (() => void) | null = null;
+    imageStoreMocks.getImageBytes.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(CROP_BYTES);
+        }),
+    );
+    const submit = vi.fn((_input: ChatComposerSubmitInput) => true);
+    const { result } = mountSubmit({
+      taskId,
+      editor: fakeEditor(EMPTY_DOC),
+      imagesUnsupported: false,
+      onSubmitMessage: submit,
+    });
+
+    act(() => {
+      result.current.submitDraft("enter");
+      result.current.submitDraft("enter");
+    });
+    expect(imageStoreMocks.getImageBytes).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release?.();
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(submit).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("does not finalize a send if the draft revision changed while bytes resolved", async () => {
+    const taskId = "chat-ann-stale";
+    useComposerDraftStore
+      .getState()
+      .addBrowserAnnotation(taskId, annotationRecord(null));
+    imageStoreMocks.sessionImageBytes.mockReturnValue(null);
+    let release: (() => void) | null = null;
+    imageStoreMocks.getImageBytes.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(CROP_BYTES);
+        }),
+    );
+    const submit = vi.fn((_input: ChatComposerSubmitInput) => true);
+    const { result } = mountSubmit({
+      taskId,
+      editor: fakeEditor(EMPTY_DOC),
+      imagesUnsupported: false,
+      onSubmitMessage: submit,
+    });
+
+    act(() => {
+      result.current.submitDraft("enter");
+    });
+    act(() => {
+      useComposerDraftStore
+        .getState()
+        .setSnapshot(taskId, EMPTY_DOC, { from: 1, to: 1 });
+    });
+    await act(async () => {
+      release?.();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(submit).not.toHaveBeenCalled();
   });
 });
 

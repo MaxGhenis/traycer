@@ -8,13 +8,14 @@ import {
   restoreAttachedBrowserAnnotations,
 } from "@/lib/browser-view/browser-annotation-attach";
 import { ANNOTATION_ROUTE_NONE_HINT } from "@/lib/browser-view/browser-annotation-router";
-import { createStubBrowserAnnotationPayloadFor } from "@/lib/browser-view/browser-annotation-stub";
+import { createStubBrowserAnnotationPayloadFor } from "@/lib/browser-view/__tests__/browser-annotation-fixtures";
 import { createBrowserConsoleAttachment } from "@/lib/browser-view/browser-context-attachments";
 import type {
   BrowserViewConsoleEntry,
   BrowserViewTileKey,
 } from "@/lib/browser-view/desktop-browser-view";
 import { landingLiveImageRootHashes } from "@/lib/composer/landing-image-budget";
+import { markLandingDraftsReady } from "@/lib/composer/landing-image-gc";
 import {
   deleteImage,
   hasLandingImageBytes,
@@ -187,6 +188,7 @@ beforeEach(async () => {
   installIdbWorking();
   window.localStorage.clear();
   useComposerDraftStore.setState({ drafts: {} });
+  markLandingDraftsReady();
 });
 
 afterEach(async () => {

@@ -171,6 +171,7 @@ export function reconcileSnapshotChange(
         failedSendRestoration: {
           clientActionId: pending.clientActionId,
           content: pending.restoreContent,
+          browserAnnotations: pending.restoreBrowserAnnotations,
           reason: "Message was not confirmed after reconnect.",
         },
       };
@@ -274,7 +275,8 @@ export function reconcileTurnSettled(
         ? input.failedSendRestoration
         : {
             clientActionId: restorable.clientActionId,
-            content: restorable.content,
+            content: restorable.restoreContent,
+            browserAnnotations: restorable.restoreBrowserAnnotations,
             reason: "The message was not recorded before the turn stopped.",
           },
   };
@@ -399,6 +401,8 @@ function pendingUserMessageFromPendingAction(
     sender: action.sender,
     settings: action.settings,
     timestamp: action.createdAt,
+    restoreContent: action.restoreContent,
+    restoreBrowserAnnotations: action.restoreBrowserAnnotations,
   };
 }
 

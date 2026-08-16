@@ -2,9 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   ANNOTATION_ROUTE_NONE_HINT,
-  chatLabelFromCanvas,
-  chatLabelFromCanvases,
   resolveAnnotationRoute,
+  type AnnotationRouteChat,
 } from "@/lib/browser-view/browser-annotation-router";
 import { makeBrowserTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
 import {
@@ -85,8 +84,17 @@ function namedChat(input: {
   });
 }
 
+function resolveFrom(
+  titles: Readonly<Record<string, string>>,
+): (chatId: string) => AnnotationRouteChat | null {
+  return (chatId) => {
+    if (!Object.hasOwn(titles, chatId)) return null;
+    return { title: titles[chatId] };
+  };
+}
+
 describe("resolveAnnotationRoute", () => {
-  it("sibling wins over last-focused; source is sibling; label comes from chatLabel", () => {
+  it("sibling wins over last-focused; source is sibling; label comes from registry", () => {
     const browser = makeBrowserTileRef({
       name: "Docs",
       hostId: HOST_ID,
@@ -99,16 +107,15 @@ describe("resolveAnnotationRoute", () => {
       name: "Plan chat",
     });
     const canvas = splitCanvas({ browser, chat: sibling });
-    const labels: string[] = [];
 
     const route = resolveAnnotationRoute({
       canvas,
       browserInstanceId: browser.instanceId,
       lastFocusedChatId: "chat-last-focused",
-      chatLabel: (chatId) => {
-        labels.push(chatId);
-        return chatLabelFromCanvas(canvas, chatId);
-      },
+      resolveChat: resolveFrom({
+        "chat-sibling": "Plan chat",
+        "chat-last-focused": "Earlier chat",
+      }),
     });
 
     expect(route).toEqual({
@@ -117,7 +124,6 @@ describe("resolveAnnotationRoute", () => {
       label: "Plan chat",
       source: "sibling",
     });
-    expect(labels).toEqual(["chat-sibling"]);
   });
 
   it("no sibling + lastFocusedChatId => last-focused source and pushed label", () => {
@@ -127,28 +133,13 @@ describe("resolveAnnotationRoute", () => {
       url: "https://example.com/docs",
       viewportPreset: "responsive",
     });
-    const focused = namedChat({
-      id: "chat-focused",
-      instanceId: "inst-chat-focused",
-      name: "Earlier chat",
-    });
     const canvas = loneBrowserCanvas(browser);
-    const otherCanvas = splitCanvas({
-      browser: makeBrowserTileRef({
-        name: "Other",
-        hostId: HOST_ID,
-        url: "https://example.com/other",
-        viewportPreset: "responsive",
-      }),
-      chat: focused,
-    });
 
     const route = resolveAnnotationRoute({
       canvas,
       browserInstanceId: browser.instanceId,
       lastFocusedChatId: "chat-focused",
-      chatLabel: (chatId) =>
-        chatLabelFromCanvases([canvas, otherCanvas], chatId),
+      resolveChat: resolveFrom({ "chat-focused": "Earlier chat" }),
     });
 
     expect(route).toEqual({
@@ -171,7 +162,7 @@ describe("resolveAnnotationRoute", () => {
       canvas: loneBrowserCanvas(browser),
       browserInstanceId: browser.instanceId,
       lastFocusedChatId: null,
-      chatLabel: () => null,
+      resolveChat: () => null,
     });
 
     expect(route).toEqual({
@@ -198,7 +189,7 @@ describe("resolveAnnotationRoute", () => {
       canvas,
       browserInstanceId: browser.instanceId,
       lastFocusedChatId: null,
-      chatLabel: (chatId) => chatLabelFromCanvas(canvas, chatId),
+      resolveChat: resolveFrom({ "chat-untitled": "" }),
     });
 
     expect(route).toEqual({
@@ -214,7 +205,7 @@ describe("resolveAnnotationRoute", () => {
       canvas: null,
       browserInstanceId: "missing-browser",
       lastFocusedChatId: "chat-only",
-      chatLabel: (chatId) => (chatId === "chat-only" ? "Solo chat" : null),
+      resolveChat: resolveFrom({ "chat-only": "Solo chat" }),
     });
 
     expect(route).toEqual({
@@ -222,6 +213,44 @@ describe("resolveAnnotationRoute", () => {
       chatId: "chat-only",
       label: "Solo chat",
       source: "last-focused",
+    });
+  });
+
+  it("deleted last-focused chat falls through to none", () => {
+    const browser = makeBrowserTileRef({
+      name: "Docs",
+      hostId: HOST_ID,
+      url: "https://example.com/docs",
+      viewportPreset: "responsive",
+    });
+    const route = resolveAnnotationRoute({
+      canvas: loneBrowserCanvas(browser),
+      browserInstanceId: browser.instanceId,
+      lastFocusedChatId: "chat-deleted",
+      resolveChat: () => null,
+    });
+    expect(route).toEqual({
+      kind: "none",
+      hint: ANNOTATION_ROUTE_NONE_HINT,
+    });
+  });
+
+  it("archived last-focused chat falls through to none", () => {
+    const browser = makeBrowserTileRef({
+      name: "Docs",
+      hostId: HOST_ID,
+      url: "https://example.com/docs",
+      viewportPreset: "responsive",
+    });
+    const route = resolveAnnotationRoute({
+      canvas: loneBrowserCanvas(browser),
+      browserInstanceId: browser.instanceId,
+      lastFocusedChatId: "chat-archived",
+      resolveChat: () => null,
+    });
+    expect(route).toEqual({
+      kind: "none",
+      hint: ANNOTATION_ROUTE_NONE_HINT,
     });
   });
 });

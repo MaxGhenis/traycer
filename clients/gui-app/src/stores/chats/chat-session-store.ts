@@ -54,6 +54,7 @@ import type {
   Attachment,
   BrowserContextAttachment,
 } from "@/lib/composer/types";
+import type { BrowserAnnotationRecord } from "@/lib/browser-view/browser-annotation-record";
 import { toBrowserAnnotationWire } from "@/lib/browser-view/browser-annotation-wire";
 import { browserContextAttachmentToWire } from "@/lib/browser-view/browser-context-attachments";
 import type {
@@ -143,6 +144,13 @@ export interface PendingUserMessage {
   readonly sender: UserMessageSender;
   readonly settings: ChatRunSettings;
   readonly timestamp: number;
+  /**
+   * Pre-submit composer document (no crop atoms). Used when a settled
+   * turn never recorded the send, so restore does not inline the wire
+   * image atoms.
+   */
+  readonly restoreContent: JsonContent;
+  readonly restoreBrowserAnnotations: ReadonlyArray<BrowserAnnotationRecord>;
 }
 
 export interface PendingChatAction {
@@ -155,6 +163,12 @@ export interface PendingChatAction {
   readonly interviewBlockId: string | null;
   readonly messageId: string | null;
   readonly restoreContent: JsonContent | null;
+  /**
+   * Annotation cards that left the composer with this send. Restored
+   * together with `restoreContent` so a rejection does not inline crop
+   * atoms or drop the records.
+   */
+  readonly restoreBrowserAnnotations: ReadonlyArray<BrowserAnnotationRecord>;
   readonly sender: UserMessageSender | null;
   readonly settings: ChatRunSettings | null;
   /**
@@ -192,6 +206,7 @@ export type PendingChatActionSeed = Omit<PendingChatAction, "connectionEpoch">;
 export interface FailedSendRestorationState {
   readonly clientActionId: string;
   readonly content: JsonContent;
+  readonly browserAnnotations: ReadonlyArray<BrowserAnnotationRecord>;
   readonly reason: string;
 }
 
@@ -500,6 +515,8 @@ export interface ChatSessionState {
     readonly settings: ChatRunSettings;
     readonly attachments: ReadonlyArray<Attachment>;
     readonly deliveryPolicy: ChatQueueDeliveryPolicy;
+    readonly restoreContent: JsonContent;
+    readonly restoreBrowserAnnotations: ReadonlyArray<BrowserAnnotationRecord>;
   }) => SentChatMessageAction | null;
   /**
    * Sends the initial handoff message reusing its pre-minted ids (shared with
@@ -1255,6 +1272,7 @@ export function createChatSessionStoreWithNotificationDependencies(
                 ? {
                     clientActionId: frame.clientActionId,
                     content: pending.restoreContent,
+                    browserAnnotations: pending.restoreBrowserAnnotations,
                     reason: frame.reason ?? "Message was not accepted.",
                   }
                 : state.failedSendRestoration,
@@ -1922,6 +1940,8 @@ export function createChatSessionStoreWithNotificationDependencies(
           settings,
           attachments: buildAttachmentsFromJSONContent(content),
           deliveryPolicy,
+          restoreContent: content,
+          restoreBrowserAnnotations: [],
         }),
       sendMessageWithAttachments: (input) => {
         const clientActionId = uuidv4();
@@ -2002,7 +2022,8 @@ export function createChatSessionStoreWithNotificationDependencies(
             action: "send",
             interviewBlockId: null,
             messageId,
-            restoreContent: input.content,
+            restoreContent: input.restoreContent,
+            restoreBrowserAnnotations: input.restoreBrowserAnnotations,
             sender: input.sender,
             settings: input.settings,
             restoreWorktreeIntent: worktreeIntent,
@@ -2028,6 +2049,8 @@ export function createChatSessionStoreWithNotificationDependencies(
                 sender: input.sender,
                 settings: input.settings,
                 timestamp: Date.now(),
+                restoreContent: input.restoreContent,
+                restoreBrowserAnnotations: input.restoreBrowserAnnotations,
               }
             : null,
         });
@@ -2117,6 +2140,7 @@ export function createChatSessionStoreWithNotificationDependencies(
             interviewBlockId: null,
             messageId: input.messageId,
             restoreContent: input.content,
+            restoreBrowserAnnotations: [],
             sender: input.sender,
             settings: input.settings,
             restoreWorktreeIntent: null,
@@ -2131,6 +2155,8 @@ export function createChatSessionStoreWithNotificationDependencies(
             sender: input.sender,
             settings: input.settings,
             timestamp: Date.now(),
+            restoreContent: input.content,
+            restoreBrowserAnnotations: [],
           },
         });
         if (sentClientActionId === null) return null;
@@ -2209,6 +2235,7 @@ export function createChatSessionStoreWithNotificationDependencies(
             interviewBlockId: null,
             messageId,
             restoreContent: null,
+            restoreBrowserAnnotations: [],
             sender: null,
             settings: null,
             restoreWorktreeIntent: worktreeIntent,
@@ -2276,6 +2303,7 @@ export function createChatSessionStoreWithNotificationDependencies(
             interviewBlockId: null,
             messageId: null,
             restoreContent: null,
+            restoreBrowserAnnotations: [],
             sender: null,
             settings: null,
             restoreWorktreeIntent: null,
@@ -2854,6 +2882,7 @@ function basicPending(
     interviewBlockId: null,
     messageId: null,
     restoreContent: null,
+    restoreBrowserAnnotations: [],
     sender: null,
     settings: null,
     restoreWorktreeIntent: null,

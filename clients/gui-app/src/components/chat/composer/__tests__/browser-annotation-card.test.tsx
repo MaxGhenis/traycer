@@ -18,13 +18,14 @@ import {
   STUB_ANNOTATION_ELEMENT,
   STUB_ANNOTATION_PARAGRAPH,
   createStubBrowserAnnotationPayloadFor,
-} from "@/lib/browser-view/browser-annotation-stub";
-import type { BrowserViewElementCapture } from "@/lib/browser-view/desktop-browser-view";
+} from "@/lib/browser-view/__tests__/browser-annotation-fixtures";
 import {
   deleteImage,
+  getImageBytes,
   imageHashKeys,
   putImage,
   releaseSession,
+  sessionObjectUrl,
 } from "@/lib/composer/landing-image-store";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
 
@@ -71,10 +72,11 @@ vi.mock("idb-keyval", () => {
 const LONG_COMMENT =
   "Please enlarge the hero heading and add more breathing room under the fold so the page feels less cramped on first paint";
 
-const EXTRA_ELEMENT: BrowserViewElementCapture = {
+const EXTRA_ELEMENT: BrowserAnnotationRecord["elements"][number] = {
   ...STUB_ANNOTATION_ELEMENT,
   selector: "main > button",
   tagName: "button",
+  classNames: [...STUB_ANNOTATION_ELEMENT.classNames],
   outerHtml: "<button>Go</button>",
   textPreview: "Go",
   ariaRole: "button",
@@ -164,12 +166,30 @@ function sessionsState(
   };
 }
 
+async function landingFetcher(hash: string): Promise<{
+  readonly bytes: Uint8Array<ArrayBuffer>;
+  readonly mediaType: string | null;
+}> {
+  const bytes = await getImageBytes(hash);
+  if (bytes === undefined) {
+    throw new Error(`Landing image ${hash} unavailable`);
+  }
+  return { bytes, mediaType: null };
+}
+
 function renderCard(
   record: BrowserAnnotationRecord,
   onRemove: (annotationId: string) => void,
   items: ReadonlyArray<BrowserSessionInfo> | null,
 ): void {
-  const card = <BrowserAnnotationCard record={record} onRemove={onRemove} />;
+  const card = (
+    <BrowserAnnotationCard
+      record={record}
+      onRemove={onRemove}
+      imageFetcher={landingFetcher}
+      sessionObjectUrl={sessionObjectUrl}
+    />
+  );
   if (items === null) {
     render(card);
     return;
@@ -244,6 +264,8 @@ describe("BrowserAnnotationCard", () => {
           comment: LONG_COMMENT,
         })}
         onRemove={vi.fn()}
+        imageFetcher={landingFetcher}
+        sessionObjectUrl={sessionObjectUrl}
       />,
     );
     const comment = screen.getByText(LONG_COMMENT);
@@ -257,6 +279,8 @@ describe("BrowserAnnotationCard", () => {
           comment: "   ",
         })}
         onRemove={vi.fn()}
+        imageFetcher={landingFetcher}
+        sessionObjectUrl={sessionObjectUrl}
       />,
     );
     expect(screen.getByText("No comment")).toBeTruthy();

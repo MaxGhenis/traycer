@@ -76,6 +76,7 @@ function userMessage(messageId: string): Extract<Message, { role: "user" }> {
       kind: "user",
       content: CONTENT,
       browserContextAttachments: [],
+      browserAnnotations: [],
     },
     timestamp: 1000,
     sessionAnchor: null,

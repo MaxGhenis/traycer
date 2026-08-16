@@ -1452,6 +1452,7 @@ describe("createChatSessionStore", () => {
     expect(harness.handle.store.getState().failedSendRestoration).toEqual({
       clientActionId: frame.clientActionId,
       content: CONTENT,
+      browserAnnotations: [],
       reason: "Message was not confirmed after reconnect.",
     });
   });
@@ -5982,6 +5983,7 @@ describe("turn-settled stranded-send reconciliation", () => {
     expect(state.failedSendRestoration).toEqual({
       clientActionId: frame.clientActionId,
       content: CONTENT,
+      browserAnnotations: [],
       reason: "The message was not recorded before the turn stopped.",
     });
   });
@@ -6086,6 +6088,7 @@ describe("turn-settled stranded-send reconciliation", () => {
     expect(state.failedSendRestoration).toEqual({
       clientActionId: frame.clientActionId,
       content: CONTENT,
+      browserAnnotations: [],
       reason: "The message was not recorded before the turn stopped.",
     });
   });

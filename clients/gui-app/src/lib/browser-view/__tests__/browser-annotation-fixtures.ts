@@ -5,65 +5,63 @@ import {
   attachBrowserAnnotation,
   type AttachBrowserAnnotationResult,
 } from "@/lib/browser-view/browser-annotation-attach";
-import type { BrowserViewElementCapture } from "@/lib/browser-view/desktop-browser-view";
+import type { BrowserAnnotationRecord } from "@/lib/browser-view/browser-annotation-record";
 
 const STUB_PNG_SIGNATURE = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
 
-export const STUB_ANNOTATION_ELEMENT: BrowserViewElementCapture = {
-  selector: "main > h1",
-  tagName: "h1",
-  elementId: null,
-  classNames: [],
-  attributes: [],
-  outerHtml: "<h1>Example Domain</h1>",
-  outerHtmlTruncated: false,
-  textPreview: "Example Domain",
-  ariaRole: "heading",
-  accessibleName: "Example Domain",
-  boundingBox: {
-    x: 60,
-    y: 90,
-    width: 420,
-    height: 40,
-    top: 90,
-    right: 480,
-    bottom: 130,
-    left: 60,
-  },
-  computedStyles: [{ property: "font-size", value: "26px" }],
-};
+export const STUB_ANNOTATION_ELEMENT: BrowserAnnotationRecord["elements"][number] =
+  {
+    selector: "main > h1",
+    tagName: "h1",
+    elementId: null,
+    classNames: [],
+    attributes: [],
+    outerHtml: "<h1>Example Domain</h1>",
+    outerHtmlTruncated: false,
+    textPreview: "Example Domain",
+    ariaRole: "heading",
+    accessibleName: "Example Domain",
+    boundingBox: {
+      x: 60,
+      y: 90,
+      width: 420,
+      height: 40,
+      top: 90,
+      right: 480,
+      bottom: 130,
+      left: 60,
+    },
+    computedStyles: [{ property: "font-size", value: "26px" }],
+  };
 
-export const STUB_ANNOTATION_PARAGRAPH: BrowserViewElementCapture = {
-  selector: "main > p",
-  tagName: "p",
-  elementId: null,
-  classNames: ["body"],
-  attributes: [{ name: "class", value: "body" }],
-  outerHtml:
-    '<p class="body">This domain is for use in documentation examples.</p>',
-  outerHtmlTruncated: false,
-  textPreview: "This domain is for use in documentation examples.",
-  ariaRole: null,
-  accessibleName: null,
-  boundingBox: {
-    x: 76,
-    y: 200,
-    width: 380,
-    height: 40,
-    top: 200,
-    right: 456,
-    bottom: 240,
-    left: 76,
-  },
-  computedStyles: [{ property: "font-size", value: "14px" }],
-};
+export const STUB_ANNOTATION_PARAGRAPH: BrowserAnnotationRecord["elements"][number] =
+  {
+    selector: "main > p",
+    tagName: "p",
+    elementId: null,
+    classNames: ["body"],
+    attributes: [{ name: "class", value: "body" }],
+    outerHtml:
+      '<p class="body">This domain is for use in documentation examples.</p>',
+    outerHtmlTruncated: false,
+    textPreview: "This domain is for use in documentation examples.",
+    ariaRole: null,
+    accessibleName: null,
+    boundingBox: {
+      x: 76,
+      y: 200,
+      width: 380,
+      height: 40,
+      top: 200,
+      right: 456,
+      bottom: 240,
+      left: 76,
+    },
+    computedStyles: [{ property: "font-size", value: "14px" }],
+  };
 
-/**
- * Ticket 04 feed: a complete attach payload + PNG bytes. Ticket 06 replaces
- * this with the real `annotationAttached` IPC.
- */
 export function createStubBrowserAnnotationPayload(): {
   readonly payload: BrowserAnnotationAttachPayload;
   readonly png: Uint8Array<ArrayBuffer>;

@@ -8,6 +8,7 @@ import type { BrowserTabInfo } from "@traycer/protocol/host/browser/contracts";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useMaybeBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import { BrowserAnnotationCard } from "@/components/chat/composer/browser-annotation-card";
+import { useChatImageFetcher } from "@/lib/attachments/use-chat-image-fetcher";
 import { toComposerAnnotationRecord } from "@/lib/browser-view/browser-annotation-wire";
 import {
   browserTabFaviconUrl,
@@ -27,19 +28,34 @@ export function BrowserReferenceChips(props: {
   return (
     <div className="mb-2 flex w-full min-w-0 flex-col gap-1.5">
       {props.annotations.length > 0 ? (
-        <div className="flex w-full min-w-0 flex-col gap-1.5">
-          {props.annotations.map((annotation) => (
-            <BrowserAnnotationCard
-              key={annotation.annotationId}
-              record={toComposerAnnotationRecord(annotation)}
-              onRemove={null}
-            />
-          ))}
-        </div>
+        <SentAnnotationCards annotations={props.annotations} />
       ) : null}
       {props.references.length > 0 ? (
         <BrowserReferenceChipsLive references={props.references} />
       ) : null}
+    </div>
+  );
+}
+
+function noSessionObjectUrl(_hash: string): string | null {
+  return null;
+}
+
+function SentAnnotationCards(props: {
+  readonly annotations: ReadonlyArray<BrowserAnnotationRecord>;
+}) {
+  const fetcher = useChatImageFetcher();
+  return (
+    <div className="flex w-full min-w-0 flex-col gap-1.5">
+      {props.annotations.map((annotation) => (
+        <BrowserAnnotationCard
+          key={annotation.annotationId}
+          record={toComposerAnnotationRecord(annotation)}
+          onRemove={null}
+          imageFetcher={fetcher}
+          sessionObjectUrl={noSessionObjectUrl}
+        />
+      ))}
     </div>
   );
 }

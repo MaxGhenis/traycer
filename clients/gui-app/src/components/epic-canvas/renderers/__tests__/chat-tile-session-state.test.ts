@@ -738,6 +738,8 @@ describe("canModifyChatMessages", () => {
     sender: { type: "user", userId: "owner-1" },
     settings: SETTINGS,
     timestamp: 0,
+    restoreContent: CONTENT,
+    restoreBrowserAnnotations: [],
   };
 
   function gateState(

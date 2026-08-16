@@ -18,6 +18,7 @@ import type {
 } from "@/stores/chats/chat-session-store";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
+import type { BrowserAnnotationRecord } from "@/lib/browser-view/browser-annotation-record";
 import type { Attachment } from "@/lib/composer/types";
 
 interface SendChatMessageInput {
@@ -26,6 +27,8 @@ interface SendChatMessageInput {
   readonly settings: ChatRunSettings;
   readonly attachments: ReadonlyArray<Attachment>;
   readonly deliveryPolicy: ChatQueueDeliveryPolicy;
+  readonly restoreContent: JsonContent;
+  readonly restoreBrowserAnnotations: ReadonlyArray<BrowserAnnotationRecord>;
 }
 
 /**

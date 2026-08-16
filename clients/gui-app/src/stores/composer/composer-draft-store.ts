@@ -11,6 +11,7 @@ import {
   type BrowserAnnotationRecord,
 } from "@/lib/browser-view/browser-annotation-record";
 import { registerExtraImageRootSource } from "@/lib/composer/landing-image-budget";
+import { scheduleLandingImageReconcile } from "@/lib/composer/landing-image-gc";
 
 export interface DraftSelection {
   readonly from: number;
@@ -288,6 +289,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
             },
           };
         });
+        scheduleLandingImageReconcile();
       },
     }),
     {

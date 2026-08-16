@@ -19,11 +19,19 @@ export type AnnotationRoute =
       readonly hint: string;
     };
 
+export interface AnnotationRouteChat {
+  readonly title: string;
+}
+
 export interface ResolveAnnotationRouteInput {
   readonly canvas: EpicCanvasState | null;
   readonly browserInstanceId: string;
   readonly lastFocusedChatId: string | null;
-  readonly chatLabel: (chatId: string) => string | null;
+  /**
+   * Epic chat registry lookup. Return null when the id is missing, deleted,
+   * or archived so last-focused cannot target an orphan draft.
+   */
+  readonly resolveChat: (chatId: string) => AnnotationRouteChat | null;
 }
 
 /**
@@ -39,20 +47,30 @@ export function resolveAnnotationRoute(
     input.browserInstanceId,
   );
   if (siblingChatId !== null) {
-    return {
-      kind: "chat",
-      chatId: siblingChatId,
-      label: labelForChat(input.chatLabel, siblingChatId),
-      source: "sibling",
-    };
+    const sibling = resolveRoutedChat(
+      input.resolveChat,
+      siblingChatId,
+      input.canvas,
+    );
+    if (sibling !== null) {
+      return {
+        kind: "chat",
+        chatId: siblingChatId,
+        label: sibling,
+        source: "sibling",
+      };
+    }
   }
   if (input.lastFocusedChatId !== null && input.lastFocusedChatId.length > 0) {
-    return {
-      kind: "chat",
-      chatId: input.lastFocusedChatId,
-      label: labelForChat(input.chatLabel, input.lastFocusedChatId),
-      source: "last-focused",
-    };
+    const focused = input.resolveChat(input.lastFocusedChatId);
+    if (focused !== null) {
+      return {
+        kind: "chat",
+        chatId: input.lastFocusedChatId,
+        label: displayTitle(focused.title, "chat"),
+        source: "last-focused",
+      };
+    }
   }
   return { kind: "none", hint: ANNOTATION_ROUTE_NONE_HINT };
 }
@@ -82,9 +100,14 @@ export function chatLabelFromCanvases(
   return null;
 }
 
-function labelForChat(
-  chatLabel: (chatId: string) => string | null,
+function resolveRoutedChat(
+  resolveChat: (chatId: string) => AnnotationRouteChat | null,
   chatId: string,
-): string {
-  return displayTitle(chatLabel(chatId) ?? "", "chat");
+  canvas: EpicCanvasState | null,
+): string | null {
+  const resolved = resolveChat(chatId);
+  if (resolved !== null) return displayTitle(resolved.title, "chat");
+  const canvasName = chatLabelFromCanvas(canvas, chatId);
+  if (canvasName === null) return null;
+  return displayTitle(canvasName, "chat");
 }

@@ -1,13 +1,16 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type {
   ChatActiveTurn,
-  ChatQueueDeliveryPolicy,
   ChatRunSettings,
 } from "@traycer/protocol/host/agent/gui/subscribe";
 
 import { useChatStore } from "@/stores/composer/chat-store";
-import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
+import {
+  readComposerDraftSnapshot,
+  useComposerDraftStore,
+} from "@/stores/composer/composer-draft-store";
+import { reportableErrorToast } from "@/lib/reportable-error-toast";
 import {
   appendImageAttachmentAtoms,
   containsImageAtoms,
@@ -35,6 +38,7 @@ import type { ComposerToolbarStore } from "@/stores/composer/composer-toolbar-st
 import type { Attachment } from "@/lib/composer/types";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 
+import type { ChatComposerSubmitInput } from "./chat-composer";
 import type { ComposerPromptEditorHandle } from "./composer-prompt-editor";
 
 interface UseChatComposerSubmitArgs {
@@ -88,13 +92,7 @@ interface UseChatComposerSubmitArgs {
     ((input: ChatComposerSubmitInput) => boolean) | null;
 }
 
-interface ChatComposerSubmitInput {
-  readonly content: JsonContent;
-  readonly contentText: string;
-  readonly attachments: ReadonlyArray<Attachment>;
-  readonly settings: ChatRunSettings;
-  readonly deliveryPolicy: ChatQueueDeliveryPolicy;
-}
+
 
 interface PendingSteerConflict {
   // The submit INTENT only - deliberately NOT the resolved `deliveryPolicy`. The
@@ -105,6 +103,8 @@ interface PendingSteerConflict {
   readonly content: JsonContent;
   readonly contentText: string;
   readonly attachments: ReadonlyArray<Attachment>;
+  readonly restoreContent: JsonContent;
+  readonly restoreBrowserAnnotations: ReadonlyArray<BrowserAnnotationRecord>;
   readonly settings: ChatRunSettings;
   readonly changed: ReadonlyArray<string>;
   // The turnId this consent was DISPLAYED for. The composer persists across turn
@@ -118,6 +118,7 @@ interface PendingSteerConflict {
 
 export interface ChatComposerSubmitResult {
   readonly submitDraft: (source: ChatComposerSubmitSource) => void;
+  readonly annotationPreparationPending: boolean;
   /**
    * Confirm-dialog state for a `Mod-Enter` steer whose settings differ from the
    * running turn's baked settings (decision 6). Open means the send is staged
@@ -156,6 +157,9 @@ export function useChatComposerSubmit(
   const clearDraftInStore = useComposerDraftStore((state) => state.clearDraft);
   const [pendingConflict, setPendingConflict] =
     useState<PendingSteerConflict | null>(null);
+  const [annotationPreparationPending, setAnnotationPreparationPending] =
+    useState(false);
+  const annotationPrepFlight = useRef(false);
 
   const finalizeSend = useCallback(
     (input: ChatComposerSubmitInput): boolean => {
@@ -219,8 +223,10 @@ export function useChatComposerSubmit(
       // and clear nothing, letting the just-submitted text resurrect once the
       // editor finishes initializing from that same stale initial content.
       if (editor === null || !editor.isReady()) return;
+      if (annotationPrepFlight.current) return;
       const draft = useComposerDraftStore.getState().drafts[taskId];
       const annotationRecords = draft?.browserAnnotations ?? [];
+      const capturedRevision = draft?.revision ?? 0;
       const browserContextAttachments =
         draft?.browserContextAttachments?.map((payload) => ({
           kind: "browser-context" as const,
@@ -229,72 +235,100 @@ export function useChatComposerSubmit(
       const editorContent = editor.getJSON();
       const contentText =
         extractPlainTextFromComposerJSONContent(editorContent);
-      const trimmed = contentText.trim();
-      const hasImages = containsImageAtoms(editorContent);
       if (
-        trimmed.length === 0 &&
-        !hasImages &&
-        browserContextAttachments.length === 0 &&
-        annotationRecords.length === 0
+        isEmptyComposerSubmit({
+          contentText,
+          editorContent,
+          browserContextAttachments,
+          annotationRecords,
+        })
       ) {
         return;
       }
 
+      annotationPrepFlight.current = true;
+      setAnnotationPreparationPending(true);
       void (async () => {
-        const annotationImages = await resolveAnnotationImageAtoms(
-          annotationRecords,
-        );
-        if (annotationImages === null) return;
-        if (submitBlocked()) return;
-        const settings = buildChatRunSettings({
-          selection: toolbar.selection,
-          permission: toolbar.permission,
-          reasoning: toolbar.reasoning,
-          serviceTier: toolbar.serviceTier,
-        });
-        const submittedContent = appendImageAttachmentAtoms(
-          buildSubmittedChatJSONContent(
-            editorContent,
-            pickerStore.getState().knownSlashCommands,
-          ),
-          annotationImages,
-        );
-        const attachments: ReadonlyArray<Attachment> = [
-          ...buildAttachmentsFromJSONContent(submittedContent),
-          ...browserContextAttachments,
-          ...annotationRecords.map((record) => ({
-            kind: "browser-annotation" as const,
-            record,
-          })),
-        ];
-        const deliveryPolicy = resolveSubmitDeliveryPolicy({
-          source,
-          activeTurnStatus,
-          steerEnabled,
-          steerProtocolSupported,
-        });
-        if (deliveryPolicy === "after_safe_point" && steerCapable) {
-          const originTurn = getActiveTurnForSteer();
-          const decision = decideSteerSettings(originTurn, settings);
-          if (decision.kind === "interrupt_restart") {
-            setPendingConflict({
-              content: submittedContent,
-              contentText,
-              attachments,
-              settings: decision.newSettings,
-              changed: decision.changed,
-              originTurnId: originTurn?.turnId ?? null,
-            });
+        try {
+          const annotationImages = await resolveAnnotationImageAtoms(
+            annotationRecords,
+          );
+          if (annotationImages === null) {
+            reportableErrorToast(
+              "Couldn't attach the annotation image.",
+              {
+                description: "The crop is missing. Try attaching again.",
+              },
+              {
+                title: "Annotation image missing",
+                message: null,
+                code: null,
+                source: "Chat composer",
+              },
+            );
             return;
           }
+          if (submitBlocked()) return;
+          const live = readComposerDraftSnapshot(taskId);
+          if (live.revision !== capturedRevision) return;
+          const settings = buildChatRunSettings({
+            selection: toolbar.selection,
+            permission: toolbar.permission,
+            reasoning: toolbar.reasoning,
+            serviceTier: toolbar.serviceTier,
+          });
+          const submittedContent = appendImageAttachmentAtoms(
+            buildSubmittedChatJSONContent(
+              editorContent,
+              pickerStore.getState().knownSlashCommands,
+            ),
+            annotationImages,
+          );
+          const attachments: ReadonlyArray<Attachment> = [
+            ...buildAttachmentsFromJSONContent(submittedContent),
+            ...browserContextAttachments,
+            ...annotationRecords.map((record) => ({
+              kind: "browser-annotation" as const,
+              record,
+            })),
+          ];
+          const deliveryPolicy = resolveSubmitDeliveryPolicy({
+            source,
+            activeTurnStatus,
+            steerEnabled,
+            steerProtocolSupported,
+          });
+          const sendInput: ChatComposerSubmitInput = {
+            content: submittedContent,
+            contentText,
+            attachments,
+            settings,
+            deliveryPolicy,
+            restoreContent: editorContent,
+            restoreBrowserAnnotations: annotationRecords,
+          };
+          if (deliveryPolicy === "after_safe_point" && steerCapable) {
+            const originTurn = getActiveTurnForSteer();
+            const decision = decideSteerSettings(originTurn, settings);
+            if (decision.kind === "interrupt_restart") {
+              setPendingConflict({
+                content: submittedContent,
+                contentText,
+                attachments,
+                restoreContent: editorContent,
+                restoreBrowserAnnotations: annotationRecords,
+                settings: decision.newSettings,
+                changed: decision.changed,
+                originTurnId: originTurn?.turnId ?? null,
+              });
+              return;
+            }
+          }
+          finalizeSend(sendInput);
+        } finally {
+          annotationPrepFlight.current = false;
+          setAnnotationPreparationPending(false);
         }
-        finalizeSend({
-          content: submittedContent,
-          contentText,
-          attachments,
-          settings,
-          deliveryPolicy,
-        });
       })();
     },
     [
@@ -350,6 +384,8 @@ export function useChatComposerSubmit(
         attachments: pendingConflict.attachments,
         settings: pendingConflict.settings,
         deliveryPolicy,
+        restoreContent: pendingConflict.restoreContent,
+        restoreBrowserAnnotations: pendingConflict.restoreBrowserAnnotations,
       })
     ) {
       setPendingConflict(null);
@@ -371,6 +407,7 @@ export function useChatComposerSubmit(
 
   return {
     submitDraft,
+    annotationPreparationPending,
     steerConflict: {
       open: pendingConflict !== null,
       changed: pendingConflict?.changed ?? [],
@@ -378,6 +415,20 @@ export function useChatComposerSubmit(
       onRestart,
     },
   };
+}
+
+function isEmptyComposerSubmit(input: {
+  readonly contentText: string;
+  readonly editorContent: JsonContent;
+  readonly browserContextAttachments: ReadonlyArray<Attachment>;
+  readonly annotationRecords: ReadonlyArray<BrowserAnnotationRecord>;
+}): boolean {
+  return (
+    input.contentText.trim().length === 0 &&
+    !containsImageAtoms(input.editorContent) &&
+    input.browserContextAttachments.length === 0 &&
+    input.annotationRecords.length === 0
+  );
 }
 
 async function resolveAnnotationImageAtoms(

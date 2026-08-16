@@ -1,5 +1,5 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAnnotationRoute } from "@/hooks/browser/use-annotation-route";
 import { ANNOTATION_ROUTE_NONE_HINT } from "@/lib/browser-view/browser-annotation-router";
@@ -12,6 +12,31 @@ import {
   type EpicArtifactRef,
   type EpicCanvasState,
 } from "@/stores/epics/canvas/types";
+import type { ChatProjection } from "@/stores/epics/open-epic/types";
+
+const epicChats = vi.hoisted(() => {
+  let byId: Readonly<Record<string, ChatProjection>> = {};
+  const listeners = new Set<() => void>();
+  return {
+    set(next: Readonly<Record<string, ChatProjection>>): void {
+      byId = next;
+      for (const listener of listeners) listener();
+    },
+    store: {
+      getState: () => ({ chats: { byId } }),
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    },
+  };
+});
+
+vi.mock("@/providers/use-open-epic-handle", () => ({
+  useMaybeOpenEpicHandle: () => ({ store: epicChats.store }),
+}));
 
 const VIEW_TAB_ID = "view-annotation-route";
 const EPIC_ID = "epic-annotation-route";
@@ -87,9 +112,29 @@ function seedView(canvas: EpicCanvasState): void {
   });
 }
 
+function chatProjection(
+  id: string,
+  title: string,
+  archivedAt: number | null,
+): ChatProjection {
+  return {
+    id,
+    title,
+    parentId: null,
+    createdAt: 1,
+    updatedAt: 1,
+    userId: null,
+    hostId: HOST_ID,
+    isTitleEditedByUser: false,
+    settings: null,
+    archivedAt,
+  };
+}
+
 function resetStores(): void {
   useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
   useLastFocusedChatStore.setState({ chatIdByEpicId: {} });
+  epicChats.set({});
 }
 
 beforeEach(() => {
@@ -176,6 +221,9 @@ describe("useAnnotationRoute", () => {
     }));
     useLastFocusedChatStore.setState({
       chatIdByEpicId: { [EPIC_ID]: "chat-focused" },
+    });
+    epicChats.set({
+      "chat-focused": chatProjection("chat-focused", "Earlier chat", null),
     });
 
     const { result } = renderHook(() =>
@@ -289,6 +337,9 @@ describe("useAnnotationRoute", () => {
     expect(result.current.kind).toBe("none");
 
     act(() => {
+      epicChats.set({
+        "chat-later": chatProjection("chat-later", "Later chat", null),
+      });
       useLastFocusedChatStore
         .getState()
         .recordFocusedChat(EPIC_ID, "chat-later");
@@ -299,6 +350,62 @@ describe("useAnnotationRoute", () => {
       chatId: "chat-later",
       label: "Later chat",
       source: "last-focused",
+    });
+  });
+
+  it("returns none when last-focused chat is missing from the epic registry", () => {
+    const browser = makeBrowserTileRef({
+      name: "Docs",
+      hostId: HOST_ID,
+      url: "https://example.com/docs",
+      viewportPreset: "responsive",
+    });
+    seedView(loneBrowserCanvas(browser));
+    useLastFocusedChatStore.setState({
+      chatIdByEpicId: { [EPIC_ID]: "chat-deleted" },
+    });
+    epicChats.set({});
+
+    const { result } = renderHook(() =>
+      useAnnotationRoute({
+        viewTabId: VIEW_TAB_ID,
+        browserInstanceId: browser.instanceId,
+        epicId: EPIC_ID,
+      }),
+    );
+
+    expect(result.current).toEqual({
+      kind: "none",
+      hint: ANNOTATION_ROUTE_NONE_HINT,
+    });
+  });
+
+  it("returns none when last-focused chat is archived", () => {
+    const browser = makeBrowserTileRef({
+      name: "Docs",
+      hostId: HOST_ID,
+      url: "https://example.com/docs",
+      viewportPreset: "responsive",
+    });
+    seedView(loneBrowserCanvas(browser));
+    useLastFocusedChatStore.setState({
+      chatIdByEpicId: { [EPIC_ID]: "chat-archived" },
+    });
+    epicChats.set({
+      "chat-archived": chatProjection("chat-archived", "Archived", 1_700),
+    });
+
+    const { result } = renderHook(() =>
+      useAnnotationRoute({
+        viewTabId: VIEW_TAB_ID,
+        browserInstanceId: browser.instanceId,
+        epicId: EPIC_ID,
+      }),
+    );
+
+    expect(result.current).toEqual({
+      kind: "none",
+      hint: ANNOTATION_ROUTE_NONE_HINT,
     });
   });
 });
