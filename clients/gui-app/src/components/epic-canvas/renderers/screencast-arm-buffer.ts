@@ -11,6 +11,7 @@ export interface ScreencastArmGestureDown<T> {
   readonly castSequence: number;
   readonly clientX: number;
   readonly clientY: number;
+  readonly isPrimary: boolean;
 }
 
 export interface ScreencastArmGestureUp<T> {
@@ -22,7 +23,7 @@ export interface ScreencastArmGestureUp<T> {
 
 export interface ScreencastArmGesture<T> {
   readonly down: T;
-  readonly up: T | null;
+  readonly up: T;
 }
 
 export interface ScreencastArmBuffer<T> {
@@ -34,6 +35,7 @@ export interface ScreencastArmBuffer<T> {
   ) => ScreencastArmGesture<T> | null;
   readonly drop: () => void;
   readonly hasPending: () => boolean;
+  readonly setOnDropped: (onDropped: () => void) => void;
 }
 
 interface PendingArmGesture<T> {
@@ -46,16 +48,23 @@ export function createScreencastArmBuffer<T>(
   clock: ScreencastArmBufferClock,
 ): ScreencastArmBuffer<T> {
   let pending: PendingArmGesture<T> | null = null;
+  let onDropped = (): void => {};
 
-  const drop = (): void => {
+  const clearPending = (): void => {
     if (pending === null) return;
     clock.clearTimeout(pending.timeoutId);
     pending = null;
   };
 
+  const drop = (): void => {
+    if (pending === null) return;
+    clearPending();
+    onDropped();
+  };
+
   return {
     storeDown: (down) => {
-      if (pending !== null) return;
+      if (pending !== null || !down.isPrimary) return;
       pending = {
         down,
         up: null,
@@ -63,8 +72,9 @@ export function createScreencastArmBuffer<T>(
       };
     },
     storeMatchingUp: (up) => {
-      if (pending === null || !up.isPrimary) return;
+      if (pending === null) return;
       if (
+        !up.isPrimary ||
         !isWithinClickSlop(
           pending.down.clientX,
           pending.down.clientY,
@@ -72,6 +82,7 @@ export function createScreencastArmBuffer<T>(
           up.clientY,
         )
       ) {
+        drop();
         return;
       }
       pending.up = up.payload;
@@ -93,15 +104,21 @@ export function createScreencastArmBuffer<T>(
     takeIfCurrent: (presentedSequence) => {
       if (pending === null) return null;
       const gesture = pending;
-      if (presentedSequence !== gesture.down.castSequence) {
+      if (
+        presentedSequence !== gesture.down.castSequence ||
+        gesture.up === null
+      ) {
         drop();
         return null;
       }
-      drop();
+      clearPending();
       return { down: gesture.down.payload, up: gesture.up };
     },
     drop,
     hasPending: () => pending !== null,
+    setOnDropped: (nextOnDropped) => {
+      onDropped = nextOnDropped;
+    },
   };
 }
 

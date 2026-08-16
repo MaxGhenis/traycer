@@ -363,6 +363,50 @@ describe("BrowserPeekTile input capture", () => {
     fireEvent.pointerCancel(button, { pointerId: 1 });
 
     expect(releasePointerCapture).toHaveBeenCalledWith(1);
+    expect(framesOfKind(stream, "pointer")).toEqual([]);
+  });
+
+  it("sends a matching clamped up on pointercancel after an accepted down", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    presentLiveFrame(stream, 7, JPEG_SEQ_7);
+    armPeekTile(stream);
+    const button = overlayButton();
+    const releasePointerCapture = vi.spyOn(button, "releasePointerCapture");
+
+    fireEvent.pointerDown(
+      button,
+      pointerEventInit({
+        clientX: 400,
+        clientY: 300,
+        button: 0,
+        buttons: 1,
+        detail: 1,
+      }),
+    );
+    fireEvent.pointerCancel(button, { pointerId: 1 });
+
+    expect(framesOfKind(stream, "pointer")).toEqual([
+      expect.objectContaining({
+        type: "down",
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+        normalizedX: 0.5,
+        normalizedY: 0.5,
+        seq: 0,
+      }),
+      expect.objectContaining({
+        type: "up",
+        button: "left",
+        buttons: 0,
+        clickCount: 1,
+        normalizedX: 0.5,
+        normalizedY: 0.5,
+        seq: 1,
+      }),
+    ]);
+    expect(releasePointerCapture).toHaveBeenCalledWith(1);
   });
 
   it("releases pointer capture when the server revokes the arm", () => {
@@ -956,6 +1000,38 @@ describe("BrowserPeekTile input capture", () => {
     });
     loadScreencastImage();
     emitArmed(stream, 1);
+
+    expect(framesOfKind(stream, "pointer")).toEqual([]);
+    expect(peekTile().querySelector(".ring-primary")).not.toBeNull();
+  });
+
+  it("does not replay a cold down when arm confirms before the matching up", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    presentLiveFrame(stream, 7, JPEG_SEQ_7);
+    const button = overlayButton();
+
+    fireEvent.pointerDown(
+      button,
+      pointerEventInit({
+        clientX: 400,
+        clientY: 300,
+        button: 0,
+        buttons: 1,
+        detail: 1,
+      }),
+    );
+    emitArmed(stream, 1);
+    fireEvent.pointerUp(
+      button,
+      pointerEventInit({
+        clientX: 400,
+        clientY: 300,
+        button: 0,
+        buttons: 0,
+        detail: 1,
+      }),
+    );
 
     expect(framesOfKind(stream, "pointer")).toEqual([]);
     expect(peekTile().querySelector(".ring-primary")).not.toBeNull();

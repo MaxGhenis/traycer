@@ -8,7 +8,6 @@ import {
   type CompositionEvent as ReactCompositionEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
-  type ReactElement,
   type RefObject,
   type SetStateAction,
 } from "react";
@@ -179,6 +178,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const suppressPointerIdRef = useRef<number | null>(null);
   const pendingMoveRef = useRef<PeekPointerInput | null>(null);
   const moveRafRef = useRef<number | null>(null);
+  const acceptedPointerDownRef = useRef<PeekPointerInput | null>(null);
   const [armBuffer] = useState<ScreencastArmBuffer<PeekPointerInput>>(() =>
     createScreencastArmBuffer({
       setTimeout: (callback, ms) => window.setTimeout(callback, ms),
@@ -476,6 +476,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const resetTransientInput = useCallback(() => {
     armBuffer.drop();
     suppressPointerIdRef.current = null;
+    acceptedPointerDownRef.current = null;
     cancelPendingMove();
     releaseCapturedPointer();
   }, [armBuffer, cancelPendingMove, releaseCapturedPointer]);
@@ -622,6 +623,13 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     (frame: PeekPointerInput) => {
       flushPendingMove();
       sendInput(frame);
+      if (frame.type === "down") {
+        acceptedPointerDownRef.current = frame;
+        return;
+      }
+      if (frame.type === "up") {
+        acceptedPointerDownRef.current = null;
+      }
     },
     [flushPendingMove, sendInput],
   );
@@ -637,7 +645,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       return;
     }
     sendDiscretePointer(gesture.down);
-    if (gesture.up !== null) sendDiscretePointer(gesture.up);
+    sendDiscretePointer(gesture.up);
   }, [armBuffer, sendDiscretePointer]);
 
   const capturePointer = useCallback(
@@ -675,20 +683,25 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         if (frame !== null) sendDiscretePointer(frame);
       } else if (!arming) {
         arm();
-        const frame = buildPointerFrame({
-          event,
-          type: "down",
-          clampToEdge: false,
-          deltaX: 0,
-          deltaY: 0,
-        });
-        if (frame !== null) {
-          armBuffer.storeDown({
-            payload: frame,
-            castSequence: frame.castSequence,
-            clientX: event.clientX,
-            clientY: event.clientY,
+        if (event.button !== 0) {
+          suppressPointerIdRef.current = event.pointerId;
+        } else {
+          const frame = buildPointerFrame({
+            event,
+            type: "down",
+            clampToEdge: false,
+            deltaX: 0,
+            deltaY: 0,
           });
+          if (frame !== null) {
+            armBuffer.storeDown({
+              payload: frame,
+              castSequence: frame.castSequence,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              isPrimary: true,
+            });
+          }
         }
       }
       imeInputRef.current?.focus();
@@ -763,11 +776,25 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   );
 
   const handleOverlayPointerCancel = useCallback(() => {
+    const accepted = acceptedPointerDownRef.current;
+    if (accepted !== null && activeArmEpochRef.current !== null) {
+      sendDiscretePointer({
+        ...accepted,
+        type: "up",
+        buttons: 0,
+      });
+    }
     armBuffer.drop();
     suppressPointerIdRef.current = null;
+    acceptedPointerDownRef.current = null;
     cancelPendingMove();
     releaseCapturedPointer();
-  }, [armBuffer, cancelPendingMove, releaseCapturedPointer]);
+  }, [
+    armBuffer,
+    cancelPendingMove,
+    releaseCapturedPointer,
+    sendDiscretePointer,
+  ]);
 
   const handleOverlayContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -823,6 +850,14 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   );
 
   useLayoutEffect(() => {
+    armBuffer.setOnDropped(() => {
+      const captured = capturedPointerRef.current;
+      if (captured === null) return;
+      suppressPointerIdRef.current = captured.pointerId;
+    });
+  }, [armBuffer]);
+
+  useLayoutEffect(() => {
     frameSizeRef.current = frameSize;
   }, [frameSize]);
 
@@ -854,7 +889,15 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
             </div>
           ) : null}
         </div>
-        <BrowserPeekStatusChip status={status} />
+        <div
+          className={cn(
+            "flex shrink-0 items-center gap-1.5 rounded-sm border px-2 py-1 text-ui-xs",
+            peekStatusToneClass(status.tone),
+          )}
+        >
+          <status.Icon className="size-3.5" aria-hidden />
+          <span>{status.label}</span>
+        </div>
       </div>
       <div
         ref={viewportRef}
@@ -1264,26 +1307,14 @@ function sendPeekFrame(
   session?.sendClientFrame(frame, null);
 }
 
-function BrowserPeekStatusChip(props: {
-  readonly status: BrowserPeekStatus;
-}): ReactElement {
-  const { status } = props;
-  return (
-    <div
-      className={cn(
-        "flex shrink-0 items-center gap-1.5 rounded-sm border px-2 py-1 text-ui-xs",
-        status.tone === "live" &&
-          "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-        status.tone === "muted" &&
-          "border-border bg-muted text-muted-foreground",
-        status.tone === "bad" &&
-          "border-destructive/30 bg-destructive/10 text-destructive",
-      )}
-    >
-      <status.Icon className="size-3.5" aria-hidden />
-      <span>{status.label}</span>
-    </div>
-  );
+function peekStatusToneClass(tone: BrowserPeekStatus["tone"]): string {
+  if (tone === "live") {
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  }
+  if (tone === "bad") {
+    return "border-destructive/30 bg-destructive/10 text-destructive";
+  }
+  return "border-border bg-muted text-muted-foreground";
 }
 
 function browserPeekStatus(
