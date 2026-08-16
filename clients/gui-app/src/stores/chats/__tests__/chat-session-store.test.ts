@@ -963,6 +963,7 @@ describe("createChatSessionStore", () => {
     emitSnapshot(harness.callbacks(), "owner");
     const key: WorktreeStagingKey = {
       surface: "owner",
+      hostId: "host-a",
       epicId: EPIC_ID,
       ownerKind: "chat",
       ownerId: CHAT_ID,
@@ -1012,7 +1013,7 @@ describe("createChatSessionStore", () => {
     ).toBeUndefined();
     // Remembered per-epic so reopening the epic restores the same picks.
     expect(
-      useWorktreeIntentMemoryStore.getState().getEpicIntent(EPIC_ID),
+      useWorktreeIntentMemoryStore.getState().getEpicIntent(EPIC_ID, "host-a"),
     ).not.toBeNull();
     expect(harness.handle.store.getState().missingWorktreePaths).toEqual([]);
     // A worktree-creating send IS echoed optimistically (like every other
@@ -1033,6 +1034,7 @@ describe("createChatSessionStore", () => {
     emitSnapshot(callbacks, "owner");
     const key: WorktreeStagingKey = {
       surface: "owner",
+      hostId: "host-a",
       epicId: EPIC_ID,
       ownerKind: "chat",
       ownerId: CHAT_ID,
@@ -1110,6 +1112,7 @@ describe("createChatSessionStore", () => {
     });
     const key: WorktreeStagingKey = {
       surface: "owner",
+      hostId: "host-a",
       epicId: EPIC_ID,
       ownerKind: "chat",
       ownerId: CHAT_ID,
@@ -1189,6 +1192,7 @@ describe("createChatSessionStore", () => {
     });
     const key: WorktreeStagingKey = {
       surface: "owner",
+      hostId: "host-a",
       epicId: EPIC_ID,
       ownerKind: "chat",
       ownerId: CHAT_ID,
@@ -1255,6 +1259,7 @@ describe("createChatSessionStore", () => {
     emitSnapshot(callbacks, "owner");
     const key: WorktreeStagingKey = {
       surface: "owner",
+      hostId: "host-a",
       epicId: EPIC_ID,
       ownerKind: "chat",
       ownerId: CHAT_ID,
@@ -1312,6 +1317,7 @@ describe("createChatSessionStore", () => {
     emitSnapshot(harness.callbacks(), "owner");
     const key: WorktreeStagingKey = {
       surface: "owner",
+      hostId: "host-a",
       epicId: EPIC_ID,
       ownerKind: "chat",
       ownerId: CHAT_ID,
@@ -2248,6 +2254,7 @@ describe("createChatSessionStore", () => {
     emitSnapshot(harness.callbacks(), "owner");
     const key: WorktreeStagingKey = {
       surface: "owner",
+      hostId: "host-a",
       epicId: EPIC_ID,
       ownerKind: "chat",
       ownerId: CHAT_ID,
@@ -2291,7 +2298,7 @@ describe("createChatSessionStore", () => {
       ],
     ).toBeUndefined();
     expect(
-      useWorktreeIntentMemoryStore.getState().getEpicIntent(EPIC_ID),
+      useWorktreeIntentMemoryStore.getState().getEpicIntent(EPIC_ID, "host-a"),
     ).toEqual(intent);
   });
 
@@ -2302,6 +2309,7 @@ describe("createChatSessionStore", () => {
     emitSnapshot(callbacks, "owner");
     const key: WorktreeStagingKey = {
       surface: "owner",
+      hostId: "host-a",
       epicId: EPIC_ID,
       ownerKind: "chat",
       ownerId: CHAT_ID,
@@ -2380,6 +2388,7 @@ describe("createChatSessionStore", () => {
     emitSnapshot(harness.callbacks(), "owner");
     const key: WorktreeStagingKey = {
       surface: "owner",
+      hostId: "host-a",
       epicId: EPIC_ID,
       ownerKind: "chat",
       ownerId: CHAT_ID,
@@ -2423,7 +2432,7 @@ describe("createChatSessionStore", () => {
       ],
     ).toEqual(intent);
     expect(
-      useWorktreeIntentMemoryStore.getState().getEpicIntent(EPIC_ID),
+      useWorktreeIntentMemoryStore.getState().getEpicIntent(EPIC_ID, "host-a"),
     ).toBeNull();
     useWorktreeIntentStagingStore.getState().resetForTests();
   });
@@ -6110,6 +6119,9 @@ describe("the chat's managed commands", () => {
       id: "cmd-1",
       monitoring: true,
       description: "deploy watcher",
+      command: "tail -f deploy.log",
+      cwd: "/work/repo",
+      cadence: { debounceMs: 500, maxWaitMs: 15_000, throttleMs: 5_000 },
       status: { state: "running", pid: 4410, startedAtMs: 10 },
       chatId: CHAT_ID,
       createdAtMs: 10,

@@ -989,6 +989,7 @@ export function createChatSessionStoreWithNotificationDependencies(
         if (sweep.sweptActionIds.size > 0) {
           const stagingKey: WorktreeStagingKey = {
             surface: "owner",
+            hostId: options.hostId,
             epicId: options.epicId,
             ownerKind: "chat",
             ownerId: options.chatId,
@@ -1189,6 +1190,7 @@ export function createChatSessionStoreWithNotificationDependencies(
         if (rejectedPending !== null) {
           restoreStagedWorktreeIntentForPending(rejectedPending, {
             surface: "owner",
+            hostId: options.hostId,
             epicId: options.epicId,
             ownerKind: "chat",
             ownerId: options.chatId,
@@ -1928,6 +1930,7 @@ export function createChatSessionStoreWithNotificationDependencies(
         // the landing page bundling its intent with `epic.create`.
         const stagedKey: WorktreeStagingKey = {
           surface: "owner",
+          hostId: options.hostId,
           epicId: options.epicId,
           ownerKind: "chat",
           ownerId: options.chatId,
@@ -2044,7 +2047,12 @@ export function createChatSessionStoreWithNotificationDependencies(
         if (worktreeIntent !== null) {
           useWorktreeIntentMemoryStore
             .getState()
-            .setEpicIntent(options.epicId, worktreeIntent, Date.now());
+            .setEpicIntent(
+              options.epicId,
+              options.hostId,
+              worktreeIntent,
+              Date.now(),
+            );
           get().refreshMissingWorktreePaths([]);
         }
         return { clientActionId: sentClientActionId, messageId };
@@ -2141,6 +2149,7 @@ export function createChatSessionStoreWithNotificationDependencies(
         const messageId = uuidv4();
         const stagedKey: WorktreeStagingKey = {
           surface: "owner",
+          hostId: options.hostId,
           epicId: options.epicId,
           ownerKind: "chat",
           ownerId: options.chatId,
@@ -2204,7 +2213,12 @@ export function createChatSessionStoreWithNotificationDependencies(
         if (worktreeIntent !== null) {
           useWorktreeIntentMemoryStore
             .getState()
-            .setEpicIntent(options.epicId, worktreeIntent, Date.now());
+            .setEpicIntent(
+              options.epicId,
+              options.hostId,
+              worktreeIntent,
+              Date.now(),
+            );
           get().refreshMissingWorktreePaths([]);
         }
         return { clientActionId: sentClientActionId, messageId };

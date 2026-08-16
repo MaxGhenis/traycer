@@ -45,6 +45,7 @@ import {
 } from "@/components/home/host-workspace-selector/host-workspace-controls-scope";
 import { preserveWhenNestedOverlay } from "@/components/home/host-workspace-selector/preserve-when-nested-overlay";
 import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
+import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import { useProvidersListForClient } from "@/hooks/providers/use-providers-list-query";
 import type { ForkWorkspaceSeed } from "@/lib/worktree/fork-workspace-seed";
 import type { TerminalAgentWorktreeCreateInput } from "@/components/epic-canvas/hooks/use-terminal-agent-worktree-gate";
@@ -296,9 +297,17 @@ function TerminalAgentSubMenuContent(props: TerminalAgentSubMenuContentProps) {
   // create on.
   const launchHostId = hostScope.kind === "fixed" ? hostScope.hostId : null;
   const launchHostClient = useHostClientForHostId(launchHostId);
+  // The per-host memory key: the fixed host when a row pins one, else the
+  // app-wide active host. Unlike tab-bound composers, this launcher's
+  // null-scope target IS the app-wide default by design (the active-scope
+  // host list rebinds it), so following the reactive active id here matches
+  // exactly what the launch will run on.
+  const reactiveActiveHostId = useReactiveActiveHostId();
+  const memoryHostId = launchHostId ?? reactiveActiveHostId;
   // No seed here - nothing to validate.
   const toolbarStore = useComposerToolbarStore(null, { kind: "none" }, null, {
     hostClient: launchHostClient,
+    hostId: memoryHostId,
     tuiOnly: true,
   });
   const selection = useStore(toolbarStore, (state) => state.selection);
@@ -330,8 +339,10 @@ function TerminalAgentSubMenuContent(props: TerminalAgentSubMenuContentProps) {
   // `undefined`, falling back to the shared epic-scoped launcher slot.
   const overrideStagingKey = props.terminalAgentStagingKey;
   const stagingKey = useMemo(
-    () => overrideStagingKey ?? pendingTerminalAgentStagingKey(epicId),
-    [overrideStagingKey, epicId],
+    () =>
+      overrideStagingKey ??
+      pendingTerminalAgentStagingKey(memoryHostId, epicId),
+    [overrideStagingKey, memoryHostId, epicId],
   );
   const launchDisabled = terminalAgentLaunchDisabled({
     modelSlug: selection.modelSlug,
@@ -346,6 +357,7 @@ function TerminalAgentSubMenuContent(props: TerminalAgentSubMenuContentProps) {
       stagingKey,
       seedIntent: workspaceSeed?.intent ?? null,
       fallbackWorkspace: workspaceSeed?.workspace ?? null,
+      hostId: memoryHostId,
     });
     onAddTerminalAgent({
       harnessId: selectedHarnessId,
@@ -363,6 +375,7 @@ function TerminalAgentSubMenuContent(props: TerminalAgentSubMenuContentProps) {
     argsDraft,
     argsTouched,
     launchDisabled,
+    memoryHostId,
     onAddTerminalAgent,
     reasoning,
     selection.modelSlug,

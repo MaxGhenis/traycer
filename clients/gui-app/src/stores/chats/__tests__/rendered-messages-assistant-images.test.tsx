@@ -145,6 +145,7 @@ function toolCallWithImages(args: {
     ...toolCallInputFields("image_generation", { prompt: "a cat" }),
     error: null,
     agentMessageSend: null,
+    managedCommand: null,
     progress: null,
     backgroundOutput: null,
     backgroundTask: false,
