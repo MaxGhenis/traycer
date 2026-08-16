@@ -107,6 +107,7 @@ export interface RegionCandidate {
   readonly ancestorIds: readonly string[];
   readonly bounds: AnnotationCssRect;
   readonly visible: boolean;
+  readonly alreadyMarked: boolean;
 }
 
 export interface RegionResolveResult {
@@ -242,8 +243,9 @@ export function sortSmallestFirst(
 }
 
 /**
- * Visible candidates -> containment -> collapse complete descendant
- * sets to parent -> smallest-first -> bundle-wide element cap.
+ * Visible candidates -> containment -> include already-marked
+ * representatives -> collapse complete descendant sets to parent ->
+ * drop already-marked -> smallest-first -> bundle-wide element cap.
  */
 export function resolveRegionSelection(input: {
   readonly candidates: readonly RegionCandidate[];
@@ -257,8 +259,13 @@ export function resolveRegionSelection(input: {
   const contained = visible.filter((candidate) =>
     isContainedInRegion(candidate.bounds, input.region),
   );
-  const collapsed = collapseCompleteDescendantSets(contained);
-  const ordered = sortSmallestFirst(collapsed);
+  const alreadyMarked = input.candidates.filter(
+    (candidate) => candidate.alreadyMarked,
+  );
+  const forCollapse = mergeCandidatesById(contained, alreadyMarked);
+  const collapsed = collapseCompleteDescendantSets(forCollapse);
+  const fresh = collapsed.filter((candidate) => !candidate.alreadyMarked);
+  const ordered = sortSmallestFirst(fresh);
   if (ordered.length === 0) {
     return { selected: [], refusedCount: 0, reason: "empty" };
   }
@@ -270,6 +277,20 @@ export function resolveRegionSelection(input: {
     refusedCount,
     reason: refusedCount > 0 ? "capped" : "ok",
   };
+}
+
+function mergeCandidatesById(
+  primary: readonly RegionCandidate[],
+  extra: readonly RegionCandidate[],
+): RegionCandidate[] {
+  const byId = new Map<string, RegionCandidate>();
+  for (const candidate of primary) {
+    byId.set(candidate.id, candidate);
+  }
+  for (const candidate of extra) {
+    if (!byId.has(candidate.id)) byId.set(candidate.id, candidate);
+  }
+  return [...byId.values()];
 }
 
 export function countElementMarks(marks: readonly OverlayMarkModel[]): number {
@@ -408,10 +429,22 @@ export function validateElementMark(input: {
 
 export function serializedCaptureBytes(payload: unknown): number {
   try {
-    return JSON.stringify(payload).length;
+    return new TextEncoder().encode(JSON.stringify(payload)).byteLength;
   } catch {
     return Number.POSITIVE_INFINITY;
   }
+}
+
+export function canMutateAnnotation(attachPending: boolean): boolean {
+  return !attachPending;
+}
+
+export function canRequestAttach(input: {
+  readonly attachPending: boolean;
+  readonly markCount: number;
+}): boolean {
+  if (input.attachPending) return false;
+  return input.markCount > 0;
 }
 
 export function applyByteBudget<T>(input: {

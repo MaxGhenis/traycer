@@ -6,6 +6,8 @@ import {
   ANNOTATION_TINY_DRAG_PX,
   applyByteBudget,
   canAddElementMark,
+  canMutateAnnotation,
+  canRequestAttach,
   collapseCompleteDescendantSets,
   countElementMarks,
   eraseNewestAtPoint,
@@ -53,7 +55,17 @@ function candidate(input: {
     ancestorIds: input.ancestorIds,
     bounds: input.bounds,
     visible: input.visible,
+    alreadyMarked: false,
   };
+}
+
+function marked(input: {
+  readonly id: string;
+  readonly ancestorIds: readonly string[];
+  readonly bounds: AnnotationCssRect;
+  readonly visible: boolean;
+}): RegionCandidate {
+  return { ...candidate(input), alreadyMarked: true };
 }
 
 function mark(input: {
@@ -575,6 +587,79 @@ describe("resolveRegionSelection", () => {
       reason: "capped",
     });
   });
+
+  it("does not let already-marked elements eat the last cap slot on an overlapping second drag", () => {
+    const already: RegionCandidate[] = [];
+    for (let index = 0; index < 29; index += 1) {
+      already.push(
+        marked({
+          id: `have-${String(index).padStart(2, "0")}`,
+          ancestorIds: [],
+          bounds: rect(index * 4, 0, 8, 8),
+          visible: true,
+        }),
+      );
+    }
+    const freshA = candidate({
+      id: "fresh-a",
+      ancestorIds: [],
+      bounds: rect(0, 40, 8, 8),
+      visible: true,
+    });
+    const freshB = candidate({
+      id: "fresh-b",
+      ancestorIds: [],
+      bounds: rect(20, 40, 8, 8),
+      visible: true,
+    });
+    const result = resolveRegionSelection({
+      candidates: [...already, freshA, freshB],
+      region: covering,
+      existingElementCount: 29,
+      elementCap: ANNOTATION_BUNDLE_ELEMENT_CAP,
+    });
+    expect(result.reason).toBe("capped");
+    expect(result.selected.map((entry) => entry.id)).toEqual(["fresh-a"]);
+    expect(result.refusedCount).toBe(1);
+  });
+
+  it("reports empty, not capped, when a second drag only hits already-marked elements", () => {
+    const already = marked({
+      id: "have",
+      ancestorIds: [],
+      bounds: rect(0, 0, 40, 40),
+      visible: true,
+    });
+    const result = resolveRegionSelection({
+      candidates: [already],
+      region: covering,
+      existingElementCount: 29,
+      elementCap: ANNOTATION_BUNDLE_ELEMENT_CAP,
+    });
+    expect(result).toEqual({ selected: [], refusedCount: 0, reason: "empty" });
+  });
+
+  it("collapses a new child into an already-marked parent before applying the cap", () => {
+    const parent = marked({
+      id: "card",
+      ancestorIds: [],
+      bounds: rect(0, 0, 200, 200),
+      visible: true,
+    });
+    const child = candidate({
+      id: "frag",
+      ancestorIds: ["card"],
+      bounds: rect(8, 8, 16, 16),
+      visible: true,
+    });
+    const result = resolveRegionSelection({
+      candidates: [parent, child],
+      region: covering,
+      existingElementCount: 29,
+      elementCap: ANNOTATION_BUNDLE_ELEMENT_CAP,
+    });
+    expect(result).toEqual({ selected: [], refusedCount: 0, reason: "empty" });
+  });
 });
 
 describe("marks stack", () => {
@@ -872,6 +957,42 @@ describe("applyByteBudget", () => {
     });
     expect(result.kept).toEqual([]);
     expect(result.refusedCount).toBe(1);
+  });
+
+  it("counts UTF-8 bytes, not UTF-16 code units, at the budget boundary", () => {
+    const euro = "€";
+    expect(euro.length).toBe(1);
+    expect(new TextEncoder().encode(euro).byteLength).toBe(3);
+    const payload = { text: euro.repeat(100) };
+    const units = JSON.stringify(payload).length;
+    const bytes = serializedCaptureBytes(payload);
+    expect(bytes).toBeGreaterThan(units);
+    const result = applyByteBudget({
+      items: [payload],
+      existingBytes: ANNOTATION_BUNDLE_BYTE_BUDGET - units - 1,
+      budget: ANNOTATION_BUNDLE_BYTE_BUDGET,
+    });
+    expect(result.kept).toEqual([]);
+    expect(result.refusedCount).toBe(1);
+  });
+});
+
+describe("attach pending guards", () => {
+  it("rejects a second attach while one is already pending", () => {
+    expect(
+      canRequestAttach({ attachPending: false, markCount: 2 }),
+    ).toBe(true);
+    expect(
+      canRequestAttach({ attachPending: true, markCount: 2 }),
+    ).toBe(false);
+    expect(
+      canRequestAttach({ attachPending: false, markCount: 0 }),
+    ).toBe(false);
+  });
+
+  it("blocks mark mutations while capture is deferred", () => {
+    expect(canMutateAnnotation(false)).toBe(true);
+    expect(canMutateAnnotation(true)).toBe(false);
   });
 });
 

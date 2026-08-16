@@ -10,13 +10,19 @@ import {
   ANNOTATION_STROKE_HALO_SIZE_PX,
   ANNOTATION_STROKE_SIZE_PX,
   canAddElementMark,
+  canMutateAnnotation,
+  canRequestAttach,
   countElementMarks,
   eraseNewestAtPoint,
+  isScrollLockArmed,
   isTinyDrag,
+  modeFromHotkey,
   normalizeDragRect,
   placeCommentBox,
   resolveRegionSelection,
+  shouldHandleModeHotkey,
   shouldSubmitCommentKey,
+  shouldSwallowScrollInput,
   strokeBoundsFromPoints,
   svgPathFromPolygon,
   toMarkSnapshot,
@@ -111,7 +117,6 @@ type GuestWindow = Window & {
   __traycerAnnotationHideChromeForCapture?: (() => void) | undefined;
   __traycerAnnotationResetAfterAttach?: (() => void) | undefined;
   __traycerAnnotationCaptureFailed?: (() => void) | undefined;
-  __traycerAnnotationSetMarkCount?: ((count: number) => void) | undefined;
   __traycerAnnotationSetTargetChatLabel?: ((label: string) => void) | undefined;
 };
 
@@ -264,6 +269,7 @@ function boot(): boolean {
   let targetChatLabel = "";
   let refusedCount = 0;
   let attachError = "";
+  let attachPending = false;
   let idSeq = 0;
   const liveMarks: LiveMark[] = [];
   const elementKeys = new WeakMap<Element, string>();
@@ -312,6 +318,7 @@ function boot(): boolean {
   }
 
   function setMode(next: string): void {
+    if (!canMutateAnnotation(attachPending)) return;
     let found: (typeof MODES)[number] | null = null;
     for (const name of MODES) {
       if (name === next) found = name;
@@ -367,21 +374,6 @@ function boot(): boolean {
       }
     }
     return false;
-  }
-
-  function isNavKey(key: string): boolean {
-    return (
-      key === "ArrowUp" ||
-      key === "ArrowDown" ||
-      key === "ArrowLeft" ||
-      key === "ArrowRight" ||
-      key === "PageUp" ||
-      key === "PageDown" ||
-      key === "Home" ||
-      key === "End" ||
-      key === " " ||
-      key === "Spacebar"
-    );
   }
 
   function swallow(e: Event): void {
@@ -705,6 +697,10 @@ function boot(): boolean {
       byId.set(id, el);
       return id;
     };
+    const markedEls = new Set<Element>();
+    for (const entry of liveMarks) {
+      if (entry.element !== null) markedEls.add(entry.element);
+    }
     const out: RegionCandidate[] = [];
     for (let i = 0; i < nodes.length; i += 1) {
       const el = nodes[i];
@@ -727,6 +723,7 @@ function boot(): boolean {
         ancestorIds,
         bounds: cssRectOf(el),
         visible: elementIsVisible(el),
+        alreadyMarked: markedEls.has(el),
       });
     }
     return { candidates: out, byId };
@@ -839,6 +836,7 @@ function boot(): boolean {
   }
 
   function addElementMark(el: Element, allowToggle: boolean): boolean {
+    if (!canMutateAnnotation(attachPending)) return false;
     const key = keyOf(el);
     const existing = findElementMark(key);
     if (existing !== null) {
@@ -938,6 +936,7 @@ function boot(): boolean {
   }
 
   function eraseAt(x: number, y: number): void {
+    if (!canMutateAnnotation(attachPending)) return;
     const hit = eraseNewestAtPoint(
       liveMarks.map((entry) => {
         if (entry.element && entry.element.isConnected) {
@@ -960,6 +959,7 @@ function boot(): boolean {
   }
 
   function applyRegion(rect: OverlayMarkModel["bounds"]): void {
+    if (!canMutateAnnotation(attachPending)) return;
     const scan = collectRegionScan();
     const resolved = resolveRegionSelection({
       candidates: scan.candidates,
@@ -995,6 +995,13 @@ function boot(): boolean {
     pill.style.visibility = "";
     const hasMarks = liveMarks.length > 0;
     editor.style.display = hasMarks ? "block" : "none";
+    attachBtn.disabled = attachPending;
+    comment.disabled = attachPending;
+    for (const name of MODES) {
+      const button = buttons[name];
+      if (button === undefined) continue;
+      button.disabled = attachPending;
+    }
     if (targetChatLabel) {
       targetLine.style.display = "block";
       targetLine.textContent = "→ attaching to: " + targetChatLabel;
@@ -1047,6 +1054,7 @@ function boot(): boolean {
 
   function resetAfterAttach(): void {
     chromeHidden = false;
+    attachPending = false;
     host.removeAttribute("data-traycer-capture-failed");
     for (const entry of liveMarks) destroyMark(entry);
     liveMarks.length = 0;
@@ -1063,6 +1071,7 @@ function boot(): boolean {
 
   function captureFailed(): void {
     chromeHidden = false;
+    attachPending = false;
     attachError = "Couldn't capture the annotated area. Try attach again.";
     host.setAttribute("data-traycer-capture-failed", "true");
     layoutChrome();
@@ -1136,7 +1145,14 @@ function boot(): boolean {
   }
 
   function requestAttach(): void {
-    if (liveMarks.length === 0) return;
+    if (
+      !canRequestAttach({
+        attachPending,
+        markCount: liveMarks.length,
+      })
+    ) {
+      return;
+    }
     attachError = "";
     if (!validateAll()) {
       attachError = "Some marks need re-marking before attach.";
@@ -1165,6 +1181,8 @@ function boot(): boolean {
     }
     const union = unionRects(snapshots.map((mark) => mark.bounds));
     if (union === null) return;
+    attachPending = true;
+    layoutChrome();
     emit({
       type: "attachRequested",
       payload: {
@@ -1174,7 +1192,6 @@ function boot(): boolean {
         unionRect: union,
       },
     });
-    layoutChrome();
   }
 
   function onPagePointer(e: Event): void {
@@ -1183,17 +1200,39 @@ function boot(): boolean {
   }
 
   function onWheel(e: Event): void {
-    if (markCount <= 0) return;
+    if (
+      !shouldSwallowScrollInput({
+        armed: isScrollLockArmed(markCount),
+        kind: "wheel",
+        key: null,
+        focusInOverlayText: false,
+      })
+    ) {
+      return;
+    }
     swallow(e);
   }
 
   function onTouchMove(e: Event): void {
-    if (markCount <= 0) return;
+    if (
+      !shouldSwallowScrollInput({
+        armed: isScrollLockArmed(markCount),
+        kind: "touchmove",
+        key: null,
+        focusInOverlayText: false,
+      })
+    ) {
+      return;
+    }
     swallow(e);
   }
 
   function onPointerMove(e: PointerEvent): void {
     if (eventTouchesOverlay(e)) {
+      hideHover();
+      return;
+    }
+    if (attachPending) {
       hideHover();
       return;
     }
@@ -1220,6 +1259,7 @@ function boot(): boolean {
     if (eventTouchesOverlay(e)) return;
     swallow(e);
     if (e.button !== 0) return;
+    if (!canMutateAnnotation(attachPending)) return;
     clearInvalid();
     attachError = "";
     if (mode === "select") {
@@ -1239,6 +1279,12 @@ function boot(): boolean {
     if (eventTouchesOverlay(e) && dragStart === null && !drawing) return;
     if (dragStart === null && !drawing) return;
     swallow(e);
+    if (!canMutateAnnotation(attachPending)) {
+      clearDraftStroke();
+      dragStart = null;
+      marquee.style.display = "none";
+      return;
+    }
     if (mode === "region" && dragStart) {
       const rect = normalizeDragRect(dragStart.x, dragStart.y, e.clientX, e.clientY);
       marquee.style.display = "none";
@@ -1256,35 +1302,42 @@ function boot(): boolean {
       finishCancelled();
       return;
     }
-    if (isOverlayTextTarget(e)) {
+    const focusInOverlayText = isOverlayTextTarget(e);
+    if (
+      shouldSwallowScrollInput({
+        armed: isScrollLockArmed(markCount),
+        kind: "keydown",
+        key: e.key,
+        focusInOverlayText,
+      })
+    ) {
+      swallow(e);
+    }
+    if (focusInOverlayText) {
       if (shouldSubmitCommentKey(e)) {
         swallow(e);
         requestAttach();
       }
       return;
     }
-    if (markCount > 0 && isNavKey(e.key)) {
-      swallow(e);
-    }
     if (e.key === "Enter" && liveMarks.length > 0) {
       swallow(e);
       requestAttach();
       return;
     }
-    if (e.altKey || e.ctrlKey || e.metaKey) return;
-    const k = String(e.key || "").toLowerCase();
-    if (k === "v") {
+    if (
+      shouldHandleModeHotkey({
+        key: e.key,
+        altKey: e.altKey,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        focusInOverlayText,
+      })
+    ) {
+      const next = modeFromHotkey(e.key);
+      if (next === null) return;
       swallow(e);
-      setMode("select");
-    } else if (k === "r") {
-      swallow(e);
-      setMode("region");
-    } else if (k === "d") {
-      swallow(e);
-      setMode("draw");
-    } else if (k === "e") {
-      swallow(e);
-      setMode("erase");
+      setMode(next);
     }
   }
 
@@ -1339,11 +1392,6 @@ function boot(): boolean {
       W.__traycerAnnotationCaptureFailed = undefined;
     }
     try {
-      delete W.__traycerAnnotationSetMarkCount;
-    } catch {
-      W.__traycerAnnotationSetMarkCount = undefined;
-    }
-    try {
       delete W.__traycerAnnotationSetTargetChatLabel;
     } catch {
       W.__traycerAnnotationSetTargetChatLabel = undefined;
@@ -1365,7 +1413,6 @@ function boot(): boolean {
   W.__traycerAnnotationHideChromeForCapture = hideChromeForCapture;
   W.__traycerAnnotationResetAfterAttach = resetAfterAttach;
   W.__traycerAnnotationCaptureFailed = captureFailed;
-  W.__traycerAnnotationSetMarkCount = setMarkCount;
   W.__traycerAnnotationSetTargetChatLabel = setTargetChatLabel;
   W.addEventListener("mousedown", onPagePointer, true);
   W.addEventListener("mouseup", onPagePointer, true);
