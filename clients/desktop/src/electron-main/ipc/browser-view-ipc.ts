@@ -65,6 +65,7 @@ import {
 } from "../browser-view/browser-storage-state";
 import { trustBrowserCertificate } from "../app/cert-trust";
 import { log } from "../app/logger";
+import type { BrowserAnnotationSetTargetChatLabelInput } from "../../ipc-contracts/browser-annotation-types";
 import type { RunnerIpcBridge } from "./runner-ipc-bridge";
 
 const BROWSER_VIEW_RELEASE_GRACE_MS = 500;
@@ -473,22 +474,6 @@ export function registerBrowserViewIpc(
   );
 
   bridge.handleInvoke(
-    RunnerHostInvoke.browserViewPickElement,
-    (event, payload) => {
-      const windowId = readSenderWindowId(bridge, event);
-      return manager.pickElement(windowId, parseTileKey(payload));
-    },
-  );
-
-  bridge.handleInvoke(
-    RunnerHostInvoke.browserViewCancelElementPick,
-    (event, payload) => {
-      const windowId = readSenderWindowId(bridge, event);
-      manager.cancelElementPick(windowId, parseTileKey(payload));
-    },
-  );
-
-  bridge.handleInvoke(
     RunnerHostInvoke.browserViewStartAnnotation,
     (event, payload) => {
       const windowId = readSenderWindowId(bridge, event);
@@ -501,6 +486,17 @@ export function registerBrowserViewIpc(
     (event, payload) => {
       const windowId = readSenderWindowId(bridge, event);
       manager.cancelAnnotation(windowId, parseTileKey(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.browserViewSetAnnotationTargetChatLabel,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.setAnnotationTargetChatLabel(
+        windowId,
+        parseAnnotationTargetChatLabel(payload),
+      );
     },
   );
 
@@ -656,6 +652,17 @@ function parseTileKey(value: unknown): BrowserViewTileKey {
     paneId: readString(record.paneId, "paneId"),
     tileInstanceId: readString(record.tileInstanceId, "tileInstanceId"),
     pageSessionId: readString(record.pageSessionId, "pageSessionId"),
+  };
+}
+
+function parseAnnotationTargetChatLabel(
+  value: unknown,
+): BrowserAnnotationSetTargetChatLabelInput {
+  const record = assertRecord(value, "Annotation target-chat label payload");
+  return {
+    ...parseTileKey(record),
+    label: readString(record.label, "label"),
+    canAttach: readBoolean(record.canAttach, "canAttach"),
   };
 }
 

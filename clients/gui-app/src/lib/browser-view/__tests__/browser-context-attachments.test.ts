@@ -4,7 +4,6 @@ import {
   browserContextAttachmentToWire,
   createBrowserConsoleAttachment,
   createBrowserDebugContextAttachment,
-  createBrowserElementAttachment,
   createBrowserNetworkAttachment,
   createBrowserScreenshotAttachment,
   mintBrowserObserveGrant,
@@ -19,7 +18,6 @@ import {
 import type {
   BrowserViewCapturePageResult,
   BrowserViewConsoleEntry,
-  BrowserViewElementCapture,
   BrowserViewNetworkEntry,
   BrowserViewTileKey,
 } from "../desktop-browser-view";
@@ -202,79 +200,6 @@ describe("browser context attachment payloads", () => {
   });
 });
 
-const ELEMENT: BrowserViewElementCapture = {
-  selector: "main > button#submit",
-  tagName: "button",
-  elementId: "submit",
-  classNames: ["btn", "btn-primary"],
-  attributes: [
-    { name: "id", value: "submit" },
-    { name: "type", value: "submit" },
-  ],
-  outerHtml: '<button id="submit" type="submit">Save</button>',
-  outerHtmlTruncated: false,
-  textPreview: "Save",
-  ariaRole: "button",
-  accessibleName: "Save",
-  boundingBox: {
-    x: 12,
-    y: 40,
-    width: 80,
-    height: 32,
-    top: 40,
-    right: 92,
-    bottom: 72,
-    left: 12,
-  },
-  computedStyles: [
-    { property: "display", value: "inline-flex" },
-    { property: "color", value: "rgb(255, 255, 255)" },
-  ],
-};
-
-describe("browser element attachment", () => {
-  it("packages a picked element with an explicit observe grant request", () => {
-    const payload = createBrowserElementAttachment({
-      tile: TILE,
-      pageUrl: "http://localhost:3000/page",
-      element: ELEMENT,
-    });
-
-    expect(payload).toMatchObject({
-      schemaVersion: 1,
-      kind: "browser-element",
-      observeGrantRequest: {
-        kind: "visible-browser-observe-grant-request",
-        chatId: null,
-        tileInstanceId: "tile",
-        origin: "http://localhost:3000",
-        dataLevel: "element",
-        sourceAction: "browser-element-send",
-      },
-      element: ELEMENT,
-    });
-    expect(payload.composerText).toContain("Selector: main > button#submit");
-    expect(payload.composerText).toContain("Role: button");
-    expect(payload.composerText).toContain("display: inline-flex");
-    expect(payload.composerText).toContain("Save");
-    // Ticket 29 (A2): no Page: line - same sweep as screenshotComposerText /
-    // ticket 22's debugContextComposerText. Selector/role/styles stay.
-    expect(payload.composerText).not.toMatch(/^Page:/m);
-    expect(payload.composerText).not.toContain(
-      "Page: http://localhost:3000/page",
-    );
-  });
-
-  it("marks truncated outer HTML in the composer text", () => {
-    const payload = createBrowserElementAttachment({
-      tile: TILE,
-      pageUrl: "http://localhost:3000/page",
-      element: { ...ELEMENT, outerHtmlTruncated: true },
-    });
-    expect(payload.composerText).toContain("… (truncated)");
-  });
-});
-
 describe("browser debug context attachment (ticket 22)", () => {
   it("omits Page/Title/Screenshot lines from composerText while keeping Level, Content hash, and error lines", () => {
     const payload = createBrowserDebugContextAttachment({
@@ -402,10 +327,10 @@ describe("browserContextAttachmentToWire (ticket 01)", () => {
       tabId: "durable-tab-1",
     });
 
-    const payload = createBrowserElementAttachment({
+    const payload = createBrowserScreenshotAttachment({
       tile: TILE,
       pageUrl: "http://localhost:3000/page",
-      element: ELEMENT,
+      capture: CAPTURE,
     });
     const wire = browserContextAttachmentToWire(payload);
     expect(wire.tabId).toBe("durable-tab-1");

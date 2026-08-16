@@ -116,7 +116,6 @@ import type {
   BrowserViewDownloadCancel,
   BrowserViewDownloadChange,
   BrowserViewDurableTabRegistration,
-  BrowserViewElementPickResult,
   BrowserViewFindChange,
   BrowserViewFindRequest,
   BrowserViewFindStop,
@@ -138,6 +137,7 @@ import type {
 import type {
   BrowserAnnotationAttachedIpcEvent,
   BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationSetTargetChatLabelInput,
   BrowserAnnotationStartResult,
 } from "../ipc-contracts/browser-annotation-types";
 import type {
@@ -501,12 +501,13 @@ export interface DesktopBrowserViewBridge {
     input: BrowserViewTileKey,
   ): Promise<BrowserViewDebugSnapshotChange>;
   clearDebugEvents(input: BrowserViewTileKey): Promise<void>;
-  pickElement(input: BrowserViewTileKey): Promise<BrowserViewElementPickResult>;
-  cancelElementPick(input: BrowserViewTileKey): Promise<void>;
   startAnnotation(
     input: BrowserViewTileKey,
   ): Promise<BrowserAnnotationStartResult>;
   cancelAnnotation(input: BrowserViewTileKey): Promise<void>;
+  setAnnotationTargetChatLabel(
+    input: BrowserAnnotationSetTargetChatLabelInput,
+  ): Promise<void>;
   openDevTools(input: BrowserViewTileKey): Promise<void>;
   occludeForOverlay(
     input: BrowserViewOverlayOcclusion,

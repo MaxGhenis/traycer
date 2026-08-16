@@ -67,12 +67,15 @@ describe("buildAnnotationOverlayBootstrap", () => {
       "__traycerAnnotationCaptureFailed",
     );
     expect(ANNOTATION_CAPTURE_FAILED_EXPRESSION).not.toContain("return false");
-    expect(buildAnnotationSetTargetChatLabelExpression("fix-billing")).toContain(
-      "__traycerAnnotationSetTargetChatLabel",
-    );
-    expect(buildAnnotationSetTargetChatLabelExpression("fix-billing")).toContain(
-      "fix-billing",
-    );
+    expect(
+      buildAnnotationSetTargetChatLabelExpression("fix-billing", true),
+    ).toContain("__traycerAnnotationSetTargetChatLabel");
+    expect(
+      buildAnnotationSetTargetChatLabelExpression("fix-billing", true),
+    ).toContain("fix-billing");
+    expect(
+      buildAnnotationSetTargetChatLabelExpression("fix-billing", false),
+    ).toContain(",false");
   });
 
   it("contains the comment placeholder, Attach, and the target-chat command", () => {
@@ -97,6 +100,7 @@ describe("buildAnnotationOverlayBootstrap", () => {
   it("encodes the target-chat label as a JSON string argument", () => {
     const expression = buildAnnotationSetTargetChatLabelExpression(
       'say </script> "hi"',
+      true,
     );
     expect(expression).toContain("__traycerAnnotationSetTargetChatLabel");
     expect(expression).toContain("\\u003c");

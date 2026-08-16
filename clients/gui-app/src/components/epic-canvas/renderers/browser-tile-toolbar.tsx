@@ -5,15 +5,18 @@ import {
   Bug,
   Info,
   Monitor,
+  PenLine,
   RotateCw,
   Smartphone,
   Tablet,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { BrowserElementPickerToggle } from "@/components/epic-canvas/renderers/browser-element-picker";
 import type { TileController } from "@/components/epic-canvas/renderers/tile-controller";
+import type { BrowserAnnotationSessionController } from "@/hooks/browser/use-browser-annotation-session";
 import { Button } from "@/components/ui/button";
+import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
+import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -76,7 +79,7 @@ export function BrowserTileToolbar(props: {
   const showZoom = capabilities.zoom;
   const showTrailing =
     capabilities.viewportPreset ||
-    capabilities.elementPicker ||
+    capabilities.annotate ||
     capabilities.devtools;
   if (!showNav && !showAddress && !showZoom && !showTrailing) return null;
 
@@ -181,7 +184,7 @@ function BrowserTileToolbarZoom(props: {
         variant="ghost"
         size="icon-sm"
         aria-label="Zoom out"
-        disabled={controller.disabled}
+        disabled={controller.disabled || controller.zoomLocked}
         onClick={controller.onZoomOut}
       >
         <ZoomOut />
@@ -190,7 +193,7 @@ function BrowserTileToolbarZoom(props: {
         type="button"
         aria-label="Reset zoom"
         className="w-12 rounded-sm px-1 py-1 text-center text-ui-xs tabular-nums text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-        disabled={controller.disabled}
+        disabled={controller.disabled || controller.zoomLocked}
         onClick={controller.onResetZoom}
       >
         {controller.zoomPercent}%
@@ -200,7 +203,7 @@ function BrowserTileToolbarZoom(props: {
         variant="ghost"
         size="icon-sm"
         aria-label="Zoom in"
-        disabled={controller.disabled}
+        disabled={controller.disabled || controller.zoomLocked}
         onClick={controller.onZoomIn}
       >
         <ZoomIn />
@@ -223,8 +226,8 @@ function BrowserTileToolbarTrailing(props: {
           onChange={controller.onViewportPresetChange}
         />
       ) : null}
-      {capabilities.elementPicker && controller.elementPicker !== null ? (
-        <BrowserElementPickerToggle controller={controller.elementPicker} />
+      {capabilities.annotate && controller.annotation !== null ? (
+        <BrowserAnnotateToggle controller={controller.annotation} />
       ) : null}
       {capabilities.devtools ? (
         <Button
@@ -241,6 +244,33 @@ function BrowserTileToolbarTrailing(props: {
         </Button>
       ) : null}
     </div>
+  );
+}
+
+function BrowserAnnotateToggle(props: {
+  readonly controller: BrowserAnnotationSessionController;
+}) {
+  const controller = props.controller;
+  return (
+    <TooltipWrapper
+      label={controller.isActive ? "Stop annotating" : "Annotate page"}
+      side="top"
+      sideOffset={6}
+      align="center"
+    >
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Annotate page"
+        aria-pressed={controller.isActive}
+        disabled={!controller.canStart && !controller.isActive}
+        onClick={controller.toggle}
+        className={cn(controller.isActive && "bg-primary/15 text-primary")}
+      >
+        <PenLine />
+      </Button>
+    </TooltipWrapper>
   );
 }
 

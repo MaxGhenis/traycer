@@ -309,10 +309,10 @@ export const RunnerHostInvoke = {
   browserViewCookieCryptoStateGet:
     "runnerHost:browserView:cookieCryptoState:get",
   browserViewLabsStateSet: "runnerHost:browserView:labsState:set",
-  browserViewPickElement: "runnerHost:browserView:pickElement",
-  browserViewCancelElementPick: "runnerHost:browserView:cancelElementPick",
   browserViewStartAnnotation: "runnerHost:browserView:annotation:start",
   browserViewCancelAnnotation: "runnerHost:browserView:annotation:cancel",
+  browserViewSetAnnotationTargetChatLabel:
+    "runnerHost:browserView:annotation:setTargetChatLabel",
   browserViewOpenDevTools: "runnerHost:browserView:openDevTools",
   // Agent-owned browser tile (ticket 02): a separate WebContentsView pool in
   // `AGENT_BROWSER_VIEW_PARTITION`, deliberately not sharing the full

@@ -5,9 +5,6 @@ import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
 import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
-import {
-  BrowserElementPickerResultPanel,
-} from "@/components/epic-canvas/renderers/browser-element-picker";
 import { BrowserTileFindAdapterBridge } from "@/components/epic-canvas/renderers/browser-tile-find-adapter";
 import {
   BrowserTileCertificateInterstitial,
@@ -19,7 +16,7 @@ import {
   isolatedTileChromeCapabilitiesFromSurface,
   PRIMARY_TILE_CHROME_CAPABILITIES,
 } from "@/components/epic-canvas/renderers/tile-controller";
-import { useBrowserElementPicker } from "@/components/epic-canvas/renderers/use-browser-element-picker";
+import { useBrowserAnnotationSession } from "@/hooks/browser/use-browser-annotation-session";
 import { useBrowserViewSnapshot } from "@/components/epic-canvas/renderers/use-browser-view-snapshot";
 import { useCloseCanvasTileWithNestedFocus } from "@/components/epic-canvas/renderers/use-close-canvas-tile-with-nested-focus";
 import { useBrowserViewBoundsBridge } from "@/components/epic-canvas/renderers/use-browser-view-bounds-bridge";
@@ -31,10 +28,12 @@ import {
   probeAgentBrowserViewOptionalSurface,
   resolveDesktopAgentBrowserViewBridge,
   type AgentBrowserViewTileKey,
+  type DesktopAgentBrowserViewBridge,
 } from "@/lib/browser-view/desktop-agent-browser-view";
 import {
   resolveDesktopBrowserViewBridge,
   type BrowserViewStatus,
+  type DesktopBrowserViewBridge,
 } from "@/lib/browser-view/desktop-browser-view";
 import {
   registerElectronBrowserTab,
@@ -96,21 +95,10 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     props.usePrimaryProfileRuntime,
     props.node.runtime,
   );
-  const primaryBridge = useMemo(
-    () =>
-      usePrimaryProfileRuntime
-        ? resolveDesktopBrowserViewBridge(runnerHost)
-        : null,
-    [runnerHost, usePrimaryProfileRuntime],
+  const { primaryBridge, browserView } = useAgentTileBridges(
+    runnerHost,
+    usePrimaryProfileRuntime,
   );
-  const agentBridge = useMemo(
-    () =>
-      usePrimaryProfileRuntime
-        ? null
-        : resolveDesktopAgentBrowserViewBridge(runnerHost),
-    [runnerHost, usePrimaryProfileRuntime],
-  );
-  const browserView = primaryBridge ?? agentBridge;
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<BrowserViewStatus>("loading");
   const [statusReason, setStatusReason] = useState<string | null>(null);
@@ -151,12 +139,8 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     [props.viewTabId, props.paneId, props.node.instanceId, props.node.id],
   );
 
-  const effectiveStatus: BrowserViewStatus =
-    browserView === null ? "dead" : status;
-  const effectiveStatusReason =
-    browserView === null
-      ? "Native browser views are unavailable."
-      : statusReason;
+  const { status: effectiveStatus, reason: effectiveStatusReason } =
+    effectiveAgentTileStatus(browserView, status, statusReason);
 
   // The host reports only loading/ready/dead - no typed timeout, so a session
   // that never activates sits in "loading" forever with nothing to tell the
@@ -322,11 +306,13 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   });
   const snapshot = useBrowserViewSnapshot(tileKey);
   const cookieCryptoState = useBrowserCookieCryptoState(primaryBridge);
-  const elementPicker = useBrowserElementPicker({
+  const annotation = useBrowserAnnotationSession({
     browserView: primaryBridge,
     tileKey,
     status: effectiveStatus,
-    targetChatId: registrationChatId,
+    viewTabId: props.viewTabId,
+    browserInstanceId: props.node.instanceId,
+    epicId: epicId ?? "",
   });
   const persistViewportPreset = useEpicCanvasStore(
     (state) => state.updateBrowserTileViewportPresetInTab,
@@ -351,7 +337,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     initialUrl: props.node.url,
     visible,
     capabilities: chromeCapabilities,
-    elementPicker,
+    annotation,
     cookieCryptoState,
     statusUrl,
     canGoBack,
@@ -453,9 +439,6 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
           onProceed={chrome.proceedCertificate}
         />
       </div>
-      {chrome.controller !== null ? (
-        <BrowserElementPickerResultPanel controller={elementPicker} />
-      ) : null}
     </div>
   );
 }
@@ -552,6 +535,44 @@ function resolvePrimaryProfileRuntime(
   nodeRuntime: AgentBrowserTileRef["runtime"],
 ): boolean {
   return requested === true || nodeRuntime === "primary";
+}
+
+function effectiveAgentTileStatus(
+  browserView: DesktopBrowserViewBridge | DesktopAgentBrowserViewBridge | null,
+  status: BrowserViewStatus,
+  statusReason: string | null,
+): { readonly status: BrowserViewStatus; readonly reason: string | null } {
+  if (browserView === null) {
+    return { status: "dead", reason: "Native browser views are unavailable." };
+  }
+  return { status, reason: statusReason };
+}
+
+function useAgentTileBridges(
+  runnerHost: IRunnerHost,
+  usePrimaryProfileRuntime: boolean,
+): {
+  readonly primaryBridge: DesktopBrowserViewBridge | null;
+  readonly browserView:
+    | DesktopBrowserViewBridge
+    | DesktopAgentBrowserViewBridge
+    | null;
+} {
+  const primaryBridge = useMemo(
+    () =>
+      usePrimaryProfileRuntime
+        ? resolveDesktopBrowserViewBridge(runnerHost)
+        : null,
+    [runnerHost, usePrimaryProfileRuntime],
+  );
+  const agentBridge = useMemo(
+    () =>
+      usePrimaryProfileRuntime
+        ? null
+        : resolveDesktopAgentBrowserViewBridge(runnerHost),
+    [runnerHost, usePrimaryProfileRuntime],
+  );
+  return { primaryBridge, browserView: primaryBridge ?? agentBridge };
 }
 
 function useAgentTileChromeCapabilities(

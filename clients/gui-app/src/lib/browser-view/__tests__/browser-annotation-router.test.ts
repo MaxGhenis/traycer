@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ANNOTATION_ROUTE_NONE_HINT,
+  overlayTargetFromRoute,
   resolveAnnotationRoute,
   type AnnotationRouteChat,
 } from "@/lib/browser-view/browser-annotation-router";
@@ -252,5 +253,38 @@ describe("resolveAnnotationRoute", () => {
       kind: "none",
       hint: ANNOTATION_ROUTE_NONE_HINT,
     });
+  });
+});
+
+describe("overlayTargetFromRoute", () => {
+  it("hides the sibling label and keeps attach enabled", () => {
+    expect(
+      overlayTargetFromRoute({
+        kind: "chat",
+        chatId: "chat-1",
+        label: "Sibling",
+        source: "sibling",
+      }),
+    ).toEqual({ label: "", canAttach: true });
+  });
+
+  it("names a last-focused chat", () => {
+    expect(
+      overlayTargetFromRoute({
+        kind: "chat",
+        chatId: "chat-2",
+        label: "Billing",
+        source: "last-focused",
+      }),
+    ).toEqual({ label: "Billing", canAttach: true });
+  });
+
+  it("shows the none hint and disables attach", () => {
+    expect(
+      overlayTargetFromRoute({
+        kind: "none",
+        hint: ANNOTATION_ROUTE_NONE_HINT,
+      }),
+    ).toEqual({ label: ANNOTATION_ROUTE_NONE_HINT, canAttach: false });
   });
 });

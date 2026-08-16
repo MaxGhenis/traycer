@@ -52,12 +52,17 @@ export const ANNOTATION_LIMITS = {
   payloadBytes: ANNOTATION_BUNDLE_BYTE_BUDGET,
 } as const;
 
-export function buildAnnotationSetTargetChatLabelExpression(label: string): string {
+export function buildAnnotationSetTargetChatLabelExpression(
+  label: string,
+  canAttach: boolean,
+): string {
   const encoded = JSON.stringify(label).replace(/</g, "\\u003c");
   return (
     "(function(){var fn=globalThis.__traycerAnnotationSetTargetChatLabel;" +
     "if(typeof fn==='function'){try{fn(" +
     encoded +
+    "," +
+    (canAttach ? "true" : "false") +
     ");}catch(e){}}return true;})()"
   );
 }

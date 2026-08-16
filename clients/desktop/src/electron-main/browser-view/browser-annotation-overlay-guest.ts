@@ -117,7 +117,9 @@ type GuestWindow = Window & {
   __traycerAnnotationHideChromeForCapture?: (() => void) | undefined;
   __traycerAnnotationResetAfterAttach?: (() => void) | undefined;
   __traycerAnnotationCaptureFailed?: (() => void) | undefined;
-  __traycerAnnotationSetTargetChatLabel?: ((label: string) => void) | undefined;
+  __traycerAnnotationSetTargetChatLabel?:
+    | ((label: string, canAttach: boolean) => void)
+    | undefined;
 };
 
 interface StrokePoint {
@@ -267,6 +269,7 @@ function boot(): boolean {
   let done = false;
   let chromeHidden = false;
   let targetChatLabel = "";
+  let attachTargetMissing = false;
   let refusedCount = 0;
   let attachError = "";
   let attachPending = false;
@@ -995,7 +998,7 @@ function boot(): boolean {
     pill.style.visibility = "";
     const hasMarks = liveMarks.length > 0;
     editor.style.display = hasMarks ? "block" : "none";
-    attachBtn.disabled = attachPending;
+    attachBtn.disabled = attachPending || attachTargetMissing;
     comment.disabled = attachPending;
     for (const name of MODES) {
       const button = buttons[name];
@@ -1077,8 +1080,9 @@ function boot(): boolean {
     layoutChrome();
   }
 
-  function setTargetChatLabel(label: string): void {
+  function setTargetChatLabel(label: string, canAttach: boolean): void {
     targetChatLabel = typeof label === "string" ? label : "";
+    attachTargetMissing = canAttach === false;
     layoutChrome();
   }
 

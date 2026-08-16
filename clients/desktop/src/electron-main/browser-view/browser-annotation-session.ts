@@ -194,9 +194,9 @@ export class BrowserAnnotationSession {
     );
   }
 
-  setTargetChatLabel(label: string): Promise<void> {
+  setTargetChatLabel(label: string, canAttach: boolean): Promise<void> {
     return this.evaluateCommand(
-      buildAnnotationSetTargetChatLabelExpression(label),
+      buildAnnotationSetTargetChatLabelExpression(label, canAttach),
       false,
       false,
     );

@@ -1,5 +1,5 @@
 import type { SyntheticEvent } from "react";
-import type { BrowserElementPickerController } from "@/components/epic-canvas/renderers/use-browser-element-picker";
+import type { BrowserAnnotationSessionController } from "@/hooks/browser/use-browser-annotation-session";
 import type {
   BrowserCookieCryptoState,
   BrowserViewViewportPresetId,
@@ -19,7 +19,7 @@ export interface TileChromeCapabilities {
   readonly devtools: boolean;
   readonly find: boolean;
   readonly siteInfo: boolean;
-  readonly elementPicker: boolean;
+  readonly annotate: boolean;
 }
 
 export interface TileController {
@@ -32,7 +32,8 @@ export interface TileController {
   readonly viewportPreset: BrowserViewViewportPresetId;
   readonly disabled: boolean;
   readonly cookieCryptoState: BrowserCookieCryptoState | null;
-  readonly elementPicker: BrowserElementPickerController | null;
+  readonly zoomLocked: boolean;
+  readonly annotation: BrowserAnnotationSessionController | null;
   readonly onNavigate: (
     event: SyntheticEvent<HTMLFormElement, SubmitEvent>,
   ) => void;
@@ -58,12 +59,12 @@ export const PRIMARY_TILE_CHROME_CAPABILITIES: TileChromeCapabilities = {
   devtools: true,
   find: true,
   siteInfo: true,
-  elementPicker: true,
+  annotate: true,
 };
 
 /**
  * Isolated agent-partition chrome: nav/zoom/viewport/devtools/find.
- * Site-info and element picker stay primary-only.
+ * Site-info and annotate stay primary-only.
  */
 export const ISOLATED_TILE_CHROME_CAPABILITIES: TileChromeCapabilities = {
   navigate: true,
@@ -75,7 +76,7 @@ export const ISOLATED_TILE_CHROME_CAPABILITIES: TileChromeCapabilities = {
   devtools: true,
   find: true,
   siteInfo: false,
-  elementPicker: false,
+  annotate: false,
 };
 
 export function isolatedTileChromeCapabilitiesFromSurface(surface: {
@@ -102,6 +103,6 @@ export function isolatedTileChromeCapabilitiesFromSurface(surface: {
     find:
       surface.findInPage && surface.stopFindInPage && surface.onFindChange,
     siteInfo: false,
-    elementPicker: false,
+    annotate: false,
   };
 }

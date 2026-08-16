@@ -97,7 +97,7 @@ interface ComposerDraftStore {
    * reliably notify every mounted composer for this `taskId` (split panes,
    * keep-alive tabs): a sibling's `resetEpoch` selector falls back to the same
    * `?? 0` whether the entry never existed or was just removed. The old
-   * `browserContextAttachments` array is left untouched (retires in ticket 06).
+   * `browserContextAttachments` array is left untouched (debug dropdown).
    */
   readonly clearDraft: (taskId: string) => void;
 }

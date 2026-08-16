@@ -39,6 +39,23 @@ export interface ResolveAnnotationRouteInput {
  * chat in this epic, else none (Attach disabled + hint). Replaces tile-local
  * routing for annotations only.
  */
+/**
+ * Overlay comment-box target. Sibling stays unnamed; last-focused shows
+ * the chat title; none shows the hint and disables Attach.
+ */
+export function overlayTargetFromRoute(route: AnnotationRoute): {
+  readonly label: string;
+  readonly canAttach: boolean;
+} {
+  if (route.kind === "none") {
+    return { label: route.hint, canAttach: false };
+  }
+  if (route.source === "sibling") {
+    return { label: "", canAttach: true };
+  }
+  return { label: route.label, canAttach: true };
+}
+
 export function resolveAnnotationRoute(
   input: ResolveAnnotationRouteInput,
 ): AnnotationRoute {

@@ -25,7 +25,6 @@ import type {
   BrowserViewDebugSnapshotData,
   BrowserViewDownloadChange,
   BrowserViewDurableTabRegistration,
-  BrowserViewElementPickResult,
   BrowserViewFindChange,
   BrowserViewFindRequest,
   BrowserViewFindStop,
@@ -52,6 +51,7 @@ import type {
   BrowserAnnotationAttachedIpcEvent,
   BrowserAnnotationEndReason,
   BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationSetTargetChatLabelInput,
   BrowserAnnotationStartResult,
 } from "../../ipc-contracts/browser-annotation-types";
 import type { PipCaptureIpcPayload } from "../../ipc-contracts/pip-capture-types";
@@ -63,7 +63,6 @@ import { browserLocalStorageSeedScript } from "./browser-storage-state";
 import { describeLogError, log } from "../app/logger";
 import { BrowserAnnotationSession } from "./browser-annotation-session";
 import { BrowserDebugSession } from "./browser-debug-session";
-import { BrowserElementPickerSession } from "./browser-element-picker-session";
 import type {
   BrowserViewCertificateErrorChange as BrowserSessionCertificateErrorChange,
   BrowserViewDownloadChange as BrowserSessionDownloadChange,
@@ -383,7 +382,6 @@ interface BrowserViewEntry {
   findState: BrowserViewEntryFindState;
   certificateError: BrowserViewCertificateErrorChange | null;
   debugSession: BrowserDebugSession | null;
-  pickerSession: BrowserElementPickerSession | null;
   annotationSession: BrowserAnnotationSession | null;
   devToolsWindow: BrowserViewDevToolsWindow | null;
   viewportPreset: BrowserViewViewportPresetId;
@@ -938,7 +936,6 @@ export class BrowserViewManager {
       return;
     }
     this.entriesByKey.delete(keyId);
-    this.endPickerSession(entry);
     this.endAnnotationSession(entry, "tile-close");
     entry.desiredVisible = false;
     entry.view.setVisible(false);
@@ -1292,42 +1289,15 @@ export class BrowserViewManager {
     entry.debugSession.clear();
   }
 
-  pickElement(
+  setAnnotationTargetChatLabel(
     windowId: string,
-    input: BrowserViewTileKey,
-  ): Promise<BrowserViewElementPickResult> {
-    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
-    if (entry === undefined) {
-      return Promise.resolve({
-        outcome: "unavailable",
-        reason: "tile-not-found",
-      });
-    }
-    if (entry.status !== "ready") {
-      return Promise.resolve({
-        outcome: "unavailable",
-        reason: "page-not-ready",
-      });
-    }
-    this.endPickerSession(entry);
-    const session = new BrowserElementPickerSession(
-      entry.view.webContents,
-      entry.currentUrl,
-    );
-    entry.pickerSession = session;
-    const result = session.run();
-    void result.finally(() => {
-      if (entry.pickerSession === session) entry.pickerSession = null;
-    });
-    return result;
-  }
-
-  cancelElementPick(windowId: string, input: BrowserViewTileKey): void {
+    input: BrowserAnnotationSetTargetChatLabelInput,
+  ): void {
     const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
     if (entry === undefined) return;
-    // Same terminal path as navigation/close: settle the session and drop the
-    // reference so a renderer toggle-off leaves no active manager picker.
-    this.endPickerSession(entry);
+    const session = entry.annotationSession;
+    if (session === null || !session.isActive()) return;
+    void session.setTargetChatLabel(input.label, input.canAttach);
   }
 
   startAnnotation(
@@ -1534,13 +1504,6 @@ export class BrowserViewManager {
     }
   }
 
-  private endPickerSession(entry: BrowserViewEntry): void {
-    const session = entry.pickerSession;
-    if (session === null) return;
-    entry.pickerSession = null;
-    session.dispose();
-  }
-
   private endAnnotationSession(
     entry: BrowserViewEntry,
     reason: BrowserAnnotationEndReason,
@@ -1691,7 +1654,6 @@ export class BrowserViewManager {
       },
       certificateError: null,
       debugSession: null,
-      pickerSession: null,
       annotationSession: null,
       devToolsWindow: null,
       viewportPreset,
@@ -1779,7 +1741,6 @@ export class BrowserViewManager {
     url: string,
     rejectOnFailure: boolean,
   ): Promise<void> {
-    this.endPickerSession(entry);
     this.endAnnotationSession(entry, "navigation");
     entry.requestedUrl = url;
     entry.status = "loading";
@@ -1809,7 +1770,6 @@ export class BrowserViewManager {
     if (entry.internalNavigation) return;
     const flags = readHostNavigationFlags(args);
     if (!flags.isMainFrame || flags.isInPlace) return;
-    this.endPickerSession(entry);
     this.endAnnotationSession(entry, "navigation");
   }
 
@@ -1844,10 +1804,6 @@ export class BrowserViewManager {
     entry.requestedUrl = url;
     entry.currentTitle = entry.view.webContents.getTitle();
     this.rememberPrimaryProfileOrigin(entry);
-    // Same-document navigation (SPA pushState) keeps status "ready", so the
-    // setStatus choke point never fires. End the picker here too - its captured
-    // pageUrl is now stale and the shield should not survive the route change.
-    this.endPickerSession(entry);
     this.endAnnotationSession(entry, "navigation");
     this.cancelControl(entry, "navigation committed", null);
     this.invalidateOverlaySnapshot(entry, "in-page-navigation");
@@ -1859,7 +1815,6 @@ export class BrowserViewManager {
     args: readonly unknown[],
   ): void {
     const detail = readRenderGoneReason(args);
-    this.endPickerSession(entry);
     this.endAnnotationSession(entry, "crash");
     this.cancelControl(entry, "renderer process gone", null);
     this.invalidateOverlaySnapshot(entry, "render-process-gone");
@@ -2267,10 +2222,8 @@ export class BrowserViewManager {
     if (!this.isEntryCurrent(entry)) return;
     if (entry.status === status && entry.statusReason === reason) return;
     // Any move out of "ready" (reload/back/forward, cert error, renderer gone)
-    // invalidates the isolated world the picker runs in - end it so the awaiting
-    // renderer promise settles instead of hanging over a stale page.
+    // invalidates the isolated world the overlay runs in.
     if (status !== "ready") {
-      this.endPickerSession(entry);
       this.endAnnotationSession(
         entry,
         status === "dead" ? "crash" : "reload",
@@ -2691,8 +2644,6 @@ export class BrowserViewManager {
     webContents.off("page-title-updated", entry.listeners.pageTitleUpdated);
     webContents.off("paint", entry.listeners.paint);
     webContents.off("render-process-gone", entry.listeners.renderProcessGone);
-    entry.pickerSession?.dispose();
-    entry.pickerSession = null;
     entry.annotationSession?.dispose("tile-close");
     entry.annotationSession = null;
     if (this.pipCaptureEntry === entry) this.pipCaptureEntry = null;

@@ -11,7 +11,7 @@ import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
 type ImageBytes = Uint8Array<ArrayBuffer>;
 
 /**
- * Incoming attach payload (IPC in ticket 06; stub in this ticket). Crop bytes
+ * Incoming attach payload from the native annotation session. Crop bytes
  * are stored separately; this object never carries pixels.
  */
 export interface BrowserAnnotationAttachPayload {

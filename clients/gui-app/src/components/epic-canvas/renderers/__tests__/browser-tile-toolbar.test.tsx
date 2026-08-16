@@ -8,7 +8,7 @@ import {
   type TileChromeCapabilities,
   type TileController,
 } from "@/components/epic-canvas/renderers/tile-controller";
-import type { BrowserElementPickerController } from "@/components/epic-canvas/renderers/use-browser-element-picker";
+import type { BrowserAnnotationSessionController } from "@/hooks/browser/use-browser-annotation-session";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { BrowserCookieCryptoState } from "@/lib/browser-view/desktop-browser-view";
 
@@ -21,15 +21,11 @@ const REAL_COOKIE_STATE: BrowserCookieCryptoState = {
   mockKeychainEnabled: false,
 };
 
-const PICKER: BrowserElementPickerController = {
-  isPicking: false,
-  canPick: true,
-  sending: false,
-  result: null,
+const ANNOTATION: BrowserAnnotationSessionController = {
+  isActive: false,
+  canStart: true,
+  zoomLocked: false,
   toggle: () => undefined,
-  cancel: () => undefined,
-  clearResult: () => undefined,
-  sendToAgent: () => undefined,
 };
 
 const DISABLED_CAPABILITIES: TileChromeCapabilities = {
@@ -42,7 +38,7 @@ const DISABLED_CAPABILITIES: TileChromeCapabilities = {
   devtools: false,
   find: false,
   siteInfo: false,
-  elementPicker: false,
+  annotate: false,
 };
 
 function preventNavigate(
@@ -53,7 +49,7 @@ function preventNavigate(
 
 function makeController(
   capabilities: TileChromeCapabilities,
-  elementPicker: BrowserElementPickerController | null,
+  annotation: BrowserAnnotationSessionController | null,
 ): TileController {
   return {
     capabilities,
@@ -65,7 +61,8 @@ function makeController(
     viewportPreset: "responsive",
     disabled: false,
     cookieCryptoState: REAL_COOKIE_STATE,
-    elementPicker,
+    zoomLocked: annotation?.zoomLocked === true,
+    annotation,
     onNavigate: preventNavigate,
     onAddressChange: () => undefined,
     onBack: () => undefined,
@@ -81,12 +78,12 @@ function makeController(
 
 function renderToolbar(
   capabilities: TileChromeCapabilities,
-  elementPicker: BrowserElementPickerController | null,
+  annotation: BrowserAnnotationSessionController | null,
 ): void {
   render(
     <TooltipProvider>
       <BrowserTileToolbar
-        controller={makeController(capabilities, elementPicker)}
+        controller={makeController(capabilities, annotation)}
       />
     </TooltipProvider>,
   );
@@ -106,7 +103,7 @@ const CHROME_QUERIES: ReadonlyArray<{
   { name: "Browser viewport preset", role: "button" },
   { name: "Open browser DevTools", role: "button" },
   { name: "Site information", role: "button" },
-  { name: "Inspect an element", role: "button" },
+  { name: "Annotate page", role: "button" },
 ];
 
 function queryChrome(query: {
@@ -122,7 +119,7 @@ describe("<BrowserTileToolbar /> capability gating", () => {
   });
 
   it("renders every chrome control when all capabilities are true", () => {
-    renderToolbar(PRIMARY_TILE_CHROME_CAPABILITIES, PICKER);
+    renderToolbar(PRIMARY_TILE_CHROME_CAPABILITIES, ANNOTATION);
 
     for (const query of CHROME_QUERIES) {
       expect(queryChrome(query)).not.toBeNull();
@@ -130,7 +127,7 @@ describe("<BrowserTileToolbar /> capability gating", () => {
   });
 
   it("renders no chrome when every capability is false", () => {
-    renderToolbar(DISABLED_CAPABILITIES, PICKER);
+    renderToolbar(DISABLED_CAPABILITIES, ANNOTATION);
 
     for (const query of CHROME_QUERIES) {
       expect(queryChrome(query)).toBeNull();
@@ -165,14 +162,14 @@ describe("<BrowserTileToolbar /> capability gating", () => {
       role: "button" as const,
     },
     {
-      flag: "elementPicker" as const,
-      name: "Inspect an element",
+      flag: "annotate" as const,
+      name: "Annotate page",
       role: "button" as const,
     },
   ])("omits $name when $flag is false", ({ flag, name, role }) => {
     renderToolbar(
       { ...PRIMARY_TILE_CHROME_CAPABILITIES, [flag]: false },
-      PICKER,
+      ANNOTATION,
     );
 
     expect(screen.queryByRole(role, { name })).toBeNull();

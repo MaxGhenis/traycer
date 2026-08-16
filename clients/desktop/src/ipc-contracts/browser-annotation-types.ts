@@ -84,6 +84,12 @@ export interface BrowserAnnotationAttachedIpcEvent extends BrowserViewTileKey {
   readonly pngBytes: Uint8Array;
 }
 
+export interface BrowserAnnotationSetTargetChatLabelInput
+  extends BrowserViewTileKey {
+  readonly label: string;
+  readonly canAttach: boolean;
+}
+
 export type BrowserAnnotationEndReason =
   | "cancelled"
   | "navigation"

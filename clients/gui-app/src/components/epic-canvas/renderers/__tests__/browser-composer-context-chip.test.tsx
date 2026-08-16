@@ -360,10 +360,9 @@ function createFakeBridge(): FakeBridge {
     capturePage: capturePageMock,
     getDebugSnapshot: getDebugSnapshotMock,
     clearDebugEvents: vi.fn(() => Promise.resolve()),
-    pickElement: vi.fn((_input: BrowserViewTileKey) =>
-      Promise.resolve({ outcome: "cancelled" as const }),
-    ),
-    cancelElementPick: vi.fn(() => Promise.resolve()),
+    startAnnotation: vi.fn(() => Promise.resolve({ ok: true as const })),
+    cancelAnnotation: vi.fn(() => Promise.resolve()),
+    setAnnotationTargetChatLabel: vi.fn(() => Promise.resolve()),
     openDevTools: vi.fn(() => Promise.resolve()),
     occludeForOverlay: vi.fn(() =>
       Promise.resolve({ snapshots: [], restoredTiles: [] }),
@@ -416,6 +415,8 @@ function createFakeBridge(): FakeBridge {
     onSnapshotInvalidated: vi.fn(() => ({ dispose: () => undefined })),
     onDebugSnapshotChange: vi.fn(() => ({ dispose: () => undefined })),
     onControlRevoked: vi.fn(() => ({ dispose: () => undefined })),
+    onAnnotationEvent: vi.fn(() => ({ dispose: () => undefined })),
+    onAnnotationAttached: vi.fn(() => ({ dispose: () => undefined })),
     // Ticket 09's borrowed-tile CDP members. Inert here - this fake exists
     // for the composer context chip, which never drives a tile.
     dispatchCdp: vi.fn(() =>

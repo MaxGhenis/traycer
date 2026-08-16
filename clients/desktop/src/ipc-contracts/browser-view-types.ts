@@ -576,8 +576,8 @@ export interface BrowserViewElementStyle {
 }
 
 /**
- * DOM-only element context harvested by the top-frame injected picker
- * (decision #25). Every field is derived from untrusted page data and is
+ * DOM-only element context harvested at annotation attach.
+ * Every field is derived from untrusted page data and is
  * length/count bounded by the main process before it crosses IPC.
  */
 export interface BrowserViewElementCapture {
@@ -595,16 +595,4 @@ export interface BrowserViewElementCapture {
   readonly computedStyles: readonly BrowserViewElementStyle[];
 }
 
-export type BrowserViewElementPickResult =
-  | {
-      readonly outcome: "picked";
-      readonly pageUrl: string;
-      readonly element: BrowserViewElementCapture;
-    }
-  | {
-      readonly outcome: "iframe-not-inspectable";
-      readonly pageUrl: string;
-      readonly frameLabel: string | null;
-    }
-  | { readonly outcome: "cancelled" }
-  | { readonly outcome: "unavailable"; readonly reason: string };
+

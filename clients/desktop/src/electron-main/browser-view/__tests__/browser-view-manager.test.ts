@@ -2601,65 +2601,6 @@ describe("BrowserViewManager", () => {
     expect(view.webContents.reloadCalls).toBe(0);
   });
 
-  it("ends an active element pick on same-document navigation", async () => {
-    const harness = createHarness();
-    harness.manager.upsertTile(
-      "window-1",
-      upsert(BASE_KEY, "http://localhost:3000", true),
-    );
-    harness.manager.updateBounds("window-1", {
-      ...BASE_KEY,
-      bounds: { x: 0, y: 0, width: 500, height: 300 },
-    });
-    const view = harness.views[0];
-    view.webContents.emit(
-      "did-frame-navigate",
-      {},
-      "http://localhost:3000",
-      200,
-      "OK",
-      true,
-    );
-
-    const pickPromise = harness.manager.pickElement("window-1", BASE_KEY);
-    // A synchronous SPA route change while the pick is establishing must end it.
-    view.webContents.emit(
-      "did-navigate-in-page",
-      {},
-      "http://localhost:3000/#step",
-      true,
-      1,
-      2,
-    );
-
-    await expect(pickPromise).resolves.toEqual({ outcome: "cancelled" });
-  });
-
-  it("ends an active element pick when the renderer cancels", async () => {
-    const harness = createHarness();
-    harness.manager.upsertTile(
-      "window-1",
-      upsert(BASE_KEY, "http://localhost:3000", true),
-    );
-    harness.manager.updateBounds("window-1", {
-      ...BASE_KEY,
-      bounds: { x: 0, y: 0, width: 500, height: 300 },
-    });
-    harness.views[0].webContents.emit(
-      "did-frame-navigate",
-      {},
-      "http://localhost:3000",
-      200,
-      "OK",
-      true,
-    );
-
-    const pickPromise = harness.manager.pickElement("window-1", BASE_KEY);
-    harness.manager.cancelElementPick("window-1", BASE_KEY);
-
-    await expect(pickPromise).resolves.toEqual({ outcome: "cancelled" });
-  });
-
   it("cancels a queued control action before it reaches CDP when native input takes over", async () => {
     const harness = createHarness();
     harness.manager.upsertTile(
