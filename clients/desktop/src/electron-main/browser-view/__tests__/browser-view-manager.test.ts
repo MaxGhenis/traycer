@@ -220,6 +220,10 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
   zoomFactor = 1;
   title = "";
   emptyCapture = false;
+  deferCaptures = false;
+  private readonly captureResolvers: Array<
+    (image: BrowserViewCapturedImage) => void
+  > = [];
   devToolsWebContentsId: number | null = null;
   openDevToolsCalls: unknown[] = [];
   windowOpenHandler:
@@ -260,9 +264,20 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
     return Promise.resolve([]);
   }
 
+  resolveNextCapture(): void {
+    const resolve = this.captureResolvers.shift();
+    if (resolve === undefined) throw new Error("No capture is pending");
+    resolve(this.buildCaptureImage());
+  }
+
   capturePage(): Promise<BrowserViewCapturedImage> {
     this.lifecycle.push("capturePage");
     this.captureVisibleStates.push(this.readVisible());
+    if (this.deferCaptures) {
+      return new Promise((resolve) => {
+        this.captureResolvers.push(resolve);
+      });
+    }
     if (this.emptyCapture) {
       const emptyBytes = new Uint8Array();
       const empty: BrowserViewCapturedImage = {
@@ -275,6 +290,10 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
       };
       return Promise.resolve(empty);
     }
+    return Promise.resolve(this.buildCaptureImage());
+  }
+
+  private buildCaptureImage(): BrowserViewCapturedImage {
     const bytes: Uint8Array = Uint8Array.from([1, 2, 3]);
     const image: BrowserViewCapturedImage = {
       getSize: () => ({ width: 320, height: 180 }),
@@ -284,7 +303,7 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
       crop: () => image,
       toPNG: () => bytes,
     };
-    return Promise.resolve(image);
+    return image;
   }
 
   getURL(): string {
@@ -4309,5 +4328,128 @@ describe("BrowserViewManager annotation session", () => {
 
     harness.manager.cancelAnnotation("window-1", BASE_KEY);
     expect(annotationEventTypes(harness)).toEqual([{ type: "cancelled" }]);
+  });
+
+  it("ends the annotation session on page-initiated main-frame navigation", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+
+    view.webContents.emit(
+      "did-start-navigation",
+      {},
+      "http://localhost:3000/next",
+      false,
+      true,
+      1,
+      2,
+    );
+
+    expect(annotationBindingCommands(view)).toEqual([
+      "Runtime.addBinding",
+      "Runtime.removeBinding",
+    ]);
+    expect(annotationEventTypes(harness)).toEqual([
+      { type: "ended", reason: "navigation" },
+    ]);
+
+    view.webContents.emit(
+      "did-frame-navigate",
+      {},
+      "http://localhost:3000/next",
+      200,
+      "OK",
+      true,
+    );
+    expect(annotationEventTypes(harness)).toEqual([
+      { type: "ended", reason: "navigation" },
+    ]);
+  });
+
+  it("does not emit annotationAttached when navigation starts during capturePage", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    view.webContents.deferCaptures = true;
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    expect(
+      view.webContents.lifecycle.filter((item) => item === "capturePage"),
+    ).toHaveLength(1);
+
+    view.webContents.emit(
+      "did-start-navigation",
+      {},
+      "http://localhost:3000/away",
+      false,
+      true,
+      1,
+      2,
+    );
+    view.webContents.resolveNextCapture();
+    await flush();
+
+    expect(harness.annotationAttached).toEqual([]);
+    expect(annotationEventTypes(harness)).toEqual([
+      { type: "ended", reason: "navigation" },
+    ]);
+  });
+
+  it("refuses keyboard and toolbar zoom while marks exist, and unlocks after erase or attach reset", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 1 },
+      77,
+    );
+    const preventDefault = vi.fn();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    view.webContents.emit(
+      "before-input-event",
+      { preventDefault },
+      { type: "keyDown", key: "+", meta: true },
+    );
+    expect(view.webContents.zoomFactor).toBe(1);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "erase", markCount: 0 },
+      77,
+    );
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1.1);
+
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 2 },
+      77,
+    );
+    harness.manager.resetZoom("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1.1);
+
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    expect(harness.annotationAttached).toHaveLength(1);
+    harness.manager.resetZoom("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1);
   });
 });

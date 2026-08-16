@@ -9,7 +9,6 @@ import {
   ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION,
   ANNOTATION_WORLD_NAME,
   buildAnnotationOverlayBootstrap,
-  buildAnnotationSetMarkCountExpression,
   buildAnnotationSetTargetChatLabelExpression,
   sanitizeAnnotationBindingPayload,
   sanitizeAttachRequest,
@@ -47,7 +46,7 @@ describe("buildAnnotationOverlayBootstrap", () => {
     expect(source).toContain("__traycerAnnotationHideChromeForCapture");
     expect(source).toContain("__traycerAnnotationResetAfterAttach");
     expect(source).toContain("__traycerAnnotationCaptureFailed");
-    expect(source).toContain("__traycerAnnotationSetMarkCount");
+    expect(source).not.toContain("__traycerAnnotationSetMarkCount");
     expect(source).toContain("JSON.stringify");
     expect(source).toContain("Escape");
   });
@@ -59,16 +58,15 @@ describe("buildAnnotationOverlayBootstrap", () => {
     expect(ANNOTATION_HIDE_CHROME_EXPRESSION).toContain(
       "__traycerAnnotationHideChromeForCapture",
     );
+    expect(ANNOTATION_HIDE_CHROME_EXPRESSION).toContain("return false");
     expect(ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION).toContain(
       "__traycerAnnotationResetAfterAttach",
     );
+    expect(ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION).toContain("return false");
     expect(ANNOTATION_CAPTURE_FAILED_EXPRESSION).toContain(
       "__traycerAnnotationCaptureFailed",
     );
-    expect(buildAnnotationSetMarkCountExpression(2)).toContain(
-      "__traycerAnnotationSetMarkCount",
-    );
-    expect(buildAnnotationSetMarkCountExpression(2)).toContain("2");
+    expect(ANNOTATION_CAPTURE_FAILED_EXPRESSION).not.toContain("return false");
     expect(buildAnnotationSetTargetChatLabelExpression("fix-billing")).toContain(
       "__traycerAnnotationSetTargetChatLabel",
     );
@@ -428,11 +426,31 @@ describe("sanitizeAttachRequest", () => {
     if (result === null) {
       throw new Error("expected sanitized request");
     }
-    expect(JSON.stringify(result).length).toBeLessThanOrEqual(
-      ANNOTATION_BUNDLE_BYTE_BUDGET,
-    );
+    expect(
+      new TextEncoder().encode(JSON.stringify(result)).byteLength,
+    ).toBeLessThanOrEqual(ANNOTATION_BUNDLE_BYTE_BUDGET);
     expect(result.elements.length).toBeGreaterThan(0);
     expect(result.elements.length).toBeLessThan(30);
     expect(result.elements[0]?.selector).toBe("div.el-0");
+  });
+
+  it("trims by UTF-8 bytes so a unit-counted payload cannot sneak past the budget", () => {
+    const fatElements = Array.from({ length: 25 }, (_unused, index) => ({
+      selector: `p.euro-${index}`,
+      tagName: "p",
+      outerHtml: "€".repeat(4000),
+      boundingBox: { x: 0, y: 0, width: 10, height: 10 },
+    }));
+    const raw = { ...VALID_ATTACH, elements: fatElements };
+    expect(JSON.stringify(raw).length).toBeLessThan(ANNOTATION_BUNDLE_BYTE_BUDGET);
+    const result = sanitizeAttachRequest(raw);
+    expect(result).not.toBeNull();
+    if (result === null) {
+      throw new Error("expected sanitized request");
+    }
+    const bytes = new TextEncoder().encode(JSON.stringify(result)).byteLength;
+    expect(bytes).toBeLessThanOrEqual(ANNOTATION_BUNDLE_BYTE_BUDGET);
+    expect(result.elements.length).toBeGreaterThan(0);
+    expect(result.elements.length).toBeLessThan(fatElements.length);
   });
 });

@@ -466,6 +466,7 @@ interface BrowserViewListeners {
   readonly didFrameFinishLoad: (...args: unknown[]) => void;
   readonly didFinishLoad: (...args: unknown[]) => void;
   readonly didNavigate: (...args: unknown[]) => void;
+  readonly didStartNavigation: (...args: unknown[]) => void;
   readonly didNavigateInPage: (...args: unknown[]) => void;
   readonly foundInPage: (...args: unknown[]) => void;
   readonly pageTitleUpdated: (...args: unknown[]) => void;
@@ -1652,6 +1653,9 @@ export class BrowserViewManager {
         didNavigate: (...args) => {
           this.handleCommittedNavigation(entry, args);
         },
+        didStartNavigation: (...args) => {
+          this.handleViewStartNavigation(entry, args);
+        },
         didNavigateInPage: (...args) => {
           this.handleInPageNavigation(entry, args);
         },
@@ -1715,6 +1719,7 @@ export class BrowserViewManager {
     webContents.on("did-frame-finish-load", entry.listeners.didFrameFinishLoad);
     webContents.on("did-finish-load", entry.listeners.didFinishLoad);
     webContents.on("did-navigate", entry.listeners.didNavigate);
+    webContents.on("did-start-navigation", entry.listeners.didStartNavigation);
     webContents.on("did-navigate-in-page", entry.listeners.didNavigateInPage);
     webContents.on("found-in-page", entry.listeners.foundInPage);
     webContents.on("page-title-updated", entry.listeners.pageTitleUpdated);
@@ -1795,6 +1800,17 @@ export class BrowserViewManager {
       }
       if (rejectOnFailure) throw err;
     }
+  }
+
+  private handleViewStartNavigation(
+    entry: BrowserViewEntry,
+    args: readonly unknown[],
+  ): void {
+    if (entry.internalNavigation) return;
+    const flags = readHostNavigationFlags(args);
+    if (!flags.isMainFrame || flags.isInPlace) return;
+    this.endPickerSession(entry);
+    this.endAnnotationSession(entry, "navigation");
   }
 
   private handleCommittedNavigation(
@@ -1920,6 +1936,7 @@ export class BrowserViewManager {
     const step = browserZoomStepForKey(input.key);
     if (step === null) return;
     preventInputDefault(args);
+    if (this.isAnnotationScrollLockArmed(entry)) return;
     if (step === 0) {
       this.setEntryZoomFactor(entry, 1);
       return;
@@ -2375,14 +2392,20 @@ export class BrowserViewManager {
   }
 
   private applyZoomStep(entry: BrowserViewEntry, direction: 1 | -1): void {
+    if (this.isAnnotationScrollLockArmed(entry)) return;
     const current = entry.view.webContents.getZoomFactor();
     const next = nextZoomFactor(current, direction);
     this.setEntryZoomFactor(entry, next);
   }
 
   private setEntryZoomFactor(entry: BrowserViewEntry, factor: number): void {
+    if (this.isAnnotationScrollLockArmed(entry)) return;
     entry.view.webContents.setZoomFactor(factor);
     this.emitStatus(entry);
+  }
+
+  private isAnnotationScrollLockArmed(entry: BrowserViewEntry): boolean {
+    return entry.annotationSession?.scrollLockArmed() === true;
   }
 
   /**
@@ -2662,6 +2685,7 @@ export class BrowserViewManager {
     );
     webContents.off("did-finish-load", entry.listeners.didFinishLoad);
     webContents.off("did-navigate", entry.listeners.didNavigate);
+    webContents.off("did-start-navigation", entry.listeners.didStartNavigation);
     webContents.off("did-navigate-in-page", entry.listeners.didNavigateInPage);
     webContents.off("found-in-page", entry.listeners.foundInPage);
     webContents.off("page-title-updated", entry.listeners.pageTitleUpdated);

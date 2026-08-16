@@ -10,6 +10,7 @@ import {
   ANNOTATION_BUNDLE_BYTE_BUDGET,
   ANNOTATION_BUNDLE_ELEMENT_CAP,
   isAnnotationMode,
+  serializedCaptureBytes,
 } from "./browser-annotation-overlay-logic";
 import { ANNOTATION_OVERLAY_GUEST_SOURCE } from "./browser-annotation-overlay-guest.generated";
 import { sanitizeElementCapture } from "./browser-element-picker-script";
@@ -23,11 +24,11 @@ export const ANNOTATION_CANCEL_EXPRESSION =
 
 export const ANNOTATION_HIDE_CHROME_EXPRESSION =
   "(function(){var fn=globalThis.__traycerAnnotationHideChromeForCapture;" +
-  "if(typeof fn==='function'){try{fn();}catch(e){}}return true;})()";
+  "if(typeof fn!=='function')return false;try{fn();return true;}catch(e){return false;}})()";
 
 export const ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION =
   "(function(){var fn=globalThis.__traycerAnnotationResetAfterAttach;" +
-  "if(typeof fn==='function'){try{fn();}catch(e){}}return true;})()";
+  "if(typeof fn!=='function')return false;try{fn();return true;}catch(e){return false;}})()";
 
 export const ANNOTATION_CAPTURE_FAILED_EXPRESSION =
   "(function(){var fn=globalThis.__traycerAnnotationCaptureFailed;" +
@@ -50,18 +51,6 @@ export const ANNOTATION_LIMITS = {
   elementCount: ANNOTATION_BUNDLE_ELEMENT_CAP,
   payloadBytes: ANNOTATION_BUNDLE_BYTE_BUDGET,
 } as const;
-
-export function buildAnnotationSetMarkCountExpression(count: number): string {
-  const safe = Number.isFinite(count)
-    ? String(Math.max(0, Math.floor(count)))
-    : "0";
-  return (
-    "(function(){var fn=globalThis.__traycerAnnotationSetMarkCount;" +
-    "if(typeof fn==='function'){try{fn(" +
-    safe +
-    ");}catch(e){}}return true;})()"
-  );
-}
 
 export function buildAnnotationSetTargetChatLabelExpression(label: string): string {
   const encoded = JSON.stringify(label).replace(/</g, "\\u003c");
@@ -213,11 +202,7 @@ function trimToByteBudget(
 }
 
 function jsonBytes(value: unknown): number {
-  try {
-    return JSON.stringify(value).length;
-  } catch {
-    return Number.POSITIVE_INFINITY;
-  }
+  return serializedCaptureBytes(value);
 }
 
 function sanitizeCssRect(value: unknown): BrowserAnnotationCssRect | null {

@@ -21,7 +21,6 @@ import {
   ANNOTATION_WAIT_FOR_PAINT_EXPRESSION,
   ANNOTATION_WORLD_NAME,
   buildAnnotationOverlayBootstrap,
-  buildAnnotationSetMarkCountExpression,
   buildAnnotationSetTargetChatLabelExpression,
   sanitizeAnnotationBindingPayload,
 } from "./browser-annotation-overlay-script";
@@ -74,6 +73,7 @@ export class BrowserAnnotationSession {
   private started = false;
   private listening = false;
   private capturing = false;
+  private markCount = 0;
 
   constructor(options: BrowserAnnotationSessionOptions) {
     this.webContents = options.webContents;
@@ -86,6 +86,10 @@ export class BrowserAnnotationSession {
     return this.started && !this.ended;
   }
 
+  scrollLockArmed(): boolean {
+    return this.isActive() && this.markCount > 0;
+  }
+
   async start(): Promise<BrowserAnnotationStartResult> {
     const browserDebugger = this.webContents.debugger;
     if (this.ended) return { ok: false, reason: "inject-failed" };
@@ -94,9 +98,9 @@ export class BrowserAnnotationSession {
     }
     try {
       await browserDebugger.sendCommand("Page.enable", {}, undefined);
-      if (this.ended) return { ok: false, reason: "inject-failed" };
+      if (this.ended) return this.abortStart("inject-failed");
       await browserDebugger.sendCommand("Runtime.enable", {}, undefined);
-      if (this.ended) return { ok: false, reason: "inject-failed" };
+      if (this.ended) return this.abortStart("inject-failed");
       await browserDebugger.sendCommand(
         "Runtime.addBinding",
         {
@@ -105,16 +109,16 @@ export class BrowserAnnotationSession {
         },
         undefined,
       );
-      if (this.ended) return { ok: false, reason: "inject-failed" };
+      if (this.ended) return this.abortStart("inject-failed");
       const frameTree = await browserDebugger.sendCommand(
         "Page.getFrameTree",
         {},
         undefined,
       );
-      if (this.ended) return { ok: false, reason: "inject-failed" };
+      if (this.ended) return this.abortStart("inject-failed");
       const frameId = readMainFrameId(frameTree);
       if (frameId === null) {
-        return { ok: false, reason: "no-main-frame" };
+        return this.abortStart("no-main-frame");
       }
       const world = await browserDebugger.sendCommand(
         "Page.createIsolatedWorld",
@@ -127,10 +131,10 @@ export class BrowserAnnotationSession {
       );
       const contextId = readExecutionContextId(world);
       if (contextId === null) {
-        return { ok: false, reason: "no-isolated-world" };
+        return this.abortStart("no-isolated-world");
       }
       this.contextId = contextId;
-      if (this.ended) return { ok: false, reason: "inject-failed" };
+      if (this.ended) return this.abortStart("inject-failed");
       this.attachMessageListener();
       const evaluation = await browserDebugger.sendCommand(
         "Runtime.evaluate",
@@ -143,21 +147,20 @@ export class BrowserAnnotationSession {
         },
         undefined,
       );
-      if (this.ended) return { ok: false, reason: "inject-failed" };
+      if (this.ended) return this.abortStart("inject-failed");
       if (evaluateFailed(evaluation)) {
-        this.teardownListeners();
-        return { ok: false, reason: "inject-failed" };
+        return this.abortStart("inject-failed");
       }
       this.started = true;
       return { ok: true };
     } catch (err) {
-      if (this.ended) return { ok: false, reason: "inject-failed" };
-      log.warn("[browser-view] annotation overlay inject failed", {
-        error: describeLogError(err),
-        webContentsId: this.webContents.id,
-      });
-      this.teardownListeners();
-      return { ok: false, reason: "inject-failed" };
+      if (!this.ended) {
+        log.warn("[browser-view] annotation overlay inject failed", {
+          error: describeLogError(err),
+          webContentsId: this.webContents.id,
+        });
+      }
+      return this.abortStart("inject-failed");
     }
   }
 
@@ -170,20 +173,23 @@ export class BrowserAnnotationSession {
   }
 
   hideChromeForCapture(): Promise<void> {
-    return this.evaluateCommand(ANNOTATION_HIDE_CHROME_EXPRESSION, false);
+    return this.evaluateCommand(ANNOTATION_HIDE_CHROME_EXPRESSION, false, true);
   }
 
   resetAfterAttach(): Promise<void> {
-    return this.evaluateCommand(ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION, false);
+    return this.evaluateCommand(
+      ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION,
+      false,
+      true,
+    ).then(() => {
+      this.markCount = 0;
+    });
   }
 
   captureFailed(): Promise<void> {
-    return this.evaluateCommand(ANNOTATION_CAPTURE_FAILED_EXPRESSION, false);
-  }
-
-  setMarkCountForTests(count: number): Promise<void> {
     return this.evaluateCommand(
-      buildAnnotationSetMarkCountExpression(count),
+      ANNOTATION_CAPTURE_FAILED_EXPRESSION,
+      false,
       false,
     );
   }
@@ -192,12 +198,23 @@ export class BrowserAnnotationSession {
     return this.evaluateCommand(
       buildAnnotationSetTargetChatLabelExpression(label),
       false,
+      false,
     );
+  }
+
+  private abortStart(
+    reason: "inject-failed" | "no-main-frame" | "no-isolated-world",
+  ): BrowserAnnotationStartResult {
+    this.teardownListeners();
+    this.removeBinding();
+    this.contextId = null;
+    return { ok: false, reason };
   }
 
   private end(reason: BrowserAnnotationEndReason): void {
     if (this.ended) return;
     this.ended = true;
+    this.markCount = 0;
     this.sendCancel();
     this.teardownListeners();
     this.removeBinding();
@@ -244,11 +261,14 @@ export class BrowserAnnotationSession {
       void this.captureAttach(sanitized.payload);
       return;
     }
+    if (sanitized.type === "stateChanged") {
+      this.markCount = sanitized.markCount;
+    }
     this.onEvent(sanitized);
   }
 
   private sendCancel(): void {
-    void this.evaluateCommand(ANNOTATION_CANCEL_EXPRESSION, false);
+    void this.evaluateCommand(ANNOTATION_CANCEL_EXPRESSION, false, false);
   }
 
   private removeBinding(): void {
@@ -270,9 +290,14 @@ export class BrowserAnnotationSession {
     this.capturing = true;
     try {
       await this.hideChromeForCapture();
-      await this.evaluateCommand(ANNOTATION_WAIT_FOR_PAINT_EXPRESSION, true);
+      await this.evaluateCommand(
+        ANNOTATION_WAIT_FOR_PAINT_EXPRESSION,
+        true,
+        true,
+      );
       const viewport = await this.readViewportCssSize();
       const image = await this.webContents.capturePage();
+      if (!this.isActive()) return;
       const pngBytes =
         viewport === null
           ? null
@@ -281,7 +306,6 @@ export class BrowserAnnotationSession {
         if (this.isActive()) await this.captureFailed();
         return;
       }
-      if (!this.isActive()) return;
       const payload = buildAnnotationAttachPayload({
         annotationId: mintAnnotationId(),
         tabId: this.identity.tabId,
@@ -333,31 +357,55 @@ export class BrowserAnnotationSession {
   private async evaluateCommand(
     expression: string,
     awaitPromise: boolean,
+    required: boolean,
   ): Promise<void> {
-    await this.evaluateRaw(expression, awaitPromise);
+    if (!required) {
+      if (this.contextId === null) return;
+      const browserDebugger = this.webContents.debugger;
+      if (!browserDebugger.isAttached()) return;
+      try {
+        await browserDebugger.sendCommand(
+          "Runtime.evaluate",
+          {
+            expression,
+            contextId: this.contextId,
+            returnByValue: true,
+            awaitPromise,
+          },
+          undefined,
+        );
+      } catch {
+        return;
+      }
+      return;
+    }
+    const evaluation = await this.evaluateRaw(expression, awaitPromise);
+    if (evaluateFailed(evaluation)) {
+      throw new Error("annotation overlay command did not confirm");
+    }
   }
 
   private async evaluateRaw(
     expression: string,
     awaitPromise: boolean,
   ): Promise<unknown> {
-    if (this.contextId === null) return undefined;
-    const browserDebugger = this.webContents.debugger;
-    if (!browserDebugger.isAttached()) return undefined;
-    try {
-      return await browserDebugger.sendCommand(
-        "Runtime.evaluate",
-        {
-          expression,
-          contextId: this.contextId,
-          returnByValue: true,
-          awaitPromise,
-        },
-        undefined,
-      );
-    } catch {
-      return undefined;
+    if (this.contextId === null) {
+      throw new Error("annotation isolated world is gone");
     }
+    const browserDebugger = this.webContents.debugger;
+    if (!browserDebugger.isAttached()) {
+      throw new Error("annotation debugger is not attached");
+    }
+    return browserDebugger.sendCommand(
+      "Runtime.evaluate",
+      {
+        expression,
+        contextId: this.contextId,
+        returnByValue: true,
+        awaitPromise,
+      },
+      undefined,
+    );
   }
 }
 
