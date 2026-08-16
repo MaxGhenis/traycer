@@ -63,6 +63,7 @@ export function chatLabelFromCanvas(
 ): string | null {
   if (canvas === null) return null;
   for (const tile of Object.values(canvas.tilesByInstanceId)) {
+    if (tile === undefined) continue;
     if (tile.type === "chat" && tile.id === chatId) {
       return tile.name;
     }

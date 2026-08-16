@@ -1009,6 +1009,7 @@ describe("<ChatTile />", () => {
         [CHAT_ARTIFACT.id]: {
           content: PENDING_DRAFT_CONTENT,
           selection: null,
+          browserAnnotations: [],
           resetEpoch: 0,
           revision: 0,
         },

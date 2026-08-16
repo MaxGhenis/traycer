@@ -17,7 +17,9 @@ export function useAnnotationRoute(input: {
     (state) => state.canvasByTabId[input.viewTabId] ?? null,
   );
   const canvasByTabId = useEpicCanvasStore((state) => state.canvasByTabId);
-  const canvases = Object.values(canvasByTabId);
+  const canvases = Object.values(canvasByTabId).filter(
+    (entry): entry is NonNullable<typeof entry> => entry !== undefined,
+  );
   const lastFocusedChatId = useLastFocusedChatStore(
     (state) => state.chatIdByEpicId[input.epicId] ?? null,
   );

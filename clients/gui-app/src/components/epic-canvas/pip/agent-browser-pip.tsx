@@ -242,7 +242,7 @@ function AgentBrowserPipSurface(props: {
   );
 
   const handleKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    (event: ReactKeyboardEvent<HTMLElement>) => {
       if (event.key === "Home") {
         event.preventDefault();
         const corner = nextPipCorner(geometry, readViewportSize());
@@ -486,11 +486,7 @@ function PipExpanded(props: {
             draggable={false}
           />
         )}
-        <PipFrameOverlays
-          snapshot={snapshot}
-          gone={gone}
-          site={meta.site}
-        />
+        <PipFrameOverlays snapshot={snapshot} gone={gone} site={meta.site} />
       </button>
       <button
         type="button"
@@ -789,9 +785,7 @@ function usePipHostClientHandle(
   return handle;
 }
 
-function nativeTileBindingKey(
-  binding: ElectronBrowserTabRegistration,
-): string {
+function nativeTileBindingKey(binding: ElectronBrowserTabRegistration): string {
   const tileKey = binding.tileKey;
   return [
     binding.registrationId,
@@ -822,7 +816,11 @@ function usePipNativeCaptureArm(input: {
   useEffect(() => {
     if (tileKey === null) return;
     const args = argsRef.current;
-    if (args.binding === null || args.bridge === null || args.burstId === null) {
+    if (
+      args.binding === null ||
+      args.bridge === null ||
+      args.burstId === null
+    ) {
       return;
     }
     const liveBurstId = args.burstId;
@@ -881,7 +879,8 @@ function usePipHeadlessCaptureArm(input: {
         epicId: args.epicId,
         onUrl: (src) => {
           args.setOwned((prev) => {
-            if (prev !== null && prev.src !== src) URL.revokeObjectURL(prev.src);
+            if (prev !== null && prev.src !== src)
+              URL.revokeObjectURL(prev.src);
             return { burstId: liveBurstId, src };
           });
         },
