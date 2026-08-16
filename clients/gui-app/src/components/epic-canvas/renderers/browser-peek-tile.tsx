@@ -25,13 +25,24 @@ import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/h
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
+import { BrowserTileToolbar } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
+import type { TileController } from "@/components/epic-canvas/renderers/tile-controller";
 import {
   createScreencastArmBuffer,
   type ScreencastArmBuffer,
 } from "@/components/epic-canvas/renderers/screencast-arm-buffer";
-import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
+import {
+  EMPTY_SCREENCAST_NAV_STATE,
+  toastScreencastUnsupportedInteraction,
+  useScreencastTileChrome,
+  type ScreencastNavState,
+} from "@/components/epic-canvas/renderers/use-screencast-tile-chrome";
+import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
+import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
 import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
 import { cn } from "@/lib/utils";
 import { wheelDeltaToPixels } from "@/lib/wheel-delta-to-pixels";
@@ -60,8 +71,14 @@ type PeekInsertTextInput = Omit<
   "armEpoch" | "seq" | "hasBinaryPayload"
 >;
 
+type PeekNavInput =
+  | { readonly kind: "navigate"; readonly url: string }
+  | { readonly kind: "goBack" }
+  | { readonly kind: "goForward" }
+  | { readonly kind: "reload" };
+
 type PeekInputFrame =
-  PeekPointerInput | PeekKeyboardInput | PeekInsertTextInput;
+  PeekPointerInput | PeekKeyboardInput | PeekInsertTextInput | PeekNavInput;
 
 interface CapturedPointer {
   readonly element: HTMLElement;
@@ -126,6 +143,7 @@ interface BrowserPeekRenderState {
     readonly width: number;
     readonly height: number;
   } | null;
+  readonly navState: ScreencastNavState;
 }
 
 type BrowserPeekDialog = Extract<
@@ -158,6 +176,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       binaryPayload: Uint8Array | null,
     ) => void;
   } | null>(null);
+  const tileRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const overlayButtonRef = useRef<HTMLButtonElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -189,6 +208,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   );
   const resetTransientInputRef = useRef<() => void>(() => {});
   const deliverArmBufferRef = useRef<() => void>(() => {});
+  const flushPendingNavRef = useRef<() => void>(() => {});
+  const pendingNavRef = useRef<PeekNavInput | null>(null);
   const [armedState, setArmedState] = useState<{
     readonly client: IHostStreamClient<HostStreamRpcRegistry>;
     readonly epoch: number;
@@ -206,6 +227,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       details: null,
       migrationPending: false,
       frameSize: null,
+      navState: EMPTY_SCREENCAST_NAV_STATE,
     }),
   );
   const stateMatchesClient = streamState.client === client;
@@ -214,6 +236,9 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const details = peekDetailsForRender(stateMatchesClient, streamState, client);
   const migrationPending = stateMatchesClient && streamState.migrationPending;
   const frameSize = stateMatchesClient ? streamState.frameSize : null;
+  const navState = stateMatchesClient
+    ? streamState.navState
+    : EMPTY_SCREENCAST_NAV_STATE;
   const armedEpoch = armedState?.client === client ? armedState.epoch : null;
   const presentedArmedEpoch = visible ? armedEpoch : null;
   const dialog = dialogForClient(dialogState, client);
@@ -340,11 +365,26 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           migrationPending: pending,
         }));
       }
+      if (parsed.data.kind === "navState") {
+        const nextNavState: ScreencastNavState = {
+          url: parsed.data.url,
+          canGoBack: parsed.data.canGoBack,
+          canGoForward: parsed.data.canGoForward,
+          loading: parsed.data.loading,
+        };
+        setStreamState((current) => ({
+          ...resetPeekStateForClient(current, client),
+          navState: nextNavState,
+        }));
+      } else if (parsed.data.kind === "unsupportedInteraction") {
+        toastScreencastUnsupportedInteraction(parsed.data.feature);
+      }
       if (parsed.data.kind === "armed") {
         if (desiredArmEpochRef.current !== parsed.data.armEpoch) return;
         activeArmEpochRef.current = parsed.data.armEpoch;
         setArmedState({ client, epoch: parsed.data.armEpoch });
         deliverArmBufferRef.current();
+        flushPendingNavRef.current();
       } else if (parsed.data.kind === "revoked") {
         if (activeArmEpochRef.current !== parsed.data.armEpoch) return;
         desiredArmEpochRef.current = null;
@@ -475,6 +515,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
 
   const resetTransientInput = useCallback(() => {
     armBuffer.drop();
+    pendingNavRef.current = null;
     suppressPointerIdRef.current = null;
     acceptedPointerDownRef.current = null;
     cancelPendingMove();
@@ -532,6 +573,43 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     });
     inputSequenceRef.current += 1;
   }, []);
+
+  const flushPendingNav = useCallback(() => {
+    const pending = pendingNavRef.current;
+    pendingNavRef.current = null;
+    if (pending === null) return;
+    sendInput(pending);
+  }, [sendInput]);
+
+  const requestNav = useCallback(
+    (frame: PeekNavInput) => {
+      if (activeArmEpochRef.current !== null) {
+        sendInput(frame);
+        return;
+      }
+      pendingNavRef.current = frame;
+      arm();
+    },
+    [arm, sendInput],
+  );
+
+  const chrome = useScreencastTileChrome({
+    navState,
+    initialUrl: node.initialUrl,
+    disabled: client === null,
+    onNavigateUrl: (url) => {
+      requestNav({ kind: "navigate", url });
+    },
+    onBack: () => {
+      requestNav({ kind: "goBack" });
+    },
+    onForward: () => {
+      requestNav({ kind: "goForward" });
+    },
+    onReload: () => {
+      requestNav({ kind: "reload" });
+    },
+  });
 
   const respondToDialog = useCallback(
     (generation: number, accept: boolean, promptText: string | null) => {
@@ -840,7 +918,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     (relatedTarget: EventTarget | null) => {
       if (
         relatedTarget instanceof Node &&
-        viewportRef.current?.contains(relatedTarget) === true
+        tileRef.current?.contains(relatedTarget) === true
       ) {
         return;
       }
@@ -869,36 +947,25 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     deliverArmBufferRef.current = deliverArmBuffer;
   }, [deliverArmBuffer]);
 
+  useLayoutEffect(() => {
+    flushPendingNavRef.current = flushPendingNav;
+  }, [flushPendingNav]);
+
   return (
     <div
+      ref={tileRef}
       className="flex h-full w-full flex-col bg-canvas text-foreground"
       data-testid={`browser-peek-tile-${node.instanceId}`}
     >
-      <div className="flex min-h-0 items-center gap-2 border-b border-border px-3 py-2 text-ui-sm">
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">{node.name}</div>
-          <div className="truncate font-mono text-ui-xs text-muted-foreground">
-            {node.initialUrl}
-          </div>
-          {migrationPending ? (
-            <div
-              className="truncate text-ui-xs text-muted-foreground"
-              aria-live="polite"
-            >
-              Will go native when the agent pauses
-            </div>
-          ) : null}
-        </div>
-        <div
-          className={cn(
-            "flex shrink-0 items-center gap-1.5 rounded-sm border px-2 py-1 text-ui-xs",
-            peekStatusToneClass(status.tone),
-          )}
-        >
-          <status.Icon className="size-3.5" aria-hidden />
-          <span>{status.label}</span>
-        </div>
-      </div>
+      <ScreencastPeekChromeBar
+        controller={chrome.controller}
+        onAddressFocusChange={chrome.onAddressFocusChange}
+        loading={navState.loading}
+        armed={presentedArmedEpoch !== null}
+        status={status}
+        migrationPending={migrationPending}
+        onRelease={disarm}
+      />
       <div
         ref={viewportRef}
         className={cn(
@@ -1045,6 +1112,80 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   );
 }
 
+function ScreencastPeekChromeBar(props: {
+  readonly controller: TileController;
+  readonly onAddressFocusChange: (focused: boolean) => void;
+  readonly loading: boolean;
+  readonly armed: boolean;
+  readonly status: BrowserPeekStatus;
+  readonly migrationPending: boolean;
+  readonly onRelease: () => void;
+}) {
+  return (
+    <div className="flex min-h-0 flex-col border-b border-border">
+      <div className="flex min-h-0 items-center">
+        <div
+          className="min-w-0 flex-1 [&>div]:border-b-0"
+          onFocusCapture={(event) => {
+            if (isBrowserAddressInput(event.target)) {
+              props.onAddressFocusChange(true);
+            }
+          }}
+          onBlurCapture={(event) => {
+            if (isBrowserAddressInput(event.target)) {
+              props.onAddressFocusChange(false);
+            }
+          }}
+        >
+          <BrowserTileToolbar controller={props.controller} />
+        </div>
+        <div className="flex shrink-0 items-center gap-2 pr-2">
+          {props.loading ? (
+            <span role="status" aria-label="Page loading">
+              <AgentSpinningDots
+                className="text-muted-foreground"
+                testId="screencast-page-loading"
+                variant={undefined}
+              />
+            </span>
+          ) : null}
+          {props.armed ? (
+            <div className="flex shrink-0 items-center gap-1">
+              <Badge variant="outline">Controlling</Badge>
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                aria-label="Release control"
+                onClick={props.onRelease}
+              >
+                Release
+              </Button>
+            </div>
+          ) : null}
+          <div
+            className={cn(
+              "flex shrink-0 items-center gap-1.5 rounded-sm border px-2 py-1 text-ui-xs",
+              peekStatusToneClass(props.status.tone),
+            )}
+          >
+            <props.status.Icon className="size-3.5" aria-hidden />
+            <span>{props.status.label}</span>
+          </div>
+        </div>
+      </div>
+      {props.migrationPending ? (
+        <div
+          className="truncate px-2 pb-1 text-ui-xs text-muted-foreground"
+          aria-live="polite"
+        >
+          Will go native when the agent pauses
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function BrowserDialogOverlay(props: {
   readonly dialog: BrowserPeekDialog;
   readonly onRespond: (
@@ -1160,6 +1301,7 @@ function resetPeekStateForClient(
     details: client === null ? "Waiting for the host stream." : null,
     migrationPending: false,
     frameSize: null,
+    navState: EMPTY_SCREENCAST_NAV_STATE,
   };
 }
 
@@ -1293,6 +1435,13 @@ function useScreencastViewportBridge(
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [ref, sendViewport, visible]);
+}
+
+function isBrowserAddressInput(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLInputElement &&
+    target.getAttribute("aria-label") === "Browser address"
+  );
 }
 
 function sendPeekFrame(
