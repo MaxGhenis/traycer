@@ -429,6 +429,12 @@ export function sanitizeElementPickPayload(
   return { outcome: "unavailable", reason: "invalid-result" };
 }
 
+export function sanitizeElementCapture(
+  value: unknown,
+): BrowserViewElementCapture | null {
+  return sanitizeCapture(value);
+}
+
 function sanitizeCapture(value: unknown): BrowserViewElementCapture | null {
   if (!isRecord(value)) return null;
   const outerHtml = boundedString(

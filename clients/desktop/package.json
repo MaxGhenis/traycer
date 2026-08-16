@@ -33,6 +33,7 @@
     "@sentry/browser": "catalog:",
     "@sentry/electron": "catalog:",
     "electron-log": "catalog:",
+    "perfect-freehand": "catalog:",
     "electron-updater": "^6.8.9",
     "encrypt-storage": "catalog:",
     "font-list": "^2.1.0",

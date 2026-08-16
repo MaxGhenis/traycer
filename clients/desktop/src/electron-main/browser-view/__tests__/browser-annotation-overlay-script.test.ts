@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ANNOTATION_BUNDLE_BYTE_BUDGET } from "../browser-annotation-overlay-logic";
 import {
   ANNOTATION_BINDING_NAME,
   ANNOTATION_CANCEL_EXPRESSION,
@@ -9,9 +10,11 @@ import {
   ANNOTATION_WORLD_NAME,
   buildAnnotationOverlayBootstrap,
   buildAnnotationSetMarkCountExpression,
+  buildAnnotationSetTargetChatLabelExpression,
   sanitizeAnnotationBindingPayload,
   sanitizeAttachRequest,
 } from "../browser-annotation-overlay-script";
+import { ELEMENT_PICKER_LIMITS } from "../browser-element-picker-script";
 
 const UNION = { x: 4, y: 8, width: 16, height: 24 };
 
@@ -66,6 +69,40 @@ describe("buildAnnotationOverlayBootstrap", () => {
       "__traycerAnnotationSetMarkCount",
     );
     expect(buildAnnotationSetMarkCountExpression(2)).toContain("2");
+    expect(buildAnnotationSetTargetChatLabelExpression("fix-billing")).toContain(
+      "__traycerAnnotationSetTargetChatLabel",
+    );
+    expect(buildAnnotationSetTargetChatLabelExpression("fix-billing")).toContain(
+      "fix-billing",
+    );
+  });
+
+  it("contains the comment placeholder, Attach, and the target-chat command", () => {
+    const source = buildAnnotationOverlayBootstrap();
+    expect(source).toContain("Describe the change");
+    expect(source).toContain("Attach");
+    expect(source).toContain("__traycerAnnotationSetTargetChatLabel");
+  });
+
+  it("does not put raw stroke points on the attach payload", () => {
+    const source = buildAnnotationOverlayBootstrap();
+    const attachAt = source.indexOf('type: "attachRequested"');
+    expect(attachAt).toBeGreaterThan(-1);
+    const payloadWindow = source.slice(attachAt, attachAt + 350);
+    expect(payloadWindow).toContain("marks: snapshots");
+    expect(payloadWindow).toContain("elements: budgeted.kept");
+    expect(payloadWindow).toContain("unionRect: union");
+    expect(payloadWindow).not.toMatch(/points\s*:/);
+    expect(source).toContain("draftPoints");
+  });
+
+  it("encodes the target-chat label as a JSON string argument", () => {
+    const expression = buildAnnotationSetTargetChatLabelExpression(
+      'say </script> "hi"',
+    );
+    expect(expression).toContain("__traycerAnnotationSetTargetChatLabel");
+    expect(expression).toContain("\\u003c");
+    expect(expression).not.toContain("</script>");
   });
 });
 
@@ -238,5 +275,164 @@ describe("sanitizeAttachRequest", () => {
       ],
     });
     expect(result?.marks[0]?.selector).toBeNull();
+  });
+
+  it("drops smuggled stroke points so snapshots are bounds-only", () => {
+    const result = sanitizeAttachRequest({
+      unionRect: UNION,
+      marks: [
+        {
+          id: "s1",
+          kind: "stroke",
+          bounds: UNION,
+          selector: "canvas",
+          points: [
+            { x: 1, y: 2 },
+            { x: 3, y: 4 },
+          ],
+        },
+      ],
+    });
+    expect(result).not.toBeNull();
+    if (result === null) {
+      throw new Error("expected sanitized request");
+    }
+    expect(result.marks).toEqual([
+      {
+        id: "s1",
+        kind: "stroke",
+        bounds: UNION,
+        selector: null,
+      },
+    ]);
+    expect(result.marks[0]).not.toHaveProperty("points");
+  });
+
+  it("keeps picker-sanitized attributes and curated computed styles", () => {
+    const result = sanitizeAttachRequest({
+      ...VALID_ATTACH,
+      elements: [
+        {
+          selector: "main > h1",
+          tagName: "H1",
+          elementId: "hero",
+          classNames: ["title"],
+          attributes: [
+            { name: "data-kind", value: "heading" },
+            { name: "aria-level", value: "1" },
+          ],
+          outerHtml: '<h1 id="hero" class="title">Example</h1>',
+          textPreview: "Example",
+          ariaRole: "heading",
+          accessibleName: "Example",
+          boundingBox: {
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4,
+            top: 2,
+            right: 4,
+            bottom: 6,
+            left: 1,
+          },
+          computedStyles: [
+            { property: "display", value: "block" },
+            { property: "font-size", value: "26px" },
+            { property: "--injected", value: "nope" },
+            { property: "content", value: "url(https://evil.example)" },
+          ],
+        },
+      ],
+    });
+    expect(result).not.toBeNull();
+    if (result === null) {
+      throw new Error("expected sanitized request");
+    }
+    expect(result.elements).toHaveLength(1);
+    const element = result.elements[0];
+    if (element === undefined) {
+      throw new Error("expected captured element");
+    }
+    expect(element.selector).toBe("main > h1");
+    expect(element.tagName).toBe("h1");
+    expect(element.attributes).toEqual([
+      { name: "data-kind", value: "heading" },
+      { name: "aria-level", value: "1" },
+    ]);
+    expect(element.computedStyles).toEqual([
+      { property: "display", value: "block" },
+      { property: "font-size", value: "26px" },
+    ]);
+  });
+
+  it("bounds per-element attributes and styles through the picker sanitizer", () => {
+    const attributes = Array.from({ length: 80 }, (_unused, index) => ({
+      name: `data-${index}`,
+      value: "v".repeat(1000),
+    }));
+    const computedStyles = Array.from({ length: 80 }, () => ({
+      property: "display",
+      value: "z".repeat(1000),
+    }));
+    const result = sanitizeAttachRequest({
+      ...VALID_ATTACH,
+      elements: [
+        {
+          selector: "div",
+          tagName: "div",
+          attributes,
+          computedStyles,
+          outerHtml: "<div></div>",
+          boundingBox: { x: 0, y: 0, width: 1, height: 1 },
+        },
+      ],
+    });
+    expect(result).not.toBeNull();
+    if (result === null) {
+      throw new Error("expected sanitized request");
+    }
+    const element = result.elements[0];
+    if (element === undefined) {
+      throw new Error("expected captured element");
+    }
+    expect(element.attributes).toHaveLength(ELEMENT_PICKER_LIMITS.attributeCount);
+    expect(element.attributes[0]?.value).toHaveLength(
+      ELEMENT_PICKER_LIMITS.attributeValue,
+    );
+    expect(element.computedStyles).toHaveLength(ELEMENT_PICKER_LIMITS.styleCount);
+    expect(element.computedStyles[0]?.value).toHaveLength(
+      ELEMENT_PICKER_LIMITS.styleValue,
+    );
+  });
+
+  it("trims elements so the attach payload stays within the byte budget", () => {
+    const fatElements = Array.from({ length: 30 }, (_unused, index) => ({
+      selector: `div.el-${index}`,
+      tagName: "div",
+      attributes: Array.from({ length: 30 }, (_inner, attrIndex) => ({
+        name: `data-${attrIndex}`,
+        value: "v".repeat(300),
+      })),
+      computedStyles: Array.from({ length: 48 }, () => ({
+        property: "display",
+        value: "x".repeat(300),
+      })),
+      outerHtml: "h".repeat(4000),
+      boundingBox: { x: 0, y: 0, width: 10, height: 10 },
+    }));
+    const result = sanitizeAttachRequest({
+      ...VALID_ATTACH,
+      elements: fatElements,
+    });
+    expect(result).not.toBeNull();
+    if (result === null) {
+      throw new Error("expected sanitized request");
+    }
+    expect(JSON.stringify(result).length).toBeLessThanOrEqual(
+      ANNOTATION_BUNDLE_BYTE_BUDGET,
+    );
+    expect(result.elements.length).toBeGreaterThan(0);
+    expect(result.elements.length).toBeLessThan(30);
+    expect(result.elements[0]?.selector).toBe("div.el-0");
   });
 });
