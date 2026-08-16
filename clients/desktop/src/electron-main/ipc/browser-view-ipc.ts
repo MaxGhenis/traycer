@@ -179,6 +179,13 @@ export function registerBrowserViewIpc(
         change,
       );
     },
+    notifyAnnotationEvent: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.browserViewAnnotationEvent,
+        change,
+      );
+    },
     scheduleDebugSnapshot: scheduleBrowserViewDebugSnapshot,
     applyStorageState: applyBrowserViewStorageState,
     captureStorageState: captureBrowserViewStorageState,
@@ -471,6 +478,22 @@ export function registerBrowserViewIpc(
     (event, payload) => {
       const windowId = readSenderWindowId(bridge, event);
       manager.cancelElementPick(windowId, parseTileKey(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.browserViewStartAnnotation,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      return manager.startAnnotation(windowId, parseTileKey(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.browserViewCancelAnnotation,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.cancelAnnotation(windowId, parseTileKey(payload));
     },
   );
 

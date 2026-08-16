@@ -810,6 +810,8 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.browserViewResetZoom,
         RunnerHostInvoke.browserViewPickElement,
         RunnerHostInvoke.browserViewCancelElementPick,
+        RunnerHostInvoke.browserViewStartAnnotation,
+        RunnerHostInvoke.browserViewCancelAnnotation,
         RunnerHostInvoke.browserViewOpenDevTools,
         RunnerHostInvoke.browserViewGetDebugSnapshot,
         RunnerHostInvoke.browserViewClearDebugEvents,

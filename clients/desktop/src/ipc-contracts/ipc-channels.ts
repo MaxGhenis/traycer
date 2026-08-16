@@ -311,6 +311,8 @@ export const RunnerHostInvoke = {
   browserViewLabsStateSet: "runnerHost:browserView:labsState:set",
   browserViewPickElement: "runnerHost:browserView:pickElement",
   browserViewCancelElementPick: "runnerHost:browserView:cancelElementPick",
+  browserViewStartAnnotation: "runnerHost:browserView:annotation:start",
+  browserViewCancelAnnotation: "runnerHost:browserView:annotation:cancel",
   browserViewOpenDevTools: "runnerHost:browserView:openDevTools",
   // Agent-owned browser tile (ticket 02): a separate WebContentsView pool in
   // `AGENT_BROWSER_VIEW_PARTITION`, deliberately not sharing the full
@@ -407,6 +409,7 @@ export const RunnerHostEvent = {
   browserViewDebugSnapshotChange:
     "runnerHost:event:browserView:debugSnapshotChange",
   browserViewControlRevoked: "runnerHost:event:browserView:controlRevoked",
+  browserViewAnnotationEvent: "runnerHost:event:browserView:annotation",
   // Durable user-tab counterparts of the agent-tab events below.
   browserViewCdpSessionEnded: "runnerHost:event:browserView:cdp:sessionEnded",
   browserViewCdpTargetAttached:

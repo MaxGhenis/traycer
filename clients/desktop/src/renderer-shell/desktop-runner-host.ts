@@ -136,6 +136,10 @@ import type {
   BrowserViewViewportPresetChange,
 } from "../ipc-contracts/browser-view-types";
 import type {
+  BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationStartResult,
+} from "../ipc-contracts/browser-annotation-types";
+import type {
   GlobalShortcutId,
   GlobalShortcutIntent,
   GlobalShortcutsSnapshot,
@@ -498,6 +502,10 @@ export interface DesktopBrowserViewBridge {
   clearDebugEvents(input: BrowserViewTileKey): Promise<void>;
   pickElement(input: BrowserViewTileKey): Promise<BrowserViewElementPickResult>;
   cancelElementPick(input: BrowserViewTileKey): Promise<void>;
+  startAnnotation(
+    input: BrowserViewTileKey,
+  ): Promise<BrowserAnnotationStartResult>;
+  cancelAnnotation(input: BrowserViewTileKey): Promise<void>;
   openDevTools(input: BrowserViewTileKey): Promise<void>;
   occludeForOverlay(
     input: BrowserViewOverlayOcclusion,
@@ -538,6 +546,11 @@ export interface DesktopBrowserViewBridge {
   };
   onDebugSnapshotChange(
     handler: (change: BrowserViewDebugSnapshotChange) => void,
+  ): {
+    dispose: () => void;
+  };
+  onAnnotationEvent(
+    handler: (change: BrowserAnnotationSessionIpcEvent) => void,
   ): {
     dispose: () => void;
   };

@@ -47,6 +47,10 @@ import type {
   BrowserViewTileUpsert,
   BrowserViewViewportPresetChange,
 } from "../ipc-contracts/browser-view-types";
+import type {
+  BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationStartResult,
+} from "../ipc-contracts/browser-annotation-types";
 import { subscribe, type Disposable, type Listener } from "./subscribe";
 
 export interface BrowserViewBridgeSurface {
@@ -84,6 +88,10 @@ export interface BrowserViewBridgeSurface {
       input: BrowserViewTileKey,
     ): Promise<BrowserViewElementPickResult>;
     cancelElementPick(input: BrowserViewTileKey): Promise<void>;
+    startAnnotation(
+      input: BrowserViewTileKey,
+    ): Promise<BrowserAnnotationStartResult>;
+    cancelAnnotation(input: BrowserViewTileKey): Promise<void>;
     openDevTools(input: BrowserViewTileKey): Promise<void>;
     occludeForOverlay(
       input: BrowserViewOverlayOcclusion,
@@ -124,6 +132,9 @@ export interface BrowserViewBridgeSurface {
     ): Disposable;
     onControlRevoked(
       handler: Listener<BrowserViewControlRevokedChange>,
+    ): Disposable;
+    onAnnotationEvent(
+      handler: Listener<BrowserAnnotationSessionIpcEvent>,
     ): Disposable;
     // Durable user-tab driving over the same typed CDP bridge as agent tabs.
     dispatchCdp(
@@ -259,6 +270,16 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
           RunnerHostInvoke.browserViewCancelElementPick,
           input,
         ) as Promise<void>,
+      startAnnotation: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewStartAnnotation,
+          input,
+        ) as Promise<BrowserAnnotationStartResult>,
+      cancelAnnotation: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewCancelAnnotation,
+          input,
+        ) as Promise<void>,
       openDevTools: (input) =>
         ipcRenderer.invoke(
           RunnerHostInvoke.browserViewOpenDevTools,
@@ -350,6 +371,11 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
       onControlRevoked: (handler) =>
         subscribe<BrowserViewControlRevokedChange>(
           RunnerHostEvent.browserViewControlRevoked,
+          handler,
+        ),
+      onAnnotationEvent: (handler) =>
+        subscribe<BrowserAnnotationSessionIpcEvent>(
+          RunnerHostEvent.browserViewAnnotationEvent,
           handler,
         ),
       dispatchCdp: (input) =>

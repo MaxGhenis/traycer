@@ -48,6 +48,11 @@ import type {
   BrowserViewViewportPresetChange,
   BrowserViewViewportPresetId,
 } from "../../ipc-contracts/browser-view-types";
+import type {
+  BrowserAnnotationEndReason,
+  BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationStartResult,
+} from "../../ipc-contracts/browser-annotation-types";
 import type { PipCaptureIpcPayload } from "../../ipc-contracts/pip-capture-types";
 import type {
   BrowserPrimaryProfileOriginSnapshot,
@@ -55,6 +60,7 @@ import type {
 } from "./browser-storage-state";
 import { browserLocalStorageSeedScript } from "./browser-storage-state";
 import { describeLogError, log } from "../app/logger";
+import { BrowserAnnotationSession } from "./browser-annotation-session";
 import { BrowserDebugSession } from "./browser-debug-session";
 import { BrowserElementPickerSession } from "./browser-element-picker-session";
 import type {
@@ -307,6 +313,10 @@ export interface BrowserViewManagerOptions {
     windowId: string,
     change: AgentBrowserViewTileHandoffChange,
   ) => void;
+  readonly notifyAnnotationEvent: (
+    windowId: string,
+    change: BrowserAnnotationSessionIpcEvent,
+  ) => void;
   readonly scheduleDebugSnapshot: (
     callback: () => void,
   ) => BrowserViewScheduledTask;
@@ -359,6 +369,7 @@ interface BrowserViewEntry {
   certificateError: BrowserViewCertificateErrorChange | null;
   debugSession: BrowserDebugSession | null;
   pickerSession: BrowserElementPickerSession | null;
+  annotationSession: BrowserAnnotationSession | null;
   devToolsWindow: BrowserViewDevToolsWindow | null;
   viewportPreset: BrowserViewViewportPresetId;
   overlayOwnerIds: string[];
@@ -519,6 +530,10 @@ export class BrowserViewManager {
     windowId: string,
     change: AgentBrowserViewTileHandoffChange,
   ) => void;
+  private readonly notifyAnnotationEvent: (
+    windowId: string,
+    change: BrowserAnnotationSessionIpcEvent,
+  ) => void;
   private readonly scheduleDebugSnapshot: (
     callback: () => void,
   ) => BrowserViewScheduledTask;
@@ -584,6 +599,7 @@ export class BrowserViewManager {
     this.notifyCdpSessionEnded = options.notifyCdpSessionEnded;
     this.notifyCdpTargetAttached = options.notifyCdpTargetAttached;
     this.notifyTileHandoff = options.notifyTileHandoff;
+    this.notifyAnnotationEvent = options.notifyAnnotationEvent;
     this.scheduleDebugSnapshot = options.scheduleDebugSnapshot;
     this.applyStorageStateToBrowser = options.applyStorageState;
     this.captureStorageStateFromBrowser = options.captureStorageState;
@@ -902,6 +918,7 @@ export class BrowserViewManager {
     }
     this.entriesByKey.delete(keyId);
     this.endPickerSession(entry);
+    this.endAnnotationSession(entry, "tile-close");
     entry.desiredVisible = false;
     entry.view.setVisible(false);
     const window =
@@ -1292,6 +1309,43 @@ export class BrowserViewManager {
     this.endPickerSession(entry);
   }
 
+  startAnnotation(
+    windowId: string,
+    input: BrowserViewTileKey,
+  ): Promise<BrowserAnnotationStartResult> {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) {
+      return Promise.resolve({ ok: false, reason: "tile-not-found" });
+    }
+    if (entry.status !== "ready") {
+      return Promise.resolve({ ok: false, reason: "page-not-ready" });
+    }
+    this.endAnnotationSession(entry, "replaced");
+    const session = new BrowserAnnotationSession({
+      webContents: entry.view.webContents,
+      onEvent: (event) => {
+        if (entry.annotationSession !== session) return;
+        this.notifyAnnotationEvent(entry.key.windowId, {
+          ...toTileKey(entry.key),
+          event,
+        });
+      },
+    });
+    entry.annotationSession = session;
+    return session.start().then((result) => {
+      if (!result.ok && entry.annotationSession === session) {
+        entry.annotationSession = null;
+      }
+      return result;
+    });
+  }
+
+  cancelAnnotation(windowId: string, input: BrowserViewTileKey): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    this.endAnnotationSession(entry, "cancelled");
+  }
+
   openDevTools(windowId: string, input: BrowserViewTileKey): void {
     const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
     if (entry === undefined) return;
@@ -1453,6 +1507,18 @@ export class BrowserViewManager {
     session.dispose();
   }
 
+  private endAnnotationSession(
+    entry: BrowserViewEntry,
+    reason: BrowserAnnotationEndReason,
+  ): void {
+    const session = entry.annotationSession;
+    if (session === null) return;
+    session.dispose(reason);
+    if (entry.annotationSession === session) {
+      entry.annotationSession = null;
+    }
+  }
+
   dispose(): void {
     this.offWindowChange();
     this.offDownloadChange();
@@ -1589,6 +1655,7 @@ export class BrowserViewManager {
       certificateError: null,
       debugSession: null,
       pickerSession: null,
+      annotationSession: null,
       devToolsWindow: null,
       viewportPreset,
       overlayOwnerIds: [],
@@ -1675,6 +1742,7 @@ export class BrowserViewManager {
     rejectOnFailure: boolean,
   ): Promise<void> {
     this.endPickerSession(entry);
+    this.endAnnotationSession(entry, "navigation");
     entry.requestedUrl = url;
     entry.status = "loading";
     entry.statusReason = null;
@@ -1731,6 +1799,7 @@ export class BrowserViewManager {
     // setStatus choke point never fires. End the picker here too - its captured
     // pageUrl is now stale and the shield should not survive the route change.
     this.endPickerSession(entry);
+    this.endAnnotationSession(entry, "navigation");
     this.cancelControl(entry, "navigation committed", null);
     this.invalidateOverlaySnapshot(entry, "in-page-navigation");
     this.emitStatus(entry);
@@ -1742,6 +1811,7 @@ export class BrowserViewManager {
   ): void {
     const detail = readRenderGoneReason(args);
     this.endPickerSession(entry);
+    this.endAnnotationSession(entry, "crash");
     this.cancelControl(entry, "renderer process gone", null);
     this.invalidateOverlaySnapshot(entry, "render-process-gone");
     this.setStatus(entry, "dead", detail);
@@ -2151,6 +2221,10 @@ export class BrowserViewManager {
     // renderer promise settles instead of hanging over a stale page.
     if (status !== "ready") {
       this.endPickerSession(entry);
+      this.endAnnotationSession(
+        entry,
+        status === "dead" ? "crash" : "reload",
+      );
       this.cancelControl(entry, reason ?? "browser tile is not ready", null);
     }
     entry.status = status;
@@ -2562,6 +2636,8 @@ export class BrowserViewManager {
     webContents.off("render-process-gone", entry.listeners.renderProcessGone);
     entry.pickerSession?.dispose();
     entry.pickerSession = null;
+    entry.annotationSession?.dispose("tile-close");
+    entry.annotationSession = null;
     if (this.pipCaptureEntry === entry) this.pipCaptureEntry = null;
     entry.debugSession?.dispose();
     entry.debugSession = null;
