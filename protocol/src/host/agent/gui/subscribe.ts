@@ -1335,10 +1335,15 @@ export type ChatSubscribeClientFrame = z.infer<
 
 // `1.4` through `1.6` are released lines. Keep their client frames on the
 // pre-collision intent shape while the live `1.7` line uses the current one.
-const chatSubscribeClientFrameSchemaV14ToV16 = z.discriminatedUnion(
+// Exported so the host parses negotiated 1.4-1.6 frames against this freeze
+// rather than the live schema (which would accept branch-born 1.7 send fields).
+export const chatSubscribeClientFrameSchemaV14ToV16 = z.discriminatedUnion(
   "kind",
   [...chatSubscribeClientFrameSchemaBeforeV14Options, activeProfileUpdateClientFrameSchema],
 );
+export type ChatSubscribeClientFrameV14ToV16 = z.infer<
+  typeof chatSubscribeClientFrameSchemaV14ToV16
+>;
 
 // ─── Frozen `chat.subscribe@1.0` shape (host-v1.0.0, as shipped) ──────────
 //
