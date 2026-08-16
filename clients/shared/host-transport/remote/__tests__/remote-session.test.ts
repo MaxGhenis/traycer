@@ -1026,6 +1026,30 @@ describe("RemoteSession dial-failure logging", () => {
   }
 
   it(
+    "preserves the legacy missing-bearer cause when client auth is unavailable",
+    async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const relay = new FakeRelayHost();
+      const lease = new MutableBearerLease("", "user-1");
+      const session = buildSession(relay, lease, null);
+      try {
+        session.start();
+        await vi.waitFor(
+          () =>
+            expect(sessionLines(warnSpy.mock.calls)).toContainEqual(
+              expect.stringContaining("missing-bearer"),
+            ),
+          WAIT,
+        );
+      } finally {
+        session.close();
+        warnSpy.mockRestore();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  it(
     "logs a grant-mint failure once, with its detail, and suppresses identical retries",
     async () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});

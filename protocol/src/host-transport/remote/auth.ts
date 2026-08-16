@@ -21,6 +21,8 @@ export interface RemoteSessionOpenAuth {
  * host-principal deployments may deliberately reuse it as the in-channel proof.
  */
 export interface RemoteSessionAuth {
+  /** Stable diagnostic cause used when no open-frame credentials are ready. */
+  readonly missingOpenAuthCause: string;
   readonly readOpenAuth: (
     attachGrant: AttachGrant,
   ) => RemoteSessionOpenAuth | null;

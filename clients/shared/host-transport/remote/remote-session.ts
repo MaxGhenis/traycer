@@ -76,6 +76,7 @@ function createClientRemoteSessionAuth(
     }
   };
   return {
+    missingOpenAuthCause: "missing-bearer",
     readOpenAuth: () => {
       const token = readBearer();
       if (token === null) {

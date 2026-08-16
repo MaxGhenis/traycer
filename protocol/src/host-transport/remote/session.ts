@@ -1284,7 +1284,10 @@ export class RemoteSession<
   ): void {
     const auth = this.options.auth.readOpenAuth(connection.attachGrant);
     if (auth === null) {
-      this.handleConnectionLost(generation, "missing-session-auth");
+      this.handleConnectionLost(
+        generation,
+        this.options.auth.missingOpenAuthCause,
+      );
       return;
     }
     this.phase = "opening";
