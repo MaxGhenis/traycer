@@ -77,7 +77,6 @@ export interface PipSnapshot {
   readonly target: PipTarget | null;
   readonly outcome: PipBurstOutcome | null;
   readonly streamHealth: PipStreamHealth;
-  readonly moreLiveCount: number;
   readonly openTileEnabled: boolean;
   readonly pinned: boolean;
   readonly lingerActive: boolean;
@@ -91,7 +90,6 @@ export const HIDDEN_PIP_SNAPSHOT: PipSnapshot = {
   target: null,
   outcome: null,
   streamHealth: "live",
-  moreLiveCount: 0,
   openTileEnabled: true,
   pinned: false,
   lingerActive: false,
@@ -157,6 +155,10 @@ export function applyPipBurstStarted(input: {
   readonly chatId: string;
   readonly startedAt: number | undefined;
 }): void {
+  const existing =
+    liveBursts.get(input.burstId) ?? finishedBursts.get(input.burstId);
+  const hadEligibleLive = listEligibleLive(input.epicId).length > 0;
+  const history = burstHistory(existing);
   const startedAt = input.startedAt ?? nowFn();
   const burst: PipBurst = {
     epicId: input.epicId,
@@ -166,11 +168,8 @@ export function applyPipBurstStarted(input: {
     burstId: input.burstId,
     chatId: input.chatId,
     startedAt,
-    arrivedAt: nowFn(),
-    arrivalOrder: nextArrivalOrder,
-    everStreamed: false,
+    ...history,
   };
-  nextArrivalOrder += 1;
   liveBursts.set(input.burstId, burst);
   finishedBursts.delete(input.burstId);
   const epic = getOrCreateEpic(input.epicId);
@@ -189,7 +188,49 @@ export function applyPipBurstStarted(input: {
     emit();
     return;
   }
+  if (
+    isTerminalLinger(epic, hadEligibleLive) &&
+    !dismissed &&
+    !tileIsVisible(burst)
+  ) {
+    goLive(input.epicId, burst);
+    emit();
+    return;
+  }
   recomputeEpic(input.epicId);
+}
+
+function burstHistory(existing: PipBurst | undefined): {
+  readonly arrivedAt: number;
+  readonly arrivalOrder: number;
+  readonly everStreamed: boolean;
+} {
+  if (existing !== undefined) {
+    return {
+      arrivedAt: existing.arrivedAt,
+      arrivalOrder: existing.arrivalOrder,
+      everStreamed: existing.everStreamed,
+    };
+  }
+  const history = {
+    arrivedAt: nowFn(),
+    arrivalOrder: nextArrivalOrder,
+    everStreamed: false,
+  };
+  nextArrivalOrder += 1;
+  return history;
+}
+
+function isTerminalLinger(
+  epic: EpicPipState,
+  hadEligibleLive: boolean,
+): boolean {
+  return (
+    epic.phase === "finished" &&
+    epic.lingerEndsAt !== null &&
+    nowFn() < epic.lingerEndsAt &&
+    !hadEligibleLive
+  );
 }
 
 export function applyPipBurstEnded(input: {
@@ -779,7 +820,6 @@ function deriveSnapshot(epicId: string): PipSnapshot {
       target: epic.target,
       outcome: epic.outcome,
       streamHealth: epic.streamHealth,
-      moreLiveCount: 0,
       openTileEnabled: epic.outcome !== "closed",
       pinned: epic.pinnedBurstId !== null,
       lingerActive: false,
@@ -788,17 +828,12 @@ function deriveSnapshot(epicId: string): PipSnapshot {
       targetEverStreamed: epic.targetEverStreamed,
     };
   }
-  const eligible = listEligibleLive(epicId);
   const displayedId = epic.target?.burstId;
-  const moreLiveCount = eligible.filter(
-    (burst) => burst.burstId !== displayedId,
-  ).length;
   return {
     phase: epic.phase,
     target: epic.target,
     outcome: epic.outcome,
     streamHealth: epic.streamHealth,
-    moreLiveCount,
     openTileEnabled: epic.outcome !== "closed",
     pinned: epic.pinnedBurstId !== null,
     lingerActive:
@@ -877,7 +912,6 @@ function snapshotsEqual(left: PipSnapshot, right: PipSnapshot): boolean {
     left.phase === right.phase &&
     left.outcome === right.outcome &&
     left.streamHealth === right.streamHealth &&
-    left.moreLiveCount === right.moreLiveCount &&
     left.openTileEnabled === right.openTileEnabled &&
     left.pinned === right.pinned &&
     left.lingerActive === right.lingerActive &&

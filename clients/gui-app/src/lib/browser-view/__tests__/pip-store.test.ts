@@ -345,7 +345,7 @@ describe("pip-store lifecycle", () => {
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
   });
 
-  it("after linger, leaves a finished target for a newer live burst", () => {
+  it("promotes a new burst immediately during terminal linger", () => {
     startBurst({
       burstId: "b1",
       sessionId: "s1",
@@ -354,7 +354,7 @@ describe("pip-store lifecycle", () => {
       hostId: undefined,
       chatId: undefined,
     });
-    endBurst("b1", "finished", 2);
+    endBurst("b1", "finished", Date.now());
     expect(getPipSnapshot(EPIC).phase).toBe("finished");
     startBurst({
       burstId: "b2",
@@ -364,12 +364,11 @@ describe("pip-store lifecycle", () => {
       hostId: undefined,
       chatId: undefined,
     });
-    expect(getPipSnapshot(EPIC).phase).toBe("finished");
-    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
-    expect(getPipSnapshot(EPIC).moreLiveCount).toBe(1);
-    vi.advanceTimersByTime(PIP_LINGER_MS);
     expect(getPipSnapshot(EPIC).phase).toBe("live");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
+    expect(getPipSnapshot(EPIC).rows.map((row) => row.target.burstId)).toEqual([
+      "b1",
+    ]);
   });
 
   it("does not let a recalled finished target block a newer live burst", () => {
@@ -522,43 +521,6 @@ describe("pip-store lifecycle", () => {
     expect(getPipSnapshot(EPIC).openTileEnabled).toBe(false);
   });
 
-  it("counts other live bursts in moreLiveCount for the badge", () => {
-    startBurst({
-      burstId: "b1",
-      sessionId: "s1",
-      tabId: "t1",
-      startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
-    });
-    startBurst({
-      burstId: "b2",
-      sessionId: "s2",
-      tabId: "t2",
-      startedAt: 2,
-      hostId: undefined,
-      chatId: undefined,
-    });
-    startBurst({
-      burstId: "b3",
-      sessionId: "s3",
-      tabId: "t3",
-      startedAt: 3,
-      hostId: undefined,
-      chatId: undefined,
-    });
-    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
-    expect(getPipSnapshot(EPIC).moreLiveCount).toBe(2);
-
-    vi.advanceTimersByTime(PIP_SWITCH_DWELL_MS);
-    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b3");
-    expect(getPipSnapshot(EPIC).moreLiveCount).toBe(2);
-
-    endBurst("b3", "finished", Date.now());
-    expect(getPipSnapshot(EPIC).phase).toBe("finished");
-    expect(getPipSnapshot(EPIC).moreLiveCount).toBe(2);
-  });
-
   it("keeps dismissals across hide/show without a relaunch reset of in-memory state", () => {
     startBurst({
       burstId: "b1",
@@ -668,6 +630,67 @@ describe("pip-store multi-session stack", () => {
       "b3",
       "b4",
     ]);
+  });
+
+  it("preserves arrival order and streamed history when a burst is replayed", () => {
+    vi.setSystemTime(2_000);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    vi.setSystemTime(2_001);
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+    vi.setSystemTime(2_002);
+    startBurst({
+      burstId: "b3",
+      sessionId: "s3",
+      tabId: "t3",
+      startedAt: 3,
+      hostId: "host-a",
+      chatId: "chat-c",
+    });
+    const originalArrival = getPipSnapshot(EPIC).rows[0]?.arrivedAt;
+
+    endBurst("b2", "finished", 2_003);
+    vi.setSystemTime(2_004);
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 4,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+    expect(getPipSnapshot(EPIC).rows.map((row) => row.target.burstId)).toEqual([
+      "b2",
+      "b3",
+    ]);
+    expect(getPipSnapshot(EPIC).rows[0]?.arrivedAt).toBe(originalArrival);
+
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 5,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    endBurst("b2", "finished", 2_005);
+    endBurst("b3", "finished", 2_005);
+    endBurst("b1", "finished", 2_005);
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
+    expect(getPipSnapshot(EPIC).targetEverStreamed).toBe(true);
   });
 
   it("keeps a finished background row until its own linger deadline", () => {

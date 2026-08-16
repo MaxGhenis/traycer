@@ -290,7 +290,9 @@ describe("PipEpicSessionsManager", () => {
     expect(getPipSnapshot(EPIC).phase).toBe("live");
     expect(getPipSnapshot(EPIC).target?.hostId).toBe("host-a");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("burst-a");
-    expect(getPipSnapshot(EPIC).moreLiveCount).toBe(1);
+    expect(getPipSnapshot(EPIC).rows.map((row) => row.target.burstId)).toEqual([
+      "burst-b",
+    ]);
 
     setPipActiveHostId("host-b");
     expect(getPipSnapshot(EPIC).target?.hostId).toBe("host-b");
@@ -308,7 +310,7 @@ describe("PipEpicSessionsManager", () => {
     );
     expect(getPipSnapshot(EPIC).phase).toBe("live");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("burst-a");
-    expect(getPipSnapshot(EPIC).moreLiveCount).toBe(0);
+    expect(getPipSnapshot(EPIC).rows[0]?.kind).toBe("lingering");
 
     hostA.request.onFrame(
       burstEndedFrame({
@@ -352,7 +354,9 @@ describe("PipEpicSessionsManager", () => {
         burstId: "burst-b",
       }),
     );
-    expect(getPipSnapshot(EPIC).moreLiveCount).toBe(1);
+    expect(getPipSnapshot(EPIC).rows.map((row) => row.target.burstId)).toEqual([
+      "burst-b",
+    ]);
 
     manager.setHostIds(["host-a"]);
 
@@ -363,7 +367,7 @@ describe("PipEpicSessionsManager", () => {
       "host-a",
     ]);
     expect(getPipSnapshot(EPIC).target?.hostId).toBe("host-a");
-    expect(getPipSnapshot(EPIC).moreLiveCount).toBe(0);
+    expect(getPipSnapshot(EPIC).rows).toEqual([]);
 
     hostB.request.onFrame(
       burstStartedFrame({
@@ -372,7 +376,7 @@ describe("PipEpicSessionsManager", () => {
         burstId: "burst-stale",
       }),
     );
-    expect(getPipSnapshot(EPIC).moreLiveCount).toBe(0);
+    expect(getPipSnapshot(EPIC).rows).toEqual([]);
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("burst-a");
 
     manager.setHostIds(["host-a", "host-b"]);
@@ -400,7 +404,9 @@ describe("PipEpicSessionsManager", () => {
       ["s-a", "host-a"],
       ["s-b2", "host-b"],
     ]);
-    expect(getPipSnapshot(EPIC).moreLiveCount).toBe(1);
+    expect(getPipSnapshot(EPIC).rows.map((row) => row.target.burstId)).toEqual([
+      "burst-rejoin",
+    ]);
     manager.dispose();
   });
 
