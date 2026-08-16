@@ -44,6 +44,16 @@ export function openPipHeadlessStream(input: {
     const parsed = browserScreencastServerFrameSchema.safeParse(envelope);
     if (!parsed.success) return;
     input.onFrame(parsed.data, binaryPayload);
+    if (parsed.data.kind === "frame") {
+      session.sendClientFrame(
+        {
+          kind: "ack",
+          hasBinaryPayload: false,
+          sequence: parsed.data.sequence,
+        },
+        null,
+      );
+    }
   });
   return {
     close: () => {

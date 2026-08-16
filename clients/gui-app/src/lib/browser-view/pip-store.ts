@@ -261,13 +261,11 @@ export function applyPipStreamHealth(
   if (epic === undefined) return;
   if (epic.streamHealth === health) return;
   const targetHostId = epic.target?.hostId;
-  const lifecycle =
-    targetHostId === undefined
-      ? "live"
-      : (hostLifecycles.get(hostLifecycleKey(epicId, targetHostId)) ?? "live");
-  // Frames arriving is stronger than a connecting/reconnecting sessions
-  // slot. Only a dead host may refuse a live/stale upgrade.
-  if (isDeadHostLifecycle(lifecycle) && health !== "disconnected") return;
+  // A frame cannot arrive from a dead stream. Promote the sessions lifecycle
+  // too so a stale close event cannot poison the next burst from this host.
+  if (health === "live" && targetHostId !== undefined) {
+    hostLifecycles.set(hostLifecycleKey(epicId, targetHostId), "live");
+  }
   epic.streamHealth = health;
   emit();
 }
@@ -825,10 +823,6 @@ function hostHealthFor(epicId: string, hostId: string): PipStreamHealth {
   if (lifecycle === undefined) return "live";
   if (lifecycle === "live" || lifecycle === "connecting") return "live";
   return "disconnected";
-}
-
-function isDeadHostLifecycle(lifecycle: PipHostLifecycle): boolean {
-  return lifecycle === "closed" || lifecycle === "failed";
 }
 
 function scheduleLinger(epicId: string): void {

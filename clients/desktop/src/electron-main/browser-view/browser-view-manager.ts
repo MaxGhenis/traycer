@@ -162,6 +162,8 @@ export type BrowserViewWindowOpenResult =
     };
 
 export interface BrowserViewCapturedImage {
+  getSize(): { readonly width: number; readonly height: number };
+  toJPEG(quality: number): Uint8Array;
   toDataURL(): string;
 }
 
@@ -1200,6 +1202,10 @@ export class BrowserViewManager {
     const entry = this.pipCaptureEntry;
     this.pipCaptureEntry = null;
     entry?.debugSession?.stopPipCapture();
+    if (entry !== null) {
+      this.applyEntryBounds(entry);
+      this.applyEntryVisibility(entry);
+    }
   }
 
   async capturePage(
@@ -2274,8 +2280,9 @@ export class BrowserViewManager {
 
   /**
    * Hidden agent-driven tabs are created unbound and without bounds.
-   * Chromium will not emit Page.screencastFrame until the view is in a
-   * window and has a compositor size. Keep the view invisible.
+   * Native page capture needs the view in a window with a compositor size.
+   * Electron returns an empty NativeImage for a setVisible(false) view, so
+   * present hidden views fully offscreen for the duration of PiP capture.
    */
   private prepareEntryForPipCapture(
     entry: BrowserViewEntry,
@@ -2297,11 +2304,25 @@ export class BrowserViewManager {
     }
     entry.view.webContents.setBackgroundThrottling(false);
     this.applyEntryVisibility(entry);
+    const captureOffscreen = entry.lastLoggedVisible !== true;
+    if (captureOffscreen) {
+      const bounds = effectiveViewportBounds(
+        entry.bounds ?? { x: 0, y: 0, width: size.width, height: size.height },
+        entry.viewportPreset,
+      );
+      entry.view.setBounds({
+        x: -bounds.width,
+        y: -bounds.height,
+        width: bounds.width,
+        height: bounds.height,
+      });
+      entry.view.setVisible(true);
+    }
     log.info("[browser-view] pip capture prepared", {
       keyId: entryKeyId(entry.key),
       attached: entry.parentWindowId !== null,
       bounds: entry.bounds,
-      visible: false,
+      captureOffscreen,
     });
   }
 

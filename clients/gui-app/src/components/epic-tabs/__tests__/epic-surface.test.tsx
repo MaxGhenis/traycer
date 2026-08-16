@@ -23,6 +23,12 @@ const readySessionsState = vi.hoisted(() => ({
   items: [] as BrowserSessionInfo[],
 }));
 
+const pipMountState = vi.hoisted(() => ({
+  mounts: 0,
+  unmounts: 0,
+  nextId: 1,
+}));
+
 vi.mock("@tanstack/react-router", () => ({
   useMatch: () => undefined,
 }));
@@ -108,6 +114,38 @@ vi.mock("@/components/epic-canvas/epic-route-session-body", () => ({
   ),
 }));
 
+vi.mock("@/components/epic-canvas/pip/agent-browser-pip", async () => {
+  const { useEffect, useState } = await import("react");
+  return {
+    AgentBrowserPip: (props: {
+      readonly epicId: string;
+      readonly viewTabId: string;
+      readonly surfaceVisible: boolean;
+    }) => {
+      const [mountId] = useState(() => {
+        const id = pipMountState.nextId;
+        pipMountState.nextId += 1;
+        pipMountState.mounts += 1;
+        return id;
+      });
+      useEffect(() => {
+        return () => {
+          pipMountState.unmounts += 1;
+        };
+      }, []);
+      return (
+        <div
+          data-epic-id={props.epicId}
+          data-mount-id={String(mountId)}
+          data-surface-visible={String(props.surfaceVisible)}
+          data-testid="agent-browser-pip"
+          data-view-tab-id={props.viewTabId}
+        />
+      );
+    },
+  };
+});
+
 /** Probe consumer under EpicBrowserSessionsScope (real cold/ready context). */
 vi.mock("@/components/epic-canvas/sidebar/epic-sidebar-column", async () => {
   const { useBrowserSessionsContext } =
@@ -163,6 +201,9 @@ describe("<EpicSurface />", () => {
     openEpicHandleState.handle = null;
     readySessionsState.items = [];
     chatRecordsState.chats = [{ id: "chat-z" }, { id: "chat-a" }];
+    pipMountState.mounts = 0;
+    pipMountState.unmounts = 0;
+    pipMountState.nextId = 1;
   });
 
   afterEach(() => {
@@ -235,5 +276,31 @@ describe("<EpicSurface />", () => {
     expect(
       screen.getByTestId("browser-session-lifecycle-tab-a").textContent,
     ).toBe("live");
+  });
+
+  it("keeps the same AgentBrowserPip instance across the null open-epic handle to ready handle transition", () => {
+    const { rerender } = renderEpicSurface("tab-a", "epic-a");
+
+    const pip = screen.getByTestId("agent-browser-pip");
+    const mountId = pip.dataset.mountId;
+    expect(mountId).toEqual("1");
+    expect(pipMountState.mounts).toBe(1);
+    expect(pipMountState.unmounts).toBe(0);
+
+    readySessionsState.items = [SAMPLE_SESSION];
+    openEpicHandleState.handle = { epicId: "epic-a" };
+
+    act(() => {
+      rerender(
+        <TabSurfaceActivityProvider activity={{ visible: true, focused: true }}>
+          <EpicSurface epicId="epic-a" tabId="tab-a" />
+        </TabSurfaceActivityProvider>,
+      );
+    });
+
+    const pipAfterReady = screen.getByTestId("agent-browser-pip");
+    expect(pipAfterReady.dataset.mountId).toBe(mountId);
+    expect(pipMountState.mounts).toBe(1);
+    expect(pipMountState.unmounts).toBe(0);
   });
 });

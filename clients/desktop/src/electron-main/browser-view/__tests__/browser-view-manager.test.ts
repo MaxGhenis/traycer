@@ -4,6 +4,7 @@ import { log } from "../../app/logger";
 import {
   BrowserViewManager,
   PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT,
+  type BrowserViewCapturedImage,
   type BrowserViewDebugger,
   type BrowserViewManagerOptions,
   type BrowserViewPopupWebContents,
@@ -233,9 +234,12 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
     return Promise.resolve([]);
   }
 
-  capturePage(): Promise<{ toDataURL(): string }> {
+  capturePage(): Promise<BrowserViewCapturedImage> {
+    this.lifecycle.push("capturePage");
     this.captureVisibleStates.push(this.readVisible());
     return Promise.resolve({
+      getSize: () => ({ width: 320, height: 180 }),
+      toJPEG: () => Uint8Array.from([1, 2, 3]),
       toDataURL: () => `data:image/png;base64,${this.id}`,
     });
   }
@@ -1318,7 +1322,7 @@ describe("BrowserViewManager", () => {
     await creation;
   });
 
-  it("binds a never-shown background tab before pip capture so Chromium can composite", async () => {
+  it("captures a never-shown background tab offscreen and restores it after PiP", async () => {
     const harness = createHarness();
     const creation = harness.manager.createBackgroundTab("window-1", {
       ...BASE_KEY,
@@ -1360,15 +1364,26 @@ describe("BrowserViewManager", () => {
     expect(started).toBe(true);
     expect(window.contentView.children).toEqual([view]);
     expect(view.bounds.at(-1)).toEqual({
+      x: -320,
+      y: -180,
+      width: 320,
+      height: 180,
+    });
+    expect(view.visible).toBe(true);
+    expect(view.webContents.backgroundThrottlingStates.at(-1)).toBe(false);
+    await vi.waitFor(() => {
+      expect(view.webContents.lifecycle).toContain("capturePage");
+      expect(frames[1]?.frame.kind).toBe("frame");
+    });
+    expect(frames[0]?.frame.kind).toBe("started");
+    harness.manager.stopPipCapture();
+    expect(view.bounds.at(-1)).toEqual({
       x: 0,
       y: 0,
       width: 320,
       height: 180,
     });
     expect(view.visible).toBe(false);
-    expect(view.webContents.backgroundThrottlingStates.at(-1)).toBe(false);
-    expect(view.webContents.lifecycle).toContain("Page.startScreencast");
-    expect(frames[0]?.frame.kind).toBe("started");
   });
 
   it("reparents the same view across panes and windows without reloading", () => {

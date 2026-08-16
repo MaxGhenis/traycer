@@ -390,7 +390,7 @@ describe("pip-store lifecycle", () => {
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
   });
 
-  it("lets arriving frames mark live even while the sessions slot is connecting", () => {
+  it("lets arriving frames override stale sessions lifecycle state", () => {
     applyPipHostLifecycle(EPIC, "host-a", "connecting");
     startBurst({
       burstId: "b1",
@@ -408,7 +408,7 @@ describe("pip-store lifecycle", () => {
     applyPipHostLifecycle(EPIC, "host-a", "closed");
     expect(getPipSnapshot(EPIC).streamHealth).toBe("disconnected");
     applyPipStreamHealth(EPIC, "live");
-    expect(getPipSnapshot(EPIC).streamHealth).toBe("disconnected");
+    expect(getPipSnapshot(EPIC).streamHealth).toBe("live");
   });
 
   it("latches the displayed target during dwell so click-through stays on the old burst", () => {

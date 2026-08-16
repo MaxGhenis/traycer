@@ -72,6 +72,7 @@ import { incrementPipHeadlessArmRunsForTests } from "@/lib/browser-view/pip-capt
 import { cn } from "@/lib/utils";
 import { useEpicChatRecords } from "@/lib/epic-selectors";
 import { useRunnerHostOrNull } from "@/providers/use-runner-host";
+import { useMaybeOpenEpicHandle } from "@/providers/use-open-epic-handle";
 import {
   findOpenArtifactInTab,
   useEpicCanvasStore,
@@ -88,12 +89,13 @@ export function AgentBrowserPip(props: {
   readonly surfaceVisible: boolean;
 }): ReactElement | null {
   const activeHostId = useReactiveActiveHostId();
+  const epicHandle = useMaybeOpenEpicHandle();
   useEffect(() => {
     setPipActiveHostId(activeHostId);
   }, [activeHostId]);
 
   const snapshot = usePipSnapshot(props.epicId);
-  if (!props.surfaceVisible) return null;
+  if (epicHandle === null || !props.surfaceVisible) return null;
   if (snapshot.phase === "hidden" || snapshot.phase === "dismissed-burst") {
     return null;
   }

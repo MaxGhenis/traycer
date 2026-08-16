@@ -142,6 +142,16 @@ describe("openPipHeadlessStream", () => {
     };
     harness.deliverServerFrame(frame, jpegBytes);
     expect(received).toEqual([{ frame, jpegBytes }]);
+    expect(harness.sentClientFrames).toEqual([
+      {
+        envelope: {
+          kind: "ack",
+          hasBinaryPayload: false,
+          sequence: 7,
+        },
+        binaryPayload: null,
+      },
+    ]);
 
     handle.close();
     expect(harness.closeCount.value).toBe(1);

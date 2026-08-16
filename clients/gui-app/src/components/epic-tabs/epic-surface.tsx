@@ -67,15 +67,15 @@ export function EpicSurface(props: EpicSurfaceProps) {
                     focusPaneId={activeSearch?.focusPaneId}
                     focusTileInstanceId={activeSearch?.focusTileInstanceId}
                   />
-                  <AgentBrowserPip
-                    epicId={props.epicId}
-                    viewTabId={props.tabId}
-                    surfaceVisible={activity.visible}
-                  />
                 </div>
               </div>
             </EpicViewTabContext.Provider>
           </EpicBrowserSessionsScope>
+          <AgentBrowserPip
+            epicId={props.epicId}
+            viewTabId={props.tabId}
+            surfaceVisible={activity.visible}
+          />
         </EpicSessionProvider>
       </PaneVisibilityContext.Provider>
     </PaneSurfaceActivityContext.Provider>
