@@ -1536,10 +1536,14 @@ describe("electron-browser-tab-store createElectronTab (ticket 14)", () => {
     const registration = frames.find(
       (frame) => frame.kind === "registerElectronTab",
     );
-    if (
-      registration === undefined ||
-      registration.kind !== "registerElectronTab"
-    ) {
+    expect(registration).toEqual(
+      expect.objectContaining({
+        kind: "registerElectronTab",
+        sessionId,
+        requestedTabId: "tab-source",
+      }),
+    );
+    if (registration === undefined) {
       throw new Error("expected background registration frame");
     }
     handleElectronBrowserTabFrame({

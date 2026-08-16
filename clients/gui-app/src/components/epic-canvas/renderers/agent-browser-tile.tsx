@@ -81,6 +81,25 @@ export interface AgentBrowserTileProps {
   readonly usePrimaryProfileRuntime?: boolean;
 }
 
+function effectiveBrowserStatus(
+  browserViewAvailable: boolean,
+  status: BrowserViewStatus,
+  reason: string | null,
+): { readonly status: BrowserViewStatus; readonly reason: string | null } {
+  return browserViewAvailable
+    ? { status, reason }
+    : { status: "dead", reason: "Native browser views are unavailable." };
+}
+
+function browserLifecycleUrl(
+  attemptedNavigation: AttemptedNavigation | null,
+  statusUrl: string,
+  initialUrl: string,
+): string {
+  if (attemptedNavigation !== null) return attemptedNavigation.url;
+  return statusUrl.length > 0 ? statusUrl : initialUrl;
+}
+
 /**
  * Electron tile used for agent-created pages and native session tabs.
  * Primary-profile session tiles keep the full PRIMARY bridge so chrome
@@ -151,12 +170,8 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     [props.viewTabId, props.paneId, props.node.instanceId, props.node.id],
   );
 
-  const effectiveStatus: BrowserViewStatus =
-    browserView === null ? "dead" : status;
-  const effectiveStatusReason =
-    browserView === null
-      ? "Native browser views are unavailable."
-      : statusReason;
+  const { status: effectiveStatus, reason: effectiveStatusReason } =
+    effectiveBrowserStatus(browserView !== null, status, statusReason);
 
   // The host reports only loading/ready/dead - no typed timeout, so a session
   // that never activates sits in "loading" forever with nothing to tell the
@@ -367,9 +382,11 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     initialViewportPreset: readAgentViewportPreset(props.node.viewportPreset),
     onAttemptedUrl: latchAttemptedUrl,
   });
-  const lifecycleUrl =
-    attemptedNavigation?.url ??
-    (statusUrl.length > 0 ? statusUrl : props.node.url);
+  const lifecycleUrl = browserLifecycleUrl(
+    attemptedNavigation,
+    statusUrl,
+    props.node.url,
+  );
 
   useEffect(() => {
     if (

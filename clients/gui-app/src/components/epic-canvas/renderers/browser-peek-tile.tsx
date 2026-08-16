@@ -59,6 +59,13 @@ interface BrowserPeekRenderState {
   } | null;
 }
 
+function migrationPendingForClient(
+  stateMatchesClient: boolean,
+  streamState: BrowserPeekRenderState,
+): boolean {
+  return stateMatchesClient && streamState.migrationPending;
+}
+
 type BrowserPeekDialog = Extract<
   BrowserScreencastServerFrame,
   { readonly kind: "dialogOpened" }
@@ -71,6 +78,7 @@ export interface BrowserPeekTileProps {
 }
 
 export function BrowserPeekTile(props: BrowserPeekTileProps) {
+  const { epicId, node, onMigrated } = props;
   const tabHostId = useTabHostId();
   const hostEntry = useHostDirectoryEntry(tabHostId);
   const auth = useStreamAuthRevalidator();
@@ -78,8 +86,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const visible = useTileBodyVisible();
   useRegisterVisibleBrowserTile({
     hostId: tabHostId,
-    sessionId: props.node.sessionId,
-    tabId: props.node.tabId,
+    sessionId: node.sessionId,
+    tabId: node.tabId,
     visible,
   });
   const sessionRef = useRef<{
@@ -122,8 +130,10 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const image = stateMatchesClient ? streamState.image : null;
   const lifecycle = stateMatchesClient ? streamState.lifecycle : "connecting";
   const details = peekDetailsForRender(stateMatchesClient, streamState, client);
-  const migrationPending =
-    stateMatchesClient && streamState.migrationPending;
+  const migrationPending = migrationPendingForClient(
+    stateMatchesClient,
+    streamState,
+  );
   const frameSize = stateMatchesClient ? streamState.frameSize : null;
   const armedEpoch = armedState?.client === client ? armedState.epoch : null;
   const dialog = dialogForClient(dialogState, client);
@@ -184,9 +194,9 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     }
 
     const session = client.subscribe("browser.screencast", {
-      epicId: props.epicId,
-      sessionId: props.node.sessionId,
-      tabId: props.node.tabId,
+      epicId,
+      sessionId: node.sessionId,
+      tabId: node.tabId,
       maxWidth: DEFAULT_MAX_WIDTH,
       maxHeight: DEFAULT_MAX_HEIGHT,
       quality: DEFAULT_QUALITY,
@@ -242,7 +252,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         parsed.data.kind === "complete" &&
         parsed.data.cause === "migrated"
       ) {
-        props.onMigrated?.();
+        onMigrated?.();
       }
       if (parsed.data.kind === "migrationPending") {
         const pending = parsed.data.pending;
@@ -292,10 +302,10 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     };
   }, [
     client,
-    props.epicId,
-    props.node.sessionId,
-    props.node.tabId,
-    props.onMigrated,
+    epicId,
+    node.sessionId,
+    node.tabId,
+    onMigrated,
     setDetails,
     setFrameSize,
     setImage,
@@ -489,13 +499,13 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   return (
     <div
       className="flex h-full w-full flex-col bg-canvas text-foreground"
-      data-testid={`browser-peek-tile-${props.node.instanceId}`}
+      data-testid={`browser-peek-tile-${node.instanceId}`}
     >
       <div className="flex min-h-0 items-center gap-2 border-b border-border px-3 py-2 text-ui-sm">
         <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">{props.node.name}</div>
+          <div className="truncate font-medium">{node.name}</div>
           <div className="truncate font-mono text-ui-xs text-muted-foreground">
-            {props.node.initialUrl}
+            {node.initialUrl}
           </div>
           {migrationPending ? (
             <div className="truncate text-ui-xs text-muted-foreground" aria-live="polite">
@@ -910,7 +920,7 @@ function useScreencastViewportBridge(
       }, VIEWPORT_DEBOUNCE_MS);
     };
     const observer = new ResizeObserver(([entry]) => {
-      if (entry !== undefined) emit(entry.contentRect.width, entry.contentRect.height);
+      emit(entry.contentRect.width, entry.contentRect.height);
     });
     observer.observe(element);
     emit(element.clientWidth, element.clientHeight);

@@ -828,6 +828,21 @@ function useChatTabRetraction(
   return useEpicChatRetraction(activeTab.type === "chat" ? activeTab.id : null);
 }
 
+function isRendererOnlyCanvasTile(activeTab: EpicCanvasTileRef): boolean {
+  return (
+    activeTab.type === "terminal" ||
+    isBrowserSurfaceTileRef(activeTab) ||
+    isDiffTileRef(activeTab) ||
+    isPrDetailTileRef(activeTab) ||
+    isPrDiffTileRef(activeTab) ||
+    isBlankTileRef(activeTab) ||
+    isManagedCommandOutputTileRef(activeTab) ||
+    isCommGraphTileRef(activeTab) ||
+    isPublishedChatTileRef(activeTab) ||
+    activeTab.type === WORKSPACE_FILE_TAB_KIND
+  );
+}
+
 function ActiveTabBody(props: ActiveTabBodyProps) {
   const { activeTab, epicId, groupId, tabId } = props;
   const navigateNested = useEpicNestedFocusNavigation();
@@ -871,16 +886,7 @@ function ActiveTabBody(props: ActiveTabBodyProps) {
   // graph id is epic-derived, and an output id belongs to a managed command;
   // each surface owns its own lifecycle instead.
   const isRemoteDeleted =
-    activeTab.type === "terminal" ||
-    isBrowserSurfaceTileRef(activeTab) ||
-    isDiffTileRef(activeTab) ||
-    isPrDetailTileRef(activeTab) ||
-    isPrDiffTileRef(activeTab) ||
-    isBlankTileRef(activeTab) ||
-    isManagedCommandOutputTileRef(activeTab) ||
-    isCommGraphTileRef(activeTab) ||
-    isPublishedChatTileRef(activeTab) ||
-    activeTab.type === WORKSPACE_FILE_TAB_KIND
+    isRendererOnlyCanvasTile(activeTab)
       ? false
       : computeIsRemoteDeleted({
           snapshotLoaded,

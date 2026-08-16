@@ -1004,6 +1004,55 @@ function TabStripEndDropIndicator(props: { readonly visible: boolean }) {
   );
 }
 
+function renderFixedTabIcon(
+  tab: EpicCanvasTileRef,
+  managedCommandMonitoring: boolean,
+): ReactNode {
+  if (isDiffTileRef(tab) || isPrDiffTileRef(tab)) {
+    return <FileDiff className="size-3.5 shrink-0 text-muted-foreground" />;
+  }
+  if (isPrDetailTileRef(tab)) {
+    return (
+      <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
+    );
+  }
+  if (isBlankTileRef(tab)) {
+    return <FilePlus className="size-3.5 shrink-0 text-muted-foreground" />;
+  }
+  if (
+    isBrowserTileRef(tab) ||
+    isBrowserPeekTileRef(tab) ||
+    isBrowserSessionTileRef(tab)
+  ) {
+    return <Globe className="size-3.5 shrink-0 text-muted-foreground" />;
+  }
+  if (isAgentBrowserTileRef(tab)) {
+    return <Bot className="size-3.5 shrink-0 text-muted-foreground" />;
+  }
+  if (isManagedCommandOutputTileRef(tab)) {
+    // A tab opened for a shell whose chat has no live session yet resolves to
+    // nothing; the quiet glyph is the honest guess, since a watcher announces
+    // itself the moment its record lands.
+    return (
+      <ManagedCommandMonitorIcon
+        monitoring={managedCommandMonitoring}
+        decorative
+        className="size-3.5"
+      />
+    );
+  }
+  if (isCommGraphTileRef(tab)) {
+    return <CommGraphTileIcon className="size-3.5" />;
+  }
+  // A published copy carries the lock rather than a chat glyph: the tab is
+  // readable but cannot be steered, and that is the one thing about it that
+  // differs from the chat tab beside it.
+  if (isPublishedChatTileRef(tab)) {
+    return <Lock className="size-3.5 shrink-0 text-muted-foreground" />;
+  }
+  return null;
+}
+
 function TabIcon(props: {
   readonly epicId: string;
   readonly tab: EpicCanvasTileRef;
@@ -1024,48 +1073,11 @@ function TabIcon(props: {
     hostId: isManagedCommandOutputTileRef(props.tab) ? props.tab.hostId : "",
     commandId: isManagedCommandOutputTileRef(props.tab) ? props.tab.id : "",
   });
-  if (isDiffTileRef(props.tab) || isPrDiffTileRef(props.tab)) {
-    return <FileDiff className="size-3.5 shrink-0 text-muted-foreground" />;
-  }
-  if (isPrDetailTileRef(props.tab)) {
-    return (
-      <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
-    );
-  }
-  if (isBlankTileRef(props.tab)) {
-    return <FilePlus className="size-3.5 shrink-0 text-muted-foreground" />;
-  }
-  if (
-    isBrowserTileRef(props.tab) ||
-    isBrowserPeekTileRef(props.tab) ||
-    isBrowserSessionTileRef(props.tab)
-  ) {
-    return <Globe className="size-3.5 shrink-0 text-muted-foreground" />;
-  }
-  if (isAgentBrowserTileRef(props.tab)) {
-    return <Bot className="size-3.5 shrink-0 text-muted-foreground" />;
-  }
-  if (isManagedCommandOutputTileRef(props.tab)) {
-    // A tab opened for a shell whose chat has no live session yet resolves to
-    // nothing; the quiet glyph is the honest guess, since a watcher announces
-    // itself the moment its record lands.
-    return (
-      <ManagedCommandMonitorIcon
-        monitoring={managedCommand !== null && managedCommand.monitoring}
-        decorative
-        className="size-3.5"
-      />
-    );
-  }
-  if (isCommGraphTileRef(props.tab)) {
-    return <CommGraphTileIcon className="size-3.5" />;
-  }
-  // A published copy carries the lock rather than a chat glyph: the tab is
-  // readable but cannot be steered, and that is the one thing about it that
-  // differs from the chat tab beside it.
-  if (isPublishedChatTileRef(props.tab)) {
-    return <Lock className="size-3.5 shrink-0 text-muted-foreground" />;
-  }
+  const fixedIcon = renderFixedTabIcon(
+    props.tab,
+    managedCommand?.monitoring === true,
+  );
+  if (fixedIcon !== null) return fixedIcon;
   // A live chat tab whose bound host is unreachable renders the published
   // copy (see tab-group-view's fallback), so its strip icon must say the same
   // thing the surface does: locked, not steerable, exactly like a copy tab.

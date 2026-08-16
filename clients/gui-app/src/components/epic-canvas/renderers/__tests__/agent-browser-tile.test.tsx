@@ -386,7 +386,7 @@ function emitStatus(
   status: BrowserViewStatusChange["status"],
   reason: string | null,
 ): void {
-  emitManagerStatus(bridge, key, status, NODE.url, reason);
+  bridge.emitStatus(statusChange(key, status, NODE.url, reason));
 }
 
 /**
@@ -400,9 +400,17 @@ function emitManagerStatus(
   key: BrowserViewTileKey,
   status: BrowserViewStatusChange["status"],
   url: string,
-  reason: string | null = null,
 ): void {
-  bridge.emitStatus({
+  bridge.emitStatus(statusChange(key, status, url, null));
+}
+
+function statusChange(
+  key: BrowserViewTileKey,
+  status: BrowserViewStatusChange["status"],
+  url: string,
+  reason: string | null,
+): BrowserViewStatusChange {
+  return {
     ...key,
     url,
     title: "Example",
@@ -411,7 +419,7 @@ function emitManagerStatus(
     canGoBack: false,
     canGoForward: false,
     zoomPercent: 100,
-  });
+  };
 }
 
 function submitAddress(url: string): void {
@@ -501,9 +509,11 @@ function createPrimaryBridgeSource(): {
   };
 }
 
-function seedAgentBrowserCanvas(
-  node: AgentBrowserTileRef = NODE,
-): string {
+function seedAgentBrowserCanvas(): string {
+  return seedAgentBrowserCanvasWithNode(NODE);
+}
+
+function seedAgentBrowserCanvasWithNode(node: AgentBrowserTileRef): string {
   const canvas = createSingleTileCanvas(node);
   if (canvas.root === null) throw new Error("expected canvas root");
   const pane = collectPanes(canvas.root).at(0);
@@ -532,9 +542,13 @@ function agentBrowserTilesOnCanvas(): AgentBrowserTileRef[] {
   );
 }
 
-function renderAgentBrowserTile(
+function renderAgentBrowserTile(paneId: string): RenderResult {
+  return renderAgentBrowserTileWithNode(paneId, NODE);
+}
+
+function renderAgentBrowserTileWithNode(
   paneId: string,
-  node: AgentBrowserTileRef = NODE,
+  node: AgentBrowserTileRef,
 ): RenderResult {
   return render(
     <AgentBrowserTile node={node} viewTabId={VIEW_TAB_ID} paneId={paneId} />,
@@ -979,11 +993,11 @@ describe("<AgentBrowserTile />", () => {
   it("adopts a primary-runtime popup as an AgentBrowserTileRef with the originating session", async () => {
     const primary = createPrimaryBridgeSource();
     bridgeHarness.host.browserView = primary.source;
-    const paneId = seedAgentBrowserCanvas(PRIMARY_NODE);
+    const paneId = seedAgentBrowserCanvasWithNode(PRIMARY_NODE);
     const key = tileKey(paneId);
     const warn = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
 
-    renderAgentBrowserTile(paneId, PRIMARY_NODE);
+    renderAgentBrowserTileWithNode(paneId, PRIMARY_NODE);
     await waitFor(() => {
       expect(primary.openTileHandlerCount).toBe(1);
     });
