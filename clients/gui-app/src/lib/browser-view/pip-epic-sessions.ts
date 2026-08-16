@@ -329,6 +329,7 @@ export class PipEpicSessionsManager {
     if (frame.kind === "caption") {
       applyPipCaption({
         epicId: this.epicId,
+        hostId: slot.hostId,
         sessionId: frame.sessionId,
         tabId: frame.tabId,
         burstId: frame.burstId,

@@ -966,6 +966,7 @@ describe("AgentBrowserPip captions", () => {
     });
     applyPipCaption({
       epicId: EPIC,
+      hostId: "host-a",
       sessionId: "s1",
       tabId: "t1",
       burstId: "b1",
@@ -987,6 +988,7 @@ describe("AgentBrowserPip captions", () => {
     });
     applyPipCaption({
       epicId: EPIC,
+      hostId: "host-a",
       sessionId: "s1",
       tabId: "t1",
       burstId: "b1",
@@ -1021,6 +1023,7 @@ describe("AgentBrowserPip captions", () => {
     });
     applyPipCaption({
       epicId: EPIC,
+      hostId: "host-a",
       sessionId: "s1",
       tabId: "t1",
       burstId: "b1",
@@ -1034,6 +1037,7 @@ describe("AgentBrowserPip captions", () => {
     act(() => {
       applyPipCaption({
         epicId: EPIC,
+        hostId: "host-a",
         sessionId: "s1",
         tabId: "t1",
         burstId: "b1",
@@ -1056,6 +1060,7 @@ describe("AgentBrowserPip captions", () => {
     });
     applyPipCaption({
       epicId: EPIC,
+      hostId: "host-a",
       sessionId: "s1",
       tabId: "t1",
       burstId: "b1",
@@ -1092,6 +1097,7 @@ describe("AgentBrowserPip captions", () => {
     });
     applyPipCaption({
       epicId: EPIC,
+      hostId: "host-a",
       sessionId: "s1",
       tabId: "t1",
       burstId: "b1",

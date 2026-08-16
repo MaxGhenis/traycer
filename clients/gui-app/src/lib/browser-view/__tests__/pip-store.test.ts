@@ -9,15 +9,19 @@ import {
   applyPipCaption,
   applyPipHostLifecycle,
   applyPipStreamHealth,
+  dismissPipRowSet,
   dismissPip,
   dismissPipChip,
   getPipDismissalsForTests,
   getPipSnapshot,
+  PIP_CAPTION_FADE_MS,
+  PIP_CAPTION_HOLD_MS,
   PIP_LINGER_MS,
   PIP_SWITCH_DWELL_MS,
   recallPip,
   reexpandPip,
   resetPipStoreForTests,
+  selectPipRow,
   setPipActiveHostId,
   setPipNowForTests,
 } from "../pip-store";
@@ -195,7 +199,12 @@ describe("pip-store lifecycle", () => {
       chatId: undefined,
     });
     dismissPip(EPIC);
-    recallPip({ epicId: EPIC, sessionId: "s1", tabId: "t1" });
+    recallPip({
+      epicId: EPIC,
+      hostId: "host-a",
+      sessionId: "s1",
+      tabId: "t1",
+    });
     expect(getPipSnapshot(EPIC).phase).toBe("live");
     expect(getPipSnapshot(EPIC).pinned).toBe(true);
 
@@ -582,6 +591,446 @@ describe("pip-store lifecycle", () => {
   });
 });
 
+describe("pip-store multi-session stack", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetPipStoreForTests();
+    resetVisibleBrowserTileRegistryForTests();
+    setPipNowForTests(() => Date.now());
+    setPipActiveHostId("host-a");
+  });
+
+  afterEach(() => {
+    resetPipStoreForTests();
+    resetVisibleBrowserTileRegistryForTests();
+    vi.useRealTimers();
+  });
+
+  it("orders live rows by GUI arrival and keeps their full identity stable", () => {
+    vi.setSystemTime(1_000);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 300,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    vi.setSystemTime(1_001);
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 100,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+    vi.setSystemTime(1_002);
+    startBurst({
+      burstId: "b3",
+      sessionId: "s3",
+      tabId: "t3",
+      startedAt: 200,
+      hostId: "host-a",
+      chatId: "chat-c",
+    });
+
+    const first = getPipSnapshot(EPIC);
+    expect(first.target?.burstId).toBe("b1");
+    expect(first.rows.map((row) => row.target.burstId)).toEqual(["b2", "b3"]);
+    expect(
+      first.rows.map((row) => [
+        row.target.hostId,
+        row.target.sessionId,
+        row.target.tabId,
+        row.target.burstId,
+        row.kind,
+        row.chatId,
+      ]),
+    ).toEqual([
+      ["host-b", "s2", "t2", "b2", "live", "chat-b"],
+      ["host-a", "s3", "t3", "b3", "live", "chat-c"],
+    ]);
+
+    expect(getPipSnapshot(EPIC).rows).toEqual(first.rows);
+
+    vi.setSystemTime(1_003);
+    startBurst({
+      burstId: "b4",
+      sessionId: "s4",
+      tabId: "t4",
+      startedAt: 50,
+      hostId: "host-b",
+      chatId: "chat-d",
+    });
+    expect(getPipSnapshot(EPIC).rows.map((row) => row.target.burstId)).toEqual([
+      "b2",
+      "b3",
+      "b4",
+    ]);
+  });
+
+  it("keeps a finished background row until its own linger deadline", () => {
+    vi.setSystemTime(10_000);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    vi.setSystemTime(10_100);
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+    endBurst("b2", "crashed", 10_100);
+
+    const row = getPipSnapshot(EPIC).rows.find(
+      (candidate) => candidate.target.burstId === "b2",
+    );
+    if (row === undefined) throw new Error("expected b2 lingering row");
+    expect(row.kind).toBe("lingering");
+    expect(row.outcome).toBe("crashed");
+    expect(row.expiresAt).toBe(15_100);
+    expect(row.chatId).toBe("chat-b");
+
+    vi.setSystemTime(15_099);
+    expect(
+      getPipSnapshot(EPIC).rows.some(
+        (candidate) => candidate.target.burstId === "b2",
+      ),
+    ).toBe(true);
+    vi.setSystemTime(15_100);
+    expect(
+      getPipSnapshot(EPIC).rows.some(
+        (candidate) => candidate.target.burstId === "b2",
+      ),
+    ).toBe(false);
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
+  });
+
+  it("selects a live row immediately and pins it until it ends", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+    const row = getPipSnapshot(EPIC).rows.find(
+      (candidate) => candidate.target.burstId === "b2",
+    );
+    if (row === undefined) throw new Error("expected b2 live row");
+
+    selectPipRow(row.target);
+
+    expect(getPipSnapshot(EPIC).phase).toBe("live");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
+    expect(getPipSnapshot(EPIC).target?.hostId).toBe("host-b");
+    expect(getPipSnapshot(EPIC).pinned).toBe(true);
+  });
+
+  it("promotes the next eligible burst when the displayed tile opens", () => {
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
+
+    const release = registerVisibleBrowserTile({
+      hostId: "host-a",
+      sessionId: "s1",
+      tabId: "t1",
+    });
+
+    expect(getPipSnapshot(EPIC).phase).toBe("live");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
+    expect(getPipSnapshot(EPIC).rows).toEqual([]);
+
+    release();
+
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
+    expect(getPipSnapshot(EPIC).rows.map((row) => row.target.burstId)).toEqual([
+      "b1",
+    ]);
+  });
+
+  it("dismisses the current row set atomically while a late burst re-presents", () => {
+    vi.setSystemTime(20_000);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+
+    dismissPipRowSet(["b1", "b2"]);
+
+    expect(getPipSnapshot(EPIC).phase).toBe("hidden");
+    expect(getPipDismissalsForTests(EPIC)).toEqual(new Set(["b1", "b2"]));
+
+    vi.setSystemTime(20_001);
+    startBurst({
+      burstId: "b3",
+      sessionId: "s3",
+      tabId: "t3",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-c",
+    });
+    expect(getPipSnapshot(EPIC).phase).toBe("live");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b3");
+  });
+
+  it("uses the displayed burst as terminal owner when it is the last live burst", () => {
+    vi.setSystemTime(30_000);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+    vi.setSystemTime(30_100);
+    endBurst("b2", "finished", 30_100);
+    vi.setSystemTime(30_200);
+    endBurst("b1", "finished", 30_200);
+
+    const snapshot = getPipSnapshot(EPIC);
+    expect(snapshot.phase).toBe("finished");
+    expect(snapshot.target?.burstId).toBe("b1");
+    expect(snapshot.outcome).toBe("finished");
+    expect(snapshot.targetEverStreamed).toBe(true);
+    expect(snapshot.lingerActive).toBe(true);
+    expect(snapshot.rows).toHaveLength(1);
+    expect(snapshot.rows[0]?.target.burstId).toBe("b2");
+
+    vi.advanceTimersByTime(PIP_LINGER_MS);
+    expect(getPipSnapshot(EPIC).phase).toBe("chip");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
+    expect(getPipSnapshot(EPIC).targetEverStreamed).toBe(true);
+  });
+
+  it("uses the last live row as terminal owner after the displayed burst ends first", () => {
+    vi.setSystemTime(31_000);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+    startBurst({
+      burstId: "b3",
+      sessionId: "s3",
+      tabId: "t3",
+      startedAt: 3,
+      hostId: "host-a",
+      chatId: "chat-c",
+    });
+    vi.setSystemTime(31_100);
+    endBurst("b1", "finished", 31_100);
+    vi.setSystemTime(31_200);
+    endBurst("b2", "finished", 31_200);
+    vi.setSystemTime(31_300);
+    endBurst("b3", "crashed", 31_300);
+
+    const snapshot = getPipSnapshot(EPIC);
+    expect(snapshot.phase).toBe("finished");
+    expect(snapshot.target?.burstId).toBe("b3");
+    expect(snapshot.outcome).toBe("crashed");
+    expect(snapshot.targetEverStreamed).toBe(false);
+    expect(snapshot.lingerActive).toBe(true);
+    expect(snapshot.rows.map((row) => row.target.burstId)).toEqual([
+      "b1",
+      "b2",
+    ]);
+    expect(snapshot.rows.every((row) => row.kind === "lingering")).toBe(true);
+
+    vi.advanceTimersByTime(PIP_LINGER_MS);
+    expect(getPipSnapshot(EPIC).phase).toBe("chip");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b3");
+    expect(getPipSnapshot(EPIC).targetEverStreamed).toBe(false);
+    expect(getPipSnapshot(EPIC).rows).toEqual([]);
+  });
+
+  it("chooses the last applied end when all live bursts end together", () => {
+    vi.setSystemTime(32_000);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+    startBurst({
+      burstId: "b3",
+      sessionId: "s3",
+      tabId: "t3",
+      startedAt: 3,
+      hostId: "host-a",
+      chatId: "chat-c",
+    });
+    vi.setSystemTime(32_100);
+    endBurst("b1", "finished", 32_100);
+    endBurst("b2", "closed", 32_100);
+    endBurst("b3", "suspended", 32_100);
+
+    const snapshot = getPipSnapshot(EPIC);
+    expect(snapshot.phase).toBe("finished");
+    expect(snapshot.target?.burstId).toBe("b3");
+    expect(snapshot.outcome).toBe("suspended");
+    expect(snapshot.targetEverStreamed).toBe(false);
+    expect(snapshot.rows.map((row) => row.target.burstId)).toEqual([
+      "b1",
+      "b2",
+    ]);
+
+    vi.advanceTimersByTime(PIP_LINGER_MS);
+    expect(getPipSnapshot(EPIC).phase).toBe("chip");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b3");
+  });
+
+  it("keeps six bursts ordered and gives the final live burst the chip", () => {
+    vi.setSystemTime(33_000);
+    for (let index = 1; index <= 6; index += 1) {
+      startBurst({
+        burstId: `b${index}`,
+        sessionId: `s${index}`,
+        tabId: `t${index}`,
+        startedAt: index,
+        hostId: index % 2 === 0 ? "host-b" : "host-a",
+        chatId: `chat-${index}`,
+      });
+    }
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
+    expect(getPipSnapshot(EPIC).rows.map((row) => row.target.burstId)).toEqual([
+      "b2",
+      "b3",
+      "b4",
+      "b5",
+      "b6",
+    ]);
+
+    endBurst("b1", "finished", 33_000);
+    endBurst("b2", "finished", 33_000);
+    endBurst("b3", "finished", 33_000);
+    endBurst("b4", "finished", 33_000);
+    endBurst("b5", "finished", 33_000);
+    endBurst("b6", "finished", 33_000);
+
+    const snapshot = getPipSnapshot(EPIC);
+    expect(snapshot.target?.burstId).toBe("b6");
+    expect(snapshot.targetEverStreamed).toBe(false);
+    expect(snapshot.rows.map((row) => row.target.burstId)).toEqual([
+      "b1",
+      "b2",
+      "b3",
+      "b4",
+      "b5",
+    ]);
+    expect(snapshot.rows.every((row) => row.kind === "lingering")).toBe(true);
+
+    vi.advanceTimersByTime(PIP_LINGER_MS);
+    expect(getPipSnapshot(EPIC).phase).toBe("chip");
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("b6");
+  });
+
+  it("recalls the requested host when session and tab ids collide", () => {
+    startBurst({
+      burstId: "burst-a",
+      sessionId: "same-session",
+      tabId: "same-tab",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    startBurst({
+      burstId: "burst-b",
+      sessionId: "same-session",
+      tabId: "same-tab",
+      startedAt: 2,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+
+    recallPip({
+      epicId: EPIC,
+      hostId: "host-b",
+      sessionId: "same-session",
+      tabId: "same-tab",
+    });
+
+    expect(getPipSnapshot(EPIC).target?.burstId).toBe("burst-b");
+    expect(getPipSnapshot(EPIC).target?.hostId).toBe("host-b");
+    expect(getPipSnapshot(EPIC).pinned).toBe(true);
+  });
+});
+
 describe("pip-store captions", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -609,6 +1058,7 @@ describe("pip-store captions", () => {
     });
     applyPipCaption({
       epicId: EPIC,
+      hostId: "host-a",
       sessionId: "s1",
       tabId: "t1",
       burstId: "b1",
@@ -637,6 +1087,7 @@ describe("pip-store captions", () => {
     });
     applyPipCaption({
       epicId: EPIC,
+      hostId: "host-a",
       sessionId: "s1",
       tabId: "t1",
       burstId: "b1",
@@ -644,6 +1095,7 @@ describe("pip-store captions", () => {
     });
     applyPipCaption({
       epicId: EPIC,
+      hostId: "host-a",
       sessionId: "s2",
       tabId: "t2",
       burstId: "b2",
@@ -671,6 +1123,7 @@ describe("pip-store captions", () => {
     });
     applyPipCaption({
       epicId: EPIC,
+      hostId: "host-a",
       sessionId: "s1",
       tabId: "t1",
       burstId: "b1",
@@ -697,6 +1150,7 @@ describe("pip-store captions", () => {
     });
     applyPipCaption({
       epicId: EPIC,
+      hostId: "host-a",
       sessionId: "s1",
       tabId: "t1",
       burstId: "b1",
@@ -707,6 +1161,7 @@ describe("pip-store captions", () => {
     setPipNowForTests(() => 2_000);
     applyPipCaption({
       epicId: EPIC,
+      hostId: "host-a",
       sessionId: "s1",
       tabId: "t1",
       burstId: "b1",
@@ -720,5 +1175,98 @@ describe("pip-store captions", () => {
       cellTitle: "Submitting payment",
       arrivedAt: 2_000,
     });
+  });
+
+  it("keeps captions separate for equal session and tab ids on different hosts", () => {
+    setPipNowForTests(() => 34_000);
+    startBurst({
+      burstId: "burst-a",
+      sessionId: "same-session",
+      tabId: "same-tab",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    startBurst({
+      burstId: "burst-b",
+      sessionId: "same-session",
+      tabId: "same-tab",
+      startedAt: 2,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      hostId: "host-a",
+      sessionId: "same-session",
+      tabId: "same-tab",
+      burstId: "burst-a",
+      cellTitle: "Local activity",
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      hostId: "host-b",
+      sessionId: "same-session",
+      tabId: "same-tab",
+      burstId: "burst-b",
+      cellTitle: "Remote activity",
+    });
+
+    expect(getPipSnapshot(EPIC).target?.hostId).toBe("host-a");
+    expect(getPipSnapshot(EPIC).caption?.cellTitle).toBe("Local activity");
+    const remoteRow = getPipSnapshot(EPIC).rows.find(
+      (row) => row.target.burstId === "burst-b",
+    );
+    if (remoteRow === undefined) throw new Error("expected remote row");
+    expect(remoteRow.caption?.cellTitle).toBe("Remote activity");
+
+    selectPipRow(remoteRow.target);
+    expect(getPipSnapshot(EPIC).target?.hostId).toBe("host-b");
+    expect(getPipSnapshot(EPIC).caption?.cellTitle).toBe("Remote activity");
+  });
+
+  it("exposes a row caption only inside its freshness window", () => {
+    vi.setSystemTime(35_000);
+    startBurst({
+      burstId: "b1",
+      sessionId: "s1",
+      tabId: "t1",
+      startedAt: 1,
+      hostId: "host-a",
+      chatId: "chat-a",
+    });
+    startBurst({
+      burstId: "b2",
+      sessionId: "s2",
+      tabId: "t2",
+      startedAt: 2,
+      hostId: "host-b",
+      chatId: "chat-b",
+    });
+    applyPipCaption({
+      epicId: EPIC,
+      hostId: "host-b",
+      sessionId: "s2",
+      tabId: "t2",
+      burstId: "b2",
+      cellTitle: "Fresh row activity",
+    });
+
+    const rowBeforeExpiry = getPipSnapshot(EPIC).rows.find(
+      (row) => row.target.burstId === "b2",
+    );
+    if (rowBeforeExpiry === undefined) {
+      throw new Error("expected b2 row before caption expiry");
+    }
+    expect(rowBeforeExpiry.caption?.cellTitle).toBe("Fresh row activity");
+
+    vi.setSystemTime(35_000 + PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS);
+    const rowAfterExpiry = getPipSnapshot(EPIC).rows.find(
+      (row) => row.target.burstId === "b2",
+    );
+    if (rowAfterExpiry === undefined) {
+      throw new Error("expected b2 row after caption expiry");
+    }
+    expect(rowAfterExpiry.caption).toBeNull();
   });
 });

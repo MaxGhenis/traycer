@@ -370,6 +370,7 @@ function BrowserSessionRow(props: BrowserSessionRowProps) {
               onClick={() => {
                 recallPip({
                   epicId,
+                  hostId: session.hostId,
                   sessionId: session.sessionId,
                   tabId: activeTab.tabId,
                 });

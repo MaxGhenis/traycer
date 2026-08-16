@@ -465,6 +465,52 @@ describe("PipEpicSessionsManager", () => {
     manager.dispose();
   });
 
+  it("qualifies caption frames with their subscription host", () => {
+    const { opened, opener } = createFakeOpener();
+    const manager = attachWithHosts(opener, ["host-a", "host-b"], CHAT);
+    const hostA = latestOpened(opened, "host-a");
+    const hostB = latestOpened(opened, "host-b");
+
+    hostA.request.onFrame(
+      burstStartedFrame({
+        sessionId: "same-session",
+        tabId: "same-tab",
+        burstId: "burst-a",
+      }),
+    );
+    hostB.request.onFrame(
+      burstStartedFrame({
+        sessionId: "same-session",
+        tabId: "same-tab",
+        burstId: "burst-b",
+      }),
+    );
+    hostA.request.onFrame(
+      captionFrame({
+        sessionId: "same-session",
+        tabId: "same-tab",
+        burstId: "burst-a",
+        cellTitle: "Local activity",
+      }),
+    );
+    hostB.request.onFrame(
+      captionFrame({
+        sessionId: "same-session",
+        tabId: "same-tab",
+        burstId: "burst-b",
+        cellTitle: "Remote activity",
+      }),
+    );
+
+    expect(getPipSnapshot(EPIC).target?.hostId).toBe("host-a");
+    expect(getPipSnapshot(EPIC).caption?.cellTitle).toBe("Local activity");
+    expect(
+      getPipSnapshot(EPIC).rows.find((row) => row.target.burstId === "burst-b")
+        ?.caption?.cellTitle,
+    ).toBe("Remote activity");
+    manager.dispose();
+  });
+
   it("treats a reconnect snapshot as a burst-generation boundary", () => {
     const { opened, opener } = createFakeOpener();
     const manager = attachWithHosts(opener, ["host-a"], CHAT);
