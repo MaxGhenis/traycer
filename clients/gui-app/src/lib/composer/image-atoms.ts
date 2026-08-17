@@ -63,25 +63,23 @@ export function omitImageAtomsByFileName(
   fileNames: ReadonlySet<string>,
 ): JsonContent {
   if (fileNames.size === 0) return content;
-  if (content.type === "imageAttachment") {
-    const fileName = stringValue(content.attrs?.fileName);
-    if (fileName !== null && fileNames.has(fileName)) return { type: "text" };
-  }
   const children = content.content;
   if (children === undefined) return content;
-  const next = children
-    .map((child) => omitImageAtomsByFileName(child, fileNames))
-    .filter((child) => child.type !== "text" || child.text !== undefined);
-  if (next.length === children.length) {
-    let unchanged = true;
-    for (let index = 0; index < next.length; index += 1) {
-      if (next[index] !== children[index]) {
-        unchanged = false;
-        break;
+  const next: JsonContent[] = [];
+  let changed = false;
+  for (const child of children) {
+    if (child.type === "imageAttachment") {
+      const fileName = stringValue(child.attrs?.fileName);
+      if (fileName !== null && fileNames.has(fileName)) {
+        changed = true;
+        continue;
       }
     }
-    if (unchanged) return content;
+    const rewritten = omitImageAtomsByFileName(child, fileNames);
+    if (rewritten !== child) changed = true;
+    next.push(rewritten);
   }
+  if (!changed) return content;
   return { ...content, content: next };
 }
 function walk(

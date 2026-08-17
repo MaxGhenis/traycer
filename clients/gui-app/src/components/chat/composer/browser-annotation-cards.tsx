@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 
 import { useLandingImageFetcher } from "@/hooks/composer/use-landing-image-fetcher";
-import { removeAttachedBrowserAnnotation } from "@/lib/browser-view/browser-annotation-attach";
+import { scheduleLandingImageReconcile } from "@/lib/composer/landing-image-gc";
 import { sessionObjectUrl } from "@/lib/composer/landing-image-store";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
 
@@ -13,7 +13,10 @@ export function BrowserAnnotationCards(props: { readonly taskId: string }) {
   );
   const onRemove = useCallback(
     (annotationId: string) => {
-      removeAttachedBrowserAnnotation(props.taskId, annotationId);
+      useComposerDraftStore
+        .getState()
+        .removeBrowserAnnotation(props.taskId, annotationId);
+      scheduleLandingImageReconcile();
     },
     [props.taskId],
   );

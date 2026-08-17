@@ -1,4 +1,10 @@
 import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
+import type {
+  BrowserViewElementAttribute,
+  BrowserViewElementBoundingBox,
+  BrowserViewElementCapture,
+  BrowserViewElementStyle,
+} from "@traycer/protocol/persistence/epic/schemas";
 // Type-only, and deliberately so: `desktop-agent-browser-view.ts` already
 // imports this module's tile-key types, and a value import back would be a
 // real cycle. Ticket 03 defined the CDP command/result shapes there because
@@ -318,41 +324,12 @@ export interface BrowserViewCapturePageResult extends BrowserViewTileKey {
   readonly capturedAt: number;
 }
 
-export interface BrowserViewElementBoundingBox {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-  readonly top: number;
-  readonly right: number;
-  readonly bottom: number;
-  readonly left: number;
-}
-
-export interface BrowserViewElementAttribute {
-  readonly name: string;
-  readonly value: string;
-}
-
-export interface BrowserViewElementStyle {
-  readonly property: string;
-  readonly value: string;
-}
-
-export interface BrowserViewElementCapture {
-  readonly selector: string;
-  readonly tagName: string;
-  readonly elementId: string | null;
-  readonly classNames: readonly string[];
-  readonly attributes: readonly BrowserViewElementAttribute[];
-  readonly outerHtml: string;
-  readonly outerHtmlTruncated: boolean;
-  readonly textPreview: string | null;
-  readonly ariaRole: string | null;
-  readonly accessibleName: string | null;
-  readonly boundingBox: BrowserViewElementBoundingBox;
-  readonly computedStyles: readonly BrowserViewElementStyle[];
-}
+export type {
+  BrowserViewElementAttribute,
+  BrowserViewElementBoundingBox,
+  BrowserViewElementCapture,
+  BrowserViewElementStyle,
+};
 
 export type BrowserAnnotationStartResult =
   | { readonly ok: true }
@@ -361,22 +338,10 @@ export type BrowserAnnotationStartResult =
       readonly reason: string;
     };
 
-export interface BrowserAnnotationAttachPayload {
-  readonly annotationId: string;
-  readonly tabId: string;
-  readonly sessionId: string;
-  readonly origin: string;
-  readonly pageUrl: string;
-  readonly pageTitle: string;
-  readonly capturedAt: number;
-  readonly comment: string;
-  readonly counts: {
-    readonly elements: number;
-    readonly regions: number;
-    readonly strokes: number;
-  };
-  readonly elements: readonly BrowserViewElementCapture[];
-}
+export type BrowserAnnotationAttachPayload = Omit<
+  import("@traycer/protocol/persistence/epic/schemas").BrowserAnnotationRecord,
+  "kind" | "imageFileName" | "imageHash"
+>;
 
 export interface BrowserAnnotationAttachedIpcEvent extends BrowserViewTileKey {
   readonly payload: BrowserAnnotationAttachPayload;
@@ -403,6 +368,11 @@ export interface BrowserAnnotationSetTargetChatLabelInput
   extends BrowserViewTileKey {
   readonly label: string;
   readonly canAttach: boolean;
+}
+
+export interface BrowserAnnotationAttachResultInput {
+  readonly annotationId: string;
+  readonly status: "attached" | "failed";
 }
 
 export type BrowserCookieCryptoMode = "real" | "basic" | "degraded";
@@ -472,6 +442,9 @@ export interface DesktopBrowserViewBridge {
   cancelAnnotation(input: BrowserViewTileKey): Promise<void>;
   setAnnotationTargetChatLabel(
     input: BrowserAnnotationSetTargetChatLabelInput,
+  ): Promise<void>;
+  reportAnnotationAttachResult?(
+    input: BrowserAnnotationAttachResultInput,
   ): Promise<void>;
   openDevTools(input: BrowserViewTileKey): Promise<void>;
   occludeForOverlay(
@@ -592,6 +565,7 @@ const REQUIRED_BROWSER_VIEW_BRIDGE_METHODS = [
   "startAnnotation",
   "cancelAnnotation",
   "setAnnotationTargetChatLabel",
+  "reportAnnotationAttachResult",
   "openDevTools",
   "occludeForOverlay",
   "releaseOverlay",
@@ -697,6 +671,10 @@ function readBrowserViewBridgeMethods(
     setAnnotationTargetChatLabel: readBridgeMethod(
       value,
       "setAnnotationTargetChatLabel",
+    ),
+    reportAnnotationAttachResult: readBridgeMethod(
+      value,
+      "reportAnnotationAttachResult",
     ),
     openDevTools: readBridgeMethod(value, "openDevTools"),
     occludeForOverlay: readBridgeMethod(value, "occludeForOverlay"),
@@ -824,6 +802,8 @@ function createBrowserViewDebugBridge(
       callBridgeVoid(value, methods.cancelAnnotation, input),
     setAnnotationTargetChatLabel: (input) =>
       callBridgeVoid(value, methods.setAnnotationTargetChatLabel, input),
+    reportAnnotationAttachResult: (input) =>
+      callBridgeVoid(value, methods.reportAnnotationAttachResult, input),
   } satisfies Pick<
     DesktopBrowserViewBridge,
     | "capturePage"
@@ -832,6 +812,7 @@ function createBrowserViewDebugBridge(
     | "startAnnotation"
     | "cancelAnnotation"
     | "setAnnotationTargetChatLabel"
+    | "reportAnnotationAttachResult"
   >;
 }
 
@@ -1619,8 +1600,14 @@ function readAnnotationAttachPayload(
     capturedAt: value.capturedAt,
     comment: value.comment,
     counts,
+    droppedElementCount: readDroppedElementCount(value.droppedElementCount),
     elements,
   };
+}
+
+function readDroppedElementCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.floor(value));
 }
 
 function readAnnotationCounts(

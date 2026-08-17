@@ -103,6 +103,7 @@ function makeRecord(
   },
 ): BrowserAnnotationRecord {
   return {
+    kind: "browser-annotation",
     annotationId: overrides.annotationId,
     tabId: overrides.tabId,
     sessionId: overrides.sessionId ?? "session-card",
@@ -120,6 +121,7 @@ function makeRecord(
       overrides.imageFileName ??
       `browser-annotation-${overrides.annotationId}.png`,
     imageHash: overrides.imageHash ?? "missing-hash",
+    droppedElementCount: overrides.droppedElementCount ?? 0,
   };
 }
 
@@ -321,6 +323,21 @@ describe("BrowserAnnotationCard", () => {
     expect(screen.getByText("2 elements · 1 drawing")).toBeTruthy();
   });
 
+  it("appends over-budget copy when droppedElementCount is nonzero", () => {
+    renderCard(
+      makeRecord({
+        annotationId: "ann-dropped",
+        tabId: "tab-1",
+        counts: { elements: 9, regions: 0, strokes: 0 },
+        droppedElementCount: 3,
+      }),
+      vi.fn(),
+      null,
+    );
+
+    expect(screen.getByText("9 elements, 3 over budget")).toBeTruthy();
+  });
+
   it("shows no staleness hint when the live tab is still on the annotated URL", () => {
     const record = makeRecord({
       annotationId: "ann-fresh",
@@ -356,16 +373,55 @@ describe("BrowserAnnotationCard", () => {
     expect(screen.getByText(/page has navigated/)).toBeTruthy();
   });
 
-  it("shows the closed hint when the source tab is missing", () => {
+  it("does not claim closed for an unregistered tabId on a live session", () => {
     const record = makeRecord({
-      annotationId: "ann-closed",
-      tabId: "tab-gone",
+      annotationId: "ann-unknown-tab",
+      tabId: "tab-unregistered",
       sessionId: "session-card",
     });
     renderCard(record, vi.fn(), [
       session({
         sessionId: "session-card",
         tabs: [tab({ tabId: "tab-other", url: "https://example.com/" })],
+      }),
+    ]);
+
+    expect(screen.queryByText(/source tab closed/)).toBeNull();
+    expect(screen.queryByText(/page has navigated/)).toBeNull();
+  });
+
+  it("does not claim closed when no matching session is listed", () => {
+    const record = makeRecord({
+      annotationId: "ann-no-session",
+      tabId: "tab-1",
+      sessionId: "session-missing",
+    });
+    renderCard(record, vi.fn(), [
+      session({
+        sessionId: "session-other",
+        tabs: [tab({ tabId: "tab-1", url: "https://example.com/" })],
+      }),
+    ]);
+
+    expect(screen.queryByText(/source tab closed/)).toBeNull();
+  });
+
+  it("shows the closed hint when the live tab is closing", () => {
+    const record = makeRecord({
+      annotationId: "ann-closing",
+      tabId: "tab-1",
+      sessionId: "session-card",
+    });
+    renderCard(record, vi.fn(), [
+      session({
+        sessionId: "session-card",
+        tabs: [
+          tab({
+            tabId: "tab-1",
+            url: "https://example.com/",
+            status: "closing",
+          }),
+        ],
       }),
     ]);
 

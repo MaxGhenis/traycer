@@ -2,11 +2,11 @@ import { X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useMaybeBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import { type ImageBytesFetcher } from "@/lib/attachments/image-blob-cache";
 import { useImageBlobUrl } from "@/lib/attachments/use-image-blob-url";
 import {
-  annotationTagLabels,
   formatAnnotationCounts,
   type BrowserAnnotationRecord,
 } from "@/lib/browser-view/browser-annotation-record";
@@ -29,10 +29,16 @@ export function BrowserAnnotationCard(props: {
   const sessionUrl = props.sessionObjectUrl(record.imageHash);
   const blobUrl = useImageBlobUrl(record.imageHash, "image/png", imageFetcher);
   const src = sessionUrl ?? blobUrl;
-  const tags = annotationTagLabels(record.elements);
   const visibleElements = record.elements.slice(0, VISIBLE_TAG_COUNT);
-  const overflow = tags.length - visibleElements.length;
+  const overflow = record.elements.length - visibleElements.length;
   const counts = formatAnnotationCounts(record.counts);
+  const dropped =
+    record.droppedElementCount > 0
+      ? `${record.droppedElementCount} over budget`
+      : "";
+  const countsLine = [counts, dropped].filter((part) => part.length > 0).join(
+    ", ",
+  );
   const staleness = annotationStalenessHint(record, sessions?.items ?? null);
   const comment =
     record.comment.trim().length > 0 ? record.comment.trim() : "No comment";
@@ -80,8 +86,11 @@ export function BrowserAnnotationCard(props: {
               +{overflow}
             </span>
           ) : null}
-          {counts.length > 0 ? (
-            <span className="text-ui-xs text-muted-foreground">{counts}</span>
+          {countsLine.length > 0 ? (
+            <AnnotationCountsLine
+              countsLine={countsLine}
+              showBudgetHint={dropped.length > 0}
+            />
           ) : null}
           {staleness !== null ? (
             <span className="text-ui-xs text-amber-600 dark:text-amber-400">
@@ -103,5 +112,25 @@ export function BrowserAnnotationCard(props: {
         </Button>
       )}
     </div>
+  );
+}
+
+function AnnotationCountsLine(props: {
+  readonly countsLine: string;
+  readonly showBudgetHint: boolean;
+}) {
+  const line = (
+    <span className="text-ui-xs text-muted-foreground">{props.countsLine}</span>
+  );
+  if (!props.showBudgetHint) return line;
+  return (
+    <TooltipWrapper
+      label={props.countsLine}
+      side="top"
+      sideOffset={undefined}
+      align={undefined}
+    >
+      {line}
+    </TooltipWrapper>
   );
 }

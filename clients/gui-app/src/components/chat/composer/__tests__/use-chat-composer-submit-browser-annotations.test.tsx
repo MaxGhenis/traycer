@@ -49,6 +49,7 @@ function annotationRecord(
 ): BrowserAnnotationRecord {
   const input = overrides ?? {};
   return {
+    kind: "browser-annotation",
     annotationId: input.annotationId ?? ANNOTATION_ID,
     tabId: input.tabId ?? "t-1",
     sessionId: input.sessionId ?? "s-1",
@@ -61,6 +62,7 @@ function annotationRecord(
     elements: input.elements ?? [STUB_ANNOTATION_ELEMENT],
     imageFileName: input.imageFileName ?? IMAGE_FILE_NAME,
     imageHash: input.imageHash ?? IMAGE_HASH,
+    droppedElementCount: input.droppedElementCount ?? 0,
   };
 }
 
@@ -196,10 +198,7 @@ describe("useChatComposerSubmit browser annotations", () => {
     });
 
     const input = submit.mock.calls[0][0];
-    expect(input.attachments).toContainEqual({
-      kind: "browser-annotation",
-      record,
-    });
+    expect(input.attachments).toContainEqual(record);
     expect(input.attachments).toContainEqual(
       expect.objectContaining({
         kind: "image",

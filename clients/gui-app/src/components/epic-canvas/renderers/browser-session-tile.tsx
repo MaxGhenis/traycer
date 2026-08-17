@@ -128,7 +128,7 @@ function shouldRenderHeadless(input: {
   readonly activatedHeadless: boolean;
   readonly tab: { readonly status: string } | undefined;
   readonly session:
-    | { readonly migration: { readonly runtime: string } | undefined }
+    | { readonly migration?: { readonly runtime: string } | undefined }
     | undefined;
   readonly binding: ElectronBrowserTabRegistration | null;
   readonly castMigrated: boolean;
@@ -188,7 +188,7 @@ function useRuntimeSwapDecisionLog(input: {
   readonly castMigrated: boolean;
   readonly terminalBindingRegistrationId: string | null;
   readonly session:
-    | { readonly migration: { readonly revision: number } | undefined }
+    | { readonly migration?: { readonly revision: number } | undefined }
     | undefined;
   readonly renderHeadless: boolean;
   readonly swapHoldReason:

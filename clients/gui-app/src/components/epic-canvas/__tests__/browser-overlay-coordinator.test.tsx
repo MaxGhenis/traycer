@@ -162,6 +162,9 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
   setAnnotationTargetChatLabel(): Promise<void> {
     return Promise.resolve();
   }
+  reportAnnotationAttachResult(): Promise<void> {
+    return Promise.resolve();
+  }
 
   openDevTools(_input: BrowserViewTileKey): Promise<void> {
     return Promise.resolve();

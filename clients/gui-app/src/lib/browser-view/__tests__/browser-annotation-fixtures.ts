@@ -118,6 +118,7 @@ function stubPayload(input: {
       capturedAt: 1_700_000_000_000,
       comment: input.comment,
       counts: { elements: 2, regions: 0, strokes: 1 },
+      droppedElementCount: 0,
       elements: [STUB_ANNOTATION_ELEMENT, STUB_ANNOTATION_PARAGRAPH],
     },
     png: stubAnnotationPng(input.annotationId),

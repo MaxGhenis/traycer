@@ -278,6 +278,7 @@ function sentAnnotation(): BrowserAnnotationRecord {
     ],
     imageFileName: "browser-annotation-ann-7f3a.png",
     imageHash: "hash-ann-7f3a",
+    droppedElementCount: 0,
   };
 }
 

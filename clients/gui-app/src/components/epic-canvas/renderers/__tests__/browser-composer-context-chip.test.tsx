@@ -363,6 +363,7 @@ function createFakeBridge(): FakeBridge {
     startAnnotation: vi.fn(() => Promise.resolve({ ok: true as const })),
     cancelAnnotation: vi.fn(() => Promise.resolve()),
     setAnnotationTargetChatLabel: vi.fn(() => Promise.resolve()),
+    reportAnnotationAttachResult: vi.fn(() => Promise.resolve()),
     openDevTools: vi.fn(() => Promise.resolve()),
     occludeForOverlay: vi.fn(() =>
       Promise.resolve({ snapshots: [], restoredTiles: [] }),

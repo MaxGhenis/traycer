@@ -287,10 +287,7 @@ export function useChatComposerSubmit(
           const attachments: ReadonlyArray<Attachment> = [
             ...buildAttachmentsFromJSONContent(submittedContent),
             ...browserContextAttachments,
-            ...annotationRecords.map((record) => ({
-              kind: "browser-annotation" as const,
-              record,
-            })),
+            ...annotationRecords,
           ];
           const deliveryPolicy = resolveSubmitDeliveryPolicy({
             source,

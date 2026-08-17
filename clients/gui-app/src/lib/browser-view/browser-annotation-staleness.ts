@@ -10,7 +10,10 @@ export const ANNOTATION_STALENESS_COPY = {
 } as const;
 
 /**
- * Cosmetic composer hint only. Host tab status at send time is ticket 05.
+ * Cosmetic composer hint. "closed" is reserved for a tab the live session
+ * list positively still names and whose status says it is gone. A missing
+ * session, an unregistered tabId on a real session, or no sessions feed
+ * makes no claim - those are UNKNOWN, not closed.
  */
 export function annotationStalenessHint(
   record: BrowserAnnotationRecord,
@@ -21,9 +24,12 @@ export function annotationStalenessHint(
     if (session.sessionId !== record.sessionId) continue;
     for (const tab of session.tabs) {
       if (tab.tabId !== record.tabId) continue;
+      if (tab.status === "closing" || tab.status === "crashed") {
+        return "closed";
+      }
       return tab.url === record.pageUrl ? null : "navigated";
     }
-    return "closed";
+    return null;
   }
-  return "closed";
+  return null;
 }

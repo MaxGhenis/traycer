@@ -23,7 +23,7 @@ import {
   turnCheckpointManifestSchema,
   type TurnCheckpointManifest,
 } from "@traycer/protocol/persistence/epic/checkpoint-manifests";
-import { toBrowserAnnotationWire } from "@/lib/browser-view/browser-annotation-wire";
+
 import {
   buildAttachmentsFromJSONContent,
   extractPlainTextFromComposerJSONContent,
@@ -2866,10 +2866,8 @@ function renderPendingUserMessage(
     structuredContent: message.content,
     attachments:
       message.attachments ?? buildAttachmentsFromJSONContent(message.content),
-    browserAnnotations: (message.attachments ?? []).flatMap((attachment) =>
-      attachment.kind === "browser-annotation"
-        ? [toBrowserAnnotationWire(attachment.record)]
-        : [],
+    browserAnnotations: (message.attachments ?? []).filter(
+      (attachment) => attachment.kind === "browser-annotation",
     ),
     settings: message.settings,
     createdAt: message.timestamp,

@@ -128,6 +128,7 @@ const PRIMARY_BRIDGE_REQUIRED_METHODS = [
   "startAnnotation",
   "cancelAnnotation",
   "setAnnotationTargetChatLabel",
+  "reportAnnotationAttachResult",
   "openDevTools",
   "occludeForOverlay",
   "releaseOverlay",

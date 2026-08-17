@@ -833,6 +833,7 @@ describe("chat-queue-reconciler", () => {
       };
       const annotations = [
         {
+          kind: "browser-annotation" as const,
           annotationId: "ann-restore",
           tabId: "tab-1",
           sessionId: "session-1",
@@ -845,6 +846,7 @@ describe("chat-queue-reconciler", () => {
           elements: [],
           imageFileName: "browser-annotation-ann-restore.png",
           imageHash: "hash-restore",
+          droppedElementCount: 0,
         },
       ];
       const result = reconcileTurnSettled(

@@ -54,6 +54,7 @@ import {
 import { useTabStripDropIndex } from "@/components/epic-canvas/dnd/dnd-store";
 import type {
   EpicCanvasTileRef,
+  EpicNodeRef,
   SplitDirection,
 } from "@/stores/epics/canvas/types";
 import {
@@ -1026,6 +1027,7 @@ function TabIcon(props: {
   });
   const kindIcon = iconForNonChatTab(props.tab, managedCommand);
   if (kindIcon !== null) return kindIcon;
+  if (!isEpicNodeTab(props.tab)) return null;
   // A live chat tab whose bound host is unreachable renders the published
   // copy (see tab-group-view's fallback), so its strip icon must say the same
   // thing the surface does: locked, not steerable, exactly like a copy tab.
@@ -1061,6 +1063,22 @@ function TabIcon(props: {
       className="size-3.5 shrink-0"
       defaultIcon={defaultIcon}
     />
+  );
+}
+
+function isEpicNodeTab(tab: EpicCanvasTileRef): tab is EpicNodeRef {
+  return (
+    !isDiffTileRef(tab) &&
+    !isPrDiffTileRef(tab) &&
+    !isPrDetailTileRef(tab) &&
+    !isBlankTileRef(tab) &&
+    !isBrowserTileRef(tab) &&
+    !isBrowserPeekTileRef(tab) &&
+    !isBrowserSessionTileRef(tab) &&
+    !isAgentBrowserTileRef(tab) &&
+    !isManagedCommandOutputTileRef(tab) &&
+    !isCommGraphTileRef(tab) &&
+    !isPublishedChatTileRef(tab)
   );
 }
 

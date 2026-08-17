@@ -7,6 +7,7 @@ import type { BrowserContextAttachmentPayload } from "@/lib/browser-view/browser
 import {
   collectDraftAnnotationImageHashes,
   mergeBrowserAnnotationRecords,
+  parseBrowserAnnotationRecord,
   parseBrowserAnnotationRecords,
   type BrowserAnnotationRecord,
 } from "@/lib/browser-view/browser-annotation-record";
@@ -125,6 +126,24 @@ function ensureDraft(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function persistAnnotationEntries(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  const next: unknown[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      next.push(entry);
+      continue;
+    }
+    const withKind =
+      entry.kind === "browser-annotation"
+        ? entry
+        : { ...entry, kind: "browser-annotation" };
+    const parsed = parseBrowserAnnotationRecord(withKind);
+    next.push(parsed ?? withKind);
+  }
+  return next;
 }
 
 function hasDraftMap(
@@ -312,7 +331,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
             content: value.content,
             selection: value.selection,
             browserAnnotations: parseBrowserAnnotationRecords(
-              value.browserAnnotations,
+              persistAnnotationEntries(value.browserAnnotations),
             ),
             resetEpoch: normalizedLegacyResetEpoch(value) + 1,
             revision: normalizedLegacyRevision(value),

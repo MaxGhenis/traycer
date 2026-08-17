@@ -327,7 +327,7 @@ export class BrowserAnnotationSession {
         comment: request.comment,
         counts,
         droppedElementCount,
-        elements: request.elements,
+        elements: [...request.elements],
       };
       const delivered = await this.onAttached({ payload, pngBytes });
       if (!this.isActive()) return;

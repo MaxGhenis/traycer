@@ -9,7 +9,6 @@ import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useMaybeBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import { BrowserAnnotationCard } from "@/components/chat/composer/browser-annotation-card";
 import { useChatImageFetcher } from "@/lib/attachments/use-chat-image-fetcher";
-import { toComposerAnnotationRecord } from "@/lib/browser-view/browser-annotation-wire";
 import {
   browserTabFaviconUrl,
   resolveTabTitle,
@@ -50,7 +49,7 @@ function SentAnnotationCards(props: {
       {props.annotations.map((annotation) => (
         <BrowserAnnotationCard
           key={annotation.annotationId}
-          record={toComposerAnnotationRecord(annotation)}
+          record={annotation}
           onRemove={null}
           imageFetcher={fetcher}
           sessionObjectUrl={noSessionObjectUrl}

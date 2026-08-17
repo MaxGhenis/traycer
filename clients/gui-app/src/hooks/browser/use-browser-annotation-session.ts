@@ -2,21 +2,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { useAnnotationRoute } from "@/hooks/browser/use-annotation-route";
-import {
-  attachRoutedBrowserAnnotation,
-  type BrowserAnnotationAttachPayload,
-} from "@/lib/browser-view/browser-annotation-attach";
-import {
-  overlayTargetFromRoute,
-  type AnnotationRoute,
-} from "@/lib/browser-view/browser-annotation-router";
+import { attachBrowserAnnotation } from "@/lib/browser-view/browser-annotation-attach";
+import type { AnnotationRoute } from "@/lib/browser-view/browser-annotation-router";
 import type {
+  BrowserAnnotationAttachResultInput,
   BrowserAnnotationAttachedIpcEvent,
   BrowserAnnotationSessionIpcEvent,
   BrowserViewStatus,
   BrowserViewTileKey,
   DesktopBrowserViewBridge,
 } from "@/lib/browser-view/desktop-browser-view";
+
+type ReportAnnotationAttachResult = (
+  input: BrowserAnnotationAttachResultInput,
+) => Promise<void>;
 
 export interface BrowserAnnotationSessionController {
   readonly isActive: boolean;
@@ -25,8 +24,18 @@ export interface BrowserAnnotationSessionController {
   readonly toggle: () => void;
 }
 
+export type BrowserAnnotationSessionBridge = Pick<
+  DesktopBrowserViewBridge,
+  | "startAnnotation"
+  | "cancelAnnotation"
+  | "setAnnotationTargetChatLabel"
+  | "reportAnnotationAttachResult"
+  | "onAnnotationEvent"
+  | "onAnnotationAttached"
+>;
+
 interface UseBrowserAnnotationSessionArgs {
-  readonly browserView: DesktopBrowserViewBridge | null;
+  readonly browserView: BrowserAnnotationSessionBridge | null;
   readonly tileKey: BrowserViewTileKey;
   readonly status: BrowserViewStatus;
   readonly viewTabId: string;
@@ -78,7 +87,14 @@ export function useBrowserAnnotationSession(
     if (browserView === null) return;
     const subscription = browserView.onAnnotationAttached((change) => {
       if (!isEventForTile(change, tileKey)) return;
-      void ingestAttachedAnnotation(change, routeRef.current);
+      const reportResult = browserView.reportAnnotationAttachResult;
+      void ingestAttachedAnnotation(
+        change,
+        routeRef.current,
+        reportResult === undefined
+          ? null
+          : (input) => reportResult.call(browserView, input),
+      );
     });
     return () => {
       subscription.dispose();
@@ -87,12 +103,13 @@ export function useBrowserAnnotationSession(
 
   useEffect(() => {
     if (browserView === null || !isActive) return;
-    const target = overlayTargetFromRoute(route);
+    const canAttach = route.kind === "chat";
+    const label = annotationTargetLabel(route);
     void browserView
       .setAnnotationTargetChatLabel({
         ...tileKey,
-        label: target.label,
-        canAttach: target.canAttach,
+        label,
+        canAttach,
       })
       .catch(ignoreAnnotationError);
   }, [browserView, isActive, route, tileKey]);
@@ -152,59 +169,41 @@ function applySessionEvent(
   setMarkCount(0);
 }
 
+function annotationTargetLabel(route: AnnotationRoute): string {
+  if (route.kind === "none") return route.hint;
+  if (route.source === "sibling") return "";
+  return route.label;
+}
+
 async function ingestAttachedAnnotation(
   change: BrowserAnnotationAttachedIpcEvent,
   route: AnnotationRoute,
+  reportResult: ReportAnnotationAttachResult | null,
 ): Promise<void> {
-  const result = await attachRoutedBrowserAnnotation({
-    route,
-    payload: toAttachPayload(change.payload),
-    png: change.pngBytes,
-  });
-  if (result.status === "attached") return;
-  if (result.status === "none") {
-    toast.error("Couldn't attach the annotation.", {
-      description: result.hint,
-    });
-    return;
+  const annotationId = change.payload.annotationId;
+  let status: "attached" | "failed" = "failed";
+  try {
+    if (route.kind === "none") {
+      toast.error("Couldn't attach the annotation.", {
+        description: route.hint,
+      });
+    } else {
+      const result = await attachBrowserAnnotation({
+        chatId: route.chatId,
+        payload: change.payload,
+        png: change.pngBytes,
+      });
+      if (result.status === "attached") {
+        status = "attached";
+      } else {
+        toast.error("Couldn't store the annotation crop.");
+      }
+    }
+  } finally {
+    if (reportResult !== null) {
+      void reportResult({ annotationId, status }).catch(ignoreAnnotationError);
+    }
   }
-  toast.error("Couldn't store the annotation crop.");
-}
-
-function toAttachPayload(
-  payload: BrowserAnnotationAttachedIpcEvent["payload"],
-): BrowserAnnotationAttachPayload {
-  return {
-    annotationId: payload.annotationId,
-    tabId: payload.tabId,
-    sessionId: payload.sessionId,
-    origin: payload.origin,
-    pageUrl: payload.pageUrl,
-    pageTitle: payload.pageTitle,
-    capturedAt: payload.capturedAt,
-    comment: payload.comment,
-    counts: payload.counts,
-    elements: payload.elements.map((element) => ({
-      selector: element.selector,
-      tagName: element.tagName,
-      elementId: element.elementId,
-      classNames: [...element.classNames],
-      attributes: element.attributes.map((attribute) => ({
-        name: attribute.name,
-        value: attribute.value,
-      })),
-      outerHtml: element.outerHtml,
-      outerHtmlTruncated: element.outerHtmlTruncated,
-      textPreview: element.textPreview,
-      ariaRole: element.ariaRole,
-      accessibleName: element.accessibleName,
-      boundingBox: { ...element.boundingBox },
-      computedStyles: element.computedStyles.map((style) => ({
-        property: style.property,
-        value: style.value,
-      })),
-    })),
-  };
 }
 
 function isEventForTile(

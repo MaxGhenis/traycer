@@ -1,7 +1,11 @@
 import type {
+  BrowserAnnotationCounts,
+  BrowserAnnotationRecord,
   BrowserViewElementCapture,
-  BrowserViewTileKey,
-} from "./browser-view-types";
+} from "@traycer/protocol/persistence/epic/schemas";
+import type { BrowserViewTileKey } from "./browser-view-types";
+
+export type { BrowserAnnotationCounts };
 
 /**
  * Guest overlay mode. Select is the session default (annotate button).
@@ -49,37 +53,13 @@ export interface BrowserAnnotationAttachRequest {
 }
 
 /**
- * `elements` is the number delivered after byte-budget trim, not the number
- * of element marks. Regions and strokes stay mark-derived.
+ * Main-owned attach payload after a successful crop. Same persist fields
+ * as the protocol record, minus kind and the crop pairing keys.
  */
-export interface BrowserAnnotationCounts {
-  readonly elements: number;
-  readonly regions: number;
-  readonly strokes: number;
-}
-
-/**
- * Main-owned attach payload after a successful crop. `annotationId` is minted
- * here; the guest never supplies ids or pixels.
- */
-export interface BrowserAnnotationAttachPayload {
-  readonly annotationId: string;
-  readonly tabId: string;
-  readonly sessionId: string;
-  readonly origin: string;
-  readonly pageUrl: string;
-  readonly pageTitle: string;
-  readonly capturedAt: number;
-  readonly comment: string;
-  readonly counts: BrowserAnnotationCounts;
-  /**
-   * Element marks that did not survive guest `applyByteBudget` or main
-   * `trimToByteBudget` / the element cap. 0 when every marked element was
-   * delivered.
-   */
-  readonly droppedElementCount: number;
-  readonly elements: readonly BrowserViewElementCapture[];
-}
+export type BrowserAnnotationAttachPayload = Omit<
+  BrowserAnnotationRecord,
+  "kind" | "imageFileName" | "imageHash"
+>;
 
 /**
  * IPC event for a successful attach. Failure never emits this (bundle stays

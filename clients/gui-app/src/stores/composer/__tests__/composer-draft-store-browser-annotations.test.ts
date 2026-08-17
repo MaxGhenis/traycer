@@ -1,13 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { del as idbDel, get as idbGet, set as idbSet } from "idb-keyval";
 
-import {
-  attachBrowserAnnotation,
-  attachRoutedBrowserAnnotation,
-  removeAttachedBrowserAnnotation,
-  restoreAttachedBrowserAnnotations,
-} from "@/lib/browser-view/browser-annotation-attach";
-import { ANNOTATION_ROUTE_NONE_HINT } from "@/lib/browser-view/browser-annotation-router";
+import { attachBrowserAnnotation } from "@/lib/browser-view/browser-annotation-attach";
+import { scheduleLandingImageReconcile } from "@/lib/composer/landing-image-gc";
+import { createChatSessionStore } from "@/stores/chats/chat-session-store";
+import { IMMEDIATE_STREAM_FLUSH_COORDINATOR } from "@/stores/chats/stream-flush-coordinator";
 import { createStubBrowserAnnotationPayloadFor } from "@/lib/browser-view/__tests__/browser-annotation-fixtures";
 import { createBrowserConsoleAttachment } from "@/lib/browser-view/browser-context-attachments";
 import type {
@@ -126,12 +123,15 @@ async function attachNamed(
     png: stub.png,
   });
   expect(result.status).toBe("attached");
-  if (result.status !== "attached") {
-    throw new Error(`expected attached, got ${result.status}`);
+  const record = draftOf(chatId).browserAnnotations.find(
+    (entry) => entry.annotationId === input.annotationId,
+  );
+  if (record === undefined) {
+    throw new Error(`expected attached record ${input.annotationId}`);
   }
   return {
-    hash: result.record.imageHash,
-    annotationId: result.record.annotationId,
+    hash: record.imageHash,
+    annotationId: record.annotationId,
   };
 }
 
@@ -209,6 +209,7 @@ describe("composer draft store browserAnnotations", () => {
     expect(hasLandingImageBytes(hash)).toBe(true);
 
     const record = {
+      kind: "browser-annotation" as const,
       annotationId: stub.payload.annotationId,
       tabId: stub.payload.tabId,
       sessionId: stub.payload.sessionId,
@@ -221,6 +222,7 @@ describe("composer draft store browserAnnotations", () => {
       elements: stub.payload.elements,
       imageFileName: `browser-annotation-${stub.payload.annotationId}.png`,
       imageHash: hash,
+      droppedElementCount: 0,
     };
     useComposerDraftStore.getState().addBrowserAnnotation("chat-add", record);
 
@@ -268,7 +270,10 @@ describe("composer draft store browserAnnotations", () => {
     });
     expect(hasLandingImageBytes(attached.hash)).toBe(true);
 
-    removeAttachedBrowserAnnotation("chat-remove", attached.annotationId);
+    useComposerDraftStore
+      .getState()
+      .removeBrowserAnnotation("chat-remove", attached.annotationId);
+    scheduleLandingImageReconcile();
 
     expect(draftOf("chat-remove").browserAnnotations).toEqual([]);
     await vi.waitFor(async () => {
@@ -303,25 +308,33 @@ describe("composer draft store browserAnnotations", () => {
     });
     expect(first.status).toBe("attached");
     expect(second.status).toBe("attached");
-    if (first.status !== "attached" || second.status !== "attached") {
-      throw new Error("expected both attaches");
+    const shared = draftOf("chat-share").browserAnnotations;
+    expect(shared).toHaveLength(2);
+    expect(shared[0]?.imageHash).toBe(shared[1]?.imageHash);
+    const sharedHash = shared[0]?.imageHash;
+    if (sharedHash === undefined) {
+      throw new Error("expected shared image hash");
     }
-    expect(first.record.imageHash).toBe(second.record.imageHash);
-    expect(draftOf("chat-share").browserAnnotations).toHaveLength(2);
 
-    removeAttachedBrowserAnnotation("chat-share", first.record.annotationId);
+    useComposerDraftStore
+      .getState()
+      .removeBrowserAnnotation("chat-share", "ann-share-a");
+    scheduleLandingImageReconcile();
 
     expect(
       draftOf("chat-share").browserAnnotations.map((r) => r.annotationId),
     ).toEqual(["ann-share-b"]);
     await Promise.resolve();
-    expect(hasLandingImageBytes(first.record.imageHash)).toBe(true);
-    expect(await imageHashKeys()).toContain(first.record.imageHash);
+    expect(hasLandingImageBytes(sharedHash)).toBe(true);
+    expect(await imageHashKeys()).toContain(sharedHash);
 
-    removeAttachedBrowserAnnotation("chat-share", second.record.annotationId);
+    useComposerDraftStore
+      .getState()
+      .removeBrowserAnnotation("chat-share", "ann-share-b");
+    scheduleLandingImageReconcile();
     await vi.waitFor(async () => {
-      expect(hasLandingImageBytes(first.record.imageHash)).toBe(false);
-      expect(await imageHashKeys()).not.toContain(first.record.imageHash);
+      expect(hasLandingImageBytes(sharedHash)).toBe(false);
+      expect(await imageHashKeys()).not.toContain(sharedHash);
     });
   });
 
@@ -334,6 +347,7 @@ describe("composer draft store browserAnnotations", () => {
     });
     const hash = await putImage(stub.png);
     const persistedRecord = {
+      kind: "browser-annotation" as const,
       annotationId: stub.payload.annotationId,
       tabId: stub.payload.tabId,
       sessionId: stub.payload.sessionId,
@@ -346,6 +360,7 @@ describe("composer draft store browserAnnotations", () => {
       elements: stub.payload.elements,
       imageFileName: `browser-annotation-${stub.payload.annotationId}.png`,
       imageHash: hash,
+      droppedElementCount: 0,
     };
     window.localStorage.setItem(
       STORAGE_KEY,
@@ -494,7 +509,9 @@ describe("composer draft store browserAnnotations", () => {
     const existing = draftOf("chat-restore-api").browserAnnotations;
     const epoch = draftOf("chat-restore-api").resetEpoch;
 
-    restoreAttachedBrowserAnnotations("chat-restore-api", existing);
+    useComposerDraftStore
+      .getState()
+      .restoreBrowserAnnotations("chat-restore-api", existing);
 
     const after = draftOf("chat-restore-api");
     expect(after.browserAnnotations).toHaveLength(1);
@@ -504,23 +521,62 @@ describe("composer draft store browserAnnotations", () => {
     expect(after.resetEpoch).toBe(epoch);
   });
 
-  it("attachRoutedBrowserAnnotation does not store when the route is none", async () => {
-    const stub = createStubBrowserAnnotationPayloadFor({
-      annotationId: "ann-none",
-      tabId: "tab-none",
-      sessionId: "session-none",
-      comment: "nowhere to go",
+  it("reject-after-optimistic-accept keeps crop bytes so the restored draft is re-sendable", async () => {
+    const attached = await attachNamed("chat-m2", {
+      annotationId: "ann-m2",
+      tabId: "tab-m2",
+      sessionId: "session-m2",
+      comment: "must survive reject",
     });
-    const result = await attachRoutedBrowserAnnotation({
-      route: { kind: "none", hint: ANNOTATION_ROUTE_NONE_HINT },
-      payload: stub.payload,
-      png: stub.png,
+    const records = draftOf("chat-m2").browserAnnotations;
+    const handle = createChatSessionStore({
+      hostId: "host-m2",
+      epicId: "epic-m2",
+      chatId: "chat-m2",
+      userId: null,
+      onAuthError: null,
+      onProviderAuthError: null,
+      streamFlushCoordinator: IMMEDIATE_STREAM_FLUSH_COORDINATOR,
+      streamClientFactory: () => ({
+        sendAction: () => undefined,
+        sameTurnSteeringProtocolSupported: () => true,
+        close: () => undefined,
+      }),
     });
-    expect(result).toEqual({
-      status: "none",
-      hint: ANNOTATION_ROUTE_NONE_HINT,
+    handle.store.setState({
+      pendingActions: {
+        "action-m2": {
+          clientActionId: "action-m2",
+          action: "send",
+          interviewBlockId: null,
+          messageId: "msg-m2",
+          restoreContent: EMPTY_DOC,
+          restoreBrowserAnnotations: records,
+          sender: null,
+          settings: null,
+          restoreWorktreeIntent: null,
+          restoreWorktreeStagingRevision: null,
+          createdAt: 1,
+          connectionEpoch: 0,
+        },
+      },
     });
-    expect(useComposerDraftStore.getState().drafts).toEqual({});
-    expect(await imageHashKeys()).toEqual([]);
+
+    useComposerDraftStore.getState().clearDraft("chat-m2");
+    await vi.waitFor(() => {
+      expect(draftOf("chat-m2").browserAnnotations).toEqual([]);
+    });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 700);
+    });
+    expect(hasLandingImageBytes(attached.hash)).toBe(true);
+
+    handle.store.setState({ pendingActions: {} });
+    scheduleLandingImageReconcile();
+    await vi.waitFor(async () => {
+      expect(hasLandingImageBytes(attached.hash)).toBe(false);
+    });
+    handle.dispose();
   });
+
 });

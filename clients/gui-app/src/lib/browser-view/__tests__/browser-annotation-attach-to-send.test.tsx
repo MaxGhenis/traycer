@@ -9,8 +9,8 @@ import type { ChatComposerSubmitInput } from "@/components/chat/composer/chat-co
 import type { ComposerPromptEditorHandle } from "@/components/chat/composer/composer-prompt-editor";
 import { createComposerPickerStore } from "@/components/chat/composer/picker/composer-picker-store";
 import { useChatComposerSubmit } from "@/components/chat/composer/use-chat-composer-submit";
-import { attachRoutedBrowserAnnotation } from "@/lib/browser-view/browser-annotation-attach";
-import type { AnnotationRoute } from "@/lib/browser-view/browser-annotation-router";
+import { attachBrowserAnnotation } from "@/lib/browser-view/browser-annotation-attach";
+
 import { collectImageAtoms } from "@/lib/composer/image-atoms";
 import {
   deleteImage,
@@ -84,13 +84,6 @@ const CHAT_ID = "chat-attach-to-send";
 const ANNOTATION_ID = "ann-attach-to-send";
 const COMMENT = "Make this hero section pop more, bigger heading";
 const IMAGE_FILE_NAME = `browser-annotation-${ANNOTATION_ID}.png`;
-
-const CHAT_ROUTE: AnnotationRoute = {
-  kind: "chat",
-  chatId: CHAT_ID,
-  label: "Chat",
-  source: "sibling",
-};
 
 let urlCounter = 0;
 const createObjectURL = vi.fn(
@@ -196,15 +189,12 @@ describe("browser annotation attach to send", () => {
       comment: COMMENT,
     });
 
-    const attached = await attachRoutedBrowserAnnotation({
-      route: CHAT_ROUTE,
+    const attached = await attachBrowserAnnotation({
+      chatId: CHAT_ID,
       payload: stub.payload,
       png: stub.png,
     });
     expect(attached.status).toBe("attached");
-    if (attached.status !== "attached") {
-      throw new Error(`expected attached, got ${attached.status}`);
-    }
 
     const draft = useComposerDraftStore.getState().drafts[CHAT_ID];
     expect(draft).toBeDefined();
@@ -216,7 +206,6 @@ describe("browser annotation attach to send", () => {
     expect(record.annotationId).toBe(ANNOTATION_ID);
     expect(record.imageHash.length).toBeGreaterThan(0);
     expect(record.imageFileName).toBe(IMAGE_FILE_NAME);
-    expect(record).toEqual(attached.record);
 
     imageStoreMocks.sessionImageBytes.mockImplementation((hash) => {
       if (hash === record.imageHash) {
@@ -246,10 +235,7 @@ describe("browser annotation attach to send", () => {
     });
 
     const input = submit.mock.calls[0][0];
-    expect(input.attachments).toContainEqual({
-      kind: "browser-annotation",
-      record,
-    });
+    expect(input.attachments).toContainEqual(record);
     const atoms = collectImageAtoms(input.content);
     expect(atoms).toHaveLength(1);
     expect(atoms[0]?.fileName).toBe(IMAGE_FILE_NAME);

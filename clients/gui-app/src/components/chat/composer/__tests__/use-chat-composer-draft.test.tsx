@@ -457,6 +457,7 @@ function draftAnnotation(
   annotationId: string,
 ): BrowserAnnotationRecord {
   return {
+    kind: "browser-annotation",
     annotationId,
     tabId: "t-1",
     sessionId: "s-1",
@@ -469,6 +470,7 @@ function draftAnnotation(
     elements: [STUB_ANNOTATION_ELEMENT],
     imageFileName: `browser-annotation-${annotationId}.png`,
     imageHash: `hash-${annotationId}`,
+    droppedElementCount: 0,
   };
 }
 

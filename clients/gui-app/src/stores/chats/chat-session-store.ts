@@ -55,7 +55,8 @@ import type {
   BrowserContextAttachment,
 } from "@/lib/composer/types";
 import type { BrowserAnnotationRecord } from "@/lib/browser-view/browser-annotation-record";
-import { toBrowserAnnotationWire } from "@/lib/browser-view/browser-annotation-wire";
+import { collectAnnotationImageHashes } from "@/lib/browser-view/browser-annotation-record";
+import { registerExtraImageRootSource } from "@/lib/composer/landing-image-budget";
 import { browserContextAttachmentToWire } from "@/lib/browser-view/browser-context-attachments";
 import type {
   RuntimeApprovalDecision,
@@ -801,6 +802,31 @@ function restoreStagedWorktreeIntentForPending(
     .getState()
     .setIntent(stagingKey, pending.restoreWorktreeIntent);
 }
+
+const liveChatSessionStores = new Set<{
+  getState: () => ChatSessionState;
+}>();
+
+function collectPendingAnnotationImageHashes(): ReadonlyArray<string> {
+  const records: BrowserAnnotationRecord[] = [];
+  for (const sessionStore of liveChatSessionStores) {
+    const state = sessionStore.getState();
+    for (const pending of Object.values(state.pendingActions)) {
+      records.push(...pending.restoreBrowserAnnotations);
+    }
+    for (const message of state.pendingUserMessages) {
+      records.push(...message.restoreBrowserAnnotations);
+    }
+    if (state.failedSendRestoration !== null) {
+      records.push(...state.failedSendRestoration.browserAnnotations);
+    }
+  }
+  return collectAnnotationImageHashes(records);
+}
+
+registerExtraImageRootSource({
+  hashes: collectPendingAnnotationImageHashes,
+});
 
 export function createChatSessionStore(
   options: ChatSessionStoreOptions,
@@ -1969,16 +1995,10 @@ export function createChatSessionStoreWithNotificationDependencies(
           .map((attachment) =>
             browserContextAttachmentToWire(attachment.payload),
           );
-        const browserAnnotations = input.attachments
-          .filter(
-            (
-              attachment,
-            ): attachment is Extract<
-              Attachment,
-              { readonly kind: "browser-annotation" }
-            > => attachment.kind === "browser-annotation",
-          )
-          .map((attachment) => toBrowserAnnotationWire(attachment.record));
+        const browserAnnotations = input.attachments.filter(
+          (attachment): attachment is BrowserAnnotationRecord =>
+            attachment.kind === "browser-annotation",
+        );
         const frame: ChatOwnerActionFrame = {
           kind: "send",
           hasBinaryPayload: false,
@@ -2787,6 +2807,7 @@ export function createChatSessionStoreWithNotificationDependencies(
       dispose: () => {
         if (disposed) return;
         disposed = true;
+        liveChatSessionStores.delete(store);
         unsubscribeLiveCompletionAcknowledgements();
         lease.unregister();
         clearBufferedDeltas();
@@ -2828,6 +2849,8 @@ export function createChatSessionStoreWithNotificationDependencies(
         },
       );
   }
+
+  liveChatSessionStores.add(store);
 
   return {
     epicId: options.epicId,
