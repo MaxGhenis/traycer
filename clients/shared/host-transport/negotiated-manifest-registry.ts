@@ -43,9 +43,18 @@
  * {@link resetNegotiatedManifests} exists so tests start from a clean slate.
  */
 
+import type {
+  ConnectionManifest,
+  SchemaVersion,
+} from "@traycer/protocol/framework/index";
+
 type ManifestListener = () => void;
 
 const methodsByHostId = new Map<string, ReadonlySet<string>>();
+const methodVersionsByHostId = new Map<
+  string,
+  ReadonlyMap<string, SchemaVersion>
+>();
 const listeners = new Set<ManifestListener>();
 
 /**
@@ -84,6 +93,40 @@ export function recordNegotiatedHostMethods(
   // contact, or a host upgraded under a live session) allocates.
   if (current !== undefined && coversExactly(current, methodNames)) return;
   methodsByHostId.set(hostId, new Set(methodNames));
+  // A name-only writer cannot preserve version evidence across a changed set.
+  methodVersionsByHostId.delete(hostId);
+  for (const listener of listeners) listener();
+}
+
+/**
+ * Records the complete versioned manifest from a host handshake.
+ *
+ * `recordNegotiatedHostMethods` remains as the compatibility surface for
+ * callers/tests that only know names. New optional RPC families should use
+ * this function: presence alone is insufficient when the UI depends on a
+ * specific schema major.
+ */
+export function recordNegotiatedHostManifest(
+  hostId: string,
+  manifest: ConnectionManifest,
+): void {
+  const names = Object.keys(manifest);
+  const currentMethods = methodsByHostId.get(hostId);
+  const currentVersions = methodVersionsByHostId.get(hostId);
+  if (
+    currentMethods !== undefined &&
+    currentVersions !== undefined &&
+    coversExactly(currentMethods, names) &&
+    versionsMatch(currentVersions, manifest)
+  ) {
+    return;
+  }
+
+  methodsByHostId.set(hostId, new Set(names));
+  methodVersionsByHostId.set(
+    hostId,
+    new Map(names.map((name) => [name, manifest[name]] as const)),
+  );
   for (const listener of listeners) listener();
 }
 
@@ -96,6 +139,14 @@ export function getNegotiatedHostMethods(
   hostId: string,
 ): ReadonlySet<string> | null {
   return methodsByHostId.get(hostId) ?? null;
+}
+
+/** The canonical version last advertised for one host method. */
+export function getNegotiatedHostMethodVersion(
+  hostId: string,
+  method: string,
+): SchemaVersion | null {
+  return methodVersionsByHostId.get(hostId)?.get(method) ?? null;
 }
 
 /**
@@ -114,9 +165,28 @@ export function subscribeNegotiatedManifests(
 
 /** Test seam: drops every recorded manifest. Listeners are left attached. */
 export function resetNegotiatedManifests(): void {
-  if (methodsByHostId.size === 0) return;
+  if (methodsByHostId.size === 0 && methodVersionsByHostId.size === 0) return;
   methodsByHostId.clear();
+  methodVersionsByHostId.clear();
   for (const listener of listeners) listener();
+}
+
+function versionsMatch(
+  current: ReadonlyMap<string, SchemaVersion>,
+  manifest: ConnectionManifest,
+): boolean {
+  const names = Object.keys(manifest);
+  if (current.size !== names.length) return false;
+  return names.every((name) => {
+    const previous = current.get(name);
+    const next = manifest[name];
+    return (
+      previous !== undefined &&
+      next !== undefined &&
+      previous.major === next.major &&
+      previous.minor === next.minor
+    );
+  });
 }
 
 /**

@@ -82,14 +82,38 @@ import {
 } from "@/stores/epics/left-panel-store";
 import { useSettingsStore } from "@/stores/settings/settings-store";
 import type { EpicTerminalRef } from "@/stores/epics/canvas/types";
+import {
+  existingSessionOriginFields,
+  isUnsupportedEpicTerminalRef,
+} from "@/stores/epics/canvas/types";
 import { providerLoginTerminalProviderId } from "@/stores/providers/provider-login-terminals";
+import { isSetupTerminal } from "@/stores/worktree/setup-terminals";
 import {
   SidebarContextMenuItems,
   SidebarDropdownMenuItems,
   type SidebarRowMenuEntry,
 } from "@/components/epic-canvas/sidebar/sidebar-row-menu-items";
+import { useHostPlainTerminalAuthority } from "@/hooks/terminal/use-plain-terminal-authority";
+import { useHostPlainTerminalMutations } from "@/hooks/terminal/use-plain-terminal-mutations";
+import {
+  registerEpicTerminalCloseAuthority,
+  requestEpicTerminalLifetimeClose,
+  type EpicTerminalCloseAuthority,
+} from "@/lib/terminals/epic-terminal-close-coordinator";
 
 const TERMINALS_PANEL_SKELETON = <TerminalsPanelSkeleton />;
+
+function withLegacyTerminalCloseAuthority(
+  authority: EpicTerminalCloseAuthority,
+  closeLocalRef: () => void,
+): void {
+  const unregister = registerEpicTerminalCloseAuthority(authority);
+  try {
+    closeLocalRef();
+  } finally {
+    unregister();
+  }
+}
 
 /**
  * Body for the "terminals" left-panel rail entry. Lists raw host
@@ -129,6 +153,34 @@ function TerminalsPanelBodyLive(props: {
     (s) => s.prepareSetActiveTileTabFocusTarget,
   );
   const activeHostId = useReactiveActiveHostId() ?? UNKNOWN_HOST_PLACEHOLDER;
+  const durableAuthority = useHostPlainTerminalAuthority({
+    hostId: activeHostId,
+    scope: { kind: "epic", epicId },
+  });
+  const durableMutations = useHostPlainTerminalMutations(durableAuthority);
+  const requestDurableClose = (terminalId: string) => {
+    const pending = requestEpicTerminalLifetimeClose({
+      hostId: activeHostId,
+      terminalId,
+      capability: durableAuthority.capability.status,
+      canMutate: durableAuthority.canMutate,
+      close: async () => {
+        await durableMutations.close.mutateAsync({ terminalId });
+      },
+    });
+    if (pending === null) return;
+    void pending.catch(() => undefined);
+  };
+  const requestDurableRename = (
+    terminalId: string,
+    manualTitle: string,
+    onSuccess: () => void,
+  ) => {
+    if (!durableAuthority.canMutate || durableMutations.rename.isPending) {
+      return;
+    }
+    durableMutations.rename.mutate({ terminalId, manualTitle }, { onSuccess });
+  };
 
   const openExisting = useCallback(
     (session: CanonicalTerminalSessionInfo) => {
@@ -181,6 +233,15 @@ function TerminalsPanelBodyLive(props: {
             tabId={tabId}
             hostId={activeHostId}
             onOpen={openExisting}
+            closeCapability={durableAuthority.capability.status}
+            closeCanMutate={durableAuthority.canMutate}
+            closePending={durableMutations.close.isPending}
+            onDurableClose={requestDurableClose}
+            durableRenameTerminalIds={Object.keys(
+              durableAuthority.collection?.terminalsById ?? {},
+            )}
+            durableRenamePending={durableMutations.rename.isPending}
+            onDurableRename={requestDurableRename}
           />
         </SidebarGroupContent>
       </SidebarGroup>
@@ -223,6 +284,31 @@ interface TerminalSidebarBodyProps {
   readonly tabId: string;
   readonly hostId: string;
   readonly onOpen: (session: CanonicalTerminalSessionInfo) => void;
+  readonly closeCapability: "unknown" | "legacy" | "capable";
+  readonly closeCanMutate: boolean;
+  readonly closePending: boolean;
+  readonly onDurableClose: (terminalId: string) => void;
+  readonly durableRenameTerminalIds: readonly string[];
+  readonly durableRenamePending: boolean;
+  readonly onDurableRename: (
+    terminalId: string,
+    manualTitle: string,
+    onSuccess: () => void,
+  ) => void;
+}
+
+type TerminalSidebarRenameMode = "disabled" | "legacy" | "capable";
+
+function resolveTerminalSidebarRenameMode(args: {
+  readonly capability: "unknown" | "legacy" | "capable";
+  readonly canMutate: boolean;
+  readonly hasProjection: boolean;
+}): TerminalSidebarRenameMode {
+  if (args.capability === "legacy") return "legacy";
+  if (args.capability !== "capable" || !args.canMutate || !args.hasProjection) {
+    return "disabled";
+  }
+  return "capable";
 }
 
 function TerminalSidebarBody(props: TerminalSidebarBodyProps) {
@@ -289,6 +375,7 @@ function TerminalSidebarBody(props: TerminalSidebarBodyProps) {
       />
     );
   }
+  const durableRenameTerminalIds = new Set(props.durableRenameTerminalIds);
   return (
     <ul
       aria-label="Epic terminals"
@@ -303,6 +390,17 @@ function TerminalSidebarBody(props: TerminalSidebarBodyProps) {
           hostId={props.hostId}
           session={session}
           onOpen={props.onOpen}
+          closeCapability={props.closeCapability}
+          closeCanMutate={props.closeCanMutate}
+          closePending={props.closePending}
+          onDurableClose={props.onDurableClose}
+          renameMode={resolveTerminalSidebarRenameMode({
+            capability: props.closeCapability,
+            canMutate: props.closeCanMutate,
+            hasProjection: durableRenameTerminalIds.has(session.sessionId),
+          })}
+          durableRenamePending={props.durableRenamePending}
+          onDurableRename={props.onDurableRename}
         />
       ))}
     </ul>
@@ -315,15 +413,38 @@ interface TerminalRowProps {
   readonly hostId: string;
   readonly session: CanonicalTerminalSessionInfo;
   readonly onOpen: (session: CanonicalTerminalSessionInfo) => void;
+  readonly closeCapability: "unknown" | "legacy" | "capable";
+  readonly closeCanMutate: boolean;
+  readonly closePending: boolean;
+  readonly onDurableClose: (terminalId: string) => void;
+  readonly renameMode: TerminalSidebarRenameMode;
+  readonly durableRenamePending: boolean;
+  readonly onDurableRename: (
+    terminalId: string,
+    manualTitle: string,
+    onSuccess: () => void,
+  ) => void;
 }
 
 function TerminalRow(props: TerminalRowProps) {
-  const { hostId, epicId, tabId, session, onOpen } = props;
+  const {
+    closeCapability,
+    closeCanMutate,
+    closePending,
+    durableRenamePending,
+    epicId,
+    hostId,
+    onDurableClose,
+    onDurableRename,
+    onOpen,
+    session,
+    tabId,
+  } = props;
   // Per-row boolean subscription so selecting a session re-renders only the two
   // rows whose active state flips, not every row.
   const isActive = useIsActiveTile(tabId, session.sessionId);
   const kill = useTerminalKill();
-  const rename = useTerminalRename();
+  const legacyRename = useTerminalRename();
   const navigateNested = useEpicNestedFocusNavigation();
   const prepareCloseCanvasTabFocusTarget = useEpicCanvasStore(
     (s) => s.prepareCloseCanvasTabFocusTarget,
@@ -331,6 +452,22 @@ function TerminalRow(props: TerminalRowProps) {
   const showNavigatorResourceStats = useSettingsStore(
     (state) => state.showNavigatorResourceStats,
   );
+  const hasUnsupportedFutureRef = useEpicCanvasStore((state) =>
+    Object.values(state.canvasByTabId).some((canvas) =>
+      Object.values(canvas?.tilesByInstanceId ?? {}).some(
+        (ref) =>
+          ref?.type === "terminal" &&
+          ref.hostId === hostId &&
+          ref.id === session.sessionId &&
+          isUnsupportedEpicTerminalRef(ref),
+      ),
+    ),
+  );
+  const renameMode = hasUnsupportedFutureRef ? "disabled" : props.renameMode;
+  let renamePending = false;
+  if (renameMode === "capable") renamePending = durableRenamePending;
+  if (renameMode === "legacy") renamePending = legacyRename.isPending;
+  const canRename = renameMode !== "disabled" && !renamePending;
 
   const label = terminalSessionLabel(session);
   const [isRenaming, setIsRenaming] = useState(false);
@@ -366,13 +503,14 @@ function TerminalRow(props: TerminalRowProps) {
     renameInputRef.current?.select();
   }, [isRenaming]);
 
-  const startRename = useCallback(() => {
+  const startRename = () => {
+    if (!canRename) return;
     setRenameValue(label);
     setIsRenaming(true);
-  }, [label]);
+  };
 
-  const commitRename = useCallback(() => {
-    if (rename.isPending) return;
+  const commitRename = () => {
+    if (!canRename) return;
     const trimmed = renameValue.trim();
     if (trimmed.length === 0 || trimmed === label) {
       setIsRenaming(false);
@@ -381,27 +519,27 @@ function TerminalRow(props: TerminalRowProps) {
     // The mutation optimistically patches the cached `terminal.list` rows,
     // so this row AND any open canvas tab for the session update before the
     // host round-trip (with rollback on error).
-    rename.mutate(
+    const finish = (): void => setIsRenaming(false);
+    if (renameMode === "capable") {
+      onDurableRename(session.sessionId, trimmed, finish);
+      return;
+    }
+    legacyRename.mutate(
       { sessionId: session.sessionId, title: trimmed },
-      {
-        onSuccess: () => setIsRenaming(false),
-      },
+      { onSuccess: finish },
     );
-  }, [label, rename, renameValue, session.sessionId]);
+  };
 
-  const handleRenameKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLInputElement>) => {
-      if (rename.isPending) return;
-      if (event.key === "Enter") {
-        event.preventDefault();
-        commitRename();
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        setIsRenaming(false);
-      }
-    },
-    [commitRename, rename.isPending],
-  );
+  const handleRenameKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (renamePending) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitRename();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setIsRenaming(false);
+    }
+  };
 
   // "Close" terminates the PTY AND closes its open canvas tab. Killing alone
   // only drops the host session (and its sidebar row); the open tile would
@@ -409,32 +547,57 @@ function TerminalRow(props: TerminalRowProps) {
   // tile is currently unmounted. Closing the tab here makes the action
   // immediate and mount-independent. `findOpenArtifactInTab` returns null when
   // no tab is open for this session, so a sidebar-only session just gets killed.
-  const requestClose = useCallback(() => {
-    if (kill.isPending) return;
+  const requestClose = () => {
+    if (hasUnsupportedFutureRef) return;
+    if (closeCapability === "capable") {
+      if (!closeCanMutate || closePending) return;
+      onDurableClose(session.sessionId);
+      return;
+    }
+    if (closeCapability === "unknown" || kill.isPending) return;
     const found = findOpenArtifactInTab(tabId, session.sessionId);
     if (found !== null) {
-      navigateNested(epicId, tabId, () =>
-        prepareCloseCanvasTabFocusTarget(tabId, found.paneId, found.instanceId),
+      // This branch is reachable only after the manifest positively identifies
+      // an old host. Register that evidence for the synchronous store boundary
+      // so it preserves the legacy local-close behavior without weakening the
+      // coordinator's fail-closed default for unregistered refs.
+      withLegacyTerminalCloseAuthority(
+        {
+          instanceId: found.instanceId,
+          hostId,
+          terminalId: session.sessionId,
+          capability: "legacy",
+          canMutate: false,
+          close: () => Promise.resolve(),
+        },
+        () => {
+          navigateNested(epicId, tabId, () =>
+            prepareCloseCanvasTabFocusTarget(
+              tabId,
+              found.paneId,
+              found.instanceId,
+            ),
+          );
+        },
       );
     }
     kill.mutate({ sessionId: session.sessionId });
-  }, [
-    epicId,
-    kill,
-    navigateNested,
-    prepareCloseCanvasTabFocusTarget,
-    session.sessionId,
-    tabId,
-  ]);
+  };
 
-  const handleDoubleClick = useCallback(() => {
-    if (isRenaming) return;
+  const handleDoubleClick = () => {
+    if (isRenaming || !canRename) return;
     startRename();
-  }, [isRenaming, startRename]);
+  };
   const rowMenuEntries = terminalRowMenuEntries({
     sessionId: session.sessionId,
-    closePending: kill.isPending,
+    closePending:
+      hasUnsupportedFutureRef ||
+      closeCapability === "unknown" ||
+      (closeCapability === "capable"
+        ? !closeCanMutate || closePending
+        : kill.isPending),
     onStartRename: startRename,
+    renameDisabled: !canRename,
     onRequestClose: requestClose,
   });
 
@@ -455,7 +618,7 @@ function TerminalRow(props: TerminalRowProps) {
                   ref={renameInputRef}
                   data-testid={`epic-terminal-sidebar-rename-input-${session.sessionId}`}
                   value={renameValue}
-                  disabled={rename.isPending}
+                  disabled={renamePending}
                   onChange={(event) => setRenameValue(event.target.value)}
                   onBlur={commitRename}
                   onKeyDown={handleRenameKeyDown}
@@ -532,6 +695,7 @@ interface TerminalRowMenuEntriesProps {
   readonly sessionId: string;
   readonly closePending: boolean;
   readonly onStartRename: () => void;
+  readonly renameDisabled: boolean;
   readonly onRequestClose: () => void;
 }
 
@@ -544,7 +708,7 @@ function terminalRowMenuEntries(
       id: "rename",
       label: "Rename",
       icon: <Pencil className="size-3.5" />,
-      disabled: false,
+      disabled: props.renameDisabled,
       disabledTooltip: null,
       variant: "default",
       testIds: {
@@ -585,6 +749,7 @@ function makeTerminalRef(
     hostId,
     session.sessionId,
   );
+  const setupSession = isSetupTerminal(hostId, session.sessionId);
   return {
     id: session.sessionId,
     instanceId,
@@ -593,11 +758,6 @@ function makeTerminalRef(
     titleSource: deriveTitleSourceFromSessionTitle(session.title),
     hostId,
     cwd: session.cwd,
-    ...(signInProviderId === null
-      ? {}
-      : {
-          origin: "provider-login" as const,
-          originProviderId: signInProviderId,
-        }),
+    ...existingSessionOriginFields(signInProviderId, setupSession),
   };
 }

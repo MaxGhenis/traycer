@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  getNegotiatedHostMethodVersion,
   getNegotiatedHostMethods,
+  recordNegotiatedHostManifest,
   recordNegotiatedHostMethods,
   resetNegotiatedManifests,
   subscribeNegotiatedManifests,
@@ -65,6 +67,29 @@ describe("negotiated-manifest-registry", () => {
     expect(second).not.toBe(first);
     expect(second?.has("epic.setChatArchived")).toBe(true);
 
+    unsubscribe();
+  });
+
+  it("records canonical versions and notifies when a version changes without a name change", () => {
+    recordNegotiatedHostManifest("host-1", {
+      "terminal.plain.list": { major: 1, minor: 0 },
+    });
+    const first = getNegotiatedHostMethods("host-1");
+    const listener = vi.fn();
+    const unsubscribe = subscribeNegotiatedManifests(listener);
+
+    expect(
+      getNegotiatedHostMethodVersion("host-1", "terminal.plain.list"),
+    ).toEqual({ major: 1, minor: 0 });
+    recordNegotiatedHostManifest("host-1", {
+      "terminal.plain.list": { major: 1, minor: 1 },
+    });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(getNegotiatedHostMethods("host-1")).not.toBe(first);
+    expect(
+      getNegotiatedHostMethodVersion("host-1", "terminal.plain.list"),
+    ).toEqual({ major: 1, minor: 1 });
     unsubscribe();
   });
 });

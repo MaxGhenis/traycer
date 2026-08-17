@@ -114,6 +114,11 @@ import {
   type DesktopAppProcessGroupUsage,
   type DesktopAppResourceUsage,
 } from "@/lib/resources/desktop-app-resource-usage";
+import { queryClient } from "@/lib/query-client";
+import {
+  rejectClosedPlainTerminalRestore,
+  retainedPlainTerminalTombstoneBlocksClosedRestore,
+} from "@/lib/terminals/plain-terminal-presentation-invalidation";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import type { NavigateNestedFocus } from "@/lib/epic-nested-focus-navigation";
 import type { NestedFocusTarget } from "@/lib/epic-nested-focus-route";
@@ -3808,6 +3813,15 @@ function buildCanvasResourceIndex(
     )) {
       const node = payload?.node;
       if (node === undefined || !isOwnerNodeRef(node)) continue;
+      if (
+        retainedPlainTerminalTombstoneBlocksClosedRestore({
+          queryClient,
+          epicId: tab.epicId,
+          node,
+        })
+      ) {
+        continue;
+      }
       const ownerKind = resourceOwnerKindForRef(node);
       if (ownerKind === null) continue;
       const key = ownerKey(tab.epicId, ownerKind, node.id);
@@ -3943,6 +3957,15 @@ function openResourceOwner(args: {
   // from the resource snapshot or an artifact record.
   const closedTile = args.row.closedTile;
   if (closedTile !== null) {
+    if (
+      rejectClosedPlainTerminalRestore({
+        queryClient,
+        epicId: snapshot.owner.epicId,
+        node: closedTile.node,
+      })
+    ) {
+      return false;
+    }
     commitOwnerFocus({
       epicId: snapshot.owner.epicId,
       tabId: closedTile.tabId,
