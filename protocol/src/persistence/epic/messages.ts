@@ -146,6 +146,10 @@ export const browserAnnotationRecordSchema = z.object({
   elements: z.array(browserViewElementCaptureSchema),
   imageFileName: z.string().min(1),
   imageHash: z.string().min(1),
+  // Element marks outlined on the crop that did not survive capture-budget
+  // trim. 0 when every marked element was delivered. Live 1.7 only.
+  // `.default(0)` so records written before this field parse cleanly.
+  droppedElementCount: z.number().int().nonnegative().default(0),
 });
 export type BrowserAnnotationRecord = z.infer<
   typeof browserAnnotationRecordSchema

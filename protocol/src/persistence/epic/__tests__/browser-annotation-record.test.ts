@@ -47,6 +47,7 @@ const FULL_ANNOTATION = {
   ],
   imageFileName: "browser-annotation-ann-7f3a.png",
   imageHash: "abc123def456",
+  droppedElementCount: 0,
 };
 
 const BROWSER_ELEMENT_RECORD = {
@@ -107,10 +108,18 @@ describe("browserAnnotationRecordSchema", () => {
     expect(parsed.elements[0]).toEqual(FULL_ANNOTATION.elements[0]);
     expect(parsed.imageFileName).toBe("browser-annotation-ann-7f3a.png");
     expect(parsed.imageHash).toBe("abc123def456");
+    expect(parsed.droppedElementCount).toBe(0);
 
     const serialized: unknown = JSON.parse(JSON.stringify(parsed));
     expect(browserAnnotationRecordSchema.parse(serialized)).toEqual(
       FULL_ANNOTATION,
+    );
+  });
+
+  it("defaults droppedElementCount to 0 on older persisted records", () => {
+    const { droppedElementCount: _dropped, ...legacy } = FULL_ANNOTATION;
+    expect(browserAnnotationRecordSchema.parse(legacy).droppedElementCount).toBe(
+      0,
     );
   });
 });
