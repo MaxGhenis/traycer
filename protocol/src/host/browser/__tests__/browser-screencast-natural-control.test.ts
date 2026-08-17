@@ -83,7 +83,7 @@ describe("browser.screencast@1.0 natural-control frames", () => {
     ).toBe(true);
   });
 
-  it("requires keyboard.autoRepeat and pointer.clickCount in 0..8", () => {
+  it("defaults keyboard.autoRepeat and pointer.clickCount for older peers", () => {
     const keyboard = {
       kind: "keyboard" as const,
       hasBinaryPayload: false as const,
@@ -116,7 +116,10 @@ describe("browser.screencast@1.0 natural-control frames", () => {
     const { autoRepeat: _omittedAutoRepeat, ...keyboardWithoutAutoRepeat } =
       keyboard;
     expect(_omittedAutoRepeat).toBe(false);
-    expect(parsesClient(keyboardWithoutAutoRepeat)).toBe(false);
+    expect(parsesClient(keyboardWithoutAutoRepeat)).toBe(true);
+    expect(
+      browserScreencastClientFrameSchema.parse(keyboardWithoutAutoRepeat),
+    ).toEqual(keyboard);
 
     expect(parsesClient(pointer)).toBe(true);
     expect(parsesClient({ ...pointer, clickCount: 8 })).toBe(true);
@@ -124,6 +127,9 @@ describe("browser.screencast@1.0 natural-control frames", () => {
     const { clickCount: _omittedClickCount, ...pointerWithoutClickCount } =
       pointer;
     expect(_omittedClickCount).toBe(0);
-    expect(parsesClient(pointerWithoutClickCount)).toBe(false);
+    expect(parsesClient(pointerWithoutClickCount)).toBe(true);
+    expect(
+      browserScreencastClientFrameSchema.parse(pointerWithoutClickCount),
+    ).toEqual({ ...pointer, clickCount: 1 });
   });
 });

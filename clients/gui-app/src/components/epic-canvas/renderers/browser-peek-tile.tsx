@@ -48,6 +48,7 @@ import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for"
 import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
 import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
 import { hasPlatformModKey } from "@/lib/keybindings/chord";
+import { bytesToBase64 } from "@/lib/composer/image-base64";
 import { cn } from "@/lib/utils";
 import { wheelDeltaToPixels } from "@/lib/wheel-delta-to-pixels";
 import type { BrowserPeekTileRef } from "@/stores/epics/canvas/types";
@@ -214,15 +215,16 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     new Map<PeekPointerInput["button"], PeekPointerInput>(),
   );
   const pointerClickCountRef = useRef<PointerClickCount | null>(null);
+  const handleArmBufferDropped = useCallback(() => {
+    pointerClickCountRef.current = null;
+    const captured = capturedPointerRef.current;
+    if (captured === null) return;
+    suppressPointerIdRef.current = captured.pointerId;
+  }, []);
+  // eslint-disable-next-line react-hooks/refs -- the factory stores this handler; it never invokes it during render.
   const [armBuffer] = useState<ScreencastArmBuffer<PeekPointerInput>>(() =>
-    createScreencastArmBuffer({
-      setTimeout: (callback, ms) => window.setTimeout(callback, ms),
-      clearTimeout: (id) => {
-        window.clearTimeout(id);
-      },
-    }),
+    createScreencastArmBuffer(handleArmBufferDropped),
   );
-  const resetTransientInputRef = useRef<() => void>(() => {});
   const deliverArmBufferRef = useRef<() => void>(() => {});
   const flushPendingNavRef = useRef<() => void>(() => {});
   const clearLocalArmRef = useRef<(notifyHost: boolean) => void>(() => {});
@@ -583,6 +585,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         armEpoch,
       });
     }
+    // Refs and host disarm must win immediately; React state follows after
+    // this visibility effect commits so the hidden render cannot route input.
     queueMicrotask(() => {
       resetLocalArmState();
     });
@@ -846,16 +850,13 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     (event: ReactPointerEvent<HTMLButtonElement>) => {
       try {
         event.currentTarget.setPointerCapture(event.pointerId);
-        capturedPointerRef.current = {
-          element: event.currentTarget,
-          pointerId: event.pointerId,
-        };
       } catch {
-        capturedPointerRef.current = {
-          element: event.currentTarget,
-          pointerId: event.pointerId,
-        };
+        // Pointer capture is best-effort; local teardown still needs the id.
       }
+      capturedPointerRef.current = {
+        element: event.currentTarget,
+        pointerId: event.pointerId,
+      };
     },
     [],
   );
@@ -1048,21 +1049,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   );
 
   useLayoutEffect(() => {
-    armBuffer.setOnDropped(() => {
-      pointerClickCountRef.current = null;
-      const captured = capturedPointerRef.current;
-      if (captured === null) return;
-      suppressPointerIdRef.current = captured.pointerId;
-    });
-  }, [armBuffer]);
-
-  useLayoutEffect(() => {
     frameSizeRef.current = frameSize;
   }, [frameSize]);
-
-  useLayoutEffect(() => {
-    resetTransientInputRef.current = resetTransientInput;
-  }, [resetTransientInput]);
 
   useLayoutEffect(() => {
     deliverArmBufferRef.current = deliverArmBuffer;
@@ -1195,6 +1183,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               return;
             }
             if (activeArmEpochRef.current === null) return;
+            if (!forwardedKeyDownsRef.current.has(event.code)) return;
             event.preventDefault();
             sendInput({
               kind: "keyboard",
@@ -1694,15 +1683,6 @@ function browserPeekStatus(
     tone: "muted",
     Icon: Radio,
   };
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.slice(index, index + chunkSize));
-  }
-  return window.btoa(binary);
 }
 
 function inputModifiers(event: {

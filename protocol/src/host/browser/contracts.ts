@@ -1216,8 +1216,8 @@ export const browserScreencastClientFrameSchema = z.discriminatedUnion("kind", [
     button: browserScreencastPointerButtonSchema,
     buttons: z.number().int().min(0).max(31),
     modifiers: z.number().int().min(0).max(15),
-    // DOM event.detail, clamped. 0 for move/wheel.
-    clickCount: z.number().int().min(0).max(8),
+    // Local click tracker; 0 for move/wheel.
+    clickCount: z.number().int().min(0).max(8).default(1),
     deltaX: z.number(),
     deltaY: z.number(),
   }),
@@ -1230,7 +1230,7 @@ export const browserScreencastClientFrameSchema = z.discriminatedUnion("kind", [
     key: z.string(),
     modifiers: z.number().int().min(0).max(15),
     // DOM event.repeat.
-    autoRepeat: z.boolean(),
+    autoRepeat: z.boolean().default(false),
   }),
   z.object({
     kind: z.literal("insertText"),

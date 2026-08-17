@@ -1,11 +1,6 @@
 export const SCREENCAST_ARM_BUFFER_TIMEOUT_MS = 1_000;
 export const SCREENCAST_ARM_BUFFER_CLICK_SLOP_PX = 4;
 
-export interface ScreencastArmBufferClock {
-  readonly setTimeout: (callback: () => void, ms: number) => number;
-  readonly clearTimeout: (id: number) => void;
-}
-
 export interface ScreencastArmGestureDown<T> {
   readonly payload: T;
   readonly castSequence: number;
@@ -35,7 +30,6 @@ export interface ScreencastArmBuffer<T> {
   ) => ScreencastArmGesture<T> | null;
   readonly drop: () => void;
   readonly hasPending: () => boolean;
-  readonly setOnDropped: (onDropped: () => void) => void;
 }
 
 interface PendingArmGesture<T> {
@@ -45,14 +39,13 @@ interface PendingArmGesture<T> {
 }
 
 export function createScreencastArmBuffer<T>(
-  clock: ScreencastArmBufferClock,
+  onDropped: () => void,
 ): ScreencastArmBuffer<T> {
   let pending: PendingArmGesture<T> | null = null;
-  let onDropped = (): void => {};
 
   const clearPending = (): void => {
     if (pending === null) return;
-    clock.clearTimeout(pending.timeoutId);
+    window.clearTimeout(pending.timeoutId);
     pending = null;
   };
 
@@ -68,7 +61,7 @@ export function createScreencastArmBuffer<T>(
       pending = {
         down,
         up: null,
-        timeoutId: clock.setTimeout(drop, SCREENCAST_ARM_BUFFER_TIMEOUT_MS),
+        timeoutId: window.setTimeout(drop, SCREENCAST_ARM_BUFFER_TIMEOUT_MS),
       };
     },
     storeMatchingUp: (up) => {
@@ -116,9 +109,6 @@ export function createScreencastArmBuffer<T>(
     },
     drop,
     hasPending: () => pending !== null,
-    setOnDropped: (nextOnDropped) => {
-      onDropped = nextOnDropped;
-    },
   };
 }
 

@@ -118,7 +118,7 @@ describe("KeybindingProvider screencast armed flag", () => {
     expect(openHistory).toHaveBeenCalledTimes(1);
   });
 
-  it("swallows the keyup for a consumed keydown so a bubble listener never runs", () => {
+  it("lets a consumed app chord keyup reach its focused target", () => {
     const router = buildProviderRouterSource("/");
     seedHistoryModal(() => undefined);
     render(createElement(KeybindingProvider, { router, children: null }));
@@ -142,28 +142,6 @@ describe("KeybindingProvider screencast armed flag", () => {
     let keyup: KeyboardEvent | undefined;
     act(() => {
       keyup = dispatchTargetKey(target, "keyup", chordInit);
-    });
-
-    expect(keyup?.defaultPrevented).toBe(true);
-    expect(bubble).not.toHaveBeenCalled();
-  });
-
-  it("does not swallow an unclaimed keyup", () => {
-    const router = buildProviderRouterSource("/");
-    render(createElement(KeybindingProvider, { router, children: null }));
-
-    const target = document.createElement("button");
-    target.type = "button";
-    document.body.append(target);
-    const bubble = vi.fn();
-    target.addEventListener("keyup", bubble);
-
-    let keyup: KeyboardEvent | undefined;
-    act(() => {
-      keyup = dispatchTargetKey(target, "keyup", {
-        code: "KeyQ",
-        key: "q",
-      });
     });
 
     expect(keyup?.defaultPrevented).toBe(false);

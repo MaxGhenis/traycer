@@ -291,13 +291,6 @@ export function KeybindingProvider(props: KeybindingProviderProps) {
       hideLeaderHints(pathname);
     };
 
-    const claimedCodes = new Set<string>();
-    const consumeChord = (event: KeyboardEvent): void => {
-      claimedCodes.add(event.code);
-      event.preventDefault();
-      event.stopPropagation();
-    };
-
     // Reserved v1 list is empty - OS-level chords live in the Electron menu
     // and never reach this listener. No action-id list.
     const skipAppActionsWhileScreencastArmed = (
@@ -352,7 +345,8 @@ export function KeybindingProvider(props: KeybindingProviderProps) {
       // is the primary key + at least one modifier is held.
       const digitMatch = matchDigitAction(event);
       if (digitMatch !== null) {
-        consumeChord(event);
+        event.preventDefault();
+        event.stopPropagation();
         handleDigitMatch(digitMatch, digitSequenceRef, digitSequenceTimerRef);
         return;
       }
@@ -366,7 +360,8 @@ export function KeybindingProvider(props: KeybindingProviderProps) {
       // reserve the chord on OS key-repeat so the browser default can't run,
       // but skip re-dispatch so a held chord doesn't flip the toggle rapidly.
       if (event.repeat && isRepeatSensitiveAction(actionId)) {
-        consumeChord(event);
+        event.preventDefault();
+        event.stopPropagation();
         return;
       }
 
@@ -374,7 +369,8 @@ export function KeybindingProvider(props: KeybindingProviderProps) {
       // dispatch can't act (e.g. `group.focus.right` with no right neighbour).
       // This stops the browser from running its own default for the same chord
       // (Cmd+Alt+Left/Right = history back/forward on Chrome+Safari).
-      consumeChord(event);
+      event.preventDefault();
+      event.stopPropagation();
       dispatchAction(actionId, adapter);
     };
 
@@ -397,12 +393,6 @@ export function KeybindingProvider(props: KeybindingProviderProps) {
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
-      // A consumed keydown remembers its physical code so a later keyup
-      // cannot land on the screencast IME as an orphan page key.
-      if (claimedCodes.delete(event.code)) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
       const pathname = adapter.getPathname();
       if (allLeaderModifiersReleased(event)) {
         commitDigitSequence(digitSequenceRef, digitSequenceTimerRef);
@@ -430,7 +420,6 @@ export function KeybindingProvider(props: KeybindingProviderProps) {
     };
 
     const handleBlur = () => {
-      claimedCodes.clear();
       resetHintSession(adapter.getPathname());
     };
 
@@ -462,7 +451,6 @@ export function KeybindingProvider(props: KeybindingProviderProps) {
     return () => {
       clearHintTimer();
       resetDigitSequence(digitSequenceRef, digitSequenceTimerRef);
-      claimedCodes.clear();
       unsubscribeArmed();
       unsubscribeHistory();
       unsubscribeScopes();

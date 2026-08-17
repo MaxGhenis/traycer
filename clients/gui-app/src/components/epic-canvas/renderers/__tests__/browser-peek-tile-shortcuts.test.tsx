@@ -8,6 +8,10 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserPeekTile } from "@/components/epic-canvas/renderers/browser-peek-tile";
+import {
+  FakeStreamClient,
+  type FakeStreamSession,
+} from "@/components/epic-canvas/renderers/__tests__/browser-peek-tile-stream-fixture";
 import { isMac } from "@/lib/keybindings/platform";
 import type { BrowserPeekTileRef } from "@/stores/epics/canvas/types";
 import { useScreencastArmedStore } from "@/stores/screencast-armed-store";
@@ -38,82 +42,6 @@ vi.mock("@/hooks/host/use-host-stream-client-for", () => ({
 vi.mock("@/lib/host/stream-auth-revalidator", () => ({
   useStreamAuthRevalidator: () => null,
 }));
-
-class FakeStreamSession {
-  readonly sentFrames: Array<Record<string, unknown>> = [];
-  private serverHandler:
-    | ((
-        envelope: Record<string, unknown>,
-        binaryPayload: Uint8Array | null,
-      ) => void)
-    | null = null;
-  private statusHandler:
-    | ((
-        status: "connecting" | "open" | "reconnecting" | "closed",
-        reason: null,
-      ) => void)
-    | null = null;
-  private currentStatus: "connecting" | "open" | "reconnecting" | "closed" =
-    "connecting";
-  closed = false;
-
-  sendClientFrame(frame: Record<string, unknown>): void {
-    this.sentFrames.push(frame);
-  }
-
-  onServerFrame(
-    handler: (
-      envelope: Record<string, unknown>,
-      binaryPayload: Uint8Array | null,
-    ) => void,
-  ): void {
-    this.serverHandler = handler;
-  }
-
-  onStatusChange(
-    handler: (
-      status: "connecting" | "open" | "reconnecting" | "closed",
-      reason: null,
-    ) => void,
-  ): void {
-    this.statusHandler = handler;
-    if (this.currentStatus === "open") handler("open", null);
-  }
-
-  close(): void {
-    this.closed = true;
-  }
-
-  emitStatus(status: "connecting" | "open" | "reconnecting" | "closed"): void {
-    this.currentStatus = status;
-    this.statusHandler?.(status, null);
-  }
-
-  emit(
-    envelope: Record<string, unknown>,
-    binaryPayload: Uint8Array | null,
-  ): void {
-    this.serverHandler?.(envelope, binaryPayload);
-  }
-}
-
-class FakeStreamClient {
-  readonly sessions: FakeStreamSession[] = [];
-  readonly subscribes: Array<{
-    readonly method: string;
-    readonly params: unknown;
-  }> = [];
-
-  constructor(private readonly autoOpen: boolean) {}
-
-  subscribe(method: string, params: unknown): FakeStreamSession {
-    const session = new FakeStreamSession();
-    this.sessions.push(session);
-    this.subscribes.push({ method, params });
-    if (this.autoOpen) session.emitStatus("open");
-    return session;
-  }
-}
 
 const PEEK_NODE: BrowserPeekTileRef = {
   id: "browser-peek-headless-1",
@@ -337,6 +265,18 @@ describe("BrowserPeekTile shortcuts and paste", () => {
         seq: 0,
       }),
     ]);
+  });
+
+  it("does not forward an orphan keyup the tile did not press", async () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    armPeekTile(stream);
+    await flushMacrotask();
+
+    const keyup = fireEvent.keyUp(imeInput(), { key: "q", code: "KeyQ" });
+
+    expect(keyup).toBe(true);
+    expect(keyboardFramesFor(stream, "q", "KeyQ")).toEqual([]);
   });
 
   it("clears the armed flag when the server revokes the arm", async () => {
