@@ -9,6 +9,7 @@ import {
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { CanonicalTerminalSessionInfo } from "@traycer/protocol/host/terminal/unary-schemas";
+import type { PlainTerminalProjection } from "@traycer/protocol/host/terminal/plain-schemas";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SnapshotLoadingProvider } from "@/components/epic-canvas/snapshots/snapshot-loading-context";
 
@@ -51,12 +52,12 @@ const terminalSessions = vi.hoisted<{
   value: ReadonlyArray<CanonicalTerminalSessionInfo>;
 }>(() => ({ value: [] }));
 
-vi.mock("@/lib/host", () => ({
-  useHostClient: () => null,
+vi.mock("@/hooks/host/use-tab-host-client", () => ({
+  useTabHostClient: () => null,
 }));
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => "host-1",
+vi.mock("@/components/epic-canvas/hooks/use-tab-host-id", () => ({
+  useTabHostId: () => "host-1",
 }));
 
 const RUNNING_SESSION: CanonicalTerminalSessionInfo = {
@@ -72,6 +73,30 @@ const RUNNING_SESSION: CanonicalTerminalSessionInfo = {
   exitCode: null,
   createdAt: 0,
   title: null,
+};
+const DURABLE_PROJECTION: PlainTerminalProjection = {
+  record: {
+    terminalId: SESSION_ID,
+    hostId: "host-1",
+    scope: { kind: "epic", epicId: "epic-1" },
+    launch: {
+      cwd: RUNNING_SESSION.cwd,
+      shellCommand: RUNNING_SESSION.shellCommand,
+      shellArgs: RUNNING_SESSION.shellArgs,
+    },
+    manualTitle: null,
+    revision: 1,
+    createdAt: "2026-08-17T10:00:00.000Z",
+    updatedAt: "2026-08-17T10:00:00.000Z",
+  },
+  runtime: {
+    status: "running",
+    sessionId: SESSION_ID,
+    currentCwd: RUNNING_SESSION.cwd,
+    activeProcessName: null,
+    cols: RUNNING_SESSION.cols,
+    rows: RUNNING_SESSION.rows,
+  },
 };
 
 vi.mock("@/hooks/terminal/use-terminal-list-query", () => ({
@@ -105,7 +130,7 @@ vi.mock("@/hooks/terminal/use-plain-terminal-authority", () => ({
     canMutate: durableAuthority.canMutate,
     collection: {
       terminalsById: durableAuthority.collectionIncludesSession
-        ? { [SESSION_ID]: {} }
+        ? { [SESSION_ID]: DURABLE_PROJECTION }
         : {},
     },
   }),

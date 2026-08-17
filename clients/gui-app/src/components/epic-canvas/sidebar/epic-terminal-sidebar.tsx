@@ -1,9 +1,10 @@
 /**
- * Host-driven raw-terminal list rendered as a left-panel rail entry.
- * The list source of truth is `terminal.list@1.0` filtered by `epicId`
- * on the host side (terminals do not live in the Y.Doc). Click a row
- * to open or focus that session as a canvas tab; the "+" action opens a
- * fresh terminal whose tile creates the underlying PTY on mount.
+ * Host-driven raw-terminal list rendered as a left-panel rail entry. Durable
+ * rows come from the authoritative `terminal.plain.list` collection stream;
+ * `terminal.list` supplies compatibility rows such as setup/provider-login
+ * shells (terminals do not live in the Y.Doc). Click a row to open or focus
+ * that session as a canvas tab; the "+" action opens a fresh terminal whose
+ * tile creates the underlying PTY on mount.
  *
  * Exports `TerminalsPanelBody` and `TerminalsPanelActions` consumed by
  * `epic-sidebar.tsx`'s `PANEL_COMPONENTS["terminals"]`. Agent terminals
@@ -26,6 +27,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { CanonicalTerminalSessionInfo } from "@traycer/protocol/host/terminal/unary-schemas";
+import type { RunningPlainTerminalProjection } from "@traycer/protocol/host/terminal/plain-schemas";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { ReportIssueAction } from "@/components/report-issue/report-issue-action";
 import { createReportIssueContext } from "@/lib/report-issue-context";
@@ -57,13 +59,12 @@ import {
   TERMINAL_TILE_DND_TYPE,
   type EpicCanvasTerminalTileDragData,
 } from "@/components/epic-canvas/dnd/dnd";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
-import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
+import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
+import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTerminalKill } from "@/hooks/terminal/use-terminal-kill-mutation";
 import { useTerminalList } from "@/hooks/terminal/use-terminal-list-query";
 import { useTerminalRename } from "@/hooks/terminal/use-terminal-rename-mutation";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
-import { useHostClient } from "@/lib/host";
 import { isVisibleEpicTerminalSession } from "@/lib/terminals/terminal-session-filters";
 import {
   deriveTitleSourceFromSessionTitle,
@@ -100,6 +101,10 @@ import {
   requestEpicTerminalLifetimeClose,
   type EpicTerminalCloseAuthority,
 } from "@/lib/terminals/epic-terminal-close-coordinator";
+import {
+  plainTerminalCollectionValues,
+  type PlainTerminalCollection,
+} from "@/lib/terminals/plain-terminal-authority";
 
 const TERMINALS_PANEL_SKELETON = <TerminalsPanelSkeleton />;
 
@@ -113,6 +118,56 @@ function withLegacyTerminalCloseAuthority(
   } finally {
     unregister();
   }
+}
+
+function sessionFromDurableProjection(
+  terminal: RunningPlainTerminalProjection,
+): CanonicalTerminalSessionInfo {
+  return {
+    sessionId: terminal.record.terminalId,
+    scope: terminal.record.scope,
+    sessionKind: "terminal",
+    cwd: terminal.record.launch.cwd,
+    shellCommand: terminal.record.launch.shellCommand,
+    shellArgs: terminal.record.launch.shellArgs,
+    cols: terminal.runtime.cols,
+    rows: terminal.runtime.rows,
+    status: "running",
+    exitCode: null,
+    exitReason: null,
+    createdAt: Date.parse(terminal.record.createdAt),
+    title: terminal.record.manualTitle,
+    activeProcessName: terminal.runtime.activeProcessName,
+  };
+}
+
+/**
+ * `terminal.list` remains the compatibility source for manager-owned setup and
+ * provider-login shells. Durable terminals arrive on the authoritative
+ * collection stream, so merge that live projection over any cached unary rows.
+ */
+function terminalSidebarSessions(args: {
+  readonly epicId: string;
+  readonly listed: readonly CanonicalTerminalSessionInfo[];
+  readonly durableCollection: PlainTerminalCollection | undefined;
+}): CanonicalTerminalSessionInfo[] {
+  const listed = args.listed.filter((session) =>
+    isVisibleEpicTerminalSession(session, args.epicId),
+  );
+  const durable = plainTerminalCollectionValues(args.durableCollection).filter(
+    (terminal): terminal is RunningPlainTerminalProjection =>
+      terminal.runtime.status === "running" &&
+      terminal.record.scope.kind === "epic" &&
+      terminal.record.scope.epicId === args.epicId,
+  );
+  if (durable.length === 0) return listed;
+  const durableIds = new Set(
+    durable.map((terminal) => terminal.record.terminalId),
+  );
+  return [
+    ...listed.filter((session) => !durableIds.has(session.sessionId)),
+    ...durable.map(sessionFromDurableProjection),
+  ];
 }
 
 /**
@@ -135,7 +190,7 @@ function TerminalsPanelBodyLive(props: {
   readonly tabId: string;
 }) {
   const { epicId, tabId } = props;
-  const hostClient = useHostClient();
+  const hostClient = useTabHostClient();
   const list = useTerminalList({ kind: "epic", epicId }, hostClient);
   // Manual escape hatch for a stranded error state: host-scoped queries get
   // no automatic retry/refetch routes (transport already retried), so without
@@ -152,7 +207,7 @@ function TerminalsPanelBodyLive(props: {
   const prepareSetActiveTileTabFocusTarget = useEpicCanvasStore(
     (s) => s.prepareSetActiveTileTabFocusTarget,
   );
-  const activeHostId = useReactiveActiveHostId() ?? UNKNOWN_HOST_PLACEHOLDER;
+  const activeHostId = useTabHostId();
   const durableAuthority = useHostPlainTerminalAuthority({
     hostId: activeHostId,
     scope: { kind: "epic", epicId },
@@ -214,8 +269,14 @@ function TerminalsPanelBodyLive(props: {
 
   // Host keeps exited sessions for a 60s grace window; filter so a
   // single kill click feels like "remove" instead of "mark dead".
-  const sessions = (list.data?.sessions ?? []).filter((session) =>
-    isVisibleEpicTerminalSession(session, epicId),
+  const sessions = useMemo(
+    () =>
+      terminalSidebarSessions({
+        epicId,
+        listed: list.data?.sessions ?? [],
+        durableCollection: durableAuthority.collection,
+      }),
+    [durableAuthority.collection, epicId, list.data?.sessions],
   );
 
   return (
@@ -223,7 +284,7 @@ function TerminalsPanelBodyLive(props: {
       <SidebarGroup className="min-h-0 flex-1 px-2 py-1">
         <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
           <TerminalSidebarBody
-            isLoading={list.isPending}
+            isLoading={list.isPending ? sessions.length === 0 : false}
             isError={list.isError}
             errorMessage={list.error?.message ?? null}
             isRetrying={list.isFetching}
