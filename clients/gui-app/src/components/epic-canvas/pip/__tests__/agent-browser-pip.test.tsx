@@ -482,7 +482,7 @@ describe("AgentBrowserPip", () => {
     ).toBe("live");
   });
 
-  it("shows the finished outcome line after the burst ends", () => {
+  it("shows an outcome card after a frame-less burst ends", () => {
     startBurst({
       burstId: "b1",
       sessionId: "s1",
@@ -495,9 +495,9 @@ describe("AgentBrowserPip", () => {
     const root = screen.getByTestId("agent-browser-pip");
     expect(root.getAttribute("data-pip-phase")).toBe("finished");
     expect(root.getAttribute("data-pip-outcome")).toBe("finished");
-    expect(screen.getByTestId("agent-browser-pip-finished").textContent).toBe(
-      "Agent finished on checkout.stripe.com",
-    );
+    expect(
+      screen.getByTestId("agent-browser-pip-outcome-only").textContent,
+    ).toBe("Agent finished on checkout.stripe.com");
     expect(
       screen
         .getByTestId("agent-browser-pip-pulse")
@@ -551,7 +551,7 @@ describe("AgentBrowserPip", () => {
     expect(screen.queryByTestId("agent-browser-pip")).toBeNull();
   });
 
-  it("disables open-tile for a closed tab and shows gone copy", () => {
+  it("disables open-tile for a closed tab and shows its outcome card", () => {
     startBurst({
       burstId: "b1",
       sessionId: "s1",
@@ -567,12 +567,12 @@ describe("AgentBrowserPip", () => {
     const open = screen.getByTestId("agent-browser-pip-open");
     expect(open).toHaveProperty("disabled", true);
     expect(open.getAttribute("aria-label")).toBe("This tab is gone");
-    expect(screen.getByTestId("agent-browser-pip-gone").textContent).toBe(
-      "This tab is gone",
-    );
+    expect(
+      screen.getByTestId("agent-browser-pip-outcome-only").textContent,
+    ).toBe("Tab closed on checkout.stripe.com");
   });
 
-  it("shows rows for other live bursts", () => {
+  it("renders live rows with metadata and hover/focus actions", () => {
     startBurst({
       burstId: "b1",
       sessionId: "s1",
@@ -591,33 +591,6 @@ describe("AgentBrowserPip", () => {
       tabId: "t3",
       startedAt: 3,
     });
-    renderPip();
-
-    expect(
-      screen
-        .getByTestId("agent-browser-pip-row-b2")
-        .getAttribute("data-pip-row-kind"),
-    ).toBe("live");
-    expect(
-      screen
-        .getByTestId("agent-browser-pip-row-b3")
-        .getAttribute("data-pip-row-kind"),
-    ).toBe("live");
-  });
-
-  it("renders live rows with metadata and hover/focus actions", () => {
-    startBurst({
-      burstId: "b1",
-      sessionId: "s1",
-      tabId: "t1",
-      startedAt: 1,
-    });
-    startBurst({
-      burstId: "b2",
-      sessionId: "s2",
-      tabId: "t2",
-      startedAt: 2,
-    });
     applyPipCaption({
       epicId: EPIC,
       hostId: "host-a",
@@ -630,11 +603,16 @@ describe("AgentBrowserPip", () => {
 
     const row = screen.getByTestId("agent-browser-pip-row-b2");
     expect(row.getAttribute("data-pip-row-kind")).toBe("live");
+    expect(
+      screen
+        .getByTestId("agent-browser-pip-row-b3")
+        .getAttribute("data-pip-row-kind"),
+    ).toBe("live");
     expect(screen.getByText("Other tab")).toBeTruthy();
     expect(screen.getByText("Searching hotels")).toBeTruthy();
-    const actions = row.querySelector("div.invisible");
-    expect(actions?.className).toContain("group-hover:visible");
-    expect(actions?.className).toContain("group-focus-within:visible");
+    const actions = row.querySelector("div.opacity-0");
+    expect(actions?.className).toContain("group-hover:opacity-100");
+    expect(actions?.className).toContain("group-focus-within:opacity-100");
 
     fireEvent.mouseEnter(row);
     const open = screen.getByRole("button", { name: "Open Other tab" });
@@ -666,7 +644,7 @@ describe("AgentBrowserPip", () => {
     const row = screen.getByTestId("agent-browser-pip-row-b2");
     expect(row.getAttribute("data-pip-row-kind")).toBe("lingering");
     expect(row.getAttribute("role")).toBeNull();
-    expect(row.getAttribute("tabindex")).toBe("0");
+    expect(row.getAttribute("tabindex")).toBeNull();
     expect(row.querySelector('button[aria-label^="Show "]')).toBeNull();
     expect(row.textContent).toContain("Agent finished on app.example");
   });
@@ -716,7 +694,6 @@ describe("AgentBrowserPip", () => {
 
     const snapshot = getPipSnapshot(EPIC);
     expect(snapshot.target?.burstId).toBe("b2");
-    expect(snapshot.targetEverStreamed).toBe(false);
     expect(
       screen.getByTestId("agent-browser-pip-outcome-only").textContent,
     ).toBe("Agent finished on app.example");
@@ -812,9 +789,7 @@ describe("AgentBrowserPip", () => {
         useEpicCanvasStore.getState().pipGeometryByEpicId[EPIC]?.previewHeight,
       ).toBe(200);
 
-      const resize = screen.getByRole("button", {
-        name: "Resize picture in picture",
-      });
+      const resize = screen.getByTestId("agent-browser-pip-resize");
       fireEvent.pointerDown(resize, {
         button: 0,
         pointerId: 2,
@@ -858,9 +833,7 @@ describe("AgentBrowserPip", () => {
     renderPip();
 
     const root = screen.getByTestId("agent-browser-pip");
-    const resize = screen.getByRole("button", {
-      name: "Resize picture in picture",
-    });
+    const resize = screen.getByTestId("agent-browser-pip-resize");
     fireEvent.pointerDown(resize, {
       button: 0,
       pointerId: 3,
@@ -976,7 +949,7 @@ describe("AgentBrowserPip", () => {
       "b2",
       "b3",
     ]);
-    expect(getPipSnapshot(EPIC).phase).toBe("hidden");
+    expect(getPipSnapshot(EPIC).phase).toBe("dismissed-burst");
   });
 
   it("Escape uses the same whole-stack dismissal as header X", () => {
@@ -1012,7 +985,7 @@ describe("AgentBrowserPip", () => {
       "b2",
       "b3",
     ]);
-    expect(getPipSnapshot(EPIC).phase).toBe("hidden");
+    expect(getPipSnapshot(EPIC).phase).toBe("dismissed-burst");
   });
 
   it("close dismisses the live PiP", () => {

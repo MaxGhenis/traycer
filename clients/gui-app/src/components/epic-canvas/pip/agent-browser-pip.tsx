@@ -1,10 +1,8 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
@@ -41,8 +39,9 @@ import {
 } from "@/lib/browser-view/pip-epic-sessions";
 import { pipGoneTabCopy, pipOutcomeLine } from "@/lib/browser-view/pip-copy";
 import {
-  dismissPip,
+  captionFreshness,
   dismissPipChip,
+  dismissPipRow,
   dismissPipRowSet,
   PIP_CAPTION_FADE_MS,
   PIP_CAPTION_HOLD_MS,
@@ -67,7 +66,6 @@ import type { EpicPipGeometry } from "@/stores/epics/canvas/types";
 
 const PIP_DRAG_CLICK_SLOP_PX = 4;
 const PIP_OVERLAY_KIND = "pip";
-const PIP_ROWS_CLOCK_MS = 1_000;
 
 export function AgentBrowserPip(props: {
   readonly epicId: string;
@@ -107,28 +105,17 @@ function AgentBrowserPipSurface(props: {
   );
   const setPipGeometry = useEpicCanvasStore((state) => state.setPipGeometry);
   const [viewport, setViewport] = useState(readViewportSize);
-  const rawGeometry = useMemo(
-    () => persisted ?? defaultPipGeometry(viewport),
-    [persisted, viewport],
-  );
-  const stack = useMemo(
-    () => layoutPipStack(rawGeometry, rows.length, viewport),
-    [rawGeometry, rows.length, viewport],
-  );
+  const rawGeometry = persisted ?? defaultPipGeometry(viewport);
+  const stack = layoutPipStack(rawGeometry, rows.length, viewport);
   const { geometry, rowLayout } = stack;
-  const chipGeometry = useMemo(
-    () => clampPipGeometry(rawGeometry, viewport, rawGeometry.previewHeight),
-    [rawGeometry, viewport],
+  const chipGeometry = clampPipGeometry(
+    rawGeometry,
+    viewport,
+    rawGeometry.previewHeight,
   );
   const isChip = snapshot.phase === "chip";
-  const interactionGeometry = useMemo(
-    () => ({
-      ...rawGeometry,
-      anchorX: isChip ? chipGeometry.anchorX : geometry.anchorX,
-      anchorY: isChip ? chipGeometry.anchorY : geometry.anchorY,
-    }),
-    [chipGeometry, geometry, isChip, rawGeometry],
-  );
+  const interactionAnchorX = isChip ? chipGeometry.anchorX : geometry.anchorX;
+  const interactionAnchorY = isChip ? chipGeometry.anchorY : geometry.anchorY;
   const visibleRows = rows.slice(0, rowLayout.visibleCount);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<PipPointerSession | null>(null);
@@ -165,27 +152,24 @@ function AgentBrowserPipSurface(props: {
       const node = rootRef.current;
       if (node === null) return;
       const nextViewport = readViewportSize();
-      if (snapshot.phase === "chip") {
-        const clamped = clampPipGeometry(
-          next,
-          nextViewport,
-          next.previewHeight,
-        );
-        node.style.left = `${String(clamped.anchorX - clamped.previewWidth)}px`;
-        node.style.top = `${String(clamped.anchorY - clamped.previewHeight)}px`;
-        node.style.width = "auto";
-        node.style.height = "auto";
-        return;
-      }
-      const nextStack = layoutPipStack(next, rows.length, nextViewport);
-      const clamped = nextStack.geometry;
-      node.style.left = `${String(clamped.anchorX - clamped.previewWidth)}px`;
-      node.style.top = `${String(clamped.anchorY - nextStack.rowLayout.outerHeight)}px`;
-      node.style.width = `${String(clamped.previewWidth)}px`;
-      node.style.height = `${String(nextStack.rowLayout.outerHeight)}px`;
+      const chip = snapshot.phase === "chip";
+      const fitted = layoutPipStack(next, rows.length, nextViewport);
+      const nextGeometry = chip
+        ? clampPipGeometry(next, nextViewport, next.previewHeight)
+        : fitted.geometry;
+      const outerHeight = chip
+        ? nextGeometry.previewHeight
+        : fitted.rowLayout.outerHeight;
+      const box = pipRootBox(nextGeometry, outerHeight, chip);
+      node.style.left = `${String(box.left)}px`;
+      node.style.top = `${String(box.top)}px`;
+      node.style.width =
+        box.width === "auto" ? box.width : `${String(box.width)}px`;
+      node.style.height =
+        box.height === "auto" ? box.height : `${String(box.height)}px`;
       node.style.setProperty(
         "--pip-preview-height",
-        `${String(clamped.previewHeight)}px`,
+        `${String(nextGeometry.previewHeight)}px`,
       );
     },
     [rows.length, snapshot.phase],
@@ -205,17 +189,20 @@ function AgentBrowserPipSurface(props: {
       event.preventDefault();
       event.stopPropagation();
       dragMovedRef.current = false;
-      const origin = interactionGeometry;
       dragRef.current = {
         pointerId: event.pointerId,
         mode,
         startX: event.clientX,
         startY: event.clientY,
-        origin,
+        origin: {
+          ...rawGeometry,
+          anchorX: interactionAnchorX,
+          anchorY: interactionAnchorY,
+        },
       };
       event.currentTarget.setPointerCapture(event.pointerId);
     },
-    [interactionGeometry, isChip],
+    [interactionAnchorX, interactionAnchorY, isChip, rawGeometry],
   );
 
   const handlePointerMove = useCallback(
@@ -277,6 +264,17 @@ function AgentBrowserPipSurface(props: {
 
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        dismissPipRowSet(epicId);
+        return;
+      }
+      if (
+        !(event.target instanceof Element) ||
+        !event.target.hasAttribute("data-pip-geometry-controls")
+      ) {
+        return;
+      }
       if (event.key === "Home") {
         event.preventDefault();
         const corner = nextPipCorner(
@@ -300,23 +298,21 @@ function AgentBrowserPipSurface(props: {
         );
         return;
       }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        dismissRenderedPip(epicId, snapshot, rows);
-        return;
-      }
       const step = event.shiftKey ? PIP_RESIZE_STEP_PX : PIP_NUDGE_PX;
       if (event.key === "ArrowLeft") {
         event.preventDefault();
         commitGeometry(
           event.shiftKey
             ? {
-                ...interactionGeometry,
+                ...rawGeometry,
+                anchorX: interactionAnchorX,
+                anchorY: interactionAnchorY,
                 previewWidth: rawGeometry.previewWidth - step,
               }
             : {
-                ...interactionGeometry,
-                anchorX: interactionGeometry.anchorX - step,
+                ...rawGeometry,
+                anchorX: interactionAnchorX - step,
+                anchorY: interactionAnchorY,
               },
           event.shiftKey,
         );
@@ -327,12 +323,15 @@ function AgentBrowserPipSurface(props: {
         commitGeometry(
           event.shiftKey
             ? {
-                ...interactionGeometry,
+                ...rawGeometry,
+                anchorX: interactionAnchorX,
+                anchorY: interactionAnchorY,
                 previewWidth: rawGeometry.previewWidth + step,
               }
             : {
-                ...interactionGeometry,
-                anchorX: interactionGeometry.anchorX + step,
+                ...rawGeometry,
+                anchorX: interactionAnchorX + step,
+                anchorY: interactionAnchorY,
               },
           event.shiftKey,
         );
@@ -343,12 +342,15 @@ function AgentBrowserPipSurface(props: {
         commitGeometry(
           event.shiftKey
             ? {
-                ...interactionGeometry,
+                ...rawGeometry,
+                anchorX: interactionAnchorX,
+                anchorY: interactionAnchorY,
                 previewHeight: rawGeometry.previewHeight - step,
               }
             : {
-                ...interactionGeometry,
-                anchorY: interactionGeometry.anchorY - step,
+                ...rawGeometry,
+                anchorX: interactionAnchorX,
+                anchorY: interactionAnchorY - step,
               },
           event.shiftKey,
         );
@@ -359,12 +361,15 @@ function AgentBrowserPipSurface(props: {
         commitGeometry(
           event.shiftKey
             ? {
-                ...interactionGeometry,
+                ...rawGeometry,
+                anchorX: interactionAnchorX,
+                anchorY: interactionAnchorY,
                 previewHeight: rawGeometry.previewHeight + step,
               }
             : {
-                ...interactionGeometry,
-                anchorY: interactionGeometry.anchorY + step,
+                ...rawGeometry,
+                anchorX: interactionAnchorX,
+                anchorY: interactionAnchorY + step,
               },
           event.shiftKey,
         );
@@ -374,11 +379,10 @@ function AgentBrowserPipSurface(props: {
       commitGeometry,
       epicId,
       geometry,
-      interactionGeometry,
+      interactionAnchorX,
+      interactionAnchorY,
       rawGeometry,
       rowLayout.outerHeight,
-      rows,
-      snapshot,
     ],
   );
 
@@ -394,20 +398,19 @@ function AgentBrowserPipSurface(props: {
     "--pip-row-height": `${String(PIP_ROW_HEIGHT_PX)}px`,
     "--pip-row-gap": `${String(PIP_ROW_GAP_PX)}px`,
     "--pip-more-height": `${String(PIP_MORE_HEIGHT_PX)}px`,
-    left: isChip
-      ? chipGeometry.anchorX - chipGeometry.previewWidth
-      : geometry.anchorX - geometry.previewWidth,
-    top: isChip
-      ? chipGeometry.anchorY - chipGeometry.previewHeight
-      : geometry.anchorY - rowLayout.outerHeight,
-    width: isChip ? "auto" : geometry.previewWidth,
-    height: isChip ? "auto" : rowLayout.outerHeight,
+    ...pipRootBox(
+      isChip ? chipGeometry : geometry,
+      isChip ? chipGeometry.previewHeight : rowLayout.outerHeight,
+      isChip,
+    ),
     maxWidth: isChip ? "min(24rem, calc(100vw - 2rem))" : undefined,
   };
 
   return (
     <div
       ref={rootRef}
+      role="group"
+      aria-label="Agent browser picture in picture stack"
       data-testid="agent-browser-pip"
       data-browser-overlay={PIP_OVERLAY_KIND}
       data-browser-overlay-id={overlayId}
@@ -427,6 +430,7 @@ function AgentBrowserPipSurface(props: {
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onKeyDownCapture={handleKeyDown}
     >
       {isChip ? (
         <PipChip
@@ -434,7 +438,6 @@ function AgentBrowserPipSurface(props: {
           snapshot={snapshot}
           dragMoved={consumeChipDragClick}
           onPointerDown={(event) => handlePointerDown(event, "move")}
-          onKeyDown={handleKeyDown}
         />
       ) : (
         <PipExpanded
@@ -443,11 +446,9 @@ function AgentBrowserPipSurface(props: {
           snapshot={snapshot}
           frameSrc={frameSrc}
           rows={visibleRows}
-          allRows={rows}
           hiddenRowCount={rowLayout.hiddenCount}
           onHeaderPointerDown={(event) => handlePointerDown(event, "move")}
           onResizePointerDown={(event) => handlePointerDown(event, "resize")}
-          onKeyDown={handleKeyDown}
         />
       )}
     </div>
@@ -461,12 +462,29 @@ type PipRootStyle = CSSProperties & {
   readonly "--pip-more-height": string;
 };
 
+function pipRootBox(
+  geometry: EpicPipGeometry,
+  outerHeight: number,
+  chip: boolean,
+): {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number | "auto";
+  readonly height: number | "auto";
+} {
+  return {
+    left: geometry.anchorX - geometry.previewWidth,
+    top: geometry.anchorY - (chip ? geometry.previewHeight : outerHeight),
+    width: chip ? "auto" : geometry.previewWidth,
+    height: chip ? "auto" : outerHeight,
+  };
+}
+
 function PipChip(props: {
   readonly epicId: string;
   readonly snapshot: PipSnapshot;
   readonly dragMoved: () => boolean;
   readonly onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
-  readonly onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
 }): ReactElement {
   const meta = usePipTargetMeta(props.epicId, props.snapshot.target);
   const line = pipOutcomeLine(props.snapshot.outcome, meta.site);
@@ -477,8 +495,8 @@ function PipChip(props: {
         className="flex min-w-0 flex-1 items-center gap-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-label={`Re-expand PiP: ${line}`}
         data-testid="agent-browser-pip-chip"
+        data-pip-geometry-controls
         onPointerDown={props.onPointerDown}
-        onKeyDown={props.onKeyDown}
         onClick={() => {
           if (props.dragMoved()) return;
           reexpandPip(props.epicId);
@@ -509,11 +527,9 @@ function PipExpanded(props: {
   readonly snapshot: PipSnapshot;
   readonly frameSrc: string | null;
   readonly rows: readonly PipRowView[];
-  readonly allRows: readonly PipRowView[];
   readonly hiddenRowCount: number;
   readonly onHeaderPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onResizePointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
-  readonly onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
 }): ReactElement {
   const { snapshot, frameSrc } = props;
   const meta = usePipTargetMeta(props.epicId, snapshot.target);
@@ -524,8 +540,7 @@ function PipExpanded(props: {
     (part): part is string => part !== null && part.length > 0,
   );
   const gone = !snapshot.openTileEnabled;
-  const outcomeOnly =
-    snapshot.phase === "finished" && !snapshot.targetEverStreamed;
+  const outcomeOnly = snapshot.phase === "finished" && frameSrc === null;
 
   return (
     <>
@@ -533,10 +548,10 @@ function PipExpanded(props: {
         <div
           role="toolbar"
           tabIndex={0}
+          data-pip-geometry-controls
           aria-label="Agent browser picture in picture"
           className="flex min-h-8 shrink-0 items-center gap-2 px-2 py-1 outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onPointerDown={props.onHeaderPointerDown}
-          onKeyDown={props.onKeyDown}
         >
           <PipFavicon url={meta.faviconUrl} />
           <div className="min-w-0 flex-1">
@@ -565,9 +580,7 @@ function PipExpanded(props: {
             data-testid="agent-browser-pip-open"
             className="flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-foreground/8 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
             onClick={() => {
-              if (snapshot.target !== null) {
-                openTile(snapshot.target, snapshot.openTileEnabled);
-              }
+              if (snapshot.target !== null) openTile(snapshot.target);
             }}
           >
             <Maximize2 className="size-3.5" aria-hidden />
@@ -578,7 +591,7 @@ function PipExpanded(props: {
             data-testid="agent-browser-pip-close"
             className="flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-foreground/8 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => {
-              dismissRenderedPip(props.epicId, snapshot, props.allRows);
+              dismissPipRowSet(props.epicId);
             }}
           >
             <X className="size-3.5" aria-hidden />
@@ -592,7 +605,7 @@ function PipExpanded(props: {
           className="relative min-h-0 flex-1 overflow-hidden bg-muted/40 outline-none disabled:cursor-not-allowed"
           onClick={() => {
             if (snapshot.target === null) return;
-            openTile(snapshot.target, snapshot.openTileEnabled);
+            openTile(snapshot.target);
           }}
         >
           <PipFrameContent
@@ -612,14 +625,17 @@ function PipExpanded(props: {
         </button>
         <button
           type="button"
-          aria-label="Resize picture in picture"
+          tabIndex={-1}
+          aria-hidden
+          data-testid="agent-browser-pip-resize"
           className="absolute right-0 bottom-0 size-3 cursor-se-resize"
           onPointerDown={props.onResizePointerDown}
         />
       </div>
       {props.rows.map((row) => (
         <PipSessionRow
-          key={row.row.target.burstId}
+          key={row.target.burstId}
+          epicId={props.epicId}
           row={row}
           openTile={openTile}
         />
@@ -677,21 +693,18 @@ function PipFrameContent(props: {
 }
 
 function PipSessionRow(props: {
+  readonly epicId: string;
   readonly row: PipRowView;
-  readonly openTile: (target: PipTarget, enabled: boolean) => void;
+  readonly openTile: (target: PipTarget) => void;
 }): ReactElement {
   const { row } = props;
-  const live = row.row.kind === "live";
-  const openEnabled = row.row.outcome !== "closed";
-  const outcome = pipOutcomeLine(row.row.outcome, row.site);
-  const activate = (): void => {
-    if (live) selectPipRow(row.row.target);
-  };
+  const live = row.kind === "live";
+  const openEnabled = row.outcome !== "closed";
+  const outcome = pipOutcomeLine(row.outcome, row.site);
   return (
     <div
-      tabIndex={live ? undefined : 0}
-      data-testid={`agent-browser-pip-row-${row.row.target.burstId}`}
-      data-pip-row-kind={row.row.kind}
+      data-testid={`agent-browser-pip-row-${row.target.burstId}`}
+      data-pip-row-kind={row.kind}
       className={cn(
         "group relative flex h-[var(--pip-row-height)] shrink-0 items-center gap-2 rounded-lg border border-border/70 bg-popover/95 px-2.5 shadow-lg outline-none backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-ring",
         live ? undefined : "text-muted-foreground",
@@ -702,7 +715,9 @@ function PipSessionRow(props: {
           type="button"
           aria-label={`Show ${row.title} in picture in picture`}
           className="absolute inset-0 cursor-pointer rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={activate}
+          onClick={() => {
+            selectPipRow(row.target);
+          }}
         />
       ) : null}
       <span className="pointer-events-none relative flex">
@@ -714,15 +729,14 @@ function PipSessionRow(props: {
           {live ? row.activity : outcome}
         </div>
       </div>
-      <div className="invisible relative flex shrink-0 gap-0.5 group-hover:visible group-focus-within:visible">
+      <div className="relative flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <button
           type="button"
           aria-label={openEnabled ? `Open ${row.title}` : outcome}
           disabled={!openEnabled}
           className="flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-foreground/8 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
-          onClick={(event) => {
-            event.stopPropagation();
-            props.openTile(row.row.target, openEnabled);
+          onClick={() => {
+            props.openTile(row.target);
           }}
         >
           <Maximize2 className="size-3.5" aria-hidden />
@@ -731,9 +745,8 @@ function PipSessionRow(props: {
           type="button"
           aria-label={`Hide ${row.title} from picture in picture`}
           className="flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-foreground/8 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={(event) => {
-            event.stopPropagation();
-            dismissPipRowSet([row.row.target.burstId]);
+          onClick={() => {
+            dismissPipRow(props.epicId, row.target.burstId);
           }}
         >
           <X className="size-3.5" aria-hidden />
@@ -805,16 +818,29 @@ function PipCaptionBadge(props: {
   readonly caption: PipCaption | null;
 }): ReactElement | null {
   const { caption } = props;
-  const now = useSyncExternalStore(
-    caption === null ? subscribeNoop : subscribeCaptionClock,
-    readCaptionClock,
-    readCaptionClock,
-  );
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (caption === null) return;
+    const deadlines = [
+      caption.arrivedAt + PIP_CAPTION_HOLD_MS,
+      caption.arrivedAt + PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS,
+    ];
+    const timers = deadlines.map((deadline) =>
+      window.setTimeout(
+        () => {
+          setNow(Date.now());
+        },
+        Math.max(0, deadline - Date.now()),
+      ),
+    );
+    return () => {
+      for (const timer of timers) window.clearTimeout(timer);
+    };
+  }, [caption]);
   if (caption === null) return null;
-  const elapsed = now - caption.arrivedAt;
-  const totalMs = PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS;
-  if (elapsed >= totalMs) return null;
-  const fading = elapsed >= PIP_CAPTION_HOLD_MS;
+  const freshness = captionFreshness(caption, now);
+  if (freshness === "expired") return null;
+  const fading = freshness === "fading";
   return (
     <span
       data-testid="agent-browser-pip-caption"
@@ -827,21 +853,6 @@ function PipCaptionBadge(props: {
       {caption.cellTitle}
     </span>
   );
-}
-
-function subscribeCaptionClock(onStoreChange: () => void): () => void {
-  const id = window.setInterval(onStoreChange, 50);
-  return () => {
-    window.clearInterval(id);
-  };
-}
-
-function subscribeNoop(): () => void {
-  return () => undefined;
-}
-
-function readCaptionClock(): number {
-  return Date.now();
 }
 
 function PipFavicon(props: { readonly url: string | null }): ReactElement {
@@ -906,34 +917,41 @@ function usePipTargetMeta(
   };
 }
 
-interface PipRowView {
-  readonly row: PipRow;
+type PipRowView = PipRow & {
   readonly title: string;
   readonly site: string | null;
   readonly faviconUrl: string | null;
   readonly activity: string;
-}
+};
 
 function usePipRows(epicId: string, rows: readonly PipRow[]): PipRowView[] {
   const items = usePipEpicSessionItems(epicId);
   const chats = useEpicChatRecords();
   const [now, setNow] = useState(Date.now);
-  const captionLifetime = PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS;
-  const hasActiveDeadline = rows.some(
-    (row) =>
-      (row.expiresAt !== null && row.expiresAt > now) ||
-      (row.caption !== null && row.caption.arrivedAt + captionLifetime > now),
+  const nextDeadline = Math.min(
+    ...rows.flatMap((row) => {
+      const deadlines = row.expiresAt === null ? [] : [row.expiresAt];
+      if (row.kind === "live" && row.caption !== null) {
+        deadlines.push(
+          row.caption.arrivedAt + PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS,
+        );
+      }
+      return deadlines.filter((deadline) => deadline > now);
+    }),
   );
 
   useEffect(() => {
-    if (!hasActiveDeadline) return;
-    const id = window.setInterval(() => {
-      setNow(Date.now());
-    }, PIP_ROWS_CLOCK_MS);
+    if (!Number.isFinite(nextDeadline)) return;
+    const id = window.setTimeout(
+      () => {
+        setNow(Date.now());
+      },
+      Math.max(0, nextDeadline - Date.now()),
+    );
     return () => {
-      window.clearInterval(id);
+      window.clearTimeout(id);
     };
-  }, [hasActiveDeadline]);
+  }, [nextDeadline]);
 
   return rows.flatMap((row) => {
     if (row.expiresAt !== null && row.expiresAt <= now) return [];
@@ -944,48 +962,29 @@ function usePipRows(epicId: string, rows: readonly PipRow[]): PipRowView[] {
     );
     const tab = session?.tabs.find((item) => item.tabId === row.target.tabId);
     const chatTitle =
-      chats.find((chat) => chat.id === row.chatId)?.title.trim() ?? "";
+      chats.find((chat) => chat.id === row.target.chatId)?.title.trim() ?? "";
     const caption =
-      row.caption !== null && row.caption.arrivedAt + captionLifetime > now
+      row.kind === "live" &&
+      row.caption !== null &&
+      captionFreshness(row.caption, now) !== "expired"
         ? row.caption.cellTitle.trim()
         : "";
     return [
       {
-        row,
+        ...row,
         title: tab === undefined ? "Browser" : resolveTabTitle(tab),
         site: tab === undefined ? null : browserTabHostname(tab.url),
         faviconUrl: tab === undefined ? null : browserTabFaviconUrl(tab.url),
-        activity: pipRowActivity(caption, chatTitle),
+        activity: caption || chatTitle || "Agent browsing",
       },
     ];
   });
 }
 
-function pipRowActivity(caption: string, chatTitle: string): string {
-  if (caption.length > 0) return caption;
-  if (chatTitle.length > 0) return chatTitle;
-  return "Agent browsing";
-}
-
-function dismissRenderedPip(
-  epicId: string,
-  snapshot: PipSnapshot,
-  rows: readonly PipRowView[],
-): void {
-  if (rows.length === 0) {
-    dismissPip(epicId);
-    return;
-  }
-  dismissPipRowSet([
-    ...(snapshot.target === null ? [] : [snapshot.target.burstId]),
-    ...rows.map((row) => row.row.target.burstId),
-  ]);
-}
-
 function useOpenPipTarget(
   epicId: string,
   viewTabId: string,
-): (target: PipTarget, enabled: boolean) => void {
+): (target: PipTarget) => void {
   const navigateNested = useEpicNestedFocusNavigation();
   const prepareOpen = useEpicCanvasStore(
     (state) => state.prepareOpenTileInTabFocusTarget,
@@ -995,8 +994,7 @@ function useOpenPipTarget(
   );
   const items = usePipEpicSessionItems(epicId);
   return useCallback(
-    (latch: PipTarget, enabled: boolean) => {
-      if (!enabled) return;
+    (latch: PipTarget) => {
       const session = findPipEpicSession(items, latch.hostId, latch.sessionId);
       const tab = session?.tabs.find((item) => item.tabId === latch.tabId);
       const binding = findElectronBrowserTabBinding(

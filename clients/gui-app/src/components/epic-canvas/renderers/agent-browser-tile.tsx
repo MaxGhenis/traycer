@@ -5,9 +5,7 @@ import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
 import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
-import {
-  BrowserElementPickerResultPanel,
-} from "@/components/epic-canvas/renderers/browser-element-picker";
+import { BrowserElementPickerResultPanel } from "@/components/epic-canvas/renderers/browser-element-picker";
 import { BrowserTileFindAdapterBridge } from "@/components/epic-canvas/renderers/browser-tile-find-adapter";
 import {
   BrowserTileCertificateInterstitial,
@@ -30,10 +28,12 @@ import { selectSiblingChatIdForBrowserTile } from "@/lib/browser-view/browser-ti
 import {
   probeAgentBrowserViewOptionalSurface,
   resolveDesktopAgentBrowserViewBridge,
+  type DesktopAgentBrowserViewBridge,
   type AgentBrowserViewTileKey,
 } from "@/lib/browser-view/desktop-agent-browser-view";
 import {
   resolveDesktopBrowserViewBridge,
+  type DesktopBrowserViewBridge,
   type BrowserViewStatus,
 } from "@/lib/browser-view/desktop-browser-view";
 import {
@@ -81,23 +81,69 @@ export interface AgentBrowserTileProps {
   readonly usePrimaryProfileRuntime?: boolean;
 }
 
-function effectiveBrowserStatus(
-  browserViewAvailable: boolean,
-  status: BrowserViewStatus,
-  reason: string | null,
-): { readonly status: BrowserViewStatus; readonly reason: string | null } {
-  return browserViewAvailable
-    ? { status, reason }
-    : { status: "dead", reason: "Native browser views are unavailable." };
+function useAgentBrowserViewBridge(
+  runnerHost: IRunnerHost,
+  usePrimaryProfileRuntime: boolean,
+): {
+  readonly browserView:
+    DesktopBrowserViewBridge | DesktopAgentBrowserViewBridge | null;
+  readonly primaryBridge: DesktopBrowserViewBridge | null;
+} {
+  const primaryBridge = useMemo(
+    () =>
+      usePrimaryProfileRuntime
+        ? resolveDesktopBrowserViewBridge(runnerHost)
+        : null,
+    [runnerHost, usePrimaryProfileRuntime],
+  );
+  const agentBridge = useMemo(
+    () =>
+      usePrimaryProfileRuntime
+        ? null
+        : resolveDesktopAgentBrowserViewBridge(runnerHost),
+    [runnerHost, usePrimaryProfileRuntime],
+  );
+  return { browserView: primaryBridge ?? agentBridge, primaryBridge };
 }
 
-function browserLifecycleUrl(
-  attemptedNavigation: AttemptedNavigation | null,
-  statusUrl: string,
-  initialUrl: string,
-): string {
-  if (attemptedNavigation !== null) return attemptedNavigation.url;
-  return statusUrl.length > 0 ? statusUrl : initialUrl;
+/** The host has no typed timeout/failure status for a view that never loads. */
+function useAgentBrowserStatus(
+  status: BrowserViewStatus,
+  reason: string | null,
+  browserViewAvailable: boolean,
+): {
+  readonly effectiveStatus: BrowserViewStatus;
+  readonly effectiveStatusReason: string | null;
+  readonly unreachable: boolean;
+  readonly retryNonce: number;
+  readonly retry: () => void;
+} {
+  // ponytail: does not re-arm across loading -> ready -> loading; key the
+  // timeout to loading transitions if that bounce becomes observable.
+  const [unreachable, setUnreachable] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
+  useEffect(() => {
+    if (status !== "loading") return;
+    const timer = window.setTimeout(() => {
+      setUnreachable(true);
+    }, AGENT_BROWSER_UNREACHABLE_TIMEOUT_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [status, retryNonce]);
+  const retry = useCallback(() => {
+    setUnreachable(false);
+    setRetryNonce((current) => current + 1);
+  }, []);
+  return {
+    effectiveStatus: browserViewAvailable ? status : "dead",
+    effectiveStatusReason: browserViewAvailable
+      ? reason
+      : "Native browser views are unavailable.",
+    unreachable: status === "loading" && unreachable,
+    retryNonce,
+    retry,
+  };
 }
 
 /**
@@ -115,21 +161,10 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     props.usePrimaryProfileRuntime,
     props.node.runtime,
   );
-  const primaryBridge = useMemo(
-    () =>
-      usePrimaryProfileRuntime
-        ? resolveDesktopBrowserViewBridge(runnerHost)
-        : null,
-    [runnerHost, usePrimaryProfileRuntime],
+  const { browserView, primaryBridge } = useAgentBrowserViewBridge(
+    runnerHost,
+    usePrimaryProfileRuntime,
   );
-  const agentBridge = useMemo(
-    () =>
-      usePrimaryProfileRuntime
-        ? null
-        : resolveDesktopAgentBrowserViewBridge(runnerHost),
-    [runnerHost, usePrimaryProfileRuntime],
-  );
-  const browserView = primaryBridge ?? agentBridge;
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<BrowserViewStatus>("loading");
   const [statusReason, setStatusReason] = useState<string | null>(null);
@@ -147,8 +182,6 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     tabId: durableTabId ?? props.requestedTabId ?? null,
     visible,
   });
-  const [unreachable, setUnreachable] = useState(false);
-  const [retryNonce, setRetryNonce] = useState(0);
   const registrationChatId = useEpicCanvasStore((state) =>
     selectSiblingChatIdForBrowserTile(
       state.canvasByTabId[props.viewTabId] ?? null,
@@ -170,41 +203,19 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     [props.viewTabId, props.paneId, props.node.instanceId, props.node.id],
   );
 
-  const { status: effectiveStatus, reason: effectiveStatusReason } =
-    effectiveBrowserStatus(browserView !== null, status, statusReason);
-
-  // The host reports only loading/ready/dead - no typed timeout, so a session
-  // that never activates sits in "loading" forever with nothing to tell the
-  // user apart "still connecting" from "never coming back." This ceiling
-  // makes that call locally: past it, the placeholder offers a way out.
-  // `unreachable` only reads as true while still loading (see
-  // `effectiveUnreachable` below), so leaving "loading" doesn't need its own
-  // reset here - only the timer firing needs to set state.
-  // ponytail: doesn't re-arm if the host bounces loading -> ready -> loading
-  // again without a Retry click in between (stale `unreachable` would read
-  // true immediately on the new attempt); add an explicit reset keyed off a
-  // fresh loading transition if that ever proves to happen in practice.
-  useEffect(() => {
-    if (status !== "loading") return;
-    const timer = window.setTimeout(() => {
-      setUnreachable(true);
-    }, AGENT_BROWSER_UNREACHABLE_TIMEOUT_MS);
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [status, retryNonce]);
-  const effectiveUnreachable = status === "loading" && unreachable;
+  const {
+    effectiveStatus,
+    effectiveStatusReason,
+    unreachable,
+    retryNonce,
+    retry,
+  } = useAgentBrowserStatus(status, statusReason, browserView !== null);
 
   const closeCanvasTile = useCloseCanvasTileWithNestedFocus(
     props.viewTabId,
     props.paneId,
     props.node.instanceId,
   );
-  const retry = useCallback(() => {
-    setUnreachable(false);
-    setRetryNonce((current) => current + 1);
-  }, []);
-
   useEffect(() => {
     if (browserView === null) return;
     return () => {
@@ -373,20 +384,14 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     canGoForward,
     zoomPercent,
     persistViewportPreset: (preset) => {
-      persistViewportPreset(
-        props.viewTabId,
-        props.node.instanceId,
-        preset,
-      );
+      persistViewportPreset(props.viewTabId, props.node.instanceId, preset);
     },
     initialViewportPreset: readAgentViewportPreset(props.node.viewportPreset),
     onAttemptedUrl: latchAttemptedUrl,
   });
-  const lifecycleUrl = browserLifecycleUrl(
-    attemptedNavigation,
-    statusUrl,
-    props.node.url,
-  );
+  const lifecycleUrl =
+    attemptedNavigation?.url ??
+    (statusUrl.length > 0 ? statusUrl : props.node.url);
 
   useEffect(() => {
     if (
@@ -439,21 +444,21 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
             effectiveStatus === "ready" && "pointer-events-none opacity-0",
           )}
           role={
-            effectiveStatus === "dead" || effectiveUnreachable
+            effectiveStatus === "dead" || unreachable
               ? "alert"
               : "status"
           }
           aria-live={
-            effectiveStatus === "dead" || effectiveUnreachable
+            effectiveStatus === "dead" || unreachable
               ? "assertive"
               : "polite"
           }
-          aria-busy={effectiveStatus === "loading" && !effectiveUnreachable}
+          aria-busy={effectiveStatus === "loading" && !unreachable}
         >
           <AgentBrowserTileStatus
             status={effectiveStatus}
             reason={effectiveStatusReason}
-            unreachable={effectiveUnreachable}
+            unreachable={unreachable}
             hostId={hostId}
             onRetry={retry}
             onClose={closeCanvasTile}
@@ -532,8 +537,14 @@ function AgentBrowserTileStatus(props: AgentBrowserTileStatusProps) {
   }
   return (
     <>
-      <AgentSpinningDots className="shrink-0" testId={undefined} variant={undefined} />
-      <div className="text-ui-base font-medium">Reconnecting to this session</div>
+      <AgentSpinningDots
+        className="shrink-0"
+        testId={undefined}
+        variant={undefined}
+      />
+      <div className="text-ui-base font-medium">
+        Reconnecting to this session
+      </div>
       <AgentBrowserTileReason reason={props.reason} hostId={props.hostId} />
     </>
   );

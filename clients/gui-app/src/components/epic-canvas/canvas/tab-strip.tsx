@@ -57,19 +57,9 @@ import type {
   SplitDirection,
 } from "@/stores/epics/canvas/types";
 import {
-  isAgentBrowserTileRef,
-  isBlankTileRef,
-  isBrowserPeekTileRef,
-  isBrowserSessionTileRef,
-  isBrowserTileRef,
-  isCommGraphTileRef,
-  isPublishedChatTileRef,
-  isDiffTileRef,
   isGitDiffTileRef,
   isManagedCommandOutputTileRef,
   isOpenableEpicNodeKind,
-  isPrDetailTileRef,
-  isPrDiffTileRef,
 } from "@/stores/epics/canvas/types";
 import { CommGraphTileIcon } from "@/components/epic-canvas/comm-graph/comm-graph-tile-icon";
 import { ManagedCommandMonitorIcon } from "@/components/managed-commands/managed-command-monitor-icon";
@@ -1008,49 +998,38 @@ function renderFixedTabIcon(
   tab: EpicCanvasTileRef,
   managedCommandMonitoring: boolean,
 ): ReactNode {
-  if (isDiffTileRef(tab) || isPrDiffTileRef(tab)) {
-    return <FileDiff className="size-3.5 shrink-0 text-muted-foreground" />;
+  switch (tab.type) {
+    case "git-diff":
+    case "snapshot-diff":
+    case "pr-diff":
+      return <FileDiff className="size-3.5 shrink-0 text-muted-foreground" />;
+    case "pr-detail":
+      return (
+        <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
+      );
+    case "blank":
+      return <FilePlus className="size-3.5 shrink-0 text-muted-foreground" />;
+    case "browser":
+    case "browser-peek":
+    case "browser-session":
+      return <Globe className="size-3.5 shrink-0 text-muted-foreground" />;
+    case "agent-browser":
+      return <Bot className="size-3.5 shrink-0 text-muted-foreground" />;
+    case "managed-command-output":
+      return (
+        <ManagedCommandMonitorIcon
+          monitoring={managedCommandMonitoring}
+          decorative
+          className="size-3.5"
+        />
+      );
+    case "comm-graph":
+      return <CommGraphTileIcon className="size-3.5" />;
+    case "published-chat":
+      return <Lock className="size-3.5 shrink-0 text-muted-foreground" />;
+    default:
+      return null;
   }
-  if (isPrDetailTileRef(tab)) {
-    return (
-      <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
-    );
-  }
-  if (isBlankTileRef(tab)) {
-    return <FilePlus className="size-3.5 shrink-0 text-muted-foreground" />;
-  }
-  if (
-    isBrowserTileRef(tab) ||
-    isBrowserPeekTileRef(tab) ||
-    isBrowserSessionTileRef(tab)
-  ) {
-    return <Globe className="size-3.5 shrink-0 text-muted-foreground" />;
-  }
-  if (isAgentBrowserTileRef(tab)) {
-    return <Bot className="size-3.5 shrink-0 text-muted-foreground" />;
-  }
-  if (isManagedCommandOutputTileRef(tab)) {
-    // A tab opened for a shell whose chat has no live session yet resolves to
-    // nothing; the quiet glyph is the honest guess, since a watcher announces
-    // itself the moment its record lands.
-    return (
-      <ManagedCommandMonitorIcon
-        monitoring={managedCommandMonitoring}
-        decorative
-        className="size-3.5"
-      />
-    );
-  }
-  if (isCommGraphTileRef(tab)) {
-    return <CommGraphTileIcon className="size-3.5" />;
-  }
-  // A published copy carries the lock rather than a chat glyph: the tab is
-  // readable but cannot be steered, and that is the one thing about it that
-  // differs from the chat tab beside it.
-  if (isPublishedChatTileRef(tab)) {
-    return <Lock className="size-3.5 shrink-0 text-muted-foreground" />;
-  }
-  return null;
 }
 
 function TabIcon(props: {

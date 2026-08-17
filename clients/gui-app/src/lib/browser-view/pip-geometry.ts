@@ -154,32 +154,30 @@ export function readViewportSize(): ViewportSize {
   };
 }
 
-export interface PipRowLayout {
-  readonly visibleCount: number;
-  readonly hiddenCount: number;
-  readonly outerHeight: number;
-}
-
-export interface PipStackLayout {
-  readonly geometry: EpicPipGeometry;
-  readonly rowLayout: PipRowLayout;
-}
-
 export function layoutPipStack(
   geometry: EpicPipGeometry,
   rowCount: number,
   viewport: ViewportSize,
-): PipStackLayout {
+): {
+  readonly geometry: EpicPipGeometry;
+  readonly rowLayout: {
+    readonly visibleCount: number;
+    readonly hiddenCount: number;
+    readonly outerHeight: number;
+  };
+} {
   const raw = clampPipGeometry(geometry, viewport, geometry.previewHeight);
-  const initialRows = pipRowLayout(
-    rowCount,
-    raw.previewHeight,
-    viewport.height,
+  const available = Math.max(
+    0,
+    viewport.height - raw.previewHeight - PIP_VIEWPORT_MARGIN * 2,
   );
+  const deficit = rowCount * (PIP_ROW_HEIGHT_PX + PIP_ROW_GAP_PX) - available;
   const fitted = {
     ...raw,
-    previewHeight:
-      initialRows.hiddenCount === 0 ? raw.previewHeight : PIP_MIN_HEIGHT,
+    previewHeight: Math.max(
+      PIP_MIN_HEIGHT,
+      raw.previewHeight - Math.max(0, deficit),
+    ),
   };
   const rowLayout = pipRowLayout(
     rowCount,
@@ -212,7 +210,11 @@ function pipRowLayout(
   rowCount: number,
   previewHeight: number,
   viewportHeight: number,
-): PipRowLayout {
+): {
+  readonly visibleCount: number;
+  readonly hiddenCount: number;
+  readonly outerHeight: number;
+} {
   if (rowCount === 0) {
     return { visibleCount: 0, hiddenCount: 0, outerHeight: previewHeight };
   }

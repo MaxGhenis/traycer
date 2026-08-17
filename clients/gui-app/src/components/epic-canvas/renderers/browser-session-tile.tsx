@@ -23,8 +23,9 @@ export interface BrowserSessionTileProps {
 
 function resolveSwapState(args: {
   readonly activatedHeadless: boolean;
-  readonly tabStatus: string | undefined;
-  readonly migrationRuntime: string | undefined;
+  readonly tabStatus: BrowserSessionInfo["tabs"][number]["status"] | undefined;
+  readonly migrationRuntime:
+    NonNullable<BrowserSessionInfo["migration"]>["runtime"] | undefined;
   readonly bindingRegistrationId: string | null;
   readonly terminalBindingRegistrationId: string | null;
   readonly castMigrated: boolean;
@@ -35,8 +36,7 @@ function resolveSwapState(args: {
       (args.migrationRuntime === "headless" ||
         args.bindingRegistrationId === null ||
         (args.castMigrated &&
-          args.bindingRegistrationId ===
-            args.terminalBindingRegistrationId)));
+          args.bindingRegistrationId === args.terminalBindingRegistrationId)));
   if (!renderHeadless) return { renderHeadless, holdReason: null };
   if (args.activatedHeadless) {
     return { renderHeadless, holdReason: "activated-headless" };
@@ -47,6 +47,110 @@ function resolveSwapState(args: {
       args.bindingRegistrationId === null
         ? "binding-missing"
         : "registration-unchanged",
+  };
+}
+
+function useBrowserSessionSwap(input: {
+  readonly session: BrowserSessionInfo | undefined;
+  readonly tab: BrowserSessionInfo["tabs"][number] | undefined;
+  readonly bindingRegistrationId: string | null;
+  readonly sessionId: string;
+  readonly tabId: string;
+}): {
+  readonly renderHeadless: boolean;
+  readonly castGeneration: number;
+  readonly onMigrated: () => void;
+  readonly onActivatedHeadless: () => void;
+} {
+  const [activatedHeadless, setActivatedHeadless] = useState(false);
+  const [castMigrated, setCastMigrated] = useState(false);
+  const [castGeneration, setCastGeneration] = useState(0);
+  const [terminalBindingRegistrationId, setTerminalBindingRegistrationId] =
+    useState<string | null>(null);
+  const bindingRegistrationIdRef = useRef<string | null>(null);
+  const latestMigrationRevisionRef = useRef(0);
+  const terminalMigrationRevisionRef = useRef(0);
+  const swapDecisionSignatureRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    bindingRegistrationIdRef.current = input.bindingRegistrationId;
+    latestMigrationRevisionRef.current =
+      input.session?.migration?.revision ?? 0;
+  }, [input.bindingRegistrationId, input.session?.migration?.revision]);
+
+  const onActivatedHeadless = useCallback(() => {
+    setActivatedHeadless(true);
+  }, []);
+  const onMigrated = useCallback(() => {
+    setActivatedHeadless(false);
+    setTerminalBindingRegistrationId(bindingRegistrationIdRef.current);
+    terminalMigrationRevisionRef.current = latestMigrationRevisionRef.current;
+    setCastMigrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (
+      !castMigrated ||
+      input.session?.migration?.runtime !== "headless" ||
+      input.session.migration.revision <= terminalMigrationRevisionRef.current
+    ) {
+      return;
+    }
+    setCastMigrated(false);
+    setCastGeneration((current) => current + 1);
+  }, [castMigrated, input.session?.migration]);
+
+  const { renderHeadless, holdReason } = resolveSwapState({
+    activatedHeadless,
+    tabStatus: input.tab?.status,
+    migrationRuntime: input.session?.migration?.runtime,
+    bindingRegistrationId: input.bindingRegistrationId,
+    terminalBindingRegistrationId,
+    castMigrated,
+  });
+
+  useEffect(() => {
+    if (!castMigrated) {
+      swapDecisionSignatureRef.current = null;
+      return;
+    }
+    const settlementRevision = input.session?.migration?.revision ?? 0;
+    const verdict = renderHeadless ? "hold" : "swap";
+    const signature = [
+      terminalBindingRegistrationId,
+      input.bindingRegistrationId,
+      settlementRevision,
+      verdict,
+      holdReason,
+    ].join("|");
+    if (swapDecisionSignatureRef.current === signature) return;
+    swapDecisionSignatureRef.current = signature;
+    appLogger.info("Browser runtime swap decision", {
+      event: "browser_runtime_swap_decision",
+      sessionId: input.sessionId,
+      tabId: input.tabId,
+      terminalRegistrationId: terminalBindingRegistrationId,
+      candidateRegistrationId: input.bindingRegistrationId,
+      settlementRevision,
+      verdict,
+      holdReason,
+    });
+  }, [
+    castMigrated,
+    holdReason,
+    input.bindingRegistrationId,
+    input.session?.migration?.revision,
+    input.sessionId,
+    input.tabId,
+    renderHeadless,
+    terminalBindingRegistrationId,
+  ]);
+
+  return {
+    renderHeadless,
+    castGeneration,
+    onMigrated,
+    onActivatedHeadless,
   };
 }
 
@@ -126,88 +230,14 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
     props.node.sessionId,
     props.node.tabId,
   );
-  const [activatedHeadless, setActivatedHeadless] = useState(false);
-  const [castMigrated, setCastMigrated] = useState(false);
-  const [castGeneration, setCastGeneration] = useState(0);
-  const [terminalBindingRegistrationId, setTerminalBindingRegistrationId] =
-    useState<string | null>(null);
-  const bindingRegistrationIdRef = useRef<string | null>(null);
-  const latestMigrationRevisionRef = useRef(0);
-  const terminalMigrationRevisionRef = useRef(0);
-  const swapDecisionSignatureRef = useRef<string | null>(null);
-  useEffect(() => {
-    bindingRegistrationIdRef.current = binding?.registrationId ?? null;
-    latestMigrationRevisionRef.current = session?.migration?.revision ?? 0;
-  }, [binding?.registrationId, session?.migration?.revision]);
-  const handleActivatedHeadless = useCallback(() => {
-    setActivatedHeadless(true);
-  }, []);
-  const handleMigrated = useCallback(() => {
-    setActivatedHeadless(false);
-    setTerminalBindingRegistrationId(bindingRegistrationIdRef.current);
-    terminalMigrationRevisionRef.current = latestMigrationRevisionRef.current;
-    setCastMigrated(true);
-  }, []);
-
-  useEffect(() => {
-    if (
-      !castMigrated ||
-      session?.migration?.runtime !== "headless" ||
-      session.migration.revision <= terminalMigrationRevisionRef.current
-    ) {
-      return;
-    }
-    setCastMigrated(false);
-    setCastGeneration((current) => current + 1);
-  }, [castMigrated, session?.migration]);
-
-  const { renderHeadless, holdReason: swapHoldReason } = resolveSwapState({
-    activatedHeadless,
-    tabStatus: tab?.status,
-    migrationRuntime: session?.migration?.runtime,
-    bindingRegistrationId: binding?.registrationId ?? null,
-    terminalBindingRegistrationId,
-    castMigrated,
-  });
-
-  useEffect(() => {
-    if (!castMigrated) {
-      swapDecisionSignatureRef.current = null;
-      return;
-    }
-    const candidateRegistrationId = binding?.registrationId ?? null;
-    const terminalRegistrationId = terminalBindingRegistrationId;
-    const settlementRevision = session?.migration?.revision ?? 0;
-    const verdict = renderHeadless ? "hold" : "swap";
-    const signature = [
-      terminalRegistrationId,
-      candidateRegistrationId,
-      settlementRevision,
-      verdict,
-      swapHoldReason,
-    ].join("|");
-    if (swapDecisionSignatureRef.current === signature) return;
-    swapDecisionSignatureRef.current = signature;
-    appLogger.info("Browser runtime swap decision", {
-      event: "browser_runtime_swap_decision",
+  const { renderHeadless, castGeneration, onMigrated, onActivatedHeadless } =
+    useBrowserSessionSwap({
+      session,
+      tab,
+      bindingRegistrationId: binding?.registrationId ?? null,
       sessionId: props.node.sessionId,
       tabId: props.node.tabId,
-      terminalRegistrationId,
-      candidateRegistrationId,
-      settlementRevision,
-      verdict,
-      holdReason: swapHoldReason,
     });
-  }, [
-    binding?.registrationId,
-    castMigrated,
-    props.node.sessionId,
-    props.node.tabId,
-    renderHeadless,
-    session?.migration?.revision,
-    swapHoldReason,
-    terminalBindingRegistrationId,
-  ]);
 
   return (
     <BrowserSessionTileBody
@@ -218,8 +248,8 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
       routingChatId={sessions.routingChatId}
       renderHeadless={renderHeadless}
       castGeneration={castGeneration}
-      onMigrated={handleMigrated}
-      onActivatedHeadless={handleActivatedHeadless}
+      onMigrated={onMigrated}
+      onActivatedHeadless={onActivatedHeadless}
     />
   );
 }

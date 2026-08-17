@@ -59,13 +59,6 @@ interface BrowserPeekRenderState {
   } | null;
 }
 
-function migrationPendingForClient(
-  stateMatchesClient: boolean,
-  streamState: BrowserPeekRenderState,
-): boolean {
-  return stateMatchesClient && streamState.migrationPending;
-}
-
 type BrowserPeekDialog = Extract<
   BrowserScreencastServerFrame,
   { readonly kind: "dialogOpened" }
@@ -126,15 +119,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       frameSize: null,
     }),
   );
-  const stateMatchesClient = streamState.client === client;
-  const image = stateMatchesClient ? streamState.image : null;
-  const lifecycle = stateMatchesClient ? streamState.lifecycle : "connecting";
-  const details = peekDetailsForRender(stateMatchesClient, streamState, client);
-  const migrationPending = migrationPendingForClient(
-    stateMatchesClient,
-    streamState,
-  );
-  const frameSize = stateMatchesClient ? streamState.frameSize : null;
+  const { image, lifecycle, details, migrationPending, frameSize } =
+    resetPeekStateForClient(streamState, client);
   const armedEpoch = armedState?.client === client ? armedState.epoch : null;
   const dialog = dialogForClient(dialogState, client);
 
@@ -248,10 +234,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         setDetails,
         setFrameSize,
       });
-      if (
-        parsed.data.kind === "complete" &&
-        parsed.data.cause === "migrated"
-      ) {
+      if (parsed.data.kind === "complete" && parsed.data.cause === "migrated") {
         onMigrated?.();
       }
       if (parsed.data.kind === "migrationPending") {
@@ -508,7 +491,10 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
             {node.initialUrl}
           </div>
           {migrationPending ? (
-            <div className="truncate text-ui-xs text-muted-foreground" aria-live="polite">
+            <div
+              className="truncate text-ui-xs text-muted-foreground"
+              aria-live="polite"
+            >
               Will go native when the agent pauses
             </div>
           ) : null}
@@ -802,16 +788,6 @@ function resetPeekStateForClient(
   };
 }
 
-function peekDetailsForRender(
-  stateMatchesClient: boolean,
-  streamState: BrowserPeekRenderState,
-  client: IHostStreamClient<HostStreamRpcRegistry> | null,
-): string | null {
-  if (stateMatchesClient) return streamState.details;
-  if (client === null) return "Waiting for the host stream.";
-  return null;
-}
-
 function handleStreamStatus(
   status: StreamConnectionStatus,
   reason: StreamCloseReason | null,
@@ -919,7 +895,9 @@ function useScreencastViewportBridge(
         });
       }, VIEWPORT_DEBOUNCE_MS);
     };
-    const observer = new ResizeObserver(([entry]) => {
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries.at(-1);
+      if (entry === undefined) return;
       emit(entry.contentRect.width, entry.contentRect.height);
     });
     observer.observe(element);

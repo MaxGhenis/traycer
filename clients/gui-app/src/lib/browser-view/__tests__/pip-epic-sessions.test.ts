@@ -512,8 +512,8 @@ describe("PipEpicSessionsManager", () => {
     expect(getPipSnapshot(EPIC).caption?.cellTitle).toBe("Local activity");
     expect(
       getPipSnapshot(EPIC).rows.find((row) => row.target.burstId === "burst-b")
-        ?.caption?.cellTitle,
-    ).toBe("Remote activity");
+        ?.caption,
+    ).toMatchObject({ cellTitle: "Remote activity" });
     manager.dispose();
   });
 

@@ -28,22 +28,14 @@ export const PIP_CAPTION_HOLD_MS = 3_500;
 export const PIP_CAPTION_FADE_MS = 300;
 
 export type PipPhase =
-  | "hidden"
-  | "live"
-  | "finished"
-  | "chip"
-  | "dismissed-burst";
+  "hidden" | "live" | "finished" | "chip" | "dismissed-burst";
 
 export type PipBurstOutcome = BrowserBurstOutcome;
 
 export type PipStreamHealth = "live" | "stale" | "disconnected";
 
 export type PipHostLifecycle =
-  | "connecting"
-  | "live"
-  | "reconnecting"
-  | "closed"
-  | "failed";
+  "connecting" | "live" | "reconnecting" | "closed" | "failed";
 
 export interface PipTarget {
   readonly hostId: string;
@@ -62,15 +54,22 @@ export interface PipCaption {
   readonly arrivedAt: number;
 }
 
-export interface PipRow {
+interface LivePipRow {
   readonly target: PipTarget;
-  readonly kind: "live" | "lingering";
-  readonly outcome: PipBurstOutcome | null;
-  readonly chatId: string;
-  readonly arrivedAt: number;
-  readonly expiresAt: number | null;
+  readonly kind: "live";
+  readonly outcome: null;
+  readonly expiresAt: null;
   readonly caption: PipCaption | null;
 }
+
+interface LingeringPipRow {
+  readonly target: PipTarget;
+  readonly kind: "lingering";
+  readonly outcome: PipBurstOutcome;
+  readonly expiresAt: number;
+}
+
+export type PipRow = LivePipRow | LingeringPipRow;
 
 export interface PipSnapshot {
   readonly phase: PipPhase;
@@ -82,7 +81,6 @@ export interface PipSnapshot {
   readonly lingerActive: boolean;
   readonly caption: PipCaption | null;
   readonly rows: readonly PipRow[];
-  readonly targetEverStreamed: boolean;
 }
 
 export const HIDDEN_PIP_SNAPSHOT: PipSnapshot = {
@@ -95,14 +93,12 @@ export const HIDDEN_PIP_SNAPSHOT: PipSnapshot = {
   lingerActive: false,
   caption: null,
   rows: [],
-  targetEverStreamed: false,
 };
 
 interface PipBurst extends PipTarget {
   readonly epicId: string;
   readonly arrivedAt: number;
   readonly arrivalOrder: number;
-  everStreamed: boolean;
 }
 
 interface FinishedPipBurst extends PipBurst {
@@ -120,7 +116,6 @@ interface EpicPipState {
   dismissedAt: number | null;
   dismissedBurstId: string | null;
   streamHealth: PipStreamHealth;
-  targetEverStreamed: boolean;
 }
 
 const epics = new Map<string, EpicPipState>();
@@ -158,7 +153,16 @@ export function applyPipBurstStarted(input: {
   const existing =
     liveBursts.get(input.burstId) ?? finishedBursts.get(input.burstId);
   const hadEligibleLive = listEligibleLive(input.epicId).length > 0;
-  const history = burstHistory(existing);
+  let arrivedAt: number;
+  let arrivalOrder: number;
+  if (existing === undefined) {
+    arrivedAt = nowFn();
+    arrivalOrder = nextArrivalOrder;
+    nextArrivalOrder += 1;
+  } else {
+    arrivedAt = existing.arrivedAt;
+    arrivalOrder = existing.arrivalOrder;
+  }
   const startedAt = input.startedAt ?? nowFn();
   const burst: PipBurst = {
     epicId: input.epicId,
@@ -168,7 +172,8 @@ export function applyPipBurstStarted(input: {
     burstId: input.burstId,
     chatId: input.chatId,
     startedAt,
-    ...history,
+    arrivedAt,
+    arrivalOrder,
   };
   liveBursts.set(input.burstId, burst);
   finishedBursts.delete(input.burstId);
@@ -198,27 +203,6 @@ export function applyPipBurstStarted(input: {
     return;
   }
   recomputeEpic(input.epicId);
-}
-
-function burstHistory(existing: PipBurst | undefined): {
-  readonly arrivedAt: number;
-  readonly arrivalOrder: number;
-  readonly everStreamed: boolean;
-} {
-  if (existing !== undefined) {
-    return {
-      arrivedAt: existing.arrivedAt,
-      arrivalOrder: existing.arrivalOrder,
-      everStreamed: existing.everStreamed,
-    };
-  }
-  const history = {
-    arrivedAt: nowFn(),
-    arrivalOrder: nextArrivalOrder,
-    everStreamed: false,
-  };
-  nextArrivalOrder += 1;
-  return history;
 }
 
 function isTerminalLinger(
@@ -262,15 +246,11 @@ export function applyPipBurstEnded(input: {
     !tileIsVisible(live);
   if (endedWasEligible && remaining.length === 0) {
     setTerminalTarget(input.epicId, finishedBursts.get(input.burstId));
-  } else if (
-    epic.target?.burstId === input.burstId &&
-    epic.phase === "live"
-  ) {
+  } else if (epic.target?.burstId === input.burstId && epic.phase === "live") {
     epic.phase = "finished";
     epic.outcome = input.outcome;
     epic.lingerEndsAt = nowFn() + PIP_LINGER_MS;
     epic.streamHealth = "live";
-    epic.targetEverStreamed = true;
     scheduleLinger(input.epicId);
   }
   recomputeEpic(input.epicId);
@@ -318,11 +298,11 @@ export function applyPipCaption(input: {
   captionsByTab.set(
     captionTabKey(input.epicId, input.hostId, input.sessionId, input.tabId),
     {
-    sessionId: input.sessionId,
-    tabId: input.tabId,
-    burstId: input.burstId,
-    cellTitle: input.cellTitle,
-    arrivedAt: nowFn(),
+      sessionId: input.sessionId,
+      tabId: input.tabId,
+      burstId: input.burstId,
+      cellTitle: input.cellTitle,
+      arrivedAt: nowFn(),
     },
   );
   emit();
@@ -399,12 +379,7 @@ export function recallPip(input: {
 }): void {
   const { epicId, hostId, sessionId, tabId } = input;
   const live = findLiveBurstForTab(epicId, hostId, sessionId, tabId);
-  const finished = findFinishedBurstForTab(
-    epicId,
-    hostId,
-    sessionId,
-    tabId,
-  );
+  const finished = findFinishedBurstForTab(epicId, hostId, sessionId, tabId);
   const target = live ?? finished;
   if (target === undefined) return;
   removeDismissal(epicId, target.burstId);
@@ -426,7 +401,6 @@ export function recallPip(input: {
     epic.dismissedAt = null;
     epic.dismissedBurstId = null;
     epic.streamHealth = "live";
-    epic.targetEverStreamed = finished.everStreamed;
     clearLinger(epicId);
     clearDwell(epicId);
     emit();
@@ -445,27 +419,25 @@ export function selectPipRow(target: PipTarget): void {
   emit();
 }
 
-export function dismissPipRowSet(burstIds: readonly string[]): void {
-  const byEpic = new Map<string, string[]>();
-  for (const burstId of burstIds) {
-    const burst = liveBursts.get(burstId) ?? finishedBursts.get(burstId);
-    if (burst === undefined) continue;
-    const ids = byEpic.get(burst.epicId) ?? [];
-    ids.push(burstId);
-    byEpic.set(burst.epicId, ids);
-  }
-  for (const [epicId, ids] of byEpic) {
-    for (const burstId of ids) addDismissal(epicId, burstId);
-    const epic = getOrCreateEpic(epicId);
-    if (epic.target !== null && ids.includes(epic.target.burstId)) {
-      epic.phase = "hidden";
-      epic.pinnedBurstId = null;
-      epic.lingerEndsAt = null;
-      clearLinger(epicId);
-      clearDwell(epicId);
-    }
-    recomputeEpic(epicId);
-  }
+export function dismissPipRow(epicId: string, burstId: string): void {
+  addDismissal(epicId, burstId);
+  recomputeEpic(epicId);
+}
+
+export function dismissPipRowSet(epicId: string): void {
+  const epic = getOrCreateEpic(epicId);
+  if (epic.target === null) return;
+  const rows = listPipRows(epicId, epic.target.burstId);
+  addDismissal(epicId, epic.target.burstId);
+  for (const row of rows) addDismissal(epicId, row.target.burstId);
+  epic.phase = "dismissed-burst";
+  epic.dismissedAt = nowFn();
+  epic.dismissedBurstId = epic.target.burstId;
+  epic.pinnedBurstId = null;
+  epic.lingerEndsAt = null;
+  clearLinger(epicId);
+  clearDwell(epicId);
+  emit();
 }
 
 export function setPipActiveHostId(hostId: string | null): void {
@@ -481,9 +453,7 @@ export function getPipSnapshot(epicId: string): PipSnapshot {
   return snapshotCache.get(epicId) ?? HIDDEN_PIP_SNAPSHOT;
 }
 
-export function getPipDismissalsForTests(
-  epicId: string,
-): ReadonlySet<string> {
+export function getPipDismissalsForTests(epicId: string): ReadonlySet<string> {
   return dismissals.get(epicId) ?? new Set<string>();
 }
 
@@ -677,8 +647,6 @@ function goLive(epicId: string, burst: PipBurst): void {
   epic.lingerEndsAt = null;
   epic.dismissedAt = null;
   epic.dismissedBurstId = null;
-  burst.everStreamed = true;
-  epic.targetEverStreamed = true;
   if (switched) {
     epic.streamHealth = hostHealthFor(epicId, burst.hostId);
   }
@@ -700,7 +668,6 @@ function setTerminalTarget(
   epic.dismissedAt = null;
   epic.dismissedBurstId = null;
   epic.streamHealth = "live";
-  epic.targetEverStreamed = burst.everStreamed;
   clearLinger(epicId);
   clearDwell(epicId);
   scheduleLinger(epicId);
@@ -824,8 +791,7 @@ function deriveSnapshot(epicId: string): PipSnapshot {
       pinned: epic.pinnedBurstId !== null,
       lingerActive: false,
       caption: null,
-      rows: listPipRows(epicId, epic.target?.burstId),
-      targetEverStreamed: epic.targetEverStreamed,
+      rows: [],
     };
   }
   const displayedId = epic.target?.burstId;
@@ -842,7 +808,6 @@ function deriveSnapshot(epicId: string): PipSnapshot {
       nowFn() < epic.lingerEndsAt,
     caption: displayedCaption(epicId, epic),
     rows: listPipRows(epicId, displayedId),
-    targetEverStreamed: epic.targetEverStreamed,
   };
 }
 
@@ -858,27 +823,25 @@ function listPipRows(
         target: toTarget(burst),
         kind: "live",
         outcome: null,
-        chatId: burst.chatId,
-        arrivedAt: burst.arrivedAt,
         expiresAt: null,
         caption: freshCaptionForBurst(burst),
       },
       order: burst.arrivalOrder,
     });
   }
-  for (const burst of finishedBursts.values()) {
+  for (const [burstId, burst] of finishedBursts) {
     const expiresAt = burst.endedAt + PIP_LINGER_MS;
-    if (nowFn() >= expiresAt) continue;
+    if (nowFn() >= expiresAt) {
+      if (burstId !== displayedBurstId) finishedBursts.delete(burstId);
+      continue;
+    }
     if (!burstIsRowEligible(epicId, burst, displayedBurstId)) continue;
     rows.push({
       row: {
         target: toTarget(burst),
         kind: "lingering",
         outcome: burst.outcome,
-        chatId: burst.chatId,
-        arrivedAt: burst.arrivedAt,
         expiresAt,
-        caption: freshCaptionForBurst(burst),
       },
       order: burst.arrivalOrder,
     });
@@ -915,7 +878,6 @@ function snapshotsEqual(left: PipSnapshot, right: PipSnapshot): boolean {
     left.openTileEnabled === right.openTileEnabled &&
     left.pinned === right.pinned &&
     left.lingerActive === right.lingerActive &&
-    left.targetEverStreamed === right.targetEverStreamed &&
     targetsEqual(left.target, right.target) &&
     captionsEqual(left.caption, right.caption) &&
     rowsEqual(left.rows, right.rows)
@@ -929,11 +891,10 @@ function rowsEqual(left: readonly PipRow[], right: readonly PipRow[]): boolean {
     return (
       row.kind === other.kind &&
       row.outcome === other.outcome &&
-      row.chatId === other.chatId &&
-      row.arrivedAt === other.arrivedAt &&
       row.expiresAt === other.expiresAt &&
       targetsEqual(row.target, other.target) &&
-      captionsEqual(row.caption, other.caption)
+      (row.kind !== "live" ||
+        (other.kind === "live" && captionsEqual(row.caption, other.caption)))
     );
   });
 }
@@ -980,7 +941,6 @@ function getOrCreateEpic(epicId: string): EpicPipState {
     dismissedAt: null,
     dismissedBurstId: null,
     streamHealth: "live",
-    targetEverStreamed: false,
   };
   epics.set(epicId, created);
   return created;
@@ -1008,7 +968,10 @@ function tileIsVisible(target: PipTarget): boolean {
   });
 }
 
-function displayedCaption(epicId: string, epic: EpicPipState): PipCaption | null {
+function displayedCaption(
+  epicId: string,
+  epic: EpicPipState,
+): PipCaption | null {
   if (epic.phase !== "live" || epic.target === null) return null;
   const caption = captionsByTab.get(
     captionTabKey(
@@ -1020,23 +983,42 @@ function displayedCaption(epicId: string, epic: EpicPipState): PipCaption | null
   );
   if (caption === undefined) return null;
   if (caption.burstId !== epic.target.burstId) return null;
+  if (captionFreshness(caption, nowFn()) === "expired") {
+    captionsByTab.delete(
+      captionTabKey(
+        epicId,
+        epic.target.hostId,
+        epic.target.sessionId,
+        epic.target.tabId,
+      ),
+    );
+    return null;
+  }
   return caption;
 }
 
 function freshCaptionForBurst(burst: PipBurst): PipCaption | null {
   const caption = captionsByTab.get(
-    captionTabKey(
-      burst.epicId,
-      burst.hostId,
-      burst.sessionId,
-      burst.tabId,
-    ),
+    captionTabKey(burst.epicId, burst.hostId, burst.sessionId, burst.tabId),
   );
   if (caption === undefined || caption.burstId !== burst.burstId) return null;
-  if (nowFn() >= caption.arrivedAt + PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS) {
+  if (captionFreshness(caption, nowFn()) === "expired") {
+    captionsByTab.delete(
+      captionTabKey(burst.epicId, burst.hostId, burst.sessionId, burst.tabId),
+    );
     return null;
   }
   return caption;
+}
+
+export function captionFreshness(
+  caption: PipCaption,
+  now: number,
+): "visible" | "fading" | "expired" {
+  const elapsed = now - caption.arrivedAt;
+  if (elapsed >= PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS) return "expired";
+  if (elapsed >= PIP_CAPTION_HOLD_MS) return "fading";
+  return "visible";
 }
 
 function dropCaptionsForBurst(burstId: string): void {
@@ -1077,10 +1059,13 @@ function scheduleLinger(epicId: string): void {
   const epic = epics.get(epicId);
   if (epic === undefined || epic.lingerEndsAt === null) return;
   const delay = Math.max(0, epic.lingerEndsAt - nowFn());
-  lingerTimers.set(epicId, startPipTimer(delay, () => {
-    lingerTimers.delete(epicId);
-    recomputeEpic(epicId);
-  }));
+  lingerTimers.set(
+    epicId,
+    startPipTimer(delay, () => {
+      lingerTimers.delete(epicId);
+      recomputeEpic(epicId);
+    }),
+  );
 }
 
 function clearLinger(epicId: string): void {
@@ -1092,10 +1077,13 @@ function clearLinger(epicId: string): void {
 
 function scheduleDwell(epicId: string, delay: number): void {
   if (dwellTimers.has(epicId)) return;
-  dwellTimers.set(epicId, startPipTimer(delay, () => {
-    dwellTimers.delete(epicId);
-    recomputeEpic(epicId);
-  }));
+  dwellTimers.set(
+    epicId,
+    startPipTimer(delay, () => {
+      dwellTimers.delete(epicId);
+      recomputeEpic(epicId);
+    }),
+  );
 }
 
 function clearDwell(epicId: string): void {

@@ -67,15 +67,7 @@ import type {
   TilePane,
 } from "@/stores/epics/canvas/types";
 import { WORKSPACE_FILE_TAB_KIND } from "@/stores/epics/canvas/types";
-import {
-  isBlankTileRef,
-  isCommGraphTileRef,
-  isPublishedChatTileRef,
-  isDiffTileRef,
-  isManagedCommandOutputTileRef,
-  isPrDetailTileRef,
-  isPrDiffTileRef,
-} from "@/stores/epics/canvas/types";
+import { isTileRefRecordBacked } from "@/stores/epics/canvas/tile-schema";
 import { resolveActivePaneTab } from "@/stores/epics/canvas/tile-tree";
 import { surfaceOwnerFor } from "@/components/epic-canvas/surface-host/surface-owner";
 import { TileSurfaceSlot } from "@/components/epic-canvas/surface-host/tile-surface-slot";
@@ -98,27 +90,6 @@ import {
 } from "@/stores/epics/left-panel-store";
 import { isEditableRole } from "@/lib/epic-permissions";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
-
-const BROWSER_SURFACE_TILE_TYPES = new Set<EpicCanvasTileRef["type"]>([
-  "browser",
-  "browser-peek",
-  "browser-session",
-  "agent-browser",
-]);
-
-type BrowserSurfaceTileRef = Extract<
-  EpicCanvasTileRef,
-  {
-    readonly type:
-      "browser" | "browser-peek" | "browser-session" | "agent-browser";
-  }
->;
-
-function isBrowserSurfaceTileRef(
-  value: EpicCanvasTileRef,
-): value is BrowserSurfaceTileRef {
-  return BROWSER_SURFACE_TILE_TYPES.has(value.type);
-}
 
 interface TabGroupViewProps {
   readonly epicId: string;
@@ -828,21 +799,6 @@ function useChatTabRetraction(
   return useEpicChatRetraction(activeTab.type === "chat" ? activeTab.id : null);
 }
 
-function isRendererOnlyCanvasTile(activeTab: EpicCanvasTileRef): boolean {
-  return (
-    activeTab.type === "terminal" ||
-    isBrowserSurfaceTileRef(activeTab) ||
-    isDiffTileRef(activeTab) ||
-    isPrDetailTileRef(activeTab) ||
-    isPrDiffTileRef(activeTab) ||
-    isBlankTileRef(activeTab) ||
-    isManagedCommandOutputTileRef(activeTab) ||
-    isCommGraphTileRef(activeTab) ||
-    isPublishedChatTileRef(activeTab) ||
-    activeTab.type === WORKSPACE_FILE_TAB_KIND
-  );
-}
-
 function ActiveTabBody(props: ActiveTabBodyProps) {
   const { activeTab, epicId, groupId, tabId } = props;
   const navigateNested = useEpicNestedFocusNavigation();
@@ -885,21 +841,20 @@ function ActiveTabBody(props: ActiveTabBodyProps) {
   // artifact lookup miss is not deletion. A blank id is throwaway, the comm
   // graph id is epic-derived, and an output id belongs to a managed command;
   // each surface owns its own lifecycle instead.
-  const isRemoteDeleted =
-    isRendererOnlyCanvasTile(activeTab)
-      ? false
-      : computeIsRemoteDeleted({
-          snapshotLoaded,
-          leafArtifact: activeTab,
-          liveArtifact,
-          isSelfDeleted,
-          isPendingCreate,
-          projectionHostId: activeHostIdForRecordGate,
-          isCloudKnown,
-          cloudListAuthorizesChatAbsence,
-          recordListAuthorizesChatAbsence: chatRecordListAuthoritative,
-          retractedAsDeleted: chatRetraction === "deleted",
-        });
+  const isRemoteDeleted = !isTileRefRecordBacked(activeTab)
+    ? false
+    : computeIsRemoteDeleted({
+        snapshotLoaded,
+        leafArtifact: activeTab,
+        liveArtifact,
+        isSelfDeleted,
+        isPendingCreate,
+        projectionHostId: activeHostIdForRecordGate,
+        isCloudKnown,
+        cloudListAuthorizesChatAbsence,
+        recordListAuthorizesChatAbsence: chatRecordListAuthoritative,
+        retractedAsDeleted: chatRetraction === "deleted",
+      });
   const isActive = role !== null && props.selected && props.globallyActive;
 
   // Reports the SAME isRemoteDeleted value this render already uses for the

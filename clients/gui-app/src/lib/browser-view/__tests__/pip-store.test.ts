@@ -33,18 +33,29 @@ function startBurst(input: {
   readonly sessionId: string;
   readonly tabId: string;
   readonly startedAt: number;
-  readonly hostId: string | undefined;
-  readonly chatId: string | undefined;
 }): void {
   applyPipBurstStarted({
     epicId: EPIC,
-    hostId: input.hostId ?? "host-a",
+    hostId: "host-a",
     sessionId: input.sessionId,
     tabId: input.tabId,
     burstId: input.burstId,
-    chatId: input.chatId ?? "chat-1",
+    chatId: "chat-1",
     startedAt: input.startedAt,
   });
+}
+
+function startBurstAs(
+  hostId: string,
+  chatId: string,
+  input: {
+    readonly burstId: string;
+    readonly sessionId: string;
+    readonly tabId: string;
+    readonly startedAt: number;
+  },
+): void {
+  applyPipBurstStarted({ epicId: EPIC, hostId, chatId, ...input });
 }
 
 function endBurst(
@@ -81,8 +92,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     const snap = getPipSnapshot(EPIC);
     expect(snap.phase).toBe("live");
@@ -96,8 +105,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     const release = registerVisibleBrowserTile({
       hostId: "host-a",
@@ -116,8 +123,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     endBurst("b1", "finished", 10);
     expect(getPipSnapshot(EPIC).phase).toBe("finished");
@@ -129,8 +134,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 20,
-      hostId: undefined,
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).phase).toBe("live");
 
@@ -145,8 +148,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     endBurst("b1", "closed", 2);
     expect(getPipSnapshot(EPIC).phase).toBe("finished");
@@ -160,8 +161,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     dismissPip(EPIC);
     expect(getPipSnapshot(EPIC).phase).toBe("dismissed-burst");
@@ -172,8 +171,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s2",
       tabId: "t2",
       startedAt: 0,
-      hostId: undefined,
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).phase).toBe("dismissed-burst");
 
@@ -182,8 +179,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s3",
       tabId: "t3",
       startedAt: Date.now() + 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).phase).toBe("live");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b3");
@@ -195,8 +190,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     dismissPip(EPIC);
     recallPip({
@@ -214,8 +207,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s2",
       tabId: "t2",
       startedAt: Date.now() + 10,
-      hostId: undefined,
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
 
@@ -232,16 +223,12 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     startBurst({
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 2,
-      hostId: undefined,
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
     vi.advanceTimersByTime(PIP_SWITCH_DWELL_MS);
@@ -249,21 +236,17 @@ describe("pip-store lifecycle", () => {
   });
 
   it("breaks start-time ties toward the active host", () => {
-    startBurst({
+    startBurstAs("host-b", "chat-1", {
       burstId: "b-remote",
       sessionId: "s-r",
       tabId: "t-r",
       startedAt: 5,
-      hostId: "host-b",
-      chatId: undefined,
     });
-    startBurst({
+    startBurstAs("host-a", "chat-1", {
       burstId: "b-local",
       sessionId: "s-l",
       tabId: "t-l",
       startedAt: 5,
-      hostId: "host-a",
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b-local");
   });
@@ -274,8 +257,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     endBurst("b1", "finished", 2);
     vi.advanceTimersByTime(PIP_LINGER_MS);
@@ -293,8 +274,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     endBurst("b1", "finished", 2);
     vi.advanceTimersByTime(PIP_LINGER_MS);
@@ -308,8 +287,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     applyPipHostLifecycle(EPIC, "host-a", "reconnecting");
     expect(getPipSnapshot(EPIC).phase).toBe("live");
@@ -325,8 +302,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     vi.advanceTimersByTime(PIP_SWITCH_DWELL_MS);
     startBurst({
@@ -334,8 +309,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s2",
       tabId: "t2",
       startedAt: Date.now(),
-      hostId: undefined,
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
     endBurst("b2", "finished", Date.now());
@@ -351,8 +324,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     endBurst("b1", "finished", Date.now());
     expect(getPipSnapshot(EPIC).phase).toBe("finished");
@@ -361,8 +332,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s2",
       tabId: "t2",
       startedAt: Date.now(),
-      hostId: undefined,
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).phase).toBe("live");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
@@ -377,8 +346,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     endBurst("b1", "finished", 2);
     vi.advanceTimersByTime(PIP_LINGER_MS);
@@ -391,8 +358,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s2",
       tabId: "t2",
       startedAt: Date.now(),
-      hostId: undefined,
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).phase).toBe("live");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
@@ -405,8 +370,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).streamHealth).toBe("live");
     applyPipStreamHealth(EPIC, "stale");
@@ -425,16 +388,12 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     startBurst({
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 2,
-      hostId: undefined,
-      chatId: undefined,
     });
     const latched = getPipSnapshot(EPIC).target;
     expect(latched?.burstId).toBe("b1");
@@ -452,8 +411,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     endBurst("b1", "finished", 10);
     expect(getPipSnapshot(EPIC).phase).toBe("finished");
@@ -468,8 +425,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 20,
-      hostId: undefined,
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).phase).toBe("dismissed-burst");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
@@ -482,8 +437,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     endBurst("b-crash", "crashed", 2);
     expect(getPipSnapshot(EPIC).phase).toBe("finished");
@@ -498,8 +451,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s2",
       tabId: "t2",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     endBurst("b-suspend", "suspended", 2);
     expect(getPipSnapshot(EPIC).outcome).toBe("suspended");
@@ -513,8 +464,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s3",
       tabId: "t3",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     endBurst("b-closed", "closed", 2);
     expect(getPipSnapshot(EPIC).outcome).toBe("closed");
@@ -527,8 +476,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     dismissPip(EPIC);
     expect(getPipSnapshot(EPIC).phase).toBe("dismissed-burst");
@@ -544,8 +491,6 @@ describe("pip-store lifecycle", () => {
       sessionId: "s2",
       tabId: "t2",
       startedAt: Date.now() + 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     expect(getPipSnapshot(EPIC).phase).toBe("live");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b2");
@@ -570,31 +515,25 @@ describe("pip-store multi-session stack", () => {
 
   it("orders live rows by GUI arrival and keeps their full identity stable", () => {
     vi.setSystemTime(1_000);
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "b1",
       sessionId: "s1",
       tabId: "t1",
       startedAt: 300,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
     vi.setSystemTime(1_001);
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 100,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
     vi.setSystemTime(1_002);
-    startBurst({
+    startBurstAs("host-a", "chat-c", {
       burstId: "b3",
       sessionId: "s3",
       tabId: "t3",
       startedAt: 200,
-      hostId: "host-a",
-      chatId: "chat-c",
     });
 
     const first = getPipSnapshot(EPIC);
@@ -607,7 +546,7 @@ describe("pip-store multi-session stack", () => {
         row.target.tabId,
         row.target.burstId,
         row.kind,
-        row.chatId,
+        row.target.chatId,
       ]),
     ).toEqual([
       ["host-b", "s2", "t2", "b2", "live", "chat-b"],
@@ -617,13 +556,11 @@ describe("pip-store multi-session stack", () => {
     expect(getPipSnapshot(EPIC).rows).toEqual(first.rows);
 
     vi.setSystemTime(1_003);
-    startBurst({
+    startBurstAs("host-b", "chat-d", {
       burstId: "b4",
       sessionId: "s4",
       tabId: "t4",
       startedAt: 50,
-      hostId: "host-b",
-      chatId: "chat-d",
     });
     expect(getPipSnapshot(EPIC).rows.map((row) => row.target.burstId)).toEqual([
       "b2",
@@ -632,85 +569,67 @@ describe("pip-store multi-session stack", () => {
     ]);
   });
 
-  it("preserves arrival order and streamed history when a burst is replayed", () => {
+  it("preserves arrival order when a burst is replayed", () => {
     vi.setSystemTime(2_000);
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "b1",
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
     vi.setSystemTime(2_001);
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 2,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
     vi.setSystemTime(2_002);
-    startBurst({
+    startBurstAs("host-a", "chat-c", {
       burstId: "b3",
       sessionId: "s3",
       tabId: "t3",
       startedAt: 3,
-      hostId: "host-a",
-      chatId: "chat-c",
     });
-    const originalArrival = getPipSnapshot(EPIC).rows[0]?.arrivedAt;
-
     endBurst("b2", "finished", 2_003);
     vi.setSystemTime(2_004);
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 4,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
     expect(getPipSnapshot(EPIC).rows.map((row) => row.target.burstId)).toEqual([
       "b2",
       "b3",
     ]);
-    expect(getPipSnapshot(EPIC).rows[0]?.arrivedAt).toBe(originalArrival);
 
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "b1",
       sessionId: "s1",
       tabId: "t1",
       startedAt: 5,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
     endBurst("b2", "finished", 2_005);
     endBurst("b3", "finished", 2_005);
     endBurst("b1", "finished", 2_005);
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
-    expect(getPipSnapshot(EPIC).targetEverStreamed).toBe(true);
   });
 
   it("keeps a finished background row until its own linger deadline", () => {
     vi.setSystemTime(10_000);
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "b1",
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
     vi.setSystemTime(10_100);
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 2,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
     endBurst("b2", "crashed", 10_100);
 
@@ -721,7 +640,7 @@ describe("pip-store multi-session stack", () => {
     expect(row.kind).toBe("lingering");
     expect(row.outcome).toBe("crashed");
     expect(row.expiresAt).toBe(15_100);
-    expect(row.chatId).toBe("chat-b");
+    expect(row.target.chatId).toBe("chat-b");
 
     vi.setSystemTime(15_099);
     expect(
@@ -739,21 +658,17 @@ describe("pip-store multi-session stack", () => {
   });
 
   it("selects a live row immediately and pins it until it ends", () => {
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "b1",
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 2,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
     const row = getPipSnapshot(EPIC).rows.find(
       (candidate) => candidate.target.burstId === "b2",
@@ -769,21 +684,17 @@ describe("pip-store multi-session stack", () => {
   });
 
   it("promotes the next eligible burst when the displayed tile opens", () => {
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "b1",
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 2,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
 
@@ -807,36 +718,30 @@ describe("pip-store multi-session stack", () => {
 
   it("dismisses the current row set atomically while a late burst re-presents", () => {
     vi.setSystemTime(20_000);
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "b1",
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 2,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
 
-    dismissPipRowSet(["b1", "b2"]);
+    dismissPipRowSet(EPIC);
 
-    expect(getPipSnapshot(EPIC).phase).toBe("hidden");
+    expect(getPipSnapshot(EPIC).phase).toBe("dismissed-burst");
     expect(getPipDismissalsForTests(EPIC)).toEqual(new Set(["b1", "b2"]));
 
     vi.setSystemTime(20_001);
-    startBurst({
+    startBurstAs("host-a", "chat-c", {
       burstId: "b3",
       sessionId: "s3",
       tabId: "t3",
-      startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-c",
+      startedAt: 20_001,
     });
     expect(getPipSnapshot(EPIC).phase).toBe("live");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b3");
@@ -844,21 +749,17 @@ describe("pip-store multi-session stack", () => {
 
   it("uses the displayed burst as terminal owner when it is the last live burst", () => {
     vi.setSystemTime(30_000);
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "b1",
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 2,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
     vi.setSystemTime(30_100);
     endBurst("b2", "finished", 30_100);
@@ -869,7 +770,6 @@ describe("pip-store multi-session stack", () => {
     expect(snapshot.phase).toBe("finished");
     expect(snapshot.target?.burstId).toBe("b1");
     expect(snapshot.outcome).toBe("finished");
-    expect(snapshot.targetEverStreamed).toBe(true);
     expect(snapshot.lingerActive).toBe(true);
     expect(snapshot.rows).toHaveLength(1);
     expect(snapshot.rows[0]?.target.burstId).toBe("b2");
@@ -877,34 +777,27 @@ describe("pip-store multi-session stack", () => {
     vi.advanceTimersByTime(PIP_LINGER_MS);
     expect(getPipSnapshot(EPIC).phase).toBe("chip");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
-    expect(getPipSnapshot(EPIC).targetEverStreamed).toBe(true);
   });
 
   it("uses the last live row as terminal owner after the displayed burst ends first", () => {
     vi.setSystemTime(31_000);
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "b1",
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 2,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
-    startBurst({
+    startBurstAs("host-a", "chat-c", {
       burstId: "b3",
       sessionId: "s3",
       tabId: "t3",
       startedAt: 3,
-      hostId: "host-a",
-      chatId: "chat-c",
     });
     vi.setSystemTime(31_100);
     endBurst("b1", "finished", 31_100);
@@ -917,7 +810,6 @@ describe("pip-store multi-session stack", () => {
     expect(snapshot.phase).toBe("finished");
     expect(snapshot.target?.burstId).toBe("b3");
     expect(snapshot.outcome).toBe("crashed");
-    expect(snapshot.targetEverStreamed).toBe(false);
     expect(snapshot.lingerActive).toBe(true);
     expect(snapshot.rows.map((row) => row.target.burstId)).toEqual([
       "b1",
@@ -928,35 +820,28 @@ describe("pip-store multi-session stack", () => {
     vi.advanceTimersByTime(PIP_LINGER_MS);
     expect(getPipSnapshot(EPIC).phase).toBe("chip");
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b3");
-    expect(getPipSnapshot(EPIC).targetEverStreamed).toBe(false);
     expect(getPipSnapshot(EPIC).rows).toEqual([]);
   });
 
   it("chooses the last applied end when all live bursts end together", () => {
     vi.setSystemTime(32_000);
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "b1",
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 2,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
-    startBurst({
+    startBurstAs("host-a", "chat-c", {
       burstId: "b3",
       sessionId: "s3",
       tabId: "t3",
       startedAt: 3,
-      hostId: "host-a",
-      chatId: "chat-c",
     });
     vi.setSystemTime(32_100);
     endBurst("b1", "finished", 32_100);
@@ -967,7 +852,6 @@ describe("pip-store multi-session stack", () => {
     expect(snapshot.phase).toBe("finished");
     expect(snapshot.target?.burstId).toBe("b3");
     expect(snapshot.outcome).toBe("suspended");
-    expect(snapshot.targetEverStreamed).toBe(false);
     expect(snapshot.rows.map((row) => row.target.burstId)).toEqual([
       "b1",
       "b2",
@@ -981,13 +865,11 @@ describe("pip-store multi-session stack", () => {
   it("keeps six bursts ordered and gives the final live burst the chip", () => {
     vi.setSystemTime(33_000);
     for (let index = 1; index <= 6; index += 1) {
-      startBurst({
+      startBurstAs(index % 2 === 0 ? "host-b" : "host-a", `chat-${index}`, {
         burstId: `b${index}`,
         sessionId: `s${index}`,
         tabId: `t${index}`,
         startedAt: index,
-        hostId: index % 2 === 0 ? "host-b" : "host-a",
-        chatId: `chat-${index}`,
       });
     }
     expect(getPipSnapshot(EPIC).target?.burstId).toBe("b1");
@@ -1008,7 +890,6 @@ describe("pip-store multi-session stack", () => {
 
     const snapshot = getPipSnapshot(EPIC);
     expect(snapshot.target?.burstId).toBe("b6");
-    expect(snapshot.targetEverStreamed).toBe(false);
     expect(snapshot.rows.map((row) => row.target.burstId)).toEqual([
       "b1",
       "b2",
@@ -1024,21 +905,17 @@ describe("pip-store multi-session stack", () => {
   });
 
   it("recalls the requested host when session and tab ids collide", () => {
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "burst-a",
       sessionId: "same-session",
       tabId: "same-tab",
       startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "burst-b",
       sessionId: "same-session",
       tabId: "same-tab",
       startedAt: 2,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
 
     recallPip({
@@ -1076,8 +953,6 @@ describe("pip-store captions", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     applyPipCaption({
       epicId: EPIC,
@@ -1105,8 +980,6 @@ describe("pip-store captions", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     applyPipCaption({
       epicId: EPIC,
@@ -1141,8 +1014,6 @@ describe("pip-store captions", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     applyPipCaption({
       epicId: EPIC,
@@ -1168,8 +1039,6 @@ describe("pip-store captions", () => {
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: undefined,
-      chatId: undefined,
     });
     applyPipCaption({
       epicId: EPIC,
@@ -1202,21 +1071,17 @@ describe("pip-store captions", () => {
 
   it("keeps captions separate for equal session and tab ids on different hosts", () => {
     setPipNowForTests(() => 34_000);
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "burst-a",
       sessionId: "same-session",
       tabId: "same-tab",
       startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "burst-b",
       sessionId: "same-session",
       tabId: "same-tab",
       startedAt: 2,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
     applyPipCaption({
       epicId: EPIC,
@@ -1241,7 +1106,7 @@ describe("pip-store captions", () => {
       (row) => row.target.burstId === "burst-b",
     );
     if (remoteRow === undefined) throw new Error("expected remote row");
-    expect(remoteRow.caption?.cellTitle).toBe("Remote activity");
+    expect(remoteRow.caption).toMatchObject({ cellTitle: "Remote activity" });
 
     selectPipRow(remoteRow.target);
     expect(getPipSnapshot(EPIC).target?.hostId).toBe("host-b");
@@ -1250,21 +1115,17 @@ describe("pip-store captions", () => {
 
   it("exposes a row caption only inside its freshness window", () => {
     vi.setSystemTime(35_000);
-    startBurst({
+    startBurstAs("host-a", "chat-a", {
       burstId: "b1",
       sessionId: "s1",
       tabId: "t1",
       startedAt: 1,
-      hostId: "host-a",
-      chatId: "chat-a",
     });
-    startBurst({
+    startBurstAs("host-b", "chat-b", {
       burstId: "b2",
       sessionId: "s2",
       tabId: "t2",
       startedAt: 2,
-      hostId: "host-b",
-      chatId: "chat-b",
     });
     applyPipCaption({
       epicId: EPIC,
@@ -1281,7 +1142,9 @@ describe("pip-store captions", () => {
     if (rowBeforeExpiry === undefined) {
       throw new Error("expected b2 row before caption expiry");
     }
-    expect(rowBeforeExpiry.caption?.cellTitle).toBe("Fresh row activity");
+    expect(rowBeforeExpiry.caption).toMatchObject({
+      cellTitle: "Fresh row activity",
+    });
 
     vi.setSystemTime(35_000 + PIP_CAPTION_HOLD_MS + PIP_CAPTION_FADE_MS);
     const rowAfterExpiry = getPipSnapshot(EPIC).rows.find(
