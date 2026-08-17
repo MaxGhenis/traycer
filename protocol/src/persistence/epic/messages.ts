@@ -94,16 +94,25 @@ export const browserViewElementBoundingBoxSchema = z.object({
   bottom: z.number(),
   left: z.number(),
 });
+export type BrowserViewElementBoundingBox = z.infer<
+  typeof browserViewElementBoundingBoxSchema
+>;
 
 export const browserViewElementAttributeSchema = z.object({
   name: z.string(),
   value: z.string(),
 });
+export type BrowserViewElementAttribute = z.infer<
+  typeof browserViewElementAttributeSchema
+>;
 
 export const browserViewElementStyleSchema = z.object({
   property: z.string(),
   value: z.string(),
 });
+export type BrowserViewElementStyle = z.infer<
+  typeof browserViewElementStyleSchema
+>;
 
 export const browserViewElementCaptureSchema = z.object({
   selector: z.string(),
@@ -214,9 +223,6 @@ export const userMessagePayloadSchema = z.discriminatedUnion("kind", [
   agentUserMessageSchema,
 ]);
 export type UserMessagePayload = z.infer<typeof userMessagePayloadSchema>;
-export type UserMessagePayloadPreAnnotation = z.infer<
-  typeof userMessagePayloadSchemaPreAnnotation
->;
 export type AgentUserMessage = z.infer<typeof agentUserMessageSchema>;
 
 const userMessageSenderKindRefine = (

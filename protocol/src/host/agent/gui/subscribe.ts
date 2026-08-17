@@ -1341,9 +1341,6 @@ export const chatSubscribeClientFrameSchemaV14ToV16 = z.discriminatedUnion(
   "kind",
   [...chatSubscribeClientFrameSchemaBeforeV14Options, activeProfileUpdateClientFrameSchema],
 );
-export type ChatSubscribeClientFrameV14ToV16 = z.infer<
-  typeof chatSubscribeClientFrameSchemaV14ToV16
->;
 
 // ─── Frozen `chat.subscribe@1.0` shape (host-v1.0.0, as shipped) ──────────
 //
