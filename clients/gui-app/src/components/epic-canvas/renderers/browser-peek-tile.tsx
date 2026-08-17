@@ -31,6 +31,7 @@ import { BrowserTileToolbar } from "@/components/epic-canvas/renderers/browser-t
 import type { TileController } from "@/components/epic-canvas/renderers/tile-controller";
 import {
   createScreencastArmBuffer,
+  SCREENCAST_ARM_BUFFER_CLICK_SLOP_PX,
   type ScreencastArmBuffer,
 } from "@/components/epic-canvas/renderers/screencast-arm-buffer";
 import {
@@ -57,6 +58,7 @@ const DEFAULT_MAX_HEIGHT = 720;
 const DEFAULT_QUALITY = 70;
 const STALE_WITHOUT_FRAME_MS = 8_000;
 const VIEWPORT_DEBOUNCE_MS = 200;
+const POINTER_CLICK_COUNT_WINDOW_MS = 500;
 const POINTER_CLICK_COUNT_MAX = 8;
 const WHEEL_LINE_HEIGHT_PX = 16;
 
@@ -98,7 +100,14 @@ interface PointerLike {
   readonly ctrlKey: boolean;
   readonly metaKey: boolean;
   readonly shiftKey: boolean;
-  readonly detail: number;
+}
+
+interface PointerClickCount {
+  readonly button: number;
+  readonly clientX: number;
+  readonly clientY: number;
+  readonly at: number;
+  readonly count: number;
 }
 
 interface PointerFrameRequest {
@@ -202,6 +211,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const pendingMoveRef = useRef<PeekPointerInput | null>(null);
   const moveRafRef = useRef<number | null>(null);
   const acceptedPointerDownRef = useRef<PeekPointerInput | null>(null);
+  const pointerClickCountRef = useRef<PointerClickCount | null>(null);
   const [armBuffer] = useState<ScreencastArmBuffer<PeekPointerInput>>(() =>
     createScreencastArmBuffer({
       setTimeout: (callback, ms) => window.setTimeout(callback, ms),
@@ -522,6 +532,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     claimedLocalCodesRef.current.clear();
     suppressPointerIdRef.current = null;
     acceptedPointerDownRef.current = null;
+    pointerClickCountRef.current = null;
     cancelPendingMove();
     releaseCapturedPointer();
   }, [armBuffer, cancelPendingMove, releaseCapturedPointer]);
@@ -725,6 +736,33 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         clampToEdge: request.clampToEdge,
       });
       if (castSequence === null || normalized === null) return null;
+      let clickCount = 0;
+      if (request.type === "down") {
+        const at = performance.now();
+        const previous = pointerClickCountRef.current;
+        const continuesPrevious =
+          previous !== null &&
+          previous.button === request.event.button &&
+          at - previous.at <= POINTER_CLICK_COUNT_WINDOW_MS &&
+          Math.abs(request.event.clientX - previous.clientX) <=
+            SCREENCAST_ARM_BUFFER_CLICK_SLOP_PX &&
+          Math.abs(request.event.clientY - previous.clientY) <=
+            SCREENCAST_ARM_BUFFER_CLICK_SLOP_PX;
+        clickCount = continuesPrevious
+          ? Math.min(POINTER_CLICK_COUNT_MAX, previous.count + 1)
+          : 1;
+        pointerClickCountRef.current = {
+          button: request.event.button,
+          clientX: request.event.clientX,
+          clientY: request.event.clientY,
+          at,
+          count: clickCount,
+        };
+      } else if (request.type === "up") {
+        const down = pointerClickCountRef.current;
+        clickCount =
+          down?.button === request.event.button ? down.count : 1;
+      }
       return {
         kind: "pointer",
         type: request.type,
@@ -736,10 +774,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
             : pointerButton(request.event.button),
         buttons: request.event.buttons,
         modifiers: inputModifiers(request.event),
-        clickCount:
-          request.type === "down" || request.type === "up"
-            ? clampClickCount(request.event.detail)
-            : 0,
+        clickCount,
         deltaX: request.deltaX,
         deltaY: request.deltaY,
       };
@@ -1689,11 +1724,6 @@ function pointerButton(
   if (button === 3) return "back";
   if (button === 4) return "forward";
   return "none";
-}
-
-function clampClickCount(detail: number): number {
-  if (!Number.isFinite(detail)) return 0;
-  return Math.min(POINTER_CLICK_COUNT_MAX, Math.max(0, Math.trunc(detail)));
 }
 
 function normalizedPointerPosition(

@@ -180,6 +180,33 @@ function pointerEventInit(input: {
   };
 }
 
+function sendPointerClick(
+  button: HTMLElement,
+  clientX: number,
+  clientY: number,
+): void {
+  fireEvent.pointerDown(
+    button,
+    pointerEventInit({
+      clientX,
+      clientY,
+      button: 0,
+      buttons: 1,
+      detail: 0,
+    }),
+  );
+  fireEvent.pointerUp(
+    button,
+    pointerEventInit({
+      clientX,
+      clientY,
+      button: 0,
+      buttons: 0,
+      detail: 0,
+    }),
+  );
+}
+
 function emitStarted(stream: FakeStreamSession): void {
   stream.emit(
     {
@@ -305,7 +332,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
 
@@ -326,7 +353,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     fireEvent.pointerUp(
@@ -336,7 +363,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 0,
-        detail: 1,
+        detail: 0,
       }),
     );
 
@@ -357,7 +384,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     fireEvent.pointerCancel(button, { pointerId: 1 });
@@ -381,7 +408,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     fireEvent.pointerCancel(button, { pointerId: 1 });
@@ -424,7 +451,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     act(() => {
@@ -457,7 +484,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     fireEvent.blur(imeInput(), { relatedTarget: document.body });
@@ -486,7 +513,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     act(() => {
@@ -510,7 +537,7 @@ describe("BrowserPeekTile input capture", () => {
     expect(second.getAttribute("src")).toBe("data:image/jpeg;base64,BAUG");
   });
 
-  it("sends clamped clickCount on armed down/up and 0 on move/wheel", async () => {
+  it("sends clickCount 1 on armed down/up and 0 on move/wheel", async () => {
     const frames = installAnimationFrameQueue();
     render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
     const stream = liveStream();
@@ -525,7 +552,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 9,
+        detail: 0,
       }),
     );
     fireEvent.pointerUp(
@@ -535,7 +562,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 0,
-        detail: 9,
+        detail: 0,
       }),
     );
     fireEvent.pointerMove(
@@ -545,7 +572,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 150,
         button: -1,
         buttons: 0,
-        detail: 3,
+        detail: 0,
       }),
     );
     frames.runNextFrame();
@@ -565,12 +592,12 @@ describe("BrowserPeekTile input capture", () => {
     expect(framesOfKind(stream, "pointer")).toEqual([
       expect.objectContaining({
         type: "down",
-        clickCount: 8,
+        clickCount: 1,
         seq: 0,
       }),
       expect.objectContaining({
         type: "up",
-        clickCount: 8,
+        clickCount: 1,
         seq: 1,
       }),
       expect.objectContaining({
@@ -584,6 +611,54 @@ describe("BrowserPeekTile input capture", () => {
         seq: 3,
       }),
     ]);
+  });
+
+  it("increments nearby clicks and resets beyond the slop or time window", () => {
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    presentLiveFrame(stream, 7, JPEG_SEQ_7);
+    armPeekTile(stream);
+    const button = overlayButton();
+
+    sendPointerClick(button, 400, 300);
+    now = 500;
+    sendPointerClick(button, 404, 304);
+    now = 600;
+    sendPointerClick(button, 409, 304);
+    now = 1_101;
+    sendPointerClick(button, 409, 304);
+
+    expect(
+      framesOfKind(stream, "pointer").map((frame) => frame.clickCount),
+    ).toEqual([1, 1, 2, 2, 1, 1, 1, 1]);
+  });
+
+  it("clamps the tracked click count at 8", () => {
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    presentLiveFrame(stream, 7, JPEG_SEQ_7);
+    armPeekTile(stream);
+    const button = overlayButton();
+
+    for (let index = 0; index < 9; index += 1) {
+      sendPointerClick(button, 400, 300);
+      now += 10;
+    }
+
+    expect(
+      framesOfKind(stream, "pointer")
+        .filter((frame) => frame.type === "down")
+        .map((frame) => frame.clickCount),
+    ).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 8]);
+    expect(
+      framesOfKind(stream, "pointer")
+        .filter((frame) => frame.type === "up")
+        .map((frame) => frame.clickCount),
+    ).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 8]);
   });
 
   it("emits at most one move per animation frame and keeps the latest sample", async () => {
@@ -667,7 +742,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     expect(framesOfKind(stream, "pointer").map((frame) => frame.type)).toEqual([
@@ -692,7 +767,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 360,
         button: 0,
         buttons: 0,
-        detail: 1,
+        detail: 0,
       }),
     );
     expect(framesOfKind(stream, "pointer").map((frame) => frame.type)).toEqual([
@@ -893,7 +968,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     hookState.visible = false;
@@ -926,7 +1001,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     fireEvent.pointerUp(
@@ -936,7 +1011,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 0,
-        detail: 1,
+        detail: 0,
       }),
     );
     expect(framesOfKind(stream, "arm")).toContainEqual({
@@ -982,7 +1057,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     fireEvent.pointerUp(
@@ -992,7 +1067,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 0,
-        detail: 1,
+        detail: 0,
       }),
     );
     act(() => {
@@ -1018,7 +1093,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     emitArmed(stream, 1);
@@ -1029,7 +1104,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 0,
-        detail: 1,
+        detail: 0,
       }),
     );
 
@@ -1050,7 +1125,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     fireEvent.pointerMove(
@@ -1070,7 +1145,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 0,
-        detail: 1,
+        detail: 0,
       }),
     );
     emitArmed(stream, 1);
@@ -1092,7 +1167,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     fireEvent.pointerUp(
@@ -1102,7 +1177,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 0,
-        detail: 1,
+        detail: 0,
       }),
     );
     act(() => {
@@ -1130,7 +1205,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 50,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     fireEvent.pointerUp(
@@ -1140,7 +1215,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 400,
         button: 0,
         buttons: 0,
-        detail: 1,
+        detail: 0,
       }),
     );
 
@@ -1162,7 +1237,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     expect(framesOfKind(stream, "pointer")).toEqual([]);
@@ -1174,7 +1249,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 1,
-        detail: 1,
+        detail: 0,
       }),
     );
     fireEvent.pointerMove(
@@ -1196,7 +1271,7 @@ describe("BrowserPeekTile input capture", () => {
         clientY: 300,
         button: 0,
         buttons: 0,
-        detail: 1,
+        detail: 0,
       }),
     );
 
