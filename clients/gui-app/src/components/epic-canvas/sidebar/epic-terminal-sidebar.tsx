@@ -59,12 +59,13 @@ import {
   TERMINAL_TILE_DND_TYPE,
   type EpicCanvasTerminalTileDragData,
 } from "@/components/epic-canvas/dnd/dnd";
-import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
-import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
+import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { useTerminalKill } from "@/hooks/terminal/use-terminal-kill-mutation";
 import { useTerminalList } from "@/hooks/terminal/use-terminal-list-query";
 import { useTerminalRename } from "@/hooks/terminal/use-terminal-rename-mutation";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
+import { useHostClient } from "@/lib/host";
 import { isVisibleEpicTerminalSession } from "@/lib/terminals/terminal-session-filters";
 import {
   deriveTitleSourceFromSessionTitle,
@@ -190,7 +191,7 @@ function TerminalsPanelBodyLive(props: {
   readonly tabId: string;
 }) {
   const { epicId, tabId } = props;
-  const hostClient = useTabHostClient();
+  const hostClient = useHostClient();
   const list = useTerminalList({ kind: "epic", epicId }, hostClient);
   // Manual escape hatch for a stranded error state: host-scoped queries get
   // no automatic retry/refetch routes (transport already retried), so without
@@ -207,7 +208,7 @@ function TerminalsPanelBodyLive(props: {
   const prepareSetActiveTileTabFocusTarget = useEpicCanvasStore(
     (s) => s.prepareSetActiveTileTabFocusTarget,
   );
-  const activeHostId = useTabHostId();
+  const activeHostId = useReactiveActiveHostId() ?? UNKNOWN_HOST_PLACEHOLDER;
   const durableAuthority = useHostPlainTerminalAuthority({
     hostId: activeHostId,
     scope: { kind: "epic", epicId },

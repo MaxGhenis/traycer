@@ -61,12 +61,12 @@ const durableCollection = vi.hoisted(() => ({
   value: null as PlainTerminalCollection | null,
 }));
 
-vi.mock("@/hooks/host/use-tab-host-client", () => ({
-  useTabHostClient: () => null,
+vi.mock("@/lib/host", () => ({
+  useHostClient: () => null,
 }));
 
-vi.mock("@/components/epic-canvas/hooks/use-tab-host-id", () => ({
-  useTabHostId: () => "host-1",
+vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
+  useReactiveActiveHostId: () => "host-1",
 }));
 
 // Reproduces a capable host whose unary list is still cached empty while the
@@ -162,7 +162,7 @@ describe("terminal sidebar durable projection rows", () => {
     cleanup();
   });
 
-  it("renders a streamed durable terminal when terminal.list is cached empty", () => {
+  it("renders outside TabHostProvider from the active host's durable stream", () => {
     const { getByTestId, queryByTestId } = render(
       wrapper(<TerminalsPanelBody epicId={EPIC_ID} tabId={TAB_ID} />),
     );

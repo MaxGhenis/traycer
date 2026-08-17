@@ -52,12 +52,12 @@ const terminalSessions = vi.hoisted<{
   value: ReadonlyArray<CanonicalTerminalSessionInfo>;
 }>(() => ({ value: [] }));
 
-vi.mock("@/hooks/host/use-tab-host-client", () => ({
-  useTabHostClient: () => null,
+vi.mock("@/lib/host", () => ({
+  useHostClient: () => null,
 }));
 
-vi.mock("@/components/epic-canvas/hooks/use-tab-host-id", () => ({
-  useTabHostId: () => "host-1",
+vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
+  useReactiveActiveHostId: () => "host-1",
 }));
 
 const RUNNING_SESSION: CanonicalTerminalSessionInfo = {

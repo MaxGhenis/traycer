@@ -12,12 +12,12 @@ const listState = vi.hoisted<{ isFetching: boolean }>(() => ({
   isFetching: false,
 }));
 
-vi.mock("@/hooks/host/use-tab-host-client", () => ({
-  useTabHostClient: () => null,
+vi.mock("@/lib/host", () => ({
+  useHostClient: () => null,
 }));
 
-vi.mock("@/components/epic-canvas/hooks/use-tab-host-id", () => ({
-  useTabHostId: () => "host-1",
+vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
+  useReactiveActiveHostId: () => "host-1",
 }));
 
 // The stranded state this guards: `terminal.list` errored (transport already
