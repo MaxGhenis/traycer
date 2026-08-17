@@ -516,8 +516,48 @@ describe("BrowserAnnotationSession annotation overlay", () => {
       regions: 0,
       strokes: 0,
     });
+    expect(payload?.counts.elements).toBe(payload?.elements.length);
+    expect(payload?.droppedElementCount).toBe(0);
     expect(payload?.elements).toHaveLength(1);
     expect(harness.attached[0]?.pngBytes.byteLength).toBeGreaterThan(0);
+  });
+
+  it("sets counts.elements to delivered captures and reports droppedElementCount when marks outnumber captures", async () => {
+    const harness = createHarness(true);
+    await harness.session.start();
+    emitBinding(
+      harness.webContents.debugger,
+      {
+        type: "attachRequested",
+        payload: {
+          ...VALID_ATTACH_PAYLOAD,
+          marks: [
+            ...VALID_ATTACH_PAYLOAD.marks,
+            {
+              id: "m2",
+              kind: "element" as const,
+              bounds: VALID_UNION,
+              selector: "h1",
+            },
+            {
+              id: "m3",
+              kind: "element" as const,
+              bounds: VALID_UNION,
+              selector: "p",
+            },
+          ],
+        },
+      },
+      77,
+    );
+    await flush();
+
+    expect(harness.attached).toHaveLength(1);
+    const payload = harness.attached[0]?.payload;
+    expect(payload?.elements).toHaveLength(1);
+    expect(payload?.counts.elements).toBe(1);
+    expect(payload?.counts.elements).toBe(payload?.elements.length);
+    expect(payload?.droppedElementCount).toBe(2);
   });
 
   it("keeps the session active and evaluates captureFailed when capturePage returns an empty image", async () => {

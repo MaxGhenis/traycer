@@ -49,8 +49,8 @@ export interface BrowserAnnotationAttachRequest {
 }
 
 /**
- * Counts minted by main from the sanitized mark list. Ticket 04's composer
- * record uses the same shape.
+ * `elements` is the number delivered after byte-budget trim, not the number
+ * of element marks. Regions and strokes stay mark-derived.
  */
 export interface BrowserAnnotationCounts {
   readonly elements: number;
@@ -72,6 +72,12 @@ export interface BrowserAnnotationAttachPayload {
   readonly capturedAt: number;
   readonly comment: string;
   readonly counts: BrowserAnnotationCounts;
+  /**
+   * Element marks that did not survive guest `applyByteBudget` or main
+   * `trimToByteBudget` / the element cap. 0 when every marked element was
+   * delivered.
+   */
+  readonly droppedElementCount: number;
   readonly elements: readonly BrowserViewElementCapture[];
 }
 

@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { BrowserAnnotationMarkSnapshot } from "../../../ipc-contracts/browser-annotation-types";
 import {
   ANNOTATION_CROP_PAD_CSS_PX,
-  buildAnnotationAttachPayload,
   computeAnnotationCropRect,
   countAnnotationMarks,
   cropAnnotationPng,
-  mintAnnotationId,
+  deliveredAnnotationCounts,
   originFromPageUrl,
   type AnnotationCapturedImage,
   type AnnotationCropRect,
@@ -210,39 +209,49 @@ describe("annotation crop helpers", () => {
     expect(originFromPageUrl("not a url")).toBe("");
   });
 
-  it("mints annotation ids with the ann- prefix", () => {
-    const id = mintAnnotationId();
-    expect(id.startsWith("ann-")).toBe(true);
-    expect(id.length).toBeGreaterThan("ann-".length);
-    expect(mintAnnotationId()).not.toBe(id);
-  });
-
-  it("builds an attach payload with minted counts and origin", () => {
-    const payload = buildAnnotationAttachPayload({
-      annotationId: "ann-1",
-      tabId: "tab-1",
-      sessionId: "session-1",
-      pageUrl: "https://example.com/page",
-      pageTitle: "Page",
-      capturedAt: 123,
-      comment: "look",
-      marks: [
-        { id: "e1", kind: "element", bounds: BOUNDS, selector: "button" },
-        { id: "r1", kind: "region", bounds: BOUNDS, selector: null },
-      ],
-      elements: [],
+  it("derives delivered counts from captures, not marks, and reports budget drops", () => {
+    const marks: BrowserAnnotationMarkSnapshot[] = [
+      { id: "e1", kind: "element", bounds: BOUNDS, selector: "button" },
+      { id: "e2", kind: "element", bounds: BOUNDS, selector: "a" },
+      { id: "e3", kind: "element", bounds: BOUNDS, selector: "h1" },
+      { id: "r1", kind: "region", bounds: BOUNDS, selector: null },
+      { id: "s1", kind: "stroke", bounds: BOUNDS, selector: null },
+    ];
+    const delivered = [
+      {
+        selector: "button",
+        tagName: "button",
+        elementId: null,
+        classNames: [],
+        attributes: [],
+        outerHtml: "<button></button>",
+        outerHtmlTruncated: false,
+        textPreview: null,
+        ariaRole: null,
+        accessibleName: null,
+        boundingBox: {
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 1,
+          top: 0,
+          right: 1,
+          bottom: 1,
+          left: 0,
+        },
+        computedStyles: [],
+      },
+    ];
+    const result = deliveredAnnotationCounts(marks, delivered);
+    expect(result.counts).toEqual({
+      elements: delivered.length,
+      regions: 1,
+      strokes: 1,
     });
-    expect(payload).toEqual({
-      annotationId: "ann-1",
-      tabId: "tab-1",
-      sessionId: "session-1",
-      origin: "https://example.com",
-      pageUrl: "https://example.com/page",
-      pageTitle: "Page",
-      capturedAt: 123,
-      comment: "look",
-      counts: { elements: 1, regions: 1, strokes: 0 },
-      elements: [],
-    });
+    expect(result.counts.elements).toBe(delivered.length);
+    expect(result.droppedElementCount).toBe(2);
+    expect(
+      deliveredAnnotationCounts(marks.slice(2, 3), delivered).droppedElementCount,
+    ).toBe(0);
   });
 });

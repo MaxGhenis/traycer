@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   BrowserAnnotationAttachPayload,
   BrowserAnnotationAttachRequest,
@@ -7,9 +8,9 @@ import type {
 } from "../../ipc-contracts/browser-annotation-types";
 import { describeLogError, log } from "../app/logger";
 import {
-  buildAnnotationAttachPayload,
   cropAnnotationPng,
-  mintAnnotationId,
+  deliveredAnnotationCounts,
+  originFromPageUrl,
 } from "./browser-annotation-crop";
 import {
   ANNOTATION_BINDING_NAME,
@@ -306,17 +307,24 @@ export class BrowserAnnotationSession {
         if (this.isActive()) await this.captureFailed();
         return;
       }
-      const payload = buildAnnotationAttachPayload({
-        annotationId: mintAnnotationId(),
+      const pageUrl = this.webContents.getURL();
+      const { counts, droppedElementCount } = deliveredAnnotationCounts(
+        request.marks,
+        request.elements,
+      );
+      const payload: BrowserAnnotationAttachPayload = {
+        annotationId: `ann-${randomUUID()}`,
         tabId: this.identity.tabId,
         sessionId: this.identity.sessionId,
-        pageUrl: this.webContents.getURL(),
+        origin: originFromPageUrl(pageUrl),
+        pageUrl,
         pageTitle: this.webContents.getTitle(),
         capturedAt: Date.now(),
         comment: request.comment,
-        marks: request.marks,
+        counts,
+        droppedElementCount,
         elements: request.elements,
-      });
+      };
       await this.resetAfterAttach();
       if (!this.isActive()) return;
       this.onAttached({ payload, pngBytes });

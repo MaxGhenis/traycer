@@ -1,6 +1,4 @@
-import { randomUUID } from "node:crypto";
 import type {
-  BrowserAnnotationAttachPayload,
   BrowserAnnotationCounts,
   BrowserAnnotationCssRect,
   BrowserAnnotationMarkSnapshot,
@@ -102,10 +100,6 @@ export function cropAnnotationPng(
   return png;
 }
 
-export function mintAnnotationId(): string {
-  return `ann-${randomUUID()}`;
-}
-
 export function countAnnotationMarks(
   marks: readonly BrowserAnnotationMarkSnapshot[],
 ): BrowserAnnotationCounts {
@@ -124,37 +118,35 @@ export function countAnnotationMarks(
   return { elements, regions, strokes };
 }
 
+/**
+ * Payload counts after guest + main budget trim. `counts.elements` is the
+ * delivered capture list, not the mark list. `droppedElementCount` is how
+ * many element marks never made it into that list.
+ */
+export function deliveredAnnotationCounts(
+  marks: readonly BrowserAnnotationMarkSnapshot[],
+  elements: readonly BrowserViewElementCapture[],
+): {
+  readonly counts: BrowserAnnotationCounts;
+  readonly droppedElementCount: number;
+} {
+  const marked = countAnnotationMarks(marks);
+  return {
+    counts: {
+      elements: elements.length,
+      regions: marked.regions,
+      strokes: marked.strokes,
+    },
+    droppedElementCount: Math.max(0, marked.elements - elements.length),
+  };
+}
+
 export function originFromPageUrl(pageUrl: string): string {
   try {
     return new URL(pageUrl).origin;
   } catch {
     return "";
   }
-}
-
-export function buildAnnotationAttachPayload(input: {
-  readonly annotationId: string;
-  readonly tabId: string;
-  readonly sessionId: string;
-  readonly pageUrl: string;
-  readonly pageTitle: string;
-  readonly capturedAt: number;
-  readonly comment: string;
-  readonly marks: readonly BrowserAnnotationMarkSnapshot[];
-  readonly elements: readonly BrowserViewElementCapture[];
-}): BrowserAnnotationAttachPayload {
-  return {
-    annotationId: input.annotationId,
-    tabId: input.tabId,
-    sessionId: input.sessionId,
-    origin: originFromPageUrl(input.pageUrl),
-    pageUrl: input.pageUrl,
-    pageTitle: input.pageTitle,
-    capturedAt: input.capturedAt,
-    comment: input.comment,
-    counts: countAnnotationMarks(input.marks),
-    elements: input.elements,
-  };
 }
 
 function clamp(value: number, min: number, max: number): number {
