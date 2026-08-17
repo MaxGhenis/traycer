@@ -196,19 +196,10 @@ function LandingTerminalLegacyBootstrap(
   }
   if (bootstrap.createIsError) {
     return (
-      <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-3 bg-canvas p-4 text-center text-ui-sm text-destructive">
-        <span>
-          {bootstrap.createError?.message ?? "Could not start terminal."}
-        </span>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={bootstrap.retry}
-        >
-          Retry
-        </Button>
-      </div>
+      <LandingTerminalErrorState
+        message={bootstrap.createError?.message ?? "Could not start terminal."}
+        onRetry={bootstrap.retry}
+      />
     );
   }
   if (bootstrap.handle === null) {
@@ -256,10 +247,10 @@ function LandingTerminalDurableBootstrap(
     readonly rows: number;
   } | null>(null);
   const [measureTimedOut, setMeasureTimedOut] = useState(false);
-  const reportMeasuredGrid = (cols: number, rows: number): void => {
+  const reportMeasuredGrid = useCallback((cols: number, rows: number): void => {
     if (cols <= 0 || rows <= 0) return;
     setMeasuredGrid({ cols, rows });
-  };
+  }, []);
 
   useEffect(() => {
     if (measuredGrid !== null || measureTimedOut) return;
@@ -277,28 +268,49 @@ function LandingTerminalDurableBootstrap(
       rows: TERMINAL_DEFAULT_ROWS,
     };
   const runtimeRunning = projection?.runtime.status === "running";
-  const dispatch = async (action: "create" | "ensure-running") => {
-    const response =
-      action === "create"
-        ? await entry.mutations.create.mutateAsync({
-            terminalId: props.tab.sessionId,
-            scope: INDEPENDENT_SCOPE,
-            cwd: props.tab.cwd,
-            cols: openingGrid.cols,
-            rows: openingGrid.rows,
-          })
-        : await entry.mutations.ensureRunning.mutateAsync({
-            terminalId: props.tab.sessionId,
-            cols: openingGrid.cols,
-            rows: openingGrid.rows,
-          });
-    return response.terminal;
-  };
-  const adopt = (terminal: PlainTerminalProjection): void => {
-    useLandingTerminalStore
-      .getState()
-      .adoptHostTerminal(props.tab.instanceId, terminal);
-  };
+  // Memoized because `useLandingTerminalDurableLifecycle` lists both in its
+  // effect deps: fresh identities every render re-run that effect on every
+  // render, leaving its dispatched-episode ref as the only thing standing
+  // between a re-render and a duplicate create. `mutateAsync` is referentially
+  // stable (the authority fleet already depends on it that way), so the real
+  // inputs are the request fields.
+  const createTerminal = entry.mutations.create.mutateAsync;
+  const ensureTerminalRunning = entry.mutations.ensureRunning.mutateAsync;
+  const dispatch = useCallback(
+    async (action: "create" | "ensure-running") => {
+      const response =
+        action === "create"
+          ? await createTerminal({
+              terminalId: props.tab.sessionId,
+              scope: INDEPENDENT_SCOPE,
+              cwd: props.tab.cwd,
+              cols: openingGrid.cols,
+              rows: openingGrid.rows,
+            })
+          : await ensureTerminalRunning({
+              terminalId: props.tab.sessionId,
+              cols: openingGrid.cols,
+              rows: openingGrid.rows,
+            });
+      return response.terminal;
+    },
+    [
+      createTerminal,
+      ensureTerminalRunning,
+      openingGrid.cols,
+      openingGrid.rows,
+      props.tab.cwd,
+      props.tab.sessionId,
+    ],
+  );
+  const adopt = useCallback(
+    (terminal: PlainTerminalProjection): void => {
+      useLandingTerminalStore
+        .getState()
+        .adoptHostTerminal(props.tab.instanceId, terminal);
+    },
+    [props.tab.instanceId],
+  );
   const lifecycle = useLandingTerminalDurableLifecycle({
     projectionStatus:
       projection === undefined ? "missing" : projection.runtime.status,
@@ -364,22 +376,27 @@ function LandingTerminalDurableState(props: {
   }
   if (
     props.reachability.status === "checking" ||
-    props.reachability.status === "host-starting" ||
-    !props.canMutate
+    props.reachability.status === "host-starting"
   ) {
     return <LandingTerminalWaiting />;
   }
   if (props.requestError !== null) {
     return (
-      <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-3 bg-canvas p-4 text-center text-ui-sm text-destructive">
-        <span>{props.requestError.message}</span>
-        <Button type="button" variant="outline" size="sm" onClick={props.retry}>
-          Retry
-        </Button>
-      </div>
+      <LandingTerminalErrorState
+        message={props.requestError.message}
+        onRetry={props.retry}
+      />
     );
   }
   if (props.handle === null) {
+    // `canMutate` tracks LIST-STREAM freshness, not terminal liveness - the
+    // authority hook drops it on every `reconnecting` status and restores it
+    // only once a fresh snapshot lands. Gating the whole tile on it swapped a
+    // running terminal (and the input focus in it) for a skeleton on each
+    // reconnect, which the legacy branch never does. It only means "cannot
+    // dispatch a mutation yet", so it belongs here, where there is nothing to
+    // tear down.
+    if (!props.canMutate) return <LandingTerminalWaiting />;
     return (
       <div className="relative flex h-full min-h-0 w-full flex-col bg-canvas">
         <div className="relative min-h-0 flex-1">
@@ -513,6 +530,25 @@ function LandingTerminalTileLive(props: {
           />
         </Suspense>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The tile replaced by a failed start and its retry. Shared by the legacy and
+ * durable branches so the two failures stay one visual state - only the
+ * message source differs.
+ */
+function LandingTerminalErrorState(props: {
+  readonly message: string;
+  readonly onRetry: () => void;
+}): ReactNode {
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-3 bg-canvas p-4 text-center text-ui-sm text-destructive">
+      <span>{props.message}</span>
+      <Button type="button" variant="outline" size="sm" onClick={props.onRetry}>
+        Retry
+      </Button>
     </div>
   );
 }
