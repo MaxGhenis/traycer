@@ -12,7 +12,6 @@ import {
   isAnnotationMode,
   serializedCaptureBytes,
 } from "./browser-annotation-overlay-logic";
-import { ANNOTATION_OVERLAY_GUEST_SOURCE } from "./browser-annotation-overlay-guest.generated";
 import { sanitizeElementCapture } from "./browser-element-picker-script";
 
 export const ANNOTATION_WORLD_NAME = "traycer-annotation";
@@ -66,15 +65,6 @@ export function buildAnnotationSetTargetChatLabelExpression(
     ");}catch(e){}}return true;})()"
   );
 }
-
-/**
- * Isolated-world overlay bootstrap. Long-lived (no Promise): events go up
- * through the CDP binding; commands come down as named evaluates.
- */
-export function buildAnnotationOverlayBootstrap(): string {
-  return ANNOTATION_OVERLAY_GUEST_SOURCE;
-}
-
 
 const ATTACH_RECT_MAX = 1_000_000;
 
@@ -130,7 +120,7 @@ export function sanitizeAttachRequest(
   if (unionRect === null) return null;
   const comment = boundedString(source.comment, ANNOTATION_LIMITS.comment, "");
   const marks = sanitizeMarks(source.marks);
-  const elements = enforceElementBudget(sanitizeElements(source.elements));
+  const elements = sanitizeElements(source.elements);
   const request: BrowserAnnotationAttachRequest = {
     marks,
     elements,
@@ -175,16 +165,12 @@ function sanitizeMarkKind(value: unknown): BrowserAnnotationMarkKind | null {
 
 function sanitizeElements(value: unknown): BrowserViewElementCapture[] {
   if (!Array.isArray(value)) return [];
-  return value.flatMap((entry): BrowserViewElementCapture[] => {
-    const captured = sanitizeElementCapture(entry);
-    return captured === null ? [] : [captured];
-  });
-}
-
-function enforceElementBudget(
-  elements: readonly BrowserViewElementCapture[],
-): BrowserViewElementCapture[] {
-  return elements.slice(0, ANNOTATION_LIMITS.elementCount);
+  return value
+    .slice(0, ANNOTATION_LIMITS.elementCount)
+    .flatMap((entry): BrowserViewElementCapture[] => {
+      const captured = sanitizeElementCapture(entry);
+      return captured === null ? [] : [captured];
+    });
 }
 
 function trimToByteBudget(

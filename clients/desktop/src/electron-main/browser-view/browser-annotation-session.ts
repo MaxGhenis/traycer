@@ -12,6 +12,7 @@ import {
   deliveredAnnotationCounts,
   originFromPageUrl,
 } from "./browser-annotation-crop";
+import { ANNOTATION_OVERLAY_GUEST_SOURCE } from "./browser-annotation-overlay-guest.generated";
 import {
   ANNOTATION_BINDING_NAME,
   ANNOTATION_CANCEL_EXPRESSION,
@@ -21,7 +22,6 @@ import {
   ANNOTATION_VIEWPORT_SIZE_EXPRESSION,
   ANNOTATION_WAIT_FOR_PAINT_EXPRESSION,
   ANNOTATION_WORLD_NAME,
-  buildAnnotationOverlayBootstrap,
   buildAnnotationSetTargetChatLabelExpression,
   sanitizeAnnotationBindingPayload,
 } from "./browser-annotation-overlay-script";
@@ -52,7 +52,9 @@ export interface BrowserAnnotationSessionOptions {
   readonly webContents: BrowserAnnotationWebContents;
   readonly identity: BrowserAnnotationSessionIdentity;
   readonly onEvent: (event: BrowserAnnotationSessionEvent) => void;
-  readonly onAttached: (result: BrowserAnnotationAttachedResult) => void;
+  readonly onAttached: (
+    result: BrowserAnnotationAttachedResult,
+  ) => Promise<boolean>;
 }
 
 /**
@@ -65,7 +67,9 @@ export class BrowserAnnotationSession {
   private readonly webContents: BrowserAnnotationWebContents;
   private readonly identity: BrowserAnnotationSessionIdentity;
   private readonly onEvent: (event: BrowserAnnotationSessionEvent) => void;
-  private readonly onAttached: (result: BrowserAnnotationAttachedResult) => void;
+  private readonly onAttached: (
+    result: BrowserAnnotationAttachedResult,
+  ) => Promise<boolean>;
   private readonly messageListener = (...args: unknown[]) => {
     this.handleDebuggerMessage(args);
   };
@@ -140,7 +144,7 @@ export class BrowserAnnotationSession {
       const evaluation = await browserDebugger.sendCommand(
         "Runtime.evaluate",
         {
-          expression: buildAnnotationOverlayBootstrap(),
+          expression: ANNOTATION_OVERLAY_GUEST_SOURCE,
           contextId,
           awaitPromise: false,
           returnByValue: true,
@@ -325,9 +329,13 @@ export class BrowserAnnotationSession {
         droppedElementCount,
         elements: request.elements,
       };
-      await this.resetAfterAttach();
+      const delivered = await this.onAttached({ payload, pngBytes });
       if (!this.isActive()) return;
-      this.onAttached({ payload, pngBytes });
+      if (!delivered) {
+        await this.captureFailed();
+        return;
+      }
+      await this.resetAfterAttach();
     } catch (err) {
       log.warn("[browser-view] annotation capture failed", {
         error: describeLogError(err),

@@ -10,8 +10,8 @@ import {
   ANNOTATION_VIEWPORT_SIZE_EXPRESSION,
   ANNOTATION_WAIT_FOR_PAINT_EXPRESSION,
   ANNOTATION_WORLD_NAME,
-  buildAnnotationOverlayBootstrap,
 } from "../browser-annotation-overlay-script";
+import { ANNOTATION_OVERLAY_GUEST_SOURCE } from "../browser-annotation-overlay-guest.generated";
 import {
   BrowserAnnotationSession,
   type BrowserAnnotationAttachedResult,
@@ -261,6 +261,7 @@ function createHarness(attached: boolean): SessionHarness {
     },
     onAttached: (result) => {
       attachedEvents.push(result);
+      return Promise.resolve(true);
     },
   });
   return { session, webContents, events, attached: attachedEvents };
@@ -346,7 +347,7 @@ describe("BrowserAnnotationSession annotation overlay", () => {
       grantUniveralAccess: false,
     });
     expect(harness.webContents.debugger.find("Runtime.evaluate")?.params).toEqual({
-      expression: buildAnnotationOverlayBootstrap(),
+      expression: ANNOTATION_OVERLAY_GUEST_SOURCE,
       contextId: 77,
       awaitPromise: false,
       returnByValue: true,
@@ -520,6 +521,33 @@ describe("BrowserAnnotationSession annotation overlay", () => {
     expect(payload?.droppedElementCount).toBe(0);
     expect(payload?.elements).toHaveLength(1);
     expect(harness.attached[0]?.pngBytes.byteLength).toBeGreaterThan(0);
+  });
+
+  it("keeps the bundle open and skips reset when attach delivery fails", async () => {
+    const webContents = new FakeWebContents(true);
+    const attached: BrowserAnnotationAttachedResult[] = [];
+    const session = new BrowserAnnotationSession({
+      webContents,
+      identity: { tabId: "tab-1", sessionId: "session-1" },
+      onEvent: () => undefined,
+      onAttached: (result) => {
+        attached.push(result);
+        return Promise.resolve(false);
+      },
+    });
+    await session.start();
+    emitBinding(
+      webContents.debugger,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+
+    expect(attached).toHaveLength(1);
+    expect(session.isActive()).toBe(true);
+    const expressions = evaluateExpressions(webContents.debugger);
+    expect(expressions).toContain(ANNOTATION_CAPTURE_FAILED_EXPRESSION);
+    expect(expressions).not.toContain(ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION);
   });
 
   it("sets counts.elements to delivered captures and reports droppedElementCount when marks outnumber captures", async () => {
@@ -723,7 +751,7 @@ describe("BrowserAnnotationSession annotation overlay", () => {
       onEvent: (event) => {
         firstEvents.push(event);
       },
-      onAttached: () => undefined,
+      onAttached: () => Promise.resolve(true),
     });
     await first.start();
     expect(webContents.debugger.listenerCount("message")).toBe(1);
@@ -737,7 +765,7 @@ describe("BrowserAnnotationSession annotation overlay", () => {
       onEvent: (event) => {
         secondEvents.push(event);
       },
-      onAttached: () => undefined,
+      onAttached: () => Promise.resolve(true),
     });
     await second.start();
     expect(webContents.debugger.listenerCount("message")).toBe(1);
@@ -836,7 +864,7 @@ describe("BrowserAnnotationSession annotation overlay", () => {
     );
   });
 
-  it("does not emit attached when resetAfterAttach is rejected", async () => {
+  it("delivers the attach then unlocks the guest when resetAfterAttach is rejected", async () => {
     const harness = createHarness(true);
     await harness.session.start();
     harness.webContents.debugger.rejectEvaluateExpressions.add(
@@ -850,10 +878,11 @@ describe("BrowserAnnotationSession annotation overlay", () => {
     await flush();
 
     expect(harness.webContents.captureCount).toBe(1);
-    expect(harness.attached).toEqual([]);
-    expect(evaluateExpressions(harness.webContents.debugger)).toContain(
-      ANNOTATION_CAPTURE_FAILED_EXPRESSION,
-    );
+    expect(harness.attached).toHaveLength(1);
+    expect(harness.session.isActive()).toBe(true);
+    const expressions = evaluateExpressions(harness.webContents.debugger);
+    expect(expressions).toContain(ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION);
+    expect(expressions).toContain(ANNOTATION_CAPTURE_FAILED_EXPRESSION);
   });
 
   it("removes the binding when cancel races a pending addBinding, then a new session starts cleanly", async () => {
@@ -880,7 +909,7 @@ describe("BrowserAnnotationSession annotation overlay", () => {
       onEvent: (event) => {
         retryEvents.push(event);
       },
-      onAttached: () => undefined,
+      onAttached: () => Promise.resolve(true),
     });
     first.webContents.debugger.holdAddBinding = false;
     await expect(retry.start()).resolves.toEqual({ ok: true });

@@ -1108,7 +1108,7 @@ export class BrowserViewManager {
   resetZoom(windowId: string, input: BrowserViewTileKey): void {
     const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
     if (entry === undefined) return;
-    this.setEntryZoomFactor(entry, 1);
+    this.trySetEntryZoom(entry, 1);
   }
 
   canTrustCertificateError(
@@ -1327,12 +1327,15 @@ export class BrowserViewManager {
         });
       },
       onAttached: (result) => {
-        if (entry.annotationSession !== session) return;
+        if (entry.annotationSession !== session) {
+          return Promise.resolve(false);
+        }
         this.notifyAnnotationAttached(entry.key.windowId, {
           ...toTileKey(entry.key),
           payload: result.payload,
           pngBytes: result.pngBytes,
         });
+        return Promise.resolve(true);
       },
     });
     entry.annotationSession = session;
@@ -1891,9 +1894,8 @@ export class BrowserViewManager {
     const step = browserZoomStepForKey(input.key);
     if (step === null) return;
     preventInputDefault(args);
-    if (this.isAnnotationScrollLockArmed(entry)) return;
     if (step === 0) {
-      this.setEntryZoomFactor(entry, 1);
+      this.trySetEntryZoom(entry, 1);
       return;
     }
     this.applyZoomStep(entry, step);
@@ -2345,20 +2347,14 @@ export class BrowserViewManager {
   }
 
   private applyZoomStep(entry: BrowserViewEntry, direction: 1 | -1): void {
-    if (this.isAnnotationScrollLockArmed(entry)) return;
     const current = entry.view.webContents.getZoomFactor();
-    const next = nextZoomFactor(current, direction);
-    this.setEntryZoomFactor(entry, next);
+    this.trySetEntryZoom(entry, nextZoomFactor(current, direction));
   }
 
-  private setEntryZoomFactor(entry: BrowserViewEntry, factor: number): void {
-    if (this.isAnnotationScrollLockArmed(entry)) return;
+  private trySetEntryZoom(entry: BrowserViewEntry, factor: number): void {
+    if (entry.annotationSession?.scrollLockArmed() === true) return;
     entry.view.webContents.setZoomFactor(factor);
     this.emitStatus(entry);
-  }
-
-  private isAnnotationScrollLockArmed(entry: BrowserViewEntry): boolean {
-    return entry.annotationSession?.scrollLockArmed() === true;
   }
 
   /**

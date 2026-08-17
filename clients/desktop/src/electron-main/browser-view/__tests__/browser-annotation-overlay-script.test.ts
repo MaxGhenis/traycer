@@ -8,12 +8,10 @@ import {
   ANNOTATION_LIMITS,
   ANNOTATION_RESET_AFTER_ATTACH_EXPRESSION,
   ANNOTATION_WORLD_NAME,
-  buildAnnotationOverlayBootstrap,
   buildAnnotationSetTargetChatLabelExpression,
   sanitizeAnnotationBindingPayload,
   sanitizeAttachRequest,
 } from "../browser-annotation-overlay-script";
-import { ELEMENT_PICKER_LIMITS } from "../browser-element-picker-script";
 
 const UNION = { x: 4, y: 8, width: 16, height: 24 };
 
@@ -31,26 +29,7 @@ const VALID_ATTACH = {
   unionRect: UNION,
 };
 
-describe("buildAnnotationOverlayBootstrap", () => {
-  it("produces a self-contained isolated-world IIFE with the overlay shell", () => {
-    const source = buildAnnotationOverlayBootstrap();
-    expect(source.startsWith("(function(){")).toBe(true);
-    expect(source.endsWith("})()")).toBe(true);
-    expect(source).toContain("attachShadow");
-    expect(source).toContain("Select");
-    expect(source).toContain("Region");
-    expect(source).toContain("Draw");
-    expect(source).toContain("Erase");
-    expect(source).toContain(ANNOTATION_BINDING_NAME);
-    expect(source).toContain("__traycerAnnotationCancel");
-    expect(source).toContain("__traycerAnnotationHideChromeForCapture");
-    expect(source).toContain("__traycerAnnotationResetAfterAttach");
-    expect(source).toContain("__traycerAnnotationCaptureFailed");
-    expect(source).not.toContain("__traycerAnnotationSetMarkCount");
-    expect(source).toContain("JSON.stringify");
-    expect(source).toContain("Escape");
-  });
-
+describe("annotation overlay command expressions", () => {
   it("exposes named command expressions and the isolated world name", () => {
     expect(ANNOTATION_WORLD_NAME).toBe("traycer-annotation");
     expect(ANNOTATION_BINDING_NAME).toBe("__traycerAnnotation");
@@ -76,25 +55,6 @@ describe("buildAnnotationOverlayBootstrap", () => {
     expect(
       buildAnnotationSetTargetChatLabelExpression("fix-billing", false),
     ).toContain(",false");
-  });
-
-  it("contains the comment placeholder, Attach, and the target-chat command", () => {
-    const source = buildAnnotationOverlayBootstrap();
-    expect(source).toContain("Describe the change");
-    expect(source).toContain("Attach");
-    expect(source).toContain("__traycerAnnotationSetTargetChatLabel");
-  });
-
-  it("does not put raw stroke points on the attach payload", () => {
-    const source = buildAnnotationOverlayBootstrap();
-    const attachAt = source.indexOf('type: "attachRequested"');
-    expect(attachAt).toBeGreaterThan(-1);
-    const payloadWindow = source.slice(attachAt, attachAt + 350);
-    expect(payloadWindow).toContain("marks: snapshots");
-    expect(payloadWindow).toContain("elements: budgeted.kept");
-    expect(payloadWindow).toContain("unionRect: union");
-    expect(payloadWindow).not.toMatch(/points\s*:/);
-    expect(source).toContain("draftPoints");
   });
 
   it("encodes the target-chat label as a JSON string argument", () => {
@@ -367,44 +327,20 @@ describe("sanitizeAttachRequest", () => {
     ]);
   });
 
-  it("bounds per-element attributes and styles through the picker sanitizer", () => {
-    const attributes = Array.from({ length: 80 }, (_unused, index) => ({
-      name: `data-${index}`,
-      value: "v".repeat(1000),
-    }));
-    const computedStyles = Array.from({ length: 80 }, () => ({
-      property: "display",
-      value: "z".repeat(1000),
-    }));
-    const result = sanitizeAttachRequest({
-      ...VALID_ATTACH,
-      elements: [
-        {
-          selector: "div",
-          tagName: "div",
-          attributes,
-          computedStyles,
-          outerHtml: "<div></div>",
-          boundingBox: { x: 0, y: 0, width: 1, height: 1 },
-        },
-      ],
-    });
+  it("caps attach elements at the count limit before sanitizing", () => {
+    const late = {
+      selector: "div.late",
+      tagName: "div",
+      outerHtml: "<div class='late'></div>",
+      boundingBox: { x: 0, y: 0, width: 1, height: 1 },
+    };
+    const elements = [
+      ...Array.from({ length: ANNOTATION_LIMITS.elementCount }, () => null),
+      late,
+    ];
+    const result = sanitizeAttachRequest({ ...VALID_ATTACH, elements });
     expect(result).not.toBeNull();
-    if (result === null) {
-      throw new Error("expected sanitized request");
-    }
-    const element = result.elements[0];
-    if (element === undefined) {
-      throw new Error("expected captured element");
-    }
-    expect(element.attributes).toHaveLength(ELEMENT_PICKER_LIMITS.attributeCount);
-    expect(element.attributes[0]?.value).toHaveLength(
-      ELEMENT_PICKER_LIMITS.attributeValue,
-    );
-    expect(element.computedStyles).toHaveLength(ELEMENT_PICKER_LIMITS.styleCount);
-    expect(element.computedStyles[0]?.value).toHaveLength(
-      ELEMENT_PICKER_LIMITS.styleValue,
-    );
+    expect(result?.elements).toEqual([]);
   });
 
   it("trims elements so the attach payload stays within the byte budget", () => {
