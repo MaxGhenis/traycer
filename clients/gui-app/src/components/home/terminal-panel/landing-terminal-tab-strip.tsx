@@ -16,10 +16,14 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
-import { useInlineRename } from "@/hooks/ui/use-inline-rename";
+import {
+  useInlineRename,
+  type InlineRenameInputProps,
+} from "@/hooks/ui/use-inline-rename";
 import { registerPrimaryFocusEndpoint } from "@/lib/focus/primary-focus-coordinator";
 import { cn } from "@/lib/utils";
 import type { LandingTerminalTabRef } from "@/stores/home/landing-terminal-store";
+import type { PlainTerminalViewModel } from "@/lib/terminals/plain-terminal-authority";
 
 export interface LandingTerminalTabStripProps {
   readonly tabs: ReadonlyArray<LandingTerminalTabRef>;
@@ -36,6 +40,10 @@ export interface LandingTerminalTabStripProps {
   readonly onClose: (tab: LandingTerminalTabRef) => void;
   readonly onCloseAll: () => void;
   readonly onRename: (instanceId: string, name: string) => void;
+  readonly canRename: (tab: LandingTerminalTabRef) => boolean;
+  readonly terminalViewModels: Readonly<
+    Partial<Record<string, PlainTerminalViewModel>>
+  >;
 }
 
 /**
@@ -82,6 +90,8 @@ export function LandingTerminalTabStrip(
               onClose={props.onClose}
               onCloseAll={props.onCloseAll}
               onRename={props.onRename}
+              canRename={props.canRename(tab)}
+              viewModel={props.terminalViewModels[tab.instanceId] ?? null}
             />
           ))}
         </div>
@@ -162,8 +172,13 @@ function LandingTerminalTab(props: {
   readonly onClose: (tab: LandingTerminalTabRef) => void;
   readonly onCloseAll: () => void;
   readonly onRename: (instanceId: string, name: string) => void;
+  readonly canRename: boolean;
+  readonly viewModel: PlainTerminalViewModel | null;
 }): ReactNode {
   const { tab, active, onActivate, onRename } = props;
+  const displayName = props.viewModel?.displayTitle ?? tab.name;
+  const displayCwd =
+    props.viewModel?.liveCwd ?? props.viewModel?.launchCwd ?? null;
   const tabRef = useRef<HTMLDivElement | null>(null);
 
   // Keep the active tab on screen. A tab created past the right edge of the
@@ -185,8 +200,8 @@ function LandingTerminalTab(props: {
   // hand-rolled rename gets wrong: focusing past the closing context menu's
   // focus-restore, and settling commit/cancel exactly once.
   const rename = useInlineRename({
-    value: tab.name,
-    canEdit: true,
+    value: displayName,
+    canEdit: props.canRename,
     onCommit: commitRename,
   });
   const { isEditing } = rename;
@@ -208,6 +223,9 @@ function LandingTerminalTab(props: {
         <div
           ref={tabRef}
           role="tab"
+          aria-label={
+            displayCwd === null ? displayName : `${displayName}, ${displayCwd}`
+          }
           aria-selected={active}
           tabIndex={0}
           data-testid={`landing-terminal-tab-${tab.instanceId}`}
@@ -226,21 +244,18 @@ function LandingTerminalTab(props: {
           )}
         >
           <TerminalSquare className="size-3.5 shrink-0" aria-hidden="true" />
-          {isEditing ? (
-            <input
-              {...rename.inputProps}
-              aria-label="Rename terminal"
-              data-testid={`landing-terminal-tab-input-${tab.instanceId}`}
-              className="h-6 min-w-[7ch] max-w-40 rounded-sm border border-border bg-background px-1 text-ui-sm text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            />
-          ) : (
-            <span className="truncate">{tab.name}</span>
-          )}
+          <LandingTerminalTabLabel
+            instanceId={tab.instanceId}
+            displayName={displayName}
+            isEditing={isEditing}
+            inputProps={rename.inputProps}
+            viewModel={props.viewModel}
+          />
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
-            aria-label={`Close ${tab.name}`}
+            aria-label={`Close ${displayName}`}
             className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
             onClick={(event) => {
               event.stopPropagation();
@@ -252,7 +267,10 @@ function LandingTerminalTab(props: {
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent onCloseAutoFocus={(event) => event.preventDefault()}>
-        <ContextMenuItem onSelect={rename.startEditing}>
+        <ContextMenuItem
+          disabled={!props.canRename}
+          onSelect={rename.startEditing}
+        >
           <Pencil className="size-4" />
           Rename
         </ContextMenuItem>
@@ -263,5 +281,54 @@ function LandingTerminalTab(props: {
         <ContextMenuItem onSelect={props.onCloseAll}>Close All</ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
+  );
+}
+
+function LandingTerminalTabLabel(props: {
+  readonly instanceId: string;
+  readonly displayName: string;
+  readonly isEditing: boolean;
+  readonly inputProps: InlineRenameInputProps;
+  readonly viewModel: PlainTerminalViewModel | null;
+}): ReactNode {
+  if (props.isEditing) {
+    return (
+      <input
+        {...props.inputProps}
+        aria-label="Rename terminal"
+        data-testid={`landing-terminal-tab-input-${props.instanceId}`}
+        className="h-6 min-w-[7ch] max-w-40 rounded-sm border border-border bg-background px-1 text-ui-sm text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      />
+    );
+  }
+  return (
+    <>
+      <TooltipWrapper
+        label={props.viewModel?.liveCwd ?? props.viewModel?.launchCwd}
+        side="bottom"
+        sideOffset={undefined}
+        align={undefined}
+      >
+        <span className="truncate">{props.displayName}</span>
+      </TooltipWrapper>
+      {props.viewModel?.manualTitle !== null &&
+      props.viewModel?.manualTitle !== undefined &&
+      props.viewModel.activeProcessName !== null ? (
+        <span
+          className="max-w-24 truncate text-ui-xs text-muted-foreground"
+          data-testid={`landing-terminal-process-${props.instanceId}`}
+        >
+          · {props.viewModel.activeProcessName}
+        </span>
+      ) : null}
+      {props.viewModel?.isDormant === true ? (
+        <span
+          className="text-ui-xs text-muted-foreground"
+          data-testid={`landing-terminal-dormant-${props.instanceId}`}
+        >
+          · dormant
+        </span>
+      ) : null}
+    </>
   );
 }
