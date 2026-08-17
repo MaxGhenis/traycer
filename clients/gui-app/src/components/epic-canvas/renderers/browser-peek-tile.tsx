@@ -71,6 +71,7 @@ export interface BrowserPeekTileProps {
 }
 
 export function BrowserPeekTile(props: BrowserPeekTileProps) {
+  const { epicId, node, onMigrated } = props;
   const tabHostId = useTabHostId();
   const hostEntry = useHostDirectoryEntry(tabHostId);
   const auth = useStreamAuthRevalidator();
@@ -78,8 +79,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const visible = useTileBodyVisible();
   useRegisterVisibleBrowserTile({
     hostId: tabHostId,
-    sessionId: props.node.sessionId,
-    tabId: props.node.tabId,
+    sessionId: node.sessionId,
+    tabId: node.tabId,
     visible,
   });
   const sessionRef = useRef<{
@@ -118,13 +119,13 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       frameSize: null,
     }),
   );
-  const stateMatchesClient = streamState.client === client;
-  const image = stateMatchesClient ? streamState.image : null;
-  const lifecycle = stateMatchesClient ? streamState.lifecycle : "connecting";
-  const details = peekDetailsForRender(stateMatchesClient, streamState, client);
-  const migrationPending =
-    stateMatchesClient && streamState.migrationPending;
-  const frameSize = stateMatchesClient ? streamState.frameSize : null;
+  const {
+    image,
+    lifecycle,
+    details,
+    migrationPending,
+    frameSize,
+  } = peekVisibleSlice(streamState, client);
   const armedEpoch = armedState?.client === client ? armedState.epoch : null;
   const dialog = dialogForClient(dialogState, client);
 
@@ -184,9 +185,9 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     }
 
     const session = client.subscribe("browser.screencast", {
-      epicId: props.epicId,
-      sessionId: props.node.sessionId,
-      tabId: props.node.tabId,
+      epicId,
+      sessionId: node.sessionId,
+      tabId: node.tabId,
       maxWidth: DEFAULT_MAX_WIDTH,
       maxHeight: DEFAULT_MAX_HEIGHT,
       quality: DEFAULT_QUALITY,
@@ -242,7 +243,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         parsed.data.kind === "complete" &&
         parsed.data.cause === "migrated"
       ) {
-        props.onMigrated?.();
+        onMigrated?.();
       }
       if (parsed.data.kind === "migrationPending") {
         const pending = parsed.data.pending;
@@ -292,10 +293,10 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     };
   }, [
     client,
-    props.epicId,
-    props.node.sessionId,
-    props.node.tabId,
-    props.onMigrated,
+    epicId,
+    node.sessionId,
+    node.tabId,
+    onMigrated,
     setDetails,
     setFrameSize,
     setImage,
@@ -792,6 +793,26 @@ function resetPeekStateForClient(
   };
 }
 
+function peekVisibleSlice(
+  streamState: BrowserPeekRenderState,
+  client: IHostStreamClient<HostStreamRpcRegistry> | null,
+): {
+  readonly image: BrowserPeekRenderState["image"];
+  readonly lifecycle: PeekLifecycle;
+  readonly details: string | null;
+  readonly migrationPending: boolean;
+  readonly frameSize: BrowserPeekRenderState["frameSize"];
+} {
+  const stateMatchesClient = streamState.client === client;
+  return {
+    image: stateMatchesClient ? streamState.image : null,
+    lifecycle: stateMatchesClient ? streamState.lifecycle : "connecting",
+    details: peekDetailsForRender(stateMatchesClient, streamState, client),
+    migrationPending: stateMatchesClient && streamState.migrationPending,
+    frameSize: stateMatchesClient ? streamState.frameSize : null,
+  };
+}
+
 function peekDetailsForRender(
   stateMatchesClient: boolean,
   streamState: BrowserPeekRenderState,
@@ -909,8 +930,11 @@ function useScreencastViewportBridge(
         });
       }, VIEWPORT_DEBOUNCE_MS);
     };
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry !== undefined) emit(entry.contentRect.width, entry.contentRect.height);
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        emit(entry.contentRect.width, entry.contentRect.height);
+        break;
+      }
     });
     observer.observe(element);
     emit(element.clientWidth, element.clientHeight);

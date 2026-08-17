@@ -59,11 +59,7 @@ describe("useChatActions deliveryPolicy threading", () => {
       }),
     );
     const storeSlice: SendMessageStoreSlice = { sendMessageWithAttachments };
-    const handle: ChatSessionStoreHandle = {
-      store: {
-        getState: () => storeSlice,
-      },
-    } as unknown as ChatSessionStoreHandle;
+    const handle = createDeliveryPolicyHandle(storeSlice);
 
     const { result } = renderHook(() => useChatActions(handle));
     result.current.sendMessage({
@@ -88,3 +84,25 @@ describe("useChatActions deliveryPolicy threading", () => {
     });
   });
 });
+
+function createDeliveryPolicyHandle(
+  storeSlice: SendMessageStoreSlice,
+): ChatSessionStoreHandle {
+  const store = {
+    getState: () => storeSlice,
+  } as ChatSessionStoreHandle["store"];
+  return {
+    epicId: "epic-1",
+    chatId: "chat-1",
+    userId: null,
+    store,
+    deliveredNotices: {
+      notices: new WeakSet(),
+      clientActionIds: new Set(),
+    },
+    deliveredRestoreCompletionKeys: new Set(),
+    setSurfaceVisibility: (_surfaceId: string, _visible: boolean) => undefined,
+    clearSurfaceVisibility: (_surfaceId: string) => undefined,
+    dispose: () => undefined,
+  };
+}

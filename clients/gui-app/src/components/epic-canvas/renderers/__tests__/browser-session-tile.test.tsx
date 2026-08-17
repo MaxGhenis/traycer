@@ -102,7 +102,8 @@ vi.mock("@/components/epic-canvas/renderers/browser-peek-tile", () => ({
       peekHarness.mounts += 1;
     }
     return (
-      <div
+      <button
+        type="button"
         data-testid="browser-peek-tile"
         data-session={props.node.sessionId}
         data-tab={props.node.tabId}

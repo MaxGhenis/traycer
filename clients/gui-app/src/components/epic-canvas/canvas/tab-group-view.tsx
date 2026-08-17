@@ -865,35 +865,18 @@ function ActiveTabBody(props: ActiveTabBodyProps) {
   const isPendingCreate = useEpicCanvasStore((s) =>
     s.pendingCreateArtifactIds.has(activeTab.id),
   );
-  // Terminals, browser surfaces, diff/PR tiles, workspace files, output
-  // windows, the comm graph, and blank tabs are renderer-only, so a cloud
-  // artifact lookup miss is not deletion. A blank id is throwaway, the comm
-  // graph id is epic-derived, and an output id belongs to a managed command;
-  // each surface owns its own lifecycle instead.
-  const isRemoteDeleted =
-    activeTab.type === "terminal" ||
-    isBrowserSurfaceTileRef(activeTab) ||
-    isDiffTileRef(activeTab) ||
-    isPrDetailTileRef(activeTab) ||
-    isPrDiffTileRef(activeTab) ||
-    isBlankTileRef(activeTab) ||
-    isManagedCommandOutputTileRef(activeTab) ||
-    isCommGraphTileRef(activeTab) ||
-    isPublishedChatTileRef(activeTab) ||
-    activeTab.type === WORKSPACE_FILE_TAB_KIND
-      ? false
-      : computeIsRemoteDeleted({
-          snapshotLoaded,
-          leafArtifact: activeTab,
-          liveArtifact,
-          isSelfDeleted,
-          isPendingCreate,
-          projectionHostId: activeHostIdForRecordGate,
-          isCloudKnown,
-          cloudListAuthorizesChatAbsence,
-          recordListAuthorizesChatAbsence: chatRecordListAuthoritative,
-          retractedAsDeleted: chatRetraction === "deleted",
-        });
+  const isRemoteDeleted = resolveActiveTabRemoteDeleted({
+    activeTab,
+    snapshotLoaded,
+    liveArtifact,
+    isSelfDeleted,
+    isPendingCreate,
+    projectionHostId: activeHostIdForRecordGate,
+    isCloudKnown,
+    cloudListAuthorizesChatAbsence,
+    recordListAuthorizesChatAbsence: chatRecordListAuthoritative,
+    retractedAsDeleted: chatRetraction === "deleted",
+  });
   const isActive = role !== null && props.selected && props.globallyActive;
 
   // Reports the SAME isRemoteDeleted value this render already uses for the
@@ -1101,6 +1084,40 @@ function chatAbsenceIsAuthoritative(args: ComputeIsRemoteDeletedArgs): boolean {
     args.cloudListAuthorizesChatAbsence &&
     args.recordListAuthorizesChatAbsence
   );
+}
+
+function resolveActiveTabRemoteDeleted(
+  args: Omit<ComputeIsRemoteDeletedArgs, "leafArtifact"> & {
+    readonly activeTab: EpicCanvasTileRef;
+  },
+): boolean {
+  const { activeTab } = args;
+  if (
+    activeTab.type === "terminal" ||
+    isBrowserSurfaceTileRef(activeTab) ||
+    isDiffTileRef(activeTab) ||
+    isPrDetailTileRef(activeTab) ||
+    isPrDiffTileRef(activeTab) ||
+    isBlankTileRef(activeTab) ||
+    isManagedCommandOutputTileRef(activeTab) ||
+    isCommGraphTileRef(activeTab) ||
+    isPublishedChatTileRef(activeTab) ||
+    activeTab.type === WORKSPACE_FILE_TAB_KIND
+  ) {
+    return false;
+  }
+  return computeIsRemoteDeleted({
+    snapshotLoaded: args.snapshotLoaded,
+    leafArtifact: activeTab,
+    liveArtifact: args.liveArtifact,
+    isSelfDeleted: args.isSelfDeleted,
+    isPendingCreate: args.isPendingCreate,
+    projectionHostId: args.projectionHostId,
+    isCloudKnown: args.isCloudKnown,
+    cloudListAuthorizesChatAbsence: args.cloudListAuthorizesChatAbsence,
+    recordListAuthorizesChatAbsence: args.recordListAuthorizesChatAbsence,
+    retractedAsDeleted: args.retractedAsDeleted,
+  });
 }
 
 function computeIsRemoteDeleted(args: ComputeIsRemoteDeletedArgs): boolean {
