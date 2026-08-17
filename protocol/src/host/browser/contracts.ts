@@ -485,6 +485,13 @@ const browserSessionsServerFrameSchemaV13 = z.discriminatedUnion("kind", [
     key: z.string().nullable(),
     code: z.string().nullable(),
     text: z.string().nullable(),
+    modifiers: z.number().int().nullable().default(null),
+    unmodifiedText: z.string().nullable().default(null),
+    windowsVirtualKeyCode: z.number().int().nullable().default(null),
+    location: z.number().int().nonnegative().nullable().default(null),
+    isKeypad: z.boolean().nullable().default(null),
+    autoRepeat: z.boolean().nullable().default(null),
+    commands: z.array(z.string()).nullable().default(null),
   }),
   z.object({
     kind: z.literal("cdpSetDeviceMetricsOverride"),

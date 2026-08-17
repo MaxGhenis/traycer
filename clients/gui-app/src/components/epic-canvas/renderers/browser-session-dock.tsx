@@ -1269,6 +1269,13 @@ function agentBrowserCdpRequestFromFrame(
           key: frame.key,
           code: frame.code,
           text: frame.text,
+          modifiers: frame.modifiers,
+          unmodifiedText: frame.unmodifiedText,
+          windowsVirtualKeyCode: frame.windowsVirtualKeyCode,
+          location: frame.location,
+          isKeypad: frame.isKeypad,
+          autoRepeat: frame.autoRepeat,
+          commands: frame.commands,
         },
       };
     case "cdpSetDeviceMetricsOverride":

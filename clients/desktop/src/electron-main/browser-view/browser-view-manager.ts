@@ -3441,6 +3441,15 @@ async function sendCdpCommand(
       if (command.key !== null) params.key = command.key;
       if (command.code !== null) params.code = command.code;
       if (command.text !== null) params.text = command.text;
+      if (command.modifiers !== null) params.modifiers = command.modifiers;
+      if (command.unmodifiedText !== null)
+        params.unmodifiedText = command.unmodifiedText;
+      if (command.windowsVirtualKeyCode !== null)
+        params.windowsVirtualKeyCode = command.windowsVirtualKeyCode;
+      if (command.location !== null) params.location = command.location;
+      if (command.isKeypad !== null) params.isKeypad = command.isKeypad;
+      if (command.autoRepeat !== null) params.autoRepeat = command.autoRepeat;
+      if (command.commands !== null) params.commands = command.commands;
       await browserDebugger.sendCommand(
         "Input.dispatchKeyEvent",
         params,
