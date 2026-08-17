@@ -45,7 +45,7 @@ export class RemoteHostMessenger<
     // endpoint/bearer halves of the authority stay unused on purpose: this
     // session owns its own relay endpoint and presents its own in-channel
     // bearer.
-    return this.session.sendUnary(method, params, authority.abortSignal);
+    return this.session.sendUnary(method, params, authority.abortSignal, null);
   }
 
   /**
@@ -60,6 +60,6 @@ export class RemoteHostMessenger<
     _responseTimeoutMs: number,
     authority: HostRequestAuthority,
   ): Promise<ResponseOfMethod<RpcRegistry, Method>> {
-    return this.session.sendUnary(method, params, authority.abortSignal);
+    return this.session.sendUnary(method, params, authority.abortSignal, null);
   }
 }

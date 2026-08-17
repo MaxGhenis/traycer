@@ -941,7 +941,7 @@ describe("RemoteSession host_detached readiness evidence", () => {
         expect(session.isClosed()).toBe(false);
 
         const error: unknown = await session
-          .sendUnary("host.status", {}, null)
+          .sendUnary("host.status", {}, null, null)
           .then(
             () => null,
             (reason: unknown) => reason,
@@ -1193,7 +1193,7 @@ describe("RemoteSession dial-failure logging", () => {
     expect(session.isClosed()).toBe(true);
 
     const error: unknown = await session
-      .sendUnary("host.status", {}, null)
+      .sendUnary("host.status", {}, null, null)
       .then(
         () => null,
         (reason: unknown) => reason,
@@ -1244,7 +1244,7 @@ describe("RemoteSession dial-failure logging", () => {
         expect(session.isReady()).toBe(false);
         expect(session.isClosed()).toBe(false);
 
-        const resultPromise = session.sendUnary("host.status", {}, null);
+        const resultPromise = session.sendUnary("host.status", {}, null, null);
         // Still not ready when the call is issued - the await-ready path must
         // hold rather than reject.
         expect(session.isReady()).toBe(false);
@@ -1296,7 +1296,7 @@ describe("RemoteSession dial-failure logging", () => {
       try {
         session.start();
         const error: unknown = await session
-          .sendUnary("host.status", {}, null)
+          .sendUnary("host.status", {}, null, null)
           .then(
             () => null,
             (reason: unknown) => reason,
@@ -1328,7 +1328,7 @@ describe("RemoteSession dial-failure logging", () => {
       try {
         session.start();
         const error: unknown = await session
-          .sendUnary("host.status", {}, null)
+          .sendUnary("host.status", {}, null, null)
           .then(
             () => null,
             (reason: unknown) => reason,
@@ -1360,7 +1360,12 @@ describe("RemoteSession dial-failure logging", () => {
       try {
         session.start();
         expect(session.isReady()).toBe(false);
-        const pending = session.sendUnary("host.status", {}, controller.signal);
+        const pending = session.sendUnary(
+          "host.status",
+          {},
+          controller.signal,
+          null,
+        );
         controller.abort();
 
         const error: unknown = await pending.then(
@@ -1401,7 +1406,7 @@ describe("RemoteSession dial-failure logging", () => {
       try {
         session.start();
         const error: unknown = await session
-          .sendUnary("host.status", {}, controller.signal)
+          .sendUnary("host.status", {}, controller.signal, null)
           .then(
             () => null,
             (reason: unknown) => reason,
@@ -1536,7 +1541,7 @@ describe("RemoteSession absent optional method", () => {
         session.start();
         await vi.waitFor(() => expect(session.isReady()).toBe(true), WAIT);
         const error: unknown = await session
-          .sendUnary("host.syntheticUnsupported", {}, null)
+          .sendUnary("host.syntheticUnsupported", {}, null, null)
           .then(
             () => null,
             (reason: unknown) => reason,
@@ -1654,6 +1659,7 @@ describe("RemoteSession fallback degrade version anchoring", () => {
         const result: unknown = await session.sendUnary(
           "host.syntheticSkewFallback",
           { label: "x" },
+          null,
           null,
         );
         // adaptResponse ran over the DECLARED 1.0 response shape: no `detail`
@@ -2049,7 +2055,7 @@ describe("RemoteSession pending-unary FATAL rejection (S3)", () => {
         session.start();
         await vi.waitFor(() => expect(session.isReady()).toBe(true), WAIT);
 
-        const pending = session.sendUnary("host.status", {}, null);
+        const pending = session.sendUnary("host.status", {}, null, null);
         await vi.waitFor(
           () => expect(relay.unaryRequests).toHaveLength(1),
           WAIT,

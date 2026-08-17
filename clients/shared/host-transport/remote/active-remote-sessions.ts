@@ -315,8 +315,8 @@ export function acquireRemoteSession<
     isClosed: () => session.isClosed(),
     isReady: () => session.isReady(),
     terminalFatal: () => session.terminalFatal(),
-    sendUnary: (method, params, abortSignal) =>
-      session.sendUnary(method, params, abortSignal),
+    sendUnary: (method, params, abortSignal, callerAgentId) =>
+      session.sendUnary(method, params, abortSignal, callerAgentId),
     subscribe: (method, params) => session.subscribe(method, params),
     subscribeWithParamsProvider: (method, paramsProvider) =>
       session.subscribeWithParamsProvider(method, paramsProvider),

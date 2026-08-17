@@ -191,6 +191,7 @@ export interface IRemoteSession<
     method: Method,
     params: RequestOfMethod<RpcRegistry, Method>,
     abortSignal: AbortSignal | null,
+    callerAgentId: string | null,
   ): Promise<ResponseOfMethod<RpcRegistry, Method>>;
   subscribe<Method extends keyof StreamRegistry & string>(
     method: Method,
@@ -502,6 +503,7 @@ export class RemoteSession<
     method: Method,
     params: RequestOfMethod<RpcRegistry, Method>,
     abortSignal: AbortSignal | null,
+    callerAgentId: string | null,
   ): Promise<ResponseOfMethod<RpcRegistry, Method>> {
     this.start();
     const requestId = this.options.requestId();
@@ -584,6 +586,7 @@ export class RemoteSession<
         connection.hostRpcMerged ?? {},
         params,
         requestId,
+        callerAgentId,
       );
     }
 
@@ -595,6 +598,7 @@ export class RemoteSession<
       hostCanonical,
       params,
       requestId,
+      callerAgentId,
     ) as Promise<ResponseOfMethod<RpcRegistry, Method>>;
   }
 
@@ -723,6 +727,7 @@ export class RemoteSession<
     hostCanonical: SchemaVersion,
     params: unknown,
     requestId: string,
+    callerAgentId: string | null,
   ): Promise<unknown> {
     let prepared: { onWireVersion: SchemaVersion; onWirePayload: unknown };
     try {
@@ -764,6 +769,7 @@ export class RemoteSession<
               method,
               schemaVersion: prepared.onWireVersion,
               params: prepared.onWirePayload,
+              callerAgentId,
               idempotencyKey: null,
             },
             binary: null,
@@ -1455,6 +1461,7 @@ export class RemoteSession<
     hostRpcMerged: ConnectionManifest,
     params: RequestOfMethod<RpcRegistry, Method>,
     requestId: string,
+    callerAgentId: string | null,
   ): Promise<ResponseOfMethod<RpcRegistry, Method>> {
     return resolveUnavailableMethodDegrade({
       registry: this.options.rpcRegistry,
@@ -1480,6 +1487,7 @@ export class RemoteSession<
           input.hostCanonical,
           input.params,
           requestId,
+          callerAgentId,
         ),
     }) as Promise<ResponseOfMethod<RpcRegistry, Method>>;
   }
