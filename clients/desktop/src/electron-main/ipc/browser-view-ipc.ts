@@ -65,7 +65,10 @@ import {
 } from "../browser-view/browser-storage-state";
 import { trustBrowserCertificate } from "../app/cert-trust";
 import { log } from "../app/logger";
-import type { BrowserAnnotationSetTargetChatLabelInput } from "../../ipc-contracts/browser-annotation-types";
+import type {
+  BrowserAnnotationAttachResultInput,
+  BrowserAnnotationSetTargetChatLabelInput,
+} from "../../ipc-contracts/browser-annotation-types";
 import type { RunnerIpcBridge } from "./runner-ipc-bridge";
 
 const BROWSER_VIEW_RELEASE_GRACE_MS = 500;
@@ -501,6 +504,17 @@ export function registerBrowserViewIpc(
   );
 
   bridge.handleInvoke(
+    RunnerHostInvoke.browserViewAnnotationAttachResult,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.reportAnnotationAttachResult(
+        windowId,
+        parseAnnotationAttachResult(payload),
+      );
+    },
+  );
+
+  bridge.handleInvoke(
     RunnerHostInvoke.browserViewOpenDevTools,
     (event, payload) => {
       const windowId = readSenderWindowId(bridge, event);
@@ -663,6 +677,20 @@ function parseAnnotationTargetChatLabel(
     ...parseTileKey(record),
     label: readString(record.label, "label"),
     canAttach: readBoolean(record.canAttach, "canAttach"),
+  };
+}
+
+function parseAnnotationAttachResult(
+  value: unknown,
+): BrowserAnnotationAttachResultInput {
+  const record = assertRecord(value, "Annotation attach-result payload");
+  const status = readString(record.status, "status");
+  if (status !== "attached" && status !== "failed") {
+    throw new Error("Browser view annotation attach result status is invalid");
+  }
+  return {
+    annotationId: readString(record.annotationId, "annotationId"),
+    status,
   };
 }
 

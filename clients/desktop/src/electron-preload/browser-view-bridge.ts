@@ -48,6 +48,7 @@ import type {
 } from "../ipc-contracts/browser-view-types";
 import type {
   BrowserAnnotationAttachedIpcEvent,
+  BrowserAnnotationAttachResultInput,
   BrowserAnnotationSessionIpcEvent,
   BrowserAnnotationSetTargetChatLabelInput,
   BrowserAnnotationStartResult,
@@ -91,6 +92,9 @@ export interface BrowserViewBridgeSurface {
     cancelAnnotation(input: BrowserViewTileKey): Promise<void>;
     setAnnotationTargetChatLabel(
       input: BrowserAnnotationSetTargetChatLabelInput,
+    ): Promise<void>;
+    reportAnnotationAttachResult(
+      input: BrowserAnnotationAttachResultInput,
     ): Promise<void>;
     openDevTools(input: BrowserViewTileKey): Promise<void>;
     occludeForOverlay(
@@ -276,6 +280,11 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
       setAnnotationTargetChatLabel: (input) =>
         ipcRenderer.invoke(
           RunnerHostInvoke.browserViewSetAnnotationTargetChatLabel,
+          input,
+        ) as Promise<void>,
+      reportAnnotationAttachResult: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewAnnotationAttachResult,
           input,
         ) as Promise<void>,
       openDevTools: (input) =>

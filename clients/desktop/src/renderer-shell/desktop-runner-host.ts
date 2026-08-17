@@ -137,6 +137,7 @@ import type {
 import type {
   BrowserAnnotationAttachedIpcEvent,
   BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationAttachResultInput,
   BrowserAnnotationSetTargetChatLabelInput,
   BrowserAnnotationStartResult,
 } from "../ipc-contracts/browser-annotation-types";
@@ -507,6 +508,9 @@ export interface DesktopBrowserViewBridge {
   cancelAnnotation(input: BrowserViewTileKey): Promise<void>;
   setAnnotationTargetChatLabel(
     input: BrowserAnnotationSetTargetChatLabelInput,
+  ): Promise<void>;
+  reportAnnotationAttachResult(
+    input: BrowserAnnotationAttachResultInput,
   ): Promise<void>;
   openDevTools(input: BrowserViewTileKey): Promise<void>;
   occludeForOverlay(

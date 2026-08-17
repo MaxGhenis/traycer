@@ -792,6 +792,9 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.zoomStepOut,
         RunnerHostInvoke.zoomReset,
         RunnerHostInvoke.browserViewUpsert,
+        RunnerHostInvoke.browserViewCreateBackgroundTab,
+        RunnerHostInvoke.browserViewReleaseDurableTab,
+        RunnerHostInvoke.browserViewSetBackgroundThrottling,
         RunnerHostInvoke.browserViewSetViewportPreset,
         RunnerHostInvoke.browserViewUpdateBounds,
         RunnerHostInvoke.browserViewRelease,
@@ -811,6 +814,7 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.browserViewStartAnnotation,
         RunnerHostInvoke.browserViewCancelAnnotation,
         RunnerHostInvoke.browserViewSetAnnotationTargetChatLabel,
+        RunnerHostInvoke.browserViewAnnotationAttachResult,
         RunnerHostInvoke.browserViewOpenDevTools,
         RunnerHostInvoke.browserViewGetDebugSnapshot,
         RunnerHostInvoke.browserViewClearDebugEvents,
@@ -850,6 +854,8 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.agentBrowserViewZoomOut,
         RunnerHostInvoke.agentBrowserViewResetZoom,
         RunnerHostInvoke.agentBrowserViewOpenDevTools,
+        RunnerHostInvoke.pipCaptureStart,
+        RunnerHostInvoke.pipCaptureStop,
       ].sort(),
     );
     bridge.dispose();

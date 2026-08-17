@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { log } from "../../app/logger";
 import {
+  ANNOTATION_ATTACH_ACK_TIMEOUT_MS,
   BrowserViewManager,
   PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT,
   type BrowserViewCapturedImage,
@@ -4390,7 +4391,184 @@ describe("BrowserViewManager annotation session", () => {
     );
     await flush();
     expect(harness.annotationAttached).toHaveLength(1);
+    reportAttachResult(harness, "window-1", "attached");
+    await flush();
     harness.manager.resetZoom("window-1", BASE_KEY);
     expect(view.webContents.zoomFactor).toBe(1);
   });
+
+  it("keeps the bundle when attachResult reports failed", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 1 },
+      77,
+    );
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    expect(harness.annotationAttached).toHaveLength(1);
+    reportAttachResult(harness, "window-1", "failed");
+    await flush();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1);
+  });
+
+  it("resets the overlay when attachResult reports attached", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 1 },
+      77,
+    );
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    expect(harness.annotationAttached).toHaveLength(1);
+    reportAttachResult(harness, "window-1", "attached");
+    await flush();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1.1);
+  });
+
+  it("keeps the bundle when the attach ack times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createHarness();
+      const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+      await expect(
+        harness.manager.startAnnotation("window-1", BASE_KEY),
+      ).resolves.toEqual({ ok: true });
+      emitAnnotationBinding(
+        view,
+        { type: "stateChanged", mode: "select", markCount: 1 },
+        77,
+      );
+      emitAnnotationBinding(
+        view,
+        { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+        77,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.annotationAttached).toHaveLength(1);
+      harness.manager.zoomIn("window-1", BASE_KEY);
+      expect(view.webContents.zoomFactor).toBe(1);
+      await vi.advanceTimersByTimeAsync(ANNOTATION_ATTACH_ACK_TIMEOUT_MS);
+      harness.manager.zoomIn("window-1", BASE_KEY);
+      expect(view.webContents.zoomFactor).toBe(1);
+      reportAttachResult(harness, "window-1", "attached");
+      await vi.advanceTimersByTimeAsync(0);
+      harness.manager.zoomIn("window-1", BASE_KEY);
+      expect(view.webContents.zoomFactor).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a late or unknown attachResult and a wrong-window ack", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 1 },
+      77,
+    );
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    const annotationId = harness.annotationAttached[0]?.payload.annotationId;
+    if (annotationId === undefined) {
+      throw new Error("expected attached annotation id");
+    }
+    harness.manager.reportAnnotationAttachResult("window-1", {
+      annotationId: "ann-unknown",
+      status: "attached",
+    });
+    harness.manager.reportAnnotationAttachResult("window-2", {
+      annotationId,
+      status: "attached",
+    });
+    await flush();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1);
+    reportAttachResult(harness, "window-1", "failed");
+    await flush();
+    harness.manager.reportAnnotationAttachResult("window-1", {
+      annotationId,
+      status: "attached",
+    });
+    await flush();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1);
+  });
+
+  it("fails a pending attach ack when the session ends", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    const annotationId = harness.annotationAttached[0]?.payload.annotationId;
+    if (annotationId === undefined) {
+      throw new Error("expected attached annotation id");
+    }
+    harness.manager.cancelAnnotation("window-1", BASE_KEY);
+    await flush();
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 1 },
+      77,
+    );
+    harness.manager.reportAnnotationAttachResult("window-1", {
+      annotationId,
+      status: "attached",
+    });
+    await flush();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1);
+  });
 });
+
+function reportAttachResult(
+  harness: Harness,
+  windowId: string,
+  status: "attached" | "failed",
+): void {
+  const annotationId = harness.annotationAttached[0]?.payload.annotationId;
+  if (annotationId === undefined) {
+    throw new Error("expected attached annotation id");
+  }
+  harness.manager.reportAnnotationAttachResult(windowId, {
+    annotationId,
+    status,
+  });
+}

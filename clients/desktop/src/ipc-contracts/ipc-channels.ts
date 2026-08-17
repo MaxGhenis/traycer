@@ -313,6 +313,8 @@ export const RunnerHostInvoke = {
   browserViewCancelAnnotation: "runnerHost:browserView:annotation:cancel",
   browserViewSetAnnotationTargetChatLabel:
     "runnerHost:browserView:annotation:setTargetChatLabel",
+  browserViewAnnotationAttachResult:
+    "runnerHost:browserView:annotation:attachResult",
   browserViewOpenDevTools: "runnerHost:browserView:openDevTools",
   // Agent-owned browser tile (ticket 02): a separate WebContentsView pool in
   // `AGENT_BROWSER_VIEW_PARTITION`, deliberately not sharing the full

@@ -96,6 +96,11 @@ export interface BrowserAnnotationSetTargetChatLabelInput
   readonly canAttach: boolean;
 }
 
+export interface BrowserAnnotationAttachResultInput {
+  readonly annotationId: string;
+  readonly status: "attached" | "failed";
+}
+
 export type BrowserAnnotationEndReason =
   | "cancelled"
   | "navigation"

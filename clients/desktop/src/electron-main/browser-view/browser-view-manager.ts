@@ -49,6 +49,7 @@ import type {
 } from "../../ipc-contracts/browser-view-types";
 import type {
   BrowserAnnotationAttachedIpcEvent,
+  BrowserAnnotationAttachResultInput,
   BrowserAnnotationEndReason,
   BrowserAnnotationSessionIpcEvent,
   BrowserAnnotationSetTargetChatLabelInput,
@@ -74,10 +75,18 @@ export const PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT = 8;
 // another tile's in-flight handoff capture before tearing down its own
 // `webContents` regardless - a hung capture must not block quit.
 const SIBLING_HANDOFF_CAPTURE_TIMEOUT_MS = 1500;
+export const ANNOTATION_ATTACH_ACK_TIMEOUT_MS = 4000;
 
 type BrowserPrimaryProfileRecentOrigin = BrowserPrimaryProfileOriginSnapshot & {
   readonly visitSequence: number;
 };
+interface PendingAnnotationAttachResult {
+  readonly windowId: string;
+  readonly keyId: string;
+  readonly resolve: (delivered: boolean) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
 const DEVTOOLS_TITLE = "Traycer Browser DevTools";
 const VIEWPORT_PRESETS: Readonly<
   Record<
@@ -586,6 +595,10 @@ export class BrowserViewManager {
   private readonly pendingDebugSnapshotsByKey = new Map<
     string,
     BrowserViewScheduledTask
+  >();
+  private readonly pendingAnnotationAttachResults = new Map<
+    string,
+    PendingAnnotationAttachResult
   >();
   private readonly hostWindowResetListenersByWindowId = new Map<
     string,
@@ -1335,7 +1348,11 @@ export class BrowserViewManager {
           payload: result.payload,
           pngBytes: result.pngBytes,
         });
-        return Promise.resolve(true);
+        return this.waitForAnnotationAttachResult({
+          windowId: entry.key.windowId,
+          keyId: entryKeyId(entry.key),
+          annotationId: result.payload.annotationId,
+        });
       },
     });
     entry.annotationSession = session;
@@ -1345,6 +1362,66 @@ export class BrowserViewManager {
       }
       return result;
     });
+  }
+
+  reportAnnotationAttachResult(
+    windowId: string,
+    input: BrowserAnnotationAttachResultInput,
+  ): void {
+    const pending = this.pendingAnnotationAttachResults.get(
+      input.annotationId,
+    );
+    if (pending === undefined) return;
+    if (pending.windowId !== windowId) return;
+    this.finishAnnotationAttachResult(
+      input.annotationId,
+      input.status === "attached",
+    );
+  }
+
+  private waitForAnnotationAttachResult(input: {
+    readonly windowId: string;
+    readonly keyId: string;
+    readonly annotationId: string;
+  }): Promise<boolean> {
+    this.finishAnnotationAttachResult(input.annotationId, false);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.finishAnnotationAttachResult(input.annotationId, false);
+      }, ANNOTATION_ATTACH_ACK_TIMEOUT_MS);
+      this.pendingAnnotationAttachResults.set(input.annotationId, {
+        windowId: input.windowId,
+        keyId: input.keyId,
+        resolve,
+        timer,
+      });
+    });
+  }
+
+  private finishAnnotationAttachResult(
+    annotationId: string,
+    delivered: boolean,
+  ): void {
+    const pending = this.pendingAnnotationAttachResults.get(annotationId);
+    if (pending === undefined) return;
+    this.pendingAnnotationAttachResults.delete(annotationId);
+    clearTimeout(pending.timer);
+    pending.resolve(delivered);
+  }
+
+  private failPendingAnnotationAttachResultsForEntry(
+    entry: BrowserViewEntry,
+  ): void {
+    const keyId = entryKeyId(entry.key);
+    const annotationIds: string[] = [];
+    for (const [annotationId, pending] of this.pendingAnnotationAttachResults) {
+      if (pending.keyId === keyId) {
+        annotationIds.push(annotationId);
+      }
+    }
+    for (const annotationId of annotationIds) {
+      this.finishAnnotationAttachResult(annotationId, false);
+    }
   }
 
   cancelAnnotation(windowId: string, input: BrowserViewTileKey): void {
@@ -1513,6 +1590,7 @@ export class BrowserViewManager {
   ): void {
     const session = entry.annotationSession;
     if (session === null) return;
+    this.failPendingAnnotationAttachResultsForEntry(entry);
     session.dispose(reason);
     if (entry.annotationSession === session) {
       entry.annotationSession = null;
@@ -1534,6 +1612,11 @@ export class BrowserViewManager {
     }
     this.pendingDebugSnapshotsByKey.clear();
     this.overlayEntryKeysByOwnerId.clear();
+    for (const annotationId of Array.from(
+      this.pendingAnnotationAttachResults.keys(),
+    )) {
+      this.finishAnnotationAttachResult(annotationId, false);
+    }
   }
 
   async drainBrowserHandoffs(): Promise<void> {
@@ -2640,6 +2723,7 @@ export class BrowserViewManager {
     webContents.off("page-title-updated", entry.listeners.pageTitleUpdated);
     webContents.off("paint", entry.listeners.paint);
     webContents.off("render-process-gone", entry.listeners.renderProcessGone);
+    this.failPendingAnnotationAttachResultsForEntry(entry);
     entry.annotationSession?.dispose("tile-close");
     entry.annotationSession = null;
     if (this.pipCaptureEntry === entry) this.pipCaptureEntry = null;
