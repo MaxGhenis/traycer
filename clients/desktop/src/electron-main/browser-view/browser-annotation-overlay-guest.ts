@@ -5,95 +5,34 @@
  */
 import { getStroke } from "perfect-freehand";
 import {
+  captureOverlayElement,
+  overlayElementCssRect,
+  overlayElementSelector,
+} from "./browser-annotation-overlay-capture";
+import {
   ANNOTATION_BUNDLE_BYTE_BUDGET,
   ANNOTATION_BUNDLE_ELEMENT_CAP,
   ANNOTATION_STROKE_HALO_SIZE_PX,
   ANNOTATION_STROKE_SIZE_PX,
-  canAddElementMark,
-  canMutateAnnotation,
-  canRequestAttach,
-  countElementMarks,
+  applyByteBudget,
   eraseNewestAtPoint,
-  isScrollLockArmed,
+  isElementVisuallyPresent,
   isTinyDrag,
   modeFromHotkey,
   normalizeDragRect,
   placeCommentBox,
+  rectsOverlap,
   resolveRegionSelection,
   shouldHandleModeHotkey,
-  shouldSubmitCommentKey,
   shouldSwallowScrollInput,
   strokeBoundsFromPoints,
   svgPathFromPolygon,
   toMarkSnapshot,
-  toggleElementMark,
   unionRects,
   validateElementMark,
-  applyByteBudget,
-  isElementVisuallyPresent,
   type OverlayMarkModel,
   type RegionCandidate,
 } from "./browser-annotation-overlay-logic";
-
-const LIMITS = {
-  outerHtml: 4000,
-  textPreview: 200,
-  attributeCount: 30,
-  attributeValue: 300,
-  styleCount: 48,
-  styleValue: 300,
-  classCount: 30,
-  className: 120,
-  selector: 1000,
-  ariaRole: 64,
-  accessibleName: 300,
-  tagName: 40,
-} as const;
-
-const STYLE_PROPS: readonly string[] = [
-  "display",
-  "position",
-  "top",
-  "right",
-  "bottom",
-  "left",
-  "width",
-  "height",
-  "margin-top",
-  "margin-right",
-  "margin-bottom",
-  "margin-left",
-  "padding-top",
-  "padding-right",
-  "padding-bottom",
-  "padding-left",
-  "box-sizing",
-  "color",
-  "background-color",
-  "background-image",
-  "font-size",
-  "font-family",
-  "font-weight",
-  "line-height",
-  "text-align",
-  "flex-direction",
-  "justify-content",
-  "align-items",
-  "gap",
-  "grid-template-columns",
-  "grid-template-rows",
-  "z-index",
-  "opacity",
-  "visibility",
-  "overflow-x",
-  "overflow-y",
-  "border-top-width",
-  "border-style",
-  "border-radius",
-  "box-shadow",
-  "transform",
-  "cursor",
-];
 
 const STROKE_OPTIONS = {
   size: ANNOTATION_STROKE_SIZE_PX,
@@ -150,13 +89,7 @@ function boot(): boolean {
     }
   }
   const leftover = D.querySelector('[data-traycer-annotation="host"]');
-  if (leftover && leftover.parentNode) {
-    try {
-      leftover.parentNode.removeChild(leftover);
-    } catch {
-      // ignore
-    }
-  }
+  if (leftover) leftover.remove();
 
   const hostRoot = D.documentElement || D.body;
   if (!hostRoot) return false;
@@ -192,6 +125,7 @@ function boot(): boolean {
     ".editor .attach:disabled{opacity:.45;cursor:default;}",
     ".target{color:#8a8a92;font-size:10px;margin-top:5px;display:none;}",
     ".refuse{color:#d4a94e;font-size:11px;margin-top:5px;display:none;}",
+    ".refuse-banner{position:fixed;top:58px;left:50%;transform:translateX(-50%);background:#2c2c31;color:#d4a94e;font-size:12px;padding:6px 12px;border-radius:8px;pointer-events:none;z-index:4;display:none;box-shadow:0 8px 20px rgba(0,0,0,.28);}",
     ".error{color:#f0b4b4;font-size:11px;margin-top:5px;display:none;}",
   ].join("");
 
@@ -248,6 +182,8 @@ function boot(): boolean {
   targetLine.className = "target";
   const refuseLine = D.createElement("div");
   refuseLine.className = "refuse";
+  const refuseBanner = D.createElement("div");
+  refuseBanner.className = "refuse-banner";
   const errorLine = D.createElement("div");
   errorLine.className = "error";
   editor.appendChild(row);
@@ -262,17 +198,19 @@ function boot(): boolean {
   layer.appendChild(marquee);
   shadow.appendChild(pill);
   shadow.appendChild(editor);
+  shadow.appendChild(refuseBanner);
   hostRoot.appendChild(host);
 
   let mode: (typeof MODES)[number] = "select";
-  let markCount = 0;
   let done = false;
   let chromeHidden = false;
   let targetChatLabel = "";
   let attachTargetMissing = false;
   let refusedCount = 0;
+  let persistRefuseCount = 0;
   let attachError = "";
   let attachPending = false;
+  const listeners = new AbortController();
   let idSeq = 0;
   const liveMarks: LiveMark[] = [];
   const elementKeys = new WeakMap<Element, string>();
@@ -295,7 +233,7 @@ function boot(): boolean {
   }
 
   function emitState(): void {
-    emit({ type: "stateChanged", mode, markCount });
+    emit({ type: "stateChanged", mode, markCount: liveMarks.length });
   }
 
   function nextId(prefix: string): string {
@@ -321,7 +259,7 @@ function boot(): boolean {
   }
 
   function setMode(next: string): void {
-    if (!canMutateAnnotation(attachPending)) return;
+    if (attachPending) return;
     let found: (typeof MODES)[number] | null = null;
     for (const name of MODES) {
       if (name === next) found = name;
@@ -333,23 +271,9 @@ function boot(): boolean {
     emitState();
   }
 
-  function setMarkCount(next: number): void {
-    const n =
-      typeof next === "number" && Number.isFinite(next)
-        ? Math.max(0, Math.floor(next))
-        : 0;
-    if (n === markCount) return;
-    markCount = n;
+  function syncMarkCountFromStack(): void {
     emitState();
     layoutChrome();
-  }
-
-  function syncMarkCountFromStack(): void {
-    setMarkCount(liveMarks.length);
-  }
-
-  function models(): OverlayMarkModel[] {
-    return liveMarks.map((entry) => entry.model);
   }
 
   function isOverlayNode(node: EventTarget | null): boolean {
@@ -387,255 +311,6 @@ function boot(): boolean {
     }
   }
 
-  function cssEscape(value: string): string {
-    const css = globalThis.CSS;
-    if (css && typeof css.escape === "function") return css.escape(value);
-    return value.replace(/[^a-zA-Z0-9_-]/g, (c) => "\\" + c);
-  }
-
-  function bounded(value: unknown, max: number): string {
-    const s = value == null ? "" : String(value);
-    return s.length > max ? s.slice(0, max) : s;
-  }
-
-  function round(n: number): number {
-    return typeof n === "number" && Number.isFinite(n) ? Math.round(n) : 0;
-  }
-
-  function rectOf(el: Element): {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    top: number;
-    right: number;
-    bottom: number;
-    left: number;
-  } {
-    try {
-      const r = el.getBoundingClientRect();
-      return {
-        x: r.x,
-        y: r.y,
-        width: r.width,
-        height: r.height,
-        top: r.top,
-        right: r.right,
-        bottom: r.bottom,
-        left: r.left,
-      };
-    } catch {
-      return { x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0 };
-    }
-  }
-
-  function cssRectOf(el: Element): OverlayMarkModel["bounds"] {
-    const r = rectOf(el);
-    return { x: r.x, y: r.y, width: r.width, height: r.height };
-  }
-
-  function classNamesOf(el: Element): string[] {
-    const out: string[] = [];
-    const list = el.classList ? el.classList : [];
-    for (let i = 0; i < list.length && out.length < LIMITS.classCount; i += 1) {
-      const name = String(list[i]);
-      if (name) out.push(bounded(name, LIMITS.className));
-    }
-    return out;
-  }
-
-  function attributesOf(el: Element): { name: string; value: string }[] {
-    const out: { name: string; value: string }[] = [];
-    const attrs = el.attributes ? el.attributes : [];
-    for (let i = 0; i < attrs.length && out.length < LIMITS.attributeCount; i += 1) {
-      const attr = attrs[i];
-      if (attr === undefined) continue;
-      out.push({
-        name: bounded(attr.name, 120),
-        value: bounded(attr.value, LIMITS.attributeValue),
-      });
-    }
-    return out;
-  }
-
-  function stylesOf(el: Element): { property: string; value: string }[] {
-    const out: { property: string; value: string }[] = [];
-    let cs: CSSStyleDeclaration | null = null;
-    try {
-      cs = W.getComputedStyle(el);
-    } catch {
-      return out;
-    }
-    if (!cs) return out;
-    for (let i = 0; i < STYLE_PROPS.length && out.length < LIMITS.styleCount; i += 1) {
-      const prop = STYLE_PROPS[i];
-      if (prop === undefined) continue;
-      let value = "";
-      try {
-        value = cs.getPropertyValue(prop);
-      } catch {
-        value = "";
-      }
-      if (value) {
-        out.push({ property: prop, value: bounded(value.trim(), LIMITS.styleValue) });
-      }
-    }
-    return out;
-  }
-
-  function selectorPath(el: Element): string {
-    const parts: string[] = [];
-    let node: Element | null = el;
-    let depth = 0;
-    while (node && node.nodeType === 1 && depth < 8) {
-      const tag = String(node.tagName || "").toLowerCase();
-      if (!tag) break;
-      if (node.id) {
-        const idSel = "#" + cssEscape(node.id);
-        try {
-          if (D.querySelectorAll(idSel).length === 1) {
-            parts.unshift(idSel);
-            break;
-          }
-        } catch {
-          // ignore invalid id
-        }
-      }
-      let sel = tag;
-      const parent: Element | null = node.parentElement;
-      if (parent) {
-        const same: Element[] = [];
-        const kids = parent.children;
-        for (let i = 0; i < kids.length; i += 1) {
-          const kid = kids[i];
-          if (kid && kid.tagName === node.tagName) same.push(kid);
-        }
-        if (same.length > 1) sel += ":nth-of-type(" + (same.indexOf(node) + 1) + ")";
-      }
-      parts.unshift(sel);
-      if (!parent || parent === D.documentElement) break;
-      node = parent;
-      depth += 1;
-    }
-    return parts.join(" > ");
-  }
-
-  function inputRole(type: string | null): string | null {
-    const t = (type || "text").toLowerCase();
-    if (t === "button" || t === "submit" || t === "reset" || t === "image") {
-      return "button";
-    }
-    if (t === "checkbox") return "checkbox";
-    if (t === "radio") return "radio";
-    if (t === "range") return "slider";
-    if (t === "search") return "searchbox";
-    if (t === "email" || t === "tel" || t === "url" || t === "text") return "textbox";
-    return null;
-  }
-
-  function implicitRole(el: Element): string | null {
-    const t = String(el.tagName || "").toLowerCase();
-    if (t === "a") return el.hasAttribute("href") ? "link" : null;
-    if (t === "input") return inputRole(el.getAttribute("type"));
-    if (t === "img") return el.getAttribute("alt") === "" ? "presentation" : "img";
-    const map: Record<string, string> = {
-      button: "button",
-      nav: "navigation",
-      main: "main",
-      header: "banner",
-      footer: "contentinfo",
-      aside: "complementary",
-      article: "article",
-      section: "region",
-      ul: "list",
-      ol: "list",
-      li: "listitem",
-      table: "table",
-      form: "form",
-      select: "combobox",
-      textarea: "textbox",
-      dialog: "dialog",
-      h1: "heading",
-      h2: "heading",
-      h3: "heading",
-      h4: "heading",
-      h5: "heading",
-      h6: "heading",
-    };
-    return map[t] ?? null;
-  }
-
-  function roleOf(el: Element): string | null {
-    const explicit = el.getAttribute ? el.getAttribute("role") : null;
-    if (explicit) {
-      const first = explicit.trim().split(/\s+/)[0];
-      if (first) return bounded(first, LIMITS.ariaRole);
-    }
-    const implicit = implicitRole(el);
-    return implicit ? bounded(implicit, LIMITS.ariaRole) : null;
-  }
-
-  function textOf(el: Element): string | null {
-    const htmlEl = el instanceof HTMLElement ? el : null;
-    const raw =
-      htmlEl !== null && typeof htmlEl.innerText === "string"
-        ? htmlEl.innerText
-        : el.textContent || "";
-    const text = raw.replace(/\s+/g, " ").trim();
-    return text ? bounded(text, LIMITS.textPreview) : null;
-  }
-
-  function accessibleNameOf(el: Element): string | null {
-    const label = el.getAttribute ? el.getAttribute("aria-label") : null;
-    if (label && label.trim()) return bounded(label.trim(), LIMITS.accessibleName);
-    const labelledby = el.getAttribute ? el.getAttribute("aria-labelledby") : null;
-    if (labelledby) {
-      const names: string[] = [];
-      const ids = labelledby.trim().split(/\s+/);
-      for (const id of ids) {
-        const ref = id ? D.getElementById(id) : null;
-        if (ref && ref.textContent) {
-          names.push(ref.textContent.replace(/\s+/g, " ").trim());
-        }
-      }
-      const joined = names.join(" ").trim();
-      if (joined) return bounded(joined, LIMITS.accessibleName);
-    }
-    const alt = el.getAttribute ? el.getAttribute("alt") : null;
-    if (alt && alt.trim()) return bounded(alt.trim(), LIMITS.accessibleName);
-    const title = el.getAttribute ? el.getAttribute("title") : null;
-    if (title && title.trim()) return bounded(title.trim(), LIMITS.accessibleName);
-    return null;
-  }
-
-  function captureElement(el: Element): Record<string, unknown> {
-    const rect = rectOf(el);
-    const html = String(el instanceof HTMLElement ? el.outerHTML || "" : "");
-    const truncated = html.length > LIMITS.outerHtml;
-    return {
-      selector: bounded(selectorPath(el), LIMITS.selector),
-      tagName: bounded(String(el.tagName || "").toLowerCase(), LIMITS.tagName),
-      elementId: el.id ? bounded(el.id, LIMITS.attributeValue) : null,
-      classNames: classNamesOf(el),
-      attributes: attributesOf(el),
-      outerHtml: truncated ? html.slice(0, LIMITS.outerHtml) : html,
-      outerHtmlTruncated: truncated,
-      textPreview: textOf(el),
-      ariaRole: roleOf(el),
-      accessibleName: accessibleNameOf(el),
-      boundingBox: {
-        x: round(rect.x),
-        y: round(rect.y),
-        width: round(rect.width),
-        height: round(rect.height),
-        top: round(rect.top),
-        right: round(rect.right),
-        bottom: round(rect.bottom),
-        left: round(rect.left),
-      },
-      computedStyles: stylesOf(el),
-    };
-  }
 
   function targetAt(x: number, y: number): Element | null {
     let els: Element[] = [];
@@ -671,7 +346,7 @@ function boot(): boolean {
   }
 
   function elementIsVisible(el: Element): boolean {
-    const box = cssRectOf(el);
+    const box = overlayElementCssRect(el);
     const visual = computedVisual(el);
     return isElementVisuallyPresent({
       connected: el.isConnected,
@@ -683,7 +358,7 @@ function boot(): boolean {
     });
   }
 
-  function collectRegionScan(): {
+  function collectRegionScan(region: OverlayMarkModel["bounds"]): {
     readonly candidates: RegionCandidate[];
     readonly byId: Map<string, Element>;
   } {
@@ -710,6 +385,9 @@ function boot(): boolean {
       if (!(el instanceof Element)) continue;
       if (el === host || host.contains(el)) continue;
       if (el === D.body || el === D.documentElement) continue;
+      const alreadyMarked = markedEls.has(el);
+      const bounds = overlayElementCssRect(el);
+      if (!alreadyMarked && !rectsOverlap(bounds, region)) continue;
       const ancestorIds: string[] = [];
       let parent: Element | null = el.parentElement;
       while (
@@ -724,12 +402,27 @@ function boot(): boolean {
       out.push({
         id: idOf(el),
         ancestorIds,
-        bounds: cssRectOf(el),
-        visible: elementIsVisible(el),
-        alreadyMarked: markedEls.has(el),
+        bounds,
+        visible: alreadyMarked ? true : elementIsVisibleFromBounds(el, bounds),
+        alreadyMarked,
       });
     }
     return { candidates: out, byId };
+  }
+
+  function elementIsVisibleFromBounds(
+    el: Element,
+    bounds: OverlayMarkModel["bounds"],
+  ): boolean {
+    const visual = computedVisual(el);
+    return isElementVisuallyPresent({
+      connected: el.isConnected,
+      width: bounds.width,
+      height: bounds.height,
+      display: visual.display,
+      visibility: visual.visibility,
+      opacity: visual.opacity,
+    });
   }
 
   function placeBox(node: HTMLElement, rect: OverlayMarkModel["bounds"]): void {
@@ -789,7 +482,7 @@ function boot(): boolean {
   function paintLiveMark(entry: LiveMark): void {
     const bounds =
       entry.element && entry.element.isConnected
-        ? cssRectOf(entry.element)
+        ? overlayElementCssRect(entry.element)
         : entry.model.bounds;
     entry.model = { ...entry.model, bounds };
     if (entry.outline) {
@@ -838,8 +531,16 @@ function boot(): boolean {
     return null;
   }
 
+  function elementMarkCount(): number {
+    let count = 0;
+    for (const entry of liveMarks) {
+      if (entry.model.kind === "element") count += 1;
+    }
+    return count;
+  }
+
   function addElementMark(el: Element, allowToggle: boolean): boolean {
-    if (!canMutateAnnotation(attachPending)) return false;
+    if (attachPending) return false;
     const key = keyOf(el);
     const existing = findElementMark(key);
     if (existing !== null) {
@@ -851,19 +552,18 @@ function boot(): boolean {
       layoutChrome();
       return true;
     }
-    if (!canAddElementMark(models(), ANNOTATION_BUNDLE_ELEMENT_CAP)) {
+    if (elementMarkCount() >= ANNOTATION_BUNDLE_ELEMENT_CAP) {
       refusedCount += 1;
       layoutChrome();
       return false;
     }
-    const next = toggleElementMark(models(), {
+    const added: OverlayMarkModel = {
       id: nextId("el"),
+      kind: "element",
+      bounds: overlayElementCssRect(el),
+      selector: overlayElementSelector(el),
       elementKey: key,
-      bounds: cssRectOf(el),
-      selector: selectorPath(el),
-    });
-    const added = next[next.length - 1];
-    if (added === undefined) return false;
+    };
     const outline = D.createElement("div");
     outline.className = "outline";
     const badge = D.createElement("div");
@@ -939,11 +639,11 @@ function boot(): boolean {
   }
 
   function eraseAt(x: number, y: number): void {
-    if (!canMutateAnnotation(attachPending)) return;
+    if (attachPending) return;
     const hit = eraseNewestAtPoint(
       liveMarks.map((entry) => {
         if (entry.element && entry.element.isConnected) {
-          return { ...entry.model, bounds: cssRectOf(entry.element) };
+          return { ...entry.model, bounds: overlayElementCssRect(entry.element) };
         }
         return entry.model;
       }),
@@ -962,12 +662,12 @@ function boot(): boolean {
   }
 
   function applyRegion(rect: OverlayMarkModel["bounds"]): void {
-    if (!canMutateAnnotation(attachPending)) return;
-    const scan = collectRegionScan();
+    if (attachPending) return;
+    const scan = collectRegionScan(rect);
     const resolved = resolveRegionSelection({
       candidates: scan.candidates,
       region: rect,
-      existingElementCount: countElementMarks(models()),
+      existingElementCount: elementMarkCount(),
       elementCap: ANNOTATION_BUNDLE_ELEMENT_CAP,
     });
     if (resolved.reason === "empty") {
@@ -991,6 +691,7 @@ function boot(): boolean {
     if (chromeHidden) {
       pill.style.visibility = "hidden";
       editor.style.display = "none";
+      refuseBanner.style.display = "none";
       hideHover();
       marquee.style.display = "none";
       return;
@@ -998,6 +699,21 @@ function boot(): boolean {
     pill.style.visibility = "";
     const hasMarks = liveMarks.length > 0;
     editor.style.display = hasMarks ? "block" : "none";
+    const shownRefuse = persistRefuseCount > 0 ? persistRefuseCount : refusedCount;
+    if (shownRefuse > 0) {
+      const copy =
+        String(shownRefuse) +
+        (shownRefuse === 1 ? " element not included" : " elements not included");
+      refuseLine.textContent = copy;
+      refuseBanner.textContent = copy;
+      refuseLine.style.display = hasMarks ? "block" : "none";
+      refuseBanner.style.display = hasMarks ? "none" : "block";
+    } else {
+      refuseLine.style.display = "none";
+      refuseLine.textContent = "";
+      refuseBanner.style.display = "none";
+      refuseBanner.textContent = "";
+    }
     attachBtn.disabled = attachPending || attachTargetMissing;
     comment.disabled = attachPending;
     for (const name of MODES) {
@@ -1012,15 +728,6 @@ function boot(): boolean {
       targetLine.style.display = "none";
       targetLine.textContent = "";
     }
-    if (refusedCount > 0) {
-      refuseLine.style.display = "block";
-      refuseLine.textContent =
-        String(refusedCount) +
-        (refusedCount === 1 ? " element not included" : " elements not included");
-    } else {
-      refuseLine.style.display = "none";
-      refuseLine.textContent = "";
-    }
     if (attachError) {
       errorLine.style.display = "block";
       errorLine.textContent = attachError;
@@ -1032,7 +739,7 @@ function boot(): boolean {
     const union = unionRects(
       liveMarks.map((entry) =>
         entry.element && entry.element.isConnected
-          ? cssRectOf(entry.element)
+          ? overlayElementCssRect(entry.element)
           : entry.model.bounds,
       ),
     );
@@ -1067,7 +774,6 @@ function boot(): boolean {
     hideHover();
     marquee.style.display = "none";
     clearDraftStroke();
-    markCount = 0;
     emitState();
     layoutChrome();
   }
@@ -1134,7 +840,7 @@ function boot(): boolean {
       const el = entry.element;
       const connected = el !== null && el.isConnected;
       const visible = el !== null && elementIsVisible(el);
-      const currentBox = el !== null && connected ? cssRectOf(el) : entry.model.bounds;
+      const currentBox = el !== null && connected ? overlayElementCssRect(el) : entry.model.bounds;
       const status = validateElementMark({
         connected,
         visible,
@@ -1149,14 +855,7 @@ function boot(): boolean {
   }
 
   function requestAttach(): void {
-    if (
-      !canRequestAttach({
-        attachPending,
-        markCount: liveMarks.length,
-      })
-    ) {
-      return;
-    }
+    if (attachPending || liveMarks.length === 0) return;
     attachError = "";
     if (!validateAll()) {
       attachError = "Some marks need re-marking before attach.";
@@ -1165,7 +864,7 @@ function boot(): boolean {
     }
     const snapshots = liveMarks.map((entry) => {
       if (entry.element && entry.element.isConnected) {
-        return toMarkSnapshot({ ...entry.model, bounds: cssRectOf(entry.element) });
+        return toMarkSnapshot({ ...entry.model, bounds: overlayElementCssRect(entry.element) });
       }
       return toMarkSnapshot(entry.model);
     });
@@ -1173,20 +872,17 @@ function boot(): boolean {
     for (const entry of liveMarks) {
       if (entry.model.kind !== "element" || entry.element === null) continue;
       if (!entry.element.isConnected) continue;
-      captures.push(captureElement(entry.element));
+      captures.push(captureOverlayElement(entry.element));
     }
     const budgeted = applyByteBudget({
       items: captures,
       existingBytes: 0,
       budget: ANNOTATION_BUNDLE_BYTE_BUDGET,
     });
-    if (budgeted.refusedCount > 0) {
-      refusedCount += budgeted.refusedCount;
-    }
+    persistRefuseCount = budgeted.refusedCount;
     const union = unionRects(snapshots.map((mark) => mark.bounds));
     if (union === null) return;
     attachPending = true;
-    layoutChrome();
     emit({
       type: "attachRequested",
       payload: {
@@ -1206,7 +902,7 @@ function boot(): boolean {
   function onWheel(e: Event): void {
     if (
       !shouldSwallowScrollInput({
-        armed: isScrollLockArmed(markCount),
+        armed: liveMarks.length > 0,
         kind: "wheel",
         key: null,
         focusInOverlayText: false,
@@ -1220,7 +916,7 @@ function boot(): boolean {
   function onTouchMove(e: Event): void {
     if (
       !shouldSwallowScrollInput({
-        armed: isScrollLockArmed(markCount),
+        armed: liveMarks.length > 0,
         kind: "touchmove",
         key: null,
         focusInOverlayText: false,
@@ -1242,7 +938,7 @@ function boot(): boolean {
     }
     if (mode === "select" && dragStart === null && !drawing) {
       const target = targetAt(e.clientX, e.clientY);
-      if (target) placeBox(hover, cssRectOf(target));
+      if (target) placeBox(hover, overlayElementCssRect(target));
       else hideHover();
       return;
     }
@@ -1263,7 +959,7 @@ function boot(): boolean {
     if (eventTouchesOverlay(e)) return;
     swallow(e);
     if (e.button !== 0) return;
-    if (!canMutateAnnotation(attachPending)) return;
+    if (attachPending) return;
     clearInvalid();
     attachError = "";
     if (mode === "select") {
@@ -1283,7 +979,7 @@ function boot(): boolean {
     if (eventTouchesOverlay(e) && dragStart === null && !drawing) return;
     if (dragStart === null && !drawing) return;
     swallow(e);
-    if (!canMutateAnnotation(attachPending)) {
+    if (attachPending) {
       clearDraftStroke();
       dragStart = null;
       marquee.style.display = "none";
@@ -1309,7 +1005,7 @@ function boot(): boolean {
     const focusInOverlayText = isOverlayTextTarget(e);
     if (
       shouldSwallowScrollInput({
-        armed: isScrollLockArmed(markCount),
+        armed: liveMarks.length > 0,
         kind: "keydown",
         key: e.key,
         focusInOverlayText,
@@ -1318,7 +1014,7 @@ function boot(): boolean {
       swallow(e);
     }
     if (focusInOverlayText) {
-      if (shouldSubmitCommentKey(e)) {
+      if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
         swallow(e);
         requestAttach();
       }
@@ -1357,24 +1053,8 @@ function boot(): boolean {
   function teardown(): void {
     if (done) return;
     done = true;
-    W.removeEventListener("mousedown", onPagePointer, true);
-    W.removeEventListener("mouseup", onPagePointer, true);
-    W.removeEventListener("click", onPagePointer, true);
-    W.removeEventListener("auxclick", onPagePointer, true);
-    W.removeEventListener("pointerdown", onPointerDown, true);
-    W.removeEventListener("pointermove", onPointerMove, true);
-    W.removeEventListener("pointerup", onPointerUp, true);
-    W.removeEventListener("pointercancel", onPointerUp, true);
-    W.removeEventListener("wheel", onWheel, { capture: true });
-    W.removeEventListener("touchmove", onTouchMove, { capture: true });
-    W.removeEventListener("keydown", onKey, true);
-    pill.removeEventListener("click", onPillClick, true);
-    attachBtn.removeEventListener("click", onAttachClick);
-    try {
-      if (host.parentNode) host.parentNode.removeChild(host);
-    } catch {
-      // ignore
-    }
+    listeners.abort();
+    host.remove();
     try {
       delete W.__traycerAnnotationCancel;
     } catch {
@@ -1418,19 +1098,25 @@ function boot(): boolean {
   W.__traycerAnnotationResetAfterAttach = resetAfterAttach;
   W.__traycerAnnotationCaptureFailed = captureFailed;
   W.__traycerAnnotationSetTargetChatLabel = setTargetChatLabel;
-  W.addEventListener("mousedown", onPagePointer, true);
-  W.addEventListener("mouseup", onPagePointer, true);
-  W.addEventListener("click", onPagePointer, true);
-  W.addEventListener("auxclick", onPagePointer, true);
-  W.addEventListener("pointerdown", onPointerDown, { capture: true, passive: false });
-  W.addEventListener("pointermove", onPointerMove, { capture: true, passive: false });
-  W.addEventListener("pointerup", onPointerUp, { capture: true, passive: false });
-  W.addEventListener("pointercancel", onPointerUp, { capture: true, passive: false });
-  W.addEventListener("wheel", onWheel, { capture: true, passive: false });
-  W.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
-  W.addEventListener("keydown", onKey, true);
-  pill.addEventListener("click", onPillClick, true);
-  attachBtn.addEventListener("click", onAttachClick);
+  const listen = { capture: true, signal: listeners.signal } as const;
+  const listenPassiveFalse = {
+    capture: true,
+    passive: false,
+    signal: listeners.signal,
+  } as const;
+  W.addEventListener("mousedown", onPagePointer, listen);
+  W.addEventListener("mouseup", onPagePointer, listen);
+  W.addEventListener("click", onPagePointer, listen);
+  W.addEventListener("auxclick", onPagePointer, listen);
+  W.addEventListener("pointerdown", onPointerDown, listenPassiveFalse);
+  W.addEventListener("pointermove", onPointerMove, listenPassiveFalse);
+  W.addEventListener("pointerup", onPointerUp, listenPassiveFalse);
+  W.addEventListener("pointercancel", onPointerUp, listenPassiveFalse);
+  W.addEventListener("wheel", onWheel, listenPassiveFalse);
+  W.addEventListener("touchmove", onTouchMove, listenPassiveFalse);
+  W.addEventListener("keydown", onKey, listen);
+  pill.addEventListener("click", onPillClick, listen);
+  attachBtn.addEventListener("click", onAttachClick, listen);
   emitState();
   return true;
 }

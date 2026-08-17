@@ -26,7 +26,7 @@ export const ELEMENT_PICKER_LIMITS = {
   tagName: 40,
 } as const;
 
-const ELEMENT_PICKER_STYLE_PROPS: readonly string[] = [
+export const ELEMENT_PICKER_STYLE_PROPS: readonly string[] = [
   "display",
   "position",
   "top",

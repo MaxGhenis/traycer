@@ -29,7 +29,8 @@ const outFile = path.resolve(
 );
 
 function stripIife(code) {
-  const trimmed = code.replace(/^\uFEFF/, "").trim().replace(/;+\s*$/, "");
+  let trimmed = code.replace(/^\uFEFF/, "").trim().replace(/;+\s*$/, "");
+  trimmed = trimmed.replace(/^(?:["']use strict["']\s*;\s*)+/, "").trim();
   const arrow = /^\(\(\)\s*=>\s*\{([\s\S]*)\}\)\(\)$/;
   const fn = /^\(function\s*\(\)\s*\{([\s\S]*)\}\)\(\)$/;
   const match = trimmed.match(arrow) || trimmed.match(fn);
@@ -37,11 +38,13 @@ function stripIife(code) {
 }
 
 function wrapAsIife(code) {
-  return (
-    "(function(){\n\"use strict\";" +
-    stripIife(code) +
-    "\nreturn true;\n})()"
-  );
+  const inner = stripIife(code).replace(/\bboot\(\);\s*$/, "return boot();");
+  if (!/\breturn boot\(\);/.test(inner)) {
+    throw new Error(
+      "overlay guest bundle did not end with boot(); cannot propagate boot result",
+    );
+  }
+  return "(function(){\n\"use strict\";" + inner + "\n})()";
 }
 
 function generate() {

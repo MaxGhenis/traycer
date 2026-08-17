@@ -5,13 +5,6 @@ import type {
   BrowserAnnotationMode,
 } from "../../ipc-contracts/browser-annotation-types";
 
-export const ANNOTATION_MODES: readonly BrowserAnnotationMode[] = [
-  "select",
-  "region",
-  "draw",
-  "erase",
-];
-
 export const ANNOTATION_BUNDLE_ELEMENT_CAP = 30;
 export const ANNOTATION_BUNDLE_BYTE_BUDGET = 256_000;
 export const ANNOTATION_TINY_DRAG_PX = 4;
@@ -68,14 +61,6 @@ export function shouldHandleModeHotkey(input: {
   return modeFromHotkey(input.key) !== null;
 }
 
-export function isScrollLockArmed(markCount: number): boolean {
-  return markCount > 0;
-}
-
-export function isScrollLockNavKey(key: string): boolean {
-  return SCROLL_LOCK_NAV_KEYS.has(key);
-}
-
 /**
  * Wheel / pinch-zoom / touch-scroll / nav keys are swallowed only while
  * unattached marks exist. Ctrl/meta+wheel is zoom and is part of that lock.
@@ -89,7 +74,7 @@ export function shouldSwallowScrollInput(input: {
   if (!input.armed) return false;
   if (input.kind === "wheel" || input.kind === "touchmove") return true;
   if (input.focusInOverlayText) return false;
-  return input.key !== null && isScrollLockNavKey(input.key);
+  return input.key !== null && SCROLL_LOCK_NAV_KEYS.has(input.key);
 }
 
 export type AnnotationCssRect = BrowserAnnotationCssRect;
@@ -119,7 +104,6 @@ export interface RegionResolveResult {
 export interface CommentBoxPlacement {
   readonly x: number;
   readonly y: number;
-  readonly usedFallback: boolean;
 }
 
 export type ElementMarkValidation =
@@ -150,11 +134,11 @@ export function isTinyDrag(rect: AnnotationCssRect): boolean {
   );
 }
 
-export function rectArea(rect: AnnotationCssRect): number {
+function rectArea(rect: AnnotationCssRect): number {
   return Math.max(0, rect.width) * Math.max(0, rect.height);
 }
 
-export function rectIntersection(
+function rectIntersection(
   a: AnnotationCssRect,
   b: AnnotationCssRect,
 ): AnnotationCssRect | null {
@@ -166,7 +150,7 @@ export function rectIntersection(
   return { x, y, width: right - x, height: bottom - y };
 }
 
-export function pointInRect(
+function pointInRect(
   x: number,
   y: number,
   rect: AnnotationCssRect,
@@ -186,7 +170,7 @@ export function rectsOverlap(
   return rectIntersection(a, b) !== null;
 }
 
-export function centerOf(rect: AnnotationCssRect): { x: number; y: number } {
+function centerOf(rect: AnnotationCssRect): { x: number; y: number } {
   return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
 }
 
@@ -194,7 +178,7 @@ export function centerOf(rect: AnnotationCssRect): { x: number; y: number } {
  * Containment: the candidate's center is inside the region AND a majority
  * of the candidate's area is inside the region.
  */
-export function isContainedInRegion(
+function isContainedInRegion(
   candidate: AnnotationCssRect,
   region: AnnotationCssRect,
 ): boolean {
@@ -207,7 +191,7 @@ export function isContainedInRegion(
   return rectArea(overlap) / area > 0.5;
 }
 
-export function isVisibleRegionCandidate(input: {
+function isVisibleRegionCandidate(input: {
   readonly visible: boolean;
   readonly bounds: AnnotationCssRect;
 }): boolean {
@@ -220,7 +204,7 @@ export function isVisibleRegionCandidate(input: {
  * (a card, not fifteen fragments). Equivalent to dropping any
  * candidate that has a selected ancestor.
  */
-export function collapseCompleteDescendantSets(
+function collapseCompleteDescendantSets(
   candidates: readonly RegionCandidate[],
 ): RegionCandidate[] {
   const selectedIds = new Set(candidates.map((candidate) => candidate.id));
@@ -232,7 +216,7 @@ export function collapseCompleteDescendantSets(
   });
 }
 
-export function sortSmallestFirst(
+function sortSmallestFirst(
   candidates: readonly RegionCandidate[],
 ): RegionCandidate[] {
   return [...candidates].sort((left, right) => {
@@ -291,59 +275,6 @@ function mergeCandidatesById(
     if (!byId.has(candidate.id)) byId.set(candidate.id, candidate);
   }
   return [...byId.values()];
-}
-
-export function countElementMarks(marks: readonly OverlayMarkModel[]): number {
-  let count = 0;
-  for (const mark of marks) {
-    if (mark.kind === "element") count += 1;
-  }
-  return count;
-}
-
-export function addMark(
-  marks: readonly OverlayMarkModel[],
-  mark: OverlayMarkModel,
-): OverlayMarkModel[] {
-  return [...marks, mark];
-}
-
-export function removeMarkById(
-  marks: readonly OverlayMarkModel[],
-  id: string,
-): OverlayMarkModel[] {
-  return marks.filter((mark) => mark.id !== id);
-}
-
-export function toggleElementMark(
-  marks: readonly OverlayMarkModel[],
-  spec: {
-    readonly id: string;
-    readonly elementKey: string;
-    readonly bounds: AnnotationCssRect;
-    readonly selector: string;
-  },
-): OverlayMarkModel[] {
-  const existingIndex = marks.findIndex(
-    (mark) => mark.kind === "element" && mark.elementKey === spec.elementKey,
-  );
-  if (existingIndex >= 0) {
-    return marks.filter((_, index) => index !== existingIndex);
-  }
-  return addMark(marks, {
-    id: spec.id,
-    kind: "element",
-    bounds: spec.bounds,
-    selector: spec.selector,
-    elementKey: spec.elementKey,
-  });
-}
-
-export function canAddElementMark(
-  marks: readonly OverlayMarkModel[],
-  elementCap: number,
-): boolean {
-  return countElementMarks(marks) < elementCap;
 }
 
 /**
@@ -435,18 +366,6 @@ export function serializedCaptureBytes(payload: unknown): number {
   }
 }
 
-export function canMutateAnnotation(attachPending: boolean): boolean {
-  return !attachPending;
-}
-
-export function canRequestAttach(input: {
-  readonly attachPending: boolean;
-  readonly markCount: number;
-}): boolean {
-  if (input.attachPending) return false;
-  return input.markCount > 0;
-}
-
 export function applyByteBudget<T>(input: {
   readonly items: readonly T[];
   readonly existingBytes: number;
@@ -524,17 +443,8 @@ export function placeCommentBox(input: {
   const margin = 12;
   const maxX = Math.max(margin, input.viewport.width - input.box.width - margin);
   const maxY = Math.max(margin, input.viewport.height - input.box.height - margin);
-  const fallbackX = maxX;
-  const fallbackY = maxY;
-  const clamp = (x: number, y: number): CommentBoxPlacement => ({
-    x: Math.min(maxX, Math.max(margin, x)),
-    y: Math.min(maxY, Math.max(Math.max(margin, input.pillBottom + 8), y)),
-    usedFallback: false,
-  });
-
-  if (input.union === null) {
-    return { x: fallbackX, y: fallbackY, usedFallback: true };
-  }
+  const fallback = { x: maxX, y: maxY };
+  if (input.union === null) return fallback;
 
   let x = input.union.x;
   let y = input.union.y + input.union.height + 8;
@@ -545,24 +455,11 @@ export function placeCommentBox(input: {
     y = input.union.y - input.box.height - 8;
   }
   const fitsAbove =
-    y >= input.pillBottom + 8 && y + input.box.height <= input.viewport.height - margin;
-  if (!fitsAbove) {
-    return { x: fallbackX, y: fallbackY, usedFallback: true };
-  }
-  const placed = clamp(x, y);
-  return { ...placed, usedFallback: false };
-}
-
-export function shouldSubmitCommentKey(input: {
-  readonly key: string;
-  readonly shiftKey: boolean;
-  readonly altKey: boolean;
-  readonly ctrlKey: boolean;
-  readonly metaKey: boolean;
-}): boolean {
-  if (input.key !== "Enter") return false;
-  if (input.shiftKey || input.altKey || input.ctrlKey || input.metaKey) {
-    return false;
-  }
-  return true;
+    y >= input.pillBottom + 8 &&
+    y + input.box.height <= input.viewport.height - margin;
+  if (!fitsAbove) return fallback;
+  return {
+    x: Math.min(maxX, Math.max(margin, x)),
+    y: Math.min(maxY, Math.max(Math.max(margin, input.pillBottom + 8), y)),
+  };
 }

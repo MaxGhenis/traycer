@@ -1,19 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { BrowserAnnotationMarkKind } from "../../../ipc-contracts/browser-annotation-types";
+import { ANNOTATION_OVERLAY_GUEST_SOURCE } from "../browser-annotation-overlay-guest.generated";
 import {
   ANNOTATION_BUNDLE_BYTE_BUDGET,
   ANNOTATION_BUNDLE_ELEMENT_CAP,
   ANNOTATION_TINY_DRAG_PX,
   applyByteBudget,
-  canAddElementMark,
-  canMutateAnnotation,
-  canRequestAttach,
-  collapseCompleteDescendantSets,
-  countElementMarks,
   eraseNewestAtPoint,
-  isContainedInRegion,
   isElementVisuallyPresent,
-  isScrollLockArmed,
   isTinyDrag,
   modeFromHotkey,
   normalizeDragRect,
@@ -21,13 +15,10 @@ import {
   resolveRegionSelection,
   serializedCaptureBytes,
   shouldHandleModeHotkey,
-  shouldSubmitCommentKey,
   shouldSwallowScrollInput,
-  sortSmallestFirst,
   strokeBoundsFromPoints,
   svgPathFromPolygon,
   toMarkSnapshot,
-  toggleElementMark,
   unionRects,
   validateElementMark,
   type AnnotationCssRect,
@@ -131,14 +122,6 @@ describe("shouldHandleModeHotkey", () => {
 
   it("is false for a non-mode key", () => {
     expect(shouldHandleModeHotkey({ ...base, key: "Escape" })).toBe(false);
-  });
-});
-
-describe("isScrollLockArmed", () => {
-  it("is false at zero and true above zero", () => {
-    expect(isScrollLockArmed(0)).toBe(false);
-    expect(isScrollLockArmed(1)).toBe(true);
-    expect(isScrollLockArmed(4)).toBe(true);
   });
 });
 
@@ -258,126 +241,45 @@ describe("region drag geometry", () => {
   });
 });
 
-describe("isContainedInRegion", () => {
-  it("accepts a candidate whose center is inside and majority of area overlaps", () => {
-    const candidateBox = rect(0, 0, 100, 100);
-    const region = rect(0, 0, 80, 80);
-    expect(isContainedInRegion(candidateBox, region)).toBe(true);
-  });
-
-  it("rejects a candidate whose center is outside the region", () => {
-    const candidateBox = rect(0, 0, 100, 100);
-    const region = rect(0, 0, 40, 40);
-    expect(isContainedInRegion(candidateBox, region)).toBe(false);
-  });
-
-  it("rejects a candidate whose center is inside but most of its area is outside", () => {
-    const candidateBox = rect(0, 0, 100, 100);
-    const region = rect(20, 30, 80, 40);
-    expect(isContainedInRegion(candidateBox, region)).toBe(false);
-  });
-
-  it("rejects an exact half-overlap even when the center sits on the region edge", () => {
-    const candidateBox = rect(0, 0, 100, 100);
-    const region = rect(0, 0, 100, 50);
-    expect(isContainedInRegion(candidateBox, region)).toBe(false);
-  });
-});
-
-describe("collapseCompleteDescendantSets", () => {
-  it("keeps the parent when the parent and every descendant are selected", () => {
-    const card = candidate({
-      id: "card",
-      ancestorIds: [],
-      bounds: rect(0, 0, 200, 200),
-      visible: true,
-    });
-    const fragments = Array.from({ length: 15 }, (_unused, index) =>
-      candidate({
-        id: `frag-${String(index).padStart(2, "0")}`,
-        ancestorIds: ["card"],
-        bounds: rect(8 + index * 10, 8, 8, 8),
-        visible: true,
-      }),
-    );
-    const collapsed = collapseCompleteDescendantSets([card, ...fragments]);
-    expect(collapsed.map((entry) => entry.id)).toEqual(["card"]);
-  });
-
-  it("keeps an incomplete child subset when the parent is not selected", () => {
-    const children = [
-      candidate({
-        id: "c1",
-        ancestorIds: ["card"],
-        bounds: rect(8, 8, 20, 20),
-        visible: true,
-      }),
-      candidate({
-        id: "c2",
-        ancestorIds: ["card"],
-        bounds: rect(40, 8, 20, 20),
-        visible: true,
-      }),
-    ];
-    const collapsed = collapseCompleteDescendantSets(children);
-    expect(collapsed.map((entry) => entry.id)).toEqual(["c1", "c2"]);
-  });
-
-  it("drops a grandchild when the grandparent is selected even if the middle parent is not", () => {
-    const grandparent = candidate({
-      id: "gp",
-      ancestorIds: [],
-      bounds: rect(0, 0, 300, 300),
-      visible: true,
-    });
-    const grandchild = candidate({
-      id: "gc",
-      ancestorIds: ["p", "gp"],
-      bounds: rect(40, 40, 20, 20),
-      visible: true,
-    });
-    const collapsed = collapseCompleteDescendantSets([grandparent, grandchild]);
-    expect(collapsed.map((entry) => entry.id)).toEqual(["gp"]);
-  });
-});
-
-describe("sortSmallestFirst", () => {
-  it("orders by area then by stable id", () => {
-    const big = candidate({
-      id: "big",
-      ancestorIds: [],
-      bounds: rect(0, 0, 100, 100),
-      visible: true,
-    });
-    const small = candidate({
-      id: "small",
-      ancestorIds: [],
-      bounds: rect(0, 0, 10, 10),
-      visible: true,
-    });
-    const tieB = candidate({
-      id: "tie-b",
-      ancestorIds: [],
-      bounds: rect(0, 0, 20, 20),
-      visible: true,
-    });
-    const tieA = candidate({
-      id: "tie-a",
-      ancestorIds: [],
-      bounds: rect(0, 0, 20, 20),
-      visible: true,
-    });
-    expect(sortSmallestFirst([big, tieB, small, tieA]).map((entry) => entry.id)).toEqual(
-      ["small", "tie-a", "tie-b", "big"],
-    );
-  });
-});
 
 describe("resolveRegionSelection", () => {
   const covering = rect(0, 0, 400, 400);
 
   it("exports the bundle element cap of 30", () => {
     expect(ANNOTATION_BUNDLE_ELEMENT_CAP).toBe(30);
+  });
+
+  it("rejects center-outside, majority-outside, and exact half-overlap as empty", () => {
+    const box = candidate({
+      id: "box",
+      ancestorIds: [],
+      bounds: rect(0, 0, 100, 100),
+      visible: true,
+    });
+    expect(
+      resolveRegionSelection({
+        candidates: [box],
+        region: rect(0, 0, 40, 40),
+        existingElementCount: 0,
+        elementCap: ANNOTATION_BUNDLE_ELEMENT_CAP,
+      }).reason,
+    ).toBe("empty");
+    expect(
+      resolveRegionSelection({
+        candidates: [box],
+        region: rect(20, 30, 80, 40),
+        existingElementCount: 0,
+        elementCap: ANNOTATION_BUNDLE_ELEMENT_CAP,
+      }).reason,
+    ).toBe("empty");
+    expect(
+      resolveRegionSelection({
+        candidates: [box],
+        region: rect(0, 0, 100, 50),
+        existingElementCount: 0,
+        elementCap: ANNOTATION_BUNDLE_ELEMENT_CAP,
+      }).reason,
+    ).toBe("empty");
   });
 
   it("returns reason empty when nothing visible is contained", () => {
@@ -726,87 +628,10 @@ describe("marks stack", () => {
     expect(miss.marks).not.toBe(stacked);
   });
 
-  it("toggles an element mark off when the same elementKey is selected again", () => {
-    const spec = {
-      id: "el-1",
-      elementKey: "node-7",
-      bounds: rect(4, 8, 16, 16),
-      selector: "main > button",
-    };
-    const added = toggleElementMark([], spec);
-    expect(added).toHaveLength(1);
-    expect(added[0]).toEqual(
-      mark({
-        id: "el-1",
-        kind: "element",
-        bounds: spec.bounds,
-        selector: spec.selector,
-        elementKey: spec.elementKey,
-      }),
-    );
-    const removed = toggleElementMark(added, { ...spec, id: "el-2" });
-    expect(removed).toEqual([]);
-  });
-
-  it("counts only element marks toward the bundle cap", () => {
-    const elements = Array.from({ length: 28 }, (_unused, index) =>
-      mark({
-        id: `el-${index}`,
-        kind: "element",
-        bounds: rect(index, 0, 8, 8),
-        selector: "div",
-        elementKey: `key-${index}`,
-      }),
-    );
-    const mixed = [
-      ...elements,
-      mark({
-        id: "rg",
-        kind: "region",
-        bounds: rect(0, 0, 40, 40),
-        selector: null,
-        elementKey: null,
-      }),
-      mark({
-        id: "st",
-        kind: "stroke",
-        bounds: rect(0, 0, 12, 12),
-        selector: null,
-        elementKey: null,
-      }),
-    ];
-    expect(countElementMarks(mixed)).toBe(28);
-    expect(canAddElementMark(mixed, ANNOTATION_BUNDLE_ELEMENT_CAP)).toBe(true);
-    const atCap = [
-      ...mixed,
-      mark({
-        id: "el-28",
-        kind: "element",
-        bounds: rect(28, 0, 8, 8),
-        selector: "div",
-        elementKey: "key-28",
-      }),
-      mark({
-        id: "el-29",
-        kind: "element",
-        bounds: rect(29, 0, 8, 8),
-        selector: "div",
-        elementKey: "key-29",
-      }),
-    ];
-    expect(countElementMarks(atCap)).toBe(ANNOTATION_BUNDLE_ELEMENT_CAP);
-    expect(canAddElementMark(atCap, ANNOTATION_BUNDLE_ELEMENT_CAP)).toBe(false);
-  });
-
-  it("arms scroll lock from the stack length and disarms when the last mark is erased", () => {
-    expect(isScrollLockArmed([].length)).toBe(false);
+  it("disarms the stack when the last mark is erased and leaves it on a miss", () => {
     const one = [elementA];
-    expect(isScrollLockArmed(one.length)).toBe(true);
-    const afterMiss = eraseNewestAtPoint(one, 500, 500);
-    expect(isScrollLockArmed(afterMiss.marks.length)).toBe(true);
-    const afterHit = eraseNewestAtPoint(one, 10, 10);
-    expect(afterHit.marks).toEqual([]);
-    expect(isScrollLockArmed(afterHit.marks.length)).toBe(false);
+    expect(eraseNewestAtPoint(one, 500, 500).marks).toEqual(one);
+    expect(eraseNewestAtPoint(one, 10, 10).marks).toEqual([]);
   });
 });
 
@@ -977,22 +802,54 @@ describe("applyByteBudget", () => {
   });
 });
 
-describe("attach pending guards", () => {
-  it("rejects a second attach while one is already pending", () => {
-    expect(
-      canRequestAttach({ attachPending: false, markCount: 2 }),
-    ).toBe(true);
-    expect(
-      canRequestAttach({ attachPending: true, markCount: 2 }),
-    ).toBe(false);
-    expect(
-      canRequestAttach({ attachPending: false, markCount: 0 }),
-    ).toBe(false);
+describe("guest attach freeze and scroll lock", () => {
+  it("sets attachPending before emit and guards mutate paths until reset or captureFailed", () => {
+    const source = ANNOTATION_OVERLAY_GUEST_SOURCE;
+    expect(source).toContain("attachPending = true");
+    expect(source).toContain("if (attachPending) return");
+    expect(source).toContain("attachPending = false");
+    expect(source).toContain("captureFailed");
+    expect(source).toContain("resetAfterAttach");
+    expect(source).toContain("persistRefuseCount");
+    expect(source).toContain("refuse-banner");
+    expect(source).toMatch(/let persistRefuseCount = 0/);
+    const resetAt = source.indexOf("function resetAfterAttach");
+    const captureFailedAt = source.indexOf("function captureFailed", resetAt);
+    expect(resetAt).toBeGreaterThan(-1);
+    expect(captureFailedAt).toBeGreaterThan(resetAt);
+    const resetBody = source.slice(resetAt, captureFailedAt);
+    expect(resetBody).toContain("refusedCount = 0");
+    expect(resetBody).not.toContain("persistRefuseCount = 0");
+    expect(source).not.toContain("droppedElementCount");
+    expect(source).toContain("return boot()");
+    expect(source).not.toMatch(/return true;\s*\}\)\(\)\s*$/);
+    expect(source).toContain("leftover.remove()");
+    expect(source).toContain("CSS.escape");
+    expect(source).toContain("AbortController");
+    expect(source).toContain(".toJSON()");
+    const emitAt = source.indexOf('type: "attachRequested"');
+    const pendingAt = source.lastIndexOf("attachPending = true", emitAt);
+    expect(pendingAt).toBeGreaterThan(-1);
+    expect(pendingAt).toBeLessThan(emitAt);
   });
 
-  it("blocks mark mutations while capture is deferred", () => {
-    expect(canMutateAnnotation(false)).toBe(true);
-    expect(canMutateAnnotation(true)).toBe(false);
+  it("still swallows wheel when marks exist and not when the stack is empty", () => {
+    expect(
+      shouldSwallowScrollInput({
+        armed: true,
+        kind: "wheel",
+        key: null,
+        focusInOverlayText: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldSwallowScrollInput({
+        armed: false,
+        kind: "wheel",
+        key: null,
+        focusInOverlayText: false,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -1020,7 +877,6 @@ describe("placeCommentBox", () => {
       box,
       pillBottom: 40,
     });
-    expect(placed.usedFallback).toBe(false);
     expect(placed.y).toBe(148);
     expect(placed.x).toBe(12);
   });
@@ -1032,7 +888,6 @@ describe("placeCommentBox", () => {
       box,
       pillBottom: 40,
     });
-    expect(placed.usedFallback).toBe(true);
     expect(placed.x).toBe(400 - 200 - 12);
     expect(placed.y).toBe(300 - 80 - 12);
   });
@@ -1047,27 +902,7 @@ describe("placeCommentBox", () => {
     expect(placed).toEqual({
       x: 800 - 200 - 12,
       y: 600 - 80 - 12,
-      usedFallback: true,
     });
-  });
-});
-
-describe("shouldSubmitCommentKey", () => {
-  const base = {
-    key: "Enter",
-    shiftKey: false,
-    altKey: false,
-    ctrlKey: false,
-    metaKey: false,
-  };
-
-  it("submits on unmodified Enter and not on Shift+Enter", () => {
-    expect(shouldSubmitCommentKey(base)).toBe(true);
-    expect(shouldSubmitCommentKey({ ...base, shiftKey: true })).toBe(false);
-    expect(shouldSubmitCommentKey({ ...base, altKey: true })).toBe(false);
-    expect(shouldSubmitCommentKey({ ...base, ctrlKey: true })).toBe(false);
-    expect(shouldSubmitCommentKey({ ...base, metaKey: true })).toBe(false);
-    expect(shouldSubmitCommentKey({ ...base, key: "e" })).toBe(false);
   });
 });
 
