@@ -88,6 +88,16 @@ function freshCollection(
   );
 }
 
+/** An open stream that has not yet settled a snapshot in this connection episode. */
+function staleCollection(
+  terminals: readonly PlainTerminalProjection[],
+): PlainTerminalCollection {
+  return setPlainTerminalStreamStatus(
+    replacePlainTerminalSnapshot(undefined, terminals),
+    "open",
+  );
+}
+
 describe("capable landing-terminal reconciliation", () => {
   let queryClient: QueryClient;
 
@@ -269,5 +279,47 @@ describe("capable landing-terminal reconciliation", () => {
         hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
       )?.deletedRevisionById["terminal-1"],
     ).toBe(2);
+  });
+
+  it("returns snapshot-not-fresh instead of throwing while the stream has not settled", async () => {
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+      staleCollection([]),
+    );
+
+    await expect(
+      reconcileCapableLandingTerminals({
+        activeHostId: HOST_ID,
+        landingPageId: LANDING_PAGE_ID,
+        capability: CAPABILITY,
+        canMutate: true,
+        closeTerminal: () => Promise.resolve(),
+        importLegacyTerminal: () =>
+          Promise.reject(new Error("unexpected import")),
+        queryClient,
+      }),
+    ).resolves.toBe("snapshot-not-fresh");
+    // A wait, not a failure: nothing in the store should be touched.
+    expect(useLandingTerminalStore.getState().tabs).toEqual([]);
+  });
+
+  it("returns reconciled after a successful pass", async () => {
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+      freshCollection([]),
+    );
+
+    await expect(
+      reconcileCapableLandingTerminals({
+        activeHostId: HOST_ID,
+        landingPageId: LANDING_PAGE_ID,
+        capability: CAPABILITY,
+        canMutate: true,
+        closeTerminal: () => Promise.resolve(),
+        importLegacyTerminal: () =>
+          Promise.reject(new Error("unexpected import")),
+        queryClient,
+      }),
+    ).resolves.toBe("reconciled");
   });
 });
