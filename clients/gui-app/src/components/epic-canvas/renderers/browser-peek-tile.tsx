@@ -914,7 +914,10 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         releaseCapturedPointer();
         return;
       }
-      if (activeArmEpochRef.current !== null) {
+      if (
+        activeArmEpochRef.current !== null &&
+        acceptedPointerDownRef.current !== null
+      ) {
         const frame = buildPointerFrame({
           event,
           type: "up",

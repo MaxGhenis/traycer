@@ -1113,6 +1113,40 @@ describe("BrowserPeekTile input capture", () => {
     expect(framesOfKind(stream, "pointer")).toEqual([]);
   });
 
+  it("drops both pointer frames when an armed down starts in the letterbox", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    const image = presentLiveFrame(stream, 7, JPEG_SEQ_7);
+    vi.spyOn(image, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, 800, 800),
+    );
+    armPeekTile(stream);
+    const button = overlayButton();
+
+    fireEvent.pointerDown(
+      button,
+      pointerEventInit({
+        clientX: 400,
+        clientY: 50,
+        button: 0,
+        buttons: 1,
+        detail: 1,
+      }),
+    );
+    fireEvent.pointerUp(
+      button,
+      pointerEventInit({
+        clientX: 400,
+        clientY: 400,
+        button: 0,
+        buttons: 0,
+        detail: 1,
+      }),
+    );
+
+    expect(framesOfKind(stream, "pointer")).toEqual([]);
+  });
+
   it("drops an armed down outside the image and clamps a captured move/up to the edge", async () => {
     const frames = installAnimationFrameQueue();
     render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
