@@ -210,7 +210,9 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const suppressPointerIdRef = useRef<number | null>(null);
   const pendingMoveRef = useRef<PeekPointerInput | null>(null);
   const moveRafRef = useRef<number | null>(null);
-  const acceptedPointerDownRef = useRef<PeekPointerInput | null>(null);
+  const acceptedPointerDownsRef = useRef(
+    new Map<PeekPointerInput["button"], PeekPointerInput>(),
+  );
   const pointerClickCountRef = useRef<PointerClickCount | null>(null);
   const [armBuffer] = useState<ScreencastArmBuffer<PeekPointerInput>>(() =>
     createScreencastArmBuffer({
@@ -531,7 +533,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     forwardedKeyDownsRef.current.clear();
     claimedLocalCodesRef.current.clear();
     suppressPointerIdRef.current = null;
-    acceptedPointerDownRef.current = null;
+    acceptedPointerDownsRef.current.clear();
     pointerClickCountRef.current = null;
     cancelPendingMove();
     releaseCapturedPointer();
@@ -759,9 +761,12 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           count: clickCount,
         };
       } else if (request.type === "up") {
+        const button = pointerButton(request.event.button);
+        const accepted = acceptedPointerDownsRef.current.get(button);
         const down = pointerClickCountRef.current;
         clickCount =
-          down?.button === request.event.button ? down.count : 1;
+          accepted?.clickCount ??
+          (down?.button === request.event.button ? down.count : 1);
       }
       return {
         kind: "pointer",
@@ -813,11 +818,11 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       flushPendingMove();
       sendInput(frame);
       if (frame.type === "down") {
-        acceptedPointerDownRef.current = frame;
+        acceptedPointerDownsRef.current.set(frame.button, frame);
         return;
       }
       if (frame.type === "up") {
-        acceptedPointerDownRef.current = null;
+        acceptedPointerDownsRef.current.delete(frame.button);
       }
     },
     [flushPendingMove, sendInput],
@@ -951,7 +956,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       }
       if (
         activeArmEpochRef.current !== null &&
-        acceptedPointerDownRef.current !== null
+        acceptedPointerDownsRef.current.has(pointerButton(event.button))
       ) {
         const frame = buildPointerFrame({
           event,
@@ -968,17 +973,18 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   );
 
   const handleOverlayPointerCancel = useCallback(() => {
-    const accepted = acceptedPointerDownRef.current;
-    if (accepted !== null && activeArmEpochRef.current !== null) {
-      sendDiscretePointer({
-        ...accepted,
-        type: "up",
-        buttons: 0,
-      });
+    if (activeArmEpochRef.current !== null) {
+      for (const accepted of acceptedPointerDownsRef.current.values()) {
+        sendDiscretePointer({
+          ...accepted,
+          type: "up",
+          buttons: 0,
+        });
+      }
     }
     armBuffer.drop();
     suppressPointerIdRef.current = null;
-    acceptedPointerDownRef.current = null;
+    acceptedPointerDownsRef.current.clear();
     cancelPendingMove();
     releaseCapturedPointer();
   }, [
@@ -1043,6 +1049,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
 
   useLayoutEffect(() => {
     armBuffer.setOnDropped(() => {
+      pointerClickCountRef.current = null;
       const captured = capturedPointerRef.current;
       if (captured === null) return;
       suppressPointerIdRef.current = captured.pointerId;

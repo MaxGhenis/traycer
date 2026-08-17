@@ -393,7 +393,7 @@ describe("BrowserPeekTile input capture", () => {
     expect(framesOfKind(stream, "pointer")).toEqual([]);
   });
 
-  it("sends a matching clamped up on pointercancel after an accepted down", () => {
+  it("sends matching ups for every accepted button on pointercancel", () => {
     render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
     const stream = liveStream();
     presentLiveFrame(stream, 7, JPEG_SEQ_7);
@@ -411,6 +411,16 @@ describe("BrowserPeekTile input capture", () => {
         detail: 0,
       }),
     );
+    fireEvent.pointerDown(
+      button,
+      pointerEventInit({
+        clientX: 400,
+        clientY: 300,
+        button: 2,
+        buttons: 3,
+        detail: 0,
+      }),
+    );
     fireEvent.pointerCancel(button, { pointerId: 1 });
 
     expect(framesOfKind(stream, "pointer")).toEqual([
@@ -424,16 +434,91 @@ describe("BrowserPeekTile input capture", () => {
         seq: 0,
       }),
       expect.objectContaining({
+        type: "down",
+        button: "right",
+        buttons: 3,
+        clickCount: 1,
+        seq: 1,
+      }),
+      expect.objectContaining({
         type: "up",
         button: "left",
         buttons: 0,
         clickCount: 1,
         normalizedX: 0.5,
         normalizedY: 0.5,
-        seq: 1,
+        seq: 2,
+      }),
+      expect.objectContaining({
+        type: "up",
+        button: "right",
+        buttons: 0,
+        clickCount: 1,
+        seq: 3,
       }),
     ]);
     expect(releasePointerCapture).toHaveBeenCalledWith(1);
+  });
+
+  it("sends both releases for a multi-button chord", () => {
+    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    const stream = liveStream();
+    presentLiveFrame(stream, 7, JPEG_SEQ_7);
+    armPeekTile(stream);
+    const button = overlayButton();
+
+    fireEvent.pointerDown(
+      button,
+      pointerEventInit({
+        clientX: 400,
+        clientY: 300,
+        button: 0,
+        buttons: 1,
+        detail: 0,
+      }),
+    );
+    fireEvent.pointerDown(
+      button,
+      pointerEventInit({
+        clientX: 400,
+        clientY: 300,
+        button: 2,
+        buttons: 3,
+        detail: 0,
+      }),
+    );
+    fireEvent.pointerUp(
+      button,
+      pointerEventInit({
+        clientX: 400,
+        clientY: 300,
+        button: 2,
+        buttons: 1,
+        detail: 0,
+      }),
+    );
+    fireEvent.pointerUp(
+      button,
+      pointerEventInit({
+        clientX: 400,
+        clientY: 300,
+        button: 0,
+        buttons: 0,
+        detail: 0,
+      }),
+    );
+
+    expect(
+      framesOfKind(stream, "pointer").map((frame) => [
+        frame.type,
+        frame.button,
+      ]),
+    ).toEqual([
+      ["down", "left"],
+      ["down", "right"],
+      ["up", "right"],
+      ["up", "left"],
+    ]);
   });
 
   it("releases pointer capture when the server revokes the arm", () => {
@@ -1044,7 +1129,9 @@ describe("BrowserPeekTile input capture", () => {
     expect(peekTile().querySelector(".ring-primary")).not.toBeNull();
   });
 
-  it("drops a buffered click when the presented sequence changes before arm", () => {
+  it("resets click counting when a buffered click is dropped", () => {
+    let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
     render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
     const stream = liveStream();
     presentLiveFrame(stream, 7, JPEG_SEQ_7);
@@ -1077,6 +1164,11 @@ describe("BrowserPeekTile input capture", () => {
     emitArmed(stream, 1);
 
     expect(framesOfKind(stream, "pointer")).toEqual([]);
+    now = 200;
+    sendPointerClick(button, 400, 300);
+    expect(
+      framesOfKind(stream, "pointer").map((frame) => frame.clickCount),
+    ).toEqual([1, 1]);
     expect(peekTile().querySelector(".ring-primary")).not.toBeNull();
   });
 
