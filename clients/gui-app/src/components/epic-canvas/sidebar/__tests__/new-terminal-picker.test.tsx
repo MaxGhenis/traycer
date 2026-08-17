@@ -322,7 +322,9 @@ describe("<NewTerminalPicker />", () => {
     );
     expect(isHostEpicTerminalRef(terminals[0])).toBe(true);
     expect(
-      useEpicCanvasStore.getState().pendingCreateArtifactIds.has(terminals[0].id),
+      useEpicCanvasStore
+        .getState()
+        .pendingCreateArtifactIds.has(terminals[0].id),
     ).toBe(true);
   });
 

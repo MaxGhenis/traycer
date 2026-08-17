@@ -150,7 +150,9 @@ function hostErrorToastMessage(error: HostRpcError, fallback: string) {
   return hostErrorToastForSimpleCode(error.code) ?? fallback;
 }
 
-function hostErrorToastForSimpleCode(code: HostRpcError["code"]): string | null {
+function hostErrorToastForSimpleCode(
+  code: HostRpcError["code"],
+): string | null {
   if (code === "PROVIDER_DISABLED") {
     return "This provider is disabled. Enable it in Settings → Providers.";
   }

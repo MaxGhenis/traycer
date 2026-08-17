@@ -69,27 +69,71 @@ describe("negotiated-manifest-registry", () => {
 
     unsubscribe();
   });
+  it("reads an unknown host's method version as not-yet-known (null)", () => {
+    expect(
+      getNegotiatedHostMethodVersion("host-unknown", "epic.listChats"),
+    ).toBeNull();
+  });
 
-  it("records canonical versions and notifies when a version changes without a name change", () => {
+  it("records the exact per-method negotiated version from a manifest", () => {
     recordNegotiatedHostManifest("host-1", {
-      "terminal.plain.list": { major: 1, minor: 0 },
+      "epic.listChats": { major: 2, minor: 3 },
+      "epic.setChatArchived": { major: 1, minor: 0 },
+    });
+
+    expect(getNegotiatedHostMethodVersion("host-1", "epic.listChats")).toEqual({
+      major: 2,
+      minor: 3,
+    });
+    expect(
+      getNegotiatedHostMethodVersion("host-1", "epic.setChatArchived"),
+    ).toEqual({ major: 1, minor: 0 });
+    // Still unknown for a method absent from the manifest.
+    expect(
+      getNegotiatedHostMethodVersion("host-1", "epic.missingMethod"),
+    ).toBeNull();
+  });
+
+  it("notifies but keeps the method set stable when only a VERSION changes", () => {
+    // The branch the fork dialog's capability healing rides on: a host upgraded
+    // in place answers the same methods at a higher minor, so `methodsChanged`
+    // is false and `versionsChanged` is true. `recordNegotiatedHostManifest`
+    // handles the two independently - it must still notify (or the gate never
+    // re-reads and the row keeps its stale "needs update" word), while leaving
+    // the method Set's REFERENCE alone (or every presence consumer's
+    // `getSnapshot` churns for a change that did not touch presence).
+    recordNegotiatedHostManifest("host-1", {
+      "epic.createChat": { major: 1, minor: 1 },
     });
     const first = getNegotiatedHostMethods("host-1");
+    expect(first).not.toBeNull();
+
     const listener = vi.fn();
     const unsubscribe = subscribeNegotiatedManifests(listener);
 
-    expect(
-      getNegotiatedHostMethodVersion("host-1", "terminal.plain.list"),
-    ).toEqual({ major: 1, minor: 0 });
     recordNegotiatedHostManifest("host-1", {
-      "terminal.plain.list": { major: 1, minor: 1 },
+      "epic.createChat": { major: 1, minor: 2 },
     });
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(getNegotiatedHostMethods("host-1")).not.toBe(first);
-    expect(
-      getNegotiatedHostMethodVersion("host-1", "terminal.plain.list"),
-    ).toEqual({ major: 1, minor: 1 });
+    expect(getNegotiatedHostMethods("host-1")).toBe(first);
+    expect(getNegotiatedHostMethodVersion("host-1", "epic.createChat")).toEqual(
+      {
+        major: 1,
+        minor: 2,
+      },
+    );
+
     unsubscribe();
+  });
+
+  it("also records method presence so existing presence consumers keep working", () => {
+    recordNegotiatedHostManifest("host-1", {
+      "epic.listChats": { major: 1, minor: 0 },
+    });
+
+    const methods = getNegotiatedHostMethods("host-1");
+    expect(methods).not.toBeNull();
+    expect(methods?.has("epic.listChats")).toBe(true);
   });
 });

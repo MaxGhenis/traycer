@@ -43,7 +43,9 @@ const durableAuthority = vi.hoisted<{
   collectionIncludesSession: false,
 }));
 const hostRequest = vi.hoisted(() =>
-  vi.fn<(method: string, vars: { readonly terminalId: string }) => Promise<unknown>>(),
+  vi.fn<
+    (method: string, vars: { readonly terminalId: string }) => Promise<unknown>
+  >(),
 );
 const terminalSessions = vi.hoisted<{
   value: ReadonlyArray<CanonicalTerminalSessionInfo>;
@@ -109,36 +111,40 @@ vi.mock("@/hooks/terminal/use-plain-terminal-authority", () => ({
   }),
 }));
 
-vi.mock("@/hooks/terminal/use-plain-terminal-mutations", async (importOriginal) => {
-  const actual = await importOriginal<
-    typeof import("@/hooks/terminal/use-plain-terminal-mutations")
-  >();
-  return {
-    ...actual,
-    useHostPlainTerminalMutations: (
-      authority: Parameters<typeof actual.useHostPlainTerminalMutations>[0],
-    ) => {
-      const real = actual.useHostPlainTerminalMutations(authority);
-      return {
-        ...real,
-        close: {
-          ...real.close,
-          mutateAsync: async (request: { readonly terminalId: string }) => {
-            const pending = durableCloseMutateAsync(request);
-            const result = await real.close.mutateAsync(request);
-            await pending;
-            return result;
+vi.mock(
+  "@/hooks/terminal/use-plain-terminal-mutations",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/hooks/terminal/use-plain-terminal-mutations")
+      >();
+    return {
+      ...actual,
+      useHostPlainTerminalMutations: (
+        authority: Parameters<typeof actual.useHostPlainTerminalMutations>[0],
+      ) => {
+        const real = actual.useHostPlainTerminalMutations(authority);
+        return {
+          ...real,
+          close: {
+            ...real.close,
+            mutateAsync: async (request: { readonly terminalId: string }) => {
+              const pending = durableCloseMutateAsync(request);
+              const result = await real.close.mutateAsync(request);
+              await pending;
+              return result;
+            },
+            isPending: durableAuthority.closePending || real.close.isPending,
           },
-          isPending: durableAuthority.closePending || real.close.isPending,
-        },
-        rename: {
-          mutate: durableRenameMutate,
-          isPending: durableAuthority.renamePending,
-        },
-      };
-    },
-  };
-});
+          rename: {
+            mutate: durableRenameMutate,
+            isPending: durableAuthority.renamePending,
+          },
+        };
+      },
+    };
+  },
+);
 
 vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenu: (props: { readonly children: ReactNode }) => props.children,
@@ -197,9 +203,10 @@ function wrapper(node: ReactNode): ReactNode {
   );
 }
 
-function resolveCloseRequest(
-  vars: { readonly terminalId: string },
-): { readonly terminalId: string; readonly revision: number } {
+function resolveCloseRequest(vars: { readonly terminalId: string }): {
+  readonly terminalId: string;
+  readonly revision: number;
+} {
   return { terminalId: vars.terminalId, revision: 2 };
 }
 
