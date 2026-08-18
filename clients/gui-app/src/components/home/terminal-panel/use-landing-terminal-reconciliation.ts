@@ -428,6 +428,12 @@ export async function reconcileCapableLandingTerminals(args: {
     }),
   );
 
+  const postKillCollection =
+    queryClient.getQueryData<PlainTerminalCollection>(queryKey);
+  if (postKillCollection?.streamSnapshotFresh !== true) {
+    return "snapshot-not-fresh";
+  }
+
   const legacyTabs = useLandingTerminalStore
     .getState()
     .tabs.filter(

@@ -113,7 +113,7 @@ function LandingTerminalTileBody(props: LandingTerminalTileProps): ReactNode {
   return <LandingTerminalWaiting />;
 }
 
-function LandingTerminalLegacyBootstrap(
+export function LandingTerminalLegacyBootstrap(
   props: LandingTerminalTileProps,
 ): ReactNode {
   const removeExitedTab = useLandingTerminalStore(
@@ -195,11 +195,15 @@ function LandingTerminalLegacyBootstrap(
     // this tile used to render the dead state for both.
     return <LandingTerminalWaiting />;
   }
-  if (bootstrap.createIsError) {
+  if (bootstrap.createIsError || bootstrap.createRetryIsPending) {
     return (
       <LandingTerminalErrorState
-        message={bootstrap.createError?.message ?? "Could not start terminal."}
-        isPending={bootstrap.createIsPending}
+        message={
+          bootstrap.createRetryError?.message ??
+          bootstrap.createError?.message ??
+          "Could not start terminal."
+        }
+        isPending={bootstrap.createRetryIsPending}
         onRetry={bootstrap.retry}
       />
     );

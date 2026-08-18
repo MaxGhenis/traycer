@@ -99,7 +99,6 @@ export function useLandingTerminalDurableLifecycle(args: {
     dispatchedEpisodeRef.current = episode;
     const requestGeneration = requestGenerationRef.current + 1;
     requestGenerationRef.current = requestGeneration;
-    setRequestError(null);
     setPendingRequestGenerations((current) => [...current, requestGeneration]);
     void dispatch(action).then(
       (terminal) => {
@@ -108,6 +107,7 @@ export function useLandingTerminalDurableLifecycle(args: {
         );
         if (requestGenerationRef.current !== requestGeneration) return;
         adopt(terminal);
+        setRequestError(null);
         setRequestSettled(true);
       },
       (error: unknown) => {
@@ -137,7 +137,6 @@ export function useLandingTerminalDurableLifecycle(args: {
     requestGenerationRef.current += 1;
     dispatchedEpisodeRef.current = null;
     setRequestSettled(false);
-    setRequestError(null);
     setRetryGeneration((current) => current + 1);
   };
 
