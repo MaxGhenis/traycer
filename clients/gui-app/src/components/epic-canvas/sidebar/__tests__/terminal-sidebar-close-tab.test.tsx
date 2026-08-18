@@ -545,6 +545,27 @@ describe("terminal sidebar Close", () => {
     expect(legacyRenameMutate).not.toHaveBeenCalled();
   });
 
+  it("disables sidebar rename for a capable host compatibility row while canMutate is false", () => {
+    durableAuthority.capability = "capable";
+    durableAuthority.canMutate = false;
+    durableAuthority.collectionIncludesSession = false;
+    const { getByTestId, queryByTestId } = render(
+      wrapper(<TerminalsPanelBody epicId="epic-1" tabId={TAB_ID} />),
+    );
+
+    const rename = getByTestId(`epic-terminal-sidebar-rename-${SESSION_ID}`);
+    expect(rename.getAttribute("disabled")).not.toBeNull();
+    fireEvent.click(rename);
+    fireEvent.doubleClick(
+      getByTestId(`epic-terminal-sidebar-item-${SESSION_ID}`),
+    );
+    expect(
+      queryByTestId(`epic-terminal-sidebar-rename-input-${SESSION_ID}`),
+    ).toBeNull();
+    expect(durableRenameMutate).not.toHaveBeenCalled();
+    expect(legacyRenameMutate).not.toHaveBeenCalled();
+  });
+
   it("keeps legacy rename for a capable host's compatibility row", () => {
     // Setup and provider-login shells stay `terminal.list` rows and never
     // enter the durable collection. The host still serves `terminal.rename`

@@ -136,6 +136,7 @@ export interface TerminalTileBootstrapResult {
   readonly hostSessionExited: boolean;
   readonly handle: TerminalSessionStoreHandle | null;
   readonly createIsError: boolean;
+  readonly createIsPending: boolean;
   readonly createIsSuccess: boolean;
   readonly createError: {
     readonly message?: string;
@@ -410,6 +411,7 @@ export function useTerminalTileBootstrap(
     hostSessionExited,
     handle,
     createIsError: create.isError,
+    createIsPending: create.isPending,
     createIsSuccess: create.isSuccess,
     createError: create.error,
     retry,

@@ -153,6 +153,36 @@ describe("durable landing-terminal bootstrap", () => {
     await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(2));
   });
 
+  it("exposes requestPending while a deferred dispatch is in flight and clears it after settlement", async () => {
+    const pending = deferred<PlainTerminalProjection>();
+    const dispatch = vi.fn(() => pending.promise);
+    const adopt = vi.fn();
+    const rendered = renderHook(() =>
+      useLandingTerminalDurableLifecycle({
+        projectionStatus: "dormant",
+        pendingCreate: false,
+        active: true,
+        canMutate: true,
+        gridReady: true,
+        dispatch,
+        adopt,
+      }),
+    );
+    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+    expect(rendered.result.current.requestPending).toBe(true);
+    expect(rendered.result.current.requestSettled).toBe(false);
+
+    await act(() => {
+      pending.resolve(projection("running"));
+      return Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(rendered.result.current.requestPending).toBe(false),
+    );
+    expect(rendered.result.current.requestSettled).toBe(true);
+    expect(adopt).toHaveBeenCalledTimes(1);
+  });
+
   it("does not loop on a stable dormant failure and retries explicitly", async () => {
     const dispatch = vi.fn(() => Promise.reject(new Error("offline")));
     const rendered = renderHook(() =>

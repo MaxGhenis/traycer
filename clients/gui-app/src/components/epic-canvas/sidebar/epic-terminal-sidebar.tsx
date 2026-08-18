@@ -368,11 +368,11 @@ function resolveTerminalSidebarRenameMode(args: {
 }): TerminalSidebarRenameMode {
   if (args.capability === "legacy") return "legacy";
   if (args.capability !== "capable") return "disabled";
+  if (!args.canMutate) return "disabled";
   // A row with no durable projection is a `terminal.list` compatibility row
   // (setup / provider-login shell). The host still serves `terminal.rename`
   // for it, so keep the legacy path instead of disabling rename.
   if (!args.hasProjection) return "legacy";
-  if (!args.canMutate) return "disabled";
   return "capable";
 }
 

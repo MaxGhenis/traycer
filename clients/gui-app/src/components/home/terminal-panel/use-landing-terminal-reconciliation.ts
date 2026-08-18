@@ -405,6 +405,11 @@ export async function reconcileCapableLandingTerminals(args: {
     activeHostId,
     INDEPENDENT_SCOPE,
   );
+  const initialCollection =
+    queryClient.getQueryData<PlainTerminalCollection>(queryKey);
+  if (initialCollection?.streamSnapshotFresh !== true) {
+    return "snapshot-not-fresh";
+  }
   const store = useLandingTerminalStore.getState();
   const pendingKills = store.pendingKills.filter(
     (pending) => pending.hostId === activeHostId,

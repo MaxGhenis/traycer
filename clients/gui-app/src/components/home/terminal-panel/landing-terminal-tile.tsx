@@ -27,6 +27,7 @@ import type {
 import type { TerminalScope } from "@traycer/protocol/host/terminal/unary-schemas";
 import type { PlainTerminalProjection } from "@traycer/protocol/host/terminal/plain-schemas";
 import { Button } from "@/components/ui/button";
+import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import type { HostUnavailability } from "@traycer-clients/shared/host-client/remote-fetcher";
 import {
   useHostReachability,
@@ -198,6 +199,7 @@ function LandingTerminalLegacyBootstrap(
     return (
       <LandingTerminalErrorState
         message={bootstrap.createError?.message ?? "Could not start terminal."}
+        isPending={bootstrap.createIsPending}
         onRetry={bootstrap.retry}
       />
     );
@@ -343,6 +345,7 @@ function LandingTerminalDurableBootstrap(
       reachability={reachability}
       canMutate={entry.authority.canMutate}
       requestError={lifecycle.requestError}
+      requestPending={lifecycle.requestPending}
       retry={lifecycle.retry}
       handle={handle}
       tab={props.tab}
@@ -360,6 +363,7 @@ function LandingTerminalDurableState(props: {
   readonly reachability: HostReachability;
   readonly canMutate: boolean;
   readonly requestError: Error | null;
+  readonly requestPending: boolean;
   readonly retry: () => void;
   readonly handle: TerminalSessionStoreHandle | null;
   readonly tab: LandingTerminalTabRef;
@@ -384,6 +388,7 @@ function LandingTerminalDurableState(props: {
     return (
       <LandingTerminalErrorState
         message={props.requestError.message}
+        isPending={props.requestPending}
         onRetry={props.retry}
       />
     );
@@ -539,14 +544,28 @@ function LandingTerminalTileLive(props: {
  * durable branches so the two failures stay one visual state - only the
  * message source differs.
  */
-function LandingTerminalErrorState(props: {
+export function LandingTerminalErrorState(props: {
   readonly message: string;
+  readonly isPending: boolean;
   readonly onRetry: () => void;
 }): ReactNode {
   return (
     <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-3 bg-canvas p-4 text-center text-ui-sm text-destructive">
       <span>{props.message}</span>
-      <Button type="button" variant="outline" size="sm" onClick={props.onRetry}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={props.isPending}
+        onClick={props.onRetry}
+      >
+        {props.isPending ? (
+          <AgentSpinningDots
+            className="shrink-0"
+            testId="landing-terminal-retry-pending"
+            variant={undefined}
+          />
+        ) : null}
         Retry
       </Button>
     </div>
