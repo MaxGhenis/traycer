@@ -1,9 +1,9 @@
 /**
- * Epic-wide `browser.sessions` fan-in for the agent-browser PiP.
+ * Epic-wide `browser.sessions` fan-in for manual browser PiP.
  *
  * The sidebar's `BrowserSessionsProvider` stays bound to the active host.
  * This manager sits beside it: one subscription per reachable host, items
- * tagged with that host's id, burst frames forwarded into `pip-store`.
+ * tagged with that host's id, and selected-tab captions forwarded to PiP.
  *
  * Plain object (not a hook-per-host) so the host set can be data-driven.
  * Dispose closes every subscription; there is no retained detached state.
@@ -17,12 +17,9 @@ import {
 import type { DurableStreamTransport } from "@/lib/host/durable-stream-transport";
 import { appLogger } from "@/lib/logger";
 import {
-  applyPipBurstEnded,
-  applyPipBurstStarted,
   applyPipCaption,
   applyPipHostLifecycle,
-  dropPipHostLiveBursts,
-  getPipSnapshot,
+  markPipHostUnavailable,
   type PipHostLifecycle,
 } from "./pip-store";
 
@@ -305,25 +302,7 @@ export class PipEpicSessionsManager {
   }
 
   private applyFrame(slot: HostSlot, frame: BrowserSessionsServerFrame): void {
-    if (frame.kind === "burstStarted") {
-      applyPipBurstStarted({
-        epicId: this.epicId,
-        hostId: slot.hostId,
-        sessionId: frame.sessionId,
-        tabId: frame.tabId,
-        burstId: frame.burstId,
-        chatId: frame.chatId,
-        startedAt: undefined,
-      });
-      return;
-    }
-    if (frame.kind === "burstEnded") {
-      applyPipBurstEnded({
-        epicId: this.epicId,
-        burstId: frame.burstId,
-        outcome: frame.outcome,
-        endedAt: undefined,
-      });
+    if (frame.kind === "burstStarted" || frame.kind === "burstEnded") {
       return;
     }
     if (frame.kind === "caption") {
@@ -332,13 +311,11 @@ export class PipEpicSessionsManager {
         hostId: slot.hostId,
         sessionId: frame.sessionId,
         tabId: frame.tabId,
-        burstId: frame.burstId,
         cellTitle: frame.cellTitle,
       });
       return;
     }
     if (frame.kind === "snapshot") {
-      this.resetHostBurstGeneration(slot.hostId);
       slot.items = frame.sessions.map((session) =>
         tagSession(slot.hostId, session),
       );
@@ -361,39 +338,10 @@ export class PipEpicSessionsManager {
     }
   }
 
-  /**
-   * A host snapshot is a burst-generation boundary. Late subscribers only
-   * hear still-open bursts as a following `burstStarted` replay; anything
-   * that ended while we were unmounted never arrives. Drop this host's prior
-   * live bursts, then finish a leftover live target on this host so it cannot
-   * pose as live until a replay restores it.
-   *
-   * `dropPipHostLiveBursts` keeps the displayed target (last-frame +
-   * disconnected). That leftover is finished here because the store has no
-   * hide-current-target API and this file must not edit pip-store.
-   */
-  private resetHostBurstGeneration(hostId: string): void {
-    const pip = getPipSnapshot(this.epicId);
-    dropPipHostLiveBursts(this.epicId, hostId);
-    if (
-      pip.phase !== "live" ||
-      pip.target === null ||
-      pip.target.hostId !== hostId
-    ) {
-      return;
-    }
-    applyPipBurstEnded({
-      epicId: this.epicId,
-      burstId: pip.target.burstId,
-      outcome: "finished",
-      endedAt: undefined,
-    });
-  }
-
   private dropHost(slot: HostSlot): void {
     this.closeSlot(slot);
     slot.items = [];
-    dropPipHostLiveBursts(this.epicId, slot.hostId);
+    markPipHostUnavailable(this.epicId, slot.hostId);
   }
 
   private closeEveryHost(): void {

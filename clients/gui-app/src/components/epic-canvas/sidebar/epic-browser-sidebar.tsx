@@ -1,4 +1,4 @@
-import { Bot, Eye, Globe2, Plus, X } from "lucide-react";
+import { Bot, Globe2, Plus, X } from "lucide-react";
 import { useCallback, useMemo } from "react";
 import type {
   BrowserSessionInfo,
@@ -7,7 +7,11 @@ import type {
 } from "@traycer/protocol/host/browser/contracts";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
-import { SidebarContent, SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
+import {
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+} from "@/components/ui/sidebar";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import type { LeftPanelSlotProps } from "@/components/epic-canvas/sidebar/left-panel-registry";
 import { useBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
@@ -19,7 +23,6 @@ import {
   resolveTabTitle,
 } from "@/lib/browser-view/browser-tab-display";
 import { findElectronBrowserTabBinding } from "@/lib/browser-view/electron-browser-tab-store";
-import { recallPip } from "@/lib/browser-view/pip-store";
 import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { cn } from "@/lib/utils";
 import { useEpicChatRecords } from "@/lib/epic-selectors";
@@ -227,7 +230,15 @@ function BrowsersPanelBodyLive(props: {
           : prepareFocus(props.tabId, existing.paneId, existing.instanceId),
       );
     },
-    [chatById, hostId, navigateNested, prepareFocus, prepareOpen, props.epicId, props.tabId],
+    [
+      chatById,
+      hostId,
+      navigateNested,
+      prepareFocus,
+      prepareOpen,
+      props.epicId,
+      props.tabId,
+    ],
   );
 
   if (sessions.lifecycle === "connecting" && sessions.items.length === 0) {
@@ -245,7 +256,6 @@ function BrowsersPanelBodyLive(props: {
       {sessions.items.map((session) => (
         <BrowserSessionRow
           key={session.sessionId}
-          epicId={props.epicId}
           session={session}
           chatById={chatById}
           duplicateTitles={duplicateTitles}
@@ -284,7 +294,12 @@ function BrowsersPanelEmptyState(props: { readonly onAddBrowser: () => void }) {
           Agents open theirs here too.
         </p>
       </div>
-      <Button type="button" variant="outline" size="sm" onClick={props.onAddBrowser}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={props.onAddBrowser}
+      >
         <Plus className="size-3.5" aria-hidden />
         Add browser
       </Button>
@@ -293,18 +308,29 @@ function BrowsersPanelEmptyState(props: { readonly onAddBrowser: () => void }) {
 }
 
 interface BrowserSessionRowProps {
-  readonly epicId: string;
   readonly session: BrowserSessionInfo;
-  readonly chatById: ReadonlyMap<string, { readonly id: string; readonly title: string }>;
+  readonly chatById: ReadonlyMap<
+    string,
+    { readonly id: string; readonly title: string }
+  >;
   readonly duplicateTitles: ReadonlySet<string>;
-  readonly onOpenTab: (session: BrowserSessionInfo, tab: BrowserTabInfo) => void;
+  readonly onOpenTab: (
+    session: BrowserSessionInfo,
+    tab: BrowserTabInfo,
+  ) => void;
   readonly onOpenDrivingChat: (driver: BrowserTabDriver) => void;
   readonly onClose: (sessionId: string) => void;
 }
 
 function BrowserSessionRow(props: BrowserSessionRowProps) {
-  const { epicId, session, chatById, duplicateTitles, onOpenTab, onOpenDrivingChat, onClose } =
-    props;
+  const {
+    session,
+    chatById,
+    duplicateTitles,
+    onOpenTab,
+    onOpenDrivingChat,
+    onClose,
+  } = props;
   if (session.tabs.length === 0) return null;
   const primaryTab = session.tabs[0];
   const activeTab = session.tabs.find((tab) => tab.viewed) ?? primaryTab;
@@ -356,31 +382,9 @@ function BrowserSessionRow(props: BrowserSessionRowProps) {
               isolated
             </span>
           ) : null}
-          <TooltipWrapper
-            label="Watch in picture in picture"
-            side="top"
-            sideOffset={undefined}
-            align={undefined}
-          >
-            <button
-              type="button"
-              aria-label={`Watch ${title} in picture in picture`}
-              data-testid="epic-browsers-watch"
-              className="flex size-5 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => {
-                recallPip({
-                  epicId,
-                  hostId: session.hostId,
-                  sessionId: session.sessionId,
-                  tabId: activeTab.tabId,
-                });
-              }}
-            >
-              <Eye className="size-3" aria-hidden />
-            </button>
-          </TooltipWrapper>
           {activeTab.drivenBy.map((driver) => {
-            const chatTitle = chatById.get(driver.chatId)?.title ?? driver.chatId;
+            const chatTitle =
+              chatById.get(driver.chatId)?.title ?? driver.chatId;
             return (
               <TooltipWrapper
                 key={driver.requestId}

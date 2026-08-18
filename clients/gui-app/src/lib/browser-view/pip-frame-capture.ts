@@ -28,13 +28,16 @@ import {
 } from "@/lib/browser-view/pip-headless-stream";
 import {
   applyPipStreamHealth,
+  completePipConversion,
+  failPipConversion,
   type PipSnapshot,
+  type PipTarget,
 } from "@/lib/browser-view/pip-store";
 import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
 import { useRunnerHostOrNull } from "@/providers/use-runner-host";
 
 interface OwnedPipFrame {
-  readonly burstId: string;
+  readonly selectionId: string;
   readonly src: string;
 }
 
@@ -43,16 +46,19 @@ export function usePipOwnedFrame(
   snapshot: PipSnapshot,
 ): string | null {
   const runnerHost = useRunnerHostOrNull();
-  const target = snapshot.target;
-  const hostId = target?.hostId ?? "";
-  const sessionId = target?.sessionId ?? "";
-  const tabId = target?.tabId ?? "";
-  const burstId = target?.burstId ?? null;
+  const {
+    captureTarget,
+    displayedSelectionId,
+    hostId,
+    selectionId,
+    sessionId,
+    tabId,
+  } = pipCaptureCoordinates(snapshot);
   const binding = useElectronBrowserTabBinding(sessionId, tabId);
   const hostEntry = useHostDirectoryEntry(hostId);
   const auth = useStreamAuthRevalidator();
   const client = useHostStreamClientFor(
-    target === null ? null : hostEntry,
+    captureTarget === null ? null : hostEntry,
     auth,
   );
   const bridge = useMemo(
@@ -61,23 +67,25 @@ export function usePipOwnedFrame(
     [runnerHost],
   );
   const useNative = binding !== null && bridge !== null;
-  const live = snapshot.phase === "live";
-  const retain = shouldRetainPipFrame(snapshot.phase, burstId);
-  const { owned, setOwned } = usePipFrameOwner(burstId, retain);
+  const enabled = captureTarget !== null;
+  const { owned, setOwned } = usePipFrameOwner(
+    displayedSelectionId,
+    selectionId,
+  );
   const clientHandle = usePipHostClientHandle(client);
 
   usePipNativeCaptureArm({
     binding,
     bridge,
-    burstId,
-    enabled: live && useNative,
+    selectionId,
+    enabled: enabled && useNative,
     epicId,
     setOwned,
   });
   usePipHeadlessCaptureArm({
-    burstId,
+    selectionId,
     clientHandle,
-    enabled: live && !useNative && sessionId.length > 0 && tabId.length > 0,
+    enabled: enabled && !useNative && sessionId.length > 0 && tabId.length > 0,
     epicId,
     hostId,
     sessionId,
@@ -85,12 +93,31 @@ export function usePipOwnedFrame(
     tabId,
   });
 
-  return frameSrcFor(owned, burstId, retain);
+  return frameSrcFor(owned, displayedSelectionId);
 }
 
 interface PipHostClientHandle {
   readonly get: () => IHostStreamClient<HostStreamRpcRegistry> | null;
   readonly subscribe: (onChange: () => void) => () => void;
+}
+
+function pipCaptureCoordinates(snapshot: PipSnapshot): {
+  readonly captureTarget: PipTarget | null;
+  readonly displayedSelectionId: string | null;
+  readonly hostId: string;
+  readonly selectionId: string | null;
+  readonly sessionId: string;
+  readonly tabId: string;
+} {
+  const captureTarget = snapshot.pendingTarget ?? snapshot.target;
+  return {
+    captureTarget,
+    displayedSelectionId: snapshot.target?.selectionId ?? null,
+    hostId: captureTarget?.hostId ?? "",
+    selectionId: captureTarget?.selectionId ?? null,
+    sessionId: captureTarget?.sessionId ?? "",
+    tabId: captureTarget?.tabId ?? "",
+  };
 }
 
 function usePipHostClientHandle(
@@ -139,13 +166,13 @@ function usePipNativeCaptureArm(input: {
   readonly enabled: boolean;
   readonly binding: ElectronBrowserTabRegistration | null;
   readonly bridge: DesktopPipCaptureBridge | null;
-  readonly burstId: string | null;
+  readonly selectionId: string | null;
   readonly epicId: string;
   readonly setOwned: Dispatch<SetStateAction<OwnedPipFrame | null>>;
 }): void {
   const tileKey =
     input.enabled && input.binding !== null
-      ? nativeTileBindingKey(input.binding)
+      ? `${nativeTileBindingKey(input.binding)}\u001f${input.selectionId ?? ""}`
       : null;
   const argsRef = useRef(input);
   useEffect(() => {
@@ -157,19 +184,20 @@ function usePipNativeCaptureArm(input: {
     if (
       args.binding === null ||
       args.bridge === null ||
-      args.burstId === null
+      args.selectionId === null
     ) {
       return;
     }
-    const liveBurstId = args.burstId;
+    const liveSelectionId = args.selectionId;
     return startNativePipCapture({
       binding: args.binding,
       bridge: args.bridge,
       epicId: args.epicId,
+      selectionId: liveSelectionId,
       onUrl: (src) => {
         args.setOwned((prev) => {
           if (prev !== null && prev.src !== src) URL.revokeObjectURL(prev.src);
-          return { burstId: liveBurstId, src };
+          return { selectionId: liveSelectionId, src };
         });
       },
     });
@@ -181,13 +209,18 @@ function usePipHeadlessCaptureArm(input: {
   readonly hostId: string;
   readonly sessionId: string;
   readonly tabId: string;
-  readonly burstId: string | null;
+  readonly selectionId: string | null;
   readonly epicId: string;
   readonly clientHandle: PipHostClientHandle;
   readonly setOwned: Dispatch<SetStateAction<OwnedPipFrame | null>>;
 }): void {
   const latchKey = input.enabled
-    ? [input.hostId, input.sessionId, input.tabId].join("\u001f")
+    ? [
+        input.hostId,
+        input.sessionId,
+        input.tabId,
+        input.selectionId ?? "",
+      ].join("\u001f")
     : null;
   const argsRef = useRef(input);
   useEffect(() => {
@@ -210,16 +243,17 @@ function usePipHeadlessCaptureArm(input: {
       closeStream?.();
       closeStream = undefined;
       openedInstanceId = nextId;
-      if (next === null || args.burstId === null) return;
-      const liveBurstId = args.burstId;
+      if (next === null || args.selectionId === null) return;
+      const liveSelectionId = args.selectionId;
       closeStream = startHeadlessPipCapture({
         client: next,
         epicId: args.epicId,
+        selectionId: liveSelectionId,
         onUrl: (src) => {
           args.setOwned((prev) => {
             if (prev !== null && prev.src !== src)
               URL.revokeObjectURL(prev.src);
-            return { burstId: liveBurstId, src };
+            return { selectionId: liveSelectionId, src };
           });
         },
         sessionId: args.sessionId,
@@ -237,27 +271,18 @@ function usePipHeadlessCaptureArm(input: {
   }, [latchKey]);
 }
 
-function shouldRetainPipFrame(
-  phase: PipSnapshot["phase"],
-  burstId: string | null,
-): boolean {
-  if (burstId === null) return false;
-  return phase === "live" || phase === "finished" || phase === "chip";
-}
-
 function frameSrcFor(
   owned: OwnedPipFrame | null,
-  burstId: string | null,
-  retain: boolean,
+  selectionId: string | null,
 ): string | null {
-  if (!retain || owned === null || burstId === null) return null;
-  if (owned.burstId !== burstId) return null;
+  if (owned === null || selectionId === null) return null;
+  if (owned.selectionId !== selectionId) return null;
   return owned.src;
 }
 
 function usePipFrameOwner(
-  burstId: string | null,
-  retain: boolean,
+  displayedSelectionId: string | null,
+  captureSelectionId: string | null,
 ): {
   readonly owned: OwnedPipFrame | null;
   readonly setOwned: Dispatch<SetStateAction<OwnedPipFrame | null>>;
@@ -272,11 +297,16 @@ function usePipFrameOwner(
   useEffect(() => {
     const current = ownedRef.current;
     if (current === null) return;
-    if (retain && current.burstId === burstId) return;
+    if (
+      current.selectionId === displayedSelectionId ||
+      current.selectionId === captureSelectionId
+    ) {
+      return;
+    }
     URL.revokeObjectURL(current.src);
     ownedRef.current = null;
     setOwned(null);
-  }, [burstId, retain, setOwned]);
+  }, [captureSelectionId, displayedSelectionId, setOwned]);
 
   useEffect(() => {
     return () => {
@@ -292,6 +322,7 @@ function startNativePipCapture(input: {
   readonly binding: ElectronBrowserTabRegistration;
   readonly bridge: DesktopPipCaptureBridge;
   readonly epicId: string;
+  readonly selectionId: string;
   readonly onUrl: (src: string) => void;
 }): () => void {
   let disposed = false;
@@ -300,15 +331,29 @@ function startNativePipCapture(input: {
     jpegBytes: Uint8Array | null,
   ): void => {
     if (disposed) return;
-    applyCaptureFrame(input.epicId, frame, jpegBytes, input.onUrl);
+    applyCaptureFrame({
+      epicId: input.epicId,
+      selectionId: input.selectionId,
+      frame,
+      jpegBytes,
+      onUrl: input.onUrl,
+    });
   };
   const subscription = input.bridge.onFrame(applyFrame);
-  void input.bridge.start(
-    input.binding.tileKey,
-    PIP_HEADLESS_MAX_WIDTH,
-    PIP_HEADLESS_MAX_HEIGHT,
-    PIP_HEADLESS_QUALITY,
-  );
+  void input.bridge
+    .start(
+      input.binding.tileKey,
+      PIP_HEADLESS_MAX_WIDTH,
+      PIP_HEADLESS_MAX_HEIGHT,
+      PIP_HEADLESS_QUALITY,
+    )
+    .catch((error: unknown) => {
+      failPipConversion(
+        input.epicId,
+        input.selectionId,
+        error instanceof Error ? error.message : "Picture in picture failed.",
+      );
+    });
   return () => {
     disposed = true;
     subscription.dispose();
@@ -319,6 +364,7 @@ function startNativePipCapture(input: {
 function startHeadlessPipCapture(input: {
   readonly client: IHostStreamClient<HostStreamRpcRegistry>;
   readonly epicId: string;
+  readonly selectionId: string;
   readonly onUrl: (src: string) => void;
   readonly sessionId: string;
   readonly tabId: string;
@@ -334,7 +380,13 @@ function startHeadlessPipCapture(input: {
     quality: PIP_HEADLESS_QUALITY,
     onFrame: (frame, jpegBytes) => {
       if (disposed) return;
-      applyCaptureFrame(input.epicId, frame, jpegBytes, input.onUrl);
+      applyCaptureFrame({
+        epicId: input.epicId,
+        selectionId: input.selectionId,
+        frame,
+        jpegBytes,
+        onUrl: input.onUrl,
+      });
     },
   });
   return () => {
@@ -343,19 +395,35 @@ function startHeadlessPipCapture(input: {
   };
 }
 
-function applyCaptureFrame(
-  epicId: string,
-  frame: BrowserScreencastServerFrame,
-  jpegBytes: Uint8Array | null,
-  onUrl: (url: string) => void,
-): void {
-  if (frame.kind === "stalled") {
-    applyPipStreamHealth(epicId, "stale");
+function applyCaptureFrame(input: {
+  readonly epicId: string;
+  readonly selectionId: string;
+  readonly frame: BrowserScreencastServerFrame;
+  readonly jpegBytes: Uint8Array | null;
+  readonly onUrl: (url: string) => void;
+}): void {
+  if (input.frame.kind === "stalled") {
+    applyPipStreamHealth(input.epicId, input.selectionId, "stale");
     return;
   }
-  if (frame.kind !== "frame" || jpegBytes === null) return;
-  applyPipStreamHealth(epicId, "live");
-  const bytes = new Uint8Array(jpegBytes);
+  if (input.frame.kind === "failed") {
+    failPipConversion(input.epicId, input.selectionId, input.frame.reason);
+    applyPipStreamHealth(input.epicId, input.selectionId, "disconnected");
+    return;
+  }
+  if (input.frame.kind === "complete") {
+    failPipConversion(
+      input.epicId,
+      input.selectionId,
+      "The browser preview ended before picture in picture was ready.",
+    );
+    applyPipStreamHealth(input.epicId, input.selectionId, "disconnected");
+    return;
+  }
+  if (input.frame.kind !== "frame" || input.jpegBytes === null) return;
+  applyPipStreamHealth(input.epicId, input.selectionId, "live");
+  const bytes = new Uint8Array(input.jpegBytes);
   const blob = new Blob([bytes], { type: "image/jpeg" });
-  onUrl(URL.createObjectURL(blob));
+  input.onUrl(URL.createObjectURL(blob));
+  completePipConversion(input.epicId, input.selectionId);
 }

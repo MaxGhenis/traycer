@@ -10,9 +10,6 @@ export const PIP_VIEWPORT_MARGIN = 16;
 export const PIP_DEFAULT_BOTTOM_INSET = 56;
 export const PIP_NUDGE_PX = 8;
 export const PIP_RESIZE_STEP_PX = 16;
-export const PIP_ROW_HEIGHT_PX = 44;
-export const PIP_ROW_GAP_PX = 6;
-export const PIP_MORE_HEIGHT_PX = 20;
 
 export type PipCorner =
   "bottom-right" | "bottom-left" | "top-left" | "top-right";
@@ -151,104 +148,6 @@ export function readViewportSize(): ViewportSize {
   return {
     width: window.innerWidth,
     height: window.innerHeight,
-  };
-}
-
-export function layoutPipStack(
-  geometry: EpicPipGeometry,
-  rowCount: number,
-  viewport: ViewportSize,
-): {
-  readonly geometry: EpicPipGeometry;
-  readonly rowLayout: {
-    readonly visibleCount: number;
-    readonly hiddenCount: number;
-    readonly outerHeight: number;
-  };
-} {
-  const raw = clampPipGeometry(geometry, viewport, geometry.previewHeight);
-  const available = Math.max(
-    0,
-    viewport.height - raw.previewHeight - PIP_VIEWPORT_MARGIN * 2,
-  );
-  const deficit = rowCount * (PIP_ROW_HEIGHT_PX + PIP_ROW_GAP_PX) - available;
-  const fitted = {
-    ...raw,
-    previewHeight: Math.max(
-      PIP_MIN_HEIGHT,
-      raw.previewHeight - Math.max(0, deficit),
-    ),
-  };
-  const rowLayout = pipRowLayout(
-    rowCount,
-    fitted.previewHeight,
-    viewport.height,
-  );
-  return {
-    geometry: clampPipGeometry(fitted, viewport, rowLayout.outerHeight),
-    rowLayout,
-  };
-}
-
-export function persistedPipGeometry(
-  geometry: EpicPipGeometry,
-  rowCount: number,
-  viewport: ViewportSize,
-  resize: boolean,
-): EpicPipGeometry {
-  const raw = clampPipGeometry(geometry, viewport, geometry.previewHeight);
-  const rendered = layoutPipStack(geometry, rowCount, viewport).geometry;
-  return {
-    anchorX: rendered.anchorX,
-    anchorY: rendered.anchorY,
-    previewWidth: resize ? raw.previewWidth : geometry.previewWidth,
-    previewHeight: resize ? raw.previewHeight : geometry.previewHeight,
-  };
-}
-
-function pipRowLayout(
-  rowCount: number,
-  previewHeight: number,
-  viewportHeight: number,
-): {
-  readonly visibleCount: number;
-  readonly hiddenCount: number;
-  readonly outerHeight: number;
-} {
-  if (rowCount === 0) {
-    return { visibleCount: 0, hiddenCount: 0, outerHeight: previewHeight };
-  }
-  const available = Math.max(
-    0,
-    viewportHeight - previewHeight - PIP_VIEWPORT_MARGIN * 2,
-  );
-  const allRowsHeight =
-    rowCount * PIP_ROW_HEIGHT_PX + rowCount * PIP_ROW_GAP_PX;
-  if (allRowsHeight <= available) {
-    return {
-      visibleCount: rowCount,
-      hiddenCount: 0,
-      outerHeight: previewHeight + allRowsHeight,
-    };
-  }
-  const visibleCount = Math.max(
-    0,
-    Math.min(
-      rowCount - 1,
-      Math.floor(
-        (available - PIP_MORE_HEIGHT_PX - PIP_ROW_GAP_PX) /
-          (PIP_ROW_HEIGHT_PX + PIP_ROW_GAP_PX),
-      ),
-    ),
-  );
-  return {
-    visibleCount,
-    hiddenCount: rowCount - visibleCount,
-    outerHeight:
-      previewHeight +
-      visibleCount * PIP_ROW_HEIGHT_PX +
-      (visibleCount + 1) * PIP_ROW_GAP_PX +
-      PIP_MORE_HEIGHT_PX,
   };
 }
 

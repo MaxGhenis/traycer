@@ -191,6 +191,8 @@ function BrowserSessionTileBody(props: BrowserSessionTileBodyProps) {
         key={props.castGeneration}
         epicId={props.epicId}
         node={peek}
+        viewTabId={props.viewTabId}
+        paneId={props.paneId}
         onMigrated={props.onMigrated}
       />
     );

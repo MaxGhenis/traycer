@@ -5,11 +5,8 @@ import {
   useState,
   type SyntheticEvent,
 } from "react";
-import {
-  AlertTriangle,
-  ShieldCheck,
-  Square,
-} from "lucide-react";
+import { AlertTriangle, ShieldCheck, Square } from "lucide-react";
+import { toast } from "sonner";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
 import { Button } from "@/components/ui/button";
@@ -53,6 +50,7 @@ import type { BrowserTileRef } from "@/stores/epics/canvas/types";
 import { BrowserDebugPanels } from "@/components/epic-canvas/renderers/browser-debug-panels";
 import { BrowserElementPickerResultPanel } from "@/components/epic-canvas/renderers/browser-element-picker";
 import { BrowserTileToolbar } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
+import { useCloseCanvasTileWithNestedFocus } from "@/components/epic-canvas/renderers/use-close-canvas-tile-with-nested-focus";
 import { useBrowserElementPicker } from "@/components/epic-canvas/renderers/use-browser-element-picker";
 import { BrowserTileFindAdapterBridge } from "@/components/epic-canvas/renderers/browser-tile-find-adapter";
 import { PRIMARY_TILE_CHROME_CAPABILITIES } from "@/components/epic-canvas/renderers/tile-controller";
@@ -64,6 +62,8 @@ import {
   BrowserTileCertificateInterstitial,
   BrowserTileDownloadStrip,
 } from "@/components/epic-canvas/renderers/browser-tile-status-panels";
+import { convertBrowserTabToPip } from "@/lib/browser-view/pip-store";
+import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
 
 export interface BrowserTileProps {
   readonly node: BrowserTileRef;
@@ -118,6 +118,13 @@ export function BrowserTile(props: BrowserTileProps) {
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const [zoomPercent, setZoomPercent] = useState(100);
+  const [durableTabId, setDurableTabId] = useState<string | null>(null);
+  useRegisterVisibleBrowserTile({
+    hostId,
+    sessionId: props.node.id,
+    tabId: durableTabId,
+    visible,
+  });
   const [downloads, setDownloads] = useState<
     readonly BrowserViewDownloadChange[]
   >([]);
@@ -131,6 +138,11 @@ export function BrowserTile(props: BrowserTileProps) {
   );
   const updateBrowserTileViewportPreset = useEpicCanvasStore(
     (state) => state.updateBrowserTileViewportPresetInTab,
+  );
+  const closeCanvasTile = useCloseCanvasTileWithNestedFocus(
+    props.viewTabId,
+    props.paneId,
+    props.node.instanceId,
   );
   const browserAttachmentTargetChatId = useEpicCanvasStore((state) =>
     selectSiblingChatIdForBrowserTile(
@@ -196,7 +208,7 @@ export function BrowserTile(props: BrowserTileProps) {
       title: props.node.name,
       tileKey,
       bridge: browserView,
-      onRegistered: null,
+      onRegistered: setDurableTabId,
       onActivatedHeadless: null,
     });
   }, [
@@ -719,6 +731,20 @@ export function BrowserTile(props: BrowserTileProps) {
         tileKey={tileKey}
       />
       <BrowserTileToolbar
+        pictureInPicture={{
+          disabled: browserView === null || durableTabId === null,
+          convert: () => {
+            if (durableTabId === null) return;
+            convertBrowserTabToPip({
+              epicId: props.epicId,
+              hostId,
+              sessionId: props.node.id,
+              tabId: durableTabId,
+              onReady: closeCanvasTile,
+              onError: (message) => toast.error(message),
+            });
+          },
+        }}
         controller={{
           capabilities: PRIMARY_TILE_CHROME_CAPABILITIES,
           url: props.node.url,
@@ -875,7 +901,10 @@ function BrowserCookieDegradedBanner(props: {
         aria-hidden
       />
       <span className="min-w-0 flex-1">
-        {browserCookieDegradedMessage(props.cryptoState, inAppBrowserBetaEnabled)}
+        {browserCookieDegradedMessage(
+          props.cryptoState,
+          inAppBrowserBetaEnabled,
+        )}
       </span>
     </div>
   );

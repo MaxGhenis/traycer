@@ -11,6 +11,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { AlertTriangle, Pause, Radio, WifiOff } from "lucide-react";
+import { toast } from "sonner";
 import {
   browserScreencastServerFrameSchema,
   type BrowserScreencastClientFrame,
@@ -30,6 +31,9 @@ import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for"
 import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
 import { cn } from "@/lib/utils";
 import type { BrowserPeekTileRef } from "@/stores/epics/canvas/types";
+import { BrowserPictureInPictureButton } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
+import { useCloseCanvasTileWithNestedFocus } from "@/components/epic-canvas/renderers/use-close-canvas-tile-with-nested-focus";
+import { convertBrowserTabToPip } from "@/lib/browser-view/pip-store";
 
 const DEFAULT_MAX_WIDTH = 1280;
 const DEFAULT_MAX_HEIGHT = 720;
@@ -67,6 +71,8 @@ type BrowserPeekDialog = Extract<
 export interface BrowserPeekTileProps {
   readonly epicId: string;
   readonly node: BrowserPeekTileRef;
+  readonly viewTabId: string;
+  readonly paneId: string;
   readonly onMigrated?: () => void;
 }
 
@@ -77,6 +83,11 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const auth = useStreamAuthRevalidator();
   const client = useHostStreamClientFor(hostEntry, auth);
   const visible = useTileBodyVisible();
+  const closeCanvasTile = useCloseCanvasTileWithNestedFocus(
+    props.viewTabId,
+    props.paneId,
+    node.instanceId,
+  );
   useRegisterVisibleBrowserTile({
     hostId: tabHostId,
     sessionId: node.sessionId,
@@ -513,6 +524,21 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           <status.Icon className="size-3.5" aria-hidden />
           <span>{status.label}</span>
         </div>
+        <BrowserPictureInPictureButton
+          control={{
+            disabled: client === null,
+            convert: () => {
+              convertBrowserTabToPip({
+                epicId,
+                hostId: tabHostId,
+                sessionId: node.sessionId,
+                tabId: node.tabId,
+                onReady: closeCanvasTile,
+                onError: (message) => toast.error(message),
+              });
+            },
+          }}
+        />
       </div>
       <div
         ref={viewportRef}

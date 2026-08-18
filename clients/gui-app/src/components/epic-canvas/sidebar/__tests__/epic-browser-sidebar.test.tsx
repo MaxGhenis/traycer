@@ -24,12 +24,7 @@ import {
   useEpicCanvasStore,
 } from "@/stores/epics/canvas/store";
 import { makeBrowserSessionTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
-import {
-  applyPipBurstStarted,
-  dismissPip,
-  getPipSnapshot,
-  resetPipStoreForTests,
-} from "@/lib/browser-view/pip-store";
+import { resetPipStoreForTests } from "@/lib/browser-view/pip-store";
 import {
   findElectronBrowserTabBinding,
   handleElectronBrowserTabFrame,
@@ -247,9 +242,7 @@ describe("BrowsersPanelBody", () => {
   });
 
   it("lists sessions by their active tab's title, with dormant styling and isolated-only badges", () => {
-    render(
-      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
-    );
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     expect(screen.getByText("Live page")).toBeTruthy();
     expect(screen.getByText("Dormant page")).toBeTruthy();
@@ -268,9 +261,7 @@ describe("BrowsersPanelBody", () => {
   });
 
   it("gives every row a unique, title-derived accessible close name", () => {
-    render(
-      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
-    );
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     expect(
       screen.getByRole("button", { name: "Close Live page" }),
@@ -278,9 +269,7 @@ describe("BrowsersPanelBody", () => {
     expect(
       screen.getByRole("button", { name: "Close Dormant page" }),
     ).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Close Checkout" }),
-    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close Checkout" })).toBeTruthy();
   });
 
   it("disambiguates duplicate host fallback titles with each tab's origin", () => {
@@ -302,9 +291,7 @@ describe("BrowsersPanelBody", () => {
       ),
     };
 
-    render(
-      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
-    );
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     const closeButtons = screen.getAllByRole("button", {
       name: /^Close 127\.0\.0\.1 \(/,
@@ -323,7 +310,11 @@ describe("BrowsersPanelBody", () => {
   });
 
   it("falls back to session ids when duplicate titles also share no origin", () => {
-    const sessionIds = ["sess-fallback-1", "sess-fallback-2", "sess-fallback-3"];
+    const sessionIds = [
+      "sess-fallback-1",
+      "sess-fallback-2",
+      "sess-fallback-3",
+    ];
     sessionsState.value = {
       ...sessionsState.value,
       items: sessionIds.map((sessionId, index) =>
@@ -343,9 +334,7 @@ describe("BrowsersPanelBody", () => {
       ),
     };
 
-    render(
-      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
-    );
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     const closeLabels = screen
       .getAllByRole("button", { name: /^Close Checkout \(/ })
@@ -376,9 +365,7 @@ describe("BrowsersPanelBody", () => {
       ],
     };
 
-    render(
-      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
-    );
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     expect(
       screen.getByRole("button", { name: "Close Unique page" }),
@@ -409,9 +396,7 @@ describe("BrowsersPanelBody", () => {
       ),
     };
 
-    render(
-      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
-    );
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     expect(screen.getAllByRole("button", { name: /^Close / })).toHaveLength(
       titles.length,
@@ -430,9 +415,7 @@ describe("BrowsersPanelBody", () => {
   });
 
   it("inherits the shared sidebar scroll container", () => {
-    render(
-      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
-    );
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     const list = screen.getByTestId("epic-browsers-panel-list");
     const scrollContainer = list.closest('[data-sidebar="content"]');
@@ -474,22 +457,18 @@ describe("BrowsersPanelBody", () => {
       ],
     };
 
-    render(
-      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
-    );
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     expect(screen.getByText("Browser")).toBeTruthy();
     expect(screen.queryByText("Agent browser")).toBeNull();
     expect(screen.queryByText("not a URL")).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Close Browser" }),
-    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close Browser" })).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Open Old page" }).className,
     ).toContain("opacity-60");
-    expect(screen.getByText("Browser").closest("div.group")?.className).not.toContain(
-      "opacity-60",
-    );
+    expect(
+      screen.getByText("Browser").closest("div.group")?.className,
+    ).not.toContain("opacity-60");
   });
 
   it("shows drivenBy attribution via real tooltip and opens the driving chat", async () => {
@@ -518,9 +497,7 @@ describe("BrowsersPanelBody", () => {
   it("close sends closeSession (host delete resource)", () => {
     render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Close Live page" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Close Live page" }));
     expect(closeSession).toHaveBeenCalledWith("sess-primary");
   });
 
@@ -643,49 +620,7 @@ describe("BrowsersPanelBody", () => {
 
     expect(screen.getByTestId("epic-browsers-panel-empty")).toBeTruthy();
     expect(screen.getByText("No browsers yet.")).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Add browser" }),
-    ).toBeTruthy();
-  });
-
-  it("watch recalls PiP and leaves row-click open-tile behavior unchanged", () => {
-    resetPipStoreForTests();
-    applyPipBurstStarted({
-      epicId: "epic-1",
-      hostId: "host-1",
-      sessionId: "sess-primary",
-      tabId: "tab-live",
-      burstId: "b-watch",
-      chatId: "chat-driver",
-      startedAt: 1,
-    });
-    dismissPip("epic-1");
-    expect(getPipSnapshot("epic-1").phase).toBe("dismissed-burst");
-
-    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
-
-    const watch = screen.getByRole("button", {
-      name: "Watch Live page in picture in picture",
-    });
-    expect(watch.getAttribute("data-testid")).toBe("epic-browsers-watch");
-    fireEvent.click(watch);
-
-    const recalled = getPipSnapshot("epic-1");
-    expect(recalled.phase).toBe("live");
-    expect(recalled.pinned).toBe(true);
-    expect(recalled.target?.burstId).toBe("b-watch");
-    const expected = makeBrowserSessionTileRef({
-      name: "Live page",
-      hostId: "host-1",
-      sessionId: "sess-primary",
-      tabId: "tab-live",
-    });
-    expect(findOpenArtifactInTab("view-tab-1", expected.id)).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: /^Live page/i }));
-    const open = findOpenArtifactInTab("view-tab-1", expected.id);
-    expect(open).not.toBeNull();
-    resetPipStoreForTests();
+    expect(screen.getByRole("button", { name: "Add browser" })).toBeTruthy();
   });
 });
 

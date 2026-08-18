@@ -5,6 +5,7 @@ import {
   Bug,
   Info,
   Monitor,
+  PictureInPicture2,
   RotateCw,
   Smartphone,
   Tablet,
@@ -32,6 +33,12 @@ import type {
   BrowserViewViewportPresetId,
 } from "@/lib/browser-view/desktop-browser-view";
 import { useSettingsStore } from "@/stores/settings/settings-store";
+import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
+
+export interface BrowserPictureInPictureControl {
+  readonly disabled: boolean;
+  readonly convert: () => void;
+}
 
 const BROWSER_VIEWPORT_PRESETS: ReadonlyArray<{
   readonly id: BrowserViewViewportPresetId;
@@ -67,6 +74,7 @@ const BROWSER_VIEWPORT_PRESETS: ReadonlyArray<{
 
 export function BrowserTileToolbar(props: {
   readonly controller: TileController;
+  readonly pictureInPicture: BrowserPictureInPictureControl | null;
 }) {
   const controller = props.controller;
   const capabilities = controller.capabilities;
@@ -77,7 +85,8 @@ export function BrowserTileToolbar(props: {
   const showTrailing =
     capabilities.viewportPreset ||
     capabilities.elementPicker ||
-    capabilities.devtools;
+    capabilities.devtools ||
+    props.pictureInPicture !== null;
   if (!showNav && !showAddress && !showZoom && !showTrailing) return null;
 
   return (
@@ -88,7 +97,10 @@ export function BrowserTileToolbar(props: {
       ) : null}
       {showZoom ? <BrowserTileToolbarZoom controller={controller} /> : null}
       {showTrailing ? (
-        <BrowserTileToolbarTrailing controller={controller} />
+        <BrowserTileToolbarTrailing
+          controller={controller}
+          pictureInPicture={props.pictureInPicture}
+        />
       ) : null}
     </div>
   );
@@ -211,6 +223,7 @@ function BrowserTileToolbarZoom(props: {
 
 function BrowserTileToolbarTrailing(props: {
   readonly controller: TileController;
+  readonly pictureInPicture: BrowserPictureInPictureControl | null;
 }) {
   const controller = props.controller;
   const capabilities = controller.capabilities;
@@ -226,6 +239,9 @@ function BrowserTileToolbarTrailing(props: {
       {capabilities.elementPicker && controller.elementPicker !== null ? (
         <BrowserElementPickerToggle controller={controller.elementPicker} />
       ) : null}
+      {props.pictureInPicture === null ? null : (
+        <BrowserPictureInPictureButton control={props.pictureInPicture} />
+      )}
       {capabilities.devtools ? (
         <Button
           type="button"
@@ -241,6 +257,31 @@ function BrowserTileToolbarTrailing(props: {
         </Button>
       ) : null}
     </div>
+  );
+}
+
+export function BrowserPictureInPictureButton(props: {
+  readonly control: BrowserPictureInPictureControl;
+}) {
+  return (
+    <TooltipWrapper
+      label="Convert to picture-in-picture"
+      side="top"
+      sideOffset={6}
+      align="center"
+    >
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Convert to picture-in-picture"
+        data-testid="browser-convert-to-pip"
+        disabled={props.control.disabled}
+        onClick={props.control.convert}
+      >
+        <PictureInPicture2 />
+      </Button>
+    </TooltipWrapper>
   );
 }
 

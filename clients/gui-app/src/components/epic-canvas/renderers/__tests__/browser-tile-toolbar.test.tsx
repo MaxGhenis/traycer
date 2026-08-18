@@ -1,7 +1,7 @@
 import "../../../../../__tests__/test-browser-apis";
 import type { SyntheticEvent } from "react";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserTileToolbar } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
 import {
   PRIMARY_TILE_CHROME_CAPABILITIES,
@@ -87,6 +87,7 @@ function renderToolbar(
     <TooltipProvider>
       <BrowserTileToolbar
         controller={makeController(capabilities, elementPicker)}
+        pictureInPicture={null}
       />
     </TooltipProvider>,
   );
@@ -135,6 +136,23 @@ describe("<BrowserTileToolbar /> capability gating", () => {
     for (const query of CHROME_QUERIES) {
       expect(queryChrome(query)).toBeNull();
     }
+  });
+
+  it("renders the explicit picture-in-picture conversion action", () => {
+    const convert = vi.fn();
+    render(
+      <TooltipProvider>
+        <BrowserTileToolbar
+          controller={makeController(DISABLED_CAPABILITIES, null)}
+          pictureInPicture={{ disabled: false, convert }}
+        />
+      </TooltipProvider>,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Convert to picture-in-picture" }),
+    );
+    expect(convert).toHaveBeenCalledOnce();
   });
 
   it.each([

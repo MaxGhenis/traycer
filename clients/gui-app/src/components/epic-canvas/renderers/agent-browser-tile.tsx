@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
@@ -48,6 +49,7 @@ import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import type { AgentBrowserTileRef } from "@/stores/epics/canvas/types";
+import { convertBrowserTabToPip } from "@/lib/browser-view/pip-store";
 
 /**
  * How long a tile can sit in `"loading"` before the placeholder stops
@@ -431,7 +433,23 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
         />
       ) : null}
       {chrome.controller !== null ? (
-        <BrowserTileToolbar controller={chrome.controller} />
+        <BrowserTileToolbar
+          controller={chrome.controller}
+          pictureInPicture={{
+            disabled: epicId === null || durableTabId === null,
+            convert: () => {
+              if (epicId === null || durableTabId === null) return;
+              convertBrowserTabToPip({
+                epicId,
+                hostId,
+                sessionId: props.node.sessionId,
+                tabId: durableTabId,
+                onReady: closeCanvasTile,
+                onError: (message) => toast.error(message),
+              });
+            },
+          }}
+        />
       ) : null}
       <div
         ref={surfaceRef}
@@ -443,15 +461,9 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
             "absolute inset-0 flex min-h-0 flex-col items-center justify-center gap-3 px-4 text-center",
             effectiveStatus === "ready" && "pointer-events-none opacity-0",
           )}
-          role={
-            effectiveStatus === "dead" || unreachable
-              ? "alert"
-              : "status"
-          }
+          role={effectiveStatus === "dead" || unreachable ? "alert" : "status"}
           aria-live={
-            effectiveStatus === "dead" || unreachable
-              ? "assertive"
-              : "polite"
+            effectiveStatus === "dead" || unreachable ? "assertive" : "polite"
           }
           aria-busy={effectiveStatus === "loading" && !unreachable}
         >

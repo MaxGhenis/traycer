@@ -811,7 +811,14 @@ describe("BrowserPeekTile", () => {
       return undefined;
     });
 
-    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    render(
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
+    );
 
     expect(consoleError).not.toHaveBeenCalledWith(
       expect.stringContaining("Too many re-renders"),
@@ -822,7 +829,14 @@ describe("BrowserPeekTile", () => {
   });
 
   it("renders JPEG frames and acks only after the image is presented", () => {
-    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    render(
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
+    );
     const stream = liveStream();
     act(() => {
       stream.emitStatus("open");
@@ -874,7 +888,14 @@ describe("BrowserPeekTile", () => {
   });
 
   it("shows and clears the quiet pending migration affordance", () => {
-    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    render(
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
+    );
     const stream = liveStream();
 
     act(() => {
@@ -910,6 +931,8 @@ describe("BrowserPeekTile", () => {
     const onMigrated = vi.fn();
     render(
       <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
         epicId="epic-1"
         node={PEEK_NODE}
         onMigrated={onMigrated}
@@ -930,7 +953,14 @@ describe("BrowserPeekTile", () => {
   });
 
   it("ignores an armed ack that arrives after blur disarmed the tile", () => {
-    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    render(
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
+    );
     const stream = liveStream();
     const controls = screen.getByRole("button", {
       name: "Browser screencast controls",
@@ -963,7 +993,14 @@ describe("BrowserPeekTile", () => {
   });
 
   it("renders an alert overlay and responds with its generation", () => {
-    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    render(
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
+    );
     const stream = liveStream();
     armPeekTile(stream);
     act(() => {
@@ -996,7 +1033,14 @@ describe("BrowserPeekTile", () => {
   });
 
   it("renders confirm and prompt overlays with dismiss and prompt responses", () => {
-    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    render(
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
+    );
     const stream = liveStream();
     armPeekTile(stream);
     act(() => {
@@ -1054,7 +1098,14 @@ describe("BrowserPeekTile", () => {
   });
 
   it("drops stale dialog generations before presenting or responding", () => {
-    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    render(
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
+    );
     const stream = liveStream();
     armPeekTile(stream);
     act(() => {
@@ -1100,7 +1151,14 @@ describe("BrowserPeekTile", () => {
   });
 
   it("clears only the matching text-free dialog settlement", () => {
-    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    render(
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
+    );
     const stream = liveStream();
     armPeekTile(stream);
     act(() => {
@@ -1140,7 +1198,14 @@ describe("BrowserPeekTile", () => {
   });
 
   it("resets control state on reconnect, re-arms with a fresh epoch, and accepts a low dialog generation", () => {
-    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    render(
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
+    );
     const stream = liveStream();
     armPeekTile(stream);
     act(() => {
@@ -1245,7 +1310,14 @@ describe("BrowserPeekTile", () => {
   });
 
   it("sends one insertText frame for a local CJK composition and shows its indicator", () => {
-    render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    render(
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
+    );
     const stream = liveStream();
     armPeekTile(stream);
     const input = screen.getByRole("textbox", { name: "Browser IME input" });
@@ -1280,12 +1352,24 @@ describe("BrowserPeekTile", () => {
 
   it("pauses the stream when the tile is hidden", () => {
     const { rerender } = render(
-      <BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />,
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
     );
     const stream = liveStream();
 
     hookState.visible = false;
-    rerender(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+    rerender(
+      <BrowserPeekTile
+        viewTabId="view-tab-1"
+        paneId="pane-1"
+        epicId="epic-1"
+        node={PEEK_NODE}
+      />,
+    );
 
     expect(stream.sentFrames).toContainEqual({
       kind: "setPaused",
@@ -1297,7 +1381,14 @@ describe("BrowserPeekTile", () => {
   it("coalesces tile viewport changes with a trailing 200ms debounce", async () => {
     vi.useFakeTimers();
     try {
-      render(<BrowserPeekTile epicId="epic-1" node={PEEK_NODE} />);
+      render(
+        <BrowserPeekTile
+          viewTabId="view-tab-1"
+          paneId="pane-1"
+          epicId="epic-1"
+          node={PEEK_NODE}
+        />,
+      );
       const stream = liveStream();
       const observer = controllableResizeObservers.at(-1);
       if (observer === undefined) throw new Error("expected resize observer");
