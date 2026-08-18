@@ -28,7 +28,6 @@ import type {
   BrowserViewDownloadCancel,
   BrowserViewDownloadChange,
   BrowserViewDurableTabRegistration,
-  BrowserViewElementPickResult,
   BrowserViewFindChange,
   BrowserViewFindRequest,
   BrowserViewFindStop,
@@ -47,6 +46,13 @@ import type {
   BrowserViewTileUpsert,
   BrowserViewViewportPresetChange,
 } from "../ipc-contracts/browser-view-types";
+import type {
+  BrowserAnnotationAttachedIpcEvent,
+  BrowserAnnotationAttachResultInput,
+  BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationSetTargetChatLabelInput,
+  BrowserAnnotationStartResult,
+} from "../ipc-contracts/browser-annotation-types";
 import { subscribe, type Disposable, type Listener } from "./subscribe";
 
 export interface BrowserViewBridgeSurface {
@@ -80,10 +86,16 @@ export interface BrowserViewBridgeSurface {
       input: BrowserViewTileKey,
     ): Promise<BrowserViewDebugSnapshotChange>;
     clearDebugEvents(input: BrowserViewTileKey): Promise<void>;
-    pickElement(
+    startAnnotation(
       input: BrowserViewTileKey,
-    ): Promise<BrowserViewElementPickResult>;
-    cancelElementPick(input: BrowserViewTileKey): Promise<void>;
+    ): Promise<BrowserAnnotationStartResult>;
+    cancelAnnotation(input: BrowserViewTileKey): Promise<void>;
+    setAnnotationTargetChatLabel(
+      input: BrowserAnnotationSetTargetChatLabelInput,
+    ): Promise<void>;
+    reportAnnotationAttachResult(
+      input: BrowserAnnotationAttachResultInput,
+    ): Promise<void>;
     openDevTools(input: BrowserViewTileKey): Promise<void>;
     occludeForOverlay(
       input: BrowserViewOverlayOcclusion,
@@ -124,6 +136,12 @@ export interface BrowserViewBridgeSurface {
     ): Disposable;
     onControlRevoked(
       handler: Listener<BrowserViewControlRevokedChange>,
+    ): Disposable;
+    onAnnotationEvent(
+      handler: Listener<BrowserAnnotationSessionIpcEvent>,
+    ): Disposable;
+    onAnnotationAttached(
+      handler: Listener<BrowserAnnotationAttachedIpcEvent>,
     ): Disposable;
     // Durable user-tab driving over the same typed CDP bridge as agent tabs.
     dispatchCdp(
@@ -249,14 +267,24 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
           RunnerHostInvoke.browserViewClearDebugEvents,
           input,
         ) as Promise<void>,
-      pickElement: (input) =>
+      startAnnotation: (input) =>
         ipcRenderer.invoke(
-          RunnerHostInvoke.browserViewPickElement,
+          RunnerHostInvoke.browserViewStartAnnotation,
           input,
-        ) as Promise<BrowserViewElementPickResult>,
-      cancelElementPick: (input) =>
+        ) as Promise<BrowserAnnotationStartResult>,
+      cancelAnnotation: (input) =>
         ipcRenderer.invoke(
-          RunnerHostInvoke.browserViewCancelElementPick,
+          RunnerHostInvoke.browserViewCancelAnnotation,
+          input,
+        ) as Promise<void>,
+      setAnnotationTargetChatLabel: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewSetAnnotationTargetChatLabel,
+          input,
+        ) as Promise<void>,
+      reportAnnotationAttachResult: (input) =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewAnnotationAttachResult,
           input,
         ) as Promise<void>,
       openDevTools: (input) =>
@@ -350,6 +378,16 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
       onControlRevoked: (handler) =>
         subscribe<BrowserViewControlRevokedChange>(
           RunnerHostEvent.browserViewControlRevoked,
+          handler,
+        ),
+      onAnnotationEvent: (handler) =>
+        subscribe<BrowserAnnotationSessionIpcEvent>(
+          RunnerHostEvent.browserViewAnnotationEvent,
+          handler,
+        ),
+      onAnnotationAttached: (handler) =>
+        subscribe<BrowserAnnotationAttachedIpcEvent>(
+          RunnerHostEvent.browserViewAnnotationAttached,
           handler,
         ),
       dispatchCdp: (input) =>

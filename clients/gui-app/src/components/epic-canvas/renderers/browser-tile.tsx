@@ -48,10 +48,9 @@ import { useSettingsStore } from "@/stores/settings/settings-store";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import type { BrowserTileRef } from "@/stores/epics/canvas/types";
 import { BrowserDebugPanels } from "@/components/epic-canvas/renderers/browser-debug-panels";
-import { BrowserElementPickerResultPanel } from "@/components/epic-canvas/renderers/browser-element-picker";
 import { BrowserTileToolbar } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
 import { useCloseCanvasTileWithNestedFocus } from "@/components/epic-canvas/renderers/use-close-canvas-tile-with-nested-focus";
-import { useBrowserElementPicker } from "@/components/epic-canvas/renderers/use-browser-element-picker";
+import { useBrowserAnnotationSession } from "@/hooks/browser/use-browser-annotation-session";
 import { BrowserTileFindAdapterBridge } from "@/components/epic-canvas/renderers/browser-tile-find-adapter";
 import { PRIMARY_TILE_CHROME_CAPABILITIES } from "@/components/epic-canvas/renderers/tile-controller";
 import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
@@ -327,13 +326,17 @@ export function BrowserTile(props: BrowserTileProps) {
   });
   const snapshot = useBrowserViewSnapshot(tileKey);
   const cookieCryptoState = useBrowserCookieCryptoState(browserView);
-  const elementPicker = useBrowserElementPicker({
+  const controlState = useBrowserTileControlState(props.node.instanceId);
+  const annotation = useBrowserAnnotationSession({
     browserView,
     tileKey,
     status,
-    targetChatId: browserAttachmentTargetChatId,
+    epicId: props.epicId,
+    browserHostId: props.node.hostId,
+    preferredChatId:
+      controlState.active?.chatId ?? controlState.pending?.chatId ?? null,
+    fallbackChatId: null,
   });
-  const controlState = useBrowserTileControlState(props.node.instanceId);
 
   useEffect(() => {
     if (browserView === null) return;
@@ -755,7 +758,8 @@ export function BrowserTile(props: BrowserTileProps) {
           viewportPreset: readBrowserViewportPreset(props.node.viewportPreset),
           disabled: browserView === null,
           cookieCryptoState,
-          elementPicker,
+          zoomLocked: annotation.zoomLocked,
+          annotation,
           onNavigate: navigateToAddress,
           onAddressChange: (value) => {
             setAddressDraft({
@@ -827,7 +831,6 @@ export function BrowserTile(props: BrowserTileProps) {
           onProceed={proceedCertificate}
         />
       </div>
-      <BrowserElementPickerResultPanel controller={elementPicker} />
       <BrowserDebugPanels
         browserView={browserView}
         tileKey={tileKey}

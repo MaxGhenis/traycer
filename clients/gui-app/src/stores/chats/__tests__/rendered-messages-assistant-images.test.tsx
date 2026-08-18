@@ -76,6 +76,7 @@ function userMessage(messageId: string): Extract<Message, { role: "user" }> {
       kind: "user",
       content: CONTENT,
       browserContextAttachments: [],
+      browserAnnotations: [],
     },
     timestamp: 1000,
     sessionAnchor: null,
@@ -426,7 +427,12 @@ describe("useRenderedMessages assistant image echo dedup", () => {
     };
     const steered: Message = {
       ...userMessage("message-queue-img"),
-      message: { kind: "user", content, browserContextAttachments: [] },
+      message: {
+        kind: "user",
+        content,
+        browserContextAttachments: [],
+        browserAnnotations: [],
+      },
       timestamp: 2002,
     };
 

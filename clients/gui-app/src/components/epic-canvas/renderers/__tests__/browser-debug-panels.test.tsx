@@ -182,11 +182,18 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
     return Promise.resolve();
   }
 
-  pickElement(): Promise<{ readonly outcome: "cancelled" }> {
-    return Promise.resolve({ outcome: "cancelled" });
+  startAnnotation(): Promise<{ readonly ok: true }> {
+    return Promise.resolve({ ok: true });
   }
 
-  cancelElementPick(): Promise<void> {
+  cancelAnnotation(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  setAnnotationTargetChatLabel(): Promise<void> {
+    return Promise.resolve();
+  }
+  reportAnnotationAttachResult(): Promise<void> {
     return Promise.resolve();
   }
 
@@ -322,6 +329,14 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
   }
 
   onControlRevoked() {
+    return disposable;
+  }
+
+  onAnnotationEvent() {
+    return disposable;
+  }
+
+  onAnnotationAttached() {
     return disposable;
   }
 

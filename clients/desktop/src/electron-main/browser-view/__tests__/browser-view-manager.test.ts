@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { log } from "../../app/logger";
 import {
+  ANNOTATION_ATTACH_ACK_TIMEOUT_MS,
   BrowserViewManager,
   PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT,
   type BrowserViewCapturedImage,
@@ -33,6 +34,11 @@ import type {
   BrowserViewTileUpsert,
 } from "../../../ipc-contracts/browser-view-types";
 import type { PipCaptureIpcPayload } from "../../../ipc-contracts/pip-capture-types";
+import type {
+  BrowserAnnotationAttachedIpcEvent,
+  BrowserAnnotationSessionIpcEvent,
+} from "../../../ipc-contracts/browser-annotation-types";
+import { ANNOTATION_BINDING_NAME } from "../browser-annotation-overlay-script";
 import type {
   BrowserViewCertificateErrorChange as BrowserSessionCertificateErrorChange,
   BrowserViewDownloadChange as BrowserSessionDownloadChange,
@@ -99,6 +105,20 @@ class FakeDebugger implements BrowserViewDebugger {
     if (method === "Page.addScriptToEvaluateOnNewDocument") {
       return Promise.resolve({ identifier: "seed-script-1" });
     }
+    if (method === "Page.getFrameTree") {
+      return Promise.resolve({ frameTree: { frame: { id: "FRAME-1" } } });
+    }
+    if (method === "Page.createIsolatedWorld") {
+      return Promise.resolve({ executionContextId: 77 });
+    }
+    if (
+      method === "Page.enable" ||
+      method === "Runtime.enable" ||
+      method === "Runtime.addBinding" ||
+      method === "Runtime.removeBinding"
+    ) {
+      return Promise.resolve({});
+    }
     return Promise.resolve(null);
   }
 
@@ -125,8 +145,14 @@ class FakeDebugger implements BrowserViewDebugger {
         },
       };
     }
-    if (expression.includes("getBoundingClientRect")) {
+    if (
+      expression.includes("getBoundingClientRect") &&
+      !expression.includes("__traycerAnnotation")
+    ) {
       return { result: { value: { x: 10, y: 10 } } };
+    }
+    if (expression.includes("traycerAnnotationViewport")) {
+      return { result: { value: { width: 320, height: 180 } } };
     }
     return { result: { value: true } };
   }
@@ -194,6 +220,11 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
   destroyed = false;
   zoomFactor = 1;
   title = "";
+  emptyCapture = false;
+  deferCaptures = false;
+  private readonly captureResolvers: Array<
+    (image: BrowserViewCapturedImage) => void
+  > = [];
   devToolsWebContentsId: number | null = null;
   openDevToolsCalls: unknown[] = [];
   windowOpenHandler:
@@ -234,14 +265,46 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
     return Promise.resolve([]);
   }
 
+  resolveNextCapture(): void {
+    const resolve = this.captureResolvers.shift();
+    if (resolve === undefined) throw new Error("No capture is pending");
+    resolve(this.buildCaptureImage());
+  }
+
   capturePage(): Promise<BrowserViewCapturedImage> {
     this.lifecycle.push("capturePage");
     this.captureVisibleStates.push(this.readVisible());
-    return Promise.resolve({
+    if (this.deferCaptures) {
+      return new Promise((resolve) => {
+        this.captureResolvers.push(resolve);
+      });
+    }
+    if (this.emptyCapture) {
+      const emptyBytes = new Uint8Array();
+      const empty: BrowserViewCapturedImage = {
+        getSize: () => ({ width: 0, height: 0 }),
+        toJPEG: () => emptyBytes,
+        toDataURL: () => "",
+        isEmpty: () => true,
+        crop: () => empty,
+        toPNG: () => emptyBytes,
+      };
+      return Promise.resolve(empty);
+    }
+    return Promise.resolve(this.buildCaptureImage());
+  }
+
+  private buildCaptureImage(): BrowserViewCapturedImage {
+    const bytes: Uint8Array = Uint8Array.from([1, 2, 3]);
+    const image: BrowserViewCapturedImage = {
       getSize: () => ({ width: 320, height: 180 }),
-      toJPEG: () => Uint8Array.from([1, 2, 3]),
+      toJPEG: () => bytes,
       toDataURL: () => `data:image/png;base64,${this.id}`,
-    });
+      isEmpty: () => false,
+      crop: () => image,
+      toPNG: () => bytes,
+    };
+    return image;
   }
 
   getURL(): string {
@@ -487,6 +550,8 @@ interface Harness {
   readonly cdpTargetAttachedNotifications: AgentBrowserViewCdpTargetAttachedChange[];
   readonly tileHandoffNotifications: AgentBrowserViewTileHandoffChange[];
   readonly snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[];
+  readonly annotationEvents: BrowserAnnotationSessionIpcEvent[];
+  readonly annotationAttached: BrowserAnnotationAttachedIpcEvent[];
   readonly storageStateApplications: BrowserViewStorageStateApply[];
   readonly storageStateCaptures: BrowserViewStorageStateCapture[];
   readonly primaryProfileCaptureSourceOrigins: string[][];
@@ -537,6 +602,8 @@ function createHarnessWithOptions(
     [];
   const tileHandoffNotifications: AgentBrowserViewTileHandoffChange[] = [];
   const snapshotInvalidations: BrowserViewSnapshotInvalidatedChange[] = [];
+  const annotationEvents: BrowserAnnotationSessionIpcEvent[] = [];
+  const annotationAttached: BrowserAnnotationAttachedIpcEvent[] = [];
   const storageStateApplications: BrowserViewStorageStateApply[] = [];
   const storageStateCaptures: BrowserViewStorageStateCapture[] = [];
   const primaryProfileCaptureSourceOrigins: string[][] = [];
@@ -617,6 +684,12 @@ function createHarnessWithOptions(
     notifyTileHandoff: (_windowId, change) => {
       tileHandoffNotifications.push(change);
     },
+    notifyAnnotationEvent: (_windowId, change) => {
+      annotationEvents.push(change);
+    },
+    notifyAnnotationAttached: (_windowId, change) => {
+      annotationAttached.push(change);
+    },
     scheduleDebugSnapshot: (callback) => {
       const timer = setTimeout(callback, 16);
       return {
@@ -638,10 +711,7 @@ function createHarnessWithOptions(
       storageStateCaptures.push(input);
       return (
         harnessOptions?.captureStorageState ?? DEFAULT_CAPTURE_STORAGE_STATE
-      )(
-        input,
-        webContents,
-      );
+      )(input, webContents);
     },
     capturePrimaryProfile: (origins) => {
       primaryProfileCaptureSourceOrigins.push(
@@ -682,6 +752,8 @@ function createHarnessWithOptions(
     cdpTargetAttachedNotifications,
     tileHandoffNotifications,
     snapshotInvalidations,
+    annotationEvents,
+    annotationAttached,
     storageStateApplications,
     storageStateCaptures,
     primaryProfileCaptureSourceOrigins,
@@ -2527,65 +2599,6 @@ describe("BrowserViewManager", () => {
     expect(view.webContents.reloadCalls).toBe(0);
   });
 
-  it("ends an active element pick on same-document navigation", async () => {
-    const harness = createHarness();
-    harness.manager.upsertTile(
-      "window-1",
-      upsert(BASE_KEY, "http://localhost:3000", true),
-    );
-    harness.manager.updateBounds("window-1", {
-      ...BASE_KEY,
-      bounds: { x: 0, y: 0, width: 500, height: 300 },
-    });
-    const view = harness.views[0];
-    view.webContents.emit(
-      "did-frame-navigate",
-      {},
-      "http://localhost:3000",
-      200,
-      "OK",
-      true,
-    );
-
-    const pickPromise = harness.manager.pickElement("window-1", BASE_KEY);
-    // A synchronous SPA route change while the pick is establishing must end it.
-    view.webContents.emit(
-      "did-navigate-in-page",
-      {},
-      "http://localhost:3000/#step",
-      true,
-      1,
-      2,
-    );
-
-    await expect(pickPromise).resolves.toEqual({ outcome: "cancelled" });
-  });
-
-  it("ends an active element pick when the renderer cancels", async () => {
-    const harness = createHarness();
-    harness.manager.upsertTile(
-      "window-1",
-      upsert(BASE_KEY, "http://localhost:3000", true),
-    );
-    harness.manager.updateBounds("window-1", {
-      ...BASE_KEY,
-      bounds: { x: 0, y: 0, width: 500, height: 300 },
-    });
-    harness.views[0].webContents.emit(
-      "did-frame-navigate",
-      {},
-      "http://localhost:3000",
-      200,
-      "OK",
-      true,
-    );
-
-    const pickPromise = harness.manager.pickElement("window-1", BASE_KEY);
-    harness.manager.cancelElementPick("window-1", BASE_KEY);
-
-    await expect(pickPromise).resolves.toEqual({ outcome: "cancelled" });
-  });
-
   it("cancels a queued control action before it reaches CDP when native input takes over", async () => {
     const harness = createHarness();
     harness.manager.upsertTile(
@@ -3497,9 +3510,7 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
       reason: "gui-quit",
     });
     expect(harness.views.map((view) => view.webContents.closeCalls)).toEqual([
-      1,
-      1,
-      1,
+      1, 1, 1,
     ]);
   });
 
@@ -3565,7 +3576,8 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
     });
     expect(harness.views[1]?.webContents.closeCalls).toBe(0);
     const releasePrimary = captureResolvers[0];
-    if (releasePrimary === undefined) throw new Error("primary capture missing");
+    if (releasePrimary === undefined)
+      throw new Error("primary capture missing");
     releasePrimary();
     await flushCloseEntry();
 
@@ -3580,14 +3592,14 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
     expect(harness.views[1]?.webContents.closeCalls).toBe(0);
 
     const releaseSibling = captureResolvers[1];
-    if (releaseSibling === undefined) throw new Error("sibling capture missing");
+    if (releaseSibling === undefined)
+      throw new Error("sibling capture missing");
     releaseSibling();
     await flushCloseEntry();
 
     expect(harness.tileHandoffNotifications).toHaveLength(1);
     expect(harness.views.map((view) => view.webContents.closeCalls)).toEqual([
-      1,
-      1,
+      1, 1,
     ]);
   });
 
@@ -3836,7 +3848,10 @@ describe("BrowserViewManager durable runtime registration (ticket 05)", () => {
 
 describe("BrowserViewManager host window renderer reset (fix round 2)", () => {
   function makeVisible(harness: Harness, key: BrowserViewTileKey): void {
-    harness.manager.upsertTile("window-1", upsert(key, "https://example.com", true));
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(key, "https://example.com", true),
+    );
     harness.manager.updateBounds("window-1", {
       ...key,
       bounds: { x: 0, y: 0, width: 300, height: 200 },
@@ -4016,3 +4031,559 @@ describe("BrowserViewManager overlay occlusion broadcast routing (fix round 3)",
     );
   });
 });
+
+describe("BrowserViewManager annotation session", () => {
+  function annotationBindingCommands(view: FakeBrowserView): string[] {
+    return view.webContents.debugger.commands
+      .filter(
+        (command) =>
+          (command.method === "Runtime.addBinding" ||
+            command.method === "Runtime.removeBinding") &&
+          command.params.name === "__traycerAnnotation",
+      )
+      .map((command) => command.method);
+  }
+
+  function annotationEventTypes(
+    harness: Harness,
+  ): BrowserAnnotationSessionIpcEvent["event"][] {
+    return harness.annotationEvents.map((change) => change.event);
+  }
+
+  it("starts an annotation session after a committed navigation", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    expect(view.webContents.debugger.attached).toBe(true);
+
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    expect(annotationBindingCommands(view)).toEqual(["Runtime.addBinding"]);
+    expect(annotationEventTypes(harness)).toEqual([]);
+  });
+
+  it("replaces an active session on a second startAnnotation", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+
+    expect(annotationBindingCommands(view)).toEqual([
+      "Runtime.addBinding",
+      "Runtime.removeBinding",
+      "Runtime.addBinding",
+    ]);
+    expect(annotationEventTypes(harness)).toEqual([
+      { type: "ended", reason: "replaced" },
+    ]);
+    expect(harness.annotationEvents[0]).toMatchObject(BASE_KEY);
+  });
+
+  it("tears down on reload, in-page navigation, crash, releaseTile, and cancel", async () => {
+    const reloadHarness = createHarness();
+    const reloadView = await upsertAndAttach(
+      reloadHarness,
+      "window-1",
+      BASE_KEY,
+    );
+    await reloadHarness.manager.startAnnotation("window-1", BASE_KEY);
+    reloadHarness.manager.reloadTile("window-1", BASE_KEY);
+    expect(annotationBindingCommands(reloadView)).toEqual([
+      "Runtime.addBinding",
+      "Runtime.removeBinding",
+    ]);
+    expect(annotationEventTypes(reloadHarness)).toEqual([
+      { type: "ended", reason: "reload" },
+    ]);
+
+    const navHarness = createHarness();
+    const navView = await upsertAndAttach(navHarness, "window-1", BASE_KEY);
+    await navHarness.manager.startAnnotation("window-1", BASE_KEY);
+    navView.webContents.emit(
+      "did-navigate-in-page",
+      {},
+      "http://localhost:3000/#step",
+      true,
+      1,
+      2,
+    );
+    expect(annotationBindingCommands(navView)).toEqual([
+      "Runtime.addBinding",
+      "Runtime.removeBinding",
+    ]);
+    expect(annotationEventTypes(navHarness)).toEqual([
+      { type: "ended", reason: "navigation" },
+    ]);
+
+    const crashHarness = createHarness();
+    const crashView = await upsertAndAttach(crashHarness, "window-1", BASE_KEY);
+    await crashHarness.manager.startAnnotation("window-1", BASE_KEY);
+    crashView.webContents.emit(
+      "render-process-gone",
+      {},
+      { reason: "crashed" },
+    );
+    expect(annotationBindingCommands(crashView)).toEqual([
+      "Runtime.addBinding",
+      "Runtime.removeBinding",
+    ]);
+    expect(annotationEventTypes(crashHarness)).toEqual([
+      { type: "ended", reason: "crash" },
+    ]);
+    await flushCloseEntry();
+
+    const releaseHarness = createHarness();
+    const releaseView = await upsertAndAttach(
+      releaseHarness,
+      "window-1",
+      BASE_KEY,
+    );
+    await releaseHarness.manager.startAnnotation("window-1", BASE_KEY);
+    releaseHarness.manager.releaseTile("window-1", BASE_KEY);
+    expect(annotationBindingCommands(releaseView)).toEqual([
+      "Runtime.addBinding",
+      "Runtime.removeBinding",
+    ]);
+    expect(annotationEventTypes(releaseHarness)).toEqual([
+      { type: "ended", reason: "tile-close" },
+    ]);
+
+    const cancelHarness = createHarness();
+    const cancelView = await upsertAndAttach(
+      cancelHarness,
+      "window-1",
+      BASE_KEY,
+    );
+    await cancelHarness.manager.startAnnotation("window-1", BASE_KEY);
+    cancelHarness.manager.cancelAnnotation("window-1", BASE_KEY);
+    expect(annotationBindingCommands(cancelView)).toEqual([
+      "Runtime.addBinding",
+      "Runtime.removeBinding",
+    ]);
+    expect(annotationEventTypes(cancelHarness)).toEqual([
+      { type: "cancelled" },
+    ]);
+  });
+
+  const VALID_UNION = { x: 1, y: 2, width: 10, height: 20 };
+
+  const TARGET_CHAT_ID = "chat-target-1";
+
+  const VALID_ATTACH_PAYLOAD = {
+    targetChatId: TARGET_CHAT_ID,
+    marks: [
+      {
+        id: "m1",
+        kind: "element" as const,
+        bounds: VALID_UNION,
+        selector: "button#go",
+      },
+    ],
+    elements: [
+      {
+        selector: "button#go",
+        tagName: "BUTTON",
+        elementId: "go",
+        classNames: ["primary"],
+        outerHtml: "<button>Go</button>",
+        outerHtmlTruncated: false,
+        textPreview: "Go",
+        ariaRole: "button",
+        accessibleName: "Go",
+        boundingBox: {
+          x: 1,
+          y: 2,
+          width: 10,
+          height: 20,
+          top: 2,
+          right: 11,
+          bottom: 22,
+          left: 1,
+        },
+      },
+    ],
+    comment: "look here",
+    unionRect: VALID_UNION,
+  };
+
+  function flush(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  function emitAnnotationBinding(
+    view: FakeBrowserView,
+    payload: unknown,
+    executionContextId: number | undefined,
+  ): void {
+    const params: Record<string, unknown> = {
+      name: ANNOTATION_BINDING_NAME,
+      payload: typeof payload === "string" ? payload : JSON.stringify(payload),
+    };
+    if (executionContextId !== undefined) {
+      params.executionContextId = executionContextId;
+    }
+    view.webContents.debugger.emitMessage(
+      "Runtime.bindingCalled",
+      params,
+      undefined,
+    );
+  }
+
+  it("forwards a successful attachRequested capture as annotationAttached and does not emit the guest event", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+
+    expect(harness.annotationAttached).toHaveLength(1);
+    expect(
+      annotationEventTypes(harness).some(
+        (event) => event.type === "attachRequested",
+      ),
+    ).toBe(false);
+    const attached = harness.annotationAttached[0];
+    expect(attached?.targetChatId).toBe(TARGET_CHAT_ID);
+    expect(attached?.payload.annotationId.startsWith("ann-")).toBe(true);
+    expect(attached?.pngBytes.byteLength).toBeGreaterThan(0);
+    expect(attached).toMatchObject(BASE_KEY);
+  });
+
+  it("emits no annotationAttached on empty capture and leaves the session cancellable", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    view.webContents.emptyCapture = true;
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+
+    expect(harness.annotationAttached).toEqual([]);
+    expect(
+      annotationEventTypes(harness).some(
+        (event) => event.type === "attachRequested",
+      ),
+    ).toBe(false);
+
+    harness.manager.cancelAnnotation("window-1", BASE_KEY);
+    expect(annotationEventTypes(harness)).toEqual([{ type: "cancelled" }]);
+  });
+
+  it("ends the annotation session on page-initiated main-frame navigation", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+
+    view.webContents.emit(
+      "did-start-navigation",
+      {},
+      "http://localhost:3000/next",
+      false,
+      true,
+      1,
+      2,
+    );
+
+    expect(annotationBindingCommands(view)).toEqual([
+      "Runtime.addBinding",
+      "Runtime.removeBinding",
+    ]);
+    expect(annotationEventTypes(harness)).toEqual([
+      { type: "ended", reason: "navigation" },
+    ]);
+
+    view.webContents.emit(
+      "did-frame-navigate",
+      {},
+      "http://localhost:3000/next",
+      200,
+      "OK",
+      true,
+    );
+    expect(annotationEventTypes(harness)).toEqual([
+      { type: "ended", reason: "navigation" },
+    ]);
+  });
+
+  it("does not emit annotationAttached when navigation starts during capturePage", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    view.webContents.deferCaptures = true;
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    expect(
+      view.webContents.lifecycle.filter((item) => item === "capturePage"),
+    ).toHaveLength(1);
+
+    view.webContents.emit(
+      "did-start-navigation",
+      {},
+      "http://localhost:3000/away",
+      false,
+      true,
+      1,
+      2,
+    );
+    view.webContents.resolveNextCapture();
+    await flush();
+
+    expect(harness.annotationAttached).toEqual([]);
+    expect(annotationEventTypes(harness)).toEqual([
+      { type: "ended", reason: "navigation" },
+    ]);
+  });
+
+  it("refuses keyboard and toolbar zoom while marks exist, and unlocks after erase or attach reset", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 1 },
+      77,
+    );
+    const preventDefault = vi.fn();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    view.webContents.emit(
+      "before-input-event",
+      { preventDefault },
+      { type: "keyDown", key: "+", meta: true },
+    );
+    expect(view.webContents.zoomFactor).toBe(1);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "erase", markCount: 0 },
+      77,
+    );
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1.1);
+
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 2 },
+      77,
+    );
+    harness.manager.resetZoom("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1.1);
+
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    expect(harness.annotationAttached).toHaveLength(1);
+    reportAttachResult(harness, "window-1", "attached");
+    await flush();
+    harness.manager.resetZoom("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1);
+  });
+
+  it("keeps the bundle when attachResult reports failed", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 1 },
+      77,
+    );
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    expect(harness.annotationAttached).toHaveLength(1);
+    reportAttachResult(harness, "window-1", "failed");
+    await flush();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1);
+  });
+
+  it("resets the overlay when attachResult reports attached", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 1 },
+      77,
+    );
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    expect(harness.annotationAttached).toHaveLength(1);
+    reportAttachResult(harness, "window-1", "attached");
+    await flush();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1.1);
+  });
+
+  it("keeps the bundle when the attach ack times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createHarness();
+      const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+      await expect(
+        harness.manager.startAnnotation("window-1", BASE_KEY),
+      ).resolves.toEqual({ ok: true });
+      emitAnnotationBinding(
+        view,
+        { type: "stateChanged", mode: "select", markCount: 1 },
+        77,
+      );
+      emitAnnotationBinding(
+        view,
+        { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+        77,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.annotationAttached).toHaveLength(1);
+      harness.manager.zoomIn("window-1", BASE_KEY);
+      expect(view.webContents.zoomFactor).toBe(1);
+      await vi.advanceTimersByTimeAsync(ANNOTATION_ATTACH_ACK_TIMEOUT_MS);
+      harness.manager.zoomIn("window-1", BASE_KEY);
+      expect(view.webContents.zoomFactor).toBe(1);
+      reportAttachResult(harness, "window-1", "attached");
+      await vi.advanceTimersByTimeAsync(0);
+      harness.manager.zoomIn("window-1", BASE_KEY);
+      expect(view.webContents.zoomFactor).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a late or unknown attachResult and a wrong-window ack", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 1 },
+      77,
+    );
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    const annotationId = harness.annotationAttached[0]?.payload.annotationId;
+    if (annotationId === undefined) {
+      throw new Error("expected attached annotation id");
+    }
+    harness.manager.reportAnnotationAttachResult("window-1", {
+      annotationId: "ann-unknown",
+      status: "attached",
+    });
+    harness.manager.reportAnnotationAttachResult("window-2", {
+      annotationId,
+      status: "attached",
+    });
+    await flush();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1);
+    reportAttachResult(harness, "window-1", "failed");
+    await flush();
+    harness.manager.reportAnnotationAttachResult("window-1", {
+      annotationId,
+      status: "attached",
+    });
+    await flush();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1);
+  });
+
+  it("fails a pending attach ack when the session ends", async () => {
+    const harness = createHarness();
+    const view = await upsertAndAttach(harness, "window-1", BASE_KEY);
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    emitAnnotationBinding(
+      view,
+      { type: "attachRequested", payload: VALID_ATTACH_PAYLOAD },
+      77,
+    );
+    await flush();
+    const annotationId = harness.annotationAttached[0]?.payload.annotationId;
+    if (annotationId === undefined) {
+      throw new Error("expected attached annotation id");
+    }
+    harness.manager.cancelAnnotation("window-1", BASE_KEY);
+    await flush();
+    await expect(
+      harness.manager.startAnnotation("window-1", BASE_KEY),
+    ).resolves.toEqual({ ok: true });
+    emitAnnotationBinding(
+      view,
+      { type: "stateChanged", mode: "select", markCount: 1 },
+      77,
+    );
+    harness.manager.reportAnnotationAttachResult("window-1", {
+      annotationId,
+      status: "attached",
+    });
+    await flush();
+    harness.manager.zoomIn("window-1", BASE_KEY);
+    expect(view.webContents.zoomFactor).toBe(1);
+  });
+});
+
+function reportAttachResult(
+  harness: Harness,
+  windowId: string,
+  status: "attached" | "failed",
+): void {
+  const annotationId = harness.annotationAttached[0]?.payload.annotationId;
+  if (annotationId === undefined) {
+    throw new Error("expected attached annotation id");
+  }
+  harness.manager.reportAnnotationAttachResult(windowId, {
+    annotationId,
+    status,
+  });
+}

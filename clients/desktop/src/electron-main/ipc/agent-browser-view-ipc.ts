@@ -149,6 +149,8 @@ export function registerAgentBrowserViewIpc(
         change,
       );
     },
+    notifyAnnotationEvent: () => {},
+    notifyAnnotationAttached: () => {},
     scheduleDebugSnapshot: scheduleBrowserViewDebugSnapshot,
     applyStorageState: () =>
       Promise.reject(

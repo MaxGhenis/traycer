@@ -552,6 +552,7 @@ function persistedUserMessage(
       kind: "user",
       content: CONTENT,
       browserContextAttachments: [],
+      browserAnnotations: [],
     },
     timestamp: 4,
     sessionAnchor: null,
@@ -947,6 +948,7 @@ describe("createChatSessionStore", () => {
           kind: "user",
           content: CONTENT,
           browserContextAttachments: [],
+          browserAnnotations: [],
         },
         timestamp: 2,
         sessionAnchor: null,
@@ -1450,6 +1452,7 @@ describe("createChatSessionStore", () => {
     expect(harness.handle.store.getState().failedSendRestoration).toEqual({
       clientActionId: frame.clientActionId,
       content: CONTENT,
+      browserAnnotations: [],
       reason: "Message was not confirmed after reconnect.",
     });
   });
@@ -1482,6 +1485,7 @@ describe("createChatSessionStore", () => {
             kind: "user",
             content: CONTENT,
             browserContextAttachments: [],
+            browserAnnotations: [],
           },
           timestamp: 2,
           sessionAnchor: null,
@@ -1634,6 +1638,7 @@ describe("createChatSessionStore", () => {
               kind: "user",
               content: CONTENT,
               browserContextAttachments: [],
+              browserAnnotations: [],
             },
             sender: { type: "user", userId: OWNER_ID },
             settings: SETTINGS,
@@ -1889,6 +1894,7 @@ describe("createChatSessionStore", () => {
               kind: "user",
               content: CONTENT,
               browserContextAttachments: [],
+              browserAnnotations: [],
             },
             sender: { type: "user", userId: OWNER_ID },
             settings: SETTINGS,
@@ -1974,6 +1980,7 @@ describe("createChatSessionStore", () => {
               kind: "user",
               content: CONTENT,
               browserContextAttachments: [],
+              browserAnnotations: [],
             },
             sender: { type: "user", userId: OWNER_ID },
             settings: SETTINGS,
@@ -2061,6 +2068,7 @@ describe("createChatSessionStore", () => {
               kind: "user",
               content: CONTENT,
               browserContextAttachments: [],
+              browserAnnotations: [],
             },
             sender: { type: "user", userId: OWNER_ID },
             settings: SETTINGS,
@@ -2497,6 +2505,7 @@ describe("createChatSessionStore", () => {
         kind: "user" as const,
         content: CONTENT,
         browserContextAttachments: [],
+        browserAnnotations: [],
       },
       sender: { type: "user" as const, userId: OWNER_ID },
       settings,
@@ -3295,6 +3304,7 @@ describe("createChatSessionStore", () => {
               kind: "user",
               content: CONTENT,
               browserContextAttachments: [],
+              browserAnnotations: [],
             },
             sender: { type: "user", userId: OWNER_ID },
             settings: SETTINGS,
@@ -3730,6 +3740,7 @@ describe("createChatSessionStore", () => {
           kind: "user",
           content: CONTENT,
           browserContextAttachments: [],
+          browserAnnotations: [],
         },
         timestamp: 5,
         sessionAnchor: null,
@@ -4494,6 +4505,7 @@ describe("createChatSessionStore", () => {
           kind: "user",
           content: CONTENT,
           browserContextAttachments: [],
+          browserAnnotations: [],
         },
         timestamp: 2,
         sessionAnchor: null,
@@ -4569,6 +4581,7 @@ describe("createChatSessionStore", () => {
           kind: "user",
           content: CONTENT,
           browserContextAttachments: [],
+          browserAnnotations: [],
         },
         timestamp: 2,
         sessionAnchor: null,
@@ -5970,6 +5983,7 @@ describe("turn-settled stranded-send reconciliation", () => {
     expect(state.failedSendRestoration).toEqual({
       clientActionId: frame.clientActionId,
       content: CONTENT,
+      browserAnnotations: [],
       reason: "The message was not recorded before the turn stopped.",
     });
   });
@@ -6074,6 +6088,7 @@ describe("turn-settled stranded-send reconciliation", () => {
     expect(state.failedSendRestoration).toEqual({
       clientActionId: frame.clientActionId,
       content: CONTENT,
+      browserAnnotations: [],
       reason: "The message was not recorded before the turn stopped.",
     });
   });

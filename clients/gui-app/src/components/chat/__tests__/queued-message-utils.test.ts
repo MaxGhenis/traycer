@@ -151,6 +151,7 @@ function queuedItem(input: {
         ],
       },
       browserContextAttachments: [],
+      browserAnnotations: [],
     },
     sender: input.sender,
     settings: TEST_SETTINGS,

@@ -1867,6 +1867,8 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
         settings: input.settings,
         attachments: input.attachments,
         deliveryPolicy: input.deliveryPolicy,
+        restoreContent: input.restoreContent,
+        restoreBrowserAnnotations: input.restoreBrowserAnnotations,
       });
       if (sent === null) return false;
       if (shouldMarkTitlePending) {
@@ -1912,6 +1914,8 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
           settings: nextStepSettings,
           attachments: [],
           deliveryPolicy: "auto",
+          restoreContent: content,
+          restoreBrowserAnnotations: [],
         }) !== null
       );
     },
@@ -1980,6 +1984,8 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
         settings: nextStepSettings,
         attachments: [],
         deliveryPolicy: runNow ? "auto" : "after_turn",
+        restoreContent: content,
+        restoreBrowserAnnotations: [],
       });
       if (sent === null || runNow) return;
       state.cancelPromotion?.();
@@ -2021,6 +2027,8 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
         settings: nextStepSettings,
         attachments: [],
         deliveryPolicy: "auto",
+        restoreContent: content,
+        restoreBrowserAnnotations: [],
       }) !== null
     );
   }, [canAct, chatActions, nextStepSettings, profile, slashCatalog]);

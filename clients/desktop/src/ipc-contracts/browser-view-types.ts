@@ -1,9 +1,6 @@
-export interface BrowserViewTileKey {
-  readonly viewTabId: string;
-  readonly paneId: string;
-  readonly tileInstanceId: string;
-  readonly pageSessionId: string;
-}
+import type { BrowserViewTileKey } from "@traycer-clients/shared/platform/browser-annotation";
+
+export type { BrowserViewTileKey };
 
 export interface BrowserViewTileUpsert extends BrowserViewTileKey {
   readonly url: string;
@@ -16,14 +13,12 @@ export interface BrowserViewDurableTabRegistration extends BrowserViewTileKey {
   readonly tabId: string;
 }
 
-export interface BrowserViewBackgroundTabCreate
-  extends BrowserViewDurableTabRegistration {
+export interface BrowserViewBackgroundTabCreate extends BrowserViewDurableTabRegistration {
   readonly url: string;
   readonly seedStorageState?: unknown;
 }
 
-export interface BrowserViewBackgroundThrottlingChange
-  extends BrowserViewTileKey {
+export interface BrowserViewBackgroundThrottlingChange extends BrowserViewTileKey {
   readonly enabled: boolean;
 }
 
@@ -554,57 +549,9 @@ export interface BrowserViewCapturePageResult extends BrowserViewTileKey {
   readonly capturedAt: number;
 }
 
-export interface BrowserViewElementBoundingBox {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-  readonly top: number;
-  readonly right: number;
-  readonly bottom: number;
-  readonly left: number;
-}
-
-export interface BrowserViewElementAttribute {
-  readonly name: string;
-  readonly value: string;
-}
-
-export interface BrowserViewElementStyle {
-  readonly property: string;
-  readonly value: string;
-}
-
-/**
- * DOM-only element context harvested by the top-frame injected picker
- * (decision #25). Every field is derived from untrusted page data and is
- * length/count bounded by the main process before it crosses IPC.
- */
-export interface BrowserViewElementCapture {
-  readonly selector: string;
-  readonly tagName: string;
-  readonly elementId: string | null;
-  readonly classNames: readonly string[];
-  readonly attributes: readonly BrowserViewElementAttribute[];
-  readonly outerHtml: string;
-  readonly outerHtmlTruncated: boolean;
-  readonly textPreview: string | null;
-  readonly ariaRole: string | null;
-  readonly accessibleName: string | null;
-  readonly boundingBox: BrowserViewElementBoundingBox;
-  readonly computedStyles: readonly BrowserViewElementStyle[];
-}
-
-export type BrowserViewElementPickResult =
-  | {
-      readonly outcome: "picked";
-      readonly pageUrl: string;
-      readonly element: BrowserViewElementCapture;
-    }
-  | {
-      readonly outcome: "iframe-not-inspectable";
-      readonly pageUrl: string;
-      readonly frameLabel: string | null;
-    }
-  | { readonly outcome: "cancelled" }
-  | { readonly outcome: "unavailable"; readonly reason: string };
+export type {
+  BrowserViewElementAttribute,
+  BrowserViewElementBoundingBox,
+  BrowserViewElementCapture,
+  BrowserViewElementStyle,
+} from "@traycer/protocol/persistence/epic/schemas";

@@ -53,6 +53,7 @@ const userMessage: UserMessage = {
     kind: "user",
     content: { type: "doc", content: [] },
     browserContextAttachments: [],
+    browserAnnotations: [],
   },
   timestamp: 1000,
   sessionAnchor: null,

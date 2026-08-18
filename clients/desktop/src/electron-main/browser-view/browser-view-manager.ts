@@ -25,7 +25,6 @@ import type {
   BrowserViewDebugSnapshotData,
   BrowserViewDownloadChange,
   BrowserViewDurableTabRegistration,
-  BrowserViewElementPickResult,
   BrowserViewFindChange,
   BrowserViewFindRequest,
   BrowserViewFindStop,
@@ -48,6 +47,14 @@ import type {
   BrowserViewViewportPresetChange,
   BrowserViewViewportPresetId,
 } from "../../ipc-contracts/browser-view-types";
+import type {
+  BrowserAnnotationAttachedIpcEvent,
+  BrowserAnnotationAttachResultInput,
+  BrowserAnnotationEndReason,
+  BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationSetTargetChatLabelInput,
+  BrowserAnnotationStartResult,
+} from "../../ipc-contracts/browser-annotation-types";
 import type { PipCaptureIpcPayload } from "../../ipc-contracts/pip-capture-types";
 import type {
   BrowserPrimaryProfileOriginSnapshot,
@@ -55,8 +62,8 @@ import type {
 } from "./browser-storage-state";
 import { browserLocalStorageSeedScript } from "./browser-storage-state";
 import { describeLogError, log } from "../app/logger";
+import { BrowserAnnotationSession } from "./browser-annotation-session";
 import { BrowserDebugSession } from "./browser-debug-session";
-import { BrowserElementPickerSession } from "./browser-element-picker-session";
 import type {
   BrowserViewCertificateErrorChange as BrowserSessionCertificateErrorChange,
   BrowserViewDownloadChange as BrowserSessionDownloadChange,
@@ -68,10 +75,18 @@ export const PRIMARY_PROFILE_LOCAL_STORAGE_ORIGIN_LIMIT = 8;
 // another tile's in-flight handoff capture before tearing down its own
 // `webContents` regardless - a hung capture must not block quit.
 const SIBLING_HANDOFF_CAPTURE_TIMEOUT_MS = 1500;
+export const ANNOTATION_ATTACH_ACK_TIMEOUT_MS = 4000;
 
 type BrowserPrimaryProfileRecentOrigin = BrowserPrimaryProfileOriginSnapshot & {
   readonly visitSequence: number;
 };
+interface PendingAnnotationAttachResult {
+  readonly windowId: string;
+  readonly keyId: string;
+  readonly resolve: (delivered: boolean) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
 const DEVTOOLS_TITLE = "Traycer Browser DevTools";
 const VIEWPORT_PRESETS: Readonly<
   Record<
@@ -161,10 +176,20 @@ export type BrowserViewWindowOpenResult =
       readonly outlivesOpener: boolean;
     };
 
+export interface BrowserViewCropRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 export interface BrowserViewCapturedImage {
   getSize(): { readonly width: number; readonly height: number };
   toJPEG(quality: number): Uint8Array;
   toDataURL(): string;
+  isEmpty(): boolean;
+  crop(rect: BrowserViewCropRect): BrowserViewCapturedImage;
+  toPNG(): Uint8Array;
 }
 
 export interface BrowserViewDevToolsWebContents {
@@ -307,6 +332,14 @@ export interface BrowserViewManagerOptions {
     windowId: string,
     change: AgentBrowserViewTileHandoffChange,
   ) => void;
+  readonly notifyAnnotationEvent: (
+    windowId: string,
+    change: BrowserAnnotationSessionIpcEvent,
+  ) => void;
+  readonly notifyAnnotationAttached: (
+    windowId: string,
+    change: BrowserAnnotationAttachedIpcEvent,
+  ) => void;
   readonly scheduleDebugSnapshot: (
     callback: () => void,
   ) => BrowserViewScheduledTask;
@@ -358,7 +391,7 @@ interface BrowserViewEntry {
   findState: BrowserViewEntryFindState;
   certificateError: BrowserViewCertificateErrorChange | null;
   debugSession: BrowserDebugSession | null;
-  pickerSession: BrowserElementPickerSession | null;
+  annotationSession: BrowserAnnotationSession | null;
   devToolsWindow: BrowserViewDevToolsWindow | null;
   viewportPreset: BrowserViewViewportPresetId;
   overlayOwnerIds: string[];
@@ -440,6 +473,7 @@ interface BrowserViewListeners {
   readonly didFrameFinishLoad: (...args: unknown[]) => void;
   readonly didFinishLoad: (...args: unknown[]) => void;
   readonly didNavigate: (...args: unknown[]) => void;
+  readonly didStartNavigation: (...args: unknown[]) => void;
   readonly didNavigateInPage: (...args: unknown[]) => void;
   readonly foundInPage: (...args: unknown[]) => void;
   readonly pageTitleUpdated: (...args: unknown[]) => void;
@@ -519,6 +553,14 @@ export class BrowserViewManager {
     windowId: string,
     change: AgentBrowserViewTileHandoffChange,
   ) => void;
+  private readonly notifyAnnotationEvent: (
+    windowId: string,
+    change: BrowserAnnotationSessionIpcEvent,
+  ) => void;
+  private readonly notifyAnnotationAttached: (
+    windowId: string,
+    change: BrowserAnnotationAttachedIpcEvent,
+  ) => void;
   private readonly scheduleDebugSnapshot: (
     callback: () => void,
   ) => BrowserViewScheduledTask;
@@ -554,6 +596,10 @@ export class BrowserViewManager {
     string,
     BrowserViewScheduledTask
   >();
+  private readonly pendingAnnotationAttachResults = new Map<
+    string,
+    PendingAnnotationAttachResult
+  >();
   private readonly hostWindowResetListenersByWindowId = new Map<
     string,
     {
@@ -584,6 +630,8 @@ export class BrowserViewManager {
     this.notifyCdpSessionEnded = options.notifyCdpSessionEnded;
     this.notifyCdpTargetAttached = options.notifyCdpTargetAttached;
     this.notifyTileHandoff = options.notifyTileHandoff;
+    this.notifyAnnotationEvent = options.notifyAnnotationEvent;
+    this.notifyAnnotationAttached = options.notifyAnnotationAttached;
     this.scheduleDebugSnapshot = options.scheduleDebugSnapshot;
     this.applyStorageStateToBrowser = options.applyStorageState;
     this.captureStorageStateFromBrowser = options.captureStorageState;
@@ -842,7 +890,8 @@ export class BrowserViewManager {
   ): void {
     const key = { ...input, windowId };
     const entry =
-      this.entriesByKey.get(entryKeyId(key)) ?? this.findTransferableEntry(key);
+      this.entriesByKey.get(entryKeyId(key)) ??
+      this.findTransferableEntry(key);
     // Unbound views have no compositor: timers/events stay unthrottled, but
     // requestAnimationFrame needs the view bound to a window.
     entry?.view.webContents.setBackgroundThrottling(input.enabled);
@@ -901,7 +950,7 @@ export class BrowserViewManager {
       return;
     }
     this.entriesByKey.delete(keyId);
-    this.endPickerSession(entry);
+    this.endAnnotationSession(entry, "tile-close");
     entry.desiredVisible = false;
     entry.view.setVisible(false);
     const window =
@@ -1073,7 +1122,7 @@ export class BrowserViewManager {
   resetZoom(windowId: string, input: BrowserViewTileKey): void {
     const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
     if (entry === undefined) return;
-    this.setEntryZoomFactor(entry, 1);
+    this.trySetEntryZoom(entry, 1);
   }
 
   canTrustCertificateError(
@@ -1171,8 +1220,7 @@ export class BrowserViewManager {
   ): Promise<boolean> {
     const key = { ...input.tileKey, windowId };
     const entry =
-      this.entriesByKey.get(entryKeyId(key)) ??
-      this.findTransferableEntry(key);
+      this.entriesByKey.get(entryKeyId(key)) ?? this.findTransferableEntry(key);
     if (entry === null || entry === undefined) return false;
     this.stopPipCapture();
     this.prepareEntryForPipCapture(entry, {
@@ -1254,42 +1302,133 @@ export class BrowserViewManager {
     entry.debugSession.clear();
   }
 
-  pickElement(
+  setAnnotationTargetChatLabel(
     windowId: string,
-    input: BrowserViewTileKey,
-  ): Promise<BrowserViewElementPickResult> {
-    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
-    if (entry === undefined) {
-      return Promise.resolve({
-        outcome: "unavailable",
-        reason: "tile-not-found",
-      });
-    }
-    if (entry.status !== "ready") {
-      return Promise.resolve({
-        outcome: "unavailable",
-        reason: "page-not-ready",
-      });
-    }
-    this.endPickerSession(entry);
-    const session = new BrowserElementPickerSession(
-      entry.view.webContents,
-      entry.currentUrl,
-    );
-    entry.pickerSession = session;
-    const result = session.run();
-    void result.finally(() => {
-      if (entry.pickerSession === session) entry.pickerSession = null;
-    });
-    return result;
-  }
-
-  cancelElementPick(windowId: string, input: BrowserViewTileKey): void {
+    input: BrowserAnnotationSetTargetChatLabelInput,
+  ): void {
     const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
     if (entry === undefined) return;
-    // Same terminal path as navigation/close: settle the session and drop the
-    // reference so a renderer toggle-off leaves no active manager picker.
-    this.endPickerSession(entry);
+    const session = entry.annotationSession;
+    if (session === null || !session.isActive()) return;
+    void session.setTargetChatLabel(input.targets, input.defaultChatId);
+  }
+
+  startAnnotation(
+    windowId: string,
+    input: BrowserViewTileKey,
+  ): Promise<BrowserAnnotationStartResult> {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) {
+      return Promise.resolve({ ok: false, reason: "tile-not-found" });
+    }
+    if (entry.status !== "ready") {
+      return Promise.resolve({ ok: false, reason: "page-not-ready" });
+    }
+    this.endAnnotationSession(entry, "replaced");
+    const session = new BrowserAnnotationSession({
+      webContents: entry.view.webContents,
+      identity: {
+        tabId: entry.runtimeTabId ?? entry.key.pageSessionId,
+        sessionId: entry.runtimeSessionId,
+      },
+      onEvent: (event) => {
+        if (entry.annotationSession !== session) return;
+        if (event.type === "attachRequested") return;
+        this.notifyAnnotationEvent(entry.key.windowId, {
+          ...toTileKey(entry.key),
+          event,
+        });
+      },
+      onAttached: (result) => {
+        if (entry.annotationSession !== session) {
+          return Promise.resolve(false);
+        }
+        this.notifyAnnotationAttached(entry.key.windowId, {
+          ...toTileKey(entry.key),
+          targetChatId: result.targetChatId,
+          payload: result.payload,
+          pngBytes: result.pngBytes,
+        });
+        return this.waitForAnnotationAttachResult({
+          windowId: entry.key.windowId,
+          keyId: entryKeyId(entry.key),
+          annotationId: result.payload.annotationId,
+        });
+      },
+    });
+    entry.annotationSession = session;
+    return session.start().then((result) => {
+      if (!result.ok && entry.annotationSession === session) {
+        entry.annotationSession = null;
+      }
+      return result;
+    });
+  }
+
+  reportAnnotationAttachResult(
+    windowId: string,
+    input: BrowserAnnotationAttachResultInput,
+  ): void {
+    const pending = this.pendingAnnotationAttachResults.get(
+      input.annotationId,
+    );
+    if (pending === undefined) return;
+    if (pending.windowId !== windowId) return;
+    this.finishAnnotationAttachResult(
+      input.annotationId,
+      input.status === "attached",
+    );
+  }
+
+  private waitForAnnotationAttachResult(input: {
+    readonly windowId: string;
+    readonly keyId: string;
+    readonly annotationId: string;
+  }): Promise<boolean> {
+    this.finishAnnotationAttachResult(input.annotationId, false);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.finishAnnotationAttachResult(input.annotationId, false);
+      }, ANNOTATION_ATTACH_ACK_TIMEOUT_MS);
+      this.pendingAnnotationAttachResults.set(input.annotationId, {
+        windowId: input.windowId,
+        keyId: input.keyId,
+        resolve,
+        timer,
+      });
+    });
+  }
+
+  private finishAnnotationAttachResult(
+    annotationId: string,
+    delivered: boolean,
+  ): void {
+    const pending = this.pendingAnnotationAttachResults.get(annotationId);
+    if (pending === undefined) return;
+    this.pendingAnnotationAttachResults.delete(annotationId);
+    clearTimeout(pending.timer);
+    pending.resolve(delivered);
+  }
+
+  private failPendingAnnotationAttachResultsForEntry(
+    entry: BrowserViewEntry,
+  ): void {
+    const keyId = entryKeyId(entry.key);
+    const annotationIds: string[] = [];
+    for (const [annotationId, pending] of this.pendingAnnotationAttachResults) {
+      if (pending.keyId === keyId) {
+        annotationIds.push(annotationId);
+      }
+    }
+    for (const annotationId of annotationIds) {
+      this.finishAnnotationAttachResult(annotationId, false);
+    }
+  }
+
+  cancelAnnotation(windowId: string, input: BrowserViewTileKey): void {
+    const entry = this.entriesByKey.get(entryKeyId({ ...input, windowId }));
+    if (entry === undefined) return;
+    this.endAnnotationSession(entry, "cancelled");
   }
 
   openDevTools(windowId: string, input: BrowserViewTileKey): void {
@@ -1446,11 +1585,17 @@ export class BrowserViewManager {
     }
   }
 
-  private endPickerSession(entry: BrowserViewEntry): void {
-    const session = entry.pickerSession;
+  private endAnnotationSession(
+    entry: BrowserViewEntry,
+    reason: BrowserAnnotationEndReason,
+  ): void {
+    const session = entry.annotationSession;
     if (session === null) return;
-    entry.pickerSession = null;
-    session.dispose();
+    this.failPendingAnnotationAttachResultsForEntry(entry);
+    session.dispose(reason);
+    if (entry.annotationSession === session) {
+      entry.annotationSession = null;
+    }
   }
 
   dispose(): void {
@@ -1468,6 +1613,11 @@ export class BrowserViewManager {
     }
     this.pendingDebugSnapshotsByKey.clear();
     this.overlayEntryKeysByOwnerId.clear();
+    for (const annotationId of Array.from(
+      this.pendingAnnotationAttachResults.keys(),
+    )) {
+      this.finishAnnotationAttachResult(annotationId, false);
+    }
   }
 
   async drainBrowserHandoffs(): Promise<void> {
@@ -1553,6 +1703,9 @@ export class BrowserViewManager {
         didNavigate: (...args) => {
           this.handleCommittedNavigation(entry, args);
         },
+        didStartNavigation: (...args) => {
+          this.handleViewStartNavigation(entry, args);
+        },
         didNavigateInPage: (...args) => {
           this.handleInPageNavigation(entry, args);
         },
@@ -1588,7 +1741,7 @@ export class BrowserViewManager {
       },
       certificateError: null,
       debugSession: null,
-      pickerSession: null,
+      annotationSession: null,
       devToolsWindow: null,
       viewportPreset,
       overlayOwnerIds: [],
@@ -1615,6 +1768,7 @@ export class BrowserViewManager {
     webContents.on("did-frame-finish-load", entry.listeners.didFrameFinishLoad);
     webContents.on("did-finish-load", entry.listeners.didFinishLoad);
     webContents.on("did-navigate", entry.listeners.didNavigate);
+    webContents.on("did-start-navigation", entry.listeners.didStartNavigation);
     webContents.on("did-navigate-in-page", entry.listeners.didNavigateInPage);
     webContents.on("found-in-page", entry.listeners.foundInPage);
     webContents.on("page-title-updated", entry.listeners.pageTitleUpdated);
@@ -1674,7 +1828,7 @@ export class BrowserViewManager {
     url: string,
     rejectOnFailure: boolean,
   ): Promise<void> {
-    this.endPickerSession(entry);
+    this.endAnnotationSession(entry, "navigation");
     entry.requestedUrl = url;
     entry.status = "loading";
     entry.statusReason = null;
@@ -1694,6 +1848,16 @@ export class BrowserViewManager {
       }
       if (rejectOnFailure) throw err;
     }
+  }
+
+  private handleViewStartNavigation(
+    entry: BrowserViewEntry,
+    args: readonly unknown[],
+  ): void {
+    if (entry.internalNavigation) return;
+    const flags = readHostNavigationFlags(args);
+    if (!flags.isMainFrame || flags.isInPlace) return;
+    this.endAnnotationSession(entry, "navigation");
   }
 
   private handleCommittedNavigation(
@@ -1727,10 +1891,7 @@ export class BrowserViewManager {
     entry.requestedUrl = url;
     entry.currentTitle = entry.view.webContents.getTitle();
     this.rememberPrimaryProfileOrigin(entry);
-    // Same-document navigation (SPA pushState) keeps status "ready", so the
-    // setStatus choke point never fires. End the picker here too - its captured
-    // pageUrl is now stale and the shield should not survive the route change.
-    this.endPickerSession(entry);
+    this.endAnnotationSession(entry, "navigation");
     this.cancelControl(entry, "navigation committed", null);
     this.invalidateOverlaySnapshot(entry, "in-page-navigation");
     this.emitStatus(entry);
@@ -1741,7 +1902,7 @@ export class BrowserViewManager {
     args: readonly unknown[],
   ): void {
     const detail = readRenderGoneReason(args);
-    this.endPickerSession(entry);
+    this.endAnnotationSession(entry, "crash");
     this.cancelControl(entry, "renderer process gone", null);
     this.invalidateOverlaySnapshot(entry, "render-process-gone");
     this.setStatus(entry, "dead", detail);
@@ -1818,7 +1979,7 @@ export class BrowserViewManager {
     if (step === null) return;
     preventInputDefault(args);
     if (step === 0) {
-      this.setEntryZoomFactor(entry, 1);
+      this.trySetEntryZoom(entry, 1);
       return;
     }
     this.applyZoomStep(entry, step);
@@ -2147,10 +2308,12 @@ export class BrowserViewManager {
     if (!this.isEntryCurrent(entry)) return;
     if (entry.status === status && entry.statusReason === reason) return;
     // Any move out of "ready" (reload/back/forward, cert error, renderer gone)
-    // invalidates the isolated world the picker runs in - end it so the awaiting
-    // renderer promise settles instead of hanging over a stale page.
+    // invalidates the isolated world the overlay runs in.
     if (status !== "ready") {
-      this.endPickerSession(entry);
+      this.endAnnotationSession(
+        entry,
+        status === "dead" ? "crash" : "reload",
+      );
       this.cancelControl(entry, reason ?? "browser tile is not ready", null);
     }
     entry.status = status;
@@ -2269,11 +2432,11 @@ export class BrowserViewManager {
 
   private applyZoomStep(entry: BrowserViewEntry, direction: 1 | -1): void {
     const current = entry.view.webContents.getZoomFactor();
-    const next = nextZoomFactor(current, direction);
-    this.setEntryZoomFactor(entry, next);
+    this.trySetEntryZoom(entry, nextZoomFactor(current, direction));
   }
 
-  private setEntryZoomFactor(entry: BrowserViewEntry, factor: number): void {
+  private trySetEntryZoom(entry: BrowserViewEntry, factor: number): void {
+    if (entry.annotationSession?.zoomLocked() === true) return;
     entry.view.webContents.setZoomFactor(factor);
     this.emitStatus(entry);
   }
@@ -2555,13 +2718,15 @@ export class BrowserViewManager {
     );
     webContents.off("did-finish-load", entry.listeners.didFinishLoad);
     webContents.off("did-navigate", entry.listeners.didNavigate);
+    webContents.off("did-start-navigation", entry.listeners.didStartNavigation);
     webContents.off("did-navigate-in-page", entry.listeners.didNavigateInPage);
     webContents.off("found-in-page", entry.listeners.foundInPage);
     webContents.off("page-title-updated", entry.listeners.pageTitleUpdated);
     webContents.off("paint", entry.listeners.paint);
     webContents.off("render-process-gone", entry.listeners.renderProcessGone);
-    entry.pickerSession?.dispose();
-    entry.pickerSession = null;
+    this.failPendingAnnotationAttachResultsForEntry(entry);
+    entry.annotationSession?.dispose("tile-close");
+    entry.annotationSession = null;
     if (this.pipCaptureEntry === entry) this.pipCaptureEntry = null;
     entry.debugSession?.dispose();
     entry.debugSession = null;

@@ -1,4 +1,22 @@
 import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
+import type {
+  BrowserAnnotationAttachedIpcEvent,
+  BrowserAnnotationAttachPayload,
+  BrowserAnnotationAttachResultInput,
+  BrowserAnnotationEndReason,
+  BrowserAnnotationForwardedSessionEvent,
+  BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationSetTargetChatLabelInput,
+  BrowserAnnotationStartFailureReason,
+  BrowserAnnotationStartResult,
+  BrowserViewTileKey,
+} from "@traycer-clients/shared/platform/browser-annotation";
+import type {
+  BrowserViewElementAttribute,
+  BrowserViewElementBoundingBox,
+  BrowserViewElementCapture,
+  BrowserViewElementStyle,
+} from "@traycer/protocol/persistence/epic/schemas";
 // Type-only, and deliberately so: `desktop-agent-browser-view.ts` already
 // imports this module's tile-key types, and a value import back would be a
 // real cycle. Ticket 03 defined the CDP command/result shapes there because
@@ -12,12 +30,15 @@ import type {
   AgentBrowserViewTileHandoffChange,
 } from "./desktop-agent-browser-view";
 
-export interface BrowserViewTileKey {
-  readonly viewTabId: string;
-  readonly paneId: string;
-  readonly tileInstanceId: string;
-  readonly pageSessionId: string;
-}
+export type {
+  BrowserAnnotationAttachedIpcEvent,
+  BrowserAnnotationAttachPayload,
+  BrowserAnnotationAttachResultInput,
+  BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationSetTargetChatLabelInput,
+  BrowserAnnotationStartResult,
+  BrowserViewTileKey,
+} from "@traycer-clients/shared/platform/browser-annotation";
 
 export interface BrowserViewTileUpsert extends BrowserViewTileKey {
   readonly url: string;
@@ -30,14 +51,12 @@ export interface BrowserViewDurableTabRegistration extends BrowserViewTileKey {
   readonly tabId: string;
 }
 
-export interface BrowserViewBackgroundTabCreate
-  extends BrowserViewDurableTabRegistration {
+export interface BrowserViewBackgroundTabCreate extends BrowserViewDurableTabRegistration {
   readonly url: string;
   readonly seedStorageState?: unknown;
 }
 
-export interface BrowserViewBackgroundThrottlingChange
-  extends BrowserViewTileKey {
+export interface BrowserViewBackgroundThrottlingChange extends BrowserViewTileKey {
   readonly enabled: boolean;
 }
 
@@ -318,55 +337,12 @@ export interface BrowserViewCapturePageResult extends BrowserViewTileKey {
   readonly capturedAt: number;
 }
 
-export interface BrowserViewElementBoundingBox {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-  readonly top: number;
-  readonly right: number;
-  readonly bottom: number;
-  readonly left: number;
-}
-
-export interface BrowserViewElementAttribute {
-  readonly name: string;
-  readonly value: string;
-}
-
-export interface BrowserViewElementStyle {
-  readonly property: string;
-  readonly value: string;
-}
-
-export interface BrowserViewElementCapture {
-  readonly selector: string;
-  readonly tagName: string;
-  readonly elementId: string | null;
-  readonly classNames: readonly string[];
-  readonly attributes: readonly BrowserViewElementAttribute[];
-  readonly outerHtml: string;
-  readonly outerHtmlTruncated: boolean;
-  readonly textPreview: string | null;
-  readonly ariaRole: string | null;
-  readonly accessibleName: string | null;
-  readonly boundingBox: BrowserViewElementBoundingBox;
-  readonly computedStyles: readonly BrowserViewElementStyle[];
-}
-
-export type BrowserViewElementPickResult =
-  | {
-      readonly outcome: "picked";
-      readonly pageUrl: string;
-      readonly element: BrowserViewElementCapture;
-    }
-  | {
-      readonly outcome: "iframe-not-inspectable";
-      readonly pageUrl: string;
-      readonly frameLabel: string | null;
-    }
-  | { readonly outcome: "cancelled" }
-  | { readonly outcome: "unavailable"; readonly reason: string };
+export type {
+  BrowserViewElementAttribute,
+  BrowserViewElementBoundingBox,
+  BrowserViewElementCapture,
+  BrowserViewElementStyle,
+};
 
 export type BrowserCookieCryptoMode = "real" | "basic" | "degraded";
 export type BrowserCookiePersistence = "persistent" | "ephemeral";
@@ -401,13 +377,9 @@ export interface BrowserLabsStateUpdate {
 
 export interface DesktopBrowserViewBridge {
   upsertTile(input: BrowserViewTileUpsert): Promise<void>;
-  createBackgroundTab?(
-    input: BrowserViewBackgroundTabCreate,
-  ): Promise<void>;
+  createBackgroundTab?(input: BrowserViewBackgroundTabCreate): Promise<void>;
   registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
-  releaseDurableTab?(
-    input: BrowserViewDurableTabRegistration,
-  ): Promise<void>;
+  releaseDurableTab?(input: BrowserViewDurableTabRegistration): Promise<void>;
   setBackgroundThrottling?(
     input: BrowserViewBackgroundThrottlingChange,
   ): Promise<void>;
@@ -429,8 +401,16 @@ export interface DesktopBrowserViewBridge {
     input: BrowserViewTileKey,
   ): Promise<BrowserViewDebugSnapshotChange>;
   clearDebugEvents(input: BrowserViewTileKey): Promise<void>;
-  pickElement(input: BrowserViewTileKey): Promise<BrowserViewElementPickResult>;
-  cancelElementPick(input: BrowserViewTileKey): Promise<void>;
+  startAnnotation(
+    input: BrowserViewTileKey,
+  ): Promise<BrowserAnnotationStartResult>;
+  cancelAnnotation(input: BrowserViewTileKey): Promise<void>;
+  setAnnotationTargetChatLabel(
+    input: BrowserAnnotationSetTargetChatLabelInput,
+  ): Promise<void>;
+  reportAnnotationAttachResult?(
+    input: BrowserAnnotationAttachResultInput,
+  ): Promise<void>;
   openDevTools(input: BrowserViewTileKey): Promise<void>;
   occludeForOverlay(
     input: BrowserViewOverlayOcclusion,
@@ -503,6 +483,16 @@ export interface DesktopBrowserViewBridge {
   ): {
     dispose: () => void;
   };
+  onAnnotationEvent(
+    handler: (change: BrowserAnnotationSessionIpcEvent) => void,
+  ): {
+    dispose: () => void;
+  };
+  onAnnotationAttached(
+    handler: (change: BrowserAnnotationAttachedIpcEvent) => void,
+  ): {
+    dispose: () => void;
+  };
 }
 
 type BrowserViewBridgeMethod = (this: unknown, ...args: unknown[]) => unknown;
@@ -537,8 +527,10 @@ const REQUIRED_BROWSER_VIEW_BRIDGE_METHODS = [
   "capturePage",
   "getDebugSnapshot",
   "clearDebugEvents",
-  "pickElement",
-  "cancelElementPick",
+  "startAnnotation",
+  "cancelAnnotation",
+  "setAnnotationTargetChatLabel",
+  "reportAnnotationAttachResult",
   "openDevTools",
   "occludeForOverlay",
   "releaseOverlay",
@@ -557,6 +549,8 @@ const REQUIRED_BROWSER_VIEW_BRIDGE_METHODS = [
   "onSnapshotInvalidated",
   "onDebugSnapshotChange",
   "onControlRevoked",
+  "onAnnotationEvent",
+  "onAnnotationAttached",
   // Electron-tab CDP members are deliberately NOT required.
   //
   // This list is a gate: a preload missing any entry makes
@@ -617,10 +611,7 @@ function readBrowserViewBridgeMethods(
     createBackgroundTab: readBridgeMethod(value, "createBackgroundTab"),
     registerDurableTab: readBridgeMethod(value, "registerDurableTab"),
     releaseDurableTab: readBridgeMethod(value, "releaseDurableTab"),
-    setBackgroundThrottling: readBridgeMethod(
-      value,
-      "setBackgroundThrottling",
-    ),
+    setBackgroundThrottling: readBridgeMethod(value, "setBackgroundThrottling"),
     updateBounds: readBridgeMethod(value, "updateBounds"),
     setViewportPreset: readBridgeMethod(value, "setViewportPreset"),
     releaseTile: readBridgeMethod(value, "releaseTile"),
@@ -637,8 +628,16 @@ function readBrowserViewBridgeMethods(
     capturePage: readBridgeMethod(value, "capturePage"),
     getDebugSnapshot: readBridgeMethod(value, "getDebugSnapshot"),
     clearDebugEvents: readBridgeMethod(value, "clearDebugEvents"),
-    pickElement: readBridgeMethod(value, "pickElement"),
-    cancelElementPick: readBridgeMethod(value, "cancelElementPick"),
+    startAnnotation: readBridgeMethod(value, "startAnnotation"),
+    cancelAnnotation: readBridgeMethod(value, "cancelAnnotation"),
+    setAnnotationTargetChatLabel: readBridgeMethod(
+      value,
+      "setAnnotationTargetChatLabel",
+    ),
+    reportAnnotationAttachResult: readBridgeMethod(
+      value,
+      "reportAnnotationAttachResult",
+    ),
     openDevTools: readBridgeMethod(value, "openDevTools"),
     occludeForOverlay: readBridgeMethod(value, "occludeForOverlay"),
     releaseOverlay: readBridgeMethod(value, "releaseOverlay"),
@@ -658,6 +657,8 @@ function readBrowserViewBridgeMethods(
     onSnapshotInvalidated: readBridgeMethod(value, "onSnapshotInvalidated"),
     onDebugSnapshotChange: readBridgeMethod(value, "onDebugSnapshotChange"),
     onControlRevoked: readBridgeMethod(value, "onControlRevoked"),
+    onAnnotationEvent: readBridgeMethod(value, "onAnnotationEvent"),
+    onAnnotationAttached: readBridgeMethod(value, "onAnnotationAttached"),
     dispatchCdp: readBridgeMethod(value, "dispatchCdp"),
     onCdpSessionEnded: readBridgeMethod(value, "onCdpSessionEnded"),
     onCdpTargetAttached: readBridgeMethod(value, "onCdpTargetAttached"),
@@ -752,22 +753,28 @@ function createBrowserViewDebugBridge(
       ),
     clearDebugEvents: (input) =>
       callBridgeVoid(value, methods.clearDebugEvents, input),
-    pickElement: (input) =>
+    startAnnotation: (input) =>
       callBridgeResult(
         value,
-        methods.pickElement,
+        methods.startAnnotation,
         input,
-        readElementPickResult,
+        readAnnotationStartResult,
       ),
-    cancelElementPick: (input) =>
-      callBridgeVoid(value, methods.cancelElementPick, input),
+    cancelAnnotation: (input) =>
+      callBridgeVoid(value, methods.cancelAnnotation, input),
+    setAnnotationTargetChatLabel: (input) =>
+      callBridgeVoid(value, methods.setAnnotationTargetChatLabel, input),
+    reportAnnotationAttachResult: (input) =>
+      callBridgeVoid(value, methods.reportAnnotationAttachResult, input),
   } satisfies Pick<
     DesktopBrowserViewBridge,
     | "capturePage"
     | "getDebugSnapshot"
     | "clearDebugEvents"
-    | "pickElement"
-    | "cancelElementPick"
+    | "startAnnotation"
+    | "cancelAnnotation"
+    | "setAnnotationTargetChatLabel"
+    | "reportAnnotationAttachResult"
   >;
 }
 
@@ -891,6 +898,18 @@ function createBrowserViewSubscriptionBridge(
       readBridgeSubscription(value, methods.onDebugSnapshotChange, handler),
     onControlRevoked: (handler) =>
       readBridgeSubscription(value, methods.onControlRevoked, handler),
+    onAnnotationEvent: (handler) =>
+      readBridgeSubscription(
+        value,
+        methods.onAnnotationEvent,
+        wrapAnnotationEventHandler(handler),
+      ),
+    onAnnotationAttached: (handler) =>
+      readBridgeSubscription(
+        value,
+        methods.onAnnotationAttached,
+        wrapAnnotationAttachedHandler(handler),
+      ),
     dispatchCdp: (input) =>
       Promise.resolve(
         methods.dispatchCdp.call(value, input),
@@ -915,6 +934,8 @@ function createBrowserViewSubscriptionBridge(
     | "onSnapshotInvalidated"
     | "onDebugSnapshotChange"
     | "onControlRevoked"
+    | "onAnnotationEvent"
+    | "onAnnotationAttached"
   >;
 }
 
@@ -1411,35 +1432,220 @@ function readStackFrame(value: unknown): BrowserViewStackFrame[] {
   ];
 }
 
-function readElementPickResult(value: unknown): BrowserViewElementPickResult {
-  if (!isRecord(value))
-    return { outcome: "unavailable", reason: "invalid-result" };
-  const outcome = value.outcome;
-  if (outcome === "cancelled") return { outcome: "cancelled" };
-  if (outcome === "unavailable") {
+function readAnnotationStartResult(
+  value: unknown,
+): BrowserAnnotationStartResult {
+  if (isRecord(value) && value.ok === true) return { ok: true };
+  return {
+    ok: false,
+    reason: readAnnotationStartFailureReason(
+      isRecord(value) ? value.reason : null,
+    ),
+  };
+}
+
+function readAnnotationStartFailureReason(
+  value: unknown,
+): BrowserAnnotationStartFailureReason {
+  if (
+    value === "tile-not-found" ||
+    value === "page-not-ready" ||
+    value === "debugger-not-attached" ||
+    value === "no-main-frame" ||
+    value === "no-isolated-world" ||
+    value === "inject-failed"
+  ) {
+    return value;
+  }
+  return "inject-failed";
+}
+
+function wrapAnnotationEventHandler(
+  handler: unknown,
+): (change: unknown) => void {
+  if (!isUnknownHandler(handler)) return () => undefined;
+  return (change: unknown) => {
+    const parsed = readAnnotationSessionEvent(change);
+    if (parsed === null) return;
+    handler(parsed);
+  };
+}
+
+function wrapAnnotationAttachedHandler(
+  handler: unknown,
+): (change: unknown) => void {
+  if (!isUnknownHandler(handler)) return () => undefined;
+  return (change: unknown) => {
+    const parsed = readAnnotationAttachedEvent(change);
+    if (parsed === null) return;
+    handler(parsed);
+  };
+}
+
+function isUnknownHandler(value: unknown): value is (input: unknown) => void {
+  return typeof value === "function";
+}
+
+function readAnnotationSessionEvent(
+  value: unknown,
+): BrowserAnnotationSessionIpcEvent | null {
+  if (!isRecord(value)) return null;
+  const key = readTileKey(value);
+  if (key === null) return null;
+  const event = readAnnotationEvent(value.event);
+  if (event === null) return null;
+  return { ...key, event };
+}
+
+function readAnnotationEvent(
+  value: unknown,
+): BrowserAnnotationForwardedSessionEvent | null {
+  if (!isRecord(value) || typeof value.type !== "string") return null;
+  if (value.type === "cancelled") return { type: "cancelled" };
+  if (value.type === "ended") {
+    const reason = readAnnotationEndReason(value.reason);
+    if (reason === null) return null;
     return {
-      outcome: "unavailable",
-      reason: typeof value.reason === "string" ? value.reason : "unknown",
+      type: "ended",
+      reason,
     };
   }
-  if (outcome === "iframe-not-inspectable") {
-    return {
-      outcome: "iframe-not-inspectable",
-      pageUrl: typeof value.pageUrl === "string" ? value.pageUrl : "",
-      frameLabel: nullableString(value.frameLabel),
-    };
+  if (value.type === "stateChanged") {
+    const mode = value.mode;
+    if (
+      mode !== "select" &&
+      mode !== "region" &&
+      mode !== "draw" &&
+      mode !== "erase"
+    ) {
+      return null;
+    }
+    const markCount =
+      typeof value.markCount === "number" && Number.isFinite(value.markCount)
+        ? Math.max(0, Math.floor(value.markCount))
+        : 0;
+    return { type: "stateChanged", mode, markCount };
   }
-  if (outcome === "picked") {
-    const element = readElementCapture(value.element);
-    if (element === null)
-      return { outcome: "unavailable", reason: "invalid-element" };
-    return {
-      outcome: "picked",
-      pageUrl: typeof value.pageUrl === "string" ? value.pageUrl : "",
-      element,
-    };
+  return null;
+}
+
+function readAnnotationEndReason(
+  value: unknown,
+): Exclude<BrowserAnnotationEndReason, "cancelled"> | null {
+  return value === "navigation" ||
+    value === "reload" ||
+    value === "crash" ||
+    value === "tile-close" ||
+    value === "replaced"
+    ? value
+    : null;
+}
+
+function readAnnotationAttachedEvent(
+  value: unknown,
+): BrowserAnnotationAttachedIpcEvent | null {
+  if (!isRecord(value)) return null;
+  const key = readTileKey(value);
+  if (key === null) return null;
+  const payload = readAnnotationAttachPayload(value.payload);
+  if (payload === null) return null;
+  const pngBytes = readPngBytes(value.pngBytes);
+  if (pngBytes === null) return null;
+  if (typeof value.targetChatId !== "string") return null;
+  return { ...key, targetChatId: value.targetChatId, payload, pngBytes };
+}
+
+function readAnnotationAttachPayload(
+  value: unknown,
+): BrowserAnnotationAttachPayload | null {
+  if (!isRecord(value)) return null;
+  if (
+    typeof value.annotationId !== "string" ||
+    typeof value.tabId !== "string" ||
+    typeof value.sessionId !== "string" ||
+    typeof value.origin !== "string" ||
+    typeof value.pageUrl !== "string" ||
+    typeof value.pageTitle !== "string" ||
+    typeof value.capturedAt !== "number" ||
+    !Number.isFinite(value.capturedAt) ||
+    typeof value.comment !== "string"
+  ) {
+    return null;
   }
-  return { outcome: "unavailable", reason: "invalid-result" };
+  const counts = readAnnotationCounts(value.counts);
+  if (counts === null) return null;
+  const elements = Array.isArray(value.elements)
+    ? value.elements.flatMap((entry): BrowserViewElementCapture[] => {
+        const element = readElementCapture(entry);
+        return element === null ? [] : [element];
+      })
+    : [];
+  return {
+    annotationId: value.annotationId,
+    tabId: value.tabId,
+    sessionId: value.sessionId,
+    origin: value.origin,
+    pageUrl: value.pageUrl,
+    pageTitle: value.pageTitle,
+    capturedAt: value.capturedAt,
+    comment: value.comment,
+    counts,
+    droppedElementCount: readDroppedElementCount(value.droppedElementCount),
+    elements,
+  };
+}
+
+function readDroppedElementCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.floor(value));
+}
+
+function readAnnotationCounts(
+  value: unknown,
+): BrowserAnnotationAttachPayload["counts"] | null {
+  if (!isRecord(value)) return null;
+  const elements = value.elements;
+  const regions = value.regions;
+  const strokes = value.strokes;
+  if (
+    typeof elements !== "number" ||
+    !Number.isFinite(elements) ||
+    typeof regions !== "number" ||
+    !Number.isFinite(regions) ||
+    typeof strokes !== "number" ||
+    !Number.isFinite(strokes)
+  ) {
+    return null;
+  }
+  return {
+    elements: Math.max(0, Math.floor(elements)),
+    regions: Math.max(0, Math.floor(regions)),
+    strokes: Math.max(0, Math.floor(strokes)),
+  };
+}
+
+function readPngBytes(value: unknown): Uint8Array<ArrayBuffer> | null {
+  if (value instanceof Uint8Array) return copyPngBytes(value);
+  if (value instanceof ArrayBuffer) return copyPngBytes(new Uint8Array(value));
+  if (ArrayBuffer.isView(value)) {
+    return copyPngBytes(
+      new Uint8Array(value.buffer, value.byteOffset, value.byteLength),
+    );
+  }
+  if (isRecord(value) && Array.isArray(value.data)) {
+    const numbers = value.data.filter(
+      (entry): entry is number => typeof entry === "number",
+    );
+    if (numbers.length !== value.data.length) return null;
+    return copyPngBytes(Uint8Array.from(numbers));
+  }
+  return null;
+}
+
+function copyPngBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy;
 }
 
 function readElementCapture(value: unknown): BrowserViewElementCapture | null {

@@ -85,6 +85,15 @@ vi.mock("@/components/epic-canvas/hooks/use-tile-body-visible", () => ({
   useTileBodyVisible: () => visibilityHarness.visible,
 }));
 
+vi.mock("@/hooks/browser/use-browser-annotation-session", () => ({
+  useBrowserAnnotationSession: () => ({
+    isActive: false,
+    canStart: false,
+    zoomLocked: false,
+    toggle: () => undefined,
+  }),
+}));
+
 vi.mock("@/providers/use-runner-host", () => ({
   useRunnerHost: () => bridgeHarness.host,
 }));
@@ -125,8 +134,10 @@ const PRIMARY_BRIDGE_REQUIRED_METHODS = [
   "capturePage",
   "getDebugSnapshot",
   "clearDebugEvents",
-  "pickElement",
-  "cancelElementPick",
+  "startAnnotation",
+  "cancelAnnotation",
+  "setAnnotationTargetChatLabel",
+  "reportAnnotationAttachResult",
   "openDevTools",
   "occludeForOverlay",
   "releaseOverlay",
@@ -145,6 +156,8 @@ const PRIMARY_BRIDGE_REQUIRED_METHODS = [
   "onSnapshotInvalidated",
   "onDebugSnapshotChange",
   "onControlRevoked",
+  "onAnnotationEvent",
+  "onAnnotationAttached",
   "onCdpSessionEnded",
   "onCdpTargetAttached",
   "onTileHandoff",
@@ -386,7 +399,7 @@ function emitStatus(
   status: BrowserViewStatusChange["status"],
   reason: string | null,
 ): void {
-  bridge.emitStatus(statusChange(key, status, NODE.url, reason));
+  emitManagerStatus(bridge, key, status, { url: NODE.url, reason });
 }
 
 /**
@@ -399,27 +412,18 @@ function emitManagerStatus(
   bridge: FakeAgentBrowserViewBridge,
   key: BrowserViewTileKey,
   status: BrowserViewStatusChange["status"],
-  url: string,
+  next: { readonly url: string; readonly reason: string | null },
 ): void {
-  bridge.emitStatus(statusChange(key, status, url, null));
-}
-
-function statusChange(
-  key: BrowserViewTileKey,
-  status: BrowserViewStatusChange["status"],
-  url: string,
-  reason: string | null,
-): BrowserViewStatusChange {
-  return {
+  bridge.emitStatus({
     ...key,
-    url,
+    url: next.url,
     title: "Example",
     status,
-    reason,
+    reason: next.reason,
     canGoBack: false,
     canGoForward: false,
     zoomPercent: 100,
-  };
+  });
 }
 
 function submitAddress(url: string): void {
@@ -471,6 +475,8 @@ function createPrimaryBridgeSource(): {
   source.onSnapshotInvalidated = () => emptyDisposable();
   source.onDebugSnapshotChange = () => emptyDisposable();
   source.onControlRevoked = () => emptyDisposable();
+  source.onAnnotationEvent = () => emptyDisposable();
+  source.onAnnotationAttached = () => emptyDisposable();
   source.onCdpSessionEnded = () => emptyDisposable();
   source.onCdpTargetAttached = () => emptyDisposable();
   source.onTileHandoff = () => emptyDisposable();
@@ -509,11 +515,7 @@ function createPrimaryBridgeSource(): {
   };
 }
 
-function seedAgentBrowserCanvas(): string {
-  return seedAgentBrowserCanvasWithNode(NODE);
-}
-
-function seedAgentBrowserCanvasWithNode(node: AgentBrowserTileRef): string {
+function seedAgentBrowserCanvas(node: AgentBrowserTileRef): string {
   const canvas = createSingleTileCanvas(node);
   if (canvas.root === null) throw new Error("expected canvas root");
   const pane = collectPanes(canvas.root).at(0);
@@ -542,11 +544,7 @@ function agentBrowserTilesOnCanvas(): AgentBrowserTileRef[] {
   );
 }
 
-function renderAgentBrowserTile(paneId: string): RenderResult {
-  return renderAgentBrowserTileWithNode(paneId, NODE);
-}
-
-function renderAgentBrowserTileWithNode(
+function renderAgentBrowserTile(
   paneId: string,
   node: AgentBrowserTileRef,
 ): RenderResult {
@@ -576,10 +574,10 @@ describe("<AgentBrowserTile />", () => {
   it("registers with the overlay coordinator on mount and unregisters on unmount", async () => {
     const bridge = new FakeAgentBrowserViewBridge();
     bridgeHarness.current = bridge;
-    const paneId = seedAgentBrowserCanvas();
+    const paneId = seedAgentBrowserCanvas(NODE);
     const key = tileKey(paneId);
 
-    const view = renderAgentBrowserTile(paneId);
+    const view = renderAgentBrowserTile(paneId, NODE);
 
     await waitFor(() => {
       expect(
@@ -601,10 +599,10 @@ describe("<AgentBrowserTile />", () => {
   it("mounts a view surface and renders a registered overlay snapshot", async () => {
     const bridge = new FakeAgentBrowserViewBridge();
     bridgeHarness.current = bridge;
-    const paneId = seedAgentBrowserCanvas();
+    const paneId = seedAgentBrowserCanvas(NODE);
     const key = tileKey(paneId);
 
-    renderAgentBrowserTile(paneId);
+    renderAgentBrowserTile(paneId, NODE);
 
     await waitFor(() => {
       expect(
@@ -643,9 +641,9 @@ describe("<AgentBrowserTile />", () => {
 
   it("renders a dead state when the agent browser bridge is unavailable", () => {
     bridgeHarness.current = null;
-    const paneId = seedAgentBrowserCanvas();
+    const paneId = seedAgentBrowserCanvas(NODE);
 
-    renderAgentBrowserTile(paneId);
+    renderAgentBrowserTile(paneId, NODE);
 
     expect(screen.getByText("Agent browser unavailable")).toBeTruthy();
     expect(
@@ -665,10 +663,10 @@ describe("<AgentBrowserTile />", () => {
 
   it("shows the host id only through the real Host details tooltip", async () => {
     bridgeHarness.current = null;
-    const paneId = seedAgentBrowserCanvas();
+    const paneId = seedAgentBrowserCanvas(NODE);
     const user = userEvent.setup();
 
-    renderAgentBrowserTile(paneId);
+    renderAgentBrowserTile(paneId, NODE);
 
     expect(screen.queryByText(`Host ${NODE.hostId}`)).toBeNull();
     const trigger = screen.getByRole("button", { name: "Host details" });
@@ -682,10 +680,10 @@ describe("<AgentBrowserTile />", () => {
   it("upserts on mount and releases on unmount", async () => {
     const bridge = new FakeAgentBrowserViewBridge();
     bridgeHarness.current = bridge;
-    const paneId = seedAgentBrowserCanvas();
+    const paneId = seedAgentBrowserCanvas(NODE);
     const key = tileKey(paneId);
 
-    const view = renderAgentBrowserTile(paneId);
+    const view = renderAgentBrowserTile(paneId, NODE);
 
     await waitFor(() => {
       expect(bridge.upsertCalls.length).toBeGreaterThanOrEqual(1);
@@ -708,10 +706,10 @@ describe("<AgentBrowserTile />", () => {
   it("subscribes to status changes for its tile key and ignores others", async () => {
     const bridge = new FakeAgentBrowserViewBridge();
     bridgeHarness.current = bridge;
-    const paneId = seedAgentBrowserCanvas();
+    const paneId = seedAgentBrowserCanvas(NODE);
     const key = tileKey(paneId);
 
-    renderAgentBrowserTile(paneId);
+    renderAgentBrowserTile(paneId, NODE);
 
     // Tile component + electron-browser-tab-store both subscribe.
     await waitFor(() => {
@@ -765,9 +763,9 @@ describe("<AgentBrowserTile />", () => {
     try {
       const bridge = new FakeAgentBrowserViewBridge();
       bridgeHarness.current = bridge;
-      const paneId = seedAgentBrowserCanvas();
+      const paneId = seedAgentBrowserCanvas(NODE);
 
-      renderAgentBrowserTile(paneId);
+      renderAgentBrowserTile(paneId, NODE);
 
       expect(screen.getByText("Reconnecting to this session")).toBeTruthy();
       act(() => {
@@ -794,9 +792,9 @@ describe("<AgentBrowserTile />", () => {
     try {
       const bridge = new FakeAgentBrowserViewBridge();
       bridgeHarness.current = bridge;
-      const paneId = seedAgentBrowserCanvas();
+      const paneId = seedAgentBrowserCanvas(NODE);
 
-      renderAgentBrowserTile(paneId);
+      renderAgentBrowserTile(paneId, NODE);
       const initialUpsertCount = bridge.upsertCalls.length;
       act(() => {
         vi.advanceTimersByTime(12_001);
@@ -824,9 +822,9 @@ describe("<AgentBrowserTile />", () => {
     try {
       const bridge = new FakeAgentBrowserViewBridge();
       bridgeHarness.current = bridge;
-      const paneId = seedAgentBrowserCanvas();
+      const paneId = seedAgentBrowserCanvas(NODE);
 
-      renderAgentBrowserTile(paneId);
+      renderAgentBrowserTile(paneId, NODE);
       act(() => {
         vi.advanceTimersByTime(12_001);
       });
@@ -846,10 +844,10 @@ describe("<AgentBrowserTile />", () => {
     try {
       const bridge = new FakeAgentBrowserViewBridge();
       bridgeHarness.current = bridge;
-      const paneId = seedAgentBrowserCanvas();
+      const paneId = seedAgentBrowserCanvas(NODE);
       const key = tileKey(paneId);
 
-      renderAgentBrowserTile(paneId);
+      renderAgentBrowserTile(paneId, NODE);
       act(() => {
         emitStatus(bridge, key, "ready", null);
       });
@@ -875,10 +873,10 @@ describe("<AgentBrowserTile />", () => {
     try {
       const bridge = new FakeAgentBrowserViewBridge();
       bridgeHarness.current = bridge;
-      const paneId = seedAgentBrowserCanvas();
+      const paneId = seedAgentBrowserCanvas(NODE);
       const key = tileKey(paneId);
 
-      renderAgentBrowserTile(paneId);
+      renderAgentBrowserTile(paneId, NODE);
       act(() => {
         vi.advanceTimersByTime(12_001);
       });
@@ -905,9 +903,9 @@ describe("<AgentBrowserTile />", () => {
   it("disposes the component status subscription on unmount", async () => {
     const bridge = new FakeAgentBrowserViewBridge();
     bridgeHarness.current = bridge;
-    const paneId = seedAgentBrowserCanvas();
+    const paneId = seedAgentBrowserCanvas(NODE);
 
-    const view = renderAgentBrowserTile(paneId);
+    const view = renderAgentBrowserTile(paneId, NODE);
     await waitFor(() => {
       // Component + registration-store forwarding.
       expect(bridge.statusHandlerCount).toBe(2);
@@ -921,11 +919,11 @@ describe("<AgentBrowserTile />", () => {
   it("adopts target=_blank open-tile requests into the same session only after electronTabRegistered", async () => {
     const bridge = new FakeAgentBrowserViewBridge();
     bridgeHarness.current = bridge;
-    const paneId = seedAgentBrowserCanvas();
+    const paneId = seedAgentBrowserCanvas(NODE);
     const key = tileKey(paneId);
     const warn = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
 
-    renderAgentBrowserTile(paneId);
+    renderAgentBrowserTile(paneId, NODE);
     await waitFor(() => {
       expect(bridge.openTileHandlerCount).toBe(1);
     });
@@ -993,11 +991,11 @@ describe("<AgentBrowserTile />", () => {
   it("adopts a primary-runtime popup as an AgentBrowserTileRef with the originating session", async () => {
     const primary = createPrimaryBridgeSource();
     bridgeHarness.host.browserView = primary.source;
-    const paneId = seedAgentBrowserCanvasWithNode(PRIMARY_NODE);
+    const paneId = seedAgentBrowserCanvas(PRIMARY_NODE);
     const key = tileKey(paneId);
     const warn = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
 
-    renderAgentBrowserTileWithNode(paneId, PRIMARY_NODE);
+    renderAgentBrowserTile(paneId, PRIMARY_NODE);
     await waitFor(() => {
       expect(primary.openTileHandlerCount).toBe(1);
     });
@@ -1070,17 +1068,17 @@ describe("<AgentBrowserTile />", () => {
     try {
       const bridge = new FakeAgentBrowserViewBridge();
       bridgeHarness.current = bridge;
-      const paneId = seedAgentBrowserCanvas();
+      const paneId = seedAgentBrowserCanvas(NODE);
       const key = tileKey(paneId);
       const attemptedUrl = "https://next.example/";
-      const view = renderAgentBrowserTile(paneId);
+      const view = renderAgentBrowserTile(paneId, NODE);
 
       expect(bridge.upsertCalls[0]?.url).toBe(NODE.url);
       submitAddress(attemptedUrl);
       expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
 
       act(() => {
-        emitManagerStatus(bridge, key, "loading", NODE.url);
+        emitManagerStatus(bridge, key, "loading", { url: NODE.url, reason: null });
       });
 
       rerenderVisibility(view, paneId, false);
@@ -1108,19 +1106,22 @@ describe("<AgentBrowserTile />", () => {
     try {
       const bridge = new FakeAgentBrowserViewBridge();
       bridgeHarness.current = bridge;
-      const paneId = seedAgentBrowserCanvas();
+      const paneId = seedAgentBrowserCanvas(NODE);
       const key = tileKey(paneId);
       const attemptedUrl = "https://next.example/";
       const redirectUrl = "https://live.example/";
-      const view = renderAgentBrowserTile(paneId);
+      const view = renderAgentBrowserTile(paneId, NODE);
 
       submitAddress(attemptedUrl);
       act(() => {
-        emitManagerStatus(bridge, key, "loading", NODE.url);
+        emitManagerStatus(bridge, key, "loading", { url: NODE.url, reason: null });
       });
       const afterEchoCount = bridge.upsertCalls.length;
       act(() => {
-        emitManagerStatus(bridge, key, "ready", redirectUrl);
+        emitManagerStatus(bridge, key, "ready", {
+          url: redirectUrl,
+          reason: null,
+        });
       });
       expect(bridge.upsertCalls.at(-1)?.url).toBe(redirectUrl);
 
@@ -1130,7 +1131,10 @@ describe("<AgentBrowserTile />", () => {
       expect(bridge.upsertCalls.at(-1)?.url).toBe(redirectUrl);
 
       act(() => {
-        emitManagerStatus(bridge, key, "loading", redirectUrl);
+        emitManagerStatus(bridge, key, "loading", {
+          url: redirectUrl,
+          reason: null,
+        });
       });
       act(() => {
         vi.advanceTimersByTime(12_001);
@@ -1158,17 +1162,20 @@ describe("<AgentBrowserTile />", () => {
   it("stays on the attempted URL when ready reports no redirect", () => {
     const bridge = new FakeAgentBrowserViewBridge();
     bridgeHarness.current = bridge;
-    const paneId = seedAgentBrowserCanvas();
+    const paneId = seedAgentBrowserCanvas(NODE);
     const key = tileKey(paneId);
     const attemptedUrl = "https://next.example/";
-    const view = renderAgentBrowserTile(paneId);
+    const view = renderAgentBrowserTile(paneId, NODE);
 
     submitAddress(attemptedUrl);
     act(() => {
-      emitManagerStatus(bridge, key, "loading", NODE.url);
+      emitManagerStatus(bridge, key, "loading", { url: NODE.url, reason: null });
     });
     act(() => {
-      emitManagerStatus(bridge, key, "ready", attemptedUrl);
+      emitManagerStatus(bridge, key, "ready", {
+        url: attemptedUrl,
+        reason: null,
+      });
     });
     expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);
 
@@ -1186,20 +1193,20 @@ describe("<AgentBrowserTile />", () => {
     try {
       const bridge = new FakeAgentBrowserViewBridge();
       bridgeHarness.current = bridge;
-      const paneId = seedAgentBrowserCanvas();
+      const paneId = seedAgentBrowserCanvas(NODE);
       const key = tileKey(paneId);
       const firstUrl = "https://next.example/";
       const newestUrl = "https://newest.example/";
-      const view = renderAgentBrowserTile(paneId);
+      const view = renderAgentBrowserTile(paneId, NODE);
 
       submitAddress(firstUrl);
       act(() => {
-        emitManagerStatus(bridge, key, "loading", NODE.url);
+        emitManagerStatus(bridge, key, "loading", { url: NODE.url, reason: null });
       });
       submitAddress(newestUrl);
       const afterNewestSubmit = bridge.upsertCalls.length;
       act(() => {
-        emitManagerStatus(bridge, key, "ready", firstUrl);
+        emitManagerStatus(bridge, key, "ready", { url: firstUrl, reason: null });
       });
 
       rerenderVisibility(view, paneId, false);
@@ -1214,12 +1221,12 @@ describe("<AgentBrowserTile />", () => {
       expect(bridge.upsertCalls.at(-1)?.url).toBe(newestUrl);
 
       act(() => {
-        emitManagerStatus(bridge, key, "loading", firstUrl);
+        emitManagerStatus(bridge, key, "loading", { url: firstUrl, reason: null });
       });
       expect(bridge.upsertCalls.at(-1)?.url).toBe(newestUrl);
 
       act(() => {
-        emitManagerStatus(bridge, key, "ready", newestUrl);
+        emitManagerStatus(bridge, key, "ready", { url: newestUrl, reason: null });
       });
       expect(bridge.upsertCalls.at(-1)?.url).toBe(newestUrl);
       expect(
@@ -1235,18 +1242,21 @@ describe("<AgentBrowserTile />", () => {
   it("lets ready settle after a same-URL resubmit of the in-flight attempt", () => {
     const bridge = new FakeAgentBrowserViewBridge();
     bridgeHarness.current = bridge;
-    const paneId = seedAgentBrowserCanvas();
+    const paneId = seedAgentBrowserCanvas(NODE);
     const key = tileKey(paneId);
     const attemptedUrl = "https://next.example/";
-    const view = renderAgentBrowserTile(paneId);
+    const view = renderAgentBrowserTile(paneId, NODE);
 
     submitAddress(attemptedUrl);
     act(() => {
-      emitManagerStatus(bridge, key, "loading", NODE.url);
+      emitManagerStatus(bridge, key, "loading", { url: NODE.url, reason: null });
     });
     submitAddress(attemptedUrl);
     act(() => {
-      emitManagerStatus(bridge, key, "ready", attemptedUrl);
+      emitManagerStatus(bridge, key, "ready", {
+        url: attemptedUrl,
+        reason: null,
+      });
     });
 
     expect(bridge.upsertCalls.at(-1)?.url).toBe(attemptedUrl);

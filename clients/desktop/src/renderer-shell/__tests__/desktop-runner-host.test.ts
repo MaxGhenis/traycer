@@ -523,8 +523,9 @@ function buildFakeBridge(
         networkEntries: [],
       }),
       clearDebugEvents: async () => undefined,
-      pickElement: async () => ({ outcome: "cancelled" as const }),
-      cancelElementPick: async () => undefined,
+      startAnnotation: async () => ({ ok: true as const }),
+      cancelAnnotation: async () => undefined,
+      setAnnotationTargetChatLabel: async () => undefined,
       openDevTools: async () => undefined,
       occludeForOverlay: async () => ({ snapshots: [], restoredTiles: [] }),
       releaseOverlay: async () => ({ restoredTiles: [] }),
@@ -558,6 +559,9 @@ function buildFakeBridge(
       onOpenTileRequest: (_handler) => ({ dispose: () => undefined }),
       onSnapshotInvalidated: (_handler) => ({ dispose: () => undefined }),
       onDebugSnapshotChange: (_handler) => ({ dispose: () => undefined }),
+      onAnnotationEvent: (_handler) => ({ dispose: () => undefined }),
+      onAnnotationAttached: (_handler) => ({ dispose: () => undefined }),
+      reportAnnotationAttachResult: async () => undefined,
     },
     // Ticket 09 scenario-7: agent browser tile seam must be present on the
     // preload bridge so DesktopRunnerHost can forward it without re-wrapping.

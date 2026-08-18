@@ -90,6 +90,7 @@ function userMessage(messageId: string): Extract<Message, { role: "user" }> {
       kind: "user",
       content: CONTENT,
       browserContextAttachments: [],
+      browserAnnotations: [],
     },
     timestamp: 1000 + messageId.length,
     sessionAnchor: null,
@@ -143,6 +144,7 @@ function steerRequestedQueueItem(
       kind: "user",
       content: CONTENT,
       browserContextAttachments: [],
+      browserAnnotations: [],
     },
     sender: { type: "user", userId: "owner-1" },
     settings: SETTINGS,
@@ -1017,6 +1019,7 @@ describe("useRenderedMessages", () => {
         kind: "user",
         content,
         browserContextAttachments: [],
+        browserAnnotations: [],
       },
       timestamp: 2002,
     };
@@ -1074,6 +1077,7 @@ describe("useRenderedMessages", () => {
         kind: "user",
         content,
         browserContextAttachments: [],
+        browserAnnotations: [],
       },
       timestamp: 2002,
     };
@@ -2960,6 +2964,8 @@ describe("useRenderedMessages", () => {
           sender: { type: "user", userId: "owner-1" },
           settings: SETTINGS,
           timestamp: 3000,
+          restoreContent: CONTENT,
+          restoreBrowserAnnotations: [],
         },
       ],
       activeTurn,
@@ -3659,6 +3665,8 @@ describe("useRenderedMessages setup card integration", () => {
           sender: { type: "user", userId: "owner-1" },
           settings: SETTINGS,
           timestamp: 1010,
+          restoreContent: CONTENT,
+          restoreBrowserAnnotations: [],
         },
       ],
     });
@@ -3682,6 +3690,8 @@ describe("useRenderedMessages setup card integration", () => {
           sender: { type: "user", userId: "owner-1" },
           settings: SETTINGS,
           timestamp: 3000,
+          restoreContent: CONTENT,
+          restoreBrowserAnnotations: [],
         },
       ],
     });

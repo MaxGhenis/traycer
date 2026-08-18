@@ -1,8 +1,16 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/composer/landing-image-store", () => ({
+  sessionObjectUrl: () => null,
+  getImageBytes: () => Promise.resolve(undefined),
+}));
 import type { ReactNode } from "react";
-import type { BrowserContextAttachmentRecord } from "@traycer/protocol/persistence/epic/schemas";
+import type {
+  BrowserAnnotationRecord,
+  BrowserContextAttachmentRecord,
+} from "@traycer/protocol/persistence/epic/schemas";
 import type {
   BrowserSessionInfo,
   BrowserTabInfo,
@@ -71,7 +79,7 @@ function renderChips(
   return render(
     <TooltipProvider delayDuration={0}>
       <BrowserSessionsContext.Provider value={sessionsState(items)}>
-        <BrowserReferenceChips references={references} />
+        <BrowserReferenceChips references={references} annotations={[]} />
       </BrowserSessionsContext.Provider>
     </TooltipProvider>,
   ).container;
@@ -88,7 +96,7 @@ afterEach(() => {
 describe("BrowserReferenceChips (ticket 08 disambiguation)", () => {
   it("renders nothing without references, and does not require BrowserSessionsProvider to do so", () => {
     const { container } = render(
-      wrapper(<BrowserReferenceChips references={[]} />),
+      wrapper(<BrowserReferenceChips references={[]} annotations={[]} />),
     );
     expect(container.firstChild).toBeNull();
   });
@@ -98,6 +106,7 @@ describe("BrowserReferenceChips (ticket 08 disambiguation)", () => {
       wrapper(
         <BrowserReferenceChips
           references={[{ ...BASE, sessionId: "sess-a", tabId: "tab-1" }]}
+          annotations={[]}
         />,
       ),
     );
@@ -227,5 +236,68 @@ describe("BrowserReferenceChips (ticket 08 disambiguation)", () => {
 
     expect(screen.getByText("Left tab")).toBeTruthy();
     expect(screen.getByText("Right tab")).toBeTruthy();
+  });
+});
+
+function sentAnnotation(): BrowserAnnotationRecord {
+  return {
+    kind: "browser-annotation",
+    annotationId: "ann-7f3a",
+    tabId: "t-1",
+    sessionId: "s-1",
+    origin: "https://example.com",
+    pageUrl: "https://example.com/",
+    pageTitle: "Example Domain",
+    capturedAt: 1_700_000_000_000,
+    comment: "Make this hero section pop more",
+    counts: { elements: 1, regions: 0, strokes: 0 },
+    elements: [
+      {
+        selector: "main > h1",
+        tagName: "h1",
+        elementId: null,
+        classNames: [],
+        attributes: [],
+        outerHtml: "<h1>Example Domain</h1>",
+        outerHtmlTruncated: false,
+        textPreview: "Example Domain",
+        ariaRole: "heading",
+        accessibleName: "Example Domain",
+        boundingBox: {
+          x: 60,
+          y: 90,
+          width: 420,
+          height: 40,
+          top: 90,
+          right: 480,
+          bottom: 130,
+          left: 60,
+        },
+        computedStyles: [],
+      },
+    ],
+    imageFileName: "browser-annotation-ann-7f3a.png",
+    imageHash: "hash-ann-7f3a",
+    droppedElementCount: 0,
+  };
+}
+
+describe("BrowserReferenceChips sent annotation card", () => {
+  it("renders a card keyed by annotationId with no remove button", () => {
+    render(
+      wrapper(
+        <BrowserReferenceChips
+          references={[]}
+          annotations={[sentAnnotation()]}
+        />,
+      ),
+    );
+
+    const card = screen.getByTestId("browser-annotation-card");
+    expect(card.getAttribute("data-annotation-id")).toBe("ann-7f3a");
+    expect(screen.getByText("Make this hero section pop more")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Remove annotation" }),
+    ).toBeNull();
   });
 });

@@ -35,7 +35,6 @@ import type {
   BrowserViewDownloadCancel,
   BrowserViewDownloadChange,
   BrowserViewDebugSnapshotChange,
-  BrowserViewElementPickResult,
   BrowserViewFindChange,
   BrowserViewFindRequest,
   BrowserViewFindStop,
@@ -84,6 +83,15 @@ vi.mock("@/components/epic-canvas/hooks/use-tab-host-id", () => ({
 
 vi.mock("@/components/epic-canvas/hooks/use-tile-body-visible", () => ({
   useTileBodyVisible: () => false,
+}));
+
+vi.mock("@/hooks/browser/use-browser-annotation-session", () => ({
+  useBrowserAnnotationSession: () => ({
+    isActive: false,
+    canStart: false,
+    zoomLocked: false,
+    toggle: () => undefined,
+  }),
 }));
 
 vi.mock("@/providers/use-runner-host", () => ({
@@ -336,13 +344,18 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
     return Promise.resolve();
   }
 
-  pickElement(
-    _input: BrowserViewTileKey,
-  ): Promise<BrowserViewElementPickResult> {
-    return Promise.resolve({ outcome: "cancelled" });
+  startAnnotation(): Promise<{ readonly ok: true }> {
+    return Promise.resolve({ ok: true });
   }
 
-  cancelElementPick(_input: BrowserViewTileKey): Promise<void> {
+  cancelAnnotation(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  setAnnotationTargetChatLabel(): Promise<void> {
+    return Promise.resolve();
+  }
+  reportAnnotationAttachResult(): Promise<void> {
     return Promise.resolve();
   }
 
@@ -508,6 +521,14 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
         this.controlRevokedHandlers.delete(handler);
       },
     };
+  }
+
+  onAnnotationEvent(): { dispose: () => void } {
+    return { dispose: () => undefined };
+  }
+
+  onAnnotationAttached(): { dispose: () => void } {
+    return { dispose: () => undefined };
   }
 
   dispatchCdp(

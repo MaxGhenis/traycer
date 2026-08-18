@@ -256,34 +256,6 @@ export function createBrowserScreenshotAttachment(input: {
   };
 }
 
-export function createBrowserElementAttachment(input: {
-  readonly tile: BrowserViewTileKey;
-  readonly pageUrl: string;
-  readonly element: BrowserViewElementCapture;
-}): BrowserElementContextAttachment {
-  const origin = originFromUrl(input.pageUrl);
-  const capturedAt = Date.now();
-  return {
-    schemaVersion: 1,
-    kind: "browser-element",
-    source: {
-      tile: input.tile,
-      pageUrl: input.pageUrl,
-      origin,
-      capturedAt,
-    },
-    observeGrantRequest: createGrantRequest({
-      tile: input.tile,
-      origin,
-      dataLevel: "element",
-      sourceAction: "browser-element-send",
-    }),
-    observeGrant: null,
-    composerText: elementComposerText(input.element),
-    element: input.element,
-  };
-}
-
 export function createBrowserDebugContextAttachment(input: {
   readonly tile: BrowserViewTileKey;
   readonly pageUrl: string;
@@ -408,31 +380,6 @@ function screenshotComposerText(capture: BrowserViewCapturePageResult): string {
     `Content hash: ${capture.sha256}`,
     `Size: ${capture.byteLength} bytes`,
   ].join("\n");
-}
-
-/** Ticket 29 (A2): no `Page:` line - same sweep as `screenshotComposerText`. */
-function elementComposerText(element: BrowserViewElementCapture): string {
-  const box = element.boundingBox;
-  const styleLines = element.computedStyles
-    .slice(0, 12)
-    .map((style) => `  ${style.property}: ${style.value}`);
-  return [
-    "Browser element",
-    `Selector: ${element.selector}`,
-    `Tag: ${element.tagName}`,
-    element.ariaRole === null ? null : `Role: ${element.ariaRole}`,
-    element.accessibleName === null ? null : `Name: ${element.accessibleName}`,
-    element.textPreview === null ? null : `Text: ${element.textPreview}`,
-    `Box: ${box.width}×${box.height} at (${box.x}, ${box.y})`,
-    styleLines.length === 0 ? null : "Computed styles:",
-    ...styleLines,
-    "HTML:",
-    element.outerHtmlTruncated
-      ? `${element.outerHtml}\n… (truncated)`
-      : element.outerHtml,
-  ]
-    .filter((line): line is string => line !== null)
-    .join("\n");
 }
 
 /**

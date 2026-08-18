@@ -1,6 +1,6 @@
 import { useEffect, useState, type SyntheticEvent } from "react";
 import type { TileChromeCapabilities, TileController } from "@/components/epic-canvas/renderers/tile-controller";
-import type { BrowserElementPickerController } from "@/components/epic-canvas/renderers/use-browser-element-picker";
+import type { BrowserAnnotationSessionController } from "@/hooks/browser/use-browser-annotation-session";
 import { normalizeBrowserAddressInput } from "@/lib/browser-view/browser-link-routing-core";
 import type { DesktopAgentBrowserViewBridge } from "@/lib/browser-view/desktop-agent-browser-view";
 import type {
@@ -27,7 +27,7 @@ interface UseElectronTileChromeArgs {
   readonly initialUrl: string;
   readonly visible: boolean;
   readonly capabilities: TileChromeCapabilities;
-  readonly elementPicker: BrowserElementPickerController | null;
+  readonly annotation: BrowserAnnotationSessionController | null;
   readonly cookieCryptoState: BrowserCookieCryptoState | null;
   readonly statusUrl: string;
   readonly canGoBack: boolean;
@@ -64,7 +64,7 @@ export function useElectronTileChrome(
     initialUrl,
     visible,
     capabilities,
-    elementPicker,
+    annotation,
     cookieCryptoState,
     statusUrl,
     canGoBack,
@@ -206,7 +206,8 @@ export function useElectronTileChrome(
     viewportPreset,
     disabled: false,
     cookieCryptoState,
-    elementPicker,
+    zoomLocked: annotation?.zoomLocked === true,
+    annotation,
     onNavigate: navigateToAddress,
     onAddressChange: (value) => {
       setAddressDraft({ sourceUrl: liveUrl, value });

@@ -16,6 +16,7 @@ import { commonRecordRegistry } from "@traycer/protocol/common/registry";
 import { getRecordSchema } from "@traycer/protocol/framework/index";
 import { defineStreamRpcContract } from "@traycer/protocol/framework/versioned-stream-rpc";
 import {
+  browserAnnotationRecordSchema,
   browserContextAttachmentKindSchema,
   chatEventSchema,
   chatEventSchemaPreInReplyTo,
@@ -26,7 +27,9 @@ import {
   chatSchemaV14,
   chatSchemaV15,
   userMessagePayloadSchema,
+  userMessagePayloadSchemaPreAnnotation,
   userMessageSchema,
+  userMessageSchemaPreAnnotation,
   userMessageSchemaPreInReplyTo,
   userMessageSchemaPreTurnTail,
   userMessageSenderSchema,
@@ -438,6 +441,36 @@ export const chatQueueStateSchema = z.object({
 });
 export type ChatQueueState = z.infer<typeof chatQueueStateSchema>;
 
+// Frozen `prompt | managed-command` queue as `chat.subscribe@1.6` shipped
+// it: same union, but the prompt arm cannot declare `browserAnnotations`.
+// Bound to 1.6 snapshot + common frames so that released line stays exact.
+const chatQueuedPromptItemSchemaPreAnnotation = z.object({
+  kind: z.literal("prompt").default("prompt"),
+  queueItemId: z.string(),
+  messageId: z.string(),
+  message: userMessagePayloadSchemaPreAnnotation,
+  sender: userMessageSenderSchema,
+  settings: chatRunSettingsSchema,
+  accountContext: accountContextSchema.default(DEFAULT_ACCOUNT_CONTEXT),
+  delivery: chatQueueItemDeliverySchema.default("next_turn"),
+  status: chatQueueItemStatusSchema.default("pending"),
+  targetTurnId: z.string().nullable().default(null),
+  steerRequest: chatQueueSteerRequestSchema.nullable().default(null),
+  fallbackReason: z.string().nullable().default(null),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+
+const chatQueuedItemSchemaPreAnnotation = z.union([
+  chatQueuedManagedCommandItemSchema,
+  chatQueuedPromptItemSchemaPreAnnotation,
+]);
+
+const chatQueueStateSchemaPreAnnotation = z.object({
+  status: z.enum(["idle", "running", "paused"]),
+  items: z.array(chatQueuedItemSchemaPreAnnotation),
+});
+
 // Wire-freeze copies with the queue item's `sender` swapped for its
 // pre-`inReplyTo` freeze. Bound to the released `chat.subscribe@1.0–1.3`
 // snapshot + `queueChanged` serverFrames. `message` reuses the live
@@ -446,7 +479,7 @@ export type ChatQueueState = z.infer<typeof chatQueueStateSchema>;
 const chatQueuedItemSchemaPreInReplyTo = z.object({
   queueItemId: z.string(),
   messageId: z.string(),
-  message: userMessagePayloadSchema,
+  message: userMessagePayloadSchemaPreAnnotation,
   sender: userMessageSenderSchemaPreInReplyTo,
   settings: chatRunSettingsSchema,
   accountContext: accountContextSchema.default(DEFAULT_ACCOUNT_CONTEXT),
@@ -480,7 +513,7 @@ const chatQueueStateSchemaPreInReplyTo = z.object({
 const chatQueuedItemSchemaPreManagedCommand = z.object({
   queueItemId: z.string(),
   messageId: z.string(),
-  message: userMessagePayloadSchema,
+  message: userMessagePayloadSchemaPreAnnotation,
   sender: userMessageSenderSchema,
   settings: chatRunSettingsSchema,
   accountContext: accountContextSchema.default(DEFAULT_ACCOUNT_CONTEXT),
@@ -918,7 +951,7 @@ const chatSubscribeCommonServerFrameSchemasPreInReplyTo =
 const chatSubscribeCommonServerFrameSchemasPreTurnTail =
   buildChatSubscribeCommonServerFrameSchemas({
     message: userMessageSchemaPreTurnTail,
-    queue: chatQueueStateSchema,
+    queue: chatQueueStateSchemaPreAnnotation,
     event: chatEventSchema,
   });
 
@@ -927,7 +960,7 @@ const chatSubscribeCommonServerFrameSchemasPreTurnTail =
 // 1.4/1.5 `queueChanged` frame can never carry a managed-command item.
 const chatSubscribeCommonServerFrameSchemasPreManagedCommand =
   buildChatSubscribeCommonServerFrameSchemas({
-    message: userMessageSchema,
+    message: userMessageSchemaPreAnnotation,
     queue: chatQueueStateSchemaPreManagedCommand,
     event: chatEventSchema,
   });
@@ -1059,6 +1092,11 @@ export type BrowserContextAttachmentWire = z.infer<
   typeof browserContextAttachmentWireSchema
 >;
 
+export {
+  browserAnnotationRecordSchema,
+  type BrowserAnnotationRecord,
+} from "@traycer/protocol/persistence/epic/schemas";
+
 const chatSubscribeClientFrameSchemaBeforeV13Options = [
   z.object({
     kind: z.literal("send"),
@@ -1077,13 +1115,6 @@ const chatSubscribeClientFrameSchemaBeforeV13Options = [
     // gating on setup - mirroring how the landing page bundles the intent
     // with `epic.create`. `null` for an ordinary send.
     worktreeIntent: worktreeIntentSchemaV10.nullable().default(null),
-    // Tiles the user attached in chat (ticket 13) - empty for every send
-    // before this shipped and for one with nothing attached. Same additive
-    // treatment as `worktreeIntent` above: `.default([])`, no separate
-    // versioned tier, since an older host simply never reads the key.
-    browserContextAttachments: z
-      .array(browserContextAttachmentWireSchema)
-      .default([]),
   }),
   z.object({
     kind: z.literal("deleteMessageSuffix"),
@@ -1278,6 +1309,13 @@ const [
 const chatSubscribeClientFrameSchemaOptions = [
   chatSubscribeClientFrameSchemaBeforeV13Options[0].extend({
     worktreeIntent: worktreeIntentSchema.nullable().default(null),
+    // Ticket 13 / 05: live `chat.subscribe@1.7` only. Frozen 1.0–1.6
+    // send frames (BeforeV13 / V10) keep the pre-ticket-13 shape so the
+    // released 1.6 surface matches main's freeze.
+    browserContextAttachments: z
+      .array(browserContextAttachmentWireSchema)
+      .default([]),
+    browserAnnotations: z.array(browserAnnotationRecordSchema).default([]),
   }),
   deleteMessageSuffixClientFrameSchema,
   chatSubscribeClientFrameSchemaBeforeV13Options[2].extend({
@@ -1297,7 +1335,9 @@ export type ChatSubscribeClientFrame = z.infer<
 
 // `1.4` through `1.6` are released lines. Keep their client frames on the
 // pre-collision intent shape while the live `1.7` line uses the current one.
-const chatSubscribeClientFrameSchemaV14ToV16 = z.discriminatedUnion(
+// Exported so the host parses negotiated 1.4-1.6 frames against this freeze
+// rather than the live schema (which would accept branch-born 1.7 send fields).
+export const chatSubscribeClientFrameSchemaV14ToV16 = z.discriminatedUnion(
   "kind",
   [...chatSubscribeClientFrameSchemaBeforeV14Options, activeProfileUpdateClientFrameSchema],
 );
@@ -1505,9 +1545,6 @@ const chatSubscribeClientFrameSchemaV10 = z.discriminatedUnion("kind", [
     accountContext: accountContextSchema,
     deliveryPolicy: chatQueueDeliveryPolicySchema.default("auto"),
     worktreeIntent: worktreeIntentSchemaV10.nullable().default(null),
-    browserContextAttachments: z
-      .array(browserContextAttachmentWireSchema)
-      .default([]),
   }),
   z.object({
     kind: z.literal("deleteMessageSuffix"),
@@ -1961,7 +1998,7 @@ export const chatSubscribeV15 = defineStreamRpcContract({
 const chatSnapshotSchemaV16 = z.object({
   chat: chatSchemaPreImage,
   access: chatAccessSchema,
-  queue: chatQueueStateSchema,
+  queue: chatQueueStateSchemaPreAnnotation,
   runStatus: chatRunStatusSchema,
   activeTurn: chatActiveTurnSchema.nullable(),
   pendingApprovals: z.array(chatApprovalStateSchema),

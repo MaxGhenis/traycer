@@ -27,7 +27,6 @@ import type {
   BrowserViewDownloadCancel,
   BrowserViewDownloadChange,
   BrowserViewDebugSnapshotChange,
-  BrowserViewElementPickResult,
   BrowserViewFindChange,
   BrowserViewFindRequest,
   BrowserViewFindStop,
@@ -152,13 +151,18 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
     return Promise.resolve();
   }
 
-  pickElement(
-    _input: BrowserViewTileKey,
-  ): Promise<BrowserViewElementPickResult> {
-    return Promise.resolve({ outcome: "cancelled" });
+  startAnnotation(): Promise<{ readonly ok: true }> {
+    return Promise.resolve({ ok: true });
   }
 
-  cancelElementPick(_input: BrowserViewTileKey): Promise<void> {
+  cancelAnnotation(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  setAnnotationTargetChatLabel(): Promise<void> {
+    return Promise.resolve();
+  }
+  reportAnnotationAttachResult(): Promise<void> {
     return Promise.resolve();
   }
 
@@ -315,6 +319,14 @@ class FakeBrowserViewBridge implements DesktopBrowserViewBridge {
   ): {
     dispose: () => void;
   } {
+    return { dispose: () => undefined };
+  }
+
+  onAnnotationEvent(): { dispose: () => void } {
+    return { dispose: () => undefined };
+  }
+
+  onAnnotationAttached(): { dispose: () => void } {
     return { dispose: () => undefined };
   }
 

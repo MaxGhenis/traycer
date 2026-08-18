@@ -299,6 +299,7 @@ function emitChatSnapshot(
                 ],
               },
               browserContextAttachments: [],
+              browserAnnotations: [],
             },
             timestamp: 1,
             sessionAnchor: null,
@@ -405,6 +406,7 @@ describe("chat-tile queue edit save-and-steer routing (decision 14)", () => {
           kind: "user",
           content: QUEUED_CONTENT,
           browserContextAttachments: [],
+          browserAnnotations: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,
@@ -441,6 +443,8 @@ describe("chat-tile queue edit save-and-steer routing (decision 14)", () => {
         attachments: [],
         settings: QUEUED_SETTINGS,
         deliveryPolicy: "after_safe_point",
+        restoreContent: QUEUED_CONTENT,
+        restoreBrowserAnnotations: [],
       });
       expect(accepted).toBe(true);
     });
@@ -483,6 +487,7 @@ describe("chat-tile queue edit save-and-steer routing (decision 14)", () => {
           kind: "user",
           content: QUEUED_CONTENT,
           browserContextAttachments: [],
+          browserAnnotations: [],
         },
         sender: { type: "user", userId: "owner-1" },
         settings: QUEUED_SETTINGS,
@@ -519,6 +524,8 @@ describe("chat-tile queue edit save-and-steer routing (decision 14)", () => {
         attachments: [],
         settings: QUEUED_SETTINGS,
         deliveryPolicy: "auto",
+        restoreContent: QUEUED_CONTENT,
+        restoreBrowserAnnotations: [],
       });
       expect(accepted).toBe(true);
     });

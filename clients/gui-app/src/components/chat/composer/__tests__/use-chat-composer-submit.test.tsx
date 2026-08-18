@@ -75,6 +75,7 @@ describe("useChatComposerSubmit", () => {
       },
       onSettingsChange: null,
       tuiOnly: false,
+      hostId: null,
     });
 
     const { result } = renderHook(() =>

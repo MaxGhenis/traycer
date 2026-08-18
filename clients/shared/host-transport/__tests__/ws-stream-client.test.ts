@@ -980,6 +980,7 @@ describe("WsStreamClient", () => {
       epicId: "epic-1",
       sessionId: "browser-session-1",
       tabId: "browser-tab-1",
+      role: "tile",
       maxWidth: 1280,
       maxHeight: 720,
       quality: 80,

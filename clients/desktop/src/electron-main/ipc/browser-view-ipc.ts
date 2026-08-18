@@ -65,6 +65,10 @@ import {
 } from "../browser-view/browser-storage-state";
 import { trustBrowserCertificate } from "../app/cert-trust";
 import { log } from "../app/logger";
+import type {
+  BrowserAnnotationAttachResultInput,
+  BrowserAnnotationSetTargetChatLabelInput,
+} from "../../ipc-contracts/browser-annotation-types";
 import type { RunnerIpcBridge } from "./runner-ipc-bridge";
 
 const BROWSER_VIEW_RELEASE_GRACE_MS = 500;
@@ -176,6 +180,20 @@ export function registerBrowserViewIpc(
       bridge.safeSendToWindow(
         windowId,
         RunnerHostEvent.browserViewTileHandoff,
+        change,
+      );
+    },
+    notifyAnnotationEvent: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.browserViewAnnotationEvent,
+        change,
+      );
+    },
+    notifyAnnotationAttached: (windowId, change) => {
+      bridge.safeSendToWindow(
+        windowId,
+        RunnerHostEvent.browserViewAnnotationAttached,
         change,
       );
     },
@@ -459,18 +477,40 @@ export function registerBrowserViewIpc(
   );
 
   bridge.handleInvoke(
-    RunnerHostInvoke.browserViewPickElement,
+    RunnerHostInvoke.browserViewStartAnnotation,
     (event, payload) => {
       const windowId = readSenderWindowId(bridge, event);
-      return manager.pickElement(windowId, parseTileKey(payload));
+      return manager.startAnnotation(windowId, parseTileKey(payload));
     },
   );
 
   bridge.handleInvoke(
-    RunnerHostInvoke.browserViewCancelElementPick,
+    RunnerHostInvoke.browserViewCancelAnnotation,
     (event, payload) => {
       const windowId = readSenderWindowId(bridge, event);
-      manager.cancelElementPick(windowId, parseTileKey(payload));
+      manager.cancelAnnotation(windowId, parseTileKey(payload));
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.browserViewSetAnnotationTargetChatLabel,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.setAnnotationTargetChatLabel(
+        windowId,
+        parseAnnotationTargetChatLabel(payload),
+      );
+    },
+  );
+
+  bridge.handleInvoke(
+    RunnerHostInvoke.browserViewAnnotationAttachResult,
+    (event, payload) => {
+      const windowId = readSenderWindowId(bridge, event);
+      manager.reportAnnotationAttachResult(
+        windowId,
+        parseAnnotationAttachResult(payload),
+      );
     },
   );
 
@@ -626,6 +666,42 @@ function parseTileKey(value: unknown): BrowserViewTileKey {
     paneId: readString(record.paneId, "paneId"),
     tileInstanceId: readString(record.tileInstanceId, "tileInstanceId"),
     pageSessionId: readString(record.pageSessionId, "pageSessionId"),
+  };
+}
+
+function parseAnnotationTargetChatLabel(
+  value: unknown,
+): BrowserAnnotationSetTargetChatLabelInput {
+  const record = assertRecord(value, "Annotation target-chat label payload");
+  return {
+    ...parseTileKey(record),
+    targets: Array.isArray(record.targets)
+      ? record.targets.map((value) => {
+          const target = assertRecord(value, "Annotation target chat");
+          return {
+            chatId: readString(target.chatId, "chatId"),
+            label: readString(target.label, "label"),
+          };
+        })
+      : [],
+    defaultChatId:
+      record.defaultChatId === null
+        ? null
+        : readString(record.defaultChatId, "defaultChatId"),
+  };
+}
+
+function parseAnnotationAttachResult(
+  value: unknown,
+): BrowserAnnotationAttachResultInput {
+  const record = assertRecord(value, "Annotation attach-result payload");
+  const status = readString(record.status, "status");
+  if (status !== "attached" && status !== "failed") {
+    throw new Error("Browser view annotation attach result status is invalid");
+  }
+  return {
+    annotationId: readString(record.annotationId, "annotationId"),
+    status,
   };
 }
 

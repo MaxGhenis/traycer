@@ -37,6 +37,8 @@ interface SendMessageStoreSlice {
     readonly settings: ChatRunSettings;
     readonly attachments: ReadonlyArray<Attachment>;
     readonly deliveryPolicy: ChatQueueDeliveryPolicy;
+    readonly restoreContent: JsonContent;
+    readonly restoreBrowserAnnotations: ReadonlyArray<unknown>;
   }) => { readonly clientActionId: string; readonly messageId: string } | null;
 }
 
@@ -49,17 +51,15 @@ describe("useChatActions deliveryPolicy threading", () => {
         readonly settings: ChatRunSettings;
         readonly attachments: ReadonlyArray<Attachment>;
         readonly deliveryPolicy: ChatQueueDeliveryPolicy;
+        readonly restoreContent: JsonContent;
+        readonly restoreBrowserAnnotations: ReadonlyArray<unknown>;
       }) => ({
         clientActionId: "action-1",
         messageId: "message-1",
       }),
     );
     const storeSlice: SendMessageStoreSlice = { sendMessageWithAttachments };
-    const handle: ChatSessionStoreHandle = {
-      store: {
-        getState: () => storeSlice,
-      },
-    } as ChatSessionStoreHandle;
+    const handle = createDeliveryPolicyHandle(storeSlice);
 
     const { result } = renderHook(() => useChatActions(handle));
     result.current.sendMessage({
@@ -68,6 +68,8 @@ describe("useChatActions deliveryPolicy threading", () => {
       settings: SETTINGS,
       attachments: [],
       deliveryPolicy: "after_safe_point",
+      restoreContent: CONTENT,
+      restoreBrowserAnnotations: [],
     });
 
     expect(sendMessageWithAttachments).toHaveBeenCalledTimes(1);
@@ -77,6 +79,30 @@ describe("useChatActions deliveryPolicy threading", () => {
       settings: SETTINGS,
       attachments: [],
       deliveryPolicy: "after_safe_point",
+      restoreContent: CONTENT,
+      restoreBrowserAnnotations: [],
     });
   });
 });
+
+function createDeliveryPolicyHandle(
+  storeSlice: SendMessageStoreSlice,
+): ChatSessionStoreHandle {
+  const store = {
+    getState: () => storeSlice,
+  } as ChatSessionStoreHandle["store"];
+  return {
+    epicId: "epic-1",
+    chatId: "chat-1",
+    userId: null,
+    store,
+    deliveredNotices: {
+      notices: new WeakSet(),
+      clientActionIds: new Set(),
+    },
+    deliveredRestoreCompletionKeys: new Set(),
+    setSurfaceVisibility: (_surfaceId: string, _visible: boolean) => undefined,
+    clearSurfaceVisibility: (_surfaceId: string) => undefined,
+    dispose: () => undefined,
+  };
+}
