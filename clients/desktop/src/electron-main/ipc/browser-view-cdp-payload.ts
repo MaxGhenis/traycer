@@ -115,6 +115,37 @@ export function parseBrowserViewCdpCommand(
         key: readCdpNullableString(record.key, "command.key"),
         code: readCdpNullableString(record.code, "command.code"),
         text: readCdpNullableString(record.text, "command.text"),
+        modifiers: readNullableInteger(
+          record.modifiers ?? null,
+          "command.modifiers",
+          false,
+        ),
+        unmodifiedText: readCdpNullableString(
+          record.unmodifiedText ?? null,
+          "command.unmodifiedText",
+        ),
+        windowsVirtualKeyCode: readNullableInteger(
+          record.windowsVirtualKeyCode ?? null,
+          "command.windowsVirtualKeyCode",
+          false,
+        ),
+        location: readNullableInteger(
+          record.location ?? null,
+          "command.location",
+          true,
+        ),
+        isKeypad: readNullableBoolean(
+          record.isKeypad ?? null,
+          "command.isKeypad",
+        ),
+        autoRepeat: readNullableBoolean(
+          record.autoRepeat ?? null,
+          "command.autoRepeat",
+        ),
+        commands: readNullableStringArray(
+          record.commands ?? null,
+          "command.commands",
+        ),
       };
     case "cdpSetDeviceMetricsOverride":
       return {
@@ -217,6 +248,41 @@ function readNullableFiniteNumber(
   if (value === null) return null;
   if (typeof value === "number" && Number.isFinite(value)) return value;
   throw new Error(`Browser view ${field} must be a finite number or null`);
+}
+
+function readNullableInteger(
+  value: unknown,
+  field: string,
+  nonnegative: boolean,
+): number | null {
+  if (value === null) return null;
+  if (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    (!nonnegative || value >= 0)
+  ) {
+    return value;
+  }
+  throw new Error(
+    `Browser view ${field} must be ${nonnegative ? "a nonnegative integer" : "an integer"} or null`,
+  );
+}
+
+function readNullableBoolean(value: unknown, field: string): boolean | null {
+  if (value === null) return null;
+  if (typeof value === "boolean") return value;
+  throw new Error(`Browser view ${field} must be a boolean or null`);
+}
+
+function readNullableStringArray(
+  value: unknown,
+  field: string,
+): string[] | null {
+  if (value === null) return null;
+  if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
+    return value;
+  }
+  throw new Error(`Browser view ${field} must be a string array or null`);
 }
 
 function assertRecord(value: unknown, label: string): Record<string, unknown> {

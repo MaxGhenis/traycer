@@ -294,6 +294,13 @@ export type AgentBrowserViewCdpCommand =
       readonly key: string | null;
       readonly code: string | null;
       readonly text: string | null;
+      readonly modifiers: number | null;
+      readonly unmodifiedText: string | null;
+      readonly windowsVirtualKeyCode: number | null;
+      readonly location: number | null;
+      readonly isKeypad: boolean | null;
+      readonly autoRepeat: boolean | null;
+      readonly commands: readonly string[] | null;
     }
   | {
       readonly kind: "cdpSetDeviceMetricsOverride";

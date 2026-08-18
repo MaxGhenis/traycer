@@ -3122,6 +3122,50 @@ describe("BrowserViewManager CDP dispatch", () => {
     expect(result).toEqual({ kind: "cdpDispatchMouseEvent", ok: true });
   });
 
+  it("dispatches mapped key fields to Input.dispatchKeyEvent", async () => {
+    const harness = createHarness();
+    await upsertAndAttach(harness, "window-1", BASE_KEY);
+
+    const result = await harness.manager.dispatchCdp("window-1", {
+      ...BASE_KEY,
+      sessionId: null,
+      command: {
+        kind: "cdpDispatchKeyEvent",
+        type: "rawKeyDown",
+        key: "Backspace",
+        code: "Backspace",
+        text: "",
+        modifiers: 0,
+        unmodifiedText: "",
+        windowsVirtualKeyCode: 8,
+        location: 0,
+        isKeypad: false,
+        autoRepeat: false,
+        commands: [],
+      },
+    });
+
+    expect(harness.views[0].webContents.debugger.commands).toContainEqual(
+      expect.objectContaining({
+        method: "Input.dispatchKeyEvent",
+        params: {
+          type: "rawKeyDown",
+          key: "Backspace",
+          code: "Backspace",
+          text: "",
+          modifiers: 0,
+          unmodifiedText: "",
+          windowsVirtualKeyCode: 8,
+          location: 0,
+          isKeypad: false,
+          autoRepeat: false,
+          commands: [],
+        },
+      }),
+    );
+    expect(result).toEqual({ kind: "cdpDispatchKeyEvent", ok: true });
+  });
+
   it("dispatches cdpSetAutoAttach as Target.setAutoAttach with flatten always true", async () => {
     const harness = createHarness();
     await upsertAndAttach(harness, "window-1", BASE_KEY);

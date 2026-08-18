@@ -75,6 +75,13 @@ describe("browser.sessions@1.0 typed CDP bridge frames", () => {
         key: "Enter",
         code: "Enter",
         text: null,
+        modifiers: 0,
+        unmodifiedText: "\r",
+        windowsVirtualKeyCode: 13,
+        location: 0,
+        isKeypad: false,
+        autoRepeat: false,
+        commands: [],
       },
       {
         kind: "cdpSetDeviceMetricsOverride",

@@ -485,6 +485,13 @@ const browserSessionsServerFrameSchemaV13 = z.discriminatedUnion("kind", [
     key: z.string().nullable(),
     code: z.string().nullable(),
     text: z.string().nullable(),
+    modifiers: z.number().int().nullable().default(null),
+    unmodifiedText: z.string().nullable().default(null),
+    windowsVirtualKeyCode: z.number().int().nullable().default(null),
+    location: z.number().int().nonnegative().nullable().default(null),
+    isKeypad: z.boolean().nullable().default(null),
+    autoRepeat: z.boolean().nullable().default(null),
+    commands: z.array(z.string()).nullable().default(null),
   }),
   z.object({
     kind: z.literal("cdpSetDeviceMetricsOverride"),
@@ -1028,6 +1035,14 @@ export type BrowserScreencastMetadata = z.infer<
   typeof browserScreencastMetadataSchema
 >;
 
+export const browserScreencastUnsupportedFeatureSchema = z.enum([
+  "fileUpload",
+  "download",
+]);
+export type BrowserScreencastUnsupportedFeature = z.infer<
+  typeof browserScreencastUnsupportedFeatureSchema
+>;
+
 export const browserScreencastServerFrameSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("started"),
@@ -1094,6 +1109,21 @@ export const browserScreencastServerFrameSchema = z.discriminatedUnion("kind", [
     kind: z.literal("dialogSettled"),
     ...textFrameFields,
     generation: z.number().int().nonnegative(),
+  }),
+  // Screencast-natural-control: full snapshot every time, no deltas.
+  // Schema only here; the host starts emitting these in ticket 04.
+  z.object({
+    kind: z.literal("navState"),
+    ...textFrameFields,
+    url: z.string(),
+    canGoBack: z.boolean(),
+    canGoForward: z.boolean(),
+    loading: z.boolean(),
+  }),
+  z.object({
+    kind: z.literal("unsupportedInteraction"),
+    ...textFrameFields,
+    feature: browserScreencastUnsupportedFeatureSchema,
   }),
 ]);
 export type BrowserScreencastServerFrame = z.infer<
@@ -1186,6 +1216,8 @@ export const browserScreencastClientFrameSchema = z.discriminatedUnion("kind", [
     button: browserScreencastPointerButtonSchema,
     buttons: z.number().int().min(0).max(31),
     modifiers: z.number().int().min(0).max(15),
+    // Local click tracker; 0 for move/wheel.
+    clickCount: z.number().int().min(0).max(8).default(1),
     deltaX: z.number(),
     deltaY: z.number(),
   }),
@@ -1197,12 +1229,35 @@ export const browserScreencastClientFrameSchema = z.discriminatedUnion("kind", [
     code: z.string(),
     key: z.string(),
     modifiers: z.number().int().min(0).max(15),
+    // DOM event.repeat.
+    autoRepeat: z.boolean().default(false),
   }),
   z.object({
     kind: z.literal("insertText"),
     ...textFrameFields,
     ...browserScreencastControlIdentitySchema,
     text: z.string(),
+  }),
+  z.object({
+    kind: z.literal("navigate"),
+    ...textFrameFields,
+    ...browserScreencastControlIdentitySchema,
+    url: z.string().max(2048),
+  }),
+  z.object({
+    kind: z.literal("goBack"),
+    ...textFrameFields,
+    ...browserScreencastControlIdentitySchema,
+  }),
+  z.object({
+    kind: z.literal("goForward"),
+    ...textFrameFields,
+    ...browserScreencastControlIdentitySchema,
+  }),
+  z.object({
+    kind: z.literal("reload"),
+    ...textFrameFields,
+    ...browserScreencastControlIdentitySchema,
   }),
   z.object({
     kind: z.literal("dialogResponse"),

@@ -83,6 +83,7 @@ describe("browser.sessions@1.0 borrowed-tile attachment frames", () => {
       button: "none" as const,
       buttons: 0,
       modifiers: 0,
+      clickCount: 0,
       deltaX: 0,
       deltaY: 0,
     };
@@ -95,6 +96,7 @@ describe("browser.sessions@1.0 borrowed-tile attachment frames", () => {
       code: "KeyA",
       key: "a",
       modifiers: 0,
+      autoRepeat: false,
     };
 
     expect(browserScreencastClientFrameSchema.safeParse(pointer).success).toBe(

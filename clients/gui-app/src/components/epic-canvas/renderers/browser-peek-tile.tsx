@@ -1,14 +1,17 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
   type CompositionEvent as ReactCompositionEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
   type SetStateAction,
-  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { AlertTriangle, Pause, Radio, WifiOff } from "lucide-react";
 import { toast } from "sonner";
@@ -25,21 +28,120 @@ import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/h
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
-import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
+import {
+  BrowserTileToolbar,
+  type BrowserPictureInPictureControl,
+} from "@/components/epic-canvas/renderers/browser-tile-toolbar";
+import { useCloseCanvasTileWithNestedFocus } from "@/components/epic-canvas/renderers/use-close-canvas-tile-with-nested-focus";
+import type { TileController } from "@/components/epic-canvas/renderers/tile-controller";
+import {
+  createScreencastArmBuffer,
+  SCREENCAST_ARM_BUFFER_CLICK_SLOP_PX,
+  type ScreencastArmBuffer,
+} from "@/components/epic-canvas/renderers/screencast-arm-buffer";
+import {
+  EMPTY_SCREENCAST_NAV_STATE,
+  toastScreencastUnsupportedInteraction,
+  useScreencastTileChrome,
+  type ScreencastNavState,
+} from "@/components/epic-canvas/renderers/use-screencast-tile-chrome";
+import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
-import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
-import { cn } from "@/lib/utils";
-import type { BrowserPeekTileRef } from "@/stores/epics/canvas/types";
-import { BrowserPictureInPictureButton } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
-import { useCloseCanvasTileWithNestedFocus } from "@/components/epic-canvas/renderers/use-close-canvas-tile-with-nested-focus";
+import { useRegisterVisibleBrowserTile } from "@/lib/browser-view/visible-tile-registry";
 import { convertBrowserTabToPip } from "@/lib/browser-view/pip-store";
+import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
+import { hasPlatformModKey } from "@/lib/keybindings/chord";
+import { bytesToBase64 } from "@/lib/composer/image-base64";
+import { cn } from "@/lib/utils";
+import { wheelDeltaToPixels } from "@/lib/wheel-delta-to-pixels";
+import type { BrowserPeekTileRef } from "@/stores/epics/canvas/types";
+import { useScreencastArmedStore } from "@/stores/screencast-armed-store";
 
 const DEFAULT_MAX_WIDTH = 1280;
 const DEFAULT_MAX_HEIGHT = 720;
 const DEFAULT_QUALITY = 70;
 const STALE_WITHOUT_FRAME_MS = 8_000;
 const VIEWPORT_DEBOUNCE_MS = 200;
+const POINTER_CLICK_COUNT_WINDOW_MS = 500;
+const POINTER_CLICK_COUNT_MAX = 8;
+const WHEEL_LINE_HEIGHT_PX = 16;
+
+type PeekPointerInput = Omit<
+  Extract<BrowserScreencastClientFrame, { readonly kind: "pointer" }>,
+  "armEpoch" | "seq" | "hasBinaryPayload"
+>;
+
+type PeekKeyboardInput = Omit<
+  Extract<BrowserScreencastClientFrame, { readonly kind: "keyboard" }>,
+  "armEpoch" | "seq" | "hasBinaryPayload"
+>;
+
+type PeekInsertTextInput = Omit<
+  Extract<BrowserScreencastClientFrame, { readonly kind: "insertText" }>,
+  "armEpoch" | "seq" | "hasBinaryPayload"
+>;
+
+type PeekNavInput =
+  | { readonly kind: "navigate"; readonly url: string }
+  | { readonly kind: "goBack" }
+  | { readonly kind: "goForward" }
+  | { readonly kind: "reload" };
+
+type PeekInputFrame =
+  PeekPointerInput | PeekKeyboardInput | PeekInsertTextInput | PeekNavInput;
+
+interface CapturedPointer {
+  readonly element: HTMLElement;
+  readonly pointerId: number;
+}
+
+interface PointerLike {
+  readonly clientX: number;
+  readonly clientY: number;
+  readonly button: number;
+  readonly buttons: number;
+  readonly altKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+  readonly shiftKey: boolean;
+}
+
+interface PointerClickCount {
+  readonly button: number;
+  readonly clientX: number;
+  readonly clientY: number;
+  readonly at: number;
+  readonly count: number;
+}
+
+interface PointerFrameRequest {
+  readonly event: PointerLike;
+  readonly type: PeekPointerInput["type"];
+  readonly clampToEdge: boolean;
+  readonly deltaX: number;
+  readonly deltaY: number;
+}
+
+interface NormalizedPointerRequest {
+  readonly clientX: number;
+  readonly clientY: number;
+  readonly image: HTMLImageElement | null;
+  readonly frameSize: {
+    readonly width: number;
+    readonly height: number;
+  } | null;
+  readonly clampToEdge: boolean;
+}
+
+interface BrowserPeekStatus {
+  readonly label: string;
+  readonly overlay: string | null;
+  readonly tone: "live" | "muted" | "bad";
+  readonly Icon: typeof Radio;
+}
 
 type PeekLifecycle =
   | "connecting"
@@ -61,6 +163,7 @@ interface BrowserPeekRenderState {
     readonly width: number;
     readonly height: number;
   } | null;
+  readonly navState: ScreencastNavState;
 }
 
 type BrowserPeekDialog = Extract<
@@ -71,8 +174,8 @@ type BrowserPeekDialog = Extract<
 export interface BrowserPeekTileProps {
   readonly epicId: string;
   readonly node: BrowserPeekTileRef;
-  readonly viewTabId: string;
-  readonly paneId: string;
+  readonly viewTabId?: string;
+  readonly paneId?: string;
   readonly onMigrated?: () => void;
 }
 
@@ -84,8 +187,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const client = useHostStreamClientFor(hostEntry, auth);
   const visible = useTileBodyVisible();
   const closeCanvasTile = useCloseCanvasTileWithNestedFocus(
-    props.viewTabId,
-    props.paneId,
+    props.viewTabId ?? "",
+    props.paneId ?? "",
     node.instanceId,
   );
   useRegisterVisibleBrowserTile({
@@ -100,7 +203,9 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       binaryPayload: Uint8Array | null,
     ) => void;
   } | null>(null);
+  const tileRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const overlayButtonRef = useRef<HTMLButtonElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const imeInputRef = useRef<HTMLInputElement | null>(null);
   const lastFrameAtRef = useRef<number | null>(null);
@@ -111,6 +216,34 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const presentedSequenceRef = useRef<number | null>(null);
   const activeDialogRef = useRef<BrowserPeekDialog | null>(null);
   const composingRef = useRef(false);
+  const frameSizeRef = useRef<{
+    readonly width: number;
+    readonly height: number;
+  } | null>(null);
+  const capturedPointerRef = useRef<CapturedPointer | null>(null);
+  const suppressPointerIdRef = useRef<number | null>(null);
+  const pendingMoveRef = useRef<PeekPointerInput | null>(null);
+  const moveRafRef = useRef<number | null>(null);
+  const acceptedPointerDownsRef = useRef(
+    new Map<PeekPointerInput["button"], PeekPointerInput>(),
+  );
+  const pointerClickCountRef = useRef<PointerClickCount | null>(null);
+  const handleArmBufferDropped = useCallback(() => {
+    pointerClickCountRef.current = null;
+    const captured = capturedPointerRef.current;
+    if (captured === null) return;
+    suppressPointerIdRef.current = captured.pointerId;
+  }, []);
+  // eslint-disable-next-line react-hooks/refs -- the factory stores this handler; it never invokes it during render.
+  const [armBuffer] = useState<ScreencastArmBuffer<PeekPointerInput>>(() =>
+    createScreencastArmBuffer(handleArmBufferDropped),
+  );
+  const deliverArmBufferRef = useRef<() => void>(() => {});
+  const flushPendingNavRef = useRef<() => void>(() => {});
+  const clearLocalArmRef = useRef<(notifyHost: boolean) => void>(() => {});
+  const pendingNavRef = useRef<PeekNavInput[]>([]);
+  const forwardedKeyDownsRef = useRef(new Map<string, PeekKeyboardInput>());
+  const claimedLocalCodesRef = useRef(new Set<string>());
   const [armedState, setArmedState] = useState<{
     readonly client: IHostStreamClient<HostStreamRpcRegistry>;
     readonly epoch: number;
@@ -128,12 +261,32 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       details: null,
       migrationPending: false,
       frameSize: null,
+      navState: EMPTY_SCREENCAST_NAV_STATE,
     }),
   );
-  const { image, lifecycle, details, migrationPending, frameSize } =
-    resetPeekStateForClient(streamState, client);
+  const stateMatchesClient = streamState.client === client;
+  const image = stateMatchesClient ? streamState.image : null;
+  const lifecycle = stateMatchesClient ? streamState.lifecycle : "connecting";
+  const details = peekDetailsForRender(stateMatchesClient, streamState, client);
+  const migrationPending = stateMatchesClient && streamState.migrationPending;
+  const frameSize = stateMatchesClient ? streamState.frameSize : null;
+  const navState = stateMatchesClient
+    ? streamState.navState
+    : EMPTY_SCREENCAST_NAV_STATE;
   const armedEpoch = armedState?.client === client ? armedState.epoch : null;
+  const presentedArmedEpoch = visible ? armedEpoch : null;
   const dialog = dialogForClient(dialogState, client);
+
+  // Only an actually-armed, visible tile participates. An unarmed
+  // sibling must never write false and clobber another tile's flag.
+  useLayoutEffect(() => {
+    if (presentedArmedEpoch === null) return;
+    const setArmed = useScreencastArmedStore.getState().setArmed;
+    setArmed(true);
+    return () => {
+      setArmed(false);
+    };
+  }, [presentedArmedEpoch]);
 
   const setLifecycle = useCallback(
     (value: SetStateAction<PeekLifecycle>) => {
@@ -184,9 +337,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     composingRef.current = false;
     if (client === null) {
       sessionRef.current = null;
-      desiredArmEpochRef.current = null;
-      activeArmEpochRef.current = null;
-      activeDialogRef.current = null;
+      clearLocalArmRef.current(false);
       return;
     }
 
@@ -204,13 +355,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     session.onStatusChange((status, reason) => {
       if (status !== "open") {
         presentedSequenceRef.current = null;
-        desiredArmEpochRef.current = null;
-        activeArmEpochRef.current = null;
-        activeDialogRef.current = null;
-        composingRef.current = false;
-        setArmedState(null);
-        setDialogState(null);
-        setComposing(false);
+        clearLocalArmRef.current(false);
       } else if (
         viewportRef.current?.contains(document.activeElement) === true
       ) {
@@ -255,17 +400,32 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           migrationPending: pending,
         }));
       }
-      if (parsed.data.kind === "armed") {
-        if (desiredArmEpochRef.current !== parsed.data.armEpoch) return;
+      if (parsed.data.kind === "navState") {
+        const nextNavState: ScreencastNavState = {
+          url: parsed.data.url,
+          canGoBack: parsed.data.canGoBack,
+          canGoForward: parsed.data.canGoForward,
+          loading: parsed.data.loading,
+        };
+        setStreamState((current) => ({
+          ...resetPeekStateForClient(current, client),
+          navState: nextNavState,
+        }));
+      } else if (parsed.data.kind === "unsupportedInteraction") {
+        toastScreencastUnsupportedInteraction(parsed.data.feature);
+      }
+      const control = applyScreencastControlFrame({
+        frame: parsed.data,
+        desiredEpoch: desiredArmEpochRef.current,
+        activeEpoch: activeArmEpochRef.current,
+      });
+      if (control === "teardown") {
+        clearLocalArmRef.current(false);
+      } else if (control === "armed" && parsed.data.kind === "armed") {
         activeArmEpochRef.current = parsed.data.armEpoch;
         setArmedState({ client, epoch: parsed.data.armEpoch });
-      } else if (parsed.data.kind === "revoked") {
-        if (activeArmEpochRef.current !== parsed.data.armEpoch) return;
-        desiredArmEpochRef.current = null;
-        activeArmEpochRef.current = null;
-        setArmedState(null);
-        activeDialogRef.current = null;
-        setDialogState(null);
+        deliverArmBufferRef.current();
+        flushPendingNavRef.current();
       } else {
         handleDialogServerFrame({
           frame: parsed.data,
@@ -287,11 +447,8 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       if (sessionRef.current === session) {
         sessionRef.current = null;
       }
-      desiredArmEpochRef.current = null;
-      activeArmEpochRef.current = null;
       presentedSequenceRef.current = null;
-      activeDialogRef.current = null;
-      composingRef.current = false;
+      clearLocalArmRef.current(false);
       session.close();
     };
   }, [
@@ -367,57 +524,198 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     });
   }, []);
 
-  const disarm = useCallback(() => {
+  const releaseCapturedPointer = useCallback(() => {
+    const captured = capturedPointerRef.current;
+    capturedPointerRef.current = null;
+    if (captured === null) return;
+    try {
+      captured.element.releasePointerCapture(captured.pointerId);
+    } catch {
+      // Already released or the node is gone.
+    }
+  }, []);
+
+  const cancelPendingMove = useCallback(() => {
+    pendingMoveRef.current = null;
+    if (moveRafRef.current === null) return;
+    window.cancelAnimationFrame(moveRafRef.current);
+    moveRafRef.current = null;
+  }, []);
+
+  const resetTransientInput = useCallback(() => {
+    armBuffer.drop();
+    pendingNavRef.current = [];
+    forwardedKeyDownsRef.current.clear();
+    claimedLocalCodesRef.current.clear();
+    suppressPointerIdRef.current = null;
+    acceptedPointerDownsRef.current.clear();
+    pointerClickCountRef.current = null;
+    cancelPendingMove();
+    releaseCapturedPointer();
+  }, [armBuffer, cancelPendingMove, releaseCapturedPointer]);
+
+  const resetLocalArmRefs = useCallback((): number | null => {
     const armEpoch = activeArmEpochRef.current ?? desiredArmEpochRef.current;
     desiredArmEpochRef.current = null;
     activeArmEpochRef.current = null;
     activeDialogRef.current = null;
     composingRef.current = false;
+    resetTransientInput();
+    return armEpoch;
+  }, [resetTransientInput]);
+
+  const resetLocalArmState = useCallback(() => {
     setComposing(false);
     setDialogState(null);
     setArmedState(null);
-    if (armEpoch === null) return;
-    sendPeekFrame(sessionRef.current, {
-      kind: "disarm",
-      hasBinaryPayload: false,
-      armEpoch,
-    });
   }, []);
 
-  const sendInput = useCallback(
-    (
-      frame:
-        | Omit<
-            Extract<BrowserScreencastClientFrame, { readonly kind: "pointer" }>,
-            "armEpoch" | "seq" | "hasBinaryPayload"
-          >
-        | Omit<
-            Extract<
-              BrowserScreencastClientFrame,
-              { readonly kind: "keyboard" }
-            >,
-            "armEpoch" | "seq" | "hasBinaryPayload"
-          >
-        | Omit<
-            Extract<
-              BrowserScreencastClientFrame,
-              { readonly kind: "insertText" }
-            >,
-            "armEpoch" | "seq" | "hasBinaryPayload"
-          >,
-    ) => {
-      const armEpoch = activeArmEpochRef.current;
-      if (armEpoch === null) return;
+  const clearLocalArm = useCallback(
+    (notifyHost: boolean) => {
+      const armEpoch = resetLocalArmRefs();
+      resetLocalArmState();
+      if (!notifyHost || armEpoch === null) return;
       sendPeekFrame(sessionRef.current, {
-        ...frame,
+        kind: "disarm",
         hasBinaryPayload: false,
         armEpoch,
-        seq: inputSequenceRef.current,
       });
-      inputSequenceRef.current += 1;
     },
-    [],
+    [resetLocalArmRefs, resetLocalArmState],
   );
+
+  const disarm = useCallback(() => {
+    clearLocalArm(true);
+  }, [clearLocalArm]);
+
+  useEffect(() => {
+    if (visible) return;
+    const armEpoch = resetLocalArmRefs();
+    if (armEpoch !== null) {
+      sendPeekFrame(sessionRef.current, {
+        kind: "disarm",
+        hasBinaryPayload: false,
+        armEpoch,
+      });
+    }
+    // Refs and host disarm must win immediately; React state follows after
+    // this visibility effect commits so the hidden render cannot route input.
+    queueMicrotask(() => {
+      resetLocalArmState();
+    });
+  }, [resetLocalArmRefs, resetLocalArmState, visible]);
+
+  const sendInput = useCallback((frame: PeekInputFrame) => {
+    const armEpoch = activeArmEpochRef.current;
+    if (armEpoch === null) return;
+    if (frame.kind === "keyboard") {
+      if (frame.type === "rawKeyDown") {
+        forwardedKeyDownsRef.current.set(frame.code, frame);
+      } else if (frame.type === "keyUp") {
+        forwardedKeyDownsRef.current.delete(frame.code);
+      }
+    }
+    sendPeekFrame(sessionRef.current, {
+      ...frame,
+      hasBinaryPayload: false,
+      armEpoch,
+      seq: inputSequenceRef.current,
+    });
+    inputSequenceRef.current += 1;
+  }, []);
+
+  const releaseForwardedPageKeys = useCallback(() => {
+    const held = Array.from(forwardedKeyDownsRef.current.values());
+    for (const frame of held) {
+      sendInput({
+        ...frame,
+        type: "keyUp",
+        autoRepeat: false,
+      });
+    }
+  }, [sendInput]);
+
+  const flushPendingNav = useCallback(() => {
+    const pending = pendingNavRef.current;
+    pendingNavRef.current = [];
+    for (const frame of pending) {
+      sendInput(frame);
+    }
+  }, [sendInput]);
+
+  const requestNav = useCallback(
+    (frame: PeekNavInput) => {
+      if (activeArmEpochRef.current !== null) {
+        sendInput(frame);
+        return;
+      }
+      pendingNavRef.current = [...pendingNavRef.current, frame];
+      arm();
+    },
+    [arm, sendInput],
+  );
+
+  const chrome = useScreencastTileChrome({
+    navState,
+    initialUrl: node.initialUrl,
+    disabled: client === null,
+    onNavigateUrl: (url) => {
+      requestNav({ kind: "navigate", url });
+    },
+    onBack: () => {
+      requestNav({ kind: "goBack" });
+    },
+    onForward: () => {
+      requestNav({ kind: "goForward" });
+    },
+    onReload: () => {
+      requestNav({ kind: "reload" });
+    },
+  });
+
+  const onAddressFocusChange = (focused: boolean): void => {
+    if (focused) releaseForwardedPageKeys();
+    chrome.onAddressFocusChange(focused);
+  };
+
+  useEffect(() => {
+    const tile = tileRef.current;
+    if (tile === null || presentedArmedEpoch === null) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (isScreencastModChord(event, "l")) {
+        event.preventDefault();
+        event.stopPropagation();
+        claimedLocalCodesRef.current.add(event.code);
+        if (document.activeElement === imeInputRef.current) {
+          releaseForwardedPageKeys();
+        }
+        focusScreencastAddressBar(tile);
+        return;
+      }
+      if (isScreencastModChord(event, "r")) {
+        event.preventDefault();
+        event.stopPropagation();
+        claimedLocalCodesRef.current.add(event.code);
+        requestNav({ kind: "reload" });
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent): void => {
+      if (!claimedLocalCodesRef.current.delete(event.code)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    const onWindowBlur = (): void => {
+      claimedLocalCodesRef.current.clear();
+    };
+    tile.addEventListener("keydown", onKeyDown, true);
+    tile.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("blur", onWindowBlur);
+    return () => {
+      tile.removeEventListener("keydown", onKeyDown, true);
+      tile.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("blur", onWindowBlur);
+    };
+  }, [presentedArmedEpoch, releaseForwardedPageKeys, requestNav]);
 
   const respondToDialog = useCallback(
     (generation: number, accept: boolean, promptText: string | null) => {
@@ -446,42 +744,315 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     [],
   );
 
-  const sendPointer = useCallback(
-    (
-      event:
-        | ReactPointerEvent<HTMLButtonElement>
-        | ReactWheelEvent<HTMLButtonElement>,
-      type: "move" | "down" | "up" | "wheel",
-    ) => {
+  const buildPointerFrame = useCallback(
+    (request: PointerFrameRequest): PeekPointerInput | null => {
       const castSequence = presentedSequenceRef.current;
-      const normalized = normalizedPointerPosition(
-        event.clientX,
-        event.clientY,
-        imageRef.current,
-        frameSize,
-      );
-      if (castSequence === null || normalized === null) return;
-      const pointerEvent = "button" in event ? event : null;
-      sendInput({
+      const normalized = normalizedPointerPosition({
+        clientX: request.event.clientX,
+        clientY: request.event.clientY,
+        image: imageRef.current,
+        frameSize: frameSizeRef.current,
+        clampToEdge: request.clampToEdge,
+      });
+      if (castSequence === null || normalized === null) return null;
+      let clickCount = 0;
+      if (request.type === "down") {
+        const at = performance.now();
+        const previous = pointerClickCountRef.current;
+        const continuesPrevious =
+          previous !== null &&
+          previous.button === request.event.button &&
+          at - previous.at <= POINTER_CLICK_COUNT_WINDOW_MS &&
+          Math.abs(request.event.clientX - previous.clientX) <=
+            SCREENCAST_ARM_BUFFER_CLICK_SLOP_PX &&
+          Math.abs(request.event.clientY - previous.clientY) <=
+            SCREENCAST_ARM_BUFFER_CLICK_SLOP_PX;
+        clickCount = continuesPrevious
+          ? Math.min(POINTER_CLICK_COUNT_MAX, previous.count + 1)
+          : 1;
+        pointerClickCountRef.current = {
+          button: request.event.button,
+          clientX: request.event.clientX,
+          clientY: request.event.clientY,
+          at,
+          count: clickCount,
+        };
+      } else if (request.type === "up") {
+        const button = pointerButton(request.event.button);
+        const accepted = acceptedPointerDownsRef.current.get(button);
+        const down = pointerClickCountRef.current;
+        clickCount =
+          accepted?.clickCount ??
+          (down?.button === request.event.button ? down.count : 1);
+      }
+      return {
         kind: "pointer",
-        type,
+        type: request.type,
         castSequence,
         ...normalized,
-        button: pointerButton(pointerEvent?.button ?? -1),
-        buttons: event.buttons,
-        modifiers: inputModifiers(event),
-        deltaX: "deltaX" in event ? event.deltaX : 0,
-        deltaY: "deltaY" in event ? event.deltaY : 0,
+        button:
+          request.type === "wheel"
+            ? "none"
+            : pointerButton(request.event.button),
+        buttons: request.event.buttons,
+        modifiers: inputModifiers(request.event),
+        clickCount,
+        deltaX: request.deltaX,
+        deltaY: request.deltaY,
+      };
+    },
+    [],
+  );
+
+  const flushPendingMove = useCallback(() => {
+    const pending = pendingMoveRef.current;
+    pendingMoveRef.current = null;
+    if (moveRafRef.current !== null) {
+      window.cancelAnimationFrame(moveRafRef.current);
+      moveRafRef.current = null;
+    }
+    if (pending === null) return;
+    sendInput(pending);
+  }, [sendInput]);
+
+  const scheduleMove = useCallback(
+    (frame: PeekPointerInput) => {
+      pendingMoveRef.current = frame;
+      if (moveRafRef.current !== null) return;
+      moveRafRef.current = window.requestAnimationFrame(() => {
+        moveRafRef.current = null;
+        const pending = pendingMoveRef.current;
+        pendingMoveRef.current = null;
+        if (pending === null) return;
+        sendInput(pending);
       });
     },
-    [frameSize, sendInput],
+    [sendInput],
   );
+
+  const sendDiscretePointer = useCallback(
+    (frame: PeekPointerInput) => {
+      flushPendingMove();
+      sendInput(frame);
+      if (frame.type === "down") {
+        acceptedPointerDownsRef.current.set(frame.button, frame);
+        return;
+      }
+      if (frame.type === "up") {
+        acceptedPointerDownsRef.current.delete(frame.button);
+      }
+    },
+    [flushPendingMove, sendInput],
+  );
+
+  const deliverArmBuffer = useCallback(() => {
+    const hadPending = armBuffer.hasPending();
+    const gesture = armBuffer.takeIfCurrent(presentedSequenceRef.current);
+    if (gesture === null) {
+      const captured = capturedPointerRef.current;
+      if (hadPending && captured !== null) {
+        suppressPointerIdRef.current = captured.pointerId;
+      }
+      return;
+    }
+    sendDiscretePointer(gesture.down);
+    sendDiscretePointer(gesture.up);
+  }, [armBuffer, sendDiscretePointer]);
+
+  const capturePointer = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture is best-effort; local teardown still needs the id.
+      }
+      capturedPointerRef.current = {
+        element: event.currentTarget,
+        pointerId: event.pointerId,
+      };
+    },
+    [],
+  );
+
+  const handleOverlayPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      capturePointer(event);
+      const armed = activeArmEpochRef.current !== null;
+      const arming = desiredArmEpochRef.current !== null;
+      if (armed) {
+        const frame = buildPointerFrame({
+          event,
+          type: "down",
+          clampToEdge: false,
+          deltaX: 0,
+          deltaY: 0,
+        });
+        if (frame !== null) sendDiscretePointer(frame);
+      } else if (!arming) {
+        arm();
+        if (event.button !== 0) {
+          suppressPointerIdRef.current = event.pointerId;
+        } else {
+          const frame = buildPointerFrame({
+            event,
+            type: "down",
+            clampToEdge: false,
+            deltaX: 0,
+            deltaY: 0,
+          });
+          if (frame !== null) {
+            armBuffer.storeDown({
+              payload: frame,
+              castSequence: frame.castSequence,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              isPrimary: true,
+            });
+          }
+        }
+      }
+      imeInputRef.current?.focus();
+    },
+    [arm, armBuffer, buildPointerFrame, capturePointer, sendDiscretePointer],
+  );
+
+  const handleOverlayPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (armBuffer.hasPending()) {
+        armBuffer.noteMove(event.clientX, event.clientY);
+        if (!armBuffer.hasPending()) {
+          suppressPointerIdRef.current = event.pointerId;
+        }
+        return;
+      }
+      if (suppressPointerIdRef.current === event.pointerId) return;
+      if (activeArmEpochRef.current === null) return;
+      const clampToEdge = event.buttons !== 0;
+      const frame = buildPointerFrame({
+        event,
+        type: "move",
+        clampToEdge,
+        deltaX: 0,
+        deltaY: 0,
+      });
+      if (frame === null) return;
+      scheduleMove(frame);
+    },
+    [armBuffer, buildPointerFrame, scheduleMove],
+  );
+
+  const handleOverlayPointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (armBuffer.hasPending()) {
+        const frame = buildPointerFrame({
+          event,
+          type: "up",
+          clampToEdge: true,
+          deltaX: 0,
+          deltaY: 0,
+        });
+        if (frame !== null) {
+          armBuffer.storeMatchingUp({
+            payload: frame,
+            isPrimary: event.button === 0,
+            clientX: event.clientX,
+            clientY: event.clientY,
+          });
+        }
+        releaseCapturedPointer();
+        return;
+      }
+      if (suppressPointerIdRef.current === event.pointerId) {
+        suppressPointerIdRef.current = null;
+        releaseCapturedPointer();
+        return;
+      }
+      if (
+        activeArmEpochRef.current !== null &&
+        acceptedPointerDownsRef.current.has(pointerButton(event.button))
+      ) {
+        const frame = buildPointerFrame({
+          event,
+          type: "up",
+          clampToEdge: true,
+          deltaX: 0,
+          deltaY: 0,
+        });
+        if (frame !== null) sendDiscretePointer(frame);
+      }
+      releaseCapturedPointer();
+    },
+    [armBuffer, buildPointerFrame, releaseCapturedPointer, sendDiscretePointer],
+  );
+
+  const handleOverlayPointerCancel = useCallback(() => {
+    if (activeArmEpochRef.current !== null) {
+      for (const accepted of acceptedPointerDownsRef.current.values()) {
+        sendDiscretePointer({
+          ...accepted,
+          type: "up",
+          buttons: 0,
+        });
+      }
+    }
+    armBuffer.drop();
+    suppressPointerIdRef.current = null;
+    acceptedPointerDownsRef.current.clear();
+    cancelPendingMove();
+    releaseCapturedPointer();
+  }, [
+    armBuffer,
+    cancelPendingMove,
+    releaseCapturedPointer,
+    sendDiscretePointer,
+  ]);
+
+  const handleOverlayContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>) => {
+      if (activeArmEpochRef.current === null) return;
+      event.preventDefault();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const button = overlayButtonRef.current;
+    if (button === null || presentedArmedEpoch === null) return;
+    const onWheel = (event: WheelEvent): void => {
+      if (activeArmEpochRef.current === null) return;
+      event.preventDefault();
+      const frame = buildPointerFrame({
+        event,
+        type: "wheel",
+        clampToEdge: false,
+        deltaX: wheelDeltaToPixels(
+          event.deltaX,
+          event.deltaMode,
+          button.clientWidth,
+          WHEEL_LINE_HEIGHT_PX,
+        ),
+        deltaY: wheelDeltaToPixels(
+          event.deltaY,
+          event.deltaMode,
+          button.clientHeight,
+          WHEEL_LINE_HEIGHT_PX,
+        ),
+      });
+      if (frame === null) return;
+      sendDiscretePointer(frame);
+    };
+    button.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      button.removeEventListener("wheel", onWheel);
+    };
+  }, [buildPointerFrame, presentedArmedEpoch, sendDiscretePointer]);
 
   const handleFocusExit = useCallback(
     (relatedTarget: EventTarget | null) => {
       if (
         relatedTarget instanceof Node &&
-        viewportRef.current?.contains(relatedTarget) === true
+        tileRef.current?.contains(relatedTarget) === true
       ) {
         return;
       }
@@ -490,81 +1061,69 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     [disarm],
   );
 
+  useLayoutEffect(() => {
+    frameSizeRef.current = frameSize;
+  }, [frameSize]);
+
+  useLayoutEffect(() => {
+    deliverArmBufferRef.current = deliverArmBuffer;
+  }, [deliverArmBuffer]);
+
+  useLayoutEffect(() => {
+    flushPendingNavRef.current = flushPendingNav;
+  }, [flushPendingNav]);
+
+  useLayoutEffect(() => {
+    clearLocalArmRef.current = clearLocalArm;
+  }, [clearLocalArm]);
+
   return (
     <div
+      ref={tileRef}
       className="flex h-full w-full flex-col bg-canvas text-foreground"
       data-testid={`browser-peek-tile-${node.instanceId}`}
+      onBlurCapture={(event) => handleFocusExit(event.relatedTarget)}
     >
-      <div className="flex min-h-0 items-center gap-2 border-b border-border px-3 py-2 text-ui-sm">
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">{node.name}</div>
-          <div className="truncate font-mono text-ui-xs text-muted-foreground">
-            {node.initialUrl}
-          </div>
-          {migrationPending ? (
-            <div
-              className="truncate text-ui-xs text-muted-foreground"
-              aria-live="polite"
-            >
-              Will go native when the agent pauses
-            </div>
-          ) : null}
-        </div>
-        <div
-          className={cn(
-            "flex shrink-0 items-center gap-1.5 rounded-sm border px-2 py-1 text-ui-xs",
-            status.tone === "live" &&
-              "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-            status.tone === "muted" &&
-              "border-border bg-muted text-muted-foreground",
-            status.tone === "bad" &&
-              "border-destructive/30 bg-destructive/10 text-destructive",
-          )}
-        >
-          <status.Icon className="size-3.5" aria-hidden />
-          <span>{status.label}</span>
-        </div>
-        <BrowserPictureInPictureButton
-          control={{
-            disabled: client === null,
-            convert: () => {
-              convertBrowserTabToPip({
-                epicId,
-                hostId: tabHostId,
-                sessionId: node.sessionId,
-                tabId: node.tabId,
-                onReady: closeCanvasTile,
-                onError: (message) => toast.error(message),
-              });
-            },
-          }}
-        />
-      </div>
+      <ScreencastPeekChromeBar
+        controller={chrome.controller}
+        pictureInPicture={{
+          disabled: client === null,
+          convert: () => {
+            convertBrowserTabToPip({
+              epicId,
+              hostId: tabHostId,
+              sessionId: node.sessionId,
+              tabId: node.tabId,
+              onReady: closeCanvasTile,
+              onError: (message) => toast.error(message),
+            });
+          },
+        }}
+        onAddressFocusChange={onAddressFocusChange}
+        loading={navState.loading}
+        armed={presentedArmedEpoch !== null}
+        status={status}
+        migrationPending={migrationPending}
+        onRelease={disarm}
+      />
       <div
         ref={viewportRef}
         className={cn(
           "relative min-h-0 flex-1 cursor-default overflow-hidden bg-background p-0 text-left outline-none",
-          armedEpoch !== null && "ring-2 ring-primary ring-inset",
+          presentedArmedEpoch !== null && "ring-2 ring-primary ring-inset",
         )}
       >
         <button
+          ref={overlayButtonRef}
           type="button"
           className="absolute inset-0 h-full w-full cursor-default overflow-hidden bg-background p-0 text-left outline-none"
           aria-label="Browser screencast controls"
           onFocus={() => imeInputRef.current?.focus()}
-          onBlur={(event) => handleFocusExit(event.relatedTarget)}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            imeInputRef.current?.focus();
-            sendPointer(event, "down");
-          }}
-          onPointerMove={(event) => sendPointer(event, "move")}
-          onPointerUp={(event) => sendPointer(event, "up")}
-          onWheel={(event) => {
-            if (activeArmEpochRef.current === null) return;
-            event.preventDefault();
-            sendPointer(event, "wheel");
-          }}
+          onPointerDown={handleOverlayPointerDown}
+          onPointerMove={handleOverlayPointerMove}
+          onPointerUp={handleOverlayPointerUp}
+          onPointerCancel={handleOverlayPointerCancel}
+          onContextMenu={handleOverlayContextMenu}
         >
           {image === null ? (
             <div className="absolute inset-0 flex items-center justify-center px-4 text-center">
@@ -579,7 +1138,6 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
             </div>
           ) : (
             <img
-              key={image.sequence}
               ref={imageRef}
               src={image.src}
               alt="Browser screencast"
@@ -615,17 +1173,14 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           autoComplete="off"
           className="pointer-events-none absolute left-0 top-0 size-px opacity-0"
           onFocus={arm}
-          onBlur={(event) => handleFocusExit(event.relatedTarget)}
-          onKeyDown={(event) => {
+          onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
             if (activeDialogRef.current !== null) return;
             if (event.nativeEvent.isComposing || composingRef.current) return;
-            if (event.key === "Escape") {
-              event.preventDefault();
-              disarm();
-              event.currentTarget.blur();
+            if (activeArmEpochRef.current === null) return;
+            if (isScreencastModChord(event.nativeEvent, "v")) {
+              claimedLocalCodesRef.current.add(event.code);
               return;
             }
-            if (activeArmEpochRef.current === null) return;
             event.preventDefault();
             sendInput({
               kind: "keyboard",
@@ -633,6 +1188,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               code: event.code,
               key: event.key,
               modifiers: inputModifiers(event),
+              autoRepeat: event.repeat,
             });
             if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) {
               sendInput({
@@ -641,13 +1197,19 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
                 code: event.code,
                 key: event.key,
                 modifiers: inputModifiers(event),
+                autoRepeat: event.repeat,
               });
             }
           }}
-          onKeyUp={(event) => {
+          onKeyUp={(event: ReactKeyboardEvent<HTMLInputElement>) => {
             if (activeDialogRef.current !== null) return;
             if (event.nativeEvent.isComposing || composingRef.current) return;
+            if (claimedLocalCodesRef.current.delete(event.code)) {
+              event.preventDefault();
+              return;
+            }
             if (activeArmEpochRef.current === null) return;
+            if (!forwardedKeyDownsRef.current.has(event.code)) return;
             event.preventDefault();
             sendInput({
               kind: "keyboard",
@@ -655,7 +1217,16 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               code: event.code,
               key: event.key,
               modifiers: inputModifiers(event),
+              autoRepeat: event.repeat,
             });
+          }}
+          onPaste={(event: ReactClipboardEvent<HTMLInputElement>) => {
+            if (activeArmEpochRef.current === null) return;
+            if (!visible) return;
+            const text = event.clipboardData.getData("text/plain");
+            event.preventDefault();
+            if (text === "") return;
+            sendInput({ kind: "insertText", text });
           }}
           onCompositionStart={() => {
             composingRef.current = true;
@@ -688,10 +1259,87 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
             key={dialog.generation}
             dialog={dialog}
             onRespond={respondToDialog}
-            onFocusExit={handleFocusExit}
           />
         )}
       </div>
+    </div>
+  );
+}
+
+function ScreencastPeekChromeBar(props: {
+  readonly controller: TileController;
+  readonly pictureInPicture: BrowserPictureInPictureControl;
+  readonly onAddressFocusChange: (focused: boolean) => void;
+  readonly loading: boolean;
+  readonly armed: boolean;
+  readonly status: BrowserPeekStatus;
+  readonly migrationPending: boolean;
+  readonly onRelease: () => void;
+}) {
+  return (
+    <div className="flex min-h-0 flex-col border-b border-border">
+      <div className="flex min-h-0 items-center">
+        <div
+          className="min-w-0 flex-1 [&>div]:border-b-0"
+          onFocusCapture={(event) => {
+            if (isBrowserAddressInput(event.target)) {
+              props.onAddressFocusChange(true);
+            }
+          }}
+          onBlurCapture={(event) => {
+            if (isBrowserAddressInput(event.target)) {
+              props.onAddressFocusChange(false);
+            }
+          }}
+        >
+          <BrowserTileToolbar
+            controller={props.controller}
+            pictureInPicture={props.pictureInPicture}
+          />
+        </div>
+        <div className="flex shrink-0 items-center gap-2 pr-2">
+          {props.loading ? (
+            <span role="status" aria-label="Page loading">
+              <AgentSpinningDots
+                className="text-muted-foreground"
+                testId="screencast-page-loading"
+                variant={undefined}
+              />
+            </span>
+          ) : null}
+          {props.armed ? (
+            <div className="flex shrink-0 items-center gap-1">
+              <Badge variant="outline">Controlling</Badge>
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                aria-label="Release control"
+                onClick={props.onRelease}
+              >
+                Release
+              </Button>
+            </div>
+          ) : null}
+          <div
+            className={cn(
+              "flex shrink-0 items-center gap-1.5 rounded-sm border px-2 py-1 text-ui-xs",
+              peekStatusToneClass(props.status.tone),
+            )}
+          >
+            <props.status.Icon className="size-3.5" aria-hidden />
+            <span>{props.status.label}</span>
+          </div>
+        </div>
+      </div>
+      {props.migrationPending ? (
+        <div
+          className="truncate px-2 pb-1 text-ui-xs text-muted-foreground"
+          aria-live="polite"
+        >
+          Will go native when the agent pauses
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -703,7 +1351,6 @@ function BrowserDialogOverlay(props: {
     accept: boolean,
     promptText: string | null,
   ) => void;
-  readonly onFocusExit: (relatedTarget: EventTarget | null) => void;
 }) {
   const [promptText, setPromptText] = useState(props.dialog.defaultValue);
   const isAlert = props.dialog.type === "alert";
@@ -729,7 +1376,6 @@ function BrowserDialogOverlay(props: {
             className="mt-3 w-full rounded border border-input bg-background px-3 py-2 text-ui-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
             value={promptText}
             onChange={(event) => setPromptText(event.currentTarget.value)}
-            onBlur={(event) => props.onFocusExit(event.relatedTarget)}
           />
         ) : null}
         <div className="mt-4 flex justify-end gap-2">
@@ -740,7 +1386,6 @@ function BrowserDialogOverlay(props: {
               onClick={() =>
                 props.onRespond(props.dialog.generation, false, null)
               }
-              onBlur={(event) => props.onFocusExit(event.relatedTarget)}
             >
               Cancel
             </button>
@@ -755,7 +1400,6 @@ function BrowserDialogOverlay(props: {
                 isPrompt ? promptText : null,
               )
             }
-            onBlur={(event) => props.onFocusExit(event.relatedTarget)}
           >
             OK
           </button>
@@ -811,7 +1455,18 @@ function resetPeekStateForClient(
     details: client === null ? "Waiting for the host stream." : null,
     migrationPending: false,
     frameSize: null,
+    navState: EMPTY_SCREENCAST_NAV_STATE,
   };
+}
+
+function peekDetailsForRender(
+  stateMatchesClient: boolean,
+  streamState: BrowserPeekRenderState,
+  client: IHostStreamClient<HostStreamRpcRegistry> | null,
+): string | null {
+  if (stateMatchesClient) return streamState.details;
+  if (client === null) return "Waiting for the host stream.";
+  return null;
 }
 
 function handleStreamStatus(
@@ -922,9 +1577,10 @@ function useScreencastViewportBridge(
       }, VIEWPORT_DEBOUNCE_MS);
     };
     const observer = new ResizeObserver((entries) => {
-      const entry = entries.at(-1);
-      if (entry === undefined) return;
-      emit(entry.contentRect.width, entry.contentRect.height);
+      for (const entry of entries) {
+        emit(entry.contentRect.width, entry.contentRect.height);
+        break;
+      }
     });
     observer.observe(element);
     emit(element.clientWidth, element.clientHeight);
@@ -933,6 +1589,52 @@ function useScreencastViewportBridge(
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [ref, sendViewport, visible]);
+}
+
+type ScreencastControlResult = "armed" | "teardown" | "ignore";
+
+function applyScreencastControlFrame(input: {
+  readonly frame: BrowserScreencastServerFrame;
+  readonly desiredEpoch: number | null;
+  readonly activeEpoch: number | null;
+}): ScreencastControlResult {
+  if (input.frame.kind === "failed" || input.frame.kind === "complete") {
+    return "teardown";
+  }
+  if (input.frame.kind === "armed") {
+    return input.desiredEpoch === input.frame.armEpoch ? "armed" : "ignore";
+  }
+  if (input.frame.kind !== "revoked") return "ignore";
+  if (
+    input.activeEpoch !== input.frame.armEpoch &&
+    input.desiredEpoch !== input.frame.armEpoch
+  ) {
+    return "ignore";
+  }
+  return "teardown";
+}
+
+function isBrowserAddressInput(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLInputElement &&
+    target.getAttribute("aria-label") === "Browser address"
+  );
+}
+
+function isScreencastModChord(event: KeyboardEvent, key: string): boolean {
+  return (
+    hasPlatformModKey(event) &&
+    !event.altKey &&
+    !event.shiftKey &&
+    event.key.toLowerCase() === key
+  );
+}
+
+function focusScreencastAddressBar(tile: HTMLElement): void {
+  const input = tile.querySelector('input[aria-label="Browser address"]');
+  if (!(input instanceof HTMLInputElement)) return;
+  input.focus();
+  input.select();
 }
 
 function sendPeekFrame(
@@ -947,16 +1649,21 @@ function sendPeekFrame(
   session?.sendClientFrame(frame, null);
 }
 
+function peekStatusToneClass(tone: BrowserPeekStatus["tone"]): string {
+  if (tone === "live") {
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  }
+  if (tone === "bad") {
+    return "border-destructive/30 bg-destructive/10 text-destructive";
+  }
+  return "border-border bg-muted text-muted-foreground";
+}
+
 function browserPeekStatus(
   lifecycle: PeekLifecycle,
   visible: boolean,
   details: string | null,
-): {
-  readonly label: string;
-  readonly overlay: string | null;
-  readonly tone: "live" | "muted" | "bad";
-  readonly Icon: typeof Radio;
-} {
+): BrowserPeekStatus {
   if (!visible) {
     return {
       label: "Paused off-screen",
@@ -1008,15 +1715,6 @@ function browserPeekStatus(
   };
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.slice(index, index + chunkSize));
-  }
-  return window.btoa(binary);
-}
-
 function inputModifiers(event: {
   readonly altKey: boolean;
   readonly ctrlKey: boolean;
@@ -1046,22 +1744,23 @@ function pointerButton(
 }
 
 function normalizedPointerPosition(
-  clientX: number,
-  clientY: number,
-  image: HTMLImageElement | null,
-  frameSize: { readonly width: number; readonly height: number } | null,
+  request: NormalizedPointerRequest,
 ): { readonly normalizedX: number; readonly normalizedY: number } | null {
-  if (image === null || frameSize === null) return null;
-  const rect = image.getBoundingClientRect();
+  if (request.image === null || request.frameSize === null) return null;
+  const rect = request.image.getBoundingClientRect();
   const scale = Math.min(
-    rect.width / frameSize.width,
-    rect.height / frameSize.height,
+    rect.width / request.frameSize.width,
+    rect.height / request.frameSize.height,
   );
   if (!Number.isFinite(scale) || scale <= 0) return null;
-  const width = frameSize.width * scale;
-  const height = frameSize.height * scale;
-  const x = clientX - rect.left - (rect.width - width) / 2;
-  const y = clientY - rect.top - (rect.height - height) / 2;
-  if (x < 0 || x > width || y < 0 || y > height) return null;
+  const width = request.frameSize.width * scale;
+  const height = request.frameSize.height * scale;
+  const rawX = request.clientX - rect.left - (rect.width - width) / 2;
+  const rawY = request.clientY - rect.top - (rect.height - height) / 2;
+  const x = request.clampToEdge ? Math.min(width, Math.max(0, rawX)) : rawX;
+  const y = request.clampToEdge ? Math.min(height, Math.max(0, rawY)) : rawY;
+  if (!request.clampToEdge && (x < 0 || x > width || y < 0 || y > height)) {
+    return null;
+  }
   return { normalizedX: x / width, normalizedY: y / height };
 }
