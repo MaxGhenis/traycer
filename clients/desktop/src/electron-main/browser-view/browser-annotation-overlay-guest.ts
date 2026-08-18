@@ -18,13 +18,10 @@ import {
   eraseNewestAtPoint,
   isElementVisuallyPresent,
   isTinyDrag,
-  modeFromHotkey,
   normalizeDragRect,
   placeCommentBox,
   rectsOverlap,
   resolveRegionSelection,
-  shouldHandleModeHotkey,
-  shouldSwallowScrollInput,
   strokeBoundsFromPoints,
   svgPathFromPolygon,
   toMarkSnapshot,
@@ -33,6 +30,10 @@ import {
   type OverlayMarkModel,
   type RegionCandidate,
 } from "./browser-annotation-overlay-logic";
+import {
+  ANNOTATION_TARGET_PICKER_CSS,
+  createAnnotationTargetPicker,
+} from "./browser-annotation-target-picker";
 
 const STROKE_OPTIONS = {
   size: ANNOTATION_STROKE_SIZE_PX,
@@ -57,7 +58,10 @@ type GuestWindow = Window & {
   __traycerAnnotationResetAfterAttach?: (() => void) | undefined;
   __traycerAnnotationCaptureFailed?: (() => void) | undefined;
   __traycerAnnotationSetTargetChatLabel?:
-    | ((label: string, canAttach: boolean) => void)
+    | ((
+        targets: readonly { readonly chatId: string; readonly label: string }[],
+        defaultChatId: string | null,
+      ) => void)
     | undefined;
 };
 
@@ -73,6 +77,7 @@ interface LiveMark {
   outline: HTMLElement | null;
   badge: HTMLElement | null;
   haloPath: SVGPathElement | null;
+  haloDarkPath: SVGPathElement | null;
   inkPath: SVGPathElement | null;
   invalid: boolean;
 }
@@ -110,7 +115,10 @@ function boot(): boolean {
     ".outline{position:fixed;pointer-events:none;border:2px solid #635bff;box-shadow:0 0 0 4px rgba(255,255,255,.85),0 0 0 5px rgba(17,17,22,.35);background:rgba(99,91,255,.06);border-radius:3px;}",
     ".outline.region{border-color:#5b7cfa;background:rgba(91,124,250,.06);}",
     ".outline.invalid{border-color:#d4a94e;box-shadow:0 0 0 4px rgba(255,255,255,.9),0 0 0 5px rgba(80,50,0,.35);background:rgba(212,169,78,.12);}",
-    ".hover{position:fixed;pointer-events:none;border:2px solid #8ab4ff;box-shadow:0 0 0 3px rgba(255,255,255,.7);background:rgba(138,180,255,.08);display:none;border-radius:3px;}",
+    ".hover{position:fixed;pointer-events:none;border:2px solid #8ab4ff;box-shadow:0 0 0 3px rgba(255,255,255,.7);background:rgba(138,180,255,.08);border-radius:3px;opacity:0;visibility:hidden;}",
+    ".hover-label{position:fixed;pointer-events:none;z-index:2;max-width:80vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:4px;background:#111827;color:#fff;padding:2px 6px;font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;box-shadow:0 1px 3px rgba(0,0,0,.4);opacity:0;visibility:hidden;}",
+    ".hover.visible,.hover-label.visible{opacity:1;visibility:visible;}",
+    "@media (prefers-reduced-motion:no-preference){.hover{transition-property:left,top,width,height,opacity;transition-duration:110ms,110ms,110ms,110ms,80ms;transition-timing-function:cubic-bezier(.2,0,0,1);}.hover-label{transition-property:left,top,opacity;transition-duration:110ms,110ms,80ms;transition-timing-function:cubic-bezier(.2,0,0,1);}}",
     ".marquee{position:fixed;pointer-events:none;border:1.5px dashed #5b7cfa;box-shadow:0 0 0 3px rgba(255,255,255,.7);background:rgba(91,124,250,.08);display:none;}",
     ".badge{position:fixed;pointer-events:none;background:#635bff;color:#fff;font-size:11px;padding:2px 7px;border-radius:6px;box-shadow:0 0 0 2px rgba(255,255,255,.9),0 1px 2px rgba(0,0,0,.25);z-index:2;white-space:nowrap;max-width:40vw;overflow:hidden;text-overflow:ellipsis;}",
     ".badge.invalid{background:#d4a94e;color:#1a1204;}",
@@ -120,10 +128,8 @@ function boot(): boolean {
     ".ink .pen{fill:#5b7cfa;}",
     ".editor{position:fixed;background:#2c2c31;border-radius:12px;padding:8px 10px;width:min(430px,calc(100vw - 24px));pointer-events:auto;z-index:4;box-shadow:0 10px 28px rgba(0,0,0,.32);display:none;}",
     ".row{display:flex;align-items:flex-end;gap:8px;}",
-    ".editor textarea{flex:1;background:none;border:0;color:#e7e7ec;font-size:13px;outline:none;resize:none;min-height:34px;max-height:120px;line-height:1.35;font-family:inherit;}",
-    ".editor .attach{background:#635bff;color:#fff;border:0;border-radius:8px;padding:7px 16px;font-size:13px;cursor:pointer;}",
-    ".editor .attach:disabled{opacity:.45;cursor:default;}",
-    ".target{color:#8a8a92;font-size:10px;margin-top:5px;display:none;}",
+    ".editor textarea{min-width:0;flex:1;background:none;border:0;color:#e7e7ec;font-size:13px;outline:none;resize:none;min-height:34px;max-height:120px;line-height:1.35;font-family:inherit;}",
+    ANNOTATION_TARGET_PICKER_CSS,
     ".refuse{color:#d4a94e;font-size:11px;margin-top:5px;display:none;}",
     ".refuse-banner{position:fixed;top:58px;left:50%;transform:translateX(-50%);background:#2c2c31;color:#d4a94e;font-size:12px;padding:6px 12px;border-radius:8px;pointer-events:none;z-index:4;display:none;box-shadow:0 8px 20px rgba(0,0,0,.28);}",
     ".error{color:#f0b4b4;font-size:11px;margin-top:5px;display:none;}",
@@ -133,6 +139,9 @@ function boot(): boolean {
   layer.className = "layer";
   const hover = D.createElement("div");
   hover.className = "hover";
+  const hoverLabel = D.createElement("div");
+  hoverLabel.className = "hover-label";
+  hoverLabel.setAttribute("aria-hidden", "true");
   const marquee = D.createElement("div");
   marquee.className = "marquee";
   const svg = D.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -151,14 +160,12 @@ function boot(): boolean {
     draw: "Draw",
     erase: "Erase",
   };
-  const KEYS = { select: "V", region: "R", draw: "D", erase: "E" };
   const buttons: Record<string, HTMLButtonElement> = {};
   for (const modeName of MODES) {
     const btn = D.createElement("button");
     btn.type = "button";
     btn.textContent = LABELS[modeName];
     btn.setAttribute("data-mode", modeName);
-    btn.setAttribute("aria-keyshortcuts", KEYS[modeName]);
     btn.setAttribute("aria-pressed", modeName === "select" ? "true" : "false");
     pill.appendChild(btn);
     buttons[modeName] = btn;
@@ -172,14 +179,12 @@ function boot(): boolean {
   comment.rows = 1;
   comment.placeholder = "Describe the change...";
   comment.setAttribute("aria-label", "Annotation comment");
-  const attachBtn = D.createElement("button");
-  attachBtn.type = "button";
-  attachBtn.className = "attach";
-  attachBtn.textContent = "Attach";
+  const targetPicker = createAnnotationTargetPicker({
+    document: D,
+    onSelect: (chatId) => requestAttach(chatId),
+  });
   row.appendChild(comment);
-  row.appendChild(attachBtn);
-  const targetLine = D.createElement("div");
-  targetLine.className = "target";
+  row.appendChild(targetPicker.root);
   const refuseLine = D.createElement("div");
   refuseLine.className = "refuse";
   const refuseBanner = D.createElement("div");
@@ -187,7 +192,6 @@ function boot(): boolean {
   const errorLine = D.createElement("div");
   errorLine.className = "error";
   editor.appendChild(row);
-  editor.appendChild(targetLine);
   editor.appendChild(refuseLine);
   editor.appendChild(errorLine);
 
@@ -195,6 +199,7 @@ function boot(): boolean {
   shadow.appendChild(layer);
   layer.appendChild(svg);
   layer.appendChild(hover);
+  layer.appendChild(hoverLabel);
   layer.appendChild(marquee);
   shadow.appendChild(pill);
   shadow.appendChild(editor);
@@ -204,8 +209,6 @@ function boot(): boolean {
   let mode: (typeof MODES)[number] = "select";
   let done = false;
   let chromeHidden = false;
-  let targetChatLabel = "";
-  let attachTargetMissing = false;
   let refusedCount = 0;
   let persistRefuseCount = 0;
   let attachError = "";
@@ -221,6 +224,8 @@ function boot(): boolean {
   let draftHalo: SVGPathElement | null = null;
   let draftHaloDark: SVGPathElement | null = null;
   let draftInk: SVGPathElement | null = null;
+  let hoveredElement: Element | null = null;
+  let scrollFrame: number | null = null;
 
   function emit(event: unknown): void {
     const fn = W.__traycerAnnotation;
@@ -296,7 +301,13 @@ function boot(): boolean {
     for (const node of path) {
       if (!(node instanceof HTMLElement)) continue;
       const tag = node.tagName.toLowerCase();
-      if (tag === "input" || tag === "textarea" || node.isContentEditable) {
+      if (
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        tag === "button" ||
+        node.isContentEditable
+      ) {
         return true;
       }
     }
@@ -310,7 +321,6 @@ function boot(): boolean {
       e.stopImmediatePropagation();
     }
   }
-
 
   function targetAt(x: number, y: number): Element | null {
     let els: Element[] = [];
@@ -433,13 +443,80 @@ function boot(): boolean {
     node.style.height = String(Math.max(0, rect.height)) + "px";
   }
 
+  function pageRect(
+    rect: OverlayMarkModel["bounds"],
+  ): OverlayMarkModel["bounds"] {
+    return { ...rect, x: rect.x + W.scrollX, y: rect.y + W.scrollY };
+  }
+
+  function viewportRect(
+    rect: OverlayMarkModel["bounds"],
+  ): OverlayMarkModel["bounds"] {
+    return { ...rect, x: rect.x - W.scrollX, y: rect.y - W.scrollY };
+  }
+
+  function pagePoint(point: StrokePoint): StrokePoint {
+    return { x: point.x + W.scrollX, y: point.y + W.scrollY };
+  }
+
+  function viewportPoints(points: readonly StrokePoint[]): StrokePoint[] {
+    return points.map((point) => ({
+      x: point.x - W.scrollX,
+      y: point.y - W.scrollY,
+    }));
+  }
+
+  function viewportBounds(entry: LiveMark): OverlayMarkModel["bounds"] {
+    return entry.element !== null && entry.element.isConnected
+      ? overlayElementCssRect(entry.element)
+      : viewportRect(entry.model.bounds);
+  }
+
+  function viewportModel(entry: LiveMark): OverlayMarkModel {
+    return { ...entry.model, bounds: viewportBounds(entry) };
+  }
+
   function hideHover(): void {
-    hover.style.display = "none";
+    hoveredElement = null;
+    hover.classList.remove("visible");
+    hoverLabel.classList.remove("visible");
+  }
+
+  function describeHoverTarget(
+    el: Element,
+    bounds: OverlayMarkModel["bounds"],
+  ): string {
+    const tag = String(el.tagName || "element").toLowerCase();
+    const id = el.id ? "#" + el.id : "";
+    const classes = Array.from(el.classList).slice(0, 3);
+    const classLabel = classes.length > 0 ? "." + classes.join(".") : "";
+    return (
+      tag +
+      id +
+      classLabel +
+      "  " +
+      String(Math.round(bounds.width)) +
+      "×" +
+      String(Math.round(bounds.height))
+    ).slice(0, 160);
+  }
+
+  function paintHover(el: Element): void {
+    hoveredElement = el;
+    const bounds = overlayElementCssRect(el);
+    placeBox(hover, bounds);
+    hover.classList.add("visible");
+    hoverLabel.textContent = describeHoverTarget(el, bounds);
+    positionBadge(hoverLabel, bounds);
+    hoverLabel.classList.add("visible");
   }
 
   function strokePathD(points: readonly StrokePoint[], size: number): string {
     const input = points.map((point) => [point.x, point.y] as [number, number]);
-    const outline = getStroke(input, size === ANNOTATION_STROKE_HALO_SIZE_PX ? HALO_OPTIONS : STROKE_OPTIONS);
+    const outline = getStroke(
+      input,
+      size === ANNOTATION_STROKE_HALO_SIZE_PX ? HALO_OPTIONS : STROKE_OPTIONS,
+    );
     return svgPathFromPolygon(outline);
   }
 
@@ -456,8 +533,14 @@ function boot(): boolean {
     haloDark: SVGPathElement,
     ink: SVGPathElement,
   ): void {
-    haloLight.setAttribute("d", strokePathD(points, ANNOTATION_STROKE_HALO_SIZE_PX));
-    haloDark.setAttribute("d", strokePathD(points, ANNOTATION_STROKE_HALO_SIZE_PX));
+    haloLight.setAttribute(
+      "d",
+      strokePathD(points, ANNOTATION_STROKE_HALO_SIZE_PX),
+    );
+    haloDark.setAttribute(
+      "d",
+      strokePathD(points, ANNOTATION_STROKE_HALO_SIZE_PX),
+    );
     ink.setAttribute("d", strokePathD(points, ANNOTATION_STROKE_SIZE_PX));
   }
 
@@ -472,7 +555,10 @@ function boot(): boolean {
     return "el";
   }
 
-  function positionBadge(badge: HTMLElement, bounds: OverlayMarkModel["bounds"]): void {
+  function positionBadge(
+    badge: HTMLElement,
+    bounds: OverlayMarkModel["bounds"],
+  ): void {
     let top = bounds.y - 22;
     if (top < 2) top = bounds.y + 4;
     badge.style.left = String(Math.max(0, bounds.x)) + "px";
@@ -480,11 +566,7 @@ function boot(): boolean {
   }
 
   function paintLiveMark(entry: LiveMark): void {
-    const bounds =
-      entry.element && entry.element.isConnected
-        ? overlayElementCssRect(entry.element)
-        : entry.model.bounds;
-    entry.model = { ...entry.model, bounds };
+    const bounds = viewportBounds(entry);
     if (entry.outline) {
       placeBox(entry.outline, bounds);
       entry.outline.classList.toggle("invalid", entry.invalid);
@@ -496,6 +578,19 @@ function boot(): boolean {
         ? "re-mark"
         : badgeLabel(entry.model, entry.element);
       positionBadge(entry.badge, bounds);
+    }
+    if (
+      entry.points !== null &&
+      entry.haloPath !== null &&
+      entry.haloDarkPath !== null &&
+      entry.inkPath !== null
+    ) {
+      paintStrokePaths(
+        viewportPoints(entry.points),
+        entry.haloPath,
+        entry.haloDarkPath,
+        entry.inkPath,
+      );
     }
   }
 
@@ -519,6 +614,7 @@ function boot(): boolean {
     entry.outline?.remove();
     entry.badge?.remove();
     entry.haloPath?.remove();
+    entry.haloDarkPath?.remove();
     entry.inkPath?.remove();
   }
 
@@ -560,7 +656,7 @@ function boot(): boolean {
     const added: OverlayMarkModel = {
       id: nextId("el"),
       kind: "element",
-      bounds: overlayElementCssRect(el),
+      bounds: pageRect(overlayElementCssRect(el)),
       selector: overlayElementSelector(el),
       elementKey: key,
     };
@@ -575,6 +671,7 @@ function boot(): boolean {
       outline,
       badge,
       haloPath: null,
+      haloDarkPath: null,
       inkPath: null,
       invalid: false,
     };
@@ -591,7 +688,7 @@ function boot(): boolean {
     const model: OverlayMarkModel = {
       id: nextId("region"),
       kind: "region",
-      bounds,
+      bounds: pageRect(bounds),
       selector: null,
       elementKey: null,
     };
@@ -602,6 +699,7 @@ function boot(): boolean {
       outline,
       badge,
       haloPath: null,
+      haloDarkPath: null,
       inkPath: null,
       invalid: false,
     };
@@ -610,12 +708,14 @@ function boot(): boolean {
   }
 
   function addStrokeMark(points: StrokePoint[]): void {
-    const bounds = strokeBoundsFromPoints(points, ANNOTATION_STROKE_HALO_SIZE_PX);
+    const bounds = strokeBoundsFromPoints(
+      points,
+      ANNOTATION_STROKE_HALO_SIZE_PX,
+    );
     if (bounds === null) return;
     const haloLight = makePath("halo-light");
     const haloDark = makePath("halo-dark");
     const ink = makePath("pen");
-    paintStrokePaths(points, haloLight, haloDark, ink);
     svg.appendChild(haloDark);
     svg.appendChild(haloLight);
     svg.appendChild(ink);
@@ -626,32 +726,28 @@ function boot(): boolean {
       selector: null,
       elementKey: null,
     };
-    pushMark({
+    const entry: LiveMark = {
       model,
       element: null,
       points,
       outline: null,
       badge: null,
       haloPath: haloLight,
+      haloDarkPath: haloDark,
       inkPath: ink,
       invalid: false,
-    });
+    };
+    paintLiveMark(entry);
+    pushMark(entry);
   }
 
   function eraseAt(x: number, y: number): void {
     if (attachPending) return;
-    const hit = eraseNewestAtPoint(
-      liveMarks.map((entry) => {
-        if (entry.element && entry.element.isConnected) {
-          return { ...entry.model, bounds: overlayElementCssRect(entry.element) };
-        }
-        return entry.model;
-      }),
-      x,
-      y,
-    );
+    const hit = eraseNewestAtPoint(liveMarks.map(viewportModel), x, y);
     if (hit.removed === null) return;
-    const idx = liveMarks.findIndex((entry) => entry.model.id === hit.removed?.id);
+    const idx = liveMarks.findIndex(
+      (entry) => entry.model.id === hit.removed?.id,
+    );
     if (idx < 0) return;
     const entry = liveMarks[idx];
     if (entry === undefined) return;
@@ -698,12 +794,16 @@ function boot(): boolean {
     }
     pill.style.visibility = "";
     const hasMarks = liveMarks.length > 0;
+    if (!hasMarks) targetPicker.close(false);
     editor.style.display = hasMarks ? "block" : "none";
-    const shownRefuse = persistRefuseCount > 0 ? persistRefuseCount : refusedCount;
+    const shownRefuse =
+      persistRefuseCount > 0 ? persistRefuseCount : refusedCount;
     if (shownRefuse > 0) {
       const copy =
         String(shownRefuse) +
-        (shownRefuse === 1 ? " element not included" : " elements not included");
+        (shownRefuse === 1
+          ? " element not included"
+          : " elements not included");
       refuseLine.textContent = copy;
       refuseBanner.textContent = copy;
       refuseLine.style.display = hasMarks ? "block" : "none";
@@ -714,19 +814,12 @@ function boot(): boolean {
       refuseBanner.style.display = "none";
       refuseBanner.textContent = "";
     }
-    attachBtn.disabled = attachPending || attachTargetMissing;
     comment.disabled = attachPending;
+    targetPicker.setDisabled(attachPending);
     for (const name of MODES) {
       const button = buttons[name];
       if (button === undefined) continue;
       button.disabled = attachPending;
-    }
-    if (targetChatLabel) {
-      targetLine.style.display = "block";
-      targetLine.textContent = "→ attaching to: " + targetChatLabel;
-    } else {
-      targetLine.style.display = "none";
-      targetLine.textContent = "";
     }
     if (attachError) {
       errorLine.style.display = "block";
@@ -736,13 +829,7 @@ function boot(): boolean {
       errorLine.textContent = "";
     }
     if (!hasMarks) return;
-    const union = unionRects(
-      liveMarks.map((entry) =>
-        entry.element && entry.element.isConnected
-          ? overlayElementCssRect(entry.element)
-          : entry.model.bounds,
-      ),
-    );
+    const union = unionRects(liveMarks.map((entry) => viewportBounds(entry)));
     const box = editor.getBoundingClientRect();
     const placed = placeCommentBox({
       union,
@@ -758,6 +845,7 @@ function boot(): boolean {
   }
 
   function hideChromeForCapture(): void {
+    targetPicker.close(false);
     chromeHidden = true;
     layoutChrome();
   }
@@ -771,6 +859,7 @@ function boot(): boolean {
     comment.value = "";
     refusedCount = 0;
     attachError = "";
+    targetPicker.close(false);
     hideHover();
     marquee.style.display = "none";
     clearDraftStroke();
@@ -781,14 +870,16 @@ function boot(): boolean {
   function captureFailed(): void {
     chromeHidden = false;
     attachPending = false;
-    attachError = "Couldn't capture the annotated area. Try attach again.";
+    attachError = "Couldn't capture the annotated area. Try sending again.";
     host.setAttribute("data-traycer-capture-failed", "true");
     layoutChrome();
   }
 
-  function setTargetChatLabel(label: string, canAttach: boolean): void {
-    targetChatLabel = typeof label === "string" ? label : "";
-    attachTargetMissing = canAttach === false;
+  function setTargetChatLabel(
+    targets: readonly { readonly chatId: string; readonly label: string }[],
+    defaultChatId: string | null,
+  ): void {
+    targetPicker.setTargets(targets, defaultChatId);
     layoutChrome();
   }
 
@@ -812,13 +903,23 @@ function boot(): boolean {
     svg.appendChild(draftHaloDark);
     svg.appendChild(draftHalo);
     svg.appendChild(draftInk);
-    paintStrokePaths(draftPoints, draftHalo, draftHaloDark, draftInk);
+    paintStrokePaths(
+      viewportPoints(draftPoints),
+      draftHalo,
+      draftHaloDark,
+      draftInk,
+    );
   }
 
   function extendDraftStroke(point: StrokePoint): void {
     draftPoints.push(point);
     if (draftHalo && draftHaloDark && draftInk) {
-      paintStrokePaths(draftPoints, draftHalo, draftHaloDark, draftInk);
+      paintStrokePaths(
+        viewportPoints(draftPoints),
+        draftHalo,
+        draftHaloDark,
+        draftInk,
+      );
     }
   }
 
@@ -840,12 +941,15 @@ function boot(): boolean {
       const el = entry.element;
       const connected = el !== null && el.isConnected;
       const visible = el !== null && elementIsVisible(el);
-      const currentBox = el !== null && connected ? overlayElementCssRect(el) : entry.model.bounds;
+      const currentBox =
+        el !== null && connected
+          ? overlayElementCssRect(el)
+          : viewportRect(entry.model.bounds);
       const status = validateElementMark({
         connected,
         visible,
         currentBox,
-        markBox: entry.model.bounds,
+        markBox: viewportRect(entry.model.bounds),
       });
       entry.invalid = status !== "ok";
       if (entry.invalid) ok = false;
@@ -854,20 +958,25 @@ function boot(): boolean {
     return ok;
   }
 
-  function requestAttach(): void {
-    if (attachPending || liveMarks.length === 0) return;
+  function requestAttach(targetChatId: string | null): void {
+    const resolvedTargetChatId =
+      targetChatId ?? targetPicker.getDefaultChatId();
+    if (
+      attachPending ||
+      liveMarks.length === 0 ||
+      resolvedTargetChatId === null
+    ) {
+      return;
+    }
     attachError = "";
     if (!validateAll()) {
-      attachError = "Some marks need re-marking before attach.";
+      attachError = "Some marks need re-marking before sending.";
       layoutChrome();
       return;
     }
-    const snapshots = liveMarks.map((entry) => {
-      if (entry.element && entry.element.isConnected) {
-        return toMarkSnapshot({ ...entry.model, bounds: overlayElementCssRect(entry.element) });
-      }
-      return toMarkSnapshot(entry.model);
-    });
+    const snapshots = liveMarks.map((entry) =>
+      toMarkSnapshot(viewportModel(entry)),
+    );
     const captures: Record<string, unknown>[] = [];
     for (const entry of liveMarks) {
       if (entry.model.kind !== "element" || entry.element === null) continue;
@@ -886,6 +995,7 @@ function boot(): boolean {
     emit({
       type: "attachRequested",
       payload: {
+        targetChatId: resolvedTargetChatId,
         marks: snapshots,
         elements: budgeted.kept,
         comment: comment.value,
@@ -896,35 +1006,40 @@ function boot(): boolean {
 
   function onPagePointer(e: Event): void {
     if (eventTouchesOverlay(e)) return;
+    targetPicker.close(false);
     swallow(e);
   }
 
-  function onWheel(e: Event): void {
-    if (
-      !shouldSwallowScrollInput({
-        armed: liveMarks.length > 0,
-        kind: "wheel",
-        key: null,
-        focusInOverlayText: false,
-      })
-    ) {
-      return;
+  function refreshAfterScroll(): void {
+    scrollFrame = null;
+    if (done) return;
+    for (const entry of liveMarks) {
+      paintLiveMark(entry);
     }
-    swallow(e);
+    if (
+      drawing &&
+      draftHalo !== null &&
+      draftHaloDark !== null &&
+      draftInk !== null
+    ) {
+      paintStrokePaths(
+        viewportPoints(draftPoints),
+        draftHalo,
+        draftHaloDark,
+        draftInk,
+      );
+    }
+    if (hoveredElement !== null && hoveredElement.isConnected) {
+      paintHover(hoveredElement);
+    } else {
+      hideHover();
+    }
+    layoutChrome();
   }
 
-  function onTouchMove(e: Event): void {
-    if (
-      !shouldSwallowScrollInput({
-        armed: liveMarks.length > 0,
-        kind: "touchmove",
-        key: null,
-        focusInOverlayText: false,
-      })
-    ) {
-      return;
-    }
-    swallow(e);
+  function onScroll(): void {
+    if (scrollFrame !== null) return;
+    scrollFrame = W.requestAnimationFrame(refreshAfterScroll);
   }
 
   function onPointerMove(e: PointerEvent): void {
@@ -938,7 +1053,7 @@ function boot(): boolean {
     }
     if (mode === "select" && dragStart === null && !drawing) {
       const target = targetAt(e.clientX, e.clientY);
-      if (target) placeBox(hover, overlayElementCssRect(target));
+      if (target) paintHover(target);
       else hideHover();
       return;
     }
@@ -951,7 +1066,7 @@ function boot(): boolean {
       return;
     }
     if (mode === "draw" && drawing) {
-      extendDraftStroke({ x: e.clientX, y: e.clientY });
+      extendDraftStroke(pagePoint({ x: e.clientX, y: e.clientY }));
     }
   }
 
@@ -972,7 +1087,7 @@ function boot(): boolean {
       return;
     }
     dragStart = { x: e.clientX, y: e.clientY };
-    if (mode === "draw") beginDraftStroke(dragStart);
+    if (mode === "draw") beginDraftStroke(pagePoint(dragStart));
   }
 
   function onPointerUp(e: PointerEvent): void {
@@ -986,7 +1101,12 @@ function boot(): boolean {
       return;
     }
     if (mode === "region" && dragStart) {
-      const rect = normalizeDragRect(dragStart.x, dragStart.y, e.clientX, e.clientY);
+      const rect = normalizeDragRect(
+        dragStart.x,
+        dragStart.y,
+        e.clientX,
+        e.clientY,
+      );
       marquee.style.display = "none";
       if (!isTinyDrag(rect)) applyRegion(rect);
     } else if (mode === "draw") {
@@ -998,46 +1118,30 @@ function boot(): boolean {
 
   function onKey(e: KeyboardEvent): void {
     if (e.key === "Escape") {
+      if (targetPicker.isOpen()) return;
       swallow(e);
       finishCancelled();
       return;
     }
     const focusInOverlayText = isOverlayTextTarget(e);
-    if (
-      shouldSwallowScrollInput({
-        armed: liveMarks.length > 0,
-        kind: "keydown",
-        key: e.key,
-        focusInOverlayText,
-      })
-    ) {
-      swallow(e);
-    }
     if (focusInOverlayText) {
-      if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      if (
+        e.composedPath().includes(comment) &&
+        e.key === "Enter" &&
+        !e.shiftKey &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey
+      ) {
         swallow(e);
-        requestAttach();
+        requestAttach(null);
       }
       return;
     }
     if (e.key === "Enter" && liveMarks.length > 0) {
       swallow(e);
-      requestAttach();
+      requestAttach(null);
       return;
-    }
-    if (
-      shouldHandleModeHotkey({
-        key: e.key,
-        altKey: e.altKey,
-        ctrlKey: e.ctrlKey,
-        metaKey: e.metaKey,
-        focusInOverlayText,
-      })
-    ) {
-      const next = modeFromHotkey(e.key);
-      if (next === null) return;
-      swallow(e);
-      setMode(next);
     }
   }
 
@@ -1054,6 +1158,8 @@ function boot(): boolean {
     if (done) return;
     done = true;
     listeners.abort();
+    if (scrollFrame !== null) W.cancelAnimationFrame(scrollFrame);
+    targetPicker.dispose();
     host.remove();
     try {
       delete W.__traycerAnnotationCancel;
@@ -1088,11 +1194,6 @@ function boot(): boolean {
     teardown();
   }
 
-  function onAttachClick(e: Event): void {
-    swallow(e);
-    requestAttach();
-  }
-
   W.__traycerAnnotationCancel = finishCancelled;
   W.__traycerAnnotationHideChromeForCapture = hideChromeForCapture;
   W.__traycerAnnotationResetAfterAttach = resetAfterAttach;
@@ -1110,13 +1211,12 @@ function boot(): boolean {
   W.addEventListener("auxclick", onPagePointer, listen);
   W.addEventListener("pointerdown", onPointerDown, listenPassiveFalse);
   W.addEventListener("pointermove", onPointerMove, listenPassiveFalse);
+  D.documentElement.addEventListener("pointerleave", hideHover, listen);
   W.addEventListener("pointerup", onPointerUp, listenPassiveFalse);
   W.addEventListener("pointercancel", onPointerUp, listenPassiveFalse);
-  W.addEventListener("wheel", onWheel, listenPassiveFalse);
-  W.addEventListener("touchmove", onTouchMove, listenPassiveFalse);
+  W.addEventListener("scroll", onScroll, listen);
   W.addEventListener("keydown", onKey, listen);
   pill.addEventListener("click", onPillClick, listen);
-  attachBtn.addEventListener("click", onAttachClick, listen);
   emitState();
   return true;
 }

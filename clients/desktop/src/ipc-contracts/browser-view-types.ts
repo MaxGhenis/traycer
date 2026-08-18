@@ -1,9 +1,6 @@
-export interface BrowserViewTileKey {
-  readonly viewTabId: string;
-  readonly paneId: string;
-  readonly tileInstanceId: string;
-  readonly pageSessionId: string;
-}
+import type { BrowserViewTileKey } from "@traycer-clients/shared/platform/browser-annotation";
+
+export type { BrowserViewTileKey };
 
 export interface BrowserViewTileUpsert extends BrowserViewTileKey {
   readonly url: string;
@@ -16,14 +13,12 @@ export interface BrowserViewDurableTabRegistration extends BrowserViewTileKey {
   readonly tabId: string;
 }
 
-export interface BrowserViewBackgroundTabCreate
-  extends BrowserViewDurableTabRegistration {
+export interface BrowserViewBackgroundTabCreate extends BrowserViewDurableTabRegistration {
   readonly url: string;
   readonly seedStorageState?: unknown;
 }
 
-export interface BrowserViewBackgroundThrottlingChange
-  extends BrowserViewTileKey {
+export interface BrowserViewBackgroundThrottlingChange extends BrowserViewTileKey {
   readonly enabled: boolean;
 }
 
@@ -560,5 +555,3 @@ export type {
   BrowserViewElementCapture,
   BrowserViewElementStyle,
 } from "@traycer/protocol/persistence/epic/schemas";
-
-

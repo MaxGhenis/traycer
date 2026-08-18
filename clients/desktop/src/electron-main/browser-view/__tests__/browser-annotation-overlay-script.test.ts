@@ -14,8 +14,14 @@ import {
 } from "../browser-annotation-overlay-script";
 
 const UNION = { x: 4, y: 8, width: 16, height: 24 };
+const TARGET_CHAT_ID = "chat-target-1";
+const TARGET_ROSTER = [
+  { chatId: TARGET_CHAT_ID, label: "fix-billing" },
+  { chatId: "chat-other", label: "other" },
+] as const;
 
 const VALID_ATTACH = {
+  targetChatId: TARGET_CHAT_ID,
   marks: [
     {
       id: "mark-1",
@@ -47,24 +53,38 @@ describe("annotation overlay command expressions", () => {
     );
     expect(ANNOTATION_CAPTURE_FAILED_EXPRESSION).not.toContain("return false");
     expect(
-      buildAnnotationSetTargetChatLabelExpression("fix-billing", true),
+      buildAnnotationSetTargetChatLabelExpression(
+        TARGET_ROSTER,
+        TARGET_CHAT_ID,
+      ),
     ).toContain("__traycerAnnotationSetTargetChatLabel");
     expect(
-      buildAnnotationSetTargetChatLabelExpression("fix-billing", true),
+      buildAnnotationSetTargetChatLabelExpression(
+        TARGET_ROSTER,
+        TARGET_CHAT_ID,
+      ),
     ).toContain("fix-billing");
     expect(
-      buildAnnotationSetTargetChatLabelExpression("fix-billing", false),
-    ).toContain(",false");
+      buildAnnotationSetTargetChatLabelExpression(
+        TARGET_ROSTER,
+        TARGET_CHAT_ID,
+      ),
+    ).toContain(TARGET_CHAT_ID);
+    expect(
+      buildAnnotationSetTargetChatLabelExpression(TARGET_ROSTER, null),
+    ).toContain(",null");
   });
 
-  it("encodes the target-chat label as a JSON string argument", () => {
+  it("encodes the target-chat roster as JSON arguments", () => {
     const expression = buildAnnotationSetTargetChatLabelExpression(
-      'say </script> "hi"',
-      true,
+      [{ chatId: "chat-1", label: 'say </script> "hi"' }],
+      "chat-1",
     );
     expect(expression).toContain("__traycerAnnotationSetTargetChatLabel");
     expect(expression).toContain("\\u003c");
     expect(expression).not.toContain("</script>");
+    expect(expression).toContain('"chatId":"chat-1"');
+    expect(expression).toContain('"chat-1"');
   });
 });
 
@@ -183,11 +203,23 @@ describe("sanitizeAttachRequest", () => {
     });
     expect(result).toEqual(VALID_ATTACH);
     expect(result === null ? [] : Object.keys(result)).toEqual([
+      "targetChatId",
       "marks",
       "elements",
       "comment",
       "unionRect",
     ]);
+  });
+
+  it("requires a non-empty targetChatId and keeps it on the sanitized request", () => {
+    expect(
+      sanitizeAttachRequest({ ...VALID_ATTACH, targetChatId: "" }),
+    ).toBeNull();
+    const { targetChatId: _omitted, ...withoutTarget } = VALID_ATTACH;
+    expect(sanitizeAttachRequest(withoutTarget)).toBeNull();
+    expect(sanitizeAttachRequest(VALID_ATTACH)?.targetChatId).toBe(
+      TARGET_CHAT_ID,
+    );
   });
 
   it("rejects guest-supplied annotationId or screenshot", () => {
@@ -218,14 +250,17 @@ describe("sanitizeAttachRequest", () => {
     expect(sanitizeAttachRequest({ comment: "x" })).toBeNull();
     const longComment = "c".repeat(ANNOTATION_LIMITS.comment + 20);
     const result = sanitizeAttachRequest({
+      targetChatId: TARGET_CHAT_ID,
       unionRect: UNION,
       comment: longComment,
     });
     expect(result?.comment).toHaveLength(ANNOTATION_LIMITS.comment);
+    expect(result?.targetChatId).toBe(TARGET_CHAT_ID);
   });
 
   it("forces stroke and region selectors to null", () => {
     const result = sanitizeAttachRequest({
+      targetChatId: TARGET_CHAT_ID,
       unionRect: UNION,
       marks: [
         {
@@ -241,6 +276,7 @@ describe("sanitizeAttachRequest", () => {
 
   it("drops smuggled stroke points so snapshots are bounds-only", () => {
     const result = sanitizeAttachRequest({
+      targetChatId: TARGET_CHAT_ID,
       unionRect: UNION,
       marks: [
         {
@@ -382,7 +418,9 @@ describe("sanitizeAttachRequest", () => {
       boundingBox: { x: 0, y: 0, width: 10, height: 10 },
     }));
     const raw = { ...VALID_ATTACH, elements: fatElements };
-    expect(JSON.stringify(raw).length).toBeLessThan(ANNOTATION_BUNDLE_BYTE_BUDGET);
+    expect(JSON.stringify(raw).length).toBeLessThan(
+      ANNOTATION_BUNDLE_BYTE_BUDGET,
+    );
     const result = sanitizeAttachRequest(raw);
     expect(result).not.toBeNull();
     if (result === null) {

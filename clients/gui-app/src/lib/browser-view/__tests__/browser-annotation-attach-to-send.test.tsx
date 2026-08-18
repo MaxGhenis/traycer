@@ -1,10 +1,17 @@
 import "../../../../__tests__/test-browser-apis";
-import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { del as idbDel, get as idbGet, set as idbSet } from "idb-keyval";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 
-import { BrowserAnnotationCards } from "@/components/chat/composer/browser-annotation-cards";
+import { BrowserAnnotationCard } from "@/components/chat/composer/browser-annotation-card";
 import type { ChatComposerSubmitInput } from "@/components/chat/composer/chat-composer";
 import type { ComposerPromptEditorHandle } from "@/components/chat/composer/composer-prompt-editor";
 import { createComposerPickerStore } from "@/components/chat/composer/picker/composer-picker-store";
@@ -214,8 +221,16 @@ describe("browser annotation attach to send", () => {
       return null;
     });
 
-    render(<BrowserAnnotationCards taskId={CHAT_ID} />);
-    expect(screen.getByTestId("browser-annotation-cards")).toBeTruthy();
+    render(
+      <BrowserAnnotationCard
+        record={record}
+        onRemove={null}
+        imageFetcher={() =>
+          Promise.resolve({ bytes: stub.png, mediaType: "image/png" })
+        }
+        sessionObjectUrl={() => null}
+      />,
+    );
     expect(screen.getByTestId("browser-annotation-card")).toBeTruthy();
     expect(screen.getByText(COMMENT)).toBeTruthy();
 

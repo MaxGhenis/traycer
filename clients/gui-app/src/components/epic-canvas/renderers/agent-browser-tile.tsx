@@ -12,6 +12,7 @@ import {
 } from "@/components/epic-canvas/renderers/browser-tile-status-panels";
 import { BrowserTileToolbar } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
 import { BrowserViewSnapshotLayer } from "@/components/epic-canvas/renderers/browser-view-snapshot-layer";
+import { useMaybeBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import {
   isolatedTileChromeCapabilitiesFromSurface,
   PRIMARY_TILE_CHROME_CAPABILITIES,
@@ -40,6 +41,7 @@ import {
   updateElectronBrowserTabView,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import { openFreshElectronTileFromBrowserPage } from "@/lib/browser-view/browser-link-routing-core";
+import { useBrowserTileControlState } from "@/lib/browser-view/browser-tile-control-store";
 import { useBrowserCookieCryptoState } from "@/lib/browser-view/use-browser-cookie-crypto-state";
 import { appLogger } from "@/lib/logger";
 import { cn } from "@/lib/utils";
@@ -118,6 +120,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   });
   const [unreachable, setUnreachable] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
+  const browserSessions = useMaybeBrowserSessionsContext();
   const registrationChatId = useEpicCanvasStore((state) =>
     selectSiblingChatIdForBrowserTile(
       state.canvasByTabId[props.viewTabId] ?? null,
@@ -127,6 +130,19 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
   const epicId = useEpicCanvasStore(
     (state) => state.tabsById[props.viewTabId]?.epicId ?? null,
   );
+  const annotationSession = browserSessions?.items.find(
+    (item) => item.sessionId === props.node.sessionId,
+  );
+  const annotationTab = annotationSession?.tabs.find(
+    (item) => item.tabId === (durableTabId ?? props.requestedTabId),
+  );
+  const annotationDriverChatId = annotationTab?.drivenBy.at(-1)?.chatId ?? null;
+  const controlState = useBrowserTileControlState(props.node.instanceId);
+  const annotationPreferredChatId =
+    annotationDriverChatId ??
+    controlState.active?.chatId ??
+    controlState.pending?.chatId ??
+    null;
 
   const tileKey = useMemo<AgentBrowserViewTileKey>(
     () => ({
@@ -310,9 +326,10 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     browserView: primaryBridge,
     tileKey,
     status: effectiveStatus,
-    viewTabId: props.viewTabId,
-    browserInstanceId: props.node.instanceId,
     epicId: epicId ?? "",
+    browserHostId: props.node.hostId,
+    preferredChatId: annotationPreferredChatId,
+    fallbackChatId: annotationSession?.createdBy.chatId ?? null,
   });
   const persistViewportPreset = useEpicCanvasStore(
     (state) => state.updateBrowserTileViewportPresetInTab,
@@ -344,11 +361,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
     canGoForward,
     zoomPercent,
     persistViewportPreset: (preset) => {
-      persistViewportPreset(
-        props.viewTabId,
-        props.node.instanceId,
-        preset,
-      );
+      persistViewportPreset(props.viewTabId, props.node.instanceId, preset);
     },
     initialViewportPreset: readAgentViewportPreset(props.node.viewportPreset),
     onAttemptedUrl: latchAttemptedUrl,
@@ -498,8 +511,14 @@ function AgentBrowserTileStatus(props: AgentBrowserTileStatusProps) {
   }
   return (
     <>
-      <AgentSpinningDots className="shrink-0" testId={undefined} variant={undefined} />
-      <div className="text-ui-base font-medium">Reconnecting to this session</div>
+      <AgentSpinningDots
+        className="shrink-0"
+        testId={undefined}
+        variant={undefined}
+      />
+      <div className="text-ui-base font-medium">
+        Reconnecting to this session
+      </div>
       <AgentBrowserTileReason reason={props.reason} hostId={props.hostId} />
     </>
   );
@@ -554,9 +573,7 @@ function useAgentTileBridges(
 ): {
   readonly primaryBridge: DesktopBrowserViewBridge | null;
   readonly browserView:
-    | DesktopBrowserViewBridge
-    | DesktopAgentBrowserViewBridge
-    | null;
+    DesktopBrowserViewBridge | DesktopAgentBrowserViewBridge | null;
 } {
   const primaryBridge = useMemo(
     () =>

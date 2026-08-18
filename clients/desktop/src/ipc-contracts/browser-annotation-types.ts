@@ -1,130 +1,19 @@
-import type {
+export type {
+  BrowserAnnotationAttachedIpcEvent,
+  BrowserAnnotationAttachPayload,
+  BrowserAnnotationAttachRequest,
+  BrowserAnnotationAttachResultInput,
   BrowserAnnotationCounts,
-  BrowserAnnotationRecord,
-  BrowserViewElementCapture,
-} from "@traycer/protocol/persistence/epic/schemas";
-import type { BrowserViewTileKey } from "./browser-view-types";
-
-export type { BrowserAnnotationCounts };
-
-/**
- * Guest overlay mode. Select is the session default (annotate button).
- * Keys: V/R/D/E, page-canvas focus only.
- */
-export type BrowserAnnotationMode = "select" | "region" | "draw" | "erase";
-
-export type BrowserAnnotationMarkKind = "element" | "region" | "stroke";
-
-/**
- * CSS-pixel rectangle in the current viewport.
- * Ticket 03 maps this through `capturedImage.width / viewport CSS width`.
- */
-export interface BrowserAnnotationCssRect {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-}
-
-/**
- * One mark on the ordered stack at attach time.
- * Ticket 02 fills this; raw stroke points must never appear here.
- */
-export interface BrowserAnnotationMarkSnapshot {
-  readonly id: string;
-  readonly kind: BrowserAnnotationMarkKind;
-  readonly bounds: BrowserAnnotationCssRect;
-  /** Element marks only; null for region/stroke. */
-  readonly selector: string | null;
-}
-
-/**
- * Guest -> main attach envelope (ticket 01 defines, ticket 02 emits, ticket 03 consumes).
- *
- * `annotationId` is minted by main on a successful crop (ticket 03) - the guest
- * must not supply ids or pixels. A guest-supplied `screenshot` / `annotationId`
- * field is rejected at the sanitizer.
- */
-export interface BrowserAnnotationAttachRequest {
-  readonly marks: readonly BrowserAnnotationMarkSnapshot[];
-  readonly elements: readonly BrowserViewElementCapture[];
-  readonly comment: string;
-  readonly unionRect: BrowserAnnotationCssRect;
-}
-
-/**
- * Main-owned attach payload after a successful crop. Same persist fields
- * as the protocol record, minus kind and the crop pairing keys.
- */
-export type BrowserAnnotationAttachPayload = Omit<
-  BrowserAnnotationRecord,
-  "kind" | "imageFileName" | "imageHash"
->;
-
-/**
- * IPC event for a successful attach. Failure never emits this (bundle stays
- * open; guest `captureFailed()` notice only).
- */
-export interface BrowserAnnotationAttachedIpcEvent extends BrowserViewTileKey {
-  readonly payload: BrowserAnnotationAttachPayload;
-  readonly pngBytes: Uint8Array;
-}
-
-export interface BrowserAnnotationSetTargetChatLabelInput
-  extends BrowserViewTileKey {
-  readonly label: string;
-  readonly canAttach: boolean;
-}
-
-export interface BrowserAnnotationAttachResultInput {
-  readonly annotationId: string;
-  readonly status: "attached" | "failed";
-}
-
-export type BrowserAnnotationEndReason =
-  | "cancelled"
-  | "navigation"
-  | "reload"
-  | "crash"
-  | "tile-close"
-  | "replaced";
-
-export type BrowserAnnotationStartFailureReason =
-  | "tile-not-found"
-  | "page-not-ready"
-  | "debugger-not-attached"
-  | "no-main-frame"
-  | "no-isolated-world"
-  | "inject-failed";
-
-export type BrowserAnnotationStartResult =
-  | { readonly ok: true }
-  | {
-      readonly ok: false;
-      readonly reason: BrowserAnnotationStartFailureReason;
-    };
-
-/**
- * Guest events on `__traycerAnnotation`, plus main-owned `ended`.
- * `cancelled` is the guest/user-cancel path; `ended` covers teardown the
- * guest did not initiate (nav, crash, tile close, second start).
- */
-export type BrowserAnnotationSessionEvent =
-  | {
-      readonly type: "stateChanged";
-      readonly mode: BrowserAnnotationMode;
-      readonly markCount: number;
-    }
-  | { readonly type: "cancelled" }
-  | {
-      readonly type: "attachRequested";
-      readonly payload: BrowserAnnotationAttachRequest;
-    }
-  | {
-      readonly type: "ended";
-      readonly reason: Exclude<BrowserAnnotationEndReason, "cancelled">;
-    };
-
-export interface BrowserAnnotationSessionIpcEvent extends BrowserViewTileKey {
-  readonly event: BrowserAnnotationSessionEvent;
-}
+  BrowserAnnotationCssRect,
+  BrowserAnnotationEndReason,
+  BrowserAnnotationForwardedSessionEvent,
+  BrowserAnnotationMarkKind,
+  BrowserAnnotationMarkSnapshot,
+  BrowserAnnotationMode,
+  BrowserAnnotationSessionEvent,
+  BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationSetTargetChatLabelInput,
+  BrowserAnnotationStartFailureReason,
+  BrowserAnnotationStartResult,
+  BrowserAnnotationTargetOption,
+} from "@traycer-clients/shared/platform/browser-annotation";

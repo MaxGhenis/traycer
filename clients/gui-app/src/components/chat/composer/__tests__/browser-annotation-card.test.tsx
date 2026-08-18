@@ -7,8 +7,8 @@ import type {
   BrowserTabInfo,
 } from "@traycer/protocol/host/browser/contracts";
 
+import { AttachmentStrip } from "@/components/chat/composer/attachments/attachment-strip";
 import { BrowserAnnotationCard } from "@/components/chat/composer/browser-annotation-card";
-import { BrowserAnnotationCards } from "@/components/chat/composer/browser-annotation-cards";
 import {
   BrowserSessionsContext,
   type BrowserSessionsState,
@@ -288,7 +288,7 @@ describe("BrowserAnnotationCard", () => {
     expect(screen.getByText("No comment")).toBeTruthy();
   });
 
-  it("shows two tag badges plus +N when there are more than two elements", () => {
+  it("renders as a compact chip without element tag badges", () => {
     renderCard(
       makeRecord({
         annotationId: "ann-tags",
@@ -303,10 +303,12 @@ describe("BrowserAnnotationCard", () => {
       null,
     );
 
-    expect(screen.getByText("h1")).toBeTruthy();
-    expect(screen.getByText("p")).toBeTruthy();
-    expect(screen.queryByText("button")).toBeNull();
-    expect(screen.getByText("+1")).toBeTruthy();
+    const card = screen.getByTestId("browser-annotation-card");
+    expect(card.className).toContain("h-10");
+    expect(card.className).toContain("max-w-[min(70vw,16rem)]");
+    expect(card.className).toContain("shrink-0");
+    expect(screen.queryByText("h1")).toBeNull();
+    expect(screen.queryByText("+1")).toBeNull();
   });
 
   it("renders the counts line as 2 elements · 1 drawing", () => {
@@ -320,7 +322,7 @@ describe("BrowserAnnotationCard", () => {
       null,
     );
 
-    expect(screen.getByText("2 elements · 1 drawing")).toBeTruthy();
+    expect(screen.getByText(/2 elements · 1 drawing/)).toBeTruthy();
   });
 
   it("appends over-budget copy when droppedElementCount is nonzero", () => {
@@ -335,7 +337,7 @@ describe("BrowserAnnotationCard", () => {
       null,
     );
 
-    expect(screen.getByText("9 elements, 3 over budget")).toBeTruthy();
+    expect(screen.getByText(/9 elements, 3 over budget/)).toBeTruthy();
   });
 
   it("shows no staleness hint when the live tab is still on the annotated URL", () => {
@@ -443,29 +445,62 @@ describe("BrowserAnnotationCard", () => {
   });
 });
 
-describe("BrowserAnnotationCards", () => {
-  it("renders two cards with different data-annotation-tab values", () => {
-    const first = makeRecord({
-      annotationId: "ann-tab-a",
+describe("BrowserAnnotationCard attachments", () => {
+  it("shares the composer image scroller as compact leading chips", () => {
+    const record = makeRecord({
+      annotationId: "ann-scroller",
       tabId: "tab-a",
-      comment: "from tab a",
+      comment: "from the overlay",
     });
-    const second = makeRecord({
-      annotationId: "ann-tab-b",
-      tabId: "tab-b",
-      comment: "from tab b",
-    });
-    useComposerDraftStore.getState().addBrowserAnnotation("chat-multi", first);
-    useComposerDraftStore.getState().addBrowserAnnotation("chat-multi", second);
+    useComposerDraftStore
+      .getState()
+      .addBrowserAnnotation("chat-scroller", record);
 
-    render(<BrowserAnnotationCards taskId="chat-multi" />);
+    render(
+      <AttachmentStrip
+        content={{
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                {
+                  type: "imageAttachment",
+                  attrs: {
+                    id: "img-1",
+                    fileName: "image.png",
+                    b64content: "img-1",
+                    mimeType: "image/png",
+                    size: 5,
+                  },
+                },
+              ],
+            },
+          ],
+        }}
+        onRemoveImage={() => undefined}
+        fetcher={() => Promise.reject(new Error("unused"))}
+        sessionObjectUrl={() => null}
+        leadingAttachments={
+          <BrowserAnnotationCard
+            record={record}
+            onRemove={() => undefined}
+            imageFetcher={landingFetcher}
+            sessionObjectUrl={sessionObjectUrl}
+          />
+        }
+      />,
+    );
 
-    const cards = screen.getAllByTestId("browser-annotation-card");
-    expect(screen.getByTestId("browser-annotation-cards")).toBeTruthy();
-    expect(cards).toHaveLength(2);
-    expect(cards[0]?.getAttribute("data-annotation-id")).toBe("ann-tab-a");
-    expect(cards[0]?.getAttribute("data-annotation-tab")).toBe("tab-a");
-    expect(cards[1]?.getAttribute("data-annotation-id")).toBe("ann-tab-b");
-    expect(cards[1]?.getAttribute("data-annotation-tab")).toBe("tab-b");
+    const strip = document.querySelector("[data-composer-attachment-strip]");
+    const row = strip?.firstElementChild;
+    const card = screen.getByTestId("browser-annotation-card");
+    expect(row?.className).toContain("w-max");
+    expect(row?.className).not.toContain("flex-wrap");
+    expect(row?.contains(card)).toBe(true);
+    expect(card.className).toContain("h-10");
+    expect(
+      row?.contains(screen.getByRole("button", { name: /Open Image#1/ })),
+    ).toBe(true);
   });
 });

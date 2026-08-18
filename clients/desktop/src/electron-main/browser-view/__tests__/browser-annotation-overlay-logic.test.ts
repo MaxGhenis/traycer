@@ -9,13 +9,10 @@ import {
   eraseNewestAtPoint,
   isElementVisuallyPresent,
   isTinyDrag,
-  modeFromHotkey,
   normalizeDragRect,
   placeCommentBox,
   resolveRegionSelection,
   serializedCaptureBytes,
-  shouldHandleModeHotkey,
-  shouldSwallowScrollInput,
   strokeBoundsFromPoints,
   svgPathFromPolygon,
   toMarkSnapshot,
@@ -75,144 +72,46 @@ function mark(input: {
   };
 }
 
-describe("modeFromHotkey", () => {
-  it("maps V/R/D/E case-insensitively", () => {
-    expect(modeFromHotkey("v")).toBe("select");
-    expect(modeFromHotkey("V")).toBe("select");
-    expect(modeFromHotkey("r")).toBe("region");
-    expect(modeFromHotkey("R")).toBe("region");
-    expect(modeFromHotkey("d")).toBe("draw");
-    expect(modeFromHotkey("D")).toBe("draw");
-    expect(modeFromHotkey("e")).toBe("erase");
-    expect(modeFromHotkey("E")).toBe("erase");
+describe("annotation overlay pointer and keyboard boundaries", () => {
+  it("changes annotation tools only through explicit button clicks", () => {
+    expect(ANNOTATION_OVERLAY_GUEST_SOURCE).not.toContain(
+      'setAttribute("aria-keyshortcuts"',
+    );
+    expect(ANNOTATION_OVERLAY_GUEST_SOURCE).not.toContain(
+      "shouldHandleModeHotkey",
+    );
   });
 
-  it("returns null for keys that are not mode hotkeys", () => {
-    expect(modeFromHotkey("Escape")).toBeNull();
-    expect(modeFromHotkey("x")).toBeNull();
-    expect(modeFromHotkey("")).toBeNull();
-  });
-});
-
-describe("shouldHandleModeHotkey", () => {
-  const base = {
-    key: "v",
-    altKey: false,
-    ctrlKey: false,
-    metaKey: false,
-    focusInOverlayText: false,
-  };
-
-  it("is true for an unscoped mode key", () => {
-    expect(shouldHandleModeHotkey(base)).toBe(true);
-    expect(shouldHandleModeHotkey({ ...base, key: "R" })).toBe(true);
+  it("clears the select hover when the pointer leaves the browser tile", () => {
+    expect(ANNOTATION_OVERLAY_GUEST_SOURCE).toContain(
+      'addEventListener("pointerleave"',
+    );
   });
 
-  it("is false when focus is in overlay text", () => {
-    expect(
-      shouldHandleModeHotkey({ ...base, focusInOverlayText: true }),
-    ).toBe(false);
+  it("labels hovered elements and transitions between their bounds", () => {
+    expect(ANNOTATION_OVERLAY_GUEST_SOURCE).toContain("hover-label");
+    expect(ANNOTATION_OVERLAY_GUEST_SOURCE).toContain("describeHoverTarget");
+    expect(ANNOTATION_OVERLAY_GUEST_SOURCE).toContain(
+      "transition-property:left,top,width,height,opacity",
+    );
+    expect(ANNOTATION_OVERLAY_GUEST_SOURCE).toContain(
+      "prefers-reduced-motion:no-preference",
+    );
   });
 
-  it("is false with alt, ctrl, or meta", () => {
-    expect(shouldHandleModeHotkey({ ...base, altKey: true })).toBe(false);
-    expect(shouldHandleModeHotkey({ ...base, ctrlKey: true })).toBe(false);
-    expect(shouldHandleModeHotkey({ ...base, metaKey: true })).toBe(false);
-  });
-
-  it("is false for a non-mode key", () => {
-    expect(shouldHandleModeHotkey({ ...base, key: "Escape" })).toBe(false);
-  });
-});
-
-describe("shouldSwallowScrollInput", () => {
-  it("swallows nothing while unlocked", () => {
-    expect(
-      shouldSwallowScrollInput({
-        armed: false,
-        kind: "wheel",
-        key: null,
-        focusInOverlayText: false,
-      }),
-    ).toBe(false);
-    expect(
-      shouldSwallowScrollInput({
-        armed: false,
-        kind: "touchmove",
-        key: null,
-        focusInOverlayText: false,
-      }),
-    ).toBe(false);
-    expect(
-      shouldSwallowScrollInput({
-        armed: false,
-        kind: "keydown",
-        key: "ArrowDown",
-        focusInOverlayText: false,
-      }),
-    ).toBe(false);
-  });
-
-  it("swallows wheel and touchmove when armed", () => {
-    expect(
-      shouldSwallowScrollInput({
-        armed: true,
-        kind: "wheel",
-        key: null,
-        focusInOverlayText: false,
-      }),
-    ).toBe(true);
-    expect(
-      shouldSwallowScrollInput({
-        armed: true,
-        kind: "touchmove",
-        key: null,
-        focusInOverlayText: false,
-      }),
-    ).toBe(true);
-  });
-
-  it("swallows nav keys when armed and focus is not in overlay text", () => {
-    for (const key of [
-      "ArrowUp",
-      "ArrowDown",
-      "ArrowLeft",
-      "ArrowRight",
-      "PageUp",
-      "PageDown",
-      "Home",
-      "End",
-      " ",
-      "Spacebar",
-    ]) {
-      expect(
-        shouldSwallowScrollInput({
-          armed: true,
-          kind: "keydown",
-          key,
-          focusInOverlayText: false,
-        }),
-      ).toBe(true);
-    }
-    expect(
-      shouldSwallowScrollInput({
-        armed: true,
-        kind: "keydown",
-        key: "a",
-        focusInOverlayText: false,
-      }),
-    ).toBe(false);
-  });
-
-  it("does not swallow nav keys when armed and focus is in overlay text", () => {
-    expect(
-      shouldSwallowScrollInput({
-        armed: true,
-        kind: "keydown",
-        key: "ArrowDown",
-        focusInOverlayText: true,
-      }),
-    ).toBe(false);
+  it("uses one custom send menu instead of a native select and attach button", () => {
+    expect(ANNOTATION_OVERLAY_GUEST_SOURCE).not.toContain(
+      'D.createElement("select")',
+    );
+    expect(ANNOTATION_OVERLAY_GUEST_SOURCE).not.toContain(
+      'textContent = "Attach"',
+    );
+    expect(ANNOTATION_OVERLAY_GUEST_SOURCE).toContain(
+      'setAttribute("aria-haspopup", "menu")',
+    );
+    expect(ANNOTATION_OVERLAY_GUEST_SOURCE).toContain(
+      "requestAttach(targetChatId)",
+    );
   });
 });
 
@@ -234,13 +133,12 @@ describe("region drag geometry", () => {
     expect(isTinyDrag(rect(0, 0, 3, 20))).toBe(true);
     expect(isTinyDrag(rect(0, 0, 20, 3))).toBe(true);
     expect(isTinyDrag(rect(0, 0, 3, 3))).toBe(true);
-    expect(isTinyDrag(rect(0, 0, ANNOTATION_TINY_DRAG_PX, ANNOTATION_TINY_DRAG_PX))).toBe(
-      false,
-    );
+    expect(
+      isTinyDrag(rect(0, 0, ANNOTATION_TINY_DRAG_PX, ANNOTATION_TINY_DRAG_PX)),
+    ).toBe(false);
     expect(isTinyDrag(rect(0, 0, 8, 8))).toBe(false);
   });
 });
-
 
 describe("resolveRegionSelection", () => {
   const covering = rect(0, 0, 400, 400);
@@ -659,12 +557,12 @@ describe("element mark validation", () => {
       opacity: 1,
     };
     expect(isElementVisuallyPresent(present)).toBe(true);
-    expect(
-      isElementVisuallyPresent({ ...present, display: "none" }),
-    ).toBe(false);
-    expect(
-      isElementVisuallyPresent({ ...present, visibility: "hidden" }),
-    ).toBe(false);
+    expect(isElementVisuallyPresent({ ...present, display: "none" })).toBe(
+      false,
+    );
+    expect(isElementVisuallyPresent({ ...present, visibility: "hidden" })).toBe(
+      false,
+    );
     expect(
       isElementVisuallyPresent({ ...present, visibility: "collapse" }),
     ).toBe(false);
@@ -802,7 +700,7 @@ describe("applyByteBudget", () => {
   });
 });
 
-describe("guest attach freeze and scroll lock", () => {
+describe("guest attach freeze", () => {
   it("sets attachPending before emit and guards mutate paths until reset or captureFailed", () => {
     const source = ANNOTATION_OVERLAY_GUEST_SOURCE;
     expect(source).toContain("attachPending = true");
@@ -833,35 +731,13 @@ describe("guest attach freeze and scroll lock", () => {
     expect(pendingAt).toBeLessThan(emitAt);
   });
 
-  it("still swallows wheel when marks exist and not when the stack is empty", () => {
-    expect(
-      shouldSwallowScrollInput({
-        armed: true,
-        kind: "wheel",
-        key: null,
-        focusInOverlayText: false,
-      }),
-    ).toBe(true);
-    expect(
-      shouldSwallowScrollInput({
-        armed: false,
-        kind: "wheel",
-        key: null,
-        focusInOverlayText: false,
-      }),
-    ).toBe(false);
-  });
 });
 
 describe("unionRects", () => {
   it("returns null for an empty list and unions mixed mark bounds", () => {
     expect(unionRects([])).toBeNull();
     expect(
-      unionRects([
-        rect(0, 0, 10, 10),
-        rect(20, 5, 10, 10),
-        rect(5, 20, 10, 5),
-      ]),
+      unionRects([rect(0, 0, 10, 10), rect(20, 5, 10, 10), rect(5, 20, 10, 5)]),
     ).toEqual(rect(0, 0, 30, 25));
   });
 });
@@ -920,6 +796,15 @@ describe("stroke geometry helpers", () => {
 
   it("pads stroke bounds from raw points and returns null for an empty stroke", () => {
     expect(strokeBoundsFromPoints([], 8)).toBeNull();
+    expect(
+      strokeBoundsFromPoints(
+        [
+          { x: 10, y: 20 },
+          { x: 11, y: 21 },
+        ],
+        8,
+      ),
+    ).toBeNull();
     expect(
       strokeBoundsFromPoints(
         [

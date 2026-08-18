@@ -1,8 +1,6 @@
 import { X } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { useMaybeBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import { type ImageBytesFetcher } from "@/lib/attachments/image-blob-cache";
 import { useImageBlobUrl } from "@/lib/attachments/use-image-blob-url";
@@ -16,8 +14,6 @@ import {
 } from "@/lib/browser-view/browser-annotation-staleness";
 import { cn } from "@/lib/utils";
 
-const VISIBLE_TAG_COUNT = 2;
-
 export function BrowserAnnotationCard(props: {
   readonly record: BrowserAnnotationRecord;
   readonly onRemove: ((annotationId: string) => void) | null;
@@ -29,30 +25,35 @@ export function BrowserAnnotationCard(props: {
   const sessionUrl = props.sessionObjectUrl(record.imageHash);
   const blobUrl = useImageBlobUrl(record.imageHash, "image/png", imageFetcher);
   const src = sessionUrl ?? blobUrl;
-  const visibleElements = record.elements.slice(0, VISIBLE_TAG_COUNT);
-  const overflow = record.elements.length - visibleElements.length;
   const counts = formatAnnotationCounts(record.counts);
   const dropped =
     record.droppedElementCount > 0
       ? `${record.droppedElementCount} over budget`
       : "";
-  const countsLine = [counts, dropped].filter((part) => part.length > 0).join(
-    ", ",
-  );
+  const countsLine = [counts, dropped]
+    .filter((part) => part.length > 0)
+    .join(", ");
   const staleness = annotationStalenessHint(record, sessions?.items ?? null);
+  const stalenessCopy =
+    staleness === null ? "" : ANNOTATION_STALENESS_COPY[staleness];
+  const secondary = stalenessCopy.length > 0 ? stalenessCopy : countsLine;
   const comment =
     record.comment.trim().length > 0 ? record.comment.trim() : "No comment";
+  const title = [comment, countsLine, stalenessCopy]
+    .filter((part) => part.length > 0)
+    .join(" · ");
 
   return (
     <div
       data-testid="browser-annotation-card"
       data-annotation-id={record.annotationId}
       data-annotation-tab={record.tabId}
-      className="flex min-w-0 items-center gap-2.5 rounded-[10px] border border-border bg-card p-2"
+      title={title}
+      className="group flex h-10 max-w-[min(70vw,16rem)] shrink-0 items-center gap-2 rounded-lg bg-foreground/5 p-1 pe-1.5"
     >
       <div
         className={cn(
-          "relative h-12 w-16 shrink-0 overflow-hidden rounded-md border border-border",
+          "relative size-8 shrink-0 overflow-hidden rounded bg-foreground/5",
           src === null && "bg-foreground/8",
         )}
       >
@@ -69,35 +70,23 @@ export function BrowserAnnotationCard(props: {
           />
         )}
       </div>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-ui-sm text-foreground">{comment}</p>
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-          {visibleElements.map((element) => (
-            <Badge
-              key={element.selector}
-              variant="default"
-              className="h-4 px-1.5 text-[0.625rem]"
-            >
-              {element.tagName.length > 0 ? element.tagName : "element"}
-            </Badge>
-          ))}
-          {overflow > 0 ? (
-            <span className="text-ui-xs text-muted-foreground">
-              +{overflow}
-            </span>
-          ) : null}
-          {countsLine.length > 0 ? (
-            <AnnotationCountsLine
-              countsLine={countsLine}
-              showBudgetHint={dropped.length > 0}
-            />
-          ) : null}
-          {staleness !== null ? (
-            <span className="text-ui-xs text-amber-600 dark:text-amber-400">
-              · {ANNOTATION_STALENESS_COPY[staleness]}
-            </span>
-          ) : null}
-        </div>
+      <div className="flex min-w-0 flex-1 items-baseline gap-1">
+        <p className="min-w-0 truncate text-ui-sm font-medium text-foreground">
+          {comment}
+        </p>
+        {secondary.length > 0 ? (
+          <span
+            className={cn(
+              "max-w-24 shrink-0 truncate text-ui-xs text-muted-foreground",
+              staleness !== null && "text-amber-600 dark:text-amber-400",
+            )}
+          >
+            · {secondary}
+          </span>
+        ) : null}
+        {stalenessCopy.length > 0 && countsLine.length > 0 ? (
+          <span className="sr-only">{countsLine}</span>
+        ) : null}
       </div>
       {onRemove === null ? null : (
         <Button
@@ -105,32 +94,12 @@ export function BrowserAnnotationCard(props: {
           variant="ghost"
           size="icon-xs"
           aria-label="Remove annotation"
-          className="shrink-0 text-muted-foreground"
+          className="shrink-0 text-muted-foreground opacity-50 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
           onClick={() => onRemove(record.annotationId)}
         >
           <X />
         </Button>
       )}
     </div>
-  );
-}
-
-function AnnotationCountsLine(props: {
-  readonly countsLine: string;
-  readonly showBudgetHint: boolean;
-}) {
-  const line = (
-    <span className="text-ui-xs text-muted-foreground">{props.countsLine}</span>
-  );
-  if (!props.showBudgetHint) return line;
-  return (
-    <TooltipWrapper
-      label={props.countsLine}
-      side="top"
-      sideOffset={undefined}
-      align={undefined}
-    >
-      {line}
-    </TooltipWrapper>
   );
 }

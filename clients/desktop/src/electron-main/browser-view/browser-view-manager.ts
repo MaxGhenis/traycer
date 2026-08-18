@@ -890,7 +890,8 @@ export class BrowserViewManager {
   ): void {
     const key = { ...input, windowId };
     const entry =
-      this.entriesByKey.get(entryKeyId(key)) ?? this.findTransferableEntry(key);
+      this.entriesByKey.get(entryKeyId(key)) ??
+      this.findTransferableEntry(key);
     // Unbound views have no compositor: timers/events stay unthrottled, but
     // requestAnimationFrame needs the view bound to a window.
     entry?.view.webContents.setBackgroundThrottling(input.enabled);
@@ -1219,8 +1220,7 @@ export class BrowserViewManager {
   ): Promise<boolean> {
     const key = { ...input.tileKey, windowId };
     const entry =
-      this.entriesByKey.get(entryKeyId(key)) ??
-      this.findTransferableEntry(key);
+      this.entriesByKey.get(entryKeyId(key)) ?? this.findTransferableEntry(key);
     if (entry === null || entry === undefined) return false;
     this.stopPipCapture();
     this.prepareEntryForPipCapture(entry, {
@@ -1310,7 +1310,7 @@ export class BrowserViewManager {
     if (entry === undefined) return;
     const session = entry.annotationSession;
     if (session === null || !session.isActive()) return;
-    void session.setTargetChatLabel(input.label, input.canAttach);
+    void session.setTargetChatLabel(input.targets, input.defaultChatId);
   }
 
   startAnnotation(
@@ -1345,6 +1345,7 @@ export class BrowserViewManager {
         }
         this.notifyAnnotationAttached(entry.key.windowId, {
           ...toTileKey(entry.key),
+          targetChatId: result.targetChatId,
           payload: result.payload,
           pngBytes: result.pngBytes,
         });
@@ -2435,7 +2436,7 @@ export class BrowserViewManager {
   }
 
   private trySetEntryZoom(entry: BrowserViewEntry, factor: number): void {
-    if (entry.annotationSession?.scrollLockArmed() === true) return;
+    if (entry.annotationSession?.zoomLocked() === true) return;
     entry.view.webContents.setZoomFactor(factor);
     this.emitStatus(entry);
   }

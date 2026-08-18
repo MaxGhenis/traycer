@@ -791,6 +791,7 @@ function InlineUserMessageEditor({
     () => (
       <>
         <ChatComposerAttachmentsStrip
+          taskId={null}
           content={editing.currentContent}
           editingQueueItemId={null}
           onCancelQueueEdit={null}

@@ -2,28 +2,25 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAnnotationRoute } from "@/hooks/browser/use-annotation-route";
-import { ANNOTATION_ROUTE_NONE_HINT } from "@/lib/browser-view/browser-annotation-router";
 import { useLastFocusedChatStore } from "@/stores/chat/last-focused-chat-store";
-import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
-import { makeBrowserTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
-import {
-  makeOpenableNodeRef,
-  type BrowserTileRef,
-  type EpicArtifactRef,
-  type EpicCanvasState,
-} from "@/stores/epics/canvas/types";
 import type { ChatProjection } from "@/stores/epics/open-epic/types";
 
 const epicChats = vi.hoisted(() => {
-  let byId: Readonly<Record<string, ChatProjection>> = {};
+  let chats: {
+    readonly byId: Readonly<Record<string, ChatProjection>>;
+    readonly allIds: readonly string[];
+  } = { byId: {}, allIds: [] };
   const listeners = new Set<() => void>();
   return {
-    set(next: Readonly<Record<string, ChatProjection>>): void {
-      byId = next;
+    set(
+      next: Readonly<Record<string, ChatProjection>>,
+      orderedIds: readonly string[],
+    ): void {
+      chats = { byId: next, allIds: orderedIds };
       for (const listener of listeners) listener();
     },
     store: {
-      getState: () => ({ chats: { byId } }),
+      getState: () => ({ chats }),
       subscribe: (listener: () => void) => {
         listeners.add(listener);
         return () => {
@@ -39,84 +36,19 @@ vi.mock("@/providers/use-open-epic-handle", () => ({
   useOpenEpicHandle: () => ({ store: epicChats.store }),
 }));
 
-const VIEW_TAB_ID = "view-annotation-route";
+vi.mock("@/components/epic-canvas/sidebar/epic-sidebar-selection", () => ({
+  useSidebarChatOrder: () => epicChats.store.getState().chats.allIds,
+}));
+
 const EPIC_ID = "epic-annotation-route";
 const HOST_ID = "host-annotation-route";
-
-function splitCanvas(input: {
-  readonly browser: BrowserTileRef;
-  readonly chat: EpicArtifactRef;
-}): EpicCanvasState {
-  return {
-    activePaneId: "pane-browser",
-    root: {
-      kind: "group",
-      id: "split-hook",
-      direction: "horizontal",
-      children: [
-        {
-          kind: "pane",
-          id: "pane-browser",
-          tabInstanceIds: [input.browser.instanceId],
-          activeTabId: input.browser.instanceId,
-          previewTabId: null,
-          activationHistory: [input.browser.instanceId],
-        },
-        {
-          kind: "pane",
-          id: "pane-chat",
-          tabInstanceIds: [input.chat.instanceId],
-          activeTabId: input.chat.instanceId,
-          previewTabId: null,
-          activationHistory: [input.chat.instanceId],
-        },
-      ],
-    },
-    tilesByInstanceId: {
-      [input.browser.instanceId]: input.browser,
-      [input.chat.instanceId]: input.chat,
-    },
-    sizesByGroupId: { "split-hook": [0.5, 0.5] },
-  };
-}
-
-function loneBrowserCanvas(browser: BrowserTileRef): EpicCanvasState {
-  return {
-    activePaneId: "pane-browser",
-    root: {
-      kind: "pane",
-      id: "pane-browser",
-      tabInstanceIds: [browser.instanceId],
-      activeTabId: browser.instanceId,
-      previewTabId: null,
-      activationHistory: [browser.instanceId],
-    },
-    tilesByInstanceId: {
-      [browser.instanceId]: browser,
-    },
-    sizesByGroupId: {},
-  };
-}
-
-function seedView(canvas: EpicCanvasState): void {
-  useEpicCanvasStore.setState({
-    tabsById: {
-      [VIEW_TAB_ID]: {
-        tabId: VIEW_TAB_ID,
-        epicId: EPIC_ID,
-        name: "Route epic",
-      },
-    },
-    canvasByTabId: {
-      [VIEW_TAB_ID]: canvas,
-    },
-  });
-}
+const OTHER_HOST_ID = "host-other";
 
 function chatProjection(
   id: string,
   title: string,
   archivedAt: number | null,
+  hostId: string | null = HOST_ID,
 ): ChatProjection {
   return {
     id,
@@ -125,17 +57,23 @@ function chatProjection(
     createdAt: 1,
     updatedAt: 1,
     userId: null,
-    hostId: HOST_ID,
+    hostId,
     isTitleEditedByUser: false,
     settings: null,
     archivedAt,
   };
 }
 
+function seedChats(
+  chats: Readonly<Record<string, ChatProjection>>,
+  orderedIds: readonly string[],
+): void {
+  epicChats.set(chats, orderedIds);
+}
+
 function resetStores(): void {
-  useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
   useLastFocusedChatStore.setState({ chatIdByEpicId: {} });
-  epicChats.set({});
+  epicChats.set({}, []);
 }
 
 beforeEach(() => {
@@ -148,118 +86,189 @@ afterEach(() => {
 });
 
 describe("useAnnotationRoute", () => {
-  it("keeps sibling identity when last-focused is a different live chat", () => {
-    const browser = makeBrowserTileRef({
-      name: "Docs",
-      hostId: HOST_ID,
-      url: "https://example.com/docs",
-      viewportPreset: "responsive",
-    });
-    const sibling = makeOpenableNodeRef({
-      id: "chat-sibling",
-      instanceId: "inst-chat-sibling",
-      type: "chat",
-      name: "Plan chat",
-      hostId: HOST_ID,
-    });
-    seedView(splitCanvas({ browser, chat: sibling }));
+  it("lists the sidebar roster and prefers the controller over last-focused", () => {
+    seedChats(
+      {
+        "chat-first": chatProjection("chat-first", "First chat", null),
+        "chat-focused": chatProjection("chat-focused", "Focused chat", null),
+        "chat-controller": chatProjection(
+          "chat-controller",
+          "Controller chat",
+          null,
+        ),
+      },
+      ["chat-first", "chat-focused", "chat-controller"],
+    );
     useLastFocusedChatStore.setState({
-      chatIdByEpicId: { [EPIC_ID]: "chat-last-focused" },
-    });
-    epicChats.set({
-      "chat-sibling": chatProjection("chat-sibling", "Plan chat", null),
-      "chat-last-focused": chatProjection(
-        "chat-last-focused",
-        "Earlier chat",
-        null,
-      ),
+      chatIdByEpicId: { [EPIC_ID]: "chat-focused" },
     });
 
     const { result } = renderHook(() =>
       useAnnotationRoute({
-        viewTabId: VIEW_TAB_ID,
-        browserInstanceId: browser.instanceId,
         epicId: EPIC_ID,
+        tileInstanceId: "tile-1",
+        browserHostId: HOST_ID,
+        preferredChatId: "chat-controller",
+        fallbackChatId: null,
       }),
     );
-    const first = result.current;
 
-    expect(first).toEqual({
-      kind: "chat",
-      chatId: "chat-sibling",
-      label: "Plan chat",
-      source: "sibling",
+    expect(result.current).toEqual({
+      targets: [
+        { chatId: "chat-first", label: "First chat" },
+        { chatId: "chat-focused", label: "Focused chat" },
+        { chatId: "chat-controller", label: "Controller chat" },
+      ],
+      defaultChatId: "chat-controller",
+    });
+  });
+
+  it("uses last-focused when no preferred controller is in the roster", () => {
+    seedChats(
+      {
+        "chat-first": chatProjection("chat-first", "First chat", null),
+        "chat-focused": chatProjection("chat-focused", "Focused chat", null),
+      },
+      ["chat-first", "chat-focused"],
+    );
+    useLastFocusedChatStore.setState({
+      chatIdByEpicId: { [EPIC_ID]: "chat-focused" },
     });
 
-    act(() => {
-      useLastFocusedChatStore
-        .getState()
-        .recordFocusedChat(EPIC_ID, "chat-last-focused");
+    const { result } = renderHook(() =>
+      useAnnotationRoute({
+        epicId: EPIC_ID,
+        tileInstanceId: "tile-1",
+        browserHostId: HOST_ID,
+        preferredChatId: "chat-missing",
+        fallbackChatId: null,
+      }),
+    );
+
+    expect(result.current.defaultChatId).toBe("chat-focused");
+    expect(result.current.targets.map((target) => target.chatId)).toEqual([
+      "chat-first",
+      "chat-focused",
+    ]);
+  });
+
+  it("defaults to the first roster chat when preferred and last-focused are absent", () => {
+    seedChats(
+      {
+        "chat-first": chatProjection("chat-first", "First chat", null),
+        "chat-second": chatProjection("chat-second", "Second chat", null),
+      },
+      ["chat-first", "chat-second"],
+    );
+
+    const { result } = renderHook(() =>
+      useAnnotationRoute({
+        epicId: EPIC_ID,
+        tileInstanceId: "tile-1",
+        browserHostId: HOST_ID,
+        preferredChatId: null,
+        fallbackChatId: null,
+      }),
+    );
+
+    expect(result.current.defaultChatId).toBe("chat-first");
+  });
+
+  it("omits archived and other-host chats from the roster", () => {
+    seedChats(
+      {
+        "chat-live": chatProjection("chat-live", "Live chat", null),
+        "chat-archived": chatProjection("chat-archived", "Archived", 1_700),
+        "chat-foreign": chatProjection(
+          "chat-foreign",
+          "Foreign",
+          null,
+          OTHER_HOST_ID,
+        ),
+      },
+      ["chat-live", "chat-archived", "chat-foreign"],
+    );
+
+    const { result } = renderHook(() =>
+      useAnnotationRoute({
+        epicId: EPIC_ID,
+        tileInstanceId: "tile-1",
+        browserHostId: HOST_ID,
+        preferredChatId: "chat-archived",
+        fallbackChatId: null,
+      }),
+    );
+
+    expect(result.current).toEqual({
+      targets: [{ chatId: "chat-live", label: "Live chat" }],
+      defaultChatId: "chat-live",
     });
-    expect(result.current).toBe(first);
   });
 
   it("reacts when last-focused is recorded after mount", () => {
-    const browser = makeBrowserTileRef({
-      name: "Docs",
-      hostId: HOST_ID,
-      url: "https://example.com/docs",
-      viewportPreset: "responsive",
-    });
-    seedView(loneBrowserCanvas(browser));
-
     const { result } = renderHook(() =>
       useAnnotationRoute({
-        viewTabId: VIEW_TAB_ID,
-        browserInstanceId: browser.instanceId,
         epicId: EPIC_ID,
+        tileInstanceId: "tile-1",
+        browserHostId: HOST_ID,
+        preferredChatId: null,
+        fallbackChatId: null,
       }),
     );
-    expect(result.current.kind).toBe("none");
+    expect(result.current).toEqual({ targets: [], defaultChatId: null });
 
     act(() => {
-      epicChats.set({
-        "chat-later": chatProjection("chat-later", "Later chat", null),
-      });
+      seedChats(
+        {
+          "chat-later": chatProjection("chat-later", "Later chat", null),
+        },
+        ["chat-later"],
+      );
       useLastFocusedChatStore
         .getState()
         .recordFocusedChat(EPIC_ID, "chat-later");
     });
 
     expect(result.current).toEqual({
-      kind: "chat",
-      chatId: "chat-later",
-      label: "Later chat",
-      source: "last-focused",
+      targets: [{ chatId: "chat-later", label: "Later chat" }],
+      defaultChatId: "chat-later",
     });
   });
 
-  it("returns none when last-focused is archived", () => {
-    const browser = makeBrowserTileRef({
-      name: "Docs",
-      hostId: HOST_ID,
-      url: "https://example.com/docs",
-      viewportPreset: "responsive",
-    });
-    seedView(loneBrowserCanvas(browser));
-    useLastFocusedChatStore.setState({
-      chatIdByEpicId: { [EPIC_ID]: "chat-archived" },
-    });
-    epicChats.set({
-      "chat-archived": chatProjection("chat-archived", "Archived", 1_700),
-    });
-
-    const { result } = renderHook(() =>
-      useAnnotationRoute({
-        viewTabId: VIEW_TAB_ID,
-        browserInstanceId: browser.instanceId,
-        epicId: EPIC_ID,
-      }),
+  it("keeps the latest controller after active control clears", () => {
+    seedChats(
+      {
+        "chat-controller": chatProjection(
+          "chat-controller",
+          "Controller chat",
+          null,
+        ),
+        "chat-focused": chatProjection("chat-focused", "Focused chat", null),
+      },
+      ["chat-controller", "chat-focused"],
     );
 
-    expect(result.current).toEqual({
-      kind: "none",
-      hint: ANNOTATION_ROUTE_NONE_HINT,
+    let preferredChatId: string | null = "chat-controller";
+    const { result, rerender } = renderHook(() =>
+      useAnnotationRoute({
+        epicId: EPIC_ID,
+        tileInstanceId: "tile-1",
+        browserHostId: HOST_ID,
+        preferredChatId,
+        fallbackChatId: null,
+      }),
+    );
+    const first = result.current;
+    expect(first.defaultChatId).toBe("chat-controller");
+
+    act(() => {
+      preferredChatId = null;
+      useLastFocusedChatStore
+        .getState()
+        .recordFocusedChat(EPIC_ID, "chat-focused");
+      rerender();
     });
+    expect(result.current).toEqual(first);
+    expect(result.current.defaultChatId).toBe("chat-controller");
   });
 });

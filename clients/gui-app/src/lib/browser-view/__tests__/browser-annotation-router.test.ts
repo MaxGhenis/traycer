@@ -1,221 +1,199 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  ANNOTATION_ROUTE_NONE_HINT,
   resolveAnnotationRoute,
   type AnnotationRoute,
-  type AnnotationRouteChat,
 } from "@/lib/browser-view/browser-annotation-router";
-import { makeBrowserTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
-import {
-  makeOpenableNodeRef,
-  type BrowserTileRef,
-  type EpicArtifactRef,
-  type EpicCanvasState,
-} from "@/stores/epics/canvas/types";
+import type {
+  ChatProjection,
+  ChatsSlice,
+} from "@/stores/epics/open-epic/types";
 
 const HOST_ID = "host-annotation-router";
+const OTHER_HOST_ID = "host-other";
 
-function splitCanvas(input: {
-  readonly browser: BrowserTileRef;
-  readonly chat: EpicArtifactRef;
-}): EpicCanvasState {
+function chat(title: string, hostId: string | null = HOST_ID): ChatProjection {
   return {
-    activePaneId: "pane-browser",
-    root: {
-      kind: "group",
-      id: "split-annotation",
-      direction: "horizontal",
-      children: [
-        {
-          kind: "pane",
-          id: "pane-browser",
-          tabInstanceIds: [input.browser.instanceId],
-          activeTabId: input.browser.instanceId,
-          previewTabId: null,
-          activationHistory: [input.browser.instanceId],
-        },
-        {
-          kind: "pane",
-          id: "pane-chat",
-          tabInstanceIds: [input.chat.instanceId],
-          activeTabId: input.chat.instanceId,
-          previewTabId: null,
-          activationHistory: [input.chat.instanceId],
-        },
-      ],
-    },
-    tilesByInstanceId: {
-      [input.browser.instanceId]: input.browser,
-      [input.chat.instanceId]: input.chat,
-    },
-    sizesByGroupId: { "split-annotation": [0.5, 0.5] },
-  };
-}
-
-function loneBrowserCanvas(browser: BrowserTileRef): EpicCanvasState {
-  return {
-    activePaneId: "pane-browser",
-    root: {
-      kind: "pane",
-      id: "pane-browser",
-      tabInstanceIds: [browser.instanceId],
-      activeTabId: browser.instanceId,
-      previewTabId: null,
-      activationHistory: [browser.instanceId],
-    },
-    tilesByInstanceId: {
-      [browser.instanceId]: browser,
-    },
-    sizesByGroupId: {},
-  };
-}
-
-function namedChat(input: {
-  readonly id: string;
-  readonly instanceId: string;
-  readonly name: string;
-}): EpicArtifactRef {
-  return makeOpenableNodeRef({
-    id: input.id,
-    instanceId: input.instanceId,
-    type: "chat",
-    name: input.name,
-    hostId: HOST_ID,
-  });
-}
-
-function resolveFrom(
-  titles: Readonly<Record<string, string>>,
-): (chatId: string) => AnnotationRouteChat | null {
-  return (chatId) => {
-    if (!Object.hasOwn(titles, chatId)) return null;
-    return { title: titles[chatId] };
+    id: title,
+    title,
+    parentId: null,
+    createdAt: 1,
+    updatedAt: 1,
+    userId: null,
+    hostId,
+    isTitleEditedByUser: false,
+    settings: null,
+    archivedAt: null,
   };
 }
 
 interface RouteCase {
   readonly name: string;
-  readonly canvas: EpicCanvasState | null;
+  readonly orderedChatIds: readonly string[];
+  readonly preferredChatId: string | null;
   readonly lastFocusedChatId: string | null;
-  readonly titles: Readonly<Record<string, string>>;
+  readonly chats: Readonly<Record<string, ChatProjection>>;
   readonly expected: AnnotationRoute;
 }
 
-function browserTile(): BrowserTileRef {
-  return makeBrowserTileRef({
-    name: "Docs",
-    hostId: HOST_ID,
-    url: "https://example.com/docs",
-    viewportPreset: "responsive",
-  });
-}
-
 describe("resolveAnnotationRoute", () => {
-  const browser = browserTile();
-  const sibling = namedChat({
-    id: "chat-sibling",
-    instanceId: "inst-chat-sibling",
-    name: "Plan chat",
-  });
-
   it.each<RouteCase>([
     {
-      name: "sibling wins over last-focused",
-      canvas: splitCanvas({ browser, chat: sibling }),
-      lastFocusedChatId: "chat-last-focused",
-      titles: {
-        "chat-sibling": "Plan chat",
-        "chat-last-focused": "Earlier chat",
+      name: "lists the reachable roster and defaults to the first chat",
+      orderedChatIds: ["chat-first", "chat-second"],
+      preferredChatId: null,
+      lastFocusedChatId: null,
+      chats: {
+        "chat-first": chat("First chat"),
+        "chat-second": chat("Second chat"),
       },
       expected: {
-        kind: "chat",
-        chatId: "chat-sibling",
-        label: "Plan chat",
-        source: "sibling",
-      } satisfies AnnotationRoute,
+        targets: [
+          { chatId: "chat-first", label: "First chat" },
+          { chatId: "chat-second", label: "Second chat" },
+        ],
+        defaultChatId: "chat-first",
+      },
     },
     {
-      name: "last-focused when there is no sibling",
-      canvas: loneBrowserCanvas(browser),
+      name: "preferred controller wins over last-focused and first",
+      orderedChatIds: ["chat-first", "chat-focused", "chat-controller"],
+      preferredChatId: "chat-controller",
       lastFocusedChatId: "chat-focused",
-      titles: { "chat-focused": "Earlier chat" },
+      chats: {
+        "chat-first": chat("First chat"),
+        "chat-focused": chat("Focused chat"),
+        "chat-controller": chat("Controller chat"),
+      },
       expected: {
-        kind: "chat",
-        chatId: "chat-focused",
-        label: "Earlier chat",
-        source: "last-focused",
-      } satisfies AnnotationRoute,
+        targets: [
+          { chatId: "chat-first", label: "First chat" },
+          { chatId: "chat-focused", label: "Focused chat" },
+          { chatId: "chat-controller", label: "Controller chat" },
+        ],
+        defaultChatId: "chat-controller",
+      },
     },
     {
-      name: "none without sibling or last-focused",
-      canvas: loneBrowserCanvas(browser),
+      name: "last-focused wins when preferred is absent",
+      orderedChatIds: ["chat-first", "chat-focused"],
+      preferredChatId: null,
+      lastFocusedChatId: "chat-focused",
+      chats: {
+        "chat-first": chat("First chat"),
+        "chat-focused": chat("Focused chat"),
+      },
+      expected: {
+        targets: [
+          { chatId: "chat-first", label: "First chat" },
+          { chatId: "chat-focused", label: "Focused chat" },
+        ],
+        defaultChatId: "chat-focused",
+      },
+    },
+    {
+      name: "preferred outside the roster falls through to last-focused",
+      orderedChatIds: ["chat-first", "chat-focused"],
+      preferredChatId: "chat-missing",
+      lastFocusedChatId: "chat-focused",
+      chats: {
+        "chat-first": chat("First chat"),
+        "chat-focused": chat("Focused chat"),
+      },
+      expected: {
+        targets: [
+          { chatId: "chat-first", label: "First chat" },
+          { chatId: "chat-focused", label: "Focused chat" },
+        ],
+        defaultChatId: "chat-focused",
+      },
+    },
+    {
+      name: "preferred and last-focused outside the roster fall through to first",
+      orderedChatIds: ["chat-first", "chat-second"],
+      preferredChatId: "chat-gone",
+      lastFocusedChatId: "chat-also-gone",
+      chats: {
+        "chat-first": chat("First chat"),
+        "chat-second": chat("Second chat"),
+      },
+      expected: {
+        targets: [
+          { chatId: "chat-first", label: "First chat" },
+          { chatId: "chat-second", label: "Second chat" },
+        ],
+        defaultChatId: "chat-first",
+      },
+    },
+    {
+      name: "empty title is Untitled agent",
+      orderedChatIds: ["chat-untitled"],
+      preferredChatId: null,
       lastFocusedChatId: null,
-      titles: {},
+      chats: { "chat-untitled": chat("") },
       expected: {
-        kind: "none",
-        hint: ANNOTATION_ROUTE_NONE_HINT,
-      } satisfies AnnotationRoute,
+        targets: [{ chatId: "chat-untitled", label: "Untitled agent" }],
+        defaultChatId: "chat-untitled",
+      },
     },
     {
-      name: "empty sibling name is Untitled chat",
-      canvas: splitCanvas({
-        browser,
-        chat: namedChat({
-          id: "chat-untitled",
-          instanceId: "inst-chat-untitled",
-          name: "",
-        }),
-      }),
+      name: "omits other-host chats and keeps null-host chats",
+      orderedChatIds: ["chat-local", "chat-foreign", "chat-unbound"],
+      preferredChatId: null,
       lastFocusedChatId: null,
-      titles: { "chat-untitled": "" },
+      chats: {
+        "chat-local": chat("Local"),
+        "chat-foreign": chat("Foreign", OTHER_HOST_ID),
+        "chat-unbound": chat("Unbound", null),
+      },
       expected: {
-        kind: "chat",
-        chatId: "chat-untitled",
-        label: "Untitled chat",
-        source: "sibling",
-      } satisfies AnnotationRoute,
+        targets: [
+          { chatId: "chat-local", label: "Local" },
+          { chatId: "chat-unbound", label: "Unbound" },
+        ],
+        defaultChatId: "chat-local",
+      },
     },
     {
-      name: "null canvas still uses last-focused",
-      canvas: null,
-      lastFocusedChatId: "chat-only",
-      titles: { "chat-only": "Solo chat" },
-      expected: {
-        kind: "chat",
-        chatId: "chat-only",
-        label: "Solo chat",
-        source: "last-focused",
-      } satisfies AnnotationRoute,
-    },
-    {
-      name: "deleted last-focused is none",
-      canvas: loneBrowserCanvas(browser),
+      name: "empty roster has a null default",
+      orderedChatIds: ["chat-deleted"],
+      preferredChatId: "chat-deleted",
       lastFocusedChatId: "chat-deleted",
-      titles: {},
+      chats: {},
       expected: {
-        kind: "none",
-        hint: ANNOTATION_ROUTE_NONE_HINT,
-      } satisfies AnnotationRoute,
+        targets: [],
+        defaultChatId: null,
+      },
     },
     {
-      name: "archived last-focused is none",
-      canvas: loneBrowserCanvas(browser),
-      lastFocusedChatId: "chat-archived",
-      titles: {},
+      name: "unknown ordered ids are dropped from the roster",
+      orderedChatIds: ["chat-live", "chat-missing"],
+      preferredChatId: null,
+      lastFocusedChatId: "chat-missing",
+      chats: { "chat-live": chat("Live chat") },
       expected: {
-        kind: "none",
-        hint: ANNOTATION_ROUTE_NONE_HINT,
-      } satisfies AnnotationRoute,
+        targets: [{ chatId: "chat-live", label: "Live chat" }],
+        defaultChatId: "chat-live",
+      },
     },
-  ])("$name", ({ canvas, lastFocusedChatId, titles, expected }) => {
-    expect(
-      resolveAnnotationRoute({
-        canvas,
-        browserInstanceId: browser.instanceId,
-        lastFocusedChatId,
-        resolveChat: resolveFrom(titles),
-      }),
-    ).toEqual(expected);
-  });
+  ])(
+    "$name",
+    ({
+      orderedChatIds,
+      preferredChatId,
+      lastFocusedChatId,
+      chats,
+      expected,
+    }) => {
+      expect(
+        resolveAnnotationRoute({
+          orderedChatIds,
+          chats: { byId: chats, allIds: orderedChatIds } satisfies ChatsSlice,
+          browserHostId: HOST_ID,
+          preferredChatId,
+          lastFocusedChatId,
+        }),
+      ).toEqual(expected);
+    },
+  );
 });

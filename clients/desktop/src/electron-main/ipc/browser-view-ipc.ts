@@ -675,8 +675,19 @@ function parseAnnotationTargetChatLabel(
   const record = assertRecord(value, "Annotation target-chat label payload");
   return {
     ...parseTileKey(record),
-    label: readString(record.label, "label"),
-    canAttach: readBoolean(record.canAttach, "canAttach"),
+    targets: Array.isArray(record.targets)
+      ? record.targets.map((value) => {
+          const target = assertRecord(value, "Annotation target chat");
+          return {
+            chatId: readString(target.chatId, "chatId"),
+            label: readString(target.label, "label"),
+          };
+        })
+      : [],
+    defaultChatId:
+      record.defaultChatId === null
+        ? null
+        : readString(record.defaultChatId, "defaultChatId"),
   };
 }
 

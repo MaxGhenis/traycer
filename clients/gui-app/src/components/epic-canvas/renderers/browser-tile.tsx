@@ -5,11 +5,7 @@ import {
   useState,
   type SyntheticEvent,
 } from "react";
-import {
-  AlertTriangle,
-  ShieldCheck,
-  Square,
-} from "lucide-react";
+import { AlertTriangle, ShieldCheck, Square } from "lucide-react";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { useTileBodyVisible } from "@/components/epic-canvas/hooks/use-tile-body-visible";
 import { Button } from "@/components/ui/button";
@@ -314,15 +310,17 @@ export function BrowserTile(props: BrowserTileProps) {
   });
   const snapshot = useBrowserViewSnapshot(tileKey);
   const cookieCryptoState = useBrowserCookieCryptoState(browserView);
+  const controlState = useBrowserTileControlState(props.node.instanceId);
   const annotation = useBrowserAnnotationSession({
     browserView,
     tileKey,
     status,
-    viewTabId: props.viewTabId,
-    browserInstanceId: props.node.instanceId,
     epicId: props.epicId,
+    browserHostId: props.node.hostId,
+    preferredChatId:
+      controlState.active?.chatId ?? controlState.pending?.chatId ?? null,
+    fallbackChatId: null,
   });
-  const controlState = useBrowserTileControlState(props.node.instanceId);
 
   useEffect(() => {
     if (browserView === null) return;
@@ -876,7 +874,10 @@ function BrowserCookieDegradedBanner(props: {
         aria-hidden
       />
       <span className="min-w-0 flex-1">
-        {browserCookieDegradedMessage(props.cryptoState, inAppBrowserBetaEnabled)}
+        {browserCookieDegradedMessage(
+          props.cryptoState,
+          inAppBrowserBetaEnabled,
+        )}
       </span>
     </div>
   );

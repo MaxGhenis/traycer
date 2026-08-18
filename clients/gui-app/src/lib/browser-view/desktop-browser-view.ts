@@ -1,5 +1,17 @@
 import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
 import type {
+  BrowserAnnotationAttachedIpcEvent,
+  BrowserAnnotationAttachPayload,
+  BrowserAnnotationAttachResultInput,
+  BrowserAnnotationEndReason,
+  BrowserAnnotationForwardedSessionEvent,
+  BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationSetTargetChatLabelInput,
+  BrowserAnnotationStartFailureReason,
+  BrowserAnnotationStartResult,
+  BrowserViewTileKey,
+} from "@traycer-clients/shared/platform/browser-annotation";
+import type {
   BrowserViewElementAttribute,
   BrowserViewElementBoundingBox,
   BrowserViewElementCapture,
@@ -18,12 +30,15 @@ import type {
   AgentBrowserViewTileHandoffChange,
 } from "./desktop-agent-browser-view";
 
-export interface BrowserViewTileKey {
-  readonly viewTabId: string;
-  readonly paneId: string;
-  readonly tileInstanceId: string;
-  readonly pageSessionId: string;
-}
+export type {
+  BrowserAnnotationAttachedIpcEvent,
+  BrowserAnnotationAttachPayload,
+  BrowserAnnotationAttachResultInput,
+  BrowserAnnotationSessionIpcEvent,
+  BrowserAnnotationSetTargetChatLabelInput,
+  BrowserAnnotationStartResult,
+  BrowserViewTileKey,
+} from "@traycer-clients/shared/platform/browser-annotation";
 
 export interface BrowserViewTileUpsert extends BrowserViewTileKey {
   readonly url: string;
@@ -36,14 +51,12 @@ export interface BrowserViewDurableTabRegistration extends BrowserViewTileKey {
   readonly tabId: string;
 }
 
-export interface BrowserViewBackgroundTabCreate
-  extends BrowserViewDurableTabRegistration {
+export interface BrowserViewBackgroundTabCreate extends BrowserViewDurableTabRegistration {
   readonly url: string;
   readonly seedStorageState?: unknown;
 }
 
-export interface BrowserViewBackgroundThrottlingChange
-  extends BrowserViewTileKey {
+export interface BrowserViewBackgroundThrottlingChange extends BrowserViewTileKey {
   readonly enabled: boolean;
 }
 
@@ -331,50 +344,6 @@ export type {
   BrowserViewElementStyle,
 };
 
-export type BrowserAnnotationStartResult =
-  | { readonly ok: true }
-  | {
-      readonly ok: false;
-      readonly reason: string;
-    };
-
-export type BrowserAnnotationAttachPayload = Omit<
-  import("@traycer/protocol/persistence/epic/schemas").BrowserAnnotationRecord,
-  "kind" | "imageFileName" | "imageHash"
->;
-
-export interface BrowserAnnotationAttachedIpcEvent extends BrowserViewTileKey {
-  readonly payload: BrowserAnnotationAttachPayload;
-  readonly pngBytes: Uint8Array<ArrayBuffer>;
-}
-
-export type BrowserAnnotationSessionEvent =
-  | {
-      readonly type: "stateChanged";
-      readonly mode: "select" | "region" | "draw" | "erase";
-      readonly markCount: number;
-    }
-  | { readonly type: "cancelled" }
-  | {
-      readonly type: "ended";
-      readonly reason: string;
-    };
-
-export interface BrowserAnnotationSessionIpcEvent extends BrowserViewTileKey {
-  readonly event: BrowserAnnotationSessionEvent;
-}
-
-export interface BrowserAnnotationSetTargetChatLabelInput
-  extends BrowserViewTileKey {
-  readonly label: string;
-  readonly canAttach: boolean;
-}
-
-export interface BrowserAnnotationAttachResultInput {
-  readonly annotationId: string;
-  readonly status: "attached" | "failed";
-}
-
 export type BrowserCookieCryptoMode = "real" | "basic" | "degraded";
 export type BrowserCookiePersistence = "persistent" | "ephemeral";
 export type BrowserCookieStorageBackend =
@@ -408,13 +377,9 @@ export interface BrowserLabsStateUpdate {
 
 export interface DesktopBrowserViewBridge {
   upsertTile(input: BrowserViewTileUpsert): Promise<void>;
-  createBackgroundTab?(
-    input: BrowserViewBackgroundTabCreate,
-  ): Promise<void>;
+  createBackgroundTab?(input: BrowserViewBackgroundTabCreate): Promise<void>;
   registerDurableTab(input: BrowserViewDurableTabRegistration): Promise<void>;
-  releaseDurableTab?(
-    input: BrowserViewDurableTabRegistration,
-  ): Promise<void>;
+  releaseDurableTab?(input: BrowserViewDurableTabRegistration): Promise<void>;
   setBackgroundThrottling?(
     input: BrowserViewBackgroundThrottlingChange,
   ): Promise<void>;
@@ -646,10 +611,7 @@ function readBrowserViewBridgeMethods(
     createBackgroundTab: readBridgeMethod(value, "createBackgroundTab"),
     registerDurableTab: readBridgeMethod(value, "registerDurableTab"),
     releaseDurableTab: readBridgeMethod(value, "releaseDurableTab"),
-    setBackgroundThrottling: readBridgeMethod(
-      value,
-      "setBackgroundThrottling",
-    ),
+    setBackgroundThrottling: readBridgeMethod(value, "setBackgroundThrottling"),
     updateBounds: readBridgeMethod(value, "updateBounds"),
     setViewportPreset: readBridgeMethod(value, "setViewportPreset"),
     releaseTile: readBridgeMethod(value, "releaseTile"),
@@ -1476,11 +1438,26 @@ function readAnnotationStartResult(
   if (isRecord(value) && value.ok === true) return { ok: true };
   return {
     ok: false,
-    reason:
-      isRecord(value) && typeof value.reason === "string"
-        ? value.reason
-        : "unknown",
+    reason: readAnnotationStartFailureReason(
+      isRecord(value) ? value.reason : null,
+    ),
   };
+}
+
+function readAnnotationStartFailureReason(
+  value: unknown,
+): BrowserAnnotationStartFailureReason {
+  if (
+    value === "tile-not-found" ||
+    value === "page-not-ready" ||
+    value === "debugger-not-attached" ||
+    value === "no-main-frame" ||
+    value === "no-isolated-world" ||
+    value === "inject-failed"
+  ) {
+    return value;
+  }
+  return "inject-failed";
 }
 
 function wrapAnnotationEventHandler(
@@ -1505,9 +1482,7 @@ function wrapAnnotationAttachedHandler(
   };
 }
 
-function isUnknownHandler(
-  value: unknown,
-): value is (input: unknown) => void {
+function isUnknownHandler(value: unknown): value is (input: unknown) => void {
   return typeof value === "function";
 }
 
@@ -1524,13 +1499,15 @@ function readAnnotationSessionEvent(
 
 function readAnnotationEvent(
   value: unknown,
-): BrowserAnnotationSessionEvent | null {
+): BrowserAnnotationForwardedSessionEvent | null {
   if (!isRecord(value) || typeof value.type !== "string") return null;
   if (value.type === "cancelled") return { type: "cancelled" };
   if (value.type === "ended") {
+    const reason = readAnnotationEndReason(value.reason);
+    if (reason === null) return null;
     return {
       type: "ended",
-      reason: typeof value.reason === "string" ? value.reason : "ended",
+      reason,
     };
   }
   if (value.type === "stateChanged") {
@@ -1552,6 +1529,18 @@ function readAnnotationEvent(
   return null;
 }
 
+function readAnnotationEndReason(
+  value: unknown,
+): Exclude<BrowserAnnotationEndReason, "cancelled"> | null {
+  return value === "navigation" ||
+    value === "reload" ||
+    value === "crash" ||
+    value === "tile-close" ||
+    value === "replaced"
+    ? value
+    : null;
+}
+
 function readAnnotationAttachedEvent(
   value: unknown,
 ): BrowserAnnotationAttachedIpcEvent | null {
@@ -1562,7 +1551,8 @@ function readAnnotationAttachedEvent(
   if (payload === null) return null;
   const pngBytes = readPngBytes(value.pngBytes);
   if (pngBytes === null) return null;
-  return { ...key, payload, pngBytes };
+  if (typeof value.targetChatId !== "string") return null;
+  return { ...key, targetChatId: value.targetChatId, payload, pngBytes };
 }
 
 function readAnnotationAttachPayload(

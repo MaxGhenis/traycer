@@ -43,6 +43,7 @@ export const ANNOTATION_WAIT_FOR_PAINT_EXPRESSION =
   "});});})()";
 
 export const ANNOTATION_LIMITS = {
+  chatId: 256,
   comment: 4000,
   markCount: 64,
   markId: 64,
@@ -52,16 +53,17 @@ export const ANNOTATION_LIMITS = {
 } as const;
 
 export function buildAnnotationSetTargetChatLabelExpression(
-  label: string,
-  canAttach: boolean,
+  targets: readonly { readonly chatId: string; readonly label: string }[],
+  defaultChatId: string | null,
 ): string {
-  const encoded = JSON.stringify(label).replace(/</g, "\\u003c");
+  const encodedTargets = JSON.stringify(targets).replace(/</g, "\\u003c");
+  const encodedDefault = JSON.stringify(defaultChatId).replace(/</g, "\\u003c");
   return (
     "(function(){var fn=globalThis.__traycerAnnotationSetTargetChatLabel;" +
     "if(typeof fn==='function'){try{fn(" +
-    encoded +
+    encodedTargets +
     "," +
-    (canAttach ? "true" : "false") +
+    encodedDefault +
     ");}catch(e){}}return true;})()"
   );
 }
@@ -118,10 +120,17 @@ export function sanitizeAttachRequest(
   const source = isRecord(value.payload) ? value.payload : value;
   const unionRect = sanitizeCssRect(source.unionRect);
   if (unionRect === null) return null;
+  const targetChatId = boundedString(
+    source.targetChatId,
+    ANNOTATION_LIMITS.chatId,
+    "",
+  );
+  if (targetChatId.length === 0) return null;
   const comment = boundedString(source.comment, ANNOTATION_LIMITS.comment, "");
   const marks = sanitizeMarks(source.marks);
   const elements = sanitizeElements(source.elements);
   const request: BrowserAnnotationAttachRequest = {
+    targetChatId,
     marks,
     elements,
     comment,
@@ -179,6 +188,7 @@ function trimToByteBudget(
   const elements = [...request.elements];
   while (elements.length > 0) {
     const candidate: BrowserAnnotationAttachRequest = {
+      targetChatId: request.targetChatId,
       marks: request.marks,
       elements,
       comment: request.comment,

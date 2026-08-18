@@ -711,10 +711,7 @@ function createHarnessWithOptions(
       storageStateCaptures.push(input);
       return (
         harnessOptions?.captureStorageState ?? DEFAULT_CAPTURE_STORAGE_STATE
-      )(
-        input,
-        webContents,
-      );
+      )(input, webContents);
     },
     capturePrimaryProfile: (origins) => {
       primaryProfileCaptureSourceOrigins.push(
@@ -3513,9 +3510,7 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
       reason: "gui-quit",
     });
     expect(harness.views.map((view) => view.webContents.closeCalls)).toEqual([
-      1,
-      1,
-      1,
+      1, 1, 1,
     ]);
   });
 
@@ -3581,7 +3576,8 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
     });
     expect(harness.views[1]?.webContents.closeCalls).toBe(0);
     const releasePrimary = captureResolvers[0];
-    if (releasePrimary === undefined) throw new Error("primary capture missing");
+    if (releasePrimary === undefined)
+      throw new Error("primary capture missing");
     releasePrimary();
     await flushCloseEntry();
 
@@ -3596,14 +3592,14 @@ describe("BrowserViewManager closeEntry re-entrancy and handoff reason mapping (
     expect(harness.views[1]?.webContents.closeCalls).toBe(0);
 
     const releaseSibling = captureResolvers[1];
-    if (releaseSibling === undefined) throw new Error("sibling capture missing");
+    if (releaseSibling === undefined)
+      throw new Error("sibling capture missing");
     releaseSibling();
     await flushCloseEntry();
 
     expect(harness.tileHandoffNotifications).toHaveLength(1);
     expect(harness.views.map((view) => view.webContents.closeCalls)).toEqual([
-      1,
-      1,
+      1, 1,
     ]);
   });
 
@@ -3852,7 +3848,10 @@ describe("BrowserViewManager durable runtime registration (ticket 05)", () => {
 
 describe("BrowserViewManager host window renderer reset (fix round 2)", () => {
   function makeVisible(harness: Harness, key: BrowserViewTileKey): void {
-    harness.manager.upsertTile("window-1", upsert(key, "https://example.com", true));
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(key, "https://example.com", true),
+    );
     harness.manager.updateBounds("window-1", {
       ...key,
       bounds: { x: 0, y: 0, width: 300, height: 200 },
@@ -4087,7 +4086,11 @@ describe("BrowserViewManager annotation session", () => {
 
   it("tears down on reload, in-page navigation, crash, releaseTile, and cancel", async () => {
     const reloadHarness = createHarness();
-    const reloadView = await upsertAndAttach(reloadHarness, "window-1", BASE_KEY);
+    const reloadView = await upsertAndAttach(
+      reloadHarness,
+      "window-1",
+      BASE_KEY,
+    );
     await reloadHarness.manager.startAnnotation("window-1", BASE_KEY);
     reloadHarness.manager.reloadTile("window-1", BASE_KEY);
     expect(annotationBindingCommands(reloadView)).toEqual([
@@ -4120,7 +4123,11 @@ describe("BrowserViewManager annotation session", () => {
     const crashHarness = createHarness();
     const crashView = await upsertAndAttach(crashHarness, "window-1", BASE_KEY);
     await crashHarness.manager.startAnnotation("window-1", BASE_KEY);
-    crashView.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+    crashView.webContents.emit(
+      "render-process-gone",
+      {},
+      { reason: "crashed" },
+    );
     expect(annotationBindingCommands(crashView)).toEqual([
       "Runtime.addBinding",
       "Runtime.removeBinding",
@@ -4147,7 +4154,11 @@ describe("BrowserViewManager annotation session", () => {
     ]);
 
     const cancelHarness = createHarness();
-    const cancelView = await upsertAndAttach(cancelHarness, "window-1", BASE_KEY);
+    const cancelView = await upsertAndAttach(
+      cancelHarness,
+      "window-1",
+      BASE_KEY,
+    );
     await cancelHarness.manager.startAnnotation("window-1", BASE_KEY);
     cancelHarness.manager.cancelAnnotation("window-1", BASE_KEY);
     expect(annotationBindingCommands(cancelView)).toEqual([
@@ -4161,7 +4172,10 @@ describe("BrowserViewManager annotation session", () => {
 
   const VALID_UNION = { x: 1, y: 2, width: 10, height: 20 };
 
+  const TARGET_CHAT_ID = "chat-target-1";
+
   const VALID_ATTACH_PAYLOAD = {
+    targetChatId: TARGET_CHAT_ID,
     marks: [
       {
         id: "m1",
@@ -4241,6 +4255,7 @@ describe("BrowserViewManager annotation session", () => {
       ),
     ).toBe(false);
     const attached = harness.annotationAttached[0];
+    expect(attached?.targetChatId).toBe(TARGET_CHAT_ID);
     expect(attached?.payload.annotationId.startsWith("ann-")).toBe(true);
     expect(attached?.pngBytes.byteLength).toBeGreaterThan(0);
     expect(attached).toMatchObject(BASE_KEY);

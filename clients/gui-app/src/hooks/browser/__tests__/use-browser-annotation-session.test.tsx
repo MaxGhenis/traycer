@@ -5,7 +5,6 @@ import {
   useBrowserAnnotationSession,
   type BrowserAnnotationSessionBridge,
 } from "@/hooks/browser/use-browser-annotation-session";
-import { ANNOTATION_ROUTE_NONE_HINT } from "@/lib/browser-view/browser-annotation-router";
 import type { AnnotationRoute } from "@/lib/browser-view/browser-annotation-router";
 import type {
   BrowserAnnotationAttachResultInput,
@@ -19,15 +18,15 @@ vi.mock("@/lib/browser-view/browser-annotation-attach", () => ({
   attachBrowserAnnotation: vi.fn(),
 }));
 
-const NONE_ROUTE: AnnotationRoute = {
-  kind: "none",
-  hint: ANNOTATION_ROUTE_NONE_HINT,
+const EMPTY_ROUTE: AnnotationRoute = {
+  targets: [],
+  defaultChatId: null,
 };
 
 const routeState = vi.hoisted((): { current: AnnotationRoute } => ({
   current: {
-    kind: "none",
-    hint: "Open or focus a chat in this task to attach.",
+    targets: [],
+    defaultChatId: null,
   },
 }));
 
@@ -42,11 +41,26 @@ const TILE = {
   pageSessionId: "page-1",
 };
 
+const TARGET_CHAT_ID = "chat-target-1";
+
 function attachedEvent(
   payload: BrowserAnnotationAttachedIpcEvent["payload"],
   png: Uint8Array<ArrayBuffer>,
+  targetChatId = TARGET_CHAT_ID,
 ): BrowserAnnotationAttachedIpcEvent {
-  return { ...TILE, payload, pngBytes: png };
+  return { ...TILE, targetChatId, payload, pngBytes: png };
+}
+
+function sessionArgs(browserView: BrowserAnnotationSessionBridge) {
+  return {
+    browserView,
+    tileKey: TILE,
+    status: "ready" as const,
+    epicId: "epic-1",
+    browserHostId: "host-1",
+    preferredChatId: null,
+    fallbackChatId: null,
+  };
 }
 
 type AttachReport = (
@@ -79,7 +93,7 @@ function createBridge(): {
 }
 
 beforeEach(() => {
-  routeState.current = NONE_ROUTE;
+  routeState.current = EMPTY_ROUTE;
   useComposerDraftStore.setState({ drafts: {} });
   vi.mocked(attachBrowserAnnotation).mockReset();
 });
@@ -90,40 +104,46 @@ afterEach(() => {
 });
 
 describe("useBrowserAnnotationSession attach ack", () => {
-  it("sends failed and does not store a record when the route is none", async () => {
-    const { browserView, attachedHandlers, report } = createBridge();
-    renderHook(() =>
-      useBrowserAnnotationSession({
-        browserView,
-        tileKey: TILE,
-        status: "ready",
-        viewTabId: TILE.viewTabId,
-        browserInstanceId: "inst-1",
-        epicId: "epic-1",
-      }),
-    );
-    const stub = createStubBrowserAnnotationPayloadFor({
-      annotationId: "ann-none",
-      tabId: "tab-none",
-      sessionId: "session-none",
-      comment: "nowhere",
+  it("attaches to the event targetChatId even when the route has no default", async () => {
+    vi.mocked(attachBrowserAnnotation).mockImplementation((input) => {
+      useComposerDraftStore.getState().addBrowserAnnotation(input.chatId, {
+        kind: "browser-annotation",
+        ...input.payload,
+        imageFileName: `browser-annotation-${input.payload.annotationId}.png`,
+        imageHash: "hash-target",
+      });
+      return Promise.resolve({ status: "attached" });
     });
-    attachedHandlers[0](attachedEvent(stub.payload, stub.png));
+    const { browserView, attachedHandlers, report } = createBridge();
+    renderHook(() => useBrowserAnnotationSession(sessionArgs(browserView)));
+    const stub = createStubBrowserAnnotationPayloadFor({
+      annotationId: "ann-target",
+      tabId: "tab-target",
+      sessionId: "session-target",
+      comment: "routed by overlay",
+    });
+    attachedHandlers[0](attachedEvent(stub.payload, stub.png, TARGET_CHAT_ID));
     await waitFor(() => {
       expect(report).toHaveBeenCalledWith({
-        annotationId: "ann-none",
-        status: "failed",
+        annotationId: "ann-target",
+        status: "attached",
       });
     });
-    expect(useComposerDraftStore.getState().drafts).toEqual({});
+    expect(attachBrowserAnnotation).toHaveBeenCalledWith({
+      chatId: TARGET_CHAT_ID,
+      payload: stub.payload,
+      png: stub.png,
+    });
+    expect(
+      useComposerDraftStore.getState().drafts[TARGET_CHAT_ID]
+        ?.browserAnnotations,
+    ).toHaveLength(1);
   });
 
   it("sends attached after the record lands on the draft", async () => {
     routeState.current = {
-      kind: "chat",
-      chatId: "chat-ok",
-      label: "Plan",
-      source: "last-focused",
+      targets: [{ chatId: "chat-ok", label: "Plan" }],
+      defaultChatId: "chat-ok",
     };
     vi.mocked(attachBrowserAnnotation).mockImplementation((input) => {
       useComposerDraftStore.getState().addBrowserAnnotation(input.chatId, {
@@ -135,23 +155,14 @@ describe("useBrowserAnnotationSession attach ack", () => {
       return Promise.resolve({ status: "attached" });
     });
     const { browserView, attachedHandlers, report } = createBridge();
-    renderHook(() =>
-      useBrowserAnnotationSession({
-        browserView,
-        tileKey: TILE,
-        status: "ready",
-        viewTabId: TILE.viewTabId,
-        browserInstanceId: "inst-1",
-        epicId: "epic-1",
-      }),
-    );
+    renderHook(() => useBrowserAnnotationSession(sessionArgs(browserView)));
     const stub = createStubBrowserAnnotationPayloadFor({
       annotationId: "ann-ok",
       tabId: "tab-ok",
       sessionId: "session-ok",
       comment: "landed",
     });
-    attachedHandlers[0](attachedEvent(stub.payload, stub.png));
+    attachedHandlers[0](attachedEvent(stub.payload, stub.png, "chat-ok"));
     await waitFor(() => {
       expect(report).toHaveBeenCalledWith({
         annotationId: "ann-ok",
@@ -162,39 +173,28 @@ describe("useBrowserAnnotationSession attach ack", () => {
       useComposerDraftStore.getState().drafts["chat-ok"]?.browserAnnotations,
     ).toHaveLength(1);
     expect(
-      useComposerDraftStore.getState().drafts["chat-ok"]
-        ?.browserAnnotations[0]?.annotationId,
+      useComposerDraftStore.getState().drafts["chat-ok"]?.browserAnnotations[0]
+        ?.annotationId,
     ).toBe("ann-ok");
   });
 
   it("sends failed and stores no record when routed attach cannot store the crop", async () => {
     routeState.current = {
-      kind: "chat",
-      chatId: "chat-fail",
-      label: "Plan",
-      source: "last-focused",
+      targets: [{ chatId: "chat-fail", label: "Plan" }],
+      defaultChatId: "chat-fail",
     };
     vi.mocked(attachBrowserAnnotation).mockResolvedValue({
       status: "store-failed",
     });
     const { browserView, attachedHandlers, report } = createBridge();
-    renderHook(() =>
-      useBrowserAnnotationSession({
-        browserView,
-        tileKey: TILE,
-        status: "ready",
-        viewTabId: TILE.viewTabId,
-        browserInstanceId: "inst-1",
-        epicId: "epic-1",
-      }),
-    );
+    renderHook(() => useBrowserAnnotationSession(sessionArgs(browserView)));
     const stub = createStubBrowserAnnotationPayloadFor({
       annotationId: "ann-store-fail",
       tabId: "tab-fail",
       sessionId: "session-fail",
       comment: "lost crop",
     });
-    attachedHandlers[0](attachedEvent(stub.payload, stub.png));
+    attachedHandlers[0](attachedEvent(stub.payload, stub.png, "chat-fail"));
     await waitFor(() => {
       expect(report).toHaveBeenCalledWith({
         annotationId: "ann-store-fail",

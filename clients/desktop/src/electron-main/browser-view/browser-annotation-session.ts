@@ -44,6 +44,7 @@ export interface BrowserAnnotationSessionIdentity {
 }
 
 export interface BrowserAnnotationAttachedResult {
+  readonly targetChatId: string;
   readonly payload: BrowserAnnotationAttachPayload;
   readonly pngBytes: Uint8Array;
 }
@@ -91,7 +92,7 @@ export class BrowserAnnotationSession {
     return this.started && !this.ended;
   }
 
-  scrollLockArmed(): boolean {
+  zoomLocked(): boolean {
     return this.isActive() && this.markCount > 0;
   }
 
@@ -199,9 +200,12 @@ export class BrowserAnnotationSession {
     );
   }
 
-  setTargetChatLabel(label: string, canAttach: boolean): Promise<void> {
+  setTargetChatLabel(
+    targets: readonly { readonly chatId: string; readonly label: string }[],
+    defaultChatId: string | null,
+  ): Promise<void> {
     return this.evaluateCommand(
-      buildAnnotationSetTargetChatLabelExpression(label, canAttach),
+      buildAnnotationSetTargetChatLabelExpression(targets, defaultChatId),
       false,
       false,
     );
@@ -329,7 +333,11 @@ export class BrowserAnnotationSession {
         droppedElementCount,
         elements: [...request.elements],
       };
-      const delivered = await this.onAttached({ payload, pngBytes });
+      const delivered = await this.onAttached({
+        targetChatId: request.targetChatId,
+        payload,
+        pngBytes,
+      });
       if (!this.isActive()) return;
       if (!delivered) {
         await this.captureFailed();
