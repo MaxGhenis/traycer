@@ -5,6 +5,7 @@ import type {
   StagedChatPart,
 } from "@traycer/protocol/persistence/chat-sync/assembly";
 import {
+  CHAT_SYNC_1_1_READER_FLOOR,
   serializeChatHeadDocument,
   type ChatHeadPart,
   type ChatHeadRecord,
@@ -404,9 +405,11 @@ export function publishChat(options: {
     parentHeadSha256: options.parentHeadSha256,
     throughRecordSeq: 42,
     capturedAt: 1_700_000_000_000,
+    // The floor, not the writer's own version: an additive minor (1.2 added
+    // `chat.imported` to the event vocabulary) keeps the 1.1 reshape floor.
     minReaderVersion: {
-      major: CHAT_SYNC_SCHEMA_VERSION.major,
-      minor: CHAT_SYNC_SCHEMA_VERSION.minor,
+      major: CHAT_SYNC_1_1_READER_FLOOR.major,
+      minor: CHAT_SYNC_1_1_READER_FLOOR.minor,
     },
     cdc: { ...FIXTURE_CDC },
     core: {

@@ -1,5 +1,6 @@
 import { getRecordSchema } from "@traycer/protocol/framework/index";
 import {
+  CHAT_SYNC_1_1_READER_FLOOR,
   CHAT_SYNC_READER_VERSION,
   chatHeadReaderSchema,
   decodeChatHeadDocument,
@@ -79,8 +80,8 @@ const wireHead: JsonObject = {
   throughRecordSeq: 7,
   capturedAt: 1_700_000_000_000,
   minReaderVersion: {
-    major: CHAT_SYNC_SCHEMA_VERSION.major,
-    minor: CHAT_SYNC_SCHEMA_VERSION.minor,
+    major: CHAT_SYNC_1_1_READER_FLOOR.major,
+    minor: CHAT_SYNC_1_1_READER_FLOOR.minor,
   },
   cdc: { ...FIXTURE_CDC },
   core: {
@@ -234,8 +235,10 @@ describe("chat-head section graduation", () => {
 });
 
 describe("chat-head minReaderVersion coherence", () => {
-  it("accepts this contract's own version - the 1.1 v2-head stamp", () => {
-    expect(parse(wireHead).minReaderVersion).toEqual(CHAT_SYNC_SCHEMA_VERSION);
+  it("accepts a 1.2 head that still stamps the 1.1 reader floor", () => {
+    expect(parse(wireHead).minReaderVersion).toEqual(
+      CHAT_SYNC_1_1_READER_FLOOR,
+    );
   });
 
   it("READER defaults to null when the key is absent", () => {
@@ -402,7 +405,7 @@ describe("chat-head canonical encoding", () => {
     // is required), so the defaulted-field walk here exercises the settings
     // levels; reader-side minReaderVersion defaulting is pinned in the
     // coherence describe above.
-    expect(once.minReaderVersion).toEqual({ major: 1, minor: 1 });
+    expect(once.minReaderVersion).toEqual(CHAT_SYNC_1_1_READER_FLOOR);
 
     // Idempotent from there on - so the digest the next head chains to does not
     // move under a reader that merely opened and re-published the chat.

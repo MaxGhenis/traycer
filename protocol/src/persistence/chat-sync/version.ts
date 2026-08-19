@@ -26,7 +26,12 @@ import { z } from "zod";
  * A new minor adds new contracts with their own literal here (`z.literal(1)`
  * for 1.1, and so on) alongside their registry entries.
  */
-export const CHAT_SYNC_SCHEMA_VERSION = { major: 1, minor: 1 } as const;
+// 1.2 adds `chat.imported` to `KNOWN_CHAT_EVENT_TYPES`. A new chat-event type
+// is a MINOR here and only here: the unknown-variant passthrough
+// (`passthrough.ts`) is what lets a 1.1 reader meet the event, keep it whole in
+// `raw`, and re-publish it unchanged - the mechanism `COMPATIBILITY.md` names
+// as reclassifying this class of addition from breaking to additive.
+export const CHAT_SYNC_SCHEMA_VERSION = { major: 1, minor: 2 } as const;
 
 export type ChatSyncSchemaVersion = typeof CHAT_SYNC_SCHEMA_VERSION;
 

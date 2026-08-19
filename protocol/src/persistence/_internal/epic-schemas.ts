@@ -1,6 +1,6 @@
 import { z } from "zod";
 import {
-  chatSchema,
+  chatSchemaPreImported,
   deletedEpicArtifactSchema,
   epicArtifactSchema,
   roleClaimsSchema,
@@ -32,7 +32,7 @@ export const epicSchema = z.object({
   isTitleEditedByUser: z.boolean(),
   createdAt: z.number(),
   updatedAt: z.number(),
-  chats: z.record(z.string(), chatSchema),
+  chats: z.record(z.string(), chatSchemaPreImported),
   artifacts: z.record(z.string(), epicArtifactSchema),
   deletedArtifacts: z.record(z.string(), deletedEpicArtifactSchema),
   // TUI agent sessions live alongside chats in their own map. Records carry

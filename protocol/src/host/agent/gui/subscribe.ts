@@ -17,6 +17,7 @@ import { getRecordSchema } from "@traycer/protocol/framework/index";
 import { defineStreamRpcContract } from "@traycer/protocol/framework/versioned-stream-rpc";
 import {
   chatEventSchema,
+  chatEventSchemaPreImported,
   chatEventSchemaPreInReplyTo,
   chatRunSettingsSchema,
   chatSchema,
@@ -957,7 +958,10 @@ const chatSubscribeCommonServerFrameSchemasPreManagedCommand =
   buildChatSubscribeCommonServerFrameSchemas({
     message: userMessageSchema,
     queue: chatQueueStateSchemaPreManagedCommand,
-    event: chatEventSchema,
+    // Pre-`chat.imported` freeze, matching `chatSchemaV14`/`chatSchemaV15`'s
+    // `events`: a released line's `eventAppended` must not be able to carry a
+    // type its client's strict enum would reject.
+    event: chatEventSchemaPreImported,
   });
 
 // Frozen for `chat.subscribe@1.2` and earlier.

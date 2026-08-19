@@ -15,7 +15,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 1
+              "const": 2
             }
           },
           "required": [
@@ -448,7 +448,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 1
+              "const": 2
             }
           },
           "required": [
@@ -808,6 +808,7 @@ export const chatSyncSchemaSurfaceBaseline = {
                               "harness.error",
                               "history.deleted",
                               "chat.forked",
+                              "chat.imported",
                               "setup.creating",
                               "setup.running",
                               "setup.succeeded",
@@ -1194,7 +1195,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 1
+              "const": 2
             }
           },
           "required": [
@@ -1269,7 +1270,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 1
+              "const": 2
             }
           },
           "required": [
@@ -4702,6 +4703,7 @@ export const chatSyncSchemaSurfaceBaseline = {
                           "harness.error",
                           "history.deleted",
                           "chat.forked",
+                          "chat.imported",
                           "setup.creating",
                           "setup.running",
                           "setup.succeeded",
