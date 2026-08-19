@@ -765,8 +765,8 @@ function VersionObservationList(props: {
         ) : null}
         <div
           className={cn(
-            "border-b transition-colors hover:bg-muted/40",
-            props.selectedId === entry.observationId && "bg-muted/60",
+            "border-b transition-colors hover:bg-foreground/5",
+            props.selectedId === entry.observationId && "bg-foreground/10",
           )}
         >
           <button
@@ -946,7 +946,7 @@ function RestoreVersionDialog(props: {
         ) : null}
         {props.preflight === null || props.refreshing ? null : (
           <div className="space-y-3">
-            <p className="rounded-md bg-muted/50 p-3 font-mono text-ui-xs break-all">
+            <p className="rounded-md bg-foreground/5 p-3 font-mono text-ui-xs break-all">
               Current hash: {props.preflight.currentHash}
             </p>
             {props.preflight.threadCount > 0 ? (
