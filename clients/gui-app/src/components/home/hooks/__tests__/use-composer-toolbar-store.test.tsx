@@ -150,9 +150,18 @@ import type { FocusedComposerKind } from "@/lib/commands/types";
  * host's client or a fallback default.
  */
 function buildTestHostClient(hostId: string): HostClient<HostRpcRegistry> {
-  const client = new HostClient<HostRpcRegistry>({
+  const entry = {
+    hostId,
+    label: hostId,
+    kind: "local" as const,
+    websocketUrl: `ws://127.0.0.1:0/${hostId}`,
+    version: "0.0.0-mock",
+    transportDialability: "dialable" as const,
+  };
+  const spine = new HostClient<HostRpcRegistry>({
     registry: hostRpcRegistry,
     invalidator: { invalidateHostScope: () => {} },
+    findHostById: (id) => (id === entry.hostId ? entry : null),
     // Never actually dispatched - the catalog hooks are mocked wholesale
     // above, so this messenger exists only to satisfy `HostClient`'s
     // constructor.
@@ -162,24 +171,23 @@ function buildTestHostClient(hostId: string): HostClient<HostRpcRegistry> {
       handlers: {},
     }),
   });
-  client.bind({
-    hostId,
-    label: hostId,
-    kind: "local",
-    websocketUrl: `ws://127.0.0.1:0/${hostId}`,
-    version: "0.0.0-mock",
-    transportDialability: "dialable",
-  });
-  return client;
+  return spine.createRequester(entry);
 }
 
 // The catalog scope every test in this file used before `hostClient` became
 // part of it - a fixed, non-null client so the mocked catalog hooks keep
 // returning `harnessesData.value` / `modelsData.value` exactly as before.
 const DEFAULT_TEST_HOST_CLIENT = buildTestHostClient("default-host");
+// The host id every test in this file commits selections/memory writes
+// under, once `catalog.hostId` became a required per-host memory key.
+const TEST_HOST_ID = "host-a";
 
 function catalogScope(tuiOnly: boolean): ComposerToolbarCatalogScope {
-  return { hostClient: DEFAULT_TEST_HOST_CLIENT, tuiOnly };
+  return {
+    hostClient: DEFAULT_TEST_HOST_CLIENT,
+    hostId: TEST_HOST_ID,
+    tuiOnly,
+  };
 }
 
 function seedDefault(
@@ -1348,10 +1356,16 @@ describe("useComposerToolbarStore selection reconciliation", () => {
     });
 
     const memory = useComposerHarnessMemoryStore.getState();
-    expect(memory.lastModelByHarness.codex).toBe("saved-model");
+    expect(memory.byHost[TEST_HOST_ID].lastModelByHarness.codex).toBe(
+      "saved-model",
+    );
     expect(
-      memory.resolveModelSelection("codex", "saved-model").reasoningEffort,
+      memory.resolveModelSelection(TEST_HOST_ID, "codex", "saved-model")
+        .reasoningEffort,
     ).toBe("high");
+    // The write lands in this host's bucket, never the legacy
+    // pre-host-scoping fallback.
+    expect(memory.legacy.lastModelByHarness).toEqual({});
   });
 
   it("does not record memory while the surface reroutes the harness", async () => {
@@ -1401,7 +1415,7 @@ describe("useComposerToolbarStore selection reconciliation", () => {
 
     // Rerouted -> emit suppressed -> nothing recorded for either harness.
     const memory = useComposerHarnessMemoryStore.getState();
-    expect(memory.lastModelByHarness).toEqual({});
+    expect(memory.byHost).toEqual({});
   });
 
   it("detaches harness queries and command registration when inactive", () => {
@@ -1506,6 +1520,7 @@ describe("useComposerToolbarStore selection reconciliation", () => {
     renderHook(() =>
       useComposerToolbarStore(null, { kind: "none" }, null, {
         hostClient: hostBClient,
+        hostId: "host-b",
         tuiOnly: false,
       }),
     );
@@ -1525,6 +1540,7 @@ describe("useComposerToolbarStore selection reconciliation", () => {
     const { result } = renderHook(() =>
       useComposerToolbarStore(null, { kind: "none" }, null, {
         hostClient: null,
+        hostId: null,
         tuiOnly: false,
       }),
     );
@@ -1549,18 +1565,19 @@ describe("useComposerToolbarStore selection reconciliation", () => {
     const hostBClient = buildTestHostClient("host-b");
 
     const { rerender } = renderHook(
-      (props: { hostClient: HostClient<HostRpcRegistry> }) =>
+      (props: { hostClient: HostClient<HostRpcRegistry>; hostId: string }) =>
         useComposerToolbarStore("landing", { kind: "none" }, null, {
           hostClient: props.hostClient,
+          hostId: props.hostId,
           tuiOnly: false,
         }),
-      { initialProps: { hostClient: hostAClient } },
+      { initialProps: { hostClient: hostAClient, hostId: "host-a" } },
     );
 
     expect(registeredComposerKinds.at(-1)).toBe("landing");
     expect(registeredComposerHostClients.at(-1)).toBe(hostAClient);
 
-    rerender({ hostClient: hostBClient });
+    rerender({ hostClient: hostBClient, hostId: "host-b" });
 
     expect(registeredComposerKinds.at(-1)).toBe("landing");
     expect(registeredComposerHostClients.at(-1)).toBe(hostBClient);
