@@ -11,13 +11,23 @@ export const authQueryKeys = {
     authService,
   ],
   // Remote Host Support (§7): the cross-device host registry + live status.
-  // Keyed on the live `AuthService` instance like `user`, so a broad `["auth"]`
-  // invalidation (sign-out / cross-user) drops it too.
-  registeredHosts: (authService: object): readonly unknown[] => [
-    "auth",
-    "registered-hosts",
-    authService,
-  ],
+  // Keyed to the signed-in user like `userSessions`, and for the same reason:
+  // an AuthService survives account changes, so without the user id the
+  // previous account's cached host list (names, ids, platforms) would be
+  // served to its replacement until a refetch landed. `null` is the
+  // signed-out placeholder — the query is disabled then, the key only has to
+  // not collide with a real user's entry.
+  registeredHosts: (
+    authService: object,
+    userId: string | null,
+  ): readonly unknown[] => ["auth", "registered-hosts", authService, userId],
+  // PREFIX over every `registeredHosts` entry, whatever AuthService or user
+  // it is keyed to. The directory's poll is the app's ONE liveness timer
+  // (redesign P4.1 / F22) and it invalidates through here: it runs outside
+  // React and holds no AuthService reference, so it cannot build the exact
+  // key - and it does not need to, because "the host registry may have
+  // moved" is true of every entry in the family at once.
+  registeredHostsAll: (): readonly unknown[] => ["auth", "registered-hosts"],
   // Devices & Sessions account-security list, keyed to both the live
   // AuthService and signed-in user. An AuthService survives account changes,
   // so the user id is required to keep an old account's promise/cache from

@@ -1,5 +1,6 @@
 import type { BearerSourceProvider } from "@traycer-clients/shared/auth/bearer-source";
 import type { StreamAuthRevalidator } from "@traycer-clients/shared/auth/bearer-revalidator";
+import type { TransportEvidenceReporter } from "@traycer-clients/shared/host-selection/transport-evidence";
 import {
   RemoteSession as ProtocolRemoteSession,
   type IRemoteSession,
@@ -28,10 +29,11 @@ export interface RemoteSessionOptions<
     import("@traycer/protocol/framework/versioned-stream-rpc").VersionedStreamRpcRegistry,
 > extends Omit<
   ProtocolRemoteSessionOptions<RpcRegistry, StreamRegistry>,
-  "auth" | "timing" | "onNegotiatedMethods"
+  "auth" | "timing" | "onNegotiatedMethods" | "evidence"
 > {
   readonly bearer: BearerSourceProvider;
   readonly auth: StreamAuthRevalidator | null;
+  readonly evidence: TransportEvidenceReporter;
 }
 
 /**

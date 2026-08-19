@@ -39,6 +39,7 @@ import {
   __resetSubscriptionsForTesting,
   type GitListChangedFilesSubscriptionResult,
 } from "../use-git-list-changed-files-subscription";
+import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
 
 // Mock stream session for testing.
 class MockStreamSession implements IStreamSession {
@@ -118,6 +119,7 @@ class MockWsStreamClient extends WsStreamClient<HostStreamRpcRegistry> {
       bearer: () => null,
       auth: null,
       hostCredentialMint: null,
+      evidence: NO_TRANSPORT_EVIDENCE,
       webSocketFactory: {
         create: () => {
           throw new Error("MockWsStreamClient should not open a websocket");
@@ -196,7 +198,9 @@ function makeSwappableStreamWrapper(
   };
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <StreamRuntimeContext.Provider value={{ wsStreamClient: holder.current }}>
+      <StreamRuntimeContext.Provider
+        value={{ wsStreamClient: holder.current, hostId: null }}
+      >
         {children}
       </StreamRuntimeContext.Provider>
     </QueryClientProvider>
@@ -263,6 +267,7 @@ describe("useGitListChangedFilesSubscription", () => {
         <StreamRuntimeContext.Provider
           value={{
             wsStreamClient: mockWsStreamClient,
+            hostId: null,
           }}
         >
           {children}
@@ -754,6 +759,7 @@ describe("useGitListChangedFilesSubscription", () => {
       bearer: () => null,
       auth: null,
       hostCredentialMint: null,
+      evidence: NO_TRANSPORT_EVIDENCE,
       webSocketFactory: {
         create: () => {
           throw new Error("a closed client must not dial");

@@ -166,6 +166,8 @@ const QUEUE: ChatLowerQueueState = {
   editingItem: null,
   editingItemId: null,
   value: { status: "idle", items: [] },
+  resumeRequested: false,
+  keepPausedRequested: false,
   onPause: () => null,
   onResume: () => null,
   onEdit: () => undefined,
@@ -174,6 +176,7 @@ const QUEUE: ChatLowerQueueState = {
   onCancelEdit: () => undefined,
   onStopBackgroundItem: () => null,
   onStopAllBackgroundItems: () => null,
+  onStopBackgroundSession: () => null,
   onReorder: () => undefined,
   onSteerNow: () => undefined,
 };
@@ -239,6 +242,7 @@ function props(
     backgroundItems: undefined,
     backgroundStopPendingTaskIds: EMPTY_BACKGROUND_STOP_TASK_IDS,
     backgroundStopAllPending: false,
+    backgroundSessionStopPending: false,
     onBackgroundItemClick: () => undefined,
   };
 }

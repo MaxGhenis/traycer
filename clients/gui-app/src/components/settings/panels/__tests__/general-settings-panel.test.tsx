@@ -72,7 +72,7 @@ interface HostQueryMocks {
   directoryEntries: ReadonlyArray<{
     readonly hostId: string;
     readonly label: string;
-    readonly status: string;
+    readonly transportDialability: string;
     readonly websocketUrl: string;
   }>;
 }
@@ -163,13 +163,13 @@ const hostQueryMocks = vi.hoisted((): HostQueryMocks => ({
     {
       hostId: "host-test",
       label: "Local host",
-      status: "available",
+      transportDialability: "dialable",
       websocketUrl: "ws://local.invalid",
     },
     {
       hostId: "remote-host",
       label: "Remote host",
-      status: "available",
+      transportDialability: "dialable",
       websocketUrl: "ws://remote.invalid",
     },
   ],
@@ -191,8 +191,8 @@ vi.mock("@/lib/host", () => ({
   useHostBinding: () => null,
 }));
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => hostQueryMocks.activeHostId,
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => hostQueryMocks.activeHostId,
 }));
 
 vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
@@ -289,13 +289,13 @@ describe("GeneralSettingsPanel", () => {
       {
         hostId: "host-test",
         label: "Local host",
-        status: "available",
+        transportDialability: "dialable",
         websocketUrl: "ws://local.invalid",
       },
       {
         hostId: "remote-host",
         label: "Remote host",
-        status: "available",
+        transportDialability: "dialable",
         websocketUrl: "ws://remote.invalid",
       },
     ];

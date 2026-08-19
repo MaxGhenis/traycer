@@ -4,10 +4,12 @@ import type {
   HostRegistryUpdateState,
   ITokenStore,
   LocalHostSnapshot,
+  RegisteredHostsChange,
   StoredCredentials,
   TrayEpic,
   TrayIndicatorState,
 } from "@traycer-clients/shared/platform/runner-host";
+import { createInertSelectionAuthorityClient } from "@traycer-clients/shared/test-fixtures/selection-authority";
 import {
   DesktopRunnerHost,
   type DesktopPreloadBridge,
@@ -49,6 +51,8 @@ interface FakeBridgeHandle {
     readonly bytes: ArrayBuffer;
   }>;
   emit(snapshot: LocalHostSnapshot | null): void;
+  emitSystemResumed(): void;
+  systemResumedBridgeSubscriptionCount(): number;
 }
 
 function buildFakeBridge(
@@ -57,6 +61,10 @@ function buildFakeBridge(
   let lastEmitted: LocalHostSnapshot | null = initialSnapshot;
   let firstSubscriberServed = false;
   const handlers = new Set<(snapshot: LocalHostSnapshot | null) => void>();
+  const registeredHostsHandlers = new Set<
+    (push: RegisteredHostsChange) => void
+  >();
+  const systemResumedHandlers = new Set<() => void>();
 
   const tokenSlot = { value: null as string | null };
   const respawnCounter = { count: 0 };
@@ -142,9 +150,28 @@ function buildFakeBridge(
         },
       };
     },
-    onSystemResumed: (_handler: () => void) => ({
-      dispose: () => undefined,
-    }),
+    // Matches `onLocalHostChange` above structurally (a `Set` of handlers
+    // plus a dispose closure), but WITHOUT the replay: production has no
+    // cache to replay from either (`host-bridge.ts` - "nothing for a cache
+    // or a first-subscribe pull to repair").
+    onRegisteredHostsChange: (
+      handler: (push: RegisteredHostsChange) => void,
+    ) => {
+      registeredHostsHandlers.add(handler);
+      return {
+        dispose: () => {
+          registeredHostsHandlers.delete(handler);
+        },
+      };
+    },
+    onSystemResumed: (handler: () => void) => {
+      systemResumedHandlers.add(handler);
+      return {
+        dispose: () => {
+          systemResumedHandlers.delete(handler);
+        },
+      };
+    },
     requestHostRespawn: async () => {
       respawnCounter.count += 1;
       return { kind: "restarted" as const };
@@ -154,13 +181,6 @@ function buildFakeBridge(
       setEpics: async (_epics: readonly TrayEpic[]) => undefined,
       setIndicator: async (_state: TrayIndicatorState) => undefined,
       onEpicSelected: (_handler: (epicId: string) => void) => ({
-        dispose: () => undefined,
-      }),
-    },
-    hostPicker: {
-      requestOpen: async () => undefined,
-      requestClose: async () => undefined,
-      onChange: (_handler: (isOpen: boolean) => void) => ({
         dispose: () => undefined,
       }),
     },
@@ -549,6 +569,8 @@ function buildFakeBridge(
     hostControllerStatus: {
       onChange: () => ({ dispose: () => undefined }),
     },
+    selectionAuthority: createInertSelectionAuthorityClient(),
+    refreshSelectionFleet: () => Promise.resolve(),
   };
 
   return {
@@ -561,6 +583,14 @@ function buildFakeBridge(
       for (const handler of handlers) {
         handler(snapshot);
       }
+    },
+    emitSystemResumed(): void {
+      for (const handler of systemResumedHandlers) {
+        handler();
+      }
+    },
+    systemResumedBridgeSubscriptionCount(): number {
+      return systemResumedHandlers.size;
     },
   };
 }
@@ -997,5 +1027,35 @@ describe("DesktopRunnerHost.onLocalHostChange", () => {
       late.push(snapshot);
     });
     expect(late).toEqual([validSnapshot]);
+  });
+});
+
+describe("DesktopRunnerHost.onSystemResumed", () => {
+  it("fans out through one bridge subscription and releases it on dispose", () => {
+    const fake = buildFakeBridge(null);
+    const host = new DesktopRunnerHost({
+      bridge: fake.bridge,
+      signInUrl: "https://auth.example.invalid/sign-in",
+    });
+    const calls = Array.from({ length: 12 }, () => vi.fn());
+    const subscriptions = calls.map((handler) => host.onSystemResumed(handler));
+
+    expect(fake.systemResumedBridgeSubscriptionCount()).toBe(1);
+    fake.emitSystemResumed();
+    for (const handler of calls) expect(handler).toHaveBeenCalledTimes(1);
+
+    subscriptions[0]?.dispose();
+    fake.emitSystemResumed();
+    expect(calls[0]).toHaveBeenCalledTimes(1);
+    for (const handler of calls.slice(1)) {
+      expect(handler).toHaveBeenCalledTimes(2);
+    }
+
+    host.dispose();
+    expect(fake.systemResumedBridgeSubscriptionCount()).toBe(0);
+    fake.emitSystemResumed();
+    for (const handler of calls.slice(1)) {
+      expect(handler).toHaveBeenCalledTimes(2);
+    }
   });
 });

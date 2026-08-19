@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
 import {
   act,
   cleanup,
@@ -6,11 +7,15 @@ import {
   render,
   screen,
 } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactElement } from "react";
+import type { RenderResult } from "@testing-library/react";
 import type {
   WorktreeBindingSelectorDisabledReason,
   WorktreeBindingSelectorRowV12,
 } from "@traycer/protocol/host";
 import { NewTerminalPicker } from "../new-terminal-picker";
+import { useSurfaceHostSelectionStore } from "@/stores/host/surface-host-selection-store";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   PaneSurfaceActivityContext,
@@ -20,7 +25,10 @@ import { useDesktopDialogStore } from "@/stores/dialogs/desktop-dialog-store";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { paneTabRefs } from "@/stores/epics/canvas/actions";
 import { collectPanes } from "@/stores/epics/canvas/tile-tree";
-import type { EpicCanvasTileRef } from "@/stores/epics/canvas/types";
+import {
+  isHostEpicTerminalRef,
+  type EpicCanvasTileRef,
+} from "@/stores/epics/canvas/types";
 import { usePanelHeaderMenuStore } from "@/stores/epics/panel-header-menu-store";
 import { modLabel } from "@/lib/keybindings/platform";
 
@@ -44,6 +52,26 @@ const bindingsQuery = vi.hoisted(() => ({
 
 vi.mock("@/hooks/worktree/use-worktree-list-bindings-for-epic-query", () => ({
   useWorktreeListBindingsForEpic: () => bindingsQuery.current,
+  useWorktreeListBindingsForEpicForClient: () => bindingsQuery.current,
+}));
+
+vi.mock("@/hooks/host/use-host-client-for-host-id", () => ({
+  useHostClientForHostId: () => null,
+}));
+
+vi.mock("@/hooks/agent/use-host-reachability", () => ({
+  useHostReachability: () => ({
+    status: "reachable",
+    hostLabel: "MacBook",
+    unavailability: null,
+  }),
+}));
+
+vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
+  useHostDirectoryList: () => ({
+    data: [{ hostId: "host-1" }],
+    fetchStatus: "idle",
+  }),
 }));
 
 function stubLoadedBindings(): void {
@@ -60,23 +88,35 @@ function stubLoadedBindings(): void {
   };
 }
 
-vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
-  useHostDirectoryList: () => ({
-    data: [
-      {
-        hostId: "host-1",
-        label: "MacBook",
-        kind: "local",
-        websocketUrl: null,
-        version: null,
-        status: "available",
-      },
-    ],
-  }),
+// This suite is about the WORKSPACE / terminal-launch list, not the host
+// list, so it mocks `useHostOptions` at the boundary (the same pattern panel
+// suites use for `useHostScope`) rather than standing up the six hooks it
+// composes. The host section itself is now a collapsed `HostSwitcher`
+// trigger (one host here, so its nested popover renders no search box, just
+// the one option row).
+vi.mock("@/components/settings/host-scope/use-host-options", async () => {
+  const { hostOptionsFixture, hostScopeOptionFixture } =
+    await import("@/components/settings/host-scope/host-scope-fixture");
+  return {
+    useHostOptions: () =>
+      hostOptionsFixture({
+        hosts: [hostScopeOptionFixture({ hostId: "host-1", name: "MacBook" })],
+        activeHostId: "host-1",
+      }),
+  };
+});
+
+// `NewTerminalPickerBody` also reads this directly (the folderless-launch
+// target's host id), independent of `useHostOptions`.
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => "host-1",
 }));
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => "host-1",
+// The surface pin (`useSurfaceHostPin` -> `useEffectiveHostId`, redesign
+// P1.2) resolves the picker's own pin row when it has none, so an unmocked
+// authority store would read a null effective host here.
+vi.mock("@/hooks/host/use-effective-host-id", () => ({
+  useEffectiveHostId: () => "host-1",
 }));
 
 vi.mock("@/lib/host", () => ({
@@ -113,9 +153,30 @@ function resetCanvas(): void {
   useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
 }
 
+// The host section now opts the window into the registry liveness poll, and
+// that hook stands on TanStack Query - so these boundary-mocked suites need a
+// client even though every query in them is disabled (signed-out auth store).
+// ONE client for the wrapper's lifetime: constructing it inside the render
+// would hand `rerender` a fresh client while existing observers stay attached
+// to the old one.
+const testQueryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false, gcTime: 0 } },
+});
+function TestProviders(props: { readonly children: ReactNode }): ReactNode {
+  return (
+    <QueryClientProvider client={testQueryClient}>
+      {props.children}
+    </QueryClientProvider>
+  );
+}
+
+function renderWithClient(ui: ReactElement): RenderResult {
+  return render(ui, { wrapper: TestProviders });
+}
+
 function openPicker(): string {
   const tabId = useEpicCanvasStore.getState().openEpicTab("epic-1", "Epic");
-  render(
+  renderWithClient(
     <TooltipProvider>
       <NewTerminalPicker
         epicId="epic-1"
@@ -134,6 +195,13 @@ function tabTiles(tabId: string): ReadonlyArray<EpicCanvasTileRef> {
   return collectPanes(canvas.root).flatMap((pane) => paneTabRefs(canvas, pane));
 }
 
+function launchedTerminalCwd(tile: EpicCanvasTileRef): string | undefined {
+  if (tile.type !== "terminal" || !isHostEpicTerminalRef(tile)) {
+    return undefined;
+  }
+  return tile.legacyFallback.cwd;
+}
+
 describe("<NewTerminalPicker />", () => {
   beforeEach(() => {
     cleanup();
@@ -141,6 +209,7 @@ describe("<NewTerminalPicker />", () => {
     usePanelHeaderMenuStore.setState({ openBySurfaceKey: {} });
     selectById.mockClear();
     refreshDirectory.mockClear();
+    useSurfaceHostSelectionStore.getState().resetForTests();
     stubLoadedBindings();
   });
 
@@ -159,6 +228,10 @@ describe("<NewTerminalPicker />", () => {
     expect(
       screen.getByTestId("host-workspace-selector-host-section"),
     ).toBeDefined();
+    // The host section is now a collapsed switcher trigger, not a flat row
+    // list - its rows are one click away, not asserted here.
+    const hostTrigger = screen.getByTestId("settings-host-switcher");
+    expect(hostTrigger.getAttribute("aria-label")).toBe("Host: MacBook");
     const workspacesHeader = screen.getByText("Workspaces");
     const search = screen.getByRole("combobox");
     expect(screen.getAllByText("Workspaces")).toHaveLength(1);
@@ -195,7 +268,7 @@ describe("<NewTerminalPicker />", () => {
         />
       </TooltipProvider>
     );
-    const { rerender } = render(picker("collapsed-header"));
+    const { rerender } = renderWithClient(picker("collapsed-header"));
 
     fireEvent.click(screen.getByTestId("epic-terminals-panel-add"));
     rerender(picker("expanded-header"));
@@ -273,7 +346,15 @@ describe("<NewTerminalPicker />", () => {
     );
     expect(terminals).toHaveLength(1);
     expect(terminals[0].hostId).toBe("host-2");
-    expect(terminals[0].cwd).toBe("/work/traycer-wt/feature-x");
+    expect(launchedTerminalCwd(terminals[0])).toBe(
+      "/work/traycer-wt/feature-x",
+    );
+    expect(isHostEpicTerminalRef(terminals[0])).toBe(true);
+    expect(
+      useEpicCanvasStore
+        .getState()
+        .pendingCreateArtifactIds.has(terminals[0].id),
+    ).toBe(true);
   });
 
   it("launches the selected terminal with Cmd+Enter", () => {
@@ -290,7 +371,8 @@ describe("<NewTerminalPicker />", () => {
     );
     expect(terminals).toHaveLength(1);
     expect(terminals[0].hostId).toBe("host-1");
-    expect(terminals[0].cwd).toBe("/work/traycer");
+    expect(launchedTerminalCwd(terminals[0])).toBe("/work/traycer");
+    expect(isHostEpicTerminalRef(terminals[0])).toBe(true);
   });
 
   it("selects nothing and keeps Launch disabled when every row is disabled", () => {
@@ -346,7 +428,8 @@ describe("<NewTerminalPicker />", () => {
     );
     expect(terminals).toHaveLength(1);
     expect(terminals[0].hostId).toBe("host-1");
-    expect(terminals[0].cwd).toBe("/Users/tgill");
+    expect(launchedTerminalCwd(terminals[0])).toBe("/Users/tgill");
+    expect(isHostEpicTerminalRef(terminals[0])).toBe(true);
   });
 
   it("keeps Launch disabled while workspace bindings are loading", () => {
@@ -439,7 +522,9 @@ describe("<NewTerminalPicker />", () => {
     const terminals = tiles.filter((tile) => tile.type === "terminal");
     expect(terminals).toHaveLength(1);
     expect(terminals[0].hostId).toBe("host-2");
-    expect(terminals[0].cwd).toBe("/work/traycer-wt/feature-x");
+    expect(launchedTerminalCwd(terminals[0])).toBe(
+      "/work/traycer-wt/feature-x",
+    );
     expect(terminals[0].name).toBe("New Terminal");
     expect(screen.queryByTestId("new-terminal-picker-popover")).toBeNull();
   });
@@ -458,14 +543,21 @@ describe("<NewTerminalPicker />", () => {
     expect(tiles.filter((tile) => tile.type === "terminal")).toHaveLength(0);
   });
 
-  it("swaps the bound host without creating a tile when a host row is clicked", () => {
+  it("pins the surface host without creating a tile when a host row is clicked", () => {
     const tabId = openPicker();
 
-    fireEvent.click(
-      screen.getByTestId("host-workspace-selector-host-row-host-1"),
-    );
+    // The host row is one click behind the switcher trigger now.
+    fireEvent.click(screen.getByTestId("settings-host-switcher"));
+    fireEvent.click(screen.getByTestId("settings-host-switcher-option-host-1"));
 
-    expect(selectById).toHaveBeenCalledWith("host-1");
+    expect(selectById).not.toHaveBeenCalled();
+    const surfaceKey = Object.keys(
+      useSurfaceHostSelectionStore.getState().selections,
+    )[0];
+    expect(surfaceKey).toMatch(/^new-terminal/);
+    expect(useSurfaceHostSelectionStore.getState().selections[surfaceKey]).toBe(
+      "host-1",
+    );
     const tiles = tabTiles(tabId);
     expect(tiles.filter((tile) => tile.type === "terminal")).toHaveLength(0);
   });
@@ -523,7 +615,7 @@ describe("<NewTerminalPicker /> focus-loss dismissal (MED4)", () => {
 
   it("dismisses an open picker when its pane loses focus, rather than leaving a logically-open root with reset content", () => {
     const tabId = useEpicCanvasStore.getState().openEpicTab("epic-1", "Epic");
-    const { rerender } = render(paneUi(true, tabId));
+    const { rerender } = renderWithClient(paneUi(true, tabId));
     fireEvent.click(screen.getByTestId("epic-terminals-panel-add"));
     expect(screen.queryByTestId("new-terminal-picker-popover")).not.toBeNull();
 

@@ -32,6 +32,7 @@ import {
   __resetWorkspaceFileListSubscriptionsForTesting,
   type WorkspaceFileListSubscriptionResult,
 } from "../use-workspace-file-list-subscription";
+import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
 
 const EPIC_ID = "epic-1";
 const HOST_ID = "host-1";
@@ -95,6 +96,7 @@ class MockWsStreamClient extends WsStreamClient<HostStreamRpcRegistry> {
       bearer: () => null,
       auth: null,
       hostCredentialMint: null,
+      evidence: NO_TRANSPORT_EVIDENCE,
       webSocketFactory: {
         create: () => {
           throw new Error("MockWsStreamClient should not open a websocket");
@@ -171,7 +173,9 @@ function renderSubscription(
 ) {
   const wrapper = (props: { readonly children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <StreamRuntimeContext.Provider value={{ wsStreamClient: client }}>
+      <StreamRuntimeContext.Provider
+        value={{ wsStreamClient: client, hostId: null }}
+      >
         {props.children}
       </StreamRuntimeContext.Provider>
     </QueryClientProvider>

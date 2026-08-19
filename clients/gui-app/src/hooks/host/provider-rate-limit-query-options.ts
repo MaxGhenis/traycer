@@ -38,14 +38,13 @@ export interface ProviderRateLimitQueryOptions {
  * (e.g. tab-scoped) can reuse the same shape without duplicating it.
  *
  * Branches on the fetch lane for background polling:
- * - `httpFetch` (openrouter, kilocode, huggingface): when credentials are
+ * - `httpFetch` (openrouter, kilocode, huggingface, opencode): when credentials are
  *   fetch-eligible,
  *   opts in to the table's fixed cadence.
  *   The builder fixes its background setting to false, so persistent app-shell
- *   subscriptions do not poll while the window is hidden. `refetchOnMount`
- *   stays at TanStack's own default (`true`): a plain GET has no subprocess to
- *   bound, so letting a popover/Settings-card remount refetch directly when
- *   stale is exactly "fetch fresh data on open" with no downside.
+ *   subscriptions do not poll while the window is hidden. `refetchOnMount` is
+ *   disabled; the shared mount-refresh hook fetches only while no successful
+ *   value exists, then the fixed cadence and manual refresh own freshness.
  * - `ephemeralProcess` (codex, claude-code): opts out of observer polling. Its
  *   background refresh is driven entirely by the serial queue's interval timer
  *   writing fresh data into this exact query key. For the exact same reason,
@@ -80,7 +79,7 @@ export function providerRateLimitQueryOptions(
       poll: isHttpFetch,
       retry: false,
       staleTime: PROVIDER_RATE_LIMITS_STALE_TIME_MS,
-      refetchOnMount: isHttpFetch ? true : false,
+      refetchOnMount: false,
     },
   };
 }

@@ -140,6 +140,44 @@ export interface RemoteSessionTiming {
   readonly relayPongTimeoutMs: number;
 }
 
+/**
+ * Runtime-neutral selection-authority surface. Client transports inject a
+ * reporter; host-side dialers pass `null` and every call is a no-op.
+ */
+export interface RemoteSessionEvidence {
+  sessionEstablished(
+    hostId: string,
+    sessionId: string,
+    transportKind: "remote-relay",
+  ): void;
+  sessionLost(
+    hostId: string,
+    sessionId: string,
+    transportKind: "remote-relay",
+  ): void;
+  reportDialSuccess(
+    hostId: string,
+    attemptId: string,
+    transportKind: "remote-relay",
+  ): void;
+  reportDialRefusal(
+    hostId: string,
+    attemptId: string,
+    transportKind: "remote-relay",
+    refusalDetail: "plan-restricted" | null,
+  ): void;
+  reportDialIndeterminate(
+    hostId: string,
+    attemptId: string,
+    transportKind: "remote-relay",
+  ): void;
+  reportRestartIntent(
+    hostId: string,
+    tombstoneId: string,
+    expiresAt: number | null,
+  ): void;
+}
+
 export interface RemoteSessionOptions<
   RpcRegistry extends VersionedRpcRegistry,
   StreamRegistry extends VersionedStreamRpcRegistry,
@@ -162,6 +200,8 @@ export interface RemoteSessionOptions<
   /** Optional client-side capability publication hook. */
   readonly onNegotiatedMethods:
     ((hostId: string, methodNames: ReadonlyArray<string>) => void) | null;
+  /** Optional selection-authority reporter. Host dialers pass `null`. */
+  readonly evidence: RemoteSessionEvidence | null;
 }
 
 /**
@@ -192,6 +232,7 @@ export interface IRemoteSession<
     params: RequestOfMethod<RpcRegistry, Method>,
     abortSignal: AbortSignal | null,
     callerAgentId: string | null,
+    responseTimeoutMs: number | undefined,
   ): Promise<ResponseOfMethod<RpcRegistry, Method>>;
   subscribe<Method extends keyof StreamRegistry & string>(
     method: Method,
@@ -244,7 +285,56 @@ export interface IRemoteSession<
    * emission is at most one host-scope invalidation per session build.
    */
   subscribeAvailabilityRecovered(listener: () => void): () => void;
+  /**
+   * The DOWN edge: this session was ready and no longer is.
+   *
+   * The counterpart to `subscribeAvailabilityRecovered`, and it exists because
+   * `hasReadyRemoteSession` used to be read by two 1-second polls. A poll has
+   * no direction - it answered "did this stop being ready" by simply asking
+   * again. Replacing it with change events kept only the transitions someone
+   * enumerated, and both of those point UP (`subscribeAvailabilityRecovered`,
+   * `onClosed`), so a relay `host_detached` or a drop into `reconnecting` left
+   * every subscriber holding a stale `true` for the whole outage - and if the
+   * reconnect succeeded they never observed the loss at all.
+   *
+   * Fires on the transition only, never on a re-assertion of the same state,
+   * and never for a terminal close (`onClosed` owns that edge - a session that
+   * died is not a session that became unready).
+   */
+  subscribeReadinessLost(listener: () => void): () => void;
   close(): void;
+}
+
+/**
+ * Whether a connection loss is evidence ABOUT THE HOST, or only about us.
+ *
+ * The one funnel (`handleConnectionLost`) is shared by both, deliberately -
+ * backoff, stream re-subscribe and pending-unary rejection belong in one
+ * place. What is NOT shared is the verdict that leaves it:
+ *
+ *  - `host-transport-plane` - the relay socket closed, a Noise/handshake step
+ *    was rejected, the peer went away, a phase deadline elapsed with the host
+ *    silent. The host's own transport plane answered (or failed to), so this
+ *    is `confirmed-refusal` evidence.
+ *  - `not-host-evidence` - we tore the connection down ourselves (a caller's
+ *    reconnect nudge) or could not present a credential (no bearer). The host
+ *    refused nothing; it may be perfectly healthy. Reported `indeterminate`.
+ */
+type ConnectionLossProvenance = "host-transport-plane" | "not-host-evidence";
+
+/**
+ * Whether a host-sent session FATAL is evidence about the HOST's transport
+ * plane, or about the credential plane standing between us and it.
+ *
+ * `UNAUTHORIZED` is the credential plane's code on this wire. Every other
+ * fatal on this path is the host's own plane answering.
+ */
+function sessionFatalProvenance(
+  details: FatalErrorDetails,
+): ConnectionLossProvenance {
+  return details.code === "UNAUTHORIZED"
+    ? "not-host-evidence"
+    : "host-transport-plane";
 }
 
 type SessionPhase =
@@ -287,6 +377,12 @@ interface ActiveConnection {
   hostAttached: boolean;
 }
 
+/**
+ * Instance counter behind {@link RemoteSession.evidenceScope}. Process-local
+ * and never persisted or sent anywhere - it only has to be distinct.
+ */
+let nextRemoteEvidenceScope = 0;
+
 export class RemoteSession<
   RpcRegistry extends VersionedRpcRegistry,
   StreamRegistry extends VersionedStreamRpcRegistry,
@@ -302,6 +398,19 @@ export class RemoteSession<
   private connectGeneration = 0;
   private reconnectAttempt = 0;
   private connection: ActiveConnection | null = null;
+
+  /**
+   * This session instance's namespace for the selection authority's evidence
+   * ids. `connectGeneration` alone is not unique across hosts in one process.
+   */
+  private readonly evidenceScope = `remote-${(nextRemoteEvidenceScope += 1)}`;
+  /**
+   * The session id currently announced to the authority as live, or null.
+   * Minted at the ready boundary and retracted at the teardown funnel.
+   */
+  private announcedSessionId: string | null = null;
+  /** Distinguishes a mid-session re-auth verdict from its generation's dial. */
+  private reauthEvidenceSeq = 0;
 
   private readonly subscriptions = new Map<number, LogicalStream>();
   private readonly pendingUnary = new Map<number, PendingUnary>();
@@ -321,6 +430,12 @@ export class RemoteSession<
   private readonly terminalStreamIds = new Set<number>();
   private readonly closedListeners = new Set<() => void>();
   private readonly availabilityRecoveredListeners = new Set<() => void>();
+  private readonly readinessLostListeners = new Set<() => void>();
+  /**
+   * Last readiness this session PUBLISHED, not last readiness it had.
+   * The edge detector for {@link IRemoteSession.subscribeReadinessLost}.
+   */
+  private lastPublishedReadiness = false;
   /**
    * Callers parked inside `sendUnary` waiting for this session to become
    * usable. Settled from exactly three places, which together are every exit
@@ -504,6 +619,7 @@ export class RemoteSession<
     params: RequestOfMethod<RpcRegistry, Method>,
     abortSignal: AbortSignal | null,
     callerAgentId: string | null,
+    responseTimeoutMs: number | undefined,
   ): Promise<ResponseOfMethod<RpcRegistry, Method>> {
     this.start();
     const requestId = this.options.requestId();
@@ -587,6 +703,7 @@ export class RemoteSession<
         params,
         requestId,
         callerAgentId,
+        responseTimeoutMs,
       );
     }
 
@@ -599,6 +716,7 @@ export class RemoteSession<
       params,
       requestId,
       callerAgentId,
+      responseTimeoutMs,
     ) as Promise<ResponseOfMethod<RpcRegistry, Method>>;
   }
 
@@ -728,6 +846,7 @@ export class RemoteSession<
     params: unknown,
     requestId: string,
     callerAgentId: string | null,
+    responseTimeoutMs: number | undefined,
   ): Promise<unknown> {
     let prepared: { onWireVersion: SchemaVersion; onWirePayload: unknown };
     try {
@@ -748,7 +867,7 @@ export class RemoteSession<
       {
         const timer = setTimeout(() => {
           this.rejectUnary(streamId, unaryTimeoutError(requestId, method));
-        }, this.options.timing.unaryResponseMs);
+        }, responseTimeoutMs ?? this.options.timing.unaryResponseMs);
         this.pendingUnary.set(streamId, {
           requestId,
           method,
@@ -869,6 +988,17 @@ export class RemoteSession<
     };
   }
 
+  /** See {@link IRemoteSession.subscribeReadinessLost}. */
+  subscribeReadinessLost(listener: () => void): () => void {
+    if (this.phase === "closed") {
+      return () => undefined;
+    }
+    this.readinessLostListeners.add(listener);
+    return () => {
+      this.readinessLostListeners.delete(listener);
+    };
+  }
+
   /** Tears the session down permanently: closes the socket, fails everything. */
   close(): void {
     if (this.phase === "closed") {
@@ -965,7 +1095,11 @@ export class RemoteSession<
     if (this.phase === "closed" || this.phase === "idle") {
       return;
     }
-    this.handleConnectionLost(this.connectGeneration, reason);
+    this.handleConnectionLost(
+      this.connectGeneration,
+      reason,
+      "not-host-evidence",
+    );
   }
 
   closeStream(streamId: number, reason: string): void {
@@ -1014,6 +1148,10 @@ export class RemoteSession<
       // an upgrade) builds a fresh session; the closed one is evicted from
       // the session cache on the next acquire.
       this.goTerminalFatal(planRestrictedFatalDetails());
+      this.reportEvidenceOutcome(
+        this.dialAttemptId(generation),
+        "plan-restricted",
+      );
       return;
     }
     if (provision.kind === "unavailable") {
@@ -1022,6 +1160,10 @@ export class RemoteSession<
       // callers settle here rather than riding an unbounded number of further
       // mint attempts inside one call.
       this.settleReadyWaiters(false);
+      this.reportEvidenceOutcome(
+        this.dialAttemptId(generation),
+        "indeterminate",
+      );
       const retryInMs = this.scheduleReconnect();
       this.dialFailures.recordFailure({
         cause: `could not mint an attach grant: ${provision.detail}`,
@@ -1040,7 +1182,7 @@ export class RemoteSession<
 
     const scheduler = new PriorityScheduler({
       write: (frame) => this.writeFrame(generation, frame),
-      onWriteError: () => this.handleConnectionLost(generation, "write-failed"),
+      onWriteError: () => this.handleConnectionLost(generation, "write-failed", "host-transport-plane"),
       initialBulkCredits: INITIAL_BULK_SEND_CREDITS,
       now: undefined,
     });
@@ -1068,6 +1210,7 @@ export class RemoteSession<
           this.handleConnectionLost(
             generation,
             describeSocketClose(this.phase, info),
+            "host-transport-plane",
           ),
       },
     });
@@ -1112,7 +1255,7 @@ export class RemoteSession<
         return;
       }
       if (!connection.relaySocket.sendData(msg0)) {
-        this.handleConnectionLost(generation, "handshake-send-failed");
+        this.handleConnectionLost(generation, "handshake-send-failed", "host-transport-plane");
       }
     })();
   }
@@ -1134,7 +1277,7 @@ export class RemoteSession<
         }
         this.sendOpenFrame(generation, connection);
       })().catch(() =>
-        this.handleConnectionLost(generation, "handshake-read-failed"),
+        this.handleConnectionLost(generation, "handshake-read-failed", "host-transport-plane"),
       );
       return;
     }
@@ -1194,7 +1337,7 @@ export class RemoteSession<
       }
       this.dispatchInbound(generation, connection, message);
     })().catch(() =>
-      this.handleConnectionLost(generation, "inbound-decode-failed"),
+      this.handleConnectionLost(generation, "inbound-decode-failed", "host-transport-plane"),
     );
   }
 
@@ -1293,6 +1436,7 @@ export class RemoteSession<
       this.handleConnectionLost(
         generation,
         this.options.auth.missingOpenAuthCause,
+        "not-host-evidence",
       );
       return;
     }
@@ -1356,7 +1500,7 @@ export class RemoteSession<
         if (parsed.success) {
           this.handleSessionFatal(generation, parsed.data.details);
         } else {
-          this.handleConnectionLost(generation, "malformed-session-fatal");
+          this.handleConnectionLost(generation, "malformed-session-fatal", "host-transport-plane");
         }
         return;
       }
@@ -1462,6 +1606,7 @@ export class RemoteSession<
     params: RequestOfMethod<RpcRegistry, Method>,
     requestId: string,
     callerAgentId: string | null,
+    responseTimeoutMs: number | undefined,
   ): Promise<ResponseOfMethod<RpcRegistry, Method>> {
     return resolveUnavailableMethodDegrade({
       registry: this.options.rpcRegistry,
@@ -1488,6 +1633,7 @@ export class RemoteSession<
           input.params,
           requestId,
           callerAgentId,
+          responseTimeoutMs,
         ),
     }) as Promise<ResponseOfMethod<RpcRegistry, Method>>;
   }
@@ -1502,7 +1648,7 @@ export class RemoteSession<
     }
     const parsed = sessionOpenAckPayloadSchema.safeParse(json);
     if (!parsed.success) {
-      this.handleConnectionLost(generation, "malformed-openAck");
+      this.handleConnectionLost(generation, "malformed-openAck", "host-transport-plane");
       return;
     }
     const hostRpcMerged = mergeConnectionManifests(
@@ -1659,6 +1805,8 @@ export class RemoteSession<
     connection.hostAttached = false;
     connection.scheduler.pause();
     this.markStreamsReconnecting();
+    this.retractSession();
+    this.syncReadinessLatch();
   }
 
   private onHostAttached(generation: number): void {
@@ -1685,7 +1833,7 @@ export class RemoteSession<
       // fresh `NoiseChannel` + relay dial + `open{bearer}` - rather than a
       // second state machine or a new wire frame (`session_reset{sid}`
       // stays deferred/telemetry-gated; see the S2 ticket).
-      this.handleConnectionLost(generation, "host-attached-stale-noise");
+      this.handleConnectionLost(generation, "host-attached-stale-noise", "host-transport-plane");
     }
   }
 
@@ -1705,17 +1853,26 @@ export class RemoteSession<
       });
       return;
     }
-    this.handleConnectionLost(generation, `peer-gone:${reason}`);
+    this.handleConnectionLost(generation, `peer-gone:${reason}`, "host-transport-plane");
   }
 
   /** Any transport loss → drop the connection and full-resume from backoff. */
-  private handleConnectionLost(generation: number, cause: string): void {
+  private handleConnectionLost(
+    generation: number,
+    cause: string,
+    provenance: ConnectionLossProvenance,
+  ): void {
     if (!this.isCurrent(generation) || this.phase === "closed") {
       return;
     }
     this.dropConnection(cause);
+    this.syncReadinessLatch();
     const retryInMs = this.scheduleReconnect();
     this.dialFailures.recordFailure({ cause, context: "", retryInMs });
+    this.reportEvidenceOutcome(
+      `${this.evidenceScope}#${generation}-lost`,
+      provenance === "host-transport-plane" ? "refusal" : "indeterminate",
+    );
   }
 
   /**
@@ -1745,6 +1902,7 @@ export class RemoteSession<
     // ride an unbounded number of further attempts inside one call.
     this.settleReadyWaiters(false);
     this.markStreamsReconnecting();
+    this.syncReadinessLatch();
   }
 
   /**
@@ -1766,11 +1924,13 @@ export class RemoteSession<
     generation: number,
     details: FatalErrorDetails,
   ): void {
+    this.reportRestartIntentIfPresent(details);
+    const provenance = sessionFatalProvenance(details);
     if (details.retryable === true) {
       // A transient host blip must not count toward the credential give-up
       // bound - clear any streak left by a prior genuine UNAUTHORIZED episode.
       this.noProgressUnauthorizedReconnects = 0;
-      this.handleConnectionLost(generation, "session-fatal-retryable");
+      this.handleConnectionLost(generation, "session-fatal-retryable", provenance);
       return;
     }
     const revalidate = this.options.auth.revalidateForReconnect;
@@ -1834,6 +1994,7 @@ export class RemoteSession<
         context: "",
         retryInMs,
       });
+      this.reportEvidenceOutcome(this.credentialAttemptId(), "indeterminate");
       return;
     }
     // outcome === "rotated": authn accepts the credential. If the bearer the
@@ -1863,6 +2024,7 @@ export class RemoteSession<
       context: "",
       retryInMs,
     });
+    this.reportEvidenceOutcome(this.credentialAttemptId(), "indeterminate");
   }
 
   /**
@@ -2012,6 +2174,10 @@ export class RemoteSession<
         context: "",
         retryInMs,
       });
+      this.reportEvidenceOutcome(
+        this.dialAttemptId(generation),
+        "indeterminate",
+      );
     });
   }
 
@@ -2043,6 +2209,7 @@ export class RemoteSession<
       // Mid-session downgrade: end the session now rather than letting the
       // relay's client-leg deadline kill it opaquely later.
       this.goTerminalFatal(planRestrictedFatalDetails());
+      this.reportEvidenceOutcome(this.reauthAttemptId(), "plan-restricted");
       return;
     }
     if (provision.kind === "ok") {
@@ -2066,7 +2233,7 @@ export class RemoteSession<
     const generation = this.connectGeneration;
     this.standingTimer = setTimeout(() => {
       this.standingTimer = null;
-      this.handleConnectionLost(generation, "host-standing-lapsed");
+      this.handleConnectionLost(generation, "host-standing-lapsed", "host-transport-plane");
     }, HOST_STANDING_BOUND_MS);
   }
 
@@ -2242,6 +2409,11 @@ export class RemoteSession<
     this.readyBoundaryGeneration = this.connectGeneration;
     this.reconnectAttempt = 0;
     this.dialFailures.recordSuccess();
+    this.reportEvidenceOutcome(
+      this.dialAttemptId(this.connectGeneration),
+      "success",
+    );
+    this.announceSession(`${this.evidenceScope}:s${this.connectGeneration}`);
     // EVERY ready boundary is availability evidence, the clean first open
     // included: queries that raced this session's first dial have already
     // errored pre-send and exhausted their retry, and this emission is the
@@ -2268,6 +2440,7 @@ export class RemoteSession<
     const listeners = Array.from(this.closedListeners);
     this.closedListeners.clear();
     this.availabilityRecoveredListeners.clear();
+    this.readinessLostListeners.clear();
     for (const listener of listeners) {
       try {
         listener();
@@ -2277,7 +2450,26 @@ export class RemoteSession<
     }
   }
 
+  private syncReadinessLatch(): void {
+    const ready = this.isReady();
+    if (ready === this.lastPublishedReadiness) {
+      return;
+    }
+    this.lastPublishedReadiness = ready;
+    if (ready) {
+      return;
+    }
+    for (const listener of Array.from(this.readinessLostListeners)) {
+      try {
+        listener();
+      } catch (error) {
+        console.error("[remote-session] readiness-lost listener threw", error);
+      }
+    }
+  }
+
   private emitAvailabilityRecovered(): void {
+    this.syncReadinessLatch();
     // Guarded per listener: the emission happens inside inbound frame
     // dispatch, so a throwing consumer must not break the session's message
     // processing or the other listeners (parity with `WsStreamClient`).
@@ -2293,7 +2485,82 @@ export class RemoteSession<
     }
   }
 
+  private dialAttemptId(generation: number): string {
+    return `${this.evidenceScope}#${generation}`;
+  }
+
+  private credentialAttemptId(): string {
+    this.reauthEvidenceSeq += 1;
+    return `${this.evidenceScope}#auth-${this.reauthEvidenceSeq}`;
+  }
+
+  private reauthAttemptId(): string {
+    this.reauthEvidenceSeq += 1;
+    return `${this.evidenceScope}#reauth-${this.reauthEvidenceSeq}`;
+  }
+
+  private reportRestartIntentIfPresent(details: FatalErrorDetails): void {
+    const restartIntent = details.restartIntent;
+    if (restartIntent === undefined) {
+      return;
+    }
+    this.options.evidence?.reportRestartIntent(
+      this.options.hostId,
+      restartIntent.tombstoneId,
+      restartIntent.expiresAt,
+    );
+  }
+
+  private reportEvidenceOutcome(
+    attemptId: string,
+    outcome: "success" | "refusal" | "plan-restricted" | "indeterminate",
+  ): void {
+    const evidence = this.options.evidence;
+    if (evidence === null) {
+      return;
+    }
+    const hostId = this.options.hostId;
+    if (outcome === "success") {
+      evidence.reportDialSuccess(hostId, attemptId, "remote-relay");
+      return;
+    }
+    if (outcome === "indeterminate") {
+      evidence.reportDialIndeterminate(hostId, attemptId, "remote-relay");
+      return;
+    }
+    evidence.reportDialRefusal(
+      hostId,
+      attemptId,
+      "remote-relay",
+      outcome === "plan-restricted" ? "plan-restricted" : null,
+    );
+  }
+
+  private announceSession(sessionId: string): void {
+    this.retractSession();
+    this.announcedSessionId = sessionId;
+    this.options.evidence?.sessionEstablished(
+      this.options.hostId,
+      sessionId,
+      "remote-relay",
+    );
+  }
+
+  private retractSession(): void {
+    const sessionId = this.announcedSessionId;
+    if (sessionId === null) {
+      return;
+    }
+    this.announcedSessionId = null;
+    this.options.evidence?.sessionLost(
+      this.options.hostId,
+      sessionId,
+      "remote-relay",
+    );
+  }
+
   private teardownConnection(reason: string): void {
+    this.retractSession();
     const connection = this.connection;
     this.connection = null;
     this.openAuthFingerprint = null;
@@ -2317,7 +2584,7 @@ export class RemoteSession<
     this.clearPhaseTimer();
     this.phaseTimer = setTimeout(() => {
       this.phaseTimer = null;
-      this.handleConnectionLost(generation, cause);
+      this.handleConnectionLost(generation, cause, "host-transport-plane");
     }, timeoutMs);
   }
 

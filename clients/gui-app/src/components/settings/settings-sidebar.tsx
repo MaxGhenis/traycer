@@ -22,6 +22,8 @@ import {
 } from "@/components/settings/host-scope/use-host-scope";
 import { useAddHostDialogStore } from "@/stores/settings/add-host-dialog-store";
 import { AddHostDialog } from "@/components/settings/host-scope/add-host-dialog";
+import { useRegisteredHostsPollLiveness } from "@/hooks/auth/use-registered-hosts-query";
+import { NO_HOST_OPTION_REFUSALS } from "@/components/settings/host-scope/host-option-model";
 
 export type SettingsSidebarMode =
   | { readonly kind: "route" }
@@ -47,6 +49,14 @@ export interface SettingsSidebarProps {
  */
 export function SettingsSidebar(props: SettingsSidebarProps) {
   const scope = useHostScope();
+  // The host picker below shows a live dot and a health word per row, so this
+  // is a liveness surface and opts into the registry poll. It is also the ONE
+  // place in Settings that has to: the picker is mounted for as long as any
+  // settings panel is, so a per-panel opt-in would poll on exactly the same
+  // schedule while being fifteen times easier to get wrong. Panels that merely
+  // read `useHostScope` for names — Shell, Worktrees, Providers — do not, which
+  // is the point: reading the list no longer implies polling it.
+  useRegisteredHostsPollLiveness();
   // No row is dimmed by host kind any more. Shell and Diagnostics used to be,
   // because both read the on-disk config store through the local CLI bridge and
   // could only ever describe this computer; `config.*` / `diagnostics.*` made
@@ -109,20 +119,36 @@ function SettingsSidebarHostPicker(props: {
         selected={scope.host}
         activeHostId={scope.activeHostId}
         onSelect={scope.setHostId}
-        onAddHost={() => openAddHost(scope.hosts.map((host) => host.hostId))}
+        refusalByHostId={NO_HOST_OPTION_REFUSALS}
+        inertExceptHostId={null}
+        // Settings is where the add-host dialog lives, so here the list ends in
+        // the verb itself rather than in a link to this very page.
+        action={{
+          kind: "add-host",
+          onSelect: () => openAddHost(scope.hosts.map((host) => host.hostId)),
+        }}
+        surface="rail"
+        intent="view"
+        disabled={false}
         isLoading={scope.isLoading}
         listsFailed={scope.listsFailed}
         onRetryLists={scope.retryLists}
       />
       {/* Said at rest, not on discovery: sections describing a host that is
-          NOT the one this window runs on is the single most confusing state
-          this surface can be in, so it never waits to be noticed. */}
+          NOT the app's active one is the single most confusing state this
+          surface can be in, so it never waits to be noticed.
+
+          "Active host", not "this window runs on": `activeHost` is the
+          app-wide EFFECTIVE host, and after a failover or an explicit pick
+          that can be a machine across the room - a developer on their laptop
+          read "this window runs on <their iMac>" as a claim about the
+          computer in front of them. */}
       {scope.host === null || scope.isViewingActive ? null : (
         <p
           className="px-1 text-[0.6875rem] leading-snug text-muted-foreground/80"
           data-testid="settings-host-viewing-note"
         >
-          Viewing — this window runs on{" "}
+          Viewing — the active host is{" "}
           {scope.activeHost?.name ?? "another host"}.
         </p>
       )}

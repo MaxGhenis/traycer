@@ -118,7 +118,8 @@ describe("useWorktreeOwnerMetadata", () => {
   it("ignores LEGACY_HOST_RESOLVED_AT rather than rendering it as an age", async () => {
     // A host predating `resolvedAt` gets its rows bridged to the literal `1`.
     // That is a resolved-MARKER, not a time: taken as one it is 1 Jan 1970, so
-    // the card would read "Checked 56y ago" on facts fetched a second ago. It
+    // the card would read "Workspace snapshot · 56y" on facts fetched a
+    // second ago. It
     // is also the smallest possible value, so a plain `Math.min` would let one
     // legacy folder swallow every real timestamp beside it.
     const fixture = createFixture({
@@ -387,15 +388,17 @@ function createFixture(
       },
     },
   });
-  const client = new HostClient<HostRpcRegistry>({
+  const spine = new HostClient<HostRpcRegistry>({
     registry: hostRpcRegistry,
     invalidator: createHostQueryInvalidator(queryClient),
+    findHostById: (hostId) =>
+      hostId === mockLocalHostEntry.hostId ? mockLocalHostEntry : null,
     messenger,
   });
-  client.bind(mockLocalHostEntry);
-  client.setRequestContext(
+  spine.setRequestContext(
     createRequestContextFixture({ origin: "renderer", bearerToken: "tok-1" }),
   );
+  const client = spine.createRequester(mockLocalHostEntry);
   const Wrapper = (props: { readonly children: ReactNode }): ReactNode => (
     <QueryClientProvider client={queryClient}>
       {props.children}

@@ -33,6 +33,7 @@ import type { EpicStreamCallbacks } from "@traycer-clients/shared/host-transport
 import { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import { mockLocalHostEntry } from "@traycer-clients/shared/host-client/mock/mock-host-directory";
 import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock-host-messenger";
+import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
 import { createRequestContextFixture } from "@traycer-clients/shared/test-fixtures/request-context";
 import { hostRpcRegistry, type HostRpcRegistry } from "@/lib/host";
 import { createHostQueryInvalidator } from "@/lib/host/query-invalidator";
@@ -58,17 +59,21 @@ const EPIC_ID = "epic-records";
 const VIEWER_ID = "viewer-1";
 const HOST_ID = mockLocalHostEntry.hostId;
 
-// `useEpicSyncChatRecords` and the rename/delete hooks read the APP-WIDE
-// client; the create-for-client hook takes one as an argument. Both must land
-// on the same host for the invalidation key to match the query key at all,
-// which is the mismatch class this suite exists to catch - so the mock hands
-// back the one fixture client and the assertions do the rest.
+// `useEpicSyncChatRecords` and the rename/delete hooks read the EPIC SESSION's
+// client (`EpicSessionHostClientContext`, provided by the wrapper below); the
+// create-for-client hook takes one as an argument; the app-wide runtime mock
+// serves whatever still resolves through it. All must land on the same host
+// for the invalidation key to match the query key at all, which is the
+// mismatch class this suite exists to catch - so every seam hands back the one
+// fixture client and the assertions do the rest.
 const runtime: { client: HostClient<HostRpcRegistry> | null } = vi.hoisted(
   () => ({ client: null }),
 );
 vi.mock("@/lib/host/runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/host/runtime")>()),
   useHostClient: () => runtime.client,
+  // The SPINE, a separate export since redesign P2.1.
+  useHostRuntimeClient: () => runtime.client,
 }));
 
 interface Fixture {
@@ -158,7 +163,7 @@ function newSession(): OpenEpicStoreHandle {
   return handle;
 }
 
-function createFixture(): Fixture {
+function createFixture(listFailureCode: "E_HOST_UNSUPPORTED" | null): Fixture {
   const records: ChatRecordSummary[] = [];
   const listCalls = { value: 0 };
   const requestSeq = { value: 0 };
@@ -168,9 +173,11 @@ function createFixture(): Fixture {
       mutations: { retry: false },
     },
   });
-  const client = new HostClient<HostRpcRegistry>({
+  const spine = new HostClient<HostRpcRegistry>({
     registry: hostRpcRegistry,
     invalidator: createHostQueryInvalidator(queryClient),
+    findHostById: (hostId) =>
+      hostId === mockLocalHostEntry.hostId ? mockLocalHostEntry : null,
     messenger: new MockHostMessenger<HostRpcRegistry>({
       registry: hostRpcRegistry,
       requestId: () => {
@@ -180,6 +187,17 @@ function createFixture(): Fixture {
       handlers: {
         "epic.listChatRecords": () => {
           listCalls.value += 1;
+          if (listFailureCode !== null) {
+            return Promise.reject(
+              new HostRpcError({
+                code: listFailureCode,
+                message: "record list unsupported",
+                requestId: `req-${String(requestSeq.value)}`,
+                method: "epic.listChatRecords",
+                fatalDetails: null,
+              }),
+            );
+          }
           return Promise.resolve({ chats: records.map((row) => ({ ...row })) });
         },
         // The host writes the registry row BEFORE it answers
@@ -228,13 +246,13 @@ function createFixture(): Fixture {
       },
     }),
   });
-  client.bind(mockLocalHostEntry);
-  client.setRequestContext(
+  spine.setRequestContext(
     // Any authenticated context will do: the client's request-context user id
     // only gates `useHostQuery`'s readiness. The VIEWER identity that scopes
     // the cache key is the auth store's, seeded in `beforeEach`.
     createRequestContextFixture({ origin: "renderer", bearerToken: "tok-1" }),
   );
+  const client = spine.createRequester(mockLocalHostEntry);
   runtime.client = client;
   const handle = newSession();
   const Wrapper = (props: { readonly children: ReactNode }): ReactNode =>
@@ -260,7 +278,7 @@ beforeEach(() => {
   useAuthStore.setState({
     contextMetadata: { userId: VIEWER_ID, username: VIEWER_ID },
   });
-  fixture = createFixture();
+  fixture = createFixture(null);
 });
 
 afterEach(() => {
@@ -283,10 +301,37 @@ function renderChannel<T>(useMutationHook: () => T): { readonly current: T } {
 }
 
 async function settleFirstRead(): Promise<void> {
+  expect(fixture.handle.store.getState().chatRecordListAuthoritative).toBe(
+    false,
+  );
   await waitFor(() => {
     expect(fixture.listCalls.value).toBe(1);
   });
+  await waitFor(() => {
+    expect(fixture.handle.store.getState().chatRecordListAuthoritative).toBe(
+      true,
+    );
+  });
 }
+
+describe("record-list deletion authority", () => {
+  it("treats E_HOST_UNSUPPORTED as an authoritative doc-only answer", async () => {
+    fixture.handle.store.getState().dispose();
+    fixture = createFixture("E_HOST_UNSUPPORTED");
+
+    renderHook(() => useEpicSyncChatRecords(EPIC_ID), {
+      wrapper: fixture.Wrapper,
+    });
+
+    await waitFor(() => {
+      expect(fixture.listCalls.value).toBe(1);
+      expect(fixture.handle.store.getState().chatRecordListAuthoritative).toBe(
+        true,
+      );
+    });
+    expect(fixture.handle.store.getState().chats.allIds).toEqual([]);
+  });
+});
 
 describe("a create refreshes the record list", () => {
   it("re-reads the records after a create sent on an explicitly resolved host client", async () => {

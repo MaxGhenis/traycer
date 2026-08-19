@@ -16,6 +16,13 @@ import {
 
 export interface NotificationIndicatorState {
   readonly unreadFailure: boolean;
+  /** Failure that is not a renderer-local terminal lifecycle failure. Host
+   * failures use this arm because the released indicator response does not
+   * carry a terminal subtype. */
+  readonly unreadNonTerminalFailure?: boolean;
+  /** GUI-local subtype used to distinguish terminal failures on aggregate
+   * task surfaces. When true, `unreadFailure` is also true. */
+  readonly unreadTerminalFailure?: boolean;
   readonly pendingFork: boolean;
   readonly pendingApproval: boolean;
   readonly pendingInterview: boolean;
@@ -36,6 +43,8 @@ export type SurfaceNotificationIndicators =
 
 export const EMPTY_NOTIFICATION_INDICATOR_STATE: NotificationIndicatorState = {
   unreadFailure: false,
+  unreadNonTerminalFailure: false,
+  unreadTerminalFailure: false,
   pendingFork: false,
   pendingApproval: false,
   pendingInterview: false,
@@ -51,19 +60,32 @@ export function selectNotificationIndicatorState(
   indicators: SurfaceNotificationIndicators,
 ): NotificationIndicatorState {
   const hostState = selectHostIndicatorState(indicators, entity, originHostId);
-  const unreadLocalFailure = Object.values(state.byId).some(
-    (entry) =>
+  let unreadLocalTerminalFailure = false;
+  let unreadLocalNonTerminalFailure = false;
+  for (const entry of Object.values(state.byId)) {
+    const matchesEntity =
       entry.readAt === null &&
       (originHostId === null || entry.originHostId === originHostId) &&
       (entity.chatId === undefined
         ? notificationPayloadBelongsToEpic(entry.payload, entity.epicId)
-        : notificationPayloadBelongsToEntity(entry.payload, entity)),
-  );
+        : notificationPayloadBelongsToEntity(entry.payload, entity));
+    if (!matchesEntity) continue;
+    if (entry.kind === "terminal.closed" || entry.kind === "terminal.crashed") {
+      unreadLocalTerminalFailure = true;
+    } else {
+      unreadLocalNonTerminalFailure = true;
+    }
+  }
+  const unreadLocalFailure =
+    unreadLocalTerminalFailure || unreadLocalNonTerminalFailure;
   if (!unreadLocalFailure && hostState === EMPTY_HOST_INDICATOR_STATE) {
     return EMPTY_NOTIFICATION_INDICATOR_STATE;
   }
   return {
     unreadFailure: unreadLocalFailure || hostState.unreadFailure,
+    unreadNonTerminalFailure:
+      unreadLocalNonTerminalFailure || hostState.unreadFailure,
+    unreadTerminalFailure: unreadLocalTerminalFailure,
     pendingFork: hostState.pendingFork,
     pendingApproval: hostState.pendingApproval,
     pendingInterview: hostState.pendingInterview,
@@ -111,14 +133,15 @@ function selectHostIndicatorState(
  * snapshots, already filtered for cleared/superseded), and every row carries
  * the entity columns, severity, kind and markers, so it can mirror the host's
  * derivation over rows from EVERY host rather than only the connected one.
- * An epic aggregates direct rows plus only its supplied live chats; a chat
- * aggregates only its own rows. Pending prompts are ORed normally. Terminal
- * rows first resolve to the newest
- * outcome for each lifecycle group and exact entity within one origin host,
- * whose timestamps share a clock domain. Those per-host winners are then
- * rolled into epic state. This lets a later success replace an earlier failure
- * from the same lifecycle without comparing clocks across hosts or allowing an
- * independent lifecycle, host, or entity's success to hide a real failure.
+ * Unread, unresolved prompt notifications light their respective pending
+ * actions. A resolved-but-unread row remains a notification-stream concern,
+ * not a false claim that its chat is still waiting for an action. Terminal rows
+ * first resolve to the newest outcome for each lifecycle group and exact entity
+ * within one origin host, whose timestamps share a clock domain. Those
+ * per-host winners are then rolled into epic state. This lets a later success
+ * replace an earlier failure from the same lifecycle without comparing clocks
+ * across hosts or allowing an independent lifecycle, host, or entity's success
+ * to hide a real failure.
  * `pendingFork` is always false here: fork truth is host-local and is merged
  * from the host response after this feed-row derivation, never inferred from a
  * retained cloud row.
@@ -198,12 +221,9 @@ function cloudIndicatorEntryIsWanted(
   wantedChatIds: ReadonlySet<string>,
 ): boolean {
   const { epicId, chatId } = row.entry;
-  const isLiveChat = chatId !== null && wantedChatIds.has(chatId);
   return (
-    (epicId !== null &&
-      wantedEpicIds.has(epicId) &&
-      (chatId === null || isLiveChat)) ||
-    isLiveChat
+    (epicId !== null && wantedEpicIds.has(epicId)) ||
+    (chatId !== null && wantedChatIds.has(chatId))
   );
 }
 

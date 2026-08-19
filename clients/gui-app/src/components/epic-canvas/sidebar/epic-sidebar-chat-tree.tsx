@@ -7,7 +7,6 @@ import { AnimatePresence, m, useReducedMotion } from "motion/react";
 import type { RoleClaim } from "@traycer/protocol/persistence/epic/role-claims";
 import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import { v4 as uuidv4 } from "uuid";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import { useHostReachability } from "@/hooks/agent/use-host-reachability";
 import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { makePublishedChatTileRef } from "@/stores/epics/canvas/tile-schema/published-chat-tile";
@@ -54,6 +53,8 @@ import {
   FAILURE_TONE,
   FORK_TONE,
   INTERVIEW_TONE,
+  terminalFailureTone,
+  TERMINAL_FAILURE_TONE,
   type IndicatorTone,
 } from "@/components/notifications/notification-indicator-tones";
 import { BackgroundActivityGlyph } from "@/components/notifications/background-activity-glyph";
@@ -83,8 +84,10 @@ import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { TreeChevron, TreeChevronSpacer } from "@/components/ui/tree-chevron";
 import {
   CHAT_ARCHIVE_VISIBILITY,
+  CHAT_OWNERSHIP,
   CHAT_ORIGIN,
   isChatFilterActive,
+  matchesChatOwnershipFilter,
   useAcknowledgedRootCreatePending,
   useChatArchiveVisibility,
   useChatFilter,
@@ -100,7 +103,7 @@ import {
   type NodeComparator,
 } from "@/lib/epic-sort";
 import {
-  findOpenArtifactInTab,
+  findOpenTileInTab,
   useActiveEpicArtifactId,
   useEpicCanvasStore,
   useIsActiveEpicArtifact,
@@ -167,6 +170,7 @@ import {
   Lock,
   Pencil,
   Plus,
+  SearchX,
   Trash2,
   Users,
 } from "lucide-react";
@@ -196,8 +200,9 @@ import {
 import { TreeGroupGuide } from "./epic-sidebar-tree-guide";
 import {
   applyVisibleFilter,
-  collectWithAncestors,
   isFilteredTreeEmpty,
+  isTypeToFilterEditableTarget,
+  isTypeToFilterKey,
   mergeForcedExpanded,
   SidebarFilterVisibilityContext,
   SidebarSortContext,
@@ -221,6 +226,18 @@ import {
 } from "@/components/epic-canvas/dnd/dnd";
 import { SidebarReparentRowDropWrapper } from "@/components/epic-canvas/sidebar/sidebar-reparent-row-drop-wrapper";
 import { SidebarPanelEmptyState } from "@/components/epic-canvas/sidebar/sidebar-panel-empty-state";
+import { ChatSearchHeaderInput } from "@/components/epic-canvas/sidebar/epic-sidebar-chat-search";
+import {
+  chatSearchMatchIds,
+  expandMatchesToVisibleIds,
+  filterCloudChatsBySearch,
+  intersectMatchIds,
+} from "@/components/epic-canvas/sidebar/chat-search-fuzzy";
+import {
+  usePanelHeaderSearchOpen,
+  usePanelHeaderSearchQuery,
+  usePanelHeaderSearchStore,
+} from "@/stores/epics/panel-header-search-store";
 import { resolveProfileAccentDot } from "@/components/worktree/worktree-owner-settings-model";
 import { harnessProfiles } from "@/components/worktree/worktree-owner-settings-profiles";
 import { useNotificationIndicators } from "@/hooks/notifications/use-notification-indicators-query";
@@ -240,7 +257,6 @@ import {
 } from "@/components/notifications/notification-indicator-icon";
 import { useEpicStore } from "@/hooks/use-epic-store";
 import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
-import { useHostClient } from "@/lib/host/runtime";
 import { useProvidersListForClient } from "@/hooks/providers/use-providers-list-query";
 
 interface ChatTreePanelBodyProps {
@@ -329,7 +345,8 @@ type ChatDescendantStatusKind =
   | "approval"
   | "running"
   | "background"
-  | "done";
+  | "done"
+  | "terminal-failure";
 
 /**
  * One shared urgency ladder for a collapsed parent's icon slot: the parent's
@@ -342,16 +359,18 @@ type ChatDescendantStatusKind =
  * / subagent / Monitor / scheduled wakeup keeping a session non-idle while the
  * agent itself is idle), matching the turn-over-background precedence the
  * per-chat indicator already uses. Both still outrank `done`, so any live work
- * beats a finished-but-unread one.
+ * beats a finished-but-unread one. A terminal failure is deliberately the
+ * lowest notable tier: Done remains the stronger task-level signal.
  */
 const CHAT_STATUS_RANKS: Record<ChatDescendantStatusKind, number> = {
-  failure: 7,
-  fork: 6,
-  interview: 5,
-  approval: 4,
-  running: 3,
-  background: 2,
-  done: 1,
+  failure: 8,
+  fork: 7,
+  interview: 6,
+  approval: 5,
+  running: 4,
+  background: 3,
+  done: 2,
+  "terminal-failure": 1,
 };
 
 /** {@link CHAT_STATUS_RANKS} most-urgent first, for picking a rollup's kind. */
@@ -363,6 +382,7 @@ const CHAT_STATUS_ORDER: ReadonlyArray<ChatDescendantStatusKind> = [
   "running",
   "background",
   "done",
+  "terminal-failure",
 ];
 
 /** The ladder kind an activity tier occupies. */
@@ -386,6 +406,7 @@ function chatDescendantKind(
   if (tone === APPROVAL_TONE) return "approval";
   if (tier !== undefined) return activityTierKind(tier);
   if (indicatorState.unreadDone) return "done";
+  if (terminalFailureTone(indicatorState) !== null) return "terminal-failure";
   return null;
 }
 
@@ -404,6 +425,7 @@ interface ChatDescendantStatusRollup {
   readonly runningCount: number;
   readonly backgroundCount: number;
   readonly doneCount: number;
+  readonly terminalFailureCount: number;
 }
 
 const EMPTY_CHAT_DESCENDANT_IDS: ReadonlyArray<string> = [];
@@ -486,6 +508,7 @@ function useChatDescendantStatus(args: {
         running: 0,
         background: 0,
         done: 0,
+        "terminal-failure": 0,
       };
       for (const chatId of descendants) {
         const indicatorState = selectNotificationIndicatorState(
@@ -512,6 +535,7 @@ function useChatDescendantStatus(args: {
         runningCount: counts.running,
         backgroundCount: counts.background,
         doneCount: counts.done,
+        terminalFailureCount: counts["terminal-failure"],
       };
     }),
   );
@@ -551,22 +575,35 @@ function usePanelRootIds(
 }
 
 /**
- * Visible-id set for an active chat origin filter (GUI chats vs TUI terminal
- * agents), expanded to include ancestors so filtered nodes stay reachable.
- * `null` when no filter is active.
+ * Nodes the active interface and ownership filters MATCH - the raw matches, with
+ * no ancestor expansion. Every local agent is owned by the viewer;
+ * collaborators' agents arrive only as cloud rows. `null` when neither filter is
+ * active.
+ *
+ * Ancestor expansion is deliberately NOT done here. A path ancestor is a
+ * rendering concession, not a match, and expanding before combining with search
+ * would let one narrowing's concession satisfy the other's predicate - see
+ * {@link intersectMatchIds}.
  */
-function useChatVisibleIds(epicId: string): ReadonlySet<string> | null {
+function useChatFilterMatchIds(epicId: string): ReadonlySet<string> | null {
   const filter = useChatFilter(epicId);
   const liveRecords = useEpicArtifactRecords();
-  const tree = useEpicTreeIndex();
   return useMemo(() => {
     if (!isChatFilterActive(filter)) return null;
-    const wantType = filter.origin === "gui" ? "chat" : "terminal-agent";
-    const matches = liveRecords.flatMap((record): string[] =>
-      record.type === wantType ? [record.id] : [],
+    const includeLocal = matchesChatOwnershipFilter(true, filter.ownership);
+    return new Set(
+      liveRecords.flatMap((record): string[] =>
+        includeLocal &&
+        CHATS_TREE_FILTER(record.type) &&
+        (filter.origin === CHAT_ORIGIN.All ||
+          (filter.origin === CHAT_ORIGIN.Gui && record.type === "chat") ||
+          (filter.origin === CHAT_ORIGIN.Tui &&
+            record.type === "terminal-agent"))
+          ? [record.id]
+          : [],
+      ),
     );
-    return collectWithAncestors(matches, tree.nodeById);
-  }, [filter, liveRecords, tree]);
+  }, [filter, liveRecords]);
 }
 
 /**
@@ -596,8 +633,26 @@ function cloudRowMatchesArchiveVisibility(
  * expressible per row has an obvious place to go.
  */
 function cloudRowMatchesOriginFilter(filter: ChatFilter): boolean {
-  if (!isChatFilterActive(filter)) return true;
   return filter.origin !== CHAT_ORIGIN.Tui;
+}
+
+function cloudRowMatchesOwnershipFilter(
+  chat: CloudChatSummary,
+  filter: ChatFilter,
+): boolean {
+  return matchesChatOwnershipFilter(chat.isOwnedByViewer, filter.ownership);
+}
+
+function chatFilterEmptyStateDescription(filter: ChatFilter): string {
+  const interfaceActive = filter.origin !== CHAT_ORIGIN.All;
+  const ownershipActive = filter.ownership !== CHAT_OWNERSHIP.All;
+  if (interfaceActive && !ownershipActive) {
+    return "The Interface filter is hiding the other agents.";
+  }
+  if (ownershipActive && !interfaceActive) {
+    return "The Ownership filter is hiding the other agents.";
+  }
+  return "The current filters are hiding the other agents.";
 }
 
 // Panel body composes sort/filter/expansion/selection/pending-create hooks in
@@ -613,12 +668,78 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
     [sort],
   );
   const allRootIds = usePanelRootIds(panelId, comparator);
-  const originVisibleIds = useChatVisibleIds(epicId);
+  const filterMatchIds = useChatFilterMatchIds(epicId);
   const tree = useEpicTreeIndex();
+  // Bulk selection owns the header outright (`PanelGroupSectionHeader` returns
+  // the selection actions before it ever considers the search row), so while
+  // selection mode is on there is no search input to type into, to read a query
+  // back from, or to press Escape in. Treating search as INACTIVE for that whole
+  // window is what keeps an already-open query from silently narrowing the very
+  // rows the user is trying to select, with no visible control to undo it.
+  const bulkSelection = useMaybeSidebarBulkSelection();
+  const selectionMode = bulkSelection?.selectionMode === true;
+  // Fuzzy title search is a SECOND narrowing layered on the filters, not a
+  // replacement for the tree. Reading the query as "" while search is closed
+  // keeps a half-typed query from narrowing a tree with no visible search box.
+  const searchOpen = usePanelHeaderSearchOpen(tabId, panelId);
+  const rawSearchQuery = usePanelHeaderSearchQuery(tabId, panelId);
+  const searchQuery = searchOpen && !selectionMode ? rawSearchQuery : "";
+  const searchActive = searchQuery.trim().length > 0;
+  const searchMatchIds = useMemo(
+    () =>
+      chatSearchMatchIds({
+        query: searchQuery,
+        nodeById: tree.nodeById,
+        treeFilter: CHATS_TREE_FILTER,
+      }),
+    [searchQuery, tree],
+  );
+  // Intersect the two narrowings as MATCHES, then expand ancestors once. Doing
+  // it the other way round lets a path-only ancestor of one narrowing satisfy
+  // the other's predicate - see `intersectMatchIds`.
+  const narrowedMatchIds = useMemo(
+    () => intersectMatchIds(filterMatchIds, searchMatchIds),
+    [filterMatchIds, searchMatchIds],
+  );
+  const narrowedVisibleIds = useMemo(
+    () => expandMatchesToVisibleIds(narrowedMatchIds, tree.nodeById),
+    [narrowedMatchIds, tree],
+  );
+  // Filter-only, still ancestor-expanded: the indicator query below reads this
+  // one so it does not refetch on every keystroke.
+  const filterVisibleIds = useMemo(
+    () => expandMatchesToVisibleIds(filterMatchIds, tree.nodeById),
+    [filterMatchIds, tree],
+  );
+  // Type-to-filter: a bare printable key anywhere in the focused tree enters
+  // search mode seeded with that character, so the keystroke that started the
+  // search is not swallowed by the focus handoff to the header input.
+  //
+  // Subscribed imperatively rather than via `onKeyDown` for the same reason the
+  // artifact panel does it: a JSX key handler on this region would oblige it to
+  // claim an interactive role it does not have (the tree inside owns
+  // `role="tree"`).
+  const openSearch = usePanelHeaderSearchStore((s) => s.openSearch);
+  const treeRegionRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const region = treeRegionRef.current;
+    if (region === null) return;
+    // Selection mode: the keystroke would open a search whose input the header
+    // has no room to render.
+    if (searchOpen || selectionMode) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (isTypeToFilterEditableTarget(event.target)) return;
+      if (!isTypeToFilterKey(event)) return;
+      event.preventDefault();
+      openSearch(tabId, panelId, event.key);
+    };
+    region.addEventListener("keydown", onKeyDown);
+    return () => region.removeEventListener("keydown", onKeyDown);
+  }, [tabId, panelId, searchOpen, selectionMode, openSearch]);
   const archiveVisibility = useChatArchiveVisibility(epicId);
-  // The origin filter's own value, for the cloud rows. The local tree consumes
-  // it as the id set `useChatVisibleIds` expands it into; a cloud row is not in
-  // the tree, so it answers the filter directly.
+  // The filter's own value, for the cloud rows. The local tree consumes it as
+  // the id set `useChatVisibleIds` expands it into; a cloud row is not in the
+  // tree, so it answers both axes directly.
   const chatFilter = useChatFilter(epicId);
   const baseArchiveHiddenIds = useSidebarArchiveHiddenIds(epicId);
   const canArchive = useChatArchiveSupported();
@@ -633,9 +754,9 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
     staleTime: undefined,
   });
   const hasCollaborators = taskHasCollaborators(collaboratorsQuery.data);
-  const originRootIds = useMemo(
-    () => applyVisibleFilter(allRootIds, originVisibleIds),
-    [allRootIds, originVisibleIds],
+  const filterRootIds = useMemo(
+    () => applyVisibleFilter(allRootIds, narrowedVisibleIds),
+    [allRootIds, narrowedVisibleIds],
   );
 
   // Indicators must be fetched BEFORE archive hiding is applied. Archived
@@ -648,10 +769,10 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
         .filter(
           (id) =>
             CHATS_TREE_FILTER(tree.nodeById[id].type) &&
-            (originVisibleIds === null || originVisibleIds.has(id)),
+            (filterVisibleIds === null || filterVisibleIds.has(id)),
         )
         .sort(),
-    [tree, originVisibleIds],
+    [tree, filterVisibleIds],
   );
   const epicSessionHostId = useEpicSessionHostId();
   const notificationIndicators = useNotificationIndicators({
@@ -692,22 +813,22 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
     [baseArchiveHiddenIds, alwaysVisibleIds, tree],
   );
 
-  // Two independent narrowings, kept separate on purpose. `originRootIds` is
-  // the origin filter's result and feeds the "no matches" empty state and
-  // forced expansion; `rootIds` additionally drops archived roots and is what
-  // actually renders. Collapsing them would make an all-archived tree show the
-  // Interface-filter empty state instead of the archived one, blaming a filter
-  // that is not hiding anything.
+  // Two independent narrowings, kept separate on purpose. `filterRootIds` is
+  // the interface/ownership filter result and feeds the "no matches" empty
+  // state and forced expansion; `rootIds` additionally drops archived roots
+  // and is what actually renders. Collapsing them would make an all-archived
+  // tree show the filter-empty state instead of the archived one, blaming a
+  // filter that is not hiding anything.
   const rootIds = useMemo(
     () =>
       archiveHiddenIds.size === 0
-        ? originRootIds
-        : originRootIds.filter((id) => !archiveHiddenIds.has(id)),
-    [originRootIds, archiveHiddenIds],
+        ? filterRootIds
+        : filterRootIds.filter((id) => !archiveHiddenIds.has(id)),
+    [filterRootIds, archiveHiddenIds],
   );
   const visibleIds = useMemo(
-    () => combineSidebarVisibleIds(originVisibleIds, archiveHiddenIds, tree),
-    [originVisibleIds, archiveHiddenIds, tree],
+    () => combineSidebarVisibleIds(narrowedVisibleIds, archiveHiddenIds, tree),
+    [narrowedVisibleIds, archiveHiddenIds, tree],
   );
   // Resolved once here and threaded down, matching how this body already
   // handles every other epic-level fact.
@@ -715,16 +836,20 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
   // The task's chats on hosts this device cannot reach, folded against the
   // local tree by PUBLICATION identity and interleaved into one recency-sorted
   // list. There is no "other devices" section: a chat's host is a property of
-  // the chat, and a lock on the row says what its state is. App-wide client,
-  // not the tab's - the cloud read is served by whatever host this device runs.
-  const appHostClient = useHostClient();
+  // the chat, and a lock on the row says what its state is. The cloud read is
+  // a byte pipe any reachable host can serve, so it rides the Epic SESSION's
+  // client - the one host known to be serving this tree - rather than the
+  // app-wide one, which for the whole of a re-point in flight names a machine
+  // that may not be answering. (Every reader of this list in the canvas -
+  // `tab-group-view`, the route sync, the chat tile's dead-tile banner -
+  // resolves the same client, so the TanStack cache is shared, not split.)
   const cloudChats = useCloudChatList({
-    client: appHostClient,
+    client: sessionHostClient,
     taskId: epicId,
     enabled: epicId.length > 0,
   });
   const publicationTargets = useChatPublicationTargets({
-    client: appHostClient,
+    client: sessionHostClient,
     epicId,
     chatIds: localChatIds,
     enabled: epicId.length > 0,
@@ -784,14 +909,28 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
   // No attention-reveal exception, unlike the local side's `alwaysVisibleIds`:
   // that exists so a row whose activity THIS device tracks cannot be archived
   // into invisibility, and a cloud row's indicators belong to its owner.
+  //
+  // Search narrows them for the same reason: a cloud row is an agent in this
+  // task's list, so a query that hides every local non-match while leaving
+  // remote rows in place would be the list contradicting its own search box.
+  const filterMatchingCloudChats = useMemo(
+    () =>
+      filterCloudChatsBySearch(
+        unfoldedCloudChats.filter(
+          (chat) =>
+            cloudRowMatchesOriginFilter(chatFilter) &&
+            cloudRowMatchesOwnershipFilter(chat, chatFilter),
+        ),
+        searchQuery,
+      ),
+    [unfoldedCloudChats, chatFilter, searchQuery],
+  );
   const visibleCloudChats = useMemo(
     () =>
-      unfoldedCloudChats.filter(
-        (chat) =>
-          cloudRowMatchesArchiveVisibility(chat, archiveVisibility) &&
-          cloudRowMatchesOriginFilter(chatFilter),
+      filterMatchingCloudChats.filter((chat) =>
+        cloudRowMatchesArchiveVisibility(chat, archiveVisibility),
       ),
-    [unfoldedCloudChats, archiveVisibility, chatFilter],
+    [filterMatchingCloudChats, archiveVisibility],
   );
   const activeArtifactId = useActiveEpicArtifactId(tabId);
   const permissionRole = useEpicPermissionRole();
@@ -821,7 +960,8 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
     [pendingRootCreates, rootIds],
   );
   const showPendingRootRows =
-    archiveVisibility !== CHAT_ARCHIVE_VISIBILITY.Archived;
+    archiveVisibility !== CHAT_ARCHIVE_VISIBILITY.Archived &&
+    matchesChatOwnershipFilter(true, chatFilter.ownership);
   const renderedLocalRootPending = showPendingRootRows
     ? localRootPending
     : null;
@@ -836,11 +976,12 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
     : EMPTY_PENDING_LIST;
 
   const ancestorIdsOfActive = useAncestorIds(activeArtifactId);
-  // Origin-only: see `combineSidebarVisibleIds`. Archive hiding must never
-  // reach here.
+  // Filter- and search-only: see `combineSidebarVisibleIds`. Archive hiding must
+  // never reach here. A search match nested under a collapsed parent forces that
+  // parent open for the same reason a filter match does.
   const forcedExpandedIds = useMemo(
-    () => mergeForcedExpanded(ancestorIdsOfActive, originVisibleIds),
-    [ancestorIdsOfActive, originVisibleIds],
+    () => mergeForcedExpanded(ancestorIdsOfActive, narrowedVisibleIds),
+    [ancestorIdsOfActive, narrowedVisibleIds],
   );
   const expandedIds = useEpicSidebarEffectiveExpanded(
     tabId,
@@ -868,7 +1009,6 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
     () => ({ expandedIds, toggleExpanded, ensureExpanded }),
     [expandedIds, toggleExpanded, ensureExpanded],
   );
-  const bulkSelection = useMaybeSidebarBulkSelection();
   const selectableIds = useMemo(
     () =>
       collectVisibleSidebarTreeIds({
@@ -893,7 +1033,6 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
     },
     [resetSelection],
   );
-  const selectionMode = bulkSelection?.selectionMode ?? false;
   const selectedIds = bulkSelection?.selectedIds ?? EMPTY_SELECTED_IDS;
   const toggleSelection = bulkSelection?.toggleSelection ?? noopToggleSelection;
   const hasPendingRootRows =
@@ -901,18 +1040,18 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
     renderedAcknowledgedRootPending !== null ||
     renderedPreAckRootCreates.length > 0 ||
     renderedPendingRootCreates.length > 0;
-  // Local-tree emptiness AND no surviving cloud row: a GUI-origin filter over a
-  // task whose only chats are remote leaves the tree empty and the list full, so
-  // asking the tree alone would announce "no matches" over rows on screen.
+  // Local-tree emptiness AND no cloud row surviving the interface/ownership
+  // filters. Asking the local tree alone would announce "no matches" over a
+  // matching remote row still rendered on screen.
   const filteredTreeEmpty =
     isFilteredTreeEmpty({
-      visibleIds: originVisibleIds,
-      rootIds: originRootIds,
+      visibleIds: narrowedVisibleIds,
+      rootIds: filterRootIds,
       localRootPending: renderedLocalRootPending,
       acknowledgedRootPending: renderedAcknowledgedRootPending,
       preAckRootCreates: renderedPreAckRootCreates,
       visiblePendingRootCreates: renderedPendingRootCreates,
-    }) && visibleCloudChats.length === 0;
+    }) && filterMatchingCloudChats.length === 0;
   // One list: local roots and unreachable-host rows, interleaved. Nested local
   // children still render under their parents through `ChatNode`; only ROOTS
   // take part in the interleave, and a cloud row is always a leaf.
@@ -926,6 +1065,19 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
       }),
     [rootIds, tree.nodeById, visibleCloudChats, comparator],
   );
+  // What the live region announces. Counted from the MATCHES, not `listEntries`:
+  // that list holds only local roots (nested matches render recursively beneath
+  // them, so two siblings under one parent would announce as one) and it counts
+  // path-only ancestors that matched nothing. Archive-hidden matches are
+  // excluded because they are not on screen to be counted.
+  const searchResultCount = useMemo(() => {
+    if (narrowedMatchIds === null) return 0;
+    let localMatches = 0;
+    for (const id of narrowedMatchIds) {
+      if (!archiveHiddenIds.has(id)) localMatches += 1;
+    }
+    return localMatches + visibleCloudChats.length;
+  }, [narrowedMatchIds, archiveHiddenIds, visibleCloudChats]);
   // "No agents yet" is now a statement about the TASK rather than this device,
   // so a task whose only agents live on an unreachable host is not empty - it
   // is a list of locked rows. That is the whole restoration.
@@ -937,21 +1089,21 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
   // ask. Pre-filter on purpose: this arm means the task HAS nothing, so a row
   // the user's own filter is hiding still counts as something.
   const showEmptyState =
-    originVisibleIds === null &&
+    filterVisibleIds === null &&
     allRootIds.length === 0 &&
     unfoldedCloudChats.length === 0 &&
     isCloudChatListSettled(cloudChats) &&
     !hasPendingRootRows;
-  // Rows exist and survive the origin filter, yet archiving hid every one of
-  // them. Distinct from both other arms: the tree is neither empty nor filtered
-  // down to nothing, and the user needs to be told where the rows went. Cloud
-  // rows count on both sides of that sentence, or an all-archived remote list
-  // would fall through to "No agents yet."
+  // Rows exist and survive the interface/ownership filters, yet archiving hid
+  // every one of them. Distinct from both other arms: the tree is neither empty
+  // nor filtered down to nothing, and the user needs to be told where the rows
+  // went. Cloud rows count on both sides of that sentence, or an all-archived
+  // remote list would fall through to "No agents yet."
   const archiveHidEverything =
     !hasPendingRootRows &&
     rootIds.length === 0 &&
     visibleCloudChats.length === 0 &&
-    (originRootIds.length > 0 || unfoldedCloudChats.length > 0);
+    (filterRootIds.length > 0 || filterMatchingCloudChats.length > 0);
   const archiveEmptyState = archiveEmptyStateCopy(
     archiveVisibility,
     canArchive,
@@ -967,15 +1119,28 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
         testId="epic-chat-sidebar-empty"
       />
     );
+  } else if (filteredTreeEmpty && searchActive) {
+    // Search is the narrowing the user is actively driving, so it owns the
+    // empty state even when a filter is also on - blaming the filter chips for
+    // a query that matches nothing would send them to the wrong control.
+    panelContent = (
+      <SidebarPanelEmptyState
+        icon={SearchX}
+        title="No agents match your search."
+        description={
+          isChatFilterActive(chatFilter)
+            ? "The current filters may also be hiding matches."
+            : null
+        }
+        testId="epic-chat-sidebar-search-empty"
+      />
+    );
   } else if (filteredTreeEmpty) {
     panelContent = (
       <SidebarPanelEmptyState
         icon={MessagesSquare}
-        // Names the INTERFACE as the thing with no matches. "No agents match"
-        // would imply the Task has none at all, when the filter is only hiding
-        // the other interface.
         title="No matches for the current filters."
-        description="The Interface filter is hiding the other agents."
+        description={chatFilterEmptyStateDescription(chatFilter)}
         testId="epic-chat-sidebar-filter-empty"
       />
     );
@@ -1088,9 +1253,19 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
           <SidebarViewerContext.Provider value={isViewer}>
             <SidebarSortContext.Provider value={comparator}>
               <SidebarFilterVisibilityContext.Provider value={visibleIds}>
+                {searchOpen && !selectionMode ? (
+                  <ChatSearchHeaderInput
+                    tabId={tabId}
+                    resultCount={searchResultCount}
+                  />
+                ) : null}
                 <SidebarContent className="gap-0">
                   <SidebarGroup className="min-h-0 flex-1 px-2 py-1">
-                    <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
+                    <SidebarGroupContent
+                      ref={treeRegionRef}
+                      className="flex min-h-0 flex-1 flex-col"
+                      data-testid="epic-chat-tree-region"
+                    >
                       {panelContent}
                     </SidebarGroupContent>
                   </SidebarGroup>
@@ -1238,15 +1413,21 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
     [archiveSupported, isArchived, archivePending, toggleArchive],
   );
 
-  const activeHostId = useReactiveActiveHostId() ?? "unknown-host";
   // The tab must bind to the chat's OWNER host, not whichever host happens to
   // be active: a connected peer host's chat reaches this tree through the
   // shared projection, and binding it to the active host would open a tab
   // that asks the wrong machine for the transcript. Downstream already
   // honors the ref's hostId (`renderTile` wraps each ref in its own
-  // `TabHostProvider`), so the owner id is all that was missing.
+  // `TabHostProvider`), so the owner id is all that was missing. The FALLBACK
+  // for a row that carries no owner is the Epic SESSION's host - the host
+  // that projected the row - never the app-wide one, which during a re-point
+  // is a different machine from the one this tree is showing.
   const ownerHostId = useEpicNodeHostId(nodeId);
-  const openHostId = ownerHostId ?? activeHostId;
+  const sessionHostId = useEpicSessionHostId();
+  const openHostId = ownerHostId ?? sessionHostId ?? UNKNOWN_HOST_PLACEHOLDER;
+  // The host that SERVES a published copy's read (the owner is unreachable by
+  // construction there) - the session's, for the reason above.
+  const readingHostId = sessionHostId ?? UNKNOWN_HOST_PLACEHOLDER;
   // Same rule the cloud rows follow (user ruling: offline hosts show as
   // readonly with a locked composer): a CHAT row whose owner host is
   // unreachable opens the published copy, not a live tab that dials a dead
@@ -1276,7 +1457,7 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
             ownerUserId,
             ownerHostId,
             name: nodeName,
-            hostId: activeHostId,
+            hostId: readingHostId,
           })
         : {
             id: nodeId,
@@ -1291,7 +1472,7 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
       epicId,
       nodeId,
       nodeName,
-      activeHostId,
+      readingHostId,
       openableType,
       openHostId,
     ],
@@ -1321,7 +1502,9 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
   const handleDoubleClick = useCallback(() => {
     if (isRenaming) return;
     if (openableType === null) return;
-    const found = findOpenArtifactInTab(tabId, nodeId);
+    // Host-aware: a cross-host clone holds one tab per host for the same
+    // copied chat id, and this row means its own.
+    const found = findOpenTileInTab(tabId, openRef());
     if (found !== null) {
       navigateNested(epicId, tabId, () => {
         promotePreviewInTab(tabId, found.paneId);
@@ -1339,13 +1522,12 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
       );
     }
   }, [
-    // `nodeId` stays - `findOpenArtifactInTab` reads it directly. `nodeName`
-    // does not: it reaches the tile ref only through `openRef`.
+    // `nodeId` and `nodeName` both reach the lookup through `openRef` now,
+    // which is itself a dependency.
     openRef,
     epicId,
     isRenaming,
     navigateNested,
-    nodeId,
     openableType,
     prepareOpenTileInTabFocusTarget,
     promotePreviewInTab,
@@ -1440,7 +1622,9 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
     markArtifactSelfDeleted(nodeId);
     const handleDeleteSuccess = () => {
       setConfirmDeleteOpen(false);
-      const found = findOpenArtifactInTab(tabId, nodeId);
+      // The tab for THIS row's host - closing the clone's twin would leave
+      // the deleted chat's own tab open and shut a live one.
+      const found = findOpenTileInTab(tabId, openRef());
       if (found !== null) {
         navigateNested(epicId, tabId, () =>
           prepareCloseCanvasTabFocusTarget(
@@ -1692,8 +1876,11 @@ function ChatNodeShellBody(
       tabId,
       placement: ACTIVE_TILE_PLACEMENT,
       parentId: nodeId,
-      // Sidebar row: app-wide surface, so the child lands on the active host
-      // exactly like the panel's own `+`.
+      // Names no host, exactly like the panel's own `+`: the modal resolves
+      // this Epic's placement memory (last created chat's host, else the
+      // session's host) with the picker live. The PARENT row's owner host is
+      // deliberately not passed - naming it would freeze the picker (§55) and
+      // a child is not required to live on its parent's machine.
       hostId: null,
     });
   }, [canMutate, epicId, nodeId, openNewConversationModal, tabId]);
@@ -2455,8 +2642,10 @@ function ChatRowButton(props: ChatRowButtonProps) {
   const resourceOwnerKind = resourceOwnerKindForNode(artifactType);
   const roleClaims = useEpicAgentRoleClaims(nodeId);
   const ownerHostId = useEpicNodeHostId(nodeId);
-  const activeHostId = useReactiveActiveHostId();
-  const sourceHostId = ownerHostId ?? activeHostId;
+  // Session host as the fallback, for the same reason `ChatNode` opens with
+  // it: the drag payload names the host the dropped tile binds to.
+  const sessionHostId = useEpicSessionHostId();
+  const sourceHostId = ownerHostId ?? sessionHostId;
   // Same lock the cloud rows carry, driven by the same signal: a CHAT row
   // whose owner host is unreachable is readonly here (its click opens the
   // published copy), and the row must say so before the click. State, not
@@ -2750,6 +2939,7 @@ const CHAT_DESCENDANT_STATUS_TONES: Record<
   interview: INTERVIEW_TONE,
   approval: APPROVAL_TONE,
   done: DONE_TONE,
+  "terminal-failure": TERMINAL_FAILURE_TONE,
 };
 
 /**
@@ -2771,6 +2961,9 @@ function chatSelfStatusRank(
   if (selfTier === "turn") return CHAT_STATUS_RANKS.running;
   if (selfTier === "background") return CHAT_STATUS_RANKS.background;
   if (state.unreadDone) return CHAT_STATUS_RANKS.done;
+  if (terminalFailureTone(state) !== null) {
+    return CHAT_STATUS_RANKS["terminal-failure"];
+  }
   return 0;
 }
 
@@ -2796,6 +2989,11 @@ function nestedChatStatusSummary(rollup: ChatDescendantStatusRollup): string {
     parts.push(`${rollup.backgroundCount} in background`);
   }
   if (rollup.doneCount > 0) parts.push(`${rollup.doneCount} completed`);
+  if (rollup.terminalFailureCount > 0) {
+    parts.push(
+      `${rollup.terminalFailureCount} terminal ${rollup.terminalFailureCount === 1 ? "failure" : "failures"}`,
+    );
+  }
   return `Nested: ${parts.join(" · ")}`;
 }
 
@@ -2861,13 +3059,14 @@ type ChatOwnStatusKind =
   | "working"
   | "background"
   | "done"
+  | "terminal-failure"
   | "read-only"
   | "idle";
 
 /**
  * The precedence lattice, reused unchanged from the per-row notification icon
- * (`NotificationIndicatorIcon`): attention tone (failure > interview >
- * approval) > running turn > background > unread-done > default. Terminal-agent
+ * (`NotificationIndicatorIcon`): attention tone (failure > fork > interview >
+ * approval) > running turn > background > unread-done > terminal failure > default. Terminal-agent
  * rows resolve through the same lattice - their `agent.stopped` notifications
  * are chat-scoped to the agent id, so `state` is populated for them too; only
  * the read-only arm stays chat-only.
@@ -2891,6 +3090,7 @@ function chatOwnStatusKind(
   if (running === "turn") return "working";
   if (running === "background") return "background";
   if (state.unreadDone) return "done";
+  if (terminalFailureTone(state) !== null) return "terminal-failure";
   if (isReadOnly) return "read-only";
   return "idle";
 }

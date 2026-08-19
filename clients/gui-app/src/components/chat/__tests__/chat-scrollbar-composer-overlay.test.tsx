@@ -57,6 +57,8 @@ vi.mock(
     useManagedCommandStopAll: () => ({ mutate: vi.fn(), isPending: false }),
     useManagedCommandDelete: () => ({ mutate: vi.fn(), isPending: false }),
     useManagedCommandStopAllIsPending: () => false,
+    useManagedCommandDeliverHeld: () => ({ mutate: vi.fn(), isPending: false }),
+    useManagedCommandDeliverHeldIsPending: () => false,
   }),
 );
 
@@ -177,12 +179,15 @@ describe("chat scrollbar + lower composer overlay pointer isolation", () => {
               epicId="epic-1"
               chatId="chat-1"
               runningManagedCommandCount={0}
+              heldManagedCommandCount={0}
               viewTabId="tab-1"
               selfAgent={null}
               activeAgents={[]}
               todo={null}
               restore={emptyRestore()}
               queue={emptyQueue()}
+              queueResumeRequested={false}
+              queueKeepPausedRequested={false}
               backgroundItems={[
                 {
                   taskId: "task-1",
@@ -191,10 +196,12 @@ describe("chat scrollbar + lower composer overlay pointer isolation", () => {
                   blockId: "tool-1",
                   parentTaskId: null,
                   scheduledFor: null,
+                  individualStopUnavailable: null,
                 },
               ]}
               backgroundStopPendingTaskIds={new Set()}
               backgroundStopAllPending={false}
+              backgroundSessionStopPending={false}
               activeTurnStatus="running"
               canAct
               readOnly={false}
@@ -211,6 +218,7 @@ describe("chat scrollbar + lower composer overlay pointer isolation", () => {
               onBackgroundItemClick={() => undefined}
               onBackgroundItemStop={() => null}
               onBackgroundItemsStopAll={() => null}
+              onBackgroundSessionStop={() => null}
             />
           </TooltipProvider>
         </TabHostProvider>,
@@ -240,12 +248,15 @@ describe("chat scrollbar + lower composer overlay pointer isolation", () => {
               epicId="epic-1"
               chatId="chat-1"
               runningManagedCommandCount={0}
+              heldManagedCommandCount={0}
               viewTabId="tab-1"
               selfAgent={null}
               activeAgents={[]}
               todo={null}
               restore={emptyRestore()}
               queue={emptyQueue()}
+              queueResumeRequested={false}
+              queueKeepPausedRequested={false}
               backgroundItems={[
                 {
                   taskId: "task-1",
@@ -254,10 +265,12 @@ describe("chat scrollbar + lower composer overlay pointer isolation", () => {
                   blockId: "tool-1",
                   parentTaskId: null,
                   scheduledFor: null,
+                  individualStopUnavailable: null,
                 },
               ]}
               backgroundStopPendingTaskIds={new Set()}
               backgroundStopAllPending={false}
+              backgroundSessionStopPending={false}
               activeTurnStatus="running"
               canAct
               readOnly={false}
@@ -274,6 +287,7 @@ describe("chat scrollbar + lower composer overlay pointer isolation", () => {
               onBackgroundItemClick={() => undefined}
               onBackgroundItemStop={() => null}
               onBackgroundItemsStopAll={() => null}
+              onBackgroundSessionStop={() => null}
             />
           </TooltipProvider>
         </TabHostProvider>,
@@ -504,6 +518,8 @@ function viewerSurfacesProps(): ChatLowerInteractionSurfacesProps {
     editingItem: null,
     editingItemId: null,
     value: { status: "idle", items: [] },
+    resumeRequested: false,
+    keepPausedRequested: false,
     onPause: () => null,
     onResume: () => null,
     onEdit: () => undefined,
@@ -512,6 +528,7 @@ function viewerSurfacesProps(): ChatLowerInteractionSurfacesProps {
     onCancelEdit: () => undefined,
     onStopBackgroundItem: () => null,
     onStopAllBackgroundItems: () => null,
+    onStopBackgroundSession: () => null,
     onReorder: () => undefined,
     onSteerNow: () => undefined,
   };
@@ -546,6 +563,7 @@ function viewerSurfacesProps(): ChatLowerInteractionSurfacesProps {
     backgroundItems: undefined,
     backgroundStopPendingTaskIds: new Set(),
     backgroundStopAllPending: false,
+    backgroundSessionStopPending: false,
     onBackgroundItemClick: () => undefined,
   };
 }

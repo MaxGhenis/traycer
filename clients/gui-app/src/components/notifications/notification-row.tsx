@@ -1,9 +1,5 @@
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { m, useReducedMotion } from "motion/react";
-import {
-  isHostReachable,
-  type HostAvailability,
-} from "@traycer-clients/shared/host-client/host-directory";
 import {
   Bell,
   Check,
@@ -19,8 +15,16 @@ import {
 import {
   FAILURE_TONE,
   notificationFeedTone,
+  TERMINAL_FAILURE_TONE,
 } from "@/components/notifications/notification-indicator-tones";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
+import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
+import {
+  hostUnavailability,
+  isConfirmedTransportRefusal,
+  type HostUnavailability,
+} from "@traycer-clients/shared/host-client/remote-fetcher";
+import { useRemoteSessionPollReadiness } from "@/hooks/agent/use-host-reachability";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useReactiveLocalHostEntry } from "@/hooks/host/use-reactive-local-host-entry";
 import { notificationPayloadRequiresOriginHost } from "@/hooks/notifications/use-notification-activation";
@@ -52,21 +56,58 @@ interface NotificationRowProps {
   readonly onAcknowledge: (row: MergedNotificationRow) => void;
 }
 
-function isOriginUnavailable(input: {
+/**
+ * Whether an origin-host-bound row must stop offering its action.
+ *
+ * DERIVATION, not the coarse bit, and the difference is the whole point of this
+ * function existing. It used to disable the row for anything the directory did
+ * not call `available`, which folded a failed liveness read in with a host that
+ * is genuinely gone: an approval prompt on a perfectly healthy machine went
+ * grey and un-actionable because one Redis read on the cloud side came back
+ * blind. `indeterminate` therefore does NOT disable — the activation path dials
+ * and fails on its own evidence, which is recoverable, where a disabled row is
+ * a dead end the user cannot argue with.
+ *
+ * A CONFIRMED refusal still disables, because for those the action really has
+ * nowhere to go: `offline` (the host is detached) and `plan-restricted` (no
+ * remote route exists to it on this account's plan).
+ *
+ * "Confirmed" is asked through `isConfirmedTransportRefusal` - the SAME
+ * ready-session-aware gate the activation path itself dials through
+ * (`ensureOriginHostSelected` -> `dialableHostEndpoint`) - not by re-reading
+ * the raw verdict here. The two must agree, and a hand-rolled second gate is
+ * how they stop agreeing: reading `hostUnavailability` directly greyed out a
+ * cloud-`offline` origin this client held a READY live session to (firsthand
+ * proof the route works, which every other gate lets outrank the registry),
+ * and refused the fuse-window recovery dial the transport would have
+ * attempted. `hostUnavailability` now supplies only the per-reason copy once
+ * the refusal is confirmed.
+ *
+ * `hasReadySession` is the component's REACTIVE answer to
+ * `hasReadyRemoteSession` (via `useRemoteSessionPollReadiness`), not read
+ * here: the session cache is pull-only and a readiness flip changes neither
+ * the notification row nor any directory value, so a direct read froze the
+ * refusal at whatever the cache said when something else happened to
+ * re-render the row - the same staleness the host picker's refusal predicate
+ * had.
+ */
+function originRefusal(input: {
   readonly row: MergedNotificationRow;
-  readonly originStatus: HostAvailability | undefined;
-}): boolean {
+  readonly originEntry: HostDirectoryEntry | null;
+  readonly hasReadySession: boolean;
+}): HostUnavailability | null {
   const requiresOriginHost =
     input.row.payload !== null &&
     notificationPayloadRequiresOriginHost(input.row.payload);
-  if (!requiresOriginHost) return false;
-  if (input.row.originHostId === null) return true;
-  // A busy host is reachable (int #48): the row must not grey out an
-  // approval whose origin is merely slow. Absent directory entry stays
-  // fail-closed.
-  return (
-    input.originStatus === undefined || !isHostReachable(input.originStatus)
-  );
+  if (!requiresOriginHost) return null;
+  if (input.row.originHostId === null) return "offline";
+  if (input.originEntry === null) return "offline";
+  if (!isConfirmedTransportRefusal(input.originEntry, input.hasReadySession)) {
+    return null;
+  }
+  // Confirmed refusals are exactly `offline` / `plan-restricted`; the verdict
+  // read here only picks which copy the row renders.
+  return hostUnavailability(input.originEntry);
 }
 
 /**
@@ -116,14 +157,21 @@ function rowMotionProps(options: {
 export function NotificationRow(props: NotificationRowProps): ReactNode {
   const row = useMergedNotificationRow(props.feedId);
   // Hooks must remain unconditional while an exact-removal frame makes this
-  // row disappear between renders.
-  const originHost = useHostDirectoryEntry(row?.originHostId ?? "");
+  // row disappear between renders; the empty-id fallback is what keeps the
+  // two origin-host subscriptions below callable for a vanished row.
+  const originHostId = row?.originHostId ?? "";
+  const originHost = useHostDirectoryEntry(originHostId);
   // This machine — not the ambient active host (G8 / D7). Pack-store events
   // are machine-local; comparing against active would mis-caption when the
   // user has a remote host selected.
   const localHost = useReactiveLocalHostEntry();
   const runnerHost = useRunnerHostOrNull();
   const shouldReduceMotion = useReducedMotion() === true;
+  // Subscribed, not read at render time: `originRefusal` is ready-session-
+  // aware, and a readiness flip changes no value this row otherwise
+  // subscribes to. An empty id reads as "no ready session", the right answer
+  // for a row with no origin host.
+  const originHasReadySession = useRemoteSessionPollReadiness(originHostId);
   if (row === null) return null;
 
   const packPresentation = resolvePackRowPresentation({
@@ -134,10 +182,12 @@ export function NotificationRow(props: NotificationRowProps): ReactNode {
     hasPayload: row.payload !== null,
   });
   const isRead = row.readAt !== null;
-  const originUnavailable = isOriginUnavailable({
+  const originUnavailability = originRefusal({
     row,
-    originStatus: originHost?.status,
+    originEntry: originHost,
+    hasReadySession: originHasReadySession,
   });
+  const originUnavailable = originUnavailability !== null;
   const glyph = notificationRowGlyph(row);
   const Icon = glyph.icon;
 
@@ -145,6 +195,21 @@ export function NotificationRow(props: NotificationRowProps): ReactNode {
     feedId: row.feedId,
     shouldReduceMotion,
   });
+
+  // Same condition the navigable body button renders under, so keyboard
+  // activation of a focused row and a click on that button are the same act.
+  const canActivate =
+    packPresentation.isNavigable && originUnavailability === null;
+  // Only the row's OWN key events - a keydown bubbling up from one of its
+  // controls has already been handled by that control (Enter on the trailing
+  // tick acknowledges; it must not also activate the row).
+  const onRowKeyDown = (event: KeyboardEvent<HTMLLIElement>): void => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    if (!canActivate) return;
+    event.preventDefault();
+    props.onActivate(row);
+  };
 
   return (
     <m.li
@@ -164,8 +229,14 @@ export function NotificationRow(props: NotificationRowProps): ReactNode {
       // Remote pack-store entries stay fully listed (needs_action evidence)
       // but are visually de-emphasised so this machine's actionable items
       // lead — de-emphasis, not filter-out (D7).
+      //
+      // `tabIndex={-1}` makes the row itself the arrow-key landing spot
+      // (see `notification-feed-keyboard-navigation.ts`) without adding a Tab
+      // stop: Tab order still runs through the row's controls only.
+      tabIndex={-1}
+      onKeyDown={onRowKeyDown}
       className={cn(
-        "relative flex items-start gap-2.5 border-b border-border/60 py-2.5 pr-4 pl-6 last:border-b-0 hover:bg-muted/70 has-[:focus-visible]:bg-muted/70",
+        "relative flex items-start gap-2.5 border-b border-border/60 py-2.5 pr-4 pl-6 outline-none last:border-b-0 hover:bg-foreground/6 focus-visible:bg-foreground/6 focus-visible:ring-1 focus-visible:ring-ring/50 focus-visible:ring-inset has-[:focus-visible]:bg-foreground/6",
         packPresentation.packRemote && "opacity-60",
       )}
       data-testid="notification-entry"
@@ -208,7 +279,7 @@ export function NotificationRow(props: NotificationRowProps): ReactNode {
         displayBody={packPresentation.displayBody}
         isRead={isRead}
         isNavigable={packPresentation.isNavigable}
-        originUnavailable={originUnavailable}
+        originUnavailability={originUnavailability}
         packRemote={packPresentation.packRemote}
         remoteHostLabel={packPresentation.remoteHostLabel}
         onActivate={props.onActivate}
@@ -266,7 +337,7 @@ function NotificationRowMain(props: {
   readonly displayBody: string;
   readonly isRead: boolean;
   readonly isNavigable: boolean;
-  readonly originUnavailable: boolean;
+  readonly originUnavailability: HostUnavailability | null;
   readonly packRemote: boolean;
   readonly remoteHostLabel: string | null;
   readonly onActivate: (row: MergedNotificationRow) => void;
@@ -279,7 +350,7 @@ function NotificationRowMain(props: {
     />
   );
 
-  if (props.isNavigable && !props.originUnavailable) {
+  if (props.isNavigable && props.originUnavailability === null) {
     return (
       <button
         type="button"
@@ -299,14 +370,16 @@ function NotificationRowMain(props: {
   return (
     <div className="min-w-0 flex-1">
       {body}
-      {props.originUnavailable ? (
+      {props.originUnavailability === null ? null : (
         <span
           data-testid="notification-origin-unavailable"
           className="block text-ui-xs text-muted-foreground"
         >
-          The originating host is unavailable.
+          {props.originUnavailability === "plan-restricted"
+            ? "The originating host is local only on your current plan."
+            : "The originating host is unavailable."}
         </span>
-      ) : null}
+      )}
       {props.packRemote ? (
         <span
           data-testid="notification-pack-remote-hint"
@@ -371,7 +444,7 @@ function NotificationRowControlButton(
         onClick={props.onClick}
         aria-label={props.label}
         data-testid={props.testId}
-        className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-foreground/8 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       >
         <Check className="size-3.5" aria-hidden />
       </button>
@@ -457,10 +530,12 @@ function notificationRowGlyph(row: MergedNotificationRow): RowGlyph {
     return globalEventGlyph(row.globalEntry.event);
   }
   if (row.appLocalKind !== null) {
-    return {
-      icon: FAILURE_TONE.Icon,
-      colorClassName: FAILURE_TONE.className,
-    };
+    const tone =
+      row.appLocalKind === "terminal.closed" ||
+      row.appLocalKind === "terminal.crashed"
+        ? TERMINAL_FAILURE_TONE
+        : FAILURE_TONE;
+    return { icon: tone.Icon, colorClassName: tone.className };
   }
   const statusTone = notificationFeedTone(row);
   if (statusTone !== null) {

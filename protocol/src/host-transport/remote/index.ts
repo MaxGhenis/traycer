@@ -2,6 +2,7 @@ export {
   RemoteSession,
   PLAN_RESTRICTED_FATAL_CODE,
   type IRemoteSession,
+  type RemoteSessionEvidence,
   type RemoteSessionOptions,
   type RemoteSessionTiming,
 } from "./session";

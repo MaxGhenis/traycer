@@ -50,7 +50,7 @@ const guideMocks = vi.hoisted(
     directoryEntries: ReadonlyArray<{
       readonly hostId: string;
       readonly label: string;
-      readonly status: string;
+      readonly transportDialability: string;
       readonly websocketUrl: string;
     }>;
   } => ({
@@ -72,21 +72,21 @@ const guideMocks = vi.hoisted(
       {
         hostId: "local",
         label: "Local host",
-        status: "available",
+        transportDialability: "dialable",
         websocketUrl: "ws://local.invalid",
       },
       {
         hostId: "remote",
         label: "Remote host",
-        status: "available",
+        transportDialability: "dialable",
         websocketUrl: "ws://remote.invalid",
       },
     ],
   }),
 );
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => guideMocks.activeHostId,
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => guideMocks.activeHostId,
 }));
 
 vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
@@ -316,13 +316,13 @@ describe("AgentSelectionGuideSection", () => {
       {
         hostId: "local",
         label: "Local host",
-        status: "available",
+        transportDialability: "dialable",
         websocketUrl: "ws://local.invalid",
       },
       {
         hostId: "remote",
         label: "Remote host",
-        status: "available",
+        transportDialability: "dialable",
         websocketUrl: "ws://remote.invalid",
       },
     ];

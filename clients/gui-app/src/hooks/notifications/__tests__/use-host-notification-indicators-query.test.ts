@@ -69,10 +69,10 @@ describe("indicatorRequests", () => {
       `epic-${String(HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP).padStart(3, "0")}`,
     ]);
     expect(requests[0].chatIds).toEqual(["chat-a", "chat-b"]);
-    expect(requests[1].chatIds).toEqual(["chat-a", "chat-b"]);
+    expect(requests[1].chatIds).toEqual([]);
   });
 
-  it("crosses epic and chat chunks so every task sees the full live-chat whitelist", () => {
+  it("pairs epic and chat chunks without a cross-product", () => {
     const epicIds = Array.from(
       { length: HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP + 1 },
       (_value, index) => `epic-${index}`,
@@ -94,14 +94,6 @@ describe("indicatorRequests", () => {
     expect(requests).toEqual([
       {
         epicIds: sortedEpicIds.slice(0, HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
-        chatIds: sortedChatIds.slice(0, HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
-      },
-      {
-        epicIds: sortedEpicIds.slice(0, HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
-        chatIds: sortedChatIds.slice(HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
-      },
-      {
-        epicIds: sortedEpicIds.slice(HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
         chatIds: sortedChatIds.slice(0, HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
       },
       {
@@ -142,9 +134,11 @@ describe("useHostNotificationIndicators recovery", () => {
       epics: {},
       chats: {},
     };
-    hostClient = new HostClient<HostRpcRegistry>({
+    const spine = new HostClient<HostRpcRegistry>({
       registry: hostRpcRegistry,
       invalidator: createHostQueryInvalidator(queryClient),
+      findHostById: (hostId) =>
+        hostId === mockLocalHostEntry.hostId ? mockLocalHostEntry : null,
       messenger: new MockHostMessenger<HostRpcRegistry>({
         registry: hostRpcRegistry,
         requestId: () => `request-${requestCount.value}`,
@@ -167,13 +161,13 @@ describe("useHostNotificationIndicators recovery", () => {
         },
       }),
     });
-    hostClient.bind(mockLocalHostEntry);
-    hostClient.setRequestContext(
+    spine.setRequestContext(
       createRequestContextFixture({
         origin: "renderer",
         bearerToken: "token",
       }),
     );
+    hostClient = spine.createRequester(mockLocalHostEntry);
     useAuthStore.setState({
       contextMetadata: { userId: "user-a", username: "user-a" },
     });

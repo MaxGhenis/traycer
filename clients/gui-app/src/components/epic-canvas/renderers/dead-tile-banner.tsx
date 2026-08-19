@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { HostUnavailability } from "@traycer-clients/shared/host-client/remote-fetcher";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
 import { ReportIssueAction } from "@/components/report-issue/report-issue-action";
@@ -39,9 +40,36 @@ import { cn } from "@/lib/utils";
  */
 export type DeadTileOwnerKind = "terminal" | "agent";
 
+function terminalDeadTileMessage(
+  unavailability: HostUnavailability | null,
+  ownerKind: DeadTileOwnerKind,
+  hostLabel: string,
+): string {
+  if (unavailability === "plan-restricted") {
+    return ownerKind === "agent"
+      ? `Host "${hostLabel}" is local only on your current plan, so this agent cannot be reached from here. Upgrade to use that host remotely — the agent and its transcript are kept either way.`
+      : `Host "${hostLabel}" is local only on your current plan, so this terminal cannot be reached from here. Upgrade to use that host remotely, or open this terminal on that machine.`;
+  }
+  return ownerKind === "agent"
+    ? `Host "${hostLabel}" is unreachable, so this agent is unavailable until that host is back. The agent and its transcript are kept — closing this tab only removes it from the canvas.`
+    : `Host "${hostLabel}" is unreachable. This terminal is permanently closed.`;
+}
+
 export interface TerminalDeadTileBannerProps {
   readonly hostLabel: string;
   readonly ownerKind: DeadTileOwnerKind;
+  /**
+   * WHY the bound host cannot be reached, from `useHostReachability`.
+   *
+   * `plan-restricted` is the reason this is a prop rather than one string. That
+   * host is running perfectly well; the account's plan simply has no remote
+   * route to it. Telling its owner the terminal is "permanently closed" is
+   * false about a session that is very probably still alive on the other side,
+   * and it names a remedy (there is none) instead of the one that exists.
+   *
+   * `indeterminate` never arrives here: the hook reports it as reachable.
+   */
+  readonly unavailability: HostUnavailability | null;
   readonly onClose: () => void;
   readonly testId: string;
 }
@@ -55,17 +83,10 @@ export function TerminalDeadTileBanner(
       data-testid={props.testId}
     >
       <p className="max-w-md">
-        {props.ownerKind === "agent" ? (
-          <>
-            Host &quot;{props.hostLabel}&quot; is unreachable, so this agent is
-            unavailable until that host is back. The agent and its transcript
-            are kept — closing this tab only removes it from the canvas.
-          </>
-        ) : (
-          <>
-            Host &quot;{props.hostLabel}&quot; is unreachable. This terminal is
-            permanently closed.
-          </>
+        {terminalDeadTileMessage(
+          props.unavailability,
+          props.ownerKind,
+          props.hostLabel,
         )}
       </p>
       <div className="flex flex-wrap justify-center gap-2">
@@ -101,54 +122,10 @@ export function TerminalDeadTileBanner(
   );
 }
 
-export interface ManagedCommandDeletedBannerProps {
-  /**
-   * Whether the deletion itself was observed. `false` only when the window
-   * never received a snapshot (restored for a shell the host had already
-   * dropped), which is the one case where "deleted" cannot be confirmed -
-   * only that the shell is no longer there.
-   */
-  readonly deletionConfirmed: boolean;
-  readonly onClose: () => void;
-  readonly testId: string;
-}
-
-/**
- * A shell deleted while its output window was open. Sits ABOVE the timeline
- * rather than replacing it: the scrollback the viewer already has is the last
- * trace of a history the host just destroyed, so it stays readable until the
- * tab is closed. Nothing can be paged in behind it and no lifecycle action
- * remains - the shell is gone, not merely stopped.
- */
-export function ManagedCommandDeletedBanner(
-  props: ManagedCommandDeletedBannerProps,
-): ReactNode {
-  return (
-    <div
-      className="flex min-w-0 items-center gap-3 border-b border-border/60 bg-muted/30 px-3 py-2 text-ui-xs text-muted-foreground"
-      data-testid={props.testId}
-      role="status"
-    >
-      <span className="min-w-0 flex-1">
-        {props.deletionConfirmed
-          ? "This shell was deleted. Its output history is gone; what is shown below is only what this window had already read."
-          : "This shell is no longer on this host. Its output history is gone; what is shown below is only what this window had already read."}
-      </span>
-      <Button type="button" variant="outline" size="sm" onClick={props.onClose}>
-        Close tab
-      </Button>
-    </div>
-  );
-}
-
 export interface WorkspaceFileDeadTileBannerProps {
   readonly hostLabel: string;
-  /**
-   * `offline` - the bound host is not in the directory / not available.
-   * `inactive` - the bound host is reachable but is not the renderer's
-   * active host, so its RPC client is not addressable from here.
-   */
-  readonly reason: "offline" | "inactive";
+  /** The bound host is not in the directory / not available. */
+  readonly reason: "offline";
   readonly testId: string;
 }
 
@@ -159,11 +136,11 @@ export function WorkspaceFileDeadTileBanner(
     <div
       className="flex h-full w-full flex-col items-center justify-center gap-3 bg-canvas px-6 text-center text-ui-sm text-muted-foreground"
       data-testid={props.testId}
+      data-reason={props.reason}
     >
       <p className="max-w-md">
-        {props.reason === "offline"
-          ? `This file is on host "${props.hostLabel}", which is currently unreachable. The preview will load once that host is back.`
-          : `This file is on host "${props.hostLabel}". Switch your active host to "${props.hostLabel}" to view it.`}
+        This file is on host &quot;{props.hostLabel}&quot;, which is currently
+        unreachable. The preview will load once that host is back.
       </p>
       <ReportIssueAction
         context={createReportIssueContext({
@@ -181,7 +158,7 @@ export function WorkspaceFileDeadTileBanner(
 
 export interface GitDiffDeadTileBannerProps {
   readonly hostLabel: string;
-  readonly reason: "offline" | "inactive";
+  readonly reason: "offline";
   readonly testId: string;
 }
 
@@ -192,11 +169,11 @@ export function GitDiffDeadTileBanner(
     <div
       className="flex h-full w-full flex-col items-center justify-center gap-3 bg-canvas px-6 text-center text-ui-sm text-muted-foreground"
       data-testid={props.testId}
+      data-reason={props.reason}
     >
       <p className="max-w-md">
-        {props.reason === "offline"
-          ? `This diff is on host "${props.hostLabel}", which is currently unreachable. The diff will load once that host is back.`
-          : `This diff is on host "${props.hostLabel}". Switch your active host to "${props.hostLabel}" to view it.`}
+        This diff is on host &quot;{props.hostLabel}&quot;, which is currently
+        unreachable. The diff will load once that host is back.
       </p>
       <ReportIssueAction
         context={createReportIssueContext({
@@ -214,10 +191,9 @@ export function GitDiffDeadTileBanner(
 
 /**
  * PR detail tiles subscribe through their OWN bound host's client
- * (`useHostStreamClientFor`), never the app's active host - so unlike
- * `GitDiffDeadTileBanner` there is no "inactive" reason, only "the bound
- * host itself is unreachable." The heavy PR cache lives on that host, so
- * nothing can render until it returns.
+ * (`useHostStreamClientFor`), never the app's active host — same as
+ * `GitDiffDeadTileBanner`, which only has an "offline" reason. The heavy
+ * PR cache lives on that host, so nothing can render until it returns.
  */
 export interface PrDetailDeadTileBannerProps {
   readonly hostLabel: string;
@@ -310,6 +286,8 @@ export function ChatHostStartingBanner(
       role="status"
       data-testid={props.testId}
       className={cn(
+        // muted-fill-ok: banner carries its own border-b border-border, so a
+        // collapse loses the wash and not the band
         "flex items-center gap-2 border-b border-border bg-muted/40 px-4 py-2 text-ui-sm text-muted-foreground",
         props.className,
       )}
@@ -327,11 +305,19 @@ export function ChatHostStartingBanner(
 }
 
 /**
- * Three distinct causes land on this ONE banner, and no two of them are the
+ * Five distinct causes land on this ONE banner, and no two of them are the
  * same sentence (chat-sync-v2 tickets 35 and 49):
  *
  * - `host-offline` - the bound host is genuinely unreachable. Nothing was
  *   asked and nothing answered, so the host is what has to come back.
+ * - `host-plan-restricted` - the host is running perfectly well and the
+ *   account's plan simply has no remote route to it. It exists because the
+ *   reason had a producer (`useHostReachability`) and no consumer: every
+ *   unreachable result was rendered as `host-offline`, so a free-tier account
+ *   with a persisted remote chat was told a healthy machine was off, and
+ *   offered a restart it could not do instead of the upgrade that is the
+ *   actual remedy. Clone stays offered - moving the thread to a host you CAN
+ *   reach is exactly the way out.
  * - `chat-not-visible` - a reachable host that is NOT this device answered,
  *   and answered that it has nothing for this chat (`chat.subscribe`
  *   terminated `CHAT_NOT_VISIBLE`). "is offline" would be false here.
@@ -348,11 +334,12 @@ export function ChatHostStartingBanner(
  *   or epic-membership loss). The one member of this taxonomy that is not about
  *   a host at all - the chat exists, its host is fine, and it is the VIEWER's
  *   entitlement that changed. It is also the only one with nothing to offer:
- *   the other three all end in "clone it and carry on", which needs read access
+ *   the other four all end in "clone it and carry on", which needs read access
  *   to a transcript this viewer no longer has.
  */
 export type ChatDeadTileBannerReason =
   | "host-offline"
+  | "host-plan-restricted"
   | "chat-not-visible"
   | "chat-not-on-this-host"
   | "chat-no-longer-shared";
@@ -375,7 +362,7 @@ const CHAT_DEAD_TILE_BANNER_COPY: Record<
     /**
      * Whether this reason ends in an action the reader can actually take.
      *
-     * Three of the four do: the transcript is readable (as a published copy or
+     * Four of the five do: the transcript is readable (as a published copy or
      * from the owner host) and cloning carries it onto a live host. `revoked`
      * does not - the clone would have to read bytes the server just stopped
      * serving this viewer, so offering the button would be an invitation to a
@@ -394,6 +381,19 @@ const CHAT_DEAD_TILE_BANNER_COPY: Record<
     ),
     reportTitle: "Agent host is offline",
     reportMessage: "The agent's bound host is offline.",
+    offersClone: true,
+  },
+  "host-plan-restricted": {
+    message: (hostLabel) => (
+      <>
+        Bound host &quot;{hostLabel}&quot; is local only on your current plan,
+        so it can&apos;t be reached from here. Upgrade to use it remotely, or
+        continue here to create a new agent on the active host.
+      </>
+    ),
+    reportTitle: "Agent host is not reachable on this plan",
+    reportMessage:
+      "The agent's bound host has no remote route on the current plan.",
     offersClone: true,
   },
   "chat-not-visible": {

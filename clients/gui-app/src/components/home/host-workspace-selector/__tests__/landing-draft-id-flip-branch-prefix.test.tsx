@@ -40,7 +40,7 @@ interface MockHostClient {
     readonly kind: "local";
     readonly websocketUrl: string;
     readonly version: string;
-    readonly status: "available";
+    readonly transportDialability: "dialable";
   };
   getActiveHostId(): string;
   getRequestContextUserId(): string;
@@ -92,7 +92,7 @@ const hostClient: MockHostClient = {
     kind: "local",
     websocketUrl: "ws://127.0.0.1:0",
     version: "0.0.0-test",
-    status: "available",
+    transportDialability: "dialable",
   }),
   getActiveHostId: () => "host-test",
   getRequestContextUserId: () => "user-test",
@@ -119,10 +119,23 @@ vi.mock("@/components/ui/select", () => ({
 vi.mock("@/lib/host", () => ({
   useHostBinding: () => ({ directory: { selectById: mocks.selectHost } }),
   useHostClient: () => hostClient,
+  // The SPINE, a separate export since redesign P2.1.
+  useHostRuntimeClient: () => hostClient,
 }));
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => "host-test",
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => "host-test",
+}));
+
+// P1.2: the picker's non-fixed arm resolves `pin ?? effective` and takes its
+// client from `useHostClientForHostId`. Mocked at their own boundary (like the
+// host list below) so this suite stays about the draft-id flip.
+vi.mock("@/hooks/host/use-effective-host-id", () => ({
+  useEffectiveHostId: () => "host-test",
+}));
+
+vi.mock("@/hooks/host/use-host-client-for-host-id", () => ({
+  useHostClientForHostId: () => hostClient,
 }));
 
 vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
@@ -134,11 +147,29 @@ vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
         kind: "local",
         websocketUrl: "ws://127.0.0.1:0",
         version: "0.0.0-test",
-        status: "available",
+        transportDialability: "dialable",
       },
     ],
   }),
 }));
+
+// This suite is about branch-prefix / draftId edge behavior, not the host
+// list, so it mocks `useHostOptions` at the boundary (the same pattern panel
+// suites use for `useHostScope`) rather than standing up the six hooks it
+// composes.
+vi.mock("@/components/settings/host-scope/use-host-options", async () => {
+  const { hostOptionsFixture, hostScopeOptionFixture } =
+    await import("@/components/settings/host-scope/host-scope-fixture");
+  return {
+    useHostOptions: () =>
+      hostOptionsFixture({
+        hosts: [
+          hostScopeOptionFixture({ hostId: "host-test", name: "Test host" }),
+        ],
+        activeHostId: "host-test",
+      }),
+  };
+});
 
 vi.mock("@/hooks/workspace/use-resolved-workspace-folders-query", () => ({
   useResolvedWorkspaceFolders: () => mocks.resolvedWorkspace.current,
@@ -256,7 +287,11 @@ function LandingLikeHarness(props: {
   readonly draftId: string | null;
 }): ReactNode {
   const stagingKey = useMemo(
-    () => ({ surface: "landing" as const, draftId: props.draftId }),
+    () => ({
+      surface: "landing" as const,
+      hostId: "host-test",
+      draftId: props.draftId,
+    }),
     [props.draftId],
   );
   return (
@@ -316,7 +351,11 @@ function outerBranchLabelText(): string {
 }
 
 function stagedBranchName(draftId: string | null): string | null {
-  const intent = readStagedWorktreeIntent({ surface: "landing", draftId });
+  const intent = readStagedWorktreeIntent({
+    surface: "landing",
+    hostId: "host-test",
+    draftId,
+  });
   const entry = intent?.entries.find((e) => e.workspacePath === WORKSPACE_PATH);
   if (entry === undefined || entry.kind !== "worktree") return null;
   if (entry.branch.type !== "new") return null;
@@ -334,9 +373,9 @@ function mintLandingDraftMidSetup(
 ): void {
   useWorktreeIntentStagingStore
     .getState()
-    .migrateKey(
-      { surface: "landing", draftId: null },
-      { surface: "landing", draftId: mintedDraftId },
+    .migrateKeyForAllHosts(
+      { surface: "landing", hostId: "host-test", draftId: null },
+      { surface: "landing", hostId: "host-test", draftId: mintedDraftId },
     );
   rerenderWithDraftId(mintedDraftId);
 }

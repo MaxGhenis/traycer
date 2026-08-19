@@ -78,7 +78,7 @@ import { commitProfileSelection } from "@/stores/composer/commit-selection";
 import { useTaskProfileRateLimitSwitch } from "./use-task-profile-rate-limit-switch";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 import { useEpicAttachmentBytesPresence } from "@/lib/attachments/use-attachment-blob-src";
-import { useOpenEpicHandle } from "@/providers/use-open-epic-handle";
+import { useChatAttachmentByteReader } from "@/lib/attachments/use-chat-image-fetcher";
 import { recordFocusedChat } from "@/stores/chat/last-focused-chat-store";
 import { usePromptStash } from "@/hooks/composer/use-prompt-stash";
 import {
@@ -230,17 +230,17 @@ function ChatComposerImpl(props: ChatComposerProps) {
     topSpacing,
     topSlot,
   } = props;
-  const resolvedMentionRoots = useWorkspaceMentionRoots(
-    mentionRoots,
-    fallbackToGlobalMentionRoots,
-  );
   const runnerHost = useRunnerHost();
   const hostClient = useTabHostClient();
   const tabHostId = useTabHostId();
+  const resolvedMentionRoots = useWorkspaceMentionRoots(
+    mentionRoots,
+    fallbackToGlobalMentionRoots,
+    tabHostId,
+  );
   const workspaceBlocked = !workspaceComposerCanStart(workspaceAvailability);
 
   const editorRef = useRef<ComposerPromptEditorHandle | null>(null);
-  const openEpicHandle = useOpenEpicHandle();
   const hasPastedImageBytes = useEpicAttachmentBytesPresence();
   // Counts editor-ready transitions (a counter, not a boolean, so a torn-down
   // and re-created editor re-fires). The draft-reset bridge keys its
@@ -305,11 +305,14 @@ function ChatComposerImpl(props: ChatComposerProps) {
   // catalog churn - stays inside the toolbar leaves and the submit path.
   // Only the focused top-level surface owns composer controls, automatic focus,
   // and their catalog subscriptions. Visible split partners retain their body.
+  // The catalog is the TAB host's (`hostClient`), like every other read in
+  // this composer - a tab bound to another host offers that host's harnesses
+  // and models, never the app-wide default's.
   const toolbarStore = useComposerToolbarStore(
     focused ? "chat-tile" : null,
     seedSource,
     onSettingsChange,
-    false,
+    { hostClient, hostId: tabHostId, tuiOnly: false },
   );
   const harnessId = useStore(toolbarStore, (s) => s.selection.harnessId);
   const profileId = useStore(toolbarStore, (s) => s.selection.profileId);
@@ -410,20 +413,13 @@ function ChatComposerImpl(props: ChatComposerProps) {
     isResolvingFilePaths,
   });
 
-  const readPromptStashImage = useCallback(
-    async (hash: string) => {
-      const state = openEpicHandle.store.getState();
-      if (!state.hasAttachmentBytes(hash)) return null;
-      // Capture deliberately survives composer unmount, so this read is not
-      // coupled to component-lifecycle cancellation.
-      const bytes = await state.readAttachmentBytes(
-        hash,
-        new AbortController().signal,
-      );
-      return bytes === null ? null : new Uint8Array(bytes);
-    },
-    [openEpicHandle],
-  );
+  // Chat-plane read with the reader's own bound, which replaces the old
+  // `hasAttachmentBytes` pre-check: the bytes may live on this host's disk or
+  // in the cloud now, so presence is no longer answerable synchronously, and
+  // the bound is what keeps a stash save from hanging on an unreachable image.
+  // A capture deliberately survives composer unmount, so this read is not
+  // coupled to component-lifecycle cancellation.
+  const readPromptStashImage = useChatAttachmentByteReader();
   const promptStashSource = useChatPromptStashSource(taskId, onCancelQueueEdit);
   // Chat writes the draft store, but restore still requires the exact ready
   // editor generation that started the restore - a remount under the same
