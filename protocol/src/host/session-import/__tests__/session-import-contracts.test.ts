@@ -10,6 +10,10 @@ import {
   sessionImportRunV10,
 } from "@traycer/protocol/host/session-import/run";
 import { sessionImportStatusV10 } from "@traycer/protocol/host/session-import/contracts";
+import {
+  hostRpcRegistry,
+  hostStreamRpcRegistry,
+} from "@traycer/protocol/host/registry";
 
 /**
  * `sessionImport.*@1.0` frame fixtures, modelled on `migration-run.test.ts`.
@@ -79,7 +83,10 @@ describe("sessionImport.scan@1.0 server frames", () => {
     });
 
     expect(parsed.kind).toBe("group");
-    if (parsed.kind === "group" && parsed.group.location.kind === "missing_folder") {
+    if (
+      parsed.kind === "group" &&
+      parsed.group.location.kind === "missing_folder"
+    ) {
       expect(parsed.group.location.path).toBe("/Users/dev/repos/gone");
     }
   });
@@ -88,7 +95,11 @@ describe("sessionImport.scan@1.0 server frames", () => {
     const states = [
       { kind: "importable" },
       { kind: "already_in_traycer", epicId: "epic-1", chatId: "chat-1" },
-      { kind: "unreadable", reason: "rollout file is truncated" },
+      {
+        kind: "unreadable",
+        reason: "source_unreadable",
+        detail: "rollout file is truncated",
+      },
     ] as const;
 
     for (const state of states) {
@@ -124,6 +135,55 @@ describe("sessionImport.scan@1.0 server frames", () => {
       hasBinaryPayload: false,
     });
     expect(parsed.kind).toBe("group");
+  });
+
+  it("parses a providerFailed frame, which never ends the scan", () => {
+    const parsed = sessionImportScanServerFrameSchema.parse({
+      kind: "providerFailed",
+      harness: "codex",
+      reason: "source_unreadable",
+      detail: "the codex app-server exited before answering thread/list",
+      hasBinaryPayload: false,
+    });
+    expect(parsed.kind).toBe("providerFailed");
+    if (parsed.kind === "providerFailed") {
+      expect(parsed.harness).toBe("codex");
+      expect(parsed.reason).toBe("source_unreadable");
+    }
+  });
+
+  it("rejects a providerFailed frame whose reason is outside the closed enum", () => {
+    expect(() =>
+      sessionImportScanServerFrameSchema.parse({
+        kind: "providerFailed",
+        harness: "codex",
+        reason: "app_server_died",
+        detail: "",
+        hasBinaryPayload: false,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects an unreadable candidate whose reason is free text", () => {
+    expect(() =>
+      sessionImportScanServerFrameSchema.parse({
+        kind: "group",
+        group: {
+          location: { kind: "folder", path: "/repo", workspaceId: null },
+          sessions: [
+            {
+              ...importableCandidate,
+              state: {
+                kind: "unreadable",
+                reason: "it was broken",
+                detail: "",
+              },
+            },
+          ],
+        },
+        hasBinaryPayload: false,
+      }),
+    ).toThrow();
   });
 
   it("parses a complete frame", () => {
@@ -210,6 +270,12 @@ describe("sessionImport.scan@1.0 client frames and open request", () => {
     ).toEqual({ providers: null });
   });
 
+  it("rejects an empty provider filter, which could only ever return nothing", () => {
+    expect(() =>
+      sessionImportScanV10.openRequestSchema.parse({ providers: [] }),
+    ).toThrow();
+  });
+
   it("accepts a narrowed provider filter", () => {
     expect(
       sessionImportScanV10.openRequestSchema.parse({ providers: ["codex"] }),
@@ -229,12 +295,39 @@ describe("sessionImport.run@1.0 server frames", () => {
       kind: "started",
       runId: "run-1",
       total: 7,
+      attached: false,
       hasBinaryPayload: false,
     });
     expect(parsed.kind).toBe("started");
     if (parsed.kind === "started") {
       expect(parsed.total).toBe(7);
+      expect(parsed.attached).toBe(false);
     }
+  });
+
+  it("marks a started frame that attached to a run already in flight", () => {
+    const parsed = sessionImportRunServerFrameSchema.parse({
+      kind: "started",
+      runId: "run-1",
+      total: 7,
+      attached: true,
+      hasBinaryPayload: false,
+    });
+    if (parsed.kind !== "started") throw new Error("expected started");
+    // The progress frames that follow an attach are a REPLAY of work already
+    // done, and the `selections` this client submitted were ignored.
+    expect(parsed.attached).toBe(true);
+  });
+
+  it("rejects a started frame that does not say whether it attached", () => {
+    expect(() =>
+      sessionImportRunServerFrameSchema.parse({
+        kind: "started",
+        runId: "run-1",
+        total: 7,
+        hasBinaryPayload: false,
+      }),
+    ).toThrow();
   });
 
   it("parses a progress frame for every outcome arm", () => {
@@ -368,7 +461,8 @@ describe("sessionImport.run@1.0 client frames and open request", () => {
   // that outlived its socket has nothing new to ask for.
   it("accepts an empty selection set", () => {
     expect(
-      sessionImportRunV10.openRequestSchema.parse({ selections: [] }).selections,
+      sessionImportRunV10.openRequestSchema.parse({ selections: [] })
+        .selections,
     ).toEqual([]);
   });
 
@@ -407,10 +501,56 @@ describe("sessionImport.status@1.0", () => {
     const parsed = sessionImportStatusV10.responseSchema.parse({
       active: null,
       lastCompleted: {
+        runId: "run-1",
         counts: { imported: 9, skippedAlreadyImported: 0, failed: 0 },
         at: 1_750_000_000_000,
       },
     });
     expect(parsed.lastCompleted?.counts.imported).toBe(9);
+    expect(parsed.lastCompleted?.runId).toBe("run-1");
+  });
+
+  it("rejects a last-completed summary that does not name its run", () => {
+    expect(() =>
+      sessionImportStatusV10.responseSchema.parse({
+        active: null,
+        lastCompleted: {
+          counts: { imported: 9, skippedAlreadyImported: 0, failed: 0 },
+          at: 1_750_000_000_000,
+        },
+      }),
+    ).toThrow();
+  });
+});
+
+/**
+ * Registry membership, asserted the way `resources-subscribe.test.ts` does it:
+ * a contract that parses correctly but is not REACHABLE from the registry is a
+ * feature the wire cannot carry, and nothing else in the suite would notice.
+ */
+describe("sessionImport.* registry membership", () => {
+  it("registers both stream methods at minor 0 with a per-method degrade", () => {
+    const scan = hostStreamRpcRegistry["sessionImport.scan"];
+    expect(scan).toBeDefined();
+    expect(scan[1].latestMinor).toBe(0);
+    expect(scan[1].versions[0].contract).toBe(sessionImportScanV10);
+    expect(sessionImportScanV10.schemaVersion).toEqual({ major: 1, minor: 0 });
+
+    const run = hostStreamRpcRegistry["sessionImport.run"];
+    expect(run).toBeDefined();
+    expect(run[1].latestMinor).toBe(0);
+    expect(run[1].versions[0].contract).toBe(sessionImportRunV10);
+    expect(sessionImportRunV10.schemaVersion).toEqual({ major: 1, minor: 0 });
+  });
+
+  it("registers the status method as a unary that degrades unsupported", () => {
+    const entry = hostRpcRegistry["sessionImport.status"];
+    expect(entry).toBeDefined();
+    expect(entry.degrade).toEqual({ kind: "unsupported" });
+    expect(entry[1].versions[0].contract).toBe(sessionImportStatusV10);
+    expect(sessionImportStatusV10.schemaVersion).toEqual({
+      major: 1,
+      minor: 0,
+    });
   });
 });

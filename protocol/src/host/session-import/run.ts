@@ -40,7 +40,17 @@
 import { z } from "zod";
 import { defineStreamRpcContract } from "@traycer/protocol/framework/versioned-stream-rpc";
 import { guiHarnessIdSchema } from "@traycer/protocol/persistence/epic/foundation";
-import { sessionImportSelectionSchema } from "@traycer/protocol/host/session-import/candidate";
+import {
+  sessionImportFailureReasonSchema,
+  sessionImportSelectionSchema,
+} from "@traycer/protocol/host/session-import/candidate";
+
+// The failure vocabulary lives with the candidate shapes, so the scan's
+// `unreadable` state and a run's `failed` outcome name the same causes.
+export {
+  sessionImportFailureReasonSchema,
+  type SessionImportFailureReason,
+} from "@traycer/protocol/host/session-import/candidate";
 
 export const sessionImportRunOpenRequestSchema = z.object({
   selections: z.array(sessionImportSelectionSchema),
@@ -49,44 +59,16 @@ export type SessionImportRunOpenRequest = z.infer<
   typeof sessionImportRunOpenRequestSchema
 >;
 
-/**
- * Closed set of import failure causes, one per seam the import can fail at.
- *
- * Closed rather than free text so the completion summary can group failures
- * and the wizard can say something specific about each ("2 sessions could not
- * be read"). The free-text half lives in `detail`, which is for the human
- * reading it and is additionally logged host-side under a fixed prefix so a
- * support report carries it even when the wizard was closed.
- *
- * - `source_unreadable`     - the vendor's session file / database could not
- *                             be read at all: gone, unreadable, or corrupt.
- * - `source_empty`          - it read, but yielded no message worth a chat.
- * - `workspace_bind_failed` - the session's `cwd` could not be resolved to a
- *                             workspace (and folderless import also failed).
- * - `creation_failed`       - epic or chat creation / seeding failed.
- * - `internal_error`        - anything else; `detail` carries the message.
- */
-export const sessionImportFailureReasonSchema = z.enum([
-  "source_unreadable",
-  "source_empty",
-  "workspace_bind_failed",
-  "creation_failed",
-  "internal_error",
-]);
-export type SessionImportFailureReason = z.infer<
-  typeof sessionImportFailureReasonSchema
->;
-
 export const sessionImportOutcomeSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("imported"),
-    epicId: z.string(),
-    chatId: z.string(),
+    epicId: z.string().min(1),
+    chatId: z.string().min(1),
   }),
   z.object({
     kind: z.literal("skipped_already_imported"),
-    epicId: z.string(),
-    chatId: z.string(),
+    epicId: z.string().min(1),
+    chatId: z.string().min(1),
   }),
   z.object({
     kind: z.literal("failed"),
@@ -108,23 +90,29 @@ export type SessionImportRunCounts = z.infer<
 export const sessionImportRunServerFrameSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("started"),
-    runId: z.string(),
+    runId: z.string().min(1),
     total: z.number().int().nonnegative(),
+    // False when this subscription STARTED the run, true when it attached to
+    // one already in flight (see the module doc). The wizard needs the
+    // difference: an attach ignores the `selections` it just submitted, and the
+    // `progress` frames that follow are a replay of work already done, not
+    // live progress on this client's request.
+    attached: z.boolean(),
     hasBinaryPayload: z.literal(false),
   }),
   z.object({
     kind: z.literal("progress"),
-    runId: z.string(),
+    runId: z.string().min(1),
     index: z.number().int().nonnegative(),
     total: z.number().int().nonnegative(),
     harness: guiHarnessIdSchema,
-    nativeSessionId: z.string(),
+    nativeSessionId: z.string().min(1),
     outcome: sessionImportOutcomeSchema,
     hasBinaryPayload: z.literal(false),
   }),
   z.object({
     kind: z.literal("complete"),
-    runId: z.string(),
+    runId: z.string().min(1),
     counts: sessionImportRunCountsSchema,
     hasBinaryPayload: z.literal(false),
   }),

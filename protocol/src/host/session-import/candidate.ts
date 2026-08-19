@@ -25,20 +25,60 @@ export type SessionImportSelection = z.infer<
 >;
 
 /**
+ * Closed set of import failure causes, one per seam the import can fail at,
+ * shared by the scan and the run.
+ *
+ * Closed rather than free text so the completion summary can group failures and
+ * the wizard can say something specific about each ("2 sessions could not be
+ * read"). The free-text half lives beside it in `detail`, which is for the
+ * human reading it and is additionally logged host-side under a fixed prefix so
+ * a support report carries it even when the wizard was closed.
+ *
+ * - `source_unreadable`     - the vendor's session file / database could not
+ *                             be read at all: gone, unreadable, or corrupt.
+ * - `source_empty`          - it read, but yielded no message worth a chat.
+ * - `workspace_bind_failed` - the session's `cwd` could not be resolved to a
+ *                             workspace (and folderless import also failed).
+ * - `creation_failed`       - epic or chat creation / seeding failed.
+ * - `internal_error`        - anything else; `detail` carries the message.
+ *
+ * A SCAN can only ever produce the first, the second, or the last: the other
+ * two name work only a run does.
+ */
+export const sessionImportFailureReasonSchema = z.enum([
+  "source_unreadable",
+  "source_empty",
+  "workspace_bind_failed",
+  "creation_failed",
+  "internal_error",
+]);
+export type SessionImportFailureReason = z.infer<
+  typeof sessionImportFailureReasonSchema
+>;
+
+/**
  * Why a discovered session cannot be offered as-is.
  *
  * `already_in_traycer` names the chat it landed in so the wizard can link to
  * it rather than just greying the row out; the epic is what the left list
  * navigates to.
+ *
+ * `unreadable` carries the same closed reason + free-text `detail` pair the
+ * run reports, so a session that fails at discovery and one that fails at
+ * import are described in the same vocabulary rather than in two.
  */
 export const sessionImportCandidateStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("importable") }),
   z.object({
     kind: z.literal("already_in_traycer"),
-    epicId: z.string(),
-    chatId: z.string(),
+    epicId: z.string().min(1),
+    chatId: z.string().min(1),
   }),
-  z.object({ kind: z.literal("unreadable"), reason: z.string() }),
+  z.object({
+    kind: z.literal("unreadable"),
+    reason: sessionImportFailureReasonSchema,
+    detail: z.string(),
+  }),
 ]);
 export type SessionImportCandidateState = z.infer<
   typeof sessionImportCandidateStateSchema

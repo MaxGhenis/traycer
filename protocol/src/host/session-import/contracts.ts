@@ -24,13 +24,17 @@ export type SessionImportStatusRequest = z.infer<
 export const sessionImportStatusResponseSchema = z.object({
   active: z
     .object({
-      runId: z.string(),
+      runId: z.string().min(1),
       done: z.number().int().nonnegative(),
       total: z.number().int().nonnegative(),
     })
     .nullable(),
   lastCompleted: z
     .object({
+      // Which run the summary is of, so a client that watched a run can tell
+      // "this is the run I just saw finish" from "an older one, and mine is
+      // still going somewhere I am not attached to".
+      runId: z.string().min(1),
       counts: sessionImportRunCountsSchema,
       at: z.number(),
     })
@@ -46,3 +50,9 @@ export const sessionImportStatusV10 = defineRpcContract({
   requestSchema: sessionImportStatusRequestSchema,
   responseSchema: sessionImportStatusResponseSchema,
 });
+
+// The feature's whole wire surface, re-exported so a caller takes one import
+// for the three contracts that only ever ship together.
+export * from "@traycer/protocol/host/session-import/candidate";
+export * from "@traycer/protocol/host/session-import/scan";
+export * from "@traycer/protocol/host/session-import/run";

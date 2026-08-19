@@ -14,10 +14,15 @@
  *
  * Server frames:
  *
- * - `started`  - emitted once, before any directory is opened.
- * - `group`    - one repo folder's worth of candidates.
- * - `complete` - terminal frame; carries the totals the wizard's header shows.
- * - `pong`     - heartbeat response.
+ * - `started`        - emitted once, before any directory is opened.
+ * - `group`          - one repo folder's worth of candidates.
+ * - `providerFailed` - one provider could not be scanned at all; the others
+ *                      keep streaming. A frame rather than a field on
+ *                      `complete` so the wizard can grey that provider's
+ *                      section out WHILE the scan is still running, which is
+ *                      exactly when the user is looking at it.
+ * - `complete`       - terminal frame; carries the totals the header shows.
+ * - `pong`           - heartbeat response.
  *
  * Client frames:
  *
@@ -26,7 +31,10 @@
 import { z } from "zod";
 import { defineStreamRpcContract } from "@traycer/protocol/framework/versioned-stream-rpc";
 import { guiHarnessIdSchema } from "@traycer/protocol/persistence/epic/foundation";
-import { sessionImportGroupSchema } from "@traycer/protocol/host/session-import/candidate";
+import {
+  sessionImportFailureReasonSchema,
+  sessionImportGroupSchema,
+} from "@traycer/protocol/host/session-import/candidate";
 
 /**
  * `providers: null` scans every provider the host has a reader for - the
@@ -34,7 +42,10 @@ import { sessionImportGroupSchema } from "@traycer/protocol/host/session-import/
  * provider filter inside the wizard submits.
  */
 export const sessionImportScanOpenRequestSchema = z.object({
-  providers: z.array(guiHarnessIdSchema).nullable(),
+  // `null` means every provider; a list narrows it and must name at least one,
+  // because an empty list is a scan that can only ever return nothing - which
+  // is a client bug, not a request worth serving.
+  providers: z.array(guiHarnessIdSchema).min(1).nullable(),
 });
 export type SessionImportScanOpenRequest = z.infer<
   typeof sessionImportScanOpenRequestSchema
@@ -60,6 +71,13 @@ export const sessionImportScanServerFrameSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("group"),
     group: sessionImportGroupSchema,
+    hasBinaryPayload: z.literal(false),
+  }),
+  z.object({
+    kind: z.literal("providerFailed"),
+    harness: guiHarnessIdSchema,
+    reason: sessionImportFailureReasonSchema,
+    detail: z.string(),
     hasBinaryPayload: z.literal(false),
   }),
   z.object({
