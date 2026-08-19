@@ -149,7 +149,6 @@ export type ManagedCommandDeleteResponse = z.infer<
   typeof managedCommandDeleteResponseSchema
 >;
 
-
 /**
  * Agent-facing command row. Wider than the human `managedCommandSchema`:
  * the authoring agent already knows the command line and cwd, and list/view

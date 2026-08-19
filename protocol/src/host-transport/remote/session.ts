@@ -197,9 +197,13 @@ export interface RemoteSessionOptions<
   readonly requestId: () => string;
   /** Every network boundary is explicit; host-side callers must choose bounds. */
   readonly timing: RemoteSessionTiming;
-  /** Optional client-side capability publication hook. */
+  /**
+   * Optional client-side capability publication hook. The merged (floor +
+   * optional) host rpc manifest, not just method names: a name-only record
+   * drops negotiated versions and invalidates any the local transport kept.
+   */
   readonly onNegotiatedMethods:
-    ((hostId: string, methodNames: ReadonlyArray<string>) => void) | null;
+    ((hostId: string, manifest: ConnectionManifest) => void) | null;
   /** Optional selection-authority reporter. Host dialers pass `null`. */
   readonly evidence: RemoteSessionEvidence | null;
 }
@@ -1182,7 +1186,12 @@ export class RemoteSession<
 
     const scheduler = new PriorityScheduler({
       write: (frame) => this.writeFrame(generation, frame),
-      onWriteError: () => this.handleConnectionLost(generation, "write-failed", "host-transport-plane"),
+      onWriteError: () =>
+        this.handleConnectionLost(
+          generation,
+          "write-failed",
+          "host-transport-plane",
+        ),
       initialBulkCredits: INITIAL_BULK_SEND_CREDITS,
       now: undefined,
     });
@@ -1255,7 +1264,11 @@ export class RemoteSession<
         return;
       }
       if (!connection.relaySocket.sendData(msg0)) {
-        this.handleConnectionLost(generation, "handshake-send-failed", "host-transport-plane");
+        this.handleConnectionLost(
+          generation,
+          "handshake-send-failed",
+          "host-transport-plane",
+        );
       }
     })();
   }
@@ -1277,7 +1290,11 @@ export class RemoteSession<
         }
         this.sendOpenFrame(generation, connection);
       })().catch(() =>
-        this.handleConnectionLost(generation, "handshake-read-failed", "host-transport-plane"),
+        this.handleConnectionLost(
+          generation,
+          "handshake-read-failed",
+          "host-transport-plane",
+        ),
       );
       return;
     }
@@ -1337,7 +1354,11 @@ export class RemoteSession<
       }
       this.dispatchInbound(generation, connection, message);
     })().catch(() =>
-      this.handleConnectionLost(generation, "inbound-decode-failed", "host-transport-plane"),
+      this.handleConnectionLost(
+        generation,
+        "inbound-decode-failed",
+        "host-transport-plane",
+      ),
     );
   }
 
@@ -1500,7 +1521,11 @@ export class RemoteSession<
         if (parsed.success) {
           this.handleSessionFatal(generation, parsed.data.details);
         } else {
-          this.handleConnectionLost(generation, "malformed-session-fatal", "host-transport-plane");
+          this.handleConnectionLost(
+            generation,
+            "malformed-session-fatal",
+            "host-transport-plane",
+          );
         }
         return;
       }
@@ -1648,7 +1673,11 @@ export class RemoteSession<
     }
     const parsed = sessionOpenAckPayloadSchema.safeParse(json);
     if (!parsed.success) {
-      this.handleConnectionLost(generation, "malformed-openAck", "host-transport-plane");
+      this.handleConnectionLost(
+        generation,
+        "malformed-openAck",
+        "host-transport-plane",
+      );
       return;
     }
     const hostRpcMerged = mergeConnectionManifests(
@@ -1662,10 +1691,7 @@ export class RemoteSession<
     // tells us truthfully which methods the host has. A long-lived session
     // refreshes this on every re-attach, which is when a host upgraded
     // underneath us re-handshakes.
-    this.options.onNegotiatedMethods?.(
-      this.options.hostId,
-      Object.keys(hostRpcMerged),
-    );
+    this.options.onNegotiatedMethods?.(this.options.hostId, hostRpcMerged);
     // Floor vs floor ONLY - optional methods are deliberately outside the
     // session-fatal surface (see `SessionManifests`); a peer lacking one
     // degrades per-call/per-gate instead.
@@ -1833,7 +1859,11 @@ export class RemoteSession<
       // fresh `NoiseChannel` + relay dial + `open{bearer}` - rather than a
       // second state machine or a new wire frame (`session_reset{sid}`
       // stays deferred/telemetry-gated; see the S2 ticket).
-      this.handleConnectionLost(generation, "host-attached-stale-noise", "host-transport-plane");
+      this.handleConnectionLost(
+        generation,
+        "host-attached-stale-noise",
+        "host-transport-plane",
+      );
     }
   }
 
@@ -1853,7 +1883,11 @@ export class RemoteSession<
       });
       return;
     }
-    this.handleConnectionLost(generation, `peer-gone:${reason}`, "host-transport-plane");
+    this.handleConnectionLost(
+      generation,
+      `peer-gone:${reason}`,
+      "host-transport-plane",
+    );
   }
 
   /** Any transport loss → drop the connection and full-resume from backoff. */
@@ -1930,7 +1964,11 @@ export class RemoteSession<
       // A transient host blip must not count toward the credential give-up
       // bound - clear any streak left by a prior genuine UNAUTHORIZED episode.
       this.noProgressUnauthorizedReconnects = 0;
-      this.handleConnectionLost(generation, "session-fatal-retryable", provenance);
+      this.handleConnectionLost(
+        generation,
+        "session-fatal-retryable",
+        provenance,
+      );
       return;
     }
     const revalidate = this.options.auth.revalidateForReconnect;
@@ -2233,7 +2271,11 @@ export class RemoteSession<
     const generation = this.connectGeneration;
     this.standingTimer = setTimeout(() => {
       this.standingTimer = null;
-      this.handleConnectionLost(generation, "host-standing-lapsed", "host-transport-plane");
+      this.handleConnectionLost(
+        generation,
+        "host-standing-lapsed",
+        "host-transport-plane",
+      );
     }, HOST_STANDING_BOUND_MS);
   }
 
@@ -2699,8 +2741,11 @@ function abortedRequestError(
   });
 }
 
-function unaryTimeoutError(requestId: string, method: string): HostRpcError {
-  return new HostRpcError({
+function unaryTimeoutError(
+  requestId: string,
+  method: string,
+): HostTransportFailureError {
+  return new HostTransportFailureError({
     code: "RPC_ERROR",
     message: `Remote unary '${method}' timed out awaiting a response`,
     requestId,

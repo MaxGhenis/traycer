@@ -8,7 +8,7 @@ import {
 } from "@traycer/protocol/host-transport/remote/session";
 import type { RemoteSessionAuth } from "@traycer/protocol/host-transport/remote/auth";
 import { extractBearerForOpenFrame } from "../ws-rpc-client";
-import { recordNegotiatedHostMethods } from "../negotiated-manifest-registry";
+import { recordNegotiatedHostManifest } from "../negotiated-manifest-registry";
 import {
   ATTACH_ACK_TIMEOUT_MS,
   NOISE_HANDSHAKE_TIMEOUT_MS,
@@ -61,7 +61,7 @@ export class RemoteSession<
         relayPingIntervalMs: RELAY_PING_INTERVAL_MS,
         relayPongTimeoutMs: RELAY_PONG_TIMEOUT_MS,
       },
-      onNegotiatedMethods: recordNegotiatedHostMethods,
+      onNegotiatedMethods: recordNegotiatedHostManifest,
     });
   }
 }
