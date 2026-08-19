@@ -1321,7 +1321,57 @@ describe("WsStreamClient", () => {
       GIT_STATUS_VERSION,
     );
     liveGitSession.close();
-    expect(client.getMethodSchemaVersion("git.subscribeStatus")).toBeNull();
+    // Not null: with the last live session gone the client falls back to what
+    // the handshake manifest says a subscribe WOULD negotiate, which is the
+    // same value and is still just as true. The live map is what emptied here
+    // - assert on it through the session that owns routing.
+    expect(client.getMethodSchemaVersion("git.subscribeStatus")).toEqual(
+      GIT_STATUS_VERSION,
+    );
+  });
+
+  it("answers the schema version for a method no session has subscribed to", async () => {
+    // The pre-check half of the capability cache. `getMethodSupport` has
+    // always answered for every method in the peer's manifest; the version
+    // did not, so a caller gating the OPENING of a stream on its minor could
+    // never satisfy the gate - the only evidence it accepted was published by
+    // the session it was deciding whether to open.
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    const { factory, sockets } = makeFactory();
+    const client = makeClient({
+      factory,
+      authToken: "t",
+      pingIntervalMs: 25_000,
+      pongTimeoutMs: 50_000,
+      initialBackoffMs: 10,
+      maxBackoffMs: 1_000,
+    });
+    const session = client.subscribe("git.subscribeStatus", {
+      hostId: "host-1",
+      runningDir: "/repo-a",
+      ignoreWhitespace: false,
+      freshNonce: null,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(
+      client.getMethodSchemaVersion("host.notifications.cloudFeed.subscribe"),
+    ).toBeNull();
+    completeHandshake(sockets[0].socket);
+
+    const cloudFeedVersion = client.getMethodSchemaVersion(
+      "host.notifications.cloudFeed.subscribe",
+    );
+    expect(cloudFeedVersion).not.toBeNull();
+    expect(cloudFeedVersion?.major).toBe(1);
+    // A reconnect may be a different host incarnation, so the prediction is
+    // re-probed on the same terms the support cache is.
+    client.reconnectAll("host-endpoint-change");
+    expect(
+      client.getMethodSchemaVersion("host.notifications.cloudFeed.subscribe"),
+    ).toBeNull();
+
+    session.close();
   });
 
   it("closes the socket after two missed pongs and triggers a reconnect", async () => {

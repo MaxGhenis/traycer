@@ -6,7 +6,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as Y from "yjs";
 import { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
-import { mockLocalHostEntry } from "@traycer-clients/shared/host-client/mock/mock-host-directory";
+import {
+  mockLocalHostEntry,
+  mockRemoteHostEntry,
+} from "@traycer-clients/shared/host-client/mock/mock-host-directory";
+import { HostRequestControlFlowError } from "@traycer-clients/shared/host-client/host-request-coordinator";
 import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock-host-messenger";
 import { acquireHostConnection } from "@traycer-clients/shared/host-client/host-connection-registry";
 import type {
@@ -30,6 +34,7 @@ import {
   hostNotificationsSubscribeClientFrameSchema,
   type HostNotificationEntry,
   type HostNotificationsCloudFeedRow,
+  type HostNotificationsIndicatorStateResponse,
   type HostNotificationsMarkReadRequest,
   type HostNotificationsSubscribeClientFrame,
 } from "@traycer/protocol/host/notifications/contracts";
@@ -54,6 +59,13 @@ import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/tr
 interface HostState {
   id: string | null;
   client: HostClient<HostRpcRegistry> | null;
+  /**
+   * The APP-WIDE client, which per G8 is a different machine from the
+   * notification host whenever a tab is bound to a remote one. Left `null` by
+   * default so every existing case keeps seeing one client; a case that needs
+   * the two to disagree sets it, and `useHostClient()` follows it.
+   */
+  appWideClient: HostClient<HostRpcRegistry> | null;
 }
 
 interface StreamState {
@@ -62,7 +74,11 @@ interface StreamState {
   useClientSupport: boolean;
 }
 
-const hostState = vi.hoisted<HostState>(() => ({ id: "host-a", client: null }));
+const hostState = vi.hoisted<HostState>(() => ({
+  id: "host-a",
+  client: null,
+  appWideClient: null,
+}));
 const streamState = vi.hoisted<StreamState>(() => ({
   client: null,
   cloudFeedSupport: null,
@@ -90,7 +106,7 @@ vi.mock("@/hooks/notifications/use-notification-host", () => ({
 
 vi.mock("@/lib/host", () => ({
   useHostBinding: () => null,
-  useHostClient: () => hostState.client,
+  useHostClient: () => hostState.appWideClient ?? hostState.client,
   // The SPINE, a separate export since redesign P2.1.
   useHostRuntimeClient: () => hostState.client,
   useAuthService: () => mockAuth,
@@ -570,6 +586,11 @@ function createHostClient(
           markReadCalls.push(request);
           return {};
         },
+        // Held open forever. The only thing that may settle it is the
+        // coordinator releasing the read, which is exactly the effect the
+        // canceller-binding case below measures.
+        "host.notifications.indicatorState": () =>
+          new Promise<HostNotificationsIndicatorStateResponse>(() => undefined),
       },
     }),
     findHostById: (hostId) =>
@@ -585,6 +606,35 @@ function createHostClient(
   // `hostState.id` names some other host, which is exactly what the bound slot
   // did before.
   return client.createRequesterForHostId(mockLocalHostEntry.hostId);
+}
+
+/**
+ * The APP-WIDE client for a session whose active host is a REMOTE machine -
+ * the G8 case where "the notification host" and "the host the rest of the app
+ * is pointed at" are two different computers.
+ *
+ * Its own runtime answers nothing: a canceller taken from here is wrong not
+ * because this host would refuse the release but because the coordinator keys
+ * one by `(hostId, userId, method, params)`, so a release issued through this
+ * client names `mock-remote` and cannot reach a read issued to `mock-local`.
+ */
+function createAppWideRemoteHostClient(): HostClient<HostRpcRegistry> {
+  const queryClient = new QueryClient();
+  const client = new HostClient<HostRpcRegistry>({
+    registry: hostRpcRegistry,
+    invalidator: createHostQueryInvalidator(queryClient),
+    messenger: new MockHostMessenger<HostRpcRegistry>({
+      registry: hostRpcRegistry,
+      requestId: () => "remote-request-1",
+      handlers: {},
+    }),
+    findHostById: (hostId) =>
+      hostId === mockRemoteHostEntry.hostId ? mockRemoteHostEntry : null,
+  });
+  client.setRequestContext(
+    createRequestContextFixture({ origin: "renderer", bearerToken: "token" }),
+  );
+  return client.createRequesterForHostId(mockRemoteHostEntry.hostId);
 }
 
 function setFocusedChat(epicId: string, chatId: string): void {
@@ -689,6 +739,7 @@ describe("<NotificationsSessionProvider />", () => {
     window.localStorage.clear();
     hostState.id = "host-a";
     hostState.client = null;
+    hostState.appWideClient = null;
     streamState.client = null;
     streamState.cloudFeedSupport = "unsupported";
     streamState.useClientSupport = false;
@@ -2958,6 +3009,74 @@ describe("<NotificationsSessionProvider />", () => {
     });
 
     expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+  });
+
+  it("releases the in-flight indicator read on the NOTIFICATION host, not the app-wide one", async () => {
+    // Set BEFORE the render: the feed handler captures its canceller in a
+    // `useCallback`, so a client swapped in afterwards is never the one under
+    // test. The two hosts disagreeing is the whole point of G8 and the only
+    // configuration in which this binding is observable at all - notifications
+    // come from `mock-local` while the rest of the app addresses
+    // `mock-remote`.
+    hostState.appWideClient = createAppWideRemoteHostClient();
+    const { queryClient, streamClient } =
+      await renderHostNotificationsProvider();
+    const notificationClient = hostState.client;
+    if (notificationClient === null) throw new Error("no notification client");
+
+    const key = indicatorKey("epic-a", "chat-a");
+    let readOutcome: "pending" | "released" | "resolved" | "failed" = "pending";
+    void queryClient
+      .fetchQuery({
+        queryKey: key,
+        retry: false,
+        queryFn: () => {
+          // Deliberately signal-LESS. `cancelActiveRead` exists for exactly
+          // the bespoke query fns that predate `requestWithSignal`, and one
+          // that forwarded its signal would be released by `cancelQueries`
+          // before the canceller was ever consulted - measuring nothing.
+          const read = notificationClient.request(
+            "host.notifications.indicatorState",
+            { epicIds: ["epic-a"], chatIds: ["chat-a"] },
+          );
+          void read.then(
+            () => {
+              readOutcome = "resolved";
+            },
+            (error: unknown) => {
+              readOutcome =
+                error instanceof HostRequestControlFlowError
+                  ? "released"
+                  : "failed";
+            },
+          );
+          return read;
+        },
+      })
+      .catch(() => undefined);
+
+    await waitFor(() => {
+      expect(queryClient.getQueryState(key)?.fetchStatus).toBe("fetching");
+    });
+
+    act(() => {
+      streamClient.session.emitServerFrame({
+        kind: "snapshot",
+        hasBinaryPayload: false,
+        attention: { entries: [], nextCursor: null },
+        recent: { entries: [], nextCursor: null },
+        summary: { unreadCount: 0, attentionCount: 0 },
+      });
+    });
+
+    // The coordinator keys a release by `(hostId, userId, method, params)`, so
+    // this only settles when the canceller the provider passed is bound to
+    // `mock-local`. Handed the app-wide client it names `mock-remote`, the
+    // release reaches nothing, and this read stays open to re-resolve the
+    // just-invalidated query with its pre-frame answer.
+    await waitFor(() => {
+      expect(readOutcome).toBe("released");
+    });
   });
 
   it("invalidates only referenced entities on read-state frames", async () => {

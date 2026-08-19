@@ -53,10 +53,15 @@ export function EpicDurabilityBadge() {
   if (
     view.kind === "cloudDurable" &&
     freshnessCopy === null &&
-    // Cloud durability is calm about the DURABILITY axis only. A stated
-    // `unavailable` protection beside it still means offline edits die with
-    // the process, so that pair draws the risk copy instead of staying silent.
-    view.protection !== "unavailable"
+    // Cloud durability is calm about the DURABILITY axis only, so silence is
+    // licensed by a POSITIVE statement on the protection axis too - never by
+    // the absence of one. `unavailable` means offline edits die with the
+    // process; `unknown` is the host saying it cannot tell, which `@1.5`
+    // defines as "rendered as unknown, never as protected". Excluding only
+    // `unavailable` here left that second case pixel-identical to `armed` -
+    // the same silence-as-reassurance inference this minor exists to break,
+    // one axis over.
+    view.protection === "armed"
   ) {
     return null;
   }
@@ -279,14 +284,14 @@ function cloudFreshnessCopy(
     case "local-copy":
       return {
         label: "Local copy",
-        className: "bg-muted text-muted-foreground",
+        className: "bg-foreground/8 text-muted-foreground",
         reconciledAtEpochMs,
         noTimestampLabel: null,
       };
     case "syncing":
       return {
         label: "Checking for updates",
-        className: "bg-muted text-muted-foreground",
+        className: "bg-foreground/8 text-muted-foreground",
         reconciledAtEpochMs,
         noTimestampLabel: null,
       };
@@ -454,12 +459,23 @@ function badgeCopy(
   pauseReason: EpicDurabilityPauseReasonV15 | null,
   promotionState: EpicPromotionState | null,
 ): { readonly label: string; readonly className: string } | null {
-  // `null`, not "Storage status unknown". This arm is only REACHED now that a
-  // freshness statement can force the badge to draw over a cloud-durable epic,
-  // and the durability half genuinely has nothing to say there - falling
-  // through to the unknown copy would answer a question nobody asked and
-  // contradict the positive `armed` the host sent alongside it.
-  if (view.kind === "cloudDurable") return null;
+  if (view.kind === "cloudDurable") {
+    // `null`, not "Storage status unknown", once the epic is positively
+    // cloud-durable: the durability half genuinely has nothing to say, and
+    // falling through to the unknown copy would answer a question nobody
+    // asked and contradict the `"cloud"` the host sent.
+    //
+    // Except when the PROTECTION leg is the unknown one. The label names that
+    // axis specifically rather than reusing "Storage status unknown", which
+    // would read as doubt about the cloud statement the host just made.
+    // `unavailable` is not here because it is already the risk copy's job.
+    return view.protection === "unknown"
+      ? {
+          label: "Local backup status unknown",
+          className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+        }
+      : null;
+  }
   if (view.kind === "indeterminate") {
     // `unavailable` is a stated FACT about risk, not an absence, so it gets
     // the stronger treatment and names the consequence rather than the
@@ -492,7 +508,7 @@ function badgeCopy(
     case "local":
       return {
         label: "Stored locally",
-        className: "bg-muted text-muted-foreground",
+        className: "bg-foreground/8 text-muted-foreground",
       };
     case "promoting":
       return {
@@ -537,12 +553,12 @@ function pausedCopy(pauseReason: EpicDurabilityPauseReasonV15 | null): {
     case "delete-pending-acknowledgement":
       return {
         label: "Delete pending",
-        className: "bg-muted text-muted-foreground",
+        className: "bg-foreground/8 text-muted-foreground",
       };
     case "delete-tombstone-unscoped-cleared":
       return {
         label: "Delete recorded \u2014 tidying up",
-        className: "bg-muted text-muted-foreground",
+        className: "bg-foreground/8 text-muted-foreground",
       };
     case "entitlement-lapsed":
     case null:

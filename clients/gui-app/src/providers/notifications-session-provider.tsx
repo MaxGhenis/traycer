@@ -49,7 +49,8 @@ import {
 } from "@/lib/notifications/notification-presence";
 import { getNotificationsStreamFactoryOverride } from "@/providers/notifications-stream-factory-override";
 import { useAuthStore } from "@/stores/auth/auth-store";
-import { useAuthService, useHostClient } from "@/lib/host";
+import { useAuthService } from "@/lib/host";
+import { useNotificationHost } from "@/hooks/notifications/use-notification-host";
 import { useReactiveLocalHostEntry } from "@/hooks/host/use-reactive-local-host-entry";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import { useNotificationShow } from "@/hooks/notifications/use-notifications";
@@ -193,7 +194,23 @@ function NotificationsSessionBody(
   const onRemoteActivityAuthError = useCallback((): void => {
     void authService.revalidateCurrentContext();
   }, [authService]);
-  const hostClient = useHostClient();
+  // The NOTIFICATION host's own client - the same resolver every other
+  // downstream consumer of these streams uses, so the canceller below and the
+  // frames driving it name one machine by construction.
+  //
+  // It is a CANCELLER, and that is why it cannot be the app-wide client:
+  // `invalidateNotificationIndicators` releases the in-flight
+  // `host.notifications.indicatorState` read sitting behind the queries it
+  // invalidates, and those reads went out on this host's client
+  // (`useHostNotificationIndicators` resolves the notification host too). The
+  // coordinator keys a cancellation by `(hostId, userId, method, params)` and
+  // `HostClient.cancelActiveReadFor` takes the host from the CLIENT, not from
+  // the `hostId` argument beside it - so the app-wide client cancelled under
+  // whichever host was effective. While a tab was bound to a remote host that
+  // left the local host's coordinated read running, to re-resolve the
+  // just-invalidated query with its pre-frame answer, and cancelled the remote
+  // host's identical read for a frame that was never about it.
+  const notificationHostClient = useNotificationHost().client;
   const showNotification = useNotificationShow();
   const { activate } = useNotificationActivationWithNavigate(props.navigate);
   const mergedActions = useMergedNotificationsActions();
@@ -362,7 +379,11 @@ function NotificationsSessionBody(
       // hold. Omitting it would drop completion receipts for the whole local
       // partition on every mixed-mode session.
       if (frame.kind === "snapshot" || frame.kind === "partitionSnapshot") {
-        invalidateNotificationIndicators(queryClient, hostId, hostClient);
+        invalidateNotificationIndicators(
+          queryClient,
+          hostId,
+          notificationHostClient,
+        );
         recordCompletions(
           [...frame.attention.entries, ...frame.recent.entries].map(
             (entry) => ({
@@ -376,7 +397,11 @@ function NotificationsSessionBody(
       }
       if (frame.kind === "cleared" || frame.kind === "removed") {
         removeObservedCompletions(hostId, frame.removedIds);
-        invalidateNotificationIndicators(queryClient, hostId, hostClient);
+        invalidateNotificationIndicators(
+          queryClient,
+          hostId,
+          notificationHostClient,
+        );
         return;
       }
       if (frame.kind === "readStateChanged") {
@@ -385,13 +410,17 @@ function NotificationsSessionBody(
         // unrelated rows the protocol has no entity refs for - full-invalidate
         // rather than leave those entities' indicators stale.
         if (frame.removedIds.length > 0) {
-          invalidateNotificationIndicators(queryClient, hostId, hostClient);
+          invalidateNotificationIndicators(
+            queryClient,
+            hostId,
+            notificationHostClient,
+          );
         } else {
           invalidateNotificationIndicatorsForEntities(
             queryClient,
             hostId,
             frame.entityRefs,
-            hostClient,
+            notificationHostClient,
           );
         }
         return;
@@ -401,13 +430,17 @@ function NotificationsSessionBody(
       // Same reasoning as above: a surviving upsert's `removedIds` can name
       // entities this frame carries no ref for.
       if (frame.removedIds.length > 0) {
-        invalidateNotificationIndicators(queryClient, hostId, hostClient);
+        invalidateNotificationIndicators(
+          queryClient,
+          hostId,
+          notificationHostClient,
+        );
       } else if (entity !== null) {
         invalidateNotificationIndicatorsForEntities(
           queryClient,
           hostId,
           [entity],
-          hostClient,
+          notificationHostClient,
         );
       }
       if (entity === null) return;
@@ -431,7 +464,7 @@ function NotificationsSessionBody(
       consumeEntity,
       recordCompletions,
       removeObservedCompletions,
-      hostClient,
+      notificationHostClient,
       queryClient,
     ],
   );

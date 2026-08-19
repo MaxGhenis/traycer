@@ -386,6 +386,38 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
     expect(badge.textContent).toContain("No local backup");
   });
 
+  it("draws over a cloud-durable epic whose protection is UNKNOWN", () => {
+    // `@1.5` defines `unknown` as "rendered as unknown, never as protected".
+    // The calm return used to exclude only `unavailable`, so this case drew
+    // nothing and was pixel-identical to `armed` - the calm answer on one axis
+    // silently answering the other.
+    cloudDurableAndArmed();
+    durability.localProtection = "unknown";
+
+    renderBadge();
+
+    const badge = screen.getByTestId("epic-durability-badge");
+    expect(badge.getAttribute("data-local-protection")).toBe("unknown");
+    expect(badge.textContent).toContain("Local backup status unknown");
+    // Names the protection axis, not the durability one: the host positively
+    // said `"cloud"`, and casting doubt on that would be a second untruth.
+    expect(badge.textContent).not.toContain("Storage status unknown");
+  });
+
+  it("draws over a cloud-durable epic whose protection key a @1.5 peer OMITTED", () => {
+    // Same case reached the other way: absence from a peer that speaks the
+    // legs is the wire contract's `unknown`, so it must render identically.
+    cloudDurableAndArmed();
+    durability.localProtection = null;
+    durability.peerSpeaksDurabilityLegs = true;
+
+    renderBadge();
+
+    expect(
+      screen.getByTestId("epic-durability-badge").textContent,
+    ).toContain("Local backup status unknown");
+  });
+
   it("draws over a cloud-durable epic that is only a local copy, which the badge could not previously say", () => {
     cloudDurableAndArmed();
     durability.cloudFreshness = {

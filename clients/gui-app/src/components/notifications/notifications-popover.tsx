@@ -155,15 +155,27 @@ function isClearAllDisabled(input: {
   readonly cloudTotalCount: number;
   readonly hasActiveHost: boolean;
   readonly hasLoadedHostNotifications: boolean;
+  readonly hasRendererLocalRows: boolean;
 }): boolean {
+  // Same shape as the mark-all gate above, and for the same reason: clearing
+  // fans out over every lane the feed renders, so the button is live while
+  // ANY of them still holds a row. Gating mixed mode on the cloud lane alone
+  // disabled it in exactly the case the fan-out exists for - a populated
+  // host/app-local/global feed behind an empty or unreachable relay.
+  //
+  // The renderer-local lanes need no connection at all; the host lane needs
+  // the notification host, whose liveness is independent of the relay's.
+  const cloudIndependentWork =
+    (input.hasActiveHost && input.hasLoadedHostNotifications) ||
+    input.hasRendererLocalRows;
   if (input.feedMode === "cloud") {
-    return (
-      !input.cloudHasSnapshot ||
-      input.cloudConnectionState !== "connected" ||
-      input.cloudTotalCount === 0
-    );
+    const cloudWork =
+      input.cloudHasSnapshot &&
+      input.cloudConnectionState === "connected" &&
+      input.cloudTotalCount > 0;
+    return !cloudWork && !cloudIndependentWork;
   }
-  return !input.hasActiveHost || !input.hasLoadedHostNotifications;
+  return !cloudIndependentWork;
 }
 
 /** Local-fallback header subtitle text. A partial host state is either
@@ -316,6 +328,15 @@ export function NotificationsPopover(
   const fullOccurrenceOrder = useMergedNotificationOccurrenceEntries();
   const hasLoadedHostNotifications = fullOccurrenceOrder.some((entry) =>
     entry.feedId.startsWith("host:"),
+  );
+  // Renderer-local lanes - app-local failures and the collaboration room -
+  // are client state, so "Clear all" can always act on them. Read off the
+  // UNFILTERED order for the same reason the host probe above is: the action
+  // clears the whole feed, not the current filter's slice of it.
+  const hasRendererLocalRows = fullOccurrenceOrder.some(
+    (entry) =>
+      entry.feedId.startsWith("app-local:") ||
+      entry.feedId.startsWith("global:"),
   );
   const occurrenceKeyByFeedId = useMemo(
     () =>
@@ -501,6 +522,7 @@ export function NotificationsPopover(
             cloudTotalCount,
             hasActiveHost: notificationHostId !== null,
             hasLoadedHostNotifications,
+            hasRendererLocalRows,
           })}
           onClearAll={handleClearAll}
           onOpenSettings={handleOpenSettings}

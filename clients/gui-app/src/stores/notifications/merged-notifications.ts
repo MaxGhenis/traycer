@@ -686,6 +686,10 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
   const appLocalMarkAllAsRead = useAppLocalNotificationsStore(
     (state) => state.markAllAsRead,
   );
+  const globalClearAll = useNotificationsStore((state) => state.clearAll);
+  const appLocalClearAll = useAppLocalNotificationsStore(
+    (state) => state.clearAll,
+  );
   const hostNextCursor = useHostNotificationsStore(
     selectHostNotificationRecentCursor,
   );
@@ -1232,25 +1236,34 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
         cloudClear.mutate({ entryId: row.sourceId });
       },
       clearAll: () => {
-        if (feedMode === "cloud") {
-          if (cloudVersion === null) return;
-          // Send the version of the snapshot the user is LOOKING AT, not
-          // whatever the cloud head has reached by the time this lands. The
-          // fan-out then covers exactly the rows on screen, and an entry that
-          // arrives in between survives however many times a lost-response
-          // retry replays this call.
-          cloudClearAll.mutate({ observedVersion: cloudVersion });
-          return;
-        }
-        // Same liveness gate as mark-all above: the one that also picked the
-        // client these rows came from, not `client !== null`.
-        if (
-          feedMode === "local" &&
-          client !== null &&
-          notificationHostId !== null
-        ) {
+        if (feedMode === "upgrade-required") return;
+        // The confirmation this sits behind promises "every notification
+        // currently visible in this feed", and in mixed mode the feed renders
+        // four lanes, not one. So the fan-out is the same shape mark-all
+        // already has: every CLOUD-INDEPENDENT lane runs unconditionally, and
+        // the cloud call is the one leg gated on the relay.
+        //
+        // The renderer-local lanes are pure client state, so they clear
+        // whatever the relay and the host are doing.
+        appLocalClearAll();
+        globalClearAll();
+        // The host plane is a separate origin store whose liveness is the
+        // NOTIFICATION host's, not the relay's - the same gate mark-all uses,
+        // and deliberately not `client !== null`, which survives a disconnect
+        // that has already taken the rows' host away. It runs in mixed mode
+        // too: the rows it clears are that host's `home: local` partition,
+        // which the cloud does not hold and `cloudClearAll` therefore cannot
+        // reach.
+        if (client !== null && notificationHostId !== null) {
           clearHostAll.mutate({ beforeUpdatedAt: Date.now() });
         }
+        if (feedMode !== "cloud" || cloudVersion === null) return;
+        // Send the version of the snapshot the user is LOOKING AT, not
+        // whatever the cloud head has reached by the time this lands. The
+        // fan-out then covers exactly the rows on screen, and an entry that
+        // arrives in between survives however many times a lost-response
+        // retry replays this call.
+        cloudClearAll.mutate({ observedVersion: cloudVersion });
       },
       loadMoreHost: () => {
         if (feedMode === "upgrade-required") return;
@@ -1297,6 +1310,8 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
       globalMarkAllAsRead,
       appLocalMarkAsRead,
       appLocalMarkAllAsRead,
+      globalClearAll,
+      appLocalClearAll,
       markHostRead,
       markHostAllRead,
       clearHostAll,

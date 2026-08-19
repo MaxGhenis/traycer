@@ -1085,9 +1085,12 @@ describe("NotificationsPopover", () => {
       "notifications-mark-all-read",
     );
     expect(markAll.disabled).toBe(false);
+    // Live for the same reason mark-all is: the renderer-local lane is client
+    // state, so clearing it needs no relay. This assertion read `true` while
+    // clear-all was a cloud-only call under an all-lanes confirmation.
     expect(
       screen.getByTestId<HTMLButtonElement>("notifications-clear-all").disabled,
-    ).toBe(true);
+    ).toBe(false);
     fireEvent.click(markAll);
 
     await waitFor(() => {
@@ -1188,6 +1191,54 @@ describe("NotificationsPopover", () => {
         { observedVersion: 1 },
       );
     });
+  });
+
+  it("clears every lane the mixed feed renders, not just the cloud one", async () => {
+    // The confirmation promises "every notification currently visible in this
+    // feed". In mixed mode that feed is four lanes, so a cloud-only call left
+    // the host, app-local and collaboration rows sitting there after a
+    // confirmed permanent clear.
+    notificationFeedMode.value = "cloud";
+    bindHostClient();
+    useCloudNotificationsStore.getState().applySnapshot({
+      rows: [cloudDone("entry-cloud", null)],
+      summary: { totalCount: 1, unreadCount: 1, attentionCount: 0 },
+      version: 4,
+    });
+    applyHostSnapshot([hostDone("entry-local", 100, null)], {
+      unreadCount: 1,
+      attentionCount: 0,
+    });
+    seedUnreadAppLocal("terminal-mixed-clear");
+    const captured: TargetCapture = {
+      epicId: null,
+      tabId: null,
+      focusArtifactId: null,
+      focusThreadId: null,
+    };
+    const { router } = buildRouterWithCapture(captured, () => undefined);
+    renderRouter(router);
+
+    fireEvent.click(await screen.findByTestId("notifications-clear-all"));
+    fireEvent.click(screen.getByTestId("confirm-action"));
+
+    await waitFor(() => {
+      expect(hostRequestMock).toHaveBeenCalledWith(
+        "host.notifications.cloudFeed.clearAll",
+        { observedVersion: 4 },
+      );
+    });
+    // The host plane is a separate origin store; `cloudFeed.clearAll` cannot
+    // reach its `home: local` partition.
+    await waitFor(() => {
+      expect(
+        hostBeforeUpdatedAtCallParams("host.notifications.clearAll")
+          .beforeUpdatedAt,
+      ).toBeTypeOf("number");
+    });
+    expect(
+      useAppLocalNotificationsStore.getState().orderedIds,
+    ).toHaveLength(0);
   });
 
   it("uses the same clear-notifications action for the local host feed", async () => {

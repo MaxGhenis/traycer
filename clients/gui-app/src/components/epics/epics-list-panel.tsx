@@ -568,8 +568,11 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
   // row lands back in the query. At most one of the two search placements is
   // ever mounted, so a single ref covers whichever one is live.
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLUListElement>(null);
-  const keyboardNav = useHistoryListKeyboardNav(searchInputRef, listRef);
+  // The SCROLL CONTAINER, not one `<ul>`: preserved-orphan rows render in a
+  // second list above the ordinary results, and arrow traversal has to cover
+  // both. See `rowTargets`.
+  const rowsScopeRef = useRef<HTMLDivElement>(null);
+  const keyboardNav = useHistoryListKeyboardNav(searchInputRef, rowsScopeRef);
 
   return (
     <TooltipProvider>
@@ -654,7 +657,10 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
           refresh={{ isFetching, hostId, onRefetch: refetch }}
         />
         <NotificationIndicatorsProvider indicators={notificationIndicators}>
-          <div className="min-h-0 flex-1 overflow-y-auto pb-10">
+          <div
+            ref={rowsScopeRef}
+            className="min-h-0 flex-1 overflow-y-auto pb-10"
+          >
             <EpicsListBody
               error={error}
               isPending={isPending}
@@ -680,7 +686,6 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
               worktreesByEpicId={worktreesByEpicId}
               openEpicIds={openEpicIdSet}
               completeness={view.completeness}
-              listRef={listRef}
               onRowKeyDown={keyboardNav.onRowKeyDown}
             />
           </div>
@@ -1027,7 +1032,6 @@ interface EpicsListBodyProps {
   readonly openEpicIds: ReadonlySet<string>;
   readonly completeness: ListTasksCompleteness | null;
   /** Anchors the arrow-key traversal: DOM order inside it is row order. */
-  readonly listRef: RefObject<HTMLUListElement | null>;
   readonly onRowKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
 }
 
@@ -1057,7 +1061,6 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
     worktreesByEpicId,
     openEpicIds,
     completeness,
-    listRef,
     onRowKeyDown,
   } = props;
 
@@ -1152,7 +1155,6 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
       ) : null}
       {ordinaryItems.length > 0 ? (
         <ul
-          ref={listRef}
           className="flex flex-col gap-2"
           data-testid="epics-list-rows"
         >

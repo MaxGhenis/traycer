@@ -1669,6 +1669,72 @@ describe("<EpicsListPanel />", () => {
     expect(document.activeElement).toBe(input);
   });
 
+  it("walks preserved-orphan rows in the same arrow sequence as ordinary ones", async () => {
+    // The preserved section is a second `<ul>` ABOVE the results, so a
+    // traversal scoped to the ordinary list skipped every preserved row on the
+    // way down and answered nothing to an arrow pressed ON one - the rows were
+    // visible, reachable by mouse, and dead to the keyboard.
+    testState.items = [
+      historyItem({
+        id: "history-orphan",
+        epicId: "orphan",
+        title: "Preserved orphan",
+        isPreservedOrphan: true,
+      }),
+      historyItem({ id: "history-normal", epicId: "normal", title: "Normal" }),
+    ];
+
+    renderPanel("page", "/");
+    const input = await screen.findByRole("searchbox", {
+      name: "Search tasks",
+    });
+    const orphan = screen.getByRole("link", {
+      name: "Open task Preserved orphan",
+    });
+    const normal = screen.getByRole("link", { name: "Open task Normal" });
+    input.focus();
+
+    // DOM order, which is also visual order: the preserved section renders
+    // first, so it is the first thing ArrowDown reaches.
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(orphan);
+
+    fireEvent.keyDown(orphan, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(normal);
+
+    fireEvent.keyDown(normal, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(orphan);
+
+    fireEvent.keyDown(orphan, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("enters a page whose ONLY rows are preserved orphans", async () => {
+    // The worst arm of the same defect: with no ordinary rows the traversal
+    // found zero targets, declined the key, and left the results unreachable
+    // from the search box entirely.
+    testState.items = [
+      historyItem({
+        id: "history-orphan",
+        epicId: "orphan",
+        title: "Preserved orphan",
+        isPreservedOrphan: true,
+      }),
+    ];
+
+    renderPanel("page", "/");
+    const input = await screen.findByRole("searchbox", {
+      name: "Search tasks",
+    });
+    const orphan = screen.getByRole("link", {
+      name: "Open task Preserved orphan",
+    });
+    input.focus();
+
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(orphan);
+  });
+
   it("leaves ArrowDown to the caret when the query matches nothing", async () => {
     testState.items = [];
     useHistorySearchStore.setState({
