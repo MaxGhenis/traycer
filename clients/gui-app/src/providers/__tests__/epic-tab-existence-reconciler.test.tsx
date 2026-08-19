@@ -714,15 +714,17 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
       (params: GetTaskContextsRequest): GetTaskContextsResponse => {
         const tasks: GetTaskContextsResponse["tasks"] = {};
         for (const taskId of params.taskIds) {
+          if (taskId === LOCAL_HOME_EPIC_ID) {
+            tasks[taskId] = {
+              status: "unknown" as const,
+              reason: "not-found-or-not-permitted" as const,
+            };
+            continue;
+          }
           tasks[taskId] =
-            taskId === LOCAL_HOME_EPIC_ID
-              ? {
-                  status: "unknown" as const,
-                  reason: "not-found-or-not-permitted" as const,
-                }
-              : taskId === STALE_EPIC_ID
-                ? { status: "confirmed-absent" as const }
-                : confirmedRow(taskId);
+            taskId === STALE_EPIC_ID
+              ? { status: "confirmed-absent" as const }
+              : confirmedRow(taskId);
         }
         return { tasks };
       },

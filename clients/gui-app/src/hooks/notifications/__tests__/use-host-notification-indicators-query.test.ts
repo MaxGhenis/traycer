@@ -81,11 +81,14 @@ describe("indicatorRequests", () => {
     expect(requests[1].epicIds).toEqual([
       `epic-${String(HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP).padStart(3, "0")}`,
     ]);
+    // EVERY epic chunk carries the complete live-chat whitelist: a task
+    // aggregate computed against a partial whitelist would silently narrow
+    // that epic's aggregate to the chats that happened to share its page.
     expect(requests[0].chatIds).toEqual(["chat-a", "chat-b"]);
-    expect(requests[1].chatIds).toEqual([]);
+    expect(requests[1].chatIds).toEqual(["chat-a", "chat-b"]);
   });
 
-  it("pairs epic and chat chunks without a cross-product", () => {
+  it("crosses epic chunks with chat chunks so every aggregate sees the whole whitelist", () => {
     const epicIds = Array.from(
       { length: HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP + 1 },
       (_value, index) => `epic-${index}`,
@@ -103,17 +106,25 @@ describe("indicatorRequests", () => {
     const sortedChatIds = [...chatIds].sort((left, right) =>
       left.localeCompare(right),
     );
+    const epicChunks = [
+      sortedEpicIds.slice(0, HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
+      sortedEpicIds.slice(HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
+    ];
+    const chatChunks = [
+      sortedChatIds.slice(0, HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
+      sortedChatIds.slice(HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
+    ];
 
-    expect(requests).toEqual([
-      {
-        epicIds: sortedEpicIds.slice(0, HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
-        chatIds: sortedChatIds.slice(0, HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
-      },
-      {
-        epicIds: sortedEpicIds.slice(HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
-        chatIds: sortedChatIds.slice(HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP),
-      },
-    ]);
+    // Crossed rather than paired index-wise: a chat id landing in a request
+    // without its epic would drop it from that epic's aggregate entirely.
+    expect(requests).toEqual(
+      epicChunks.flatMap((epicChunk) =>
+        chatChunks.map((chatChunk) => ({
+          epicIds: epicChunk,
+          chatIds: chatChunk,
+        })),
+      ),
+    );
   });
 });
 
