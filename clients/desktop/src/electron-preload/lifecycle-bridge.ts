@@ -7,6 +7,7 @@ import type {
   AppLifecycleBridge,
   BrowserHandoffDrainRequest,
   BrowserHandoffDrainResponse,
+  CrossWindowUnsyncableReport,
   FreshUnsyncedSnapshotRequest,
   FreshUnsyncedSnapshotResponse,
   QuitDecisionResponse,
@@ -67,6 +68,10 @@ export function buildLifecycleBridge(): LifecycleBridgeSurface {
           RunnerHostInvoke.browserHandoffsDrained,
           reply,
         ) as Promise<void>,
+      unsyncableWorkAcrossWindows: () =>
+        ipcRenderer.invoke(
+          RunnerHostInvoke.unsyncableWorkAcrossWindows,
+        ) as Promise<CrossWindowUnsyncableReport>,
     },
   };
 }

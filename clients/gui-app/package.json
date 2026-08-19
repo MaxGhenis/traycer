@@ -79,6 +79,7 @@
     "fflate": "catalog:",
     "fuse.js": "catalog:",
     "hast-util-sanitize": "catalog:",
+    "html-to-image": "catalog:",
     "idb-keyval": "^6.3.0",
     "lowlight": "catalog:",
     "lucide-react": "catalog:",
@@ -119,6 +120,7 @@
   },
   "devDependencies": {
     "@rolldown/plugin-babel": "catalog:",
+    "@tailwindcss/vite": "catalog:",
     "@tanstack/eslint-plugin-query": "catalog:",
     "@tanstack/eslint-plugin-router": "catalog:",
     "@tanstack/react-query-devtools": "catalog:",

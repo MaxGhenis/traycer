@@ -75,6 +75,12 @@ export interface ChatMessageActionsInput {
   // picker so a fork starts from the same folders / worktree modes.
   readonly worktreeBinding: WorktreeBinding | null;
   readonly revertOnEditOpen: boolean;
+  /**
+   * Items currently parked in the message queue. They survive a history edit
+   * untouched and send after the replacement turn; the revert-on-edit dialog
+   * surfaces the count so that isn't a surprise.
+   */
+  readonly queuedCount: number;
 }
 
 export interface ChatMessageActionsResult {
@@ -101,6 +107,7 @@ export interface ChatMessageActionsResult {
     readonly onRevert: (revertArtifacts: boolean) => void;
     readonly onDontRevert: () => void;
     readonly artifactCount: number;
+    readonly queuedCount: number;
   };
 }
 
@@ -285,7 +292,10 @@ export function useChatMessageActions(
       const workspaceSeed =
         mode === "ab-worktree"
           ? buildAbForkWorkspaceSeed(seedInput)
-          : buildForkWorkspaceSeed(seedInput);
+          : buildForkWorkspaceSeed({
+              ...seedInput,
+              hostId: tabHostId,
+            });
       // Seed the fork dialog's picker from the source chat's currently visible
       // workspace (its binding overlaid with any unsent staged choices) so it
       // opens exactly where the source chat's composer is. The dialog applies
@@ -458,6 +468,7 @@ export function useChatMessageActions(
         performEditSubmit(true, revertArtifacts),
       onDontRevert: () => performEditSubmit(false, true),
       artifactCount: revertOnEditArtifactCount,
+      queuedCount: input.queuedCount,
     },
   };
 }

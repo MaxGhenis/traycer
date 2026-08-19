@@ -44,6 +44,8 @@ vi.mock(
     useManagedCommandStopAll: () => ({ mutate: vi.fn(), isPending: false }),
     useManagedCommandDelete: () => ({ mutate: vi.fn(), isPending: false }),
     useManagedCommandStopAllIsPending: () => false,
+    useManagedCommandDeliverHeld: () => ({ mutate: vi.fn(), isPending: false }),
+    useManagedCommandDeliverHeldIsPending: () => false,
   }),
 );
 
@@ -142,11 +144,14 @@ function Harness(props: { readonly paneId: string }): ReactNode {
               readOnly={false}
               pendingStopTaskIds={new Set()}
               stopAllPending={false}
+              sessionStopPending={false}
+              turnActive={false}
               scrollRegionMaxHeightClass="max-h-96"
               separated={false}
               onItemClick={() => undefined}
               onStopItem={() => null}
               onStopAll={() => null}
+              onStopSession={() => null}
             />
             <PaneDropZone
               paneId={props.paneId}

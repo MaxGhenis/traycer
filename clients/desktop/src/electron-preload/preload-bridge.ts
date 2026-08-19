@@ -30,6 +30,10 @@ import { buildZoomBridge } from "./zoom-bridge";
 import { buildBrowserViewBridge } from "./browser-view-bridge";
 import { buildAgentBrowserViewBridge } from "./agent-browser-view-bridge";
 import { buildPipCaptureBridge } from "./pip-capture-bridge";
+import {
+  buildSelectionAuthorityBridge,
+  buildSelectionFleetRefresh,
+} from "./selection-authority-bridge";
 import { readSyncString } from "./sync-bootstrap";
 
 /**
@@ -84,6 +88,8 @@ contextBridge.exposeInMainWorld("runnerHost", {
   ...buildBrowserViewBridge(),
   ...buildAgentBrowserViewBridge(),
   ...buildPipCaptureBridge(),
+  selectionAuthority: buildSelectionAuthorityBridge(),
+  refreshSelectionFleet: buildSelectionFleetRefresh(),
   hostManagement: buildHostManagementBridge(),
   hostTray: buildHostTrayCommandSubscriber(),
   hostControllerStatus: buildHostControllerStatusSubscriber(),

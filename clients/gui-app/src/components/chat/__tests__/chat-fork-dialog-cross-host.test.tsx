@@ -40,6 +40,7 @@ const ABSENT_HOST_ID = "absent-host-id";
 
 interface ChatForkCreateInput {
   readonly hostId: string;
+  readonly title: string;
   readonly worktreeIntent: WorktreeIntent | null;
   readonly forkSource: {
     readonly boundary: "assistantMessage";
@@ -394,7 +395,8 @@ import {
 import { useSeededWorkspaceSnapshotStore } from "@/stores/worktree/seeded-workspace-snapshot-store";
 
 function buildHostClient(hostId: string): HostClient<HostRpcRegistry> {
-  const client = new HostClient<HostRpcRegistry>({
+  const entry = directoryEntry(hostId, hostId);
+  const spine = new HostClient<HostRpcRegistry>({
     registry: hostRpcRegistry,
     invalidator: { invalidateHostScope: () => {} },
     messenger: new MockHostMessenger<HostRpcRegistry>({
@@ -402,16 +404,10 @@ function buildHostClient(hostId: string): HostClient<HostRpcRegistry> {
       requestId: () => `req-${hostId}`,
       handlers: {},
     }),
+    findHostById: (id) => (id === hostId ? entry : null),
   });
-  client.bind({
-    hostId,
-    label: hostId,
-    kind: "local",
-    websocketUrl: `ws://127.0.0.1:0/${hostId}`,
-    version: "0.0.0-mock",
-    transportDialability: "dialable",
-  });
-  return client;
+  // `bind()` died with the active slot (D17): address via a requester.
+  return spine.createRequester(entry);
 }
 
 function directoryEntry(hostId: string, label: string): HostDirectoryEntry {
@@ -578,14 +574,14 @@ function selectedRefusalWord(hostId: string): string | undefined {
 
 function advertiseSourcePublication(): void {
   recordNegotiatedHostManifest(TAB_HOST_ID, {
-    "epic.createChat": { major: 1, minor: 2 },
+    "epic.createChat": { major: 1, minor: 1 },
     "epic.chatPublicationState": { major: 1, minor: 0 },
   });
 }
 
 function advertiseSourceWithoutPublication(): void {
   recordNegotiatedHostManifest(TAB_HOST_ID, {
-    "epic.createChat": { major: 1, minor: 2 },
+    "epic.createChat": { major: 1, minor: 1 },
   });
 }
 
@@ -649,10 +645,10 @@ describe("ChatForkDialog cross-host routing", () => {
       directoryEntry(ABSENT_HOST_ID, "Absent host"),
     ];
     recordNegotiatedHostManifest(OTHER_HOST_ID, {
-      "epic.createChat": { major: 1, minor: 2 },
+      "epic.createChat": { major: 1, minor: 1 },
     });
     recordNegotiatedHostManifest(OLD_HOST_ID, {
-      "epic.createChat": { major: 1, minor: 1 },
+      "epic.createChat": { major: 1, minor: 0 },
     });
     recordNegotiatedHostManifest(ABSENT_HOST_ID, {
       "epic.listChats": { major: 1, minor: 0 },
@@ -711,7 +707,7 @@ describe("ChatForkDialog cross-host routing", () => {
     expect(request.hostId).toBe(UNKNOWN_HOST_ID);
   });
 
-  it("a 1.1 host and a negotiated-absent host are disabled with needs update", () => {
+  it("a 1.0 host and a negotiated-absent host are disabled with needs update", () => {
     renderDialog(forkTarget({}), ignoreOpenChange);
     fillTitle();
 
@@ -913,7 +909,7 @@ describe("ChatForkDialog cross-host routing", () => {
     expect(forkButton().disabled).toBe(true);
   });
 
-  it("a 1.1 refusal flips to selectable after the host is recorded at 1.2, with no interaction", () => {
+  it("a 1.0 refusal flips to selectable after the host is recorded at 1.1, with no interaction", () => {
     renderDialog(forkTarget({}), ignoreOpenChange);
     fillTitle();
 
@@ -928,7 +924,7 @@ describe("ChatForkDialog cross-host routing", () => {
     // directly to see the probe at all, which was the defect stated as a
     // workaround.
     expect(dialogMocks.capabilityProbeHostIds.has(OLD_HOST_ID)).toBe(true);
-    // The 1.2 host is not re-asked about - only the ones with something to
+    // The 1.1 host is not re-asked about - only the ones with something to
     // learn - so this is a bounded refresh rather than a read per row.
     expect(dialogMocks.capabilityProbeHostIds.has(OTHER_HOST_ID)).toBe(false);
 
@@ -945,7 +941,7 @@ describe("ChatForkDialog cross-host routing", () => {
     dialogMocks.capabilityProbeHostIds.clear();
     act(() => {
       recordNegotiatedHostManifest(OLD_HOST_ID, {
-        "epic.createChat": { major: 1, minor: 2 },
+        "epic.createChat": { major: 1, minor: 1 },
       });
     });
 
@@ -1149,7 +1145,16 @@ describe("ChatForkDialog cross-host routing", () => {
     expect(dialogMocks.createMutate).not.toHaveBeenCalled();
   });
 
-  it("boundarySyncing: notice speaks, rows stay selectable, submit stays enabled", async () => {
+  it("boundarySyncing: notice speaks, rows stay selectable, submit is blocked", () => {
+    // Clicking OTHER_HOST_ID makes this a CROSS-HOST fork, and
+    // `chatForkTargetVerdict` only reaches the `boundaryUncovered` arm (→
+    // `boundarySyncing`) when `isCrossHost` is true — a same-host fork
+    // short-circuits to `allowed` before this check ever runs (see the
+    // sibling first-paint test below, which stays same-host). `boundarySyncing`
+    // is no longer exempt from `verdictAllowsSubmit`: the host's coverage
+    // check is presence-only, so an uncovered boundary can be ACCEPTED and
+    // seed a truncated turn, and submit must block on it like every other
+    // refusal now.
     advertiseSourcePublication();
     dialogMocks.publicationQuery = {
       data: {
@@ -1165,26 +1170,38 @@ describe("ChatForkDialog cross-host routing", () => {
 
     const notice = screen.getByTestId("chat-fork-publication-notice");
     expect(notice.textContent).toContain(
-      "Still syncing this turn — retry shortly.",
+      "Still syncing this turn to the cloud — forking to another machine unlocks as soon as it lands.",
     );
     expect(selectedUnselectableExceptHostId()).toBeNull();
     expect(selectedRefusalWord(OTHER_HOST_ID)).toBeUndefined();
 
+    // The distinction this state carries is over the ROW, not the button:
+    // the row stays selectable because nothing is wrong with the host and
+    // the wait is seconds long, so killing the row would throw away the
+    // configuration the user is about to be allowed to submit.
     const otherRow = screen.getByTestId(`fork-host-${OTHER_HOST_ID}`);
     expect(otherRow instanceof HTMLButtonElement && otherRow.disabled).toBe(
       false,
     );
-    expect(forkButton().disabled).toBe(false);
+    expect(forkButton().disabled).toBe(true);
 
-    const request = await submitFork();
-    expect(request.hostId).toBe(OTHER_HOST_ID);
+    fireEvent.click(forkButton());
+    expect(dialogMocks.createMutate).not.toHaveBeenCalled();
   });
 
   it("boundarySyncing sentence is on first paint with no host selected", () => {
     // Sibling of the unpublished first-paint case. The class resolver
-    // returns `syncing` with no `isCrossHost` input, so the sentence must
-    // not wait for a highlight. The post-click test above would still pass
-    // if it did.
+    // (`chatForkRemoteClassState`) returns `syncing` with no `isCrossHost`
+    // input, so the sentence must not wait for a highlight.
+    //
+    // No host is selected here, so the highlighted target is the tab's own
+    // host and this is a SAME-HOST fork. `chatForkTargetVerdict` short-
+    // circuits `!isCrossHost` to `{ kind: "allowed" }` before it ever looks
+    // at `publication` (chat-fork-target.ts:403), so the submit gate never
+    // sees `boundarySyncing` here and the button stays enabled — unlike the
+    // sibling test above, which selects OTHER_HOST_ID, makes the fork
+    // cross-host, and gets blocked. The two are not contradicting each
+    // other: this pair is what pins the same-host exemption.
     advertiseSourcePublication();
     dialogMocks.publicationQuery = {
       data: {
@@ -1198,7 +1215,7 @@ describe("ChatForkDialog cross-host routing", () => {
 
     const notice = screen.getByTestId("chat-fork-publication-notice");
     expect(notice.textContent).toContain(
-      "Still syncing this turn — retry shortly.",
+      "Still syncing this turn to the cloud — forking to another machine unlocks as soon as it lands.",
     );
     expect(selectedUnselectableExceptHostId()).toBeNull();
     const otherRow = screen.getByTestId(`fork-host-${OTHER_HOST_ID}`);
@@ -1272,7 +1289,7 @@ describe("ChatForkDialog cross-host routing", () => {
     const scope = dialogMocks.lastWorkspace?.hostScope;
     expect(scope?.kind === "selected" ? scope.hostId : null).toBe(TAB_HOST_ID);
 
-    // F2: a 1.1 / negotiated-absent row is still in the directory. Inert
+    // F2: a 1.0 / negotiated-absent row is still in the directory. Inert
     // leads, so those rows must not also carry "needs update".
     const oldRow = screen.getByTestId(`fork-host-${OLD_HOST_ID}`);
     const absentRow = screen.getByTestId(`fork-host-${ABSENT_HOST_ID}`);
@@ -1385,5 +1402,65 @@ describe("ChatForkDialog cross-host routing", () => {
     expect(otherRow instanceof HTMLButtonElement && otherRow.disabled).toBe(
       false,
     );
+  });
+
+  it('untitled source: empty input, "Untitled agent" placeholder, submit enabled, sends title ""', async () => {
+    renderDialog(forkTarget({ sourceChatTitle: "" }), ignoreOpenChange);
+
+    const input = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Fork agent title",
+    });
+    expect(input.value).toBe("");
+    expect(input.getAttribute("placeholder")).toBe("Untitled agent");
+    // No fillTitle() here on purpose: an untitled source must not need one.
+    expect(forkButton().disabled).toBe(false);
+
+    fireEvent.click(forkButton());
+    await waitFor(() => {
+      expect(dialogMocks.createMutate).toHaveBeenCalled();
+    });
+    const request = dialogMocks.createMutate.mock.calls[0][0];
+    expect(request.title).toBe("");
+  });
+
+  it("untitled source with a user-typed title still sends the typed title", async () => {
+    renderDialog(forkTarget({ sourceChatTitle: "" }), ignoreOpenChange);
+
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Fork agent title" }),
+      { target: { value: "My chosen name" } },
+    );
+    expect(forkButton().disabled).toBe(false);
+
+    fireEvent.click(forkButton());
+    await waitFor(() => {
+      expect(dialogMocks.createMutate).toHaveBeenCalled();
+    });
+    const request = dialogMocks.createMutate.mock.calls[0][0];
+    expect(request.title).toBe("My chosen name");
+  });
+
+  it("titled source: prefills 'Fork - <title>' and clearing the field disables submit", () => {
+    // The default title is only computed on an open TRANSITION (`if (open
+    // !== dialogState.open)`), not on an initial mount that is already
+    // `open`. Mounting closed and then flipping to open, like the
+    // boundary-notice tests above, is what actually exercises the prefill.
+    const target = forkTarget({ sourceChatTitle: "Source chat" });
+    const view = render(
+      <ChatForkDialog {...dialogProps(target, ignoreOpenChange, false)} />,
+    );
+    view.rerender(
+      <ChatForkDialog {...dialogProps(target, ignoreOpenChange, true)} />,
+    );
+
+    const input = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Fork agent title",
+    });
+    expect(input.value).toBe("Fork - Source chat");
+    expect(input.getAttribute("placeholder")).toBe("");
+    expect(forkButton().disabled).toBe(false);
+
+    fireEvent.change(input, { target: { value: "" } });
+    expect(forkButton().disabled).toBe(true);
   });
 });

@@ -7,14 +7,19 @@ import type {
 } from "@traycer/protocol/persistence/epic/schemas";
 import type {
   BackgroundItem,
+  ChatActiveTurn,
   ChatFileEditApprovalState,
   ChatPendingInterviewState,
   ChatQueueState,
   ChatRunSettings,
+  ChatRunStatus,
   ChatSubscribeClientFrame,
 } from "@traycer/protocol/host/agent/gui/subscribe";
 import { createImageResolutionUpdatedFrame } from "@traycer/protocol/host/agent/gui/subscribe";
-import type { ManagedCommand } from "@traycer/protocol/host/managed-command/unary-schemas";
+import type {
+  HeldManagedCommandUpdate,
+  ManagedCommand,
+} from "@traycer/protocol/host/managed-command/unary-schemas";
 import type { WorktreeBinding } from "@traycer/protocol/host/worktree-schemas";
 import type { SchemaVersion } from "@traycer/protocol/framework/versioned-stream-rpc";
 import {
@@ -66,6 +71,7 @@ import {
   __resetAppLocalNotificationsStoreForTests,
   useAppLocalNotificationsStore,
 } from "@/stores/notifications/app-local-notifications-store";
+import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
 
 const EPIC_ID = "epic-1";
 const CHAT_ID = "chat-1";
@@ -204,6 +210,7 @@ class ProtocolMockWsStreamClient extends WsStreamClient<HostStreamRpcRegistry> {
       bearer: () => null,
       auth: null,
       hostCredentialMint: null,
+      evidence: NO_TRANSPORT_EVIDENCE,
       webSocketFactory: {
         create: () => {
           throw new Error(
@@ -355,7 +362,14 @@ interface SnapshotFrameInput {
   readonly pendingInterviews?: ReadonlyArray<ChatPendingInterviewState>;
   readonly backgroundItems?: ReadonlyArray<BackgroundItem>;
   readonly managedCommands?: ReadonlyArray<ManagedCommand>;
+  readonly heldUpdates?: ReadonlyArray<HeldManagedCommandUpdate>;
   readonly claudePendingWakes?: ReadonlyArray<ClaudePendingWake>;
+  // Default to the idle/no-turn snapshot every existing caller relies on;
+  // the session-stop reconnect tests need a snapshot that reports a live
+  // turn instead.
+  readonly runStatus?: ChatRunStatus;
+  readonly activeTurn?: ChatActiveTurn | null;
+  readonly turnInProgress?: boolean;
 }
 
 function emitSnapshotFrame(input: SnapshotFrameInput): void {
@@ -390,8 +404,8 @@ function emitSnapshotFrame(input: SnapshotFrameInput): void {
         canAct: input.access === "owner",
       },
       queue: input.queue,
-      runStatus: "idle",
-      activeTurn: null,
+      runStatus: input.runStatus ?? "idle",
+      activeTurn: input.activeTurn ?? null,
       pendingApprovals: [],
       pendingInterviews: [...(input.pendingInterviews ?? [])],
       worktreeBinding: null,
@@ -399,9 +413,13 @@ function emitSnapshotFrame(input: SnapshotFrameInput): void {
       pendingFileEditApprovals: [...input.pendingFileEditApprovals],
       accumulatedFileChanges: [],
       managedCommands: [...(input.managedCommands ?? [])],
+      heldUpdates: [...(input.heldUpdates ?? [])],
       ...(input.backgroundItems === undefined
         ? {}
         : { backgroundItems: [...input.backgroundItems] }),
+      ...(input.turnInProgress === undefined
+        ? {}
+        : { turnInProgress: input.turnInProgress }),
     },
   });
 }
@@ -445,6 +463,7 @@ function emitSnapshotWithWorktree(
       pendingFileEditApprovals: [],
       accumulatedFileChanges: [],
       managedCommands: [],
+      heldUpdates: [],
       worktreeBinding,
       missingWorktreePaths: [],
     },
@@ -1752,20 +1771,7 @@ describe("createChatSessionStore", () => {
       epicId: EPIC_ID,
       chatId: CHAT_ID,
       runStatus: "running",
-      activeTurn: {
-        agentMode: "regular",
-        sameTurnSteeringSupported: false,
-        turnId: "turn-1",
-        status: "running",
-        harnessId: "codex",
-        model: "gpt-5-codex",
-        profileId: null,
-        userMessageId: "message-1",
-        startedAt: 3,
-        updatedAt: 3,
-        reasoningEffort: null,
-        serviceTier: null,
-      },
+      activeTurn: runningActiveTurn(),
     });
 
     harness.handle.store
@@ -1851,20 +1857,7 @@ describe("createChatSessionStore", () => {
       epicId: EPIC_ID,
       chatId: CHAT_ID,
       runStatus: "running",
-      activeTurn: {
-        agentMode: "regular",
-        sameTurnSteeringSupported: false,
-        turnId: "turn-1",
-        status: "running",
-        harnessId: "codex",
-        model: "gpt-5-codex",
-        profileId: null,
-        userMessageId: "message-1",
-        startedAt: 3,
-        updatedAt: 3,
-        reasoningEffort: null,
-        serviceTier: null,
-      },
+      activeTurn: runningActiveTurn(),
     });
 
     harness.handle.store
@@ -1928,20 +1921,7 @@ describe("createChatSessionStore", () => {
       epicId: EPIC_ID,
       chatId: CHAT_ID,
       runStatus: "running",
-      activeTurn: {
-        agentMode: "regular",
-        sameTurnSteeringSupported: false,
-        turnId: "turn-1",
-        status: "running",
-        harnessId: "codex",
-        model: "gpt-5-codex",
-        profileId: null,
-        userMessageId: "message-1",
-        startedAt: 3,
-        updatedAt: 3,
-        reasoningEffort: null,
-        serviceTier: null,
-      },
+      activeTurn: runningActiveTurn(),
     });
 
     harness.handle.store
@@ -2025,20 +2005,7 @@ describe("createChatSessionStore", () => {
       epicId: EPIC_ID,
       chatId: CHAT_ID,
       runStatus: "running",
-      activeTurn: {
-        agentMode: "regular",
-        sameTurnSteeringSupported: false,
-        turnId: "turn-1",
-        status: "running",
-        harnessId: "codex",
-        model: "gpt-5-codex",
-        profileId: null,
-        userMessageId: "message-1",
-        startedAt: 3,
-        updatedAt: 3,
-        reasoningEffort: null,
-        serviceTier: null,
-      },
+      activeTurn: runningActiveTurn(),
     });
 
     harness.handle.store
@@ -3342,20 +3309,7 @@ describe("createChatSessionStore", () => {
       epicId: EPIC_ID,
       chatId: CHAT_ID,
       runStatus: "running",
-      activeTurn: {
-        agentMode: "regular",
-        sameTurnSteeringSupported: false,
-        turnId: "turn-1",
-        status: "running",
-        harnessId: "codex",
-        model: "gpt-5-codex",
-        profileId: null,
-        userMessageId: "message-1",
-        startedAt: 3,
-        updatedAt: 3,
-        reasoningEffort: null,
-        serviceTier: null,
-      },
+      activeTurn: runningActiveTurn(),
     });
     callbacks.onBlockDelta({
       kind: "blockDelta",
@@ -3389,6 +3343,7 @@ describe("createChatSessionStore", () => {
       blockId: "tool-1",
       parentTaskId: null,
       scheduledFor: null,
+      individualStopUnavailable: null,
     };
     emitSnapshotFrame({
       callbacks,
@@ -3446,6 +3401,7 @@ describe("createChatSessionStore", () => {
       blockId: "tool-2",
       parentTaskId: null,
       scheduledFor: null,
+      individualStopUnavailable: null,
     };
     callbacks.onTurnStateChanged({
       kind: "turnStateChanged",
@@ -3470,6 +3426,751 @@ describe("createChatSessionStore", () => {
       backgroundItems: [],
     });
     expect(harness.handle.store.getState().pendingBackgroundStops).toEqual({});
+  });
+
+  it("sends the session-scoped background stop immediately when no turn is running", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const gatedCommand = gatedCommandItem();
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+    });
+
+    const sent = harness.handle.store.getState().stopBackgroundSession();
+    expect(sent).not.toBeNull();
+    expect(harness.sent).toHaveLength(1);
+    expect(harness.sent[0].kind).toBe("stopBackgroundSession");
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({ clientActionId: sent, awaitingTurnEnd: false, turnId: null });
+  });
+
+  it("stops the turn first when one is active, then sends the session stop once turnStateChanged reports it settled", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const gatedCommand = gatedCommandItem();
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+    });
+    callbacks.onTurnStateChanged({
+      kind: "turnStateChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      runStatus: "running",
+      activeTurn: runningActiveTurn(),
+      turnInProgress: true,
+      backgroundItems: [gatedCommand],
+    });
+
+    const sent = harness.handle.store.getState().stopBackgroundSession();
+    expect(sent).not.toBeNull();
+    expect(harness.sent).toHaveLength(1);
+    expect(harness.sent[0].kind).toBe("stop");
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({
+      clientActionId: sent,
+      awaitingTurnEnd: true,
+      turnId: "turn-1",
+    });
+
+    // The turn settles but the gated command is still running - the
+    // session-stop frame dispatches now instead of waiting forever.
+    callbacks.onTurnStateChanged({
+      kind: "turnStateChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      runStatus: "idle",
+      activeTurn: null,
+      turnInProgress: false,
+      backgroundItems: [gatedCommand],
+    });
+
+    expect(harness.sent).toHaveLength(2);
+    const sessionFrame = harness.sent.at(-1);
+    if (sessionFrame === undefined || sessionFrame.kind === "ping") {
+      throw new Error("Expected stopBackgroundSession frame");
+    }
+    expect(sessionFrame.kind).toBe("stopBackgroundSession");
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({
+      clientActionId: sessionFrame.clientActionId,
+      awaitingTurnEnd: false,
+      turnId: null,
+    });
+  });
+
+  it("clears the pending session stop and records an error notice when the host rejects it", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const gatedCommand = gatedCommandItem();
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+    });
+
+    const sent = harness.handle.store.getState().stopBackgroundSession();
+    expect(sent).not.toBeNull();
+    const frame = harness.sent.at(-1);
+    if (frame === undefined || frame.kind === "ping") {
+      throw new Error("Expected stopBackgroundSession frame");
+    }
+
+    callbacks.onActionAck({
+      kind: "actionAck",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      clientActionId: frame.clientActionId,
+      action: frame.kind,
+      status: "rejected",
+      reason: "Session already stopped.",
+      code: "NO_ACTIVE_SESSION",
+      backgroundStopTaskIds: [],
+    });
+
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toBeNull();
+    expect(harness.handle.store.getState().errorNotices.at(-1)).toMatchObject({
+      clientActionId: frame.clientActionId,
+      message: "Session already stopped.",
+    });
+  });
+
+  it("no-ops when no command in the chat needs the session-scoped escalation", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const ungatedCommand: BackgroundItem = {
+      taskId: "task-1",
+      kind: "command",
+      title: "sleep 5",
+      blockId: "tool-1",
+      parentTaskId: null,
+      scheduledFor: null,
+      individualStopUnavailable: null,
+    };
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [ungatedCommand],
+    });
+
+    expect(harness.handle.store.getState().stopBackgroundSession()).toBeNull();
+    expect(harness.sent).toEqual([]);
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toBeNull();
+  });
+
+  it("clears a session stop whose phase-two frame died with the connection", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const gatedCommand = gatedCommandItem();
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+    });
+
+    const sent = harness.handle.store.getState().stopBackgroundSession();
+    expect(sent).not.toBeNull();
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({ clientActionId: sent, awaitingTurnEnd: false, turnId: null });
+
+    // The frame died with the connection before any ack arrived.
+    callbacks.onConnectionStatus("reconnecting", null);
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+    });
+
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toBeNull();
+    // Stop all re-enables: re-issuing the escalation works.
+    expect(
+      harness.handle.store.getState().stopBackgroundSession(),
+    ).not.toBeNull();
+  });
+
+  it("clears a session stop whose phase-one turn-stop frame died with the connection", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const gatedCommand = gatedCommandItem();
+    const activeTurn: ChatActiveTurn = {
+      agentMode: "regular",
+      sameTurnSteeringSupported: false,
+      turnId: "turn-1",
+      status: "running",
+      harnessId: "codex",
+      model: "gpt-5-codex",
+      profileId: null,
+      userMessageId: "message-1",
+      startedAt: 3,
+      updatedAt: 3,
+      reasoningEffort: null,
+      serviceTier: null,
+    };
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+      runStatus: "running",
+      activeTurn,
+      turnInProgress: true,
+    });
+
+    const sent = harness.handle.store.getState().stopBackgroundSession();
+    expect(sent).not.toBeNull();
+    expect(harness.sent.at(-1)?.kind).toBe("stop");
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({
+      clientActionId: sent,
+      awaitingTurnEnd: true,
+      turnId: "turn-1",
+    });
+
+    // The turn-stop frame died with the connection before any ack arrived;
+    // the reconnect snapshot still reports the turn as active.
+    callbacks.onConnectionStatus("reconnecting", null);
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+      runStatus: "running",
+      activeTurn,
+      turnInProgress: true,
+    });
+
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toBeNull();
+    // No session-stop frame was dispatched off the still-active-turn snapshot.
+    expect(harness.sent).toHaveLength(1);
+  });
+
+  it("advances a deferred session stop from the reconnect snapshot when the settled turnStateChanged was missed", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const gatedCommand = gatedCommandItem();
+    const activeTurn: ChatActiveTurn = {
+      agentMode: "regular",
+      sameTurnSteeringSupported: false,
+      turnId: "turn-1",
+      status: "running",
+      harnessId: "codex",
+      model: "gpt-5-codex",
+      profileId: null,
+      userMessageId: "message-1",
+      startedAt: 3,
+      updatedAt: 3,
+      reasoningEffort: null,
+      serviceTier: null,
+    };
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+      runStatus: "running",
+      activeTurn,
+      turnInProgress: true,
+    });
+
+    const sent = harness.handle.store.getState().stopBackgroundSession();
+    expect(sent).not.toBeNull();
+    const stopFrame = harness.sent.at(-1);
+    if (stopFrame === undefined || stopFrame.kind === "ping") {
+      throw new Error("Expected stop frame");
+    }
+
+    // The turn-stop ack lands and is accepted - the slot survives, still
+    // awaiting the settled frame, and its clientActionId is no longer a
+    // pending action (so a later reconnect sweep can't clear it that way).
+    callbacks.onActionAck({
+      kind: "actionAck",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      clientActionId: stopFrame.clientActionId,
+      action: stopFrame.kind,
+      status: "accepted",
+      reason: null,
+      code: null,
+      backgroundStopTaskIds: [],
+    });
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({
+      clientActionId: sent,
+      awaitingTurnEnd: true,
+      turnId: "turn-1",
+    });
+
+    // The connection drops before `turnStateChanged` reports the turn
+    // settled; the reconnect snapshot is the only signal that arrives, and
+    // it must advance the deferred stop on its own.
+    callbacks.onConnectionStatus("reconnecting", null);
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+      runStatus: "idle",
+      activeTurn: null,
+      turnInProgress: false,
+    });
+
+    expect(harness.sent).toHaveLength(2);
+    const sessionFrame = harness.sent.at(-1);
+    if (sessionFrame === undefined || sessionFrame.kind === "ping") {
+      throw new Error("Expected stopBackgroundSession frame");
+    }
+    expect(sessionFrame.kind).toBe("stopBackgroundSession");
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({
+      clientActionId: sessionFrame.clientActionId,
+      awaitingTurnEnd: false,
+      turnId: null,
+    });
+  });
+
+  it("releases the escalation when the turn stop is rejected while the turn still runs", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const gatedCommand = gatedCommandItem();
+    const activeTurn: ChatActiveTurn = {
+      agentMode: "regular",
+      sameTurnSteeringSupported: false,
+      turnId: "turn-1",
+      status: "running",
+      harnessId: "codex",
+      model: "gpt-5-codex",
+      profileId: null,
+      userMessageId: "message-1",
+      startedAt: 3,
+      updatedAt: 3,
+      reasoningEffort: null,
+      serviceTier: null,
+    };
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+      runStatus: "running",
+      activeTurn,
+      turnInProgress: true,
+    });
+
+    const sent = harness.handle.store.getState().stopBackgroundSession();
+    expect(sent).not.toBeNull();
+    const stopFrame = harness.sent.at(-1);
+    if (stopFrame === undefined || stopFrame.kind === "ping") {
+      throw new Error("Expected stop frame");
+    }
+
+    // The host rejects the turn stop while the turn is genuinely still
+    // running (no NO_ACTIVE_TURN race) - the escalation is dead.
+    callbacks.onActionAck({
+      kind: "actionAck",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      clientActionId: stopFrame.clientActionId,
+      action: stopFrame.kind,
+      status: "rejected",
+      reason: "Turn is still running.",
+      code: "TURN_ACTIVE",
+      backgroundStopTaskIds: [],
+    });
+
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toBeNull();
+    expect(harness.sent).toHaveLength(1);
+  });
+
+  it("still advances when the turn stop's rejection loses the race with the turn's natural end", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const gatedCommand = gatedCommandItem();
+    const activeTurn: ChatActiveTurn = {
+      agentMode: "regular",
+      sameTurnSteeringSupported: false,
+      turnId: "turn-1",
+      status: "running",
+      harnessId: "codex",
+      model: "gpt-5-codex",
+      profileId: null,
+      userMessageId: "message-1",
+      startedAt: 3,
+      updatedAt: 3,
+      reasoningEffort: null,
+      serviceTier: null,
+    };
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+      runStatus: "running",
+      activeTurn,
+      turnInProgress: true,
+    });
+
+    const sent = harness.handle.store.getState().stopBackgroundSession();
+    expect(sent).not.toBeNull();
+    const stopFrame = harness.sent.at(-1);
+    if (stopFrame === undefined || stopFrame.kind === "ping") {
+      throw new Error("Expected stop frame");
+    }
+
+    // The turn ends naturally before the turn-stop's rejected ack arrives -
+    // `onTurnStateChanged`'s state-based dispatch already advances to phase
+    // two here, ahead of the ack.
+    callbacks.onTurnStateChanged({
+      kind: "turnStateChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      runStatus: "idle",
+      activeTurn: null,
+      turnInProgress: false,
+      backgroundItems: [gatedCommand],
+    });
+
+    expect(harness.sent).toHaveLength(2);
+    const sessionFrame = harness.sent.at(-1);
+    if (sessionFrame === undefined || sessionFrame.kind === "ping") {
+      throw new Error("Expected stopBackgroundSession frame");
+    }
+    expect(sessionFrame.kind).toBe("stopBackgroundSession");
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({
+      clientActionId: sessionFrame.clientActionId,
+      awaitingTurnEnd: false,
+      turnId: null,
+    });
+
+    // The turn-stop's late rejection targets a clientActionId the slot has
+    // already moved past (phase two now), so it changes nothing.
+    callbacks.onActionAck({
+      kind: "actionAck",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      clientActionId: stopFrame.clientActionId,
+      action: stopFrame.kind,
+      status: "rejected",
+      reason: "No active turn.",
+      code: "NO_ACTIVE_TURN",
+      backgroundStopTaskIds: [],
+    });
+
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({
+      clientActionId: sessionFrame.clientActionId,
+      awaitingTurnEnd: false,
+      turnId: null,
+    });
+  });
+
+  it("falls back to graceful per-item stops when the gated command settles on its own during wind-down", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const gatedCommand: BackgroundItem = {
+      taskId: "task-gated",
+      kind: "command",
+      title: "codex exec",
+      blockId: "tool-1",
+      parentTaskId: null,
+      scheduledFor: null,
+      individualStopUnavailable: {
+        providerLabel: "Codex",
+        minVersion: "0.146.0",
+      },
+    };
+    const ungatedCommand: BackgroundItem = {
+      taskId: "task-ungated",
+      kind: "command",
+      title: "sleep 5",
+      blockId: "tool-2",
+      parentTaskId: null,
+      scheduledFor: null,
+      individualStopUnavailable: null,
+    };
+    const wakeup: BackgroundItem = {
+      taskId: "wake-1",
+      kind: "wakeup",
+      title: "Standup",
+      blockId: "wake-tool-1",
+      parentTaskId: null,
+      scheduledFor: 123456,
+    };
+    const activeTurn: ChatActiveTurn = {
+      agentMode: "regular",
+      sameTurnSteeringSupported: false,
+      turnId: "turn-1",
+      status: "running",
+      harnessId: "codex",
+      model: "gpt-5-codex",
+      profileId: null,
+      userMessageId: "message-1",
+      startedAt: 3,
+      updatedAt: 3,
+      reasoningEffort: null,
+      serviceTier: null,
+    };
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand, ungatedCommand],
+      runStatus: "running",
+      activeTurn,
+      turnInProgress: true,
+    });
+
+    const sent = harness.handle.store.getState().stopBackgroundSession();
+    expect(sent).not.toBeNull();
+    expect(harness.sent.at(-1)?.kind).toBe("stop");
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({
+      clientActionId: sent,
+      awaitingTurnEnd: true,
+      turnId: "turn-1",
+    });
+
+    // The gated command finished on its own during wind-down - the ungated
+    // command and a scheduled wakeup remain when the turn settles.
+    callbacks.onTurnStateChanged({
+      kind: "turnStateChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      runStatus: "idle",
+      activeTurn: null,
+      turnInProgress: false,
+      backgroundItems: [ungatedCommand, wakeup],
+    });
+
+    // No process-kill frame - the reason for one is gone. The confirmed
+    // "stop my background work" is honored via per-item stops that leave
+    // the wakeup scheduled, matching the confirmation's count.
+    expect(
+      harness.sent.some((frame) => frame.kind === "stopBackgroundSession"),
+    ).toBe(false);
+    expect(
+      harness.sent.some((frame) => frame.kind === "stopAllBackgroundItems"),
+    ).toBe(false);
+    const itemStops = harness.sent.filter(
+      (frame) => frame.kind === "stopBackgroundItem",
+    );
+    expect(itemStops.map((frame) => frame.taskId)).toEqual(["task-ungated"]);
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toBeNull();
+    expect(
+      harness.handle.store.getState().pendingBackgroundStops,
+    ).toHaveProperty("task-ungated");
+  });
+
+  it("clears the escalation without firing when a different turn is seen active", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const gatedCommand = gatedCommandItem();
+    const turnOne: ChatActiveTurn = {
+      agentMode: "regular",
+      sameTurnSteeringSupported: false,
+      turnId: "turn-1",
+      status: "running",
+      harnessId: "codex",
+      model: "gpt-5-codex",
+      profileId: null,
+      userMessageId: "message-1",
+      startedAt: 3,
+      updatedAt: 3,
+      reasoningEffort: null,
+      serviceTier: null,
+    };
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+      runStatus: "running",
+      activeTurn: turnOne,
+      turnInProgress: true,
+    });
+
+    const sent = harness.handle.store.getState().stopBackgroundSession();
+    expect(sent).not.toBeNull();
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({
+      clientActionId: sent,
+      awaitingTurnEnd: true,
+      turnId: "turn-1",
+    });
+
+    // A different turn is now running - a queued send started while the
+    // escalation was in flight. Firing at ITS end would stop work the user
+    // never confirmed stopping.
+    const turnTwo: ChatActiveTurn = {
+      ...turnOne,
+      turnId: "turn-2",
+      userMessageId: "message-2",
+    };
+    callbacks.onTurnStateChanged({
+      kind: "turnStateChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      runStatus: "running",
+      activeTurn: turnTwo,
+      turnInProgress: true,
+      backgroundItems: [gatedCommand],
+    });
+
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toBeNull();
+    expect(harness.sent).toHaveLength(1);
+
+    // Turn two settles - the released escalation must not resurrect itself.
+    callbacks.onTurnStateChanged({
+      kind: "turnStateChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      runStatus: "idle",
+      activeTurn: null,
+      turnInProgress: false,
+      backgroundItems: [gatedCommand],
+    });
+
+    expect(harness.sent).toHaveLength(1);
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toBeNull();
+  });
+
+  it("latches the first turn id observed when the escalation was confirmed before the turn had one", () => {
+    const harness = createHarness();
+    const callbacks = harness.callbacks();
+    const gatedCommand = gatedCommandItem();
+    // The request-to-turn activation window: the host reports a turn in
+    // progress before the turn record (and its id) exists.
+    emitSnapshotFrame({
+      callbacks,
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      backgroundItems: [gatedCommand],
+      runStatus: "running",
+      activeTurn: null,
+      turnInProgress: true,
+    });
+
+    const sent = harness.handle.store.getState().stopBackgroundSession();
+    expect(sent).not.toBeNull();
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({
+      clientActionId: sent,
+      awaitingTurnEnd: true,
+      turnId: null,
+    });
+
+    // The original turn materializes with its id - the slot latches it.
+    callbacks.onTurnStateChanged({
+      kind: "turnStateChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      runStatus: "running",
+      activeTurn: runningActiveTurn(),
+      turnInProgress: true,
+      backgroundItems: [gatedCommand],
+    });
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toEqual({
+      clientActionId: sent,
+      awaitingTurnEnd: true,
+      turnId: "turn-1",
+    });
+
+    // A queued turn replaces it - the latched id makes it read as different,
+    // so the escalation releases instead of firing at turn-2's end.
+    callbacks.onTurnStateChanged({
+      kind: "turnStateChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      runStatus: "running",
+      activeTurn: { ...runningActiveTurn(), turnId: "turn-2" },
+      turnInProgress: true,
+      backgroundItems: [gatedCommand],
+    });
+    expect(
+      harness.handle.store.getState().pendingBackgroundSessionStop,
+    ).toBeNull();
+    expect(harness.sent).toHaveLength(1);
   });
 
   it("does not apply an ownerless detached background tool terminal to the active turn", () => {
@@ -3566,20 +4267,7 @@ describe("createChatSessionStore", () => {
       epicId: EPIC_ID,
       chatId: CHAT_ID,
       runStatus: "running",
-      activeTurn: {
-        agentMode: "regular",
-        sameTurnSteeringSupported: false,
-        turnId: "turn-1",
-        status: "running",
-        harnessId: "codex",
-        model: "gpt-5-codex",
-        profileId: null,
-        userMessageId: "message-1",
-        startedAt: 3,
-        updatedAt: 3,
-        reasoningEffort: null,
-        serviceTier: null,
-      },
+      activeTurn: runningActiveTurn(),
     });
     callbacks.onBlockDelta({
       kind: "blockDelta",
@@ -3878,6 +4566,7 @@ describe("createChatSessionStore", () => {
         pendingFileEditApprovals: [],
         accumulatedFileChanges: [],
         managedCommands: [],
+        heldUpdates: [],
       },
     });
     callbacks.onTurnStateChanged({
@@ -4047,6 +4736,7 @@ describe("createChatSessionStore", () => {
         pendingFileEditApprovals: [],
         accumulatedFileChanges: [],
         managedCommands: [],
+        heldUpdates: [],
       },
     });
 
@@ -5020,6 +5710,38 @@ function createCoalesceHarness(): CoalesceHarness {
   };
 }
 
+function gatedCommandItem(): BackgroundItem {
+  return {
+    taskId: "task-1",
+    kind: "command",
+    title: "codex exec",
+    blockId: "tool-1",
+    parentTaskId: null,
+    scheduledFor: null,
+    individualStopUnavailable: {
+      providerLabel: "Codex",
+      minVersion: "0.146.0",
+    },
+  };
+}
+
+function runningActiveTurn(): ChatActiveTurn {
+  return {
+    agentMode: "regular",
+    sameTurnSteeringSupported: false,
+    turnId: "turn-1",
+    status: "running",
+    harnessId: "codex",
+    model: "gpt-5-codex",
+    profileId: null,
+    userMessageId: "message-1",
+    startedAt: 3,
+    updatedAt: 3,
+    reasoningEffort: null,
+    serviceTier: null,
+  };
+}
+
 function startRunningTurn(callbacks: ChatStreamCallbacks): void {
   emitSnapshot(callbacks, "owner");
   callbacks.onTurnStateChanged({
@@ -5629,6 +6351,7 @@ describe("non-message pendings across a missed-ack reconnect", () => {
         blockId: "tool-1",
         parentTaskId: null,
         scheduledFor: null,
+        individualStopUnavailable: null,
       },
       {
         taskId: "task-accepted",
@@ -5637,6 +6360,7 @@ describe("non-message pendings across a missed-ack reconnect", () => {
         blockId: "tool-2",
         parentTaskId: null,
         scheduledFor: null,
+        individualStopUnavailable: null,
       },
     ];
     emitSnapshotFrame({
@@ -6233,6 +6957,159 @@ describe("the chat's managed commands", () => {
     expect(
       harness.handle.store.getState().managedCommands.map((c) => c.id),
     ).toEqual(["cmd-1"]);
+    harness.handle.dispose();
+  });
+});
+
+describe("the chat's held updates", () => {
+  function held(
+    over: Partial<HeldManagedCommandUpdate>,
+  ): HeldManagedCommandUpdate {
+    return {
+      commandId: "cmd-1",
+      description: "deploy watcher",
+      heldAtMs: 10,
+      ...over,
+    };
+  }
+
+  function seededHarness(
+    heldUpdates: ReadonlyArray<HeldManagedCommandUpdate>,
+  ): Harness {
+    const harness = createHarness();
+    emitSnapshotFrame({
+      callbacks: harness.callbacks(),
+      access: "owner",
+      messages: [],
+      queue: { status: "idle", items: [] },
+      pendingFileEditApprovals: [],
+      heldUpdates,
+    });
+    return harness;
+  }
+
+  it("reads as an empty set before the host has said anything", () => {
+    const harness = createHarness();
+
+    expect(harness.handle.store.getState().heldUpdates).toEqual([]);
+    harness.handle.dispose();
+  });
+
+  it("takes the set from the snapshot", () => {
+    const harness = seededHarness([held({ commandId: "cmd-1" })]);
+
+    expect(
+      harness.handle.store.getState().heldUpdates.map((h) => h.commandId),
+    ).toEqual(["cmd-1"]);
+    harness.handle.dispose();
+  });
+
+  it("replaces the whole set on a heldUpdatesChanged frame - a shrink drops the stale row", () => {
+    const harness = seededHarness([
+      held({ commandId: "cmd-1" }),
+      held({ commandId: "cmd-2" }),
+    ]);
+
+    harness.callbacks().onHeldUpdatesChanged({
+      kind: "heldUpdatesChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      heldUpdates: [held({ commandId: "cmd-2" })],
+    });
+
+    // The frame is the set, not a delta: `cmd-1` is gone, and it is gone
+    // because the host stopped naming it - no stale row can survive a shrink.
+    expect(
+      harness.handle.store.getState().heldUpdates.map((h) => h.commandId),
+    ).toEqual(["cmd-2"]);
+    harness.handle.dispose();
+  });
+
+  it("ignores a frame addressed to another chat", () => {
+    const harness = seededHarness([held({ commandId: "cmd-1" })]);
+
+    harness.callbacks().onHeldUpdatesChanged({
+      kind: "heldUpdatesChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: "some-other-chat",
+      heldUpdates: [],
+    });
+
+    expect(
+      harness.handle.store.getState().heldUpdates.map((h) => h.commandId),
+    ).toEqual(["cmd-1"]);
+    harness.handle.dispose();
+  });
+
+  it("ignores a frame addressed to another epic", () => {
+    const harness = seededHarness([held({ commandId: "cmd-1" })]);
+
+    harness.callbacks().onHeldUpdatesChanged({
+      kind: "heldUpdatesChanged",
+      hasBinaryPayload: false,
+      epicId: "some-other-epic",
+      chatId: CHAT_ID,
+      heldUpdates: [],
+    });
+
+    expect(
+      harness.handle.store.getState().heldUpdates.map((h) => h.commandId),
+    ).toEqual(["cmd-1"]);
+    harness.handle.dispose();
+  });
+
+  // The chat and epic guards above both pass for a frame from the RIGHT chat
+  // on a stream this store has already replaced, which is the one a retry
+  // produces: the old client is torn down but its in-flight frames still land.
+  // A hold is durable state a human acts on, so a stale set installing rows
+  // here would offer a Deliver for holds the new stream never named - or, on a
+  // stale empty frame, quietly take a live one off screen.
+  it("ignores a held-updates frame from a superseded stream", () => {
+    const harness = seededHarness([held({ commandId: "cmd-1" })]);
+    const staleCallbacks = harness.callbacks();
+
+    harness.handle.store.getState().retry();
+
+    // The empty frame is the sharp one: a retry cancels nothing, so the hold
+    // is still standing, and honouring a stale "nothing is held" would take
+    // the Deliver affordance off screen while the hold outlived the socket.
+    staleCallbacks.onHeldUpdatesChanged({
+      kind: "heldUpdatesChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      heldUpdates: [],
+    });
+    expect(
+      harness.handle.store.getState().heldUpdates.map((h) => h.commandId),
+    ).toEqual(["cmd-1"]);
+
+    staleCallbacks.onHeldUpdatesChanged({
+      kind: "heldUpdatesChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      heldUpdates: [held({ commandId: "cmd-stale" })],
+    });
+    expect(
+      harness.handle.store.getState().heldUpdates.map((h) => h.commandId),
+    ).toEqual(["cmd-1"]);
+
+    // ...and the live stream is still heard, so this is a generation guard
+    // rather than a store that stopped listening.
+    harness.callbacks().onHeldUpdatesChanged({
+      kind: "heldUpdatesChanged",
+      hasBinaryPayload: false,
+      epicId: EPIC_ID,
+      chatId: CHAT_ID,
+      heldUpdates: [held({ commandId: "cmd-live" })],
+    });
+
+    expect(
+      harness.handle.store.getState().heldUpdates.map((h) => h.commandId),
+    ).toEqual(["cmd-live"]);
     harness.handle.dispose();
   });
 });

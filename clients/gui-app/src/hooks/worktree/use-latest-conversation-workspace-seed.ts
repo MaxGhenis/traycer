@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import type { WorktreeBindingOwnerKind } from "@traycer/protocol/host/worktree-schemas";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import { useHostClient, type HostRpcRegistry } from "@/lib/host";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { useAddressableHostId } from "@/hooks/host/use-addressable-host-id";
 import { useWorktreeGetBinding } from "@/hooks/worktree/use-worktree-get-binding-query";
 import { useActiveEpicProjection } from "@/lib/commands/sources/open/use-active-epic-projection";
 import type { ForkWorkspaceSeed } from "@/lib/worktree/fork-workspace-seed";
@@ -47,7 +47,7 @@ export function useLatestConversationWorkspaceSeed(
     () => latestCreatedConversationOwner(projection),
     [projection],
   );
-  const activeHostId = useReactiveActiveHostId();
+  const activeHostId = useAddressableHostId();
   const activeClient = useHostClient();
   const seedHostId = pin === null ? activeHostId : pin.hostId;
   const client = pin === null ? activeClient : pin.hostClient;
@@ -90,6 +90,7 @@ export function useLatestConversationWorkspaceSeed(
     const seed = buildForkWorkspaceSeed({
       binding,
       stagedIntent,
+      hostId: seedHostId,
     });
     if (seed.intent === null) return null;
     return {
@@ -97,7 +98,7 @@ export function useLatestConversationWorkspaceSeed(
       sourceOwnerId: latestOwner.id,
       sourceOwnerKind: latestOwner.ownerKind,
     };
-  }, [binding, canReadBinding, latestOwner, stagedIntent]);
+  }, [binding, canReadBinding, latestOwner, seedHostId, stagedIntent]);
 }
 
 export function latestCreatedConversationOwner(
