@@ -4,11 +4,15 @@ import type {
   ListTaskLight,
   ListTasksFacets,
   ListTasksResponse,
+  TaskContextResult,
   TaskLight,
   TaskRepoIdentifier,
   TaskWorkspaceIdentifier,
 } from "@traycer/protocol/host/epic/unary-schemas";
-import { formatRepoIdentifier } from "@traycer/protocol/host/epic/unary-schemas";
+import {
+  formatRepoIdentifier,
+  isFoundTaskContext,
+} from "@traycer/protocol/host/epic/unary-schemas";
 import {
   isCloudEpicTasksQueryKey,
   isEpicTaskContextsQueryKey,
@@ -263,16 +267,26 @@ function setEpicPinnedInTaskContextsResponse(
   pinned: boolean,
 ): GetTaskContextsResponse {
   const entry = Object.entries(response.tasks).find(
-    ([, task]) => task?.epic?.light?.id === epicId,
+    ([, resolution]) =>
+      isFoundTaskContext(resolution) &&
+      resolution.task.epic?.light?.id === epicId,
   );
   if (entry === undefined) return response;
-  const [taskId, task] = entry;
-  if (task === null || (task.pinned ?? false) === pinned) return response;
+  const [taskId, resolution] = entry;
+  if (
+    !isFoundTaskContext(resolution) ||
+    (resolution.task.pinned ?? false) === pinned
+  ) {
+    return response;
+  }
   return {
     ...response,
     tasks: {
       ...response.tasks,
-      [taskId]: { ...task, pinned },
+      [taskId]: {
+        ...resolution,
+        task: { ...resolution.task, pinned },
+      },
     },
   };
 }
@@ -359,19 +373,19 @@ function updateEpicTitleInTaskContextsResponse(
   title: string,
 ): GetTaskContextsResponse {
   let changed = false;
-  const tasks: Record<string, ListTaskLight | null> = {};
-  for (const [taskId, task] of Object.entries(response.tasks)) {
-    if (task === null) {
-      tasks[taskId] = null;
+  const tasks: Record<string, TaskContextResult> = {};
+  for (const [taskId, resolution] of Object.entries(response.tasks)) {
+    if (!isFoundTaskContext(resolution)) {
+      tasks[taskId] = resolution;
       continue;
     }
-    const next = updateEpicTitleInListTaskLight(task, epicId, title);
+    const next = updateEpicTitleInListTaskLight(resolution.task, epicId, title);
     if (next === null) {
-      tasks[taskId] = task;
+      tasks[taskId] = resolution;
       continue;
     }
     changed = true;
-    tasks[taskId] = next;
+    tasks[taskId] = { ...resolution, task: next };
   }
   return changed ? { ...response, tasks } : response;
 }

@@ -21,8 +21,9 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { NewTerminalPickerBody } from "@/components/epic-canvas/sidebar/new-terminal-picker-body";
+import { useTabSurfaceKey } from "@/hooks/host/use-surface-host-pin";
 import {
-  buildTerminalTileRef,
+  mintNewEpicTerminalTile,
   type TerminalLaunchTarget,
 } from "@/components/epic-canvas/sidebar/new-terminal-tile-ref";
 import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
@@ -32,6 +33,7 @@ import {
   usePanelHeaderMenuOpen,
   usePanelHeaderMenuStore,
 } from "@/stores/epics/panel-header-menu-store";
+import { isHostSwitcherListInteraction } from "@/components/settings/host-scope/host-switcher-portal";
 
 interface NewTerminalPickerProps {
   readonly epicId: string;
@@ -41,6 +43,7 @@ interface NewTerminalPickerProps {
 
 export function NewTerminalPicker(props: NewTerminalPickerProps) {
   const { epicId, onBeforeOpen, tabId } = props;
+  const surfaceKey = useTabSurfaceKey("new-terminal", tabId);
   const isOpen = usePanelHeaderMenuOpen(tabId, "terminals", "create");
   const setMenuOpen = usePanelHeaderMenuStore((state) => state.setMenuOpen);
   const setIsOpen = useCallback(
@@ -77,7 +80,7 @@ export function NewTerminalPicker(props: NewTerminalPickerProps) {
   const handleLaunch = useCallback(
     (target: TerminalLaunchTarget) => {
       navigateNested(epicId, tabId, () =>
-        prepareOpenTileInTabFocusTarget(tabId, buildTerminalTileRef(target)),
+        prepareOpenTileInTabFocusTarget(tabId, mintNewEpicTerminalTile(target)),
       );
       setIsOpen(false);
     },
@@ -102,13 +105,26 @@ export function NewTerminalPicker(props: NewTerminalPickerProps) {
         align="start"
         className="w-[min(90vw,28rem)] gap-0 p-0"
         data-testid="new-terminal-picker-popover"
+        // The host picker's list is a nested Radix popover: it portals OUTSIDE
+        // this content, so every click in it arrives here as an interaction
+        // from outside. Dismissing on those would close the panel the picker
+        // exists to scope, and no host could ever be chosen from it.
+        onInteractOutside={(event) => {
+          if (isHostSwitcherListInteraction(event.target)) {
+            event.preventDefault();
+          }
+        }}
         // Keep Radix from focusing the first focusable element (a host row);
         // the workspace search input auto-focuses itself instead so the user
         // can immediately type/arrow through workspaces.
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
         {isOpen ? (
-          <NewTerminalPickerBody epicId={epicId} onLaunch={handleLaunch} />
+          <NewTerminalPickerBody
+            epicId={epicId}
+            surfaceKey={surfaceKey}
+            onLaunch={handleLaunch}
+          />
         ) : null}
       </PopoverContent>
     </Popover>

@@ -86,6 +86,14 @@ export function resolveProviderRateLimitViewState(
     };
   }
   if (props.isError) return { kind: "error" };
+  // No reading and no failure to report, but work is in flight - which now
+  // includes a read whose failure was SUPPRESSED because the queue scheduled a
+  // delayed collection for it (callers fold that window into `isFetching`).
+  // Without this the section fell through to `empty` and rendered a blank card
+  // for the whole recovery window, then popped to data - the silent half of
+  // the visible-failure-then-silent-success pair. `empty` still covers the
+  // genuinely-nothing case, where nothing is fetching.
+  if (props.isFetching) return { kind: "loading" };
   return { kind: "empty" };
 }
 
@@ -119,9 +127,9 @@ const RATE_LIMIT_UNAVAILABLE_REASON_LABELS: Record<
 > = {
   cli_not_found: "the CLI isn't installed",
   unsupported_provider: "this provider isn't supported",
-  invalid_response: "the CLI returned an unexpected response",
+  invalid_response: "the provider returned an unexpected response",
   timeout: "the request timed out",
-  connection_failed: "couldn't connect to the CLI",
+  connection_failed: "couldn't connect to the provider",
   sdk_incompatible: "this SDK version doesn't support usage limits",
   rate_limits_not_available: "not available for this account",
   insufficient_permissions:
@@ -160,6 +168,7 @@ export type PopoverProviderRateLimitState =
   | { readonly kind: "error" }
   | {
       readonly kind: "unavailable";
+      readonly provider: ProviderRateLimits["provider"];
       readonly reason: RateLimitUnavailableReason;
     }
   | {
@@ -190,7 +199,17 @@ export function resolvePopoverProviderRateLimitState(
     // Once a queued fetch actually fails, TanStack moves the observer out of
     // `isPending` and into `isError`, revealing retryable error content instead
     // of staying hidden in Overview.
-    return props.isFetching || props.isPending
+    //
+    // `isError` is consulted rather than inferred from "idle with no data".
+    // Callers pass the SUPPRESSED value (`isRateLimitQueryFailure`), which is
+    // false while a read we stopped waiting for still has its delayed
+    // collection coming. On a COLD read there is no envelope to fall back on,
+    // so inferring the failure from idleness reported one anyway - and then
+    // silently succeeded when the collection landed, which is the exact
+    // visible-failure-then-silent-success transition the suppression exists to
+    // remove. A read that genuinely failed still arrives here with `isError`
+    // true (including once the follow-up budget is spent) and still reports.
+    return props.isFetching || props.isPending || !props.isError
       ? { kind: "cold" }
       : { kind: "error" };
   }
@@ -208,7 +227,11 @@ export function resolvePopoverProviderRateLimitState(
     // friends), or a transient reason with no retained `lastGood` yet -
     // either way `resolveRetainedProviderRateLimits` already decided there's
     // nothing to show dimmed, so this replaces the picture entirely.
-    return { kind: "unavailable", reason: data.reason };
+    return {
+      kind: "unavailable",
+      provider: data.provider,
+      reason: data.reason,
+    };
   }
   // A last-known-good snapshot is present, either fresh (`data` came straight
   // from `envelope.latest`) or retained across a transient failure (`data`
@@ -251,9 +274,9 @@ export function titleCaseFromToken(value: string): string {
  * A provider's plan/tier label, where one is fetched - the header popover
  * shows this as a chip next to the provider name (Core Flows: "where the
  * provider reports one"). Codex (`planType`), Claude Code (`subscriptionType`),
- * and Grok (`subscriptionTier`) report a plan/tier; OpenRouter, Kilo Code and
- * Hugging Face have no analogous field, so they always resolve to `null` and
- * render no chip.
+ * and Grok (`subscriptionTier`) report a plan/tier; OpenRouter, Kilo Code,
+ * Hugging Face and Cursor have no analogous field, so they always resolve to
+ * `null` and render no chip.
  */
 export function resolveProviderPlanLabel(
   data: AvailableProviderRateLimits,
@@ -271,11 +294,16 @@ export function resolveProviderPlanLabel(
     // intra-word capital ("Supergrok").
     case "grok":
       return data.subscriptionTier;
+    case "opencode":
+      return "Go";
     // None of the credit providers report a tier - Hugging Face's billing-usage
-    // endpoint carries no plan field either - so all three render no chip.
+    // endpoint carries no plan field either, and Cursor's current-period usage
+    // reports the plan's SIZE (an included-credit allowance) but never its
+    // NAME - so all four render no chip.
     case "openrouter":
     case "kilocode":
     case "huggingface":
+    case "cursor":
       return null;
   }
 }

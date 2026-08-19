@@ -42,6 +42,7 @@ import {
   type NotificationCategory,
 } from "@/lib/notifications/notification-category";
 import { classifyNotificationLifecycle } from "@/lib/notifications/notification-lifecycle";
+import { useNotificationFeedKeyboardNavigation } from "@/hooks/notifications/use-notification-feed-keyboard-navigation";
 import { activationResultHandler } from "@/lib/notifications/notification-activation-result";
 import { cn } from "@/lib/utils";
 import {
@@ -147,6 +148,24 @@ function isMarkAllReadDisabled(input: {
   return input.unreadCount === 0 && actionableHostAttention === 0;
 }
 
+function isClearAllDisabled(input: {
+  readonly feedMode: NotificationFeedMode;
+  readonly cloudHasSnapshot: boolean;
+  readonly cloudConnectionState: CloudNotificationsConnectionState;
+  readonly cloudTotalCount: number;
+  readonly hasActiveHost: boolean;
+  readonly hasLoadedHostNotifications: boolean;
+}): boolean {
+  if (input.feedMode === "cloud") {
+    return (
+      !input.cloudHasSnapshot ||
+      input.cloudConnectionState !== "connected" ||
+      input.cloudTotalCount === 0
+    );
+  }
+  return !input.hasActiveHost || !input.hasLoadedHostNotifications;
+}
+
 /** Local-fallback header subtitle text. A partial host state is either
  * transient (still
  * connecting - the exact wording carries no permanence claim) or confirmed
@@ -234,9 +253,10 @@ export function NotificationsPopover(
   const notificationsSupport = useStreamMethodSupport(
     "host.notifications.feed.subscribe",
   );
-  // Authoritative liveness signal for the "Mark all read" enablement gate -
-  // the SAME notification host the mutations behind that button are bound to,
-  // and `null` during a disconnect even though the runtime binding is retained.
+  // Authoritative liveness signal for the "Mark all read" / "Clear all"
+  // enablement gates - the SAME notification host the mutations behind those
+  // buttons are bound to, and `null` during a disconnect even though the
+  // runtime binding is retained.
   const notificationHostId = useNotificationHostId();
   // Loaded HOST Attention rows (feed ids are `host:<id>`); app-local/global
   // attention is locally actionable and already reflected in `unreadCount`.
@@ -285,11 +305,18 @@ export function NotificationsPopover(
     isAtTop,
     scrollToTop,
   } = useNotificationCenterScrollAnchor({ orderedFeedIds });
+  // Feed traversal is bound to the shell, not the scrollport, so Up/Down also
+  // enter the list from the header - including the heading a keyboard or chord
+  // open focuses.
+  useNotificationFeedKeyboardNavigation(shellRef);
 
   // Full, unfiltered occurrence order is the identity source for live-arrival
   // detection, so a Recent filter can never blind the arrival set to a row it
   // currently hides (see "N-new" in the technical plan).
   const fullOccurrenceOrder = useMergedNotificationOccurrenceEntries();
+  const hasLoadedHostNotifications = fullOccurrenceOrder.some((entry) =>
+    entry.feedId.startsWith("host:"),
+  );
   const occurrenceKeyByFeedId = useMemo(
     () =>
       new Map(
@@ -437,10 +464,15 @@ export function NotificationsPopover(
 
   return (
     <TooltipProvider delayDuration={300}>
+      {/* `data-notification-center` marks this surface for code that must ask
+          "is focus inside the center right now?" without reaching for the
+          shell ref (the keybinding chord's toggle-close, in
+          `notifications-bell.tsx`). */}
       <div
         ref={shellRef}
         style={shellStyle}
         className="flex w-[min(90vw,34rem)] min-w-0 flex-col gap-0 overflow-hidden"
+        data-notification-center=""
         data-testid="notifications-popover"
       >
         <NotificationsPopoverHeader
@@ -461,17 +493,15 @@ export function NotificationsPopover(
             hasActiveHost: notificationHostId !== null,
             cloudConnectionState: cloudPresentationState,
           })}
-          showClearAll={feedMode === "cloud"}
-          isClearAllDisabled={
-            !cloudHasSnapshot ||
-            cloudConnectionState !== "connected" ||
-            // The CLOUD lane, not the merged order. `fullOccurrenceOrder` now
-            // carries the local-home rows too, so a connected-but-empty cloud
-            // snapshot beside any local row enabled a destructive control
-            // whose confirmation sends only `cloudFeed.clearAll` - nothing the
-            // user could see would disappear.
-            cloudTotalCount === 0
-          }
+          showClearAll={feedMode === "cloud" || feedMode === "local"}
+          isClearAllDisabled={isClearAllDisabled({
+            feedMode,
+            cloudHasSnapshot,
+            cloudConnectionState,
+            cloudTotalCount,
+            hasActiveHost: notificationHostId !== null,
+            hasLoadedHostNotifications,
+          })}
           onClearAll={handleClearAll}
           onOpenSettings={handleOpenSettings}
           subtitle={notificationsSubtitle(feedMode, {
@@ -534,8 +564,8 @@ export function NotificationsPopover(
       <ConfirmDestructiveDialog
         open={clearAllConfirmOpen}
         onOpenChange={setClearAllConfirmOpen}
-        title="Clear all cloud notifications?"
-        description="This permanently clears every notification currently visible in your cloud feed across your devices."
+        title="Clear all notifications?"
+        description="This permanently clears every notification currently visible in this feed."
         cascadeSummary={null}
         actionLabel="Clear all"
         isPending={false}
@@ -706,7 +736,7 @@ function NotificationsPopoverHeader({
           </TooltipWrapper>
           {showClearAll ? (
             <TooltipWrapper
-              label="Clear cloud notifications"
+              label="Clear notifications"
               side="bottom"
               sideOffset={6}
               align="end"
@@ -718,7 +748,7 @@ function NotificationsPopoverHeader({
                 onClick={onClearAll}
                 disabled={isClearAllDisabled}
                 data-testid="notifications-clear-all"
-                aria-label="Clear cloud notifications"
+                aria-label="Clear notifications"
                 className="text-muted-foreground hover:text-foreground"
               >
                 <Trash2 className="size-3.5" aria-hidden />
@@ -810,7 +840,7 @@ function NotificationFeedStatus(props: {
       aria-live="polite"
       className={cn(
         props.compact
-          ? "flex shrink-0 items-center gap-2 border-b border-border/60 bg-muted/30 px-4 py-2 text-muted-foreground"
+          ? "flex shrink-0 items-center gap-2 border-b border-border/60 bg-foreground/3 px-4 py-2 text-muted-foreground"
           : "flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 py-8 text-center text-muted-foreground",
       )}
       data-testid="notifications-feed-status"
@@ -905,7 +935,7 @@ function OriginUnavailableBanner(): ReactNode {
   return (
     <p
       data-testid="notifications-origin-unavailable"
-      className="shrink-0 border-b border-border/60 bg-muted/40 px-4 py-2 text-ui-xs text-muted-foreground"
+      className="shrink-0 border-b border-border/60 bg-foreground/5 px-4 py-2 text-ui-xs text-muted-foreground"
     >
       This notification is from {hostLabel ?? "another device"}, which
       isn&apos;t the active device right now.

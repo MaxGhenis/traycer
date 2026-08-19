@@ -103,7 +103,7 @@ vi.mock("@/hooks/epic/use-epic-get-task-contexts-query", () => ({
         return task === undefined ? [] : [[taskId, task] as const];
       }),
     ),
-    // `epic.getTaskContexts@1.1`'s sibling home-marker list. Kept on the fake
+    // `epic.getTaskContexts@1.2`'s sibling home-marker list. Kept on the fake
     // because the projection now READS it - a context-only hit is the one path
     // where nothing else can say the epic is local-homed.
     localHomedTaskIds: testState.localHomedTaskIds,

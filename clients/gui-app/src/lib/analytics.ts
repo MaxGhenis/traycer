@@ -59,6 +59,7 @@ export type AnalyticsCommand =
 
 export type AnalyticsSettingsSection =
   | "agents"
+  | "app-diagnostics"
   | "appearance"
   | "devices"
   | "diagnostics"
@@ -72,6 +73,13 @@ export type AnalyticsSettingsSection =
   | "worktrees";
 
 export type AnalyticsArtifactKind = "review" | "spec" | "story" | "ticket";
+
+/** Which usage surface ran the image export. Deliberately NOT
+ * `AnalyticsSource`: that union names the UI gesture that reached a feature
+ * (menu, palette, shortcut), while this names the surface whose region was
+ * captured - an export is always a direct button press, so the gesture axis
+ * carries no signal here. */
+export type AnalyticsUsageImageExportSource = "epic_dialog" | "settings";
 
 export type AnalyticsEditor = "cursor" | "vscode" | "windsurf" | "zed";
 
@@ -260,6 +268,8 @@ export enum AnalyticsEvent {
   HostSetupSucceeded = "host_setup_succeeded",
   HostSetupFailed = "host_setup_failed",
   HostSelected = "host_selected",
+  HostFailover = "host_failover_moved",
+  HostRecovered = "host_recovered",
   HostUpdateStarted = "host_update_started",
   HostUpdateSucceeded = "host_update_succeeded",
   HostUpdateFailed = "host_update_failed",
@@ -335,6 +345,7 @@ export enum AnalyticsEvent {
   ArtifactStatusChanged = "artifact_status_changed",
   ArtifactDeleted = "artifact_deleted",
   ArtifactExported = "artifact_exported",
+  UsageImageExported = "usage_image_exported",
   CommentCreated = "comment_created",
   CommentReplied = "comment_replied",
   CommentEdited = "comment_edited",
@@ -475,6 +486,16 @@ export interface AnalyticsEventProperties {
   readonly [AnalyticsEvent.HostSelected]: SourceProperties & {
     readonly host_kind: "local" | "remote";
   };
+  /**
+   * The DERIVATION moved the app, with no gesture behind it - the selection
+   * authority's `failover` / `recovery` cause (redesign P1.2). Property-less
+   * on purpose: what happened is the whole event, and a host id here would be
+   * an identifier for a machine, attached to a signal nobody segments by.
+   * `HostSelected` stays the INTENT event, fired only by Settings ▸ Activate,
+   * so the two can never be conflated again.
+   */
+  readonly [AnalyticsEvent.HostFailover]: null;
+  readonly [AnalyticsEvent.HostRecovered]: null;
   readonly [AnalyticsEvent.HostUpdateStarted]: SourceProperties;
   readonly [AnalyticsEvent.HostUpdateSucceeded]: null;
   readonly [AnalyticsEvent.HostUpdateFailed]: {
@@ -592,7 +613,7 @@ export interface AnalyticsEventProperties {
     readonly scope: "current" | "with_children";
   };
   readonly [AnalyticsEvent.ChatBackgroundItemStopped]: {
-    readonly scope: "one" | "all";
+    readonly scope: "one" | "all" | "session";
   };
   readonly [AnalyticsEvent.ChatQueuePaused]: null;
   readonly [AnalyticsEvent.ChatQueueResumed]: null;
@@ -656,6 +677,10 @@ export interface AnalyticsEventProperties {
   readonly [AnalyticsEvent.ArtifactExported]: {
     readonly format: "markdown" | "pdf";
     readonly artifact_count: number;
+  };
+  readonly [AnalyticsEvent.UsageImageExported]: {
+    readonly action: "copy" | "download";
+    readonly source: AnalyticsUsageImageExportSource;
   };
   readonly [AnalyticsEvent.CommentCreated]: { readonly has_mention: boolean };
   readonly [AnalyticsEvent.CommentReplied]: { readonly has_mention: boolean };
@@ -763,7 +788,29 @@ export interface AnalyticsEventProperties {
   readonly [AnalyticsEvent.UpdateFailed]: {
     readonly blocker: AnalyticsBlocker;
   };
-  readonly [AnalyticsEvent.ReportIssueOpened]: SourceProperties;
+  /**
+   * `source` is the ENTRY POINT (which affordance was used); `surface` is
+   * WHICH in-app button, from the report context's own fixed vocabulary
+   * ("Host startup", "App update", "Git changes"…).
+   *
+   * The two are separate on purpose. Every in-app Report button files under
+   * `source: "direct_ui"`, so the moment one of them is gated - and
+   * `18aef324` now suppresses the app-update toast while a window narration
+   * owns the frame - that series cannot distinguish "people used the other
+   * button" from "people stopped reporting". Re-valuing `direct_ui` per
+   * surface would have answered it by breaking the entry-point series
+   * instead, and `AnalyticsSource` is shared with a dozen unrelated events.
+   * A new dimension costs nothing; a re-valued one costs the history.
+   *
+   * `null` where there is no in-app surface (the native menu). Safe to send:
+   * `host-failure-report.ts` states the contract these values are built to -
+   * categorical phase names, "never paths, error text or anything the user
+   * has to redact" - and all 145 `createReportIssueContext` call sites pass a
+   * string literal.
+   */
+  readonly [AnalyticsEvent.ReportIssueOpened]: SourceProperties & {
+    readonly surface: string | null;
+  };
   // Which report type's gate blocked the attempt (ticket 07's evidence gate,
   // Flow 2 manual opens only) - downstream funnels join this against a later
   // `ReportIssuePrivateSubmit` (or its absence) to compute abandon-after-block.
@@ -954,6 +1001,7 @@ const ANALYTICS_PROVIDERS = new Set<string>([
 const ANALYTICS_SETTINGS_SECTIONS = new Set<string>(
   Object.keys({
     agents: true,
+    "app-diagnostics": true,
     appearance: true,
     devices: true,
     diagnostics: true,
@@ -1285,6 +1333,7 @@ const EVENT_PROPERTY_KEYS = new Map<AnalyticsEvent, ReadonlyArray<string>>([
     [AnalyticsEvent.ArtifactExported],
     ["format", "artifact_count"],
   ),
+  ...eventKeyEntries([AnalyticsEvent.UsageImageExported], ["action", "source"]),
   ...eventKeyEntries(
     [AnalyticsEvent.CommentCreated, AnalyticsEvent.CommentReplied],
     ["has_mention"],
@@ -1378,6 +1427,8 @@ const EVENT_PROPERTY_KEYS = new Map<AnalyticsEvent, ReadonlyArray<string>>([
 
 const EVENTS_WITHOUT_PROPERTIES = new Set<AnalyticsEvent>([
   AnalyticsEvent.SignInSucceeded,
+  AnalyticsEvent.HostFailover,
+  AnalyticsEvent.HostRecovered,
   AnalyticsEvent.HostUpdateSucceeded,
   AnalyticsEvent.TaskShared,
   AnalyticsEvent.ChatMessageEdited,
@@ -1592,6 +1643,18 @@ const EVENT_EXACT_PROPERTY_VALUES = new Map<string, ReadonlySet<string>>([
     ],
     "kind",
     new Set(["agent", "shell"]),
+  ),
+  ...eventValueEntries(
+    [AnalyticsEvent.UsageImageExported],
+    "action",
+    new Set(["copy", "download"]),
+  ),
+  // Event-scoped so this `source` validates against the export surfaces, not
+  // the global gesture-origin `ANALYTICS_SOURCES` fallback.
+  ...eventValueEntries(
+    [AnalyticsEvent.UsageImageExported],
+    "source",
+    new Set(["epic_dialog", "settings"]),
   ),
   ...eventValueEntries(
     [
@@ -2087,6 +2150,7 @@ const RPC_ERROR_BLOCKERS: Readonly<Record<string, AnalyticsBlocker>> = {
   RPC_ERROR: "host_unavailable",
   SENDER_TUI_UNSUPPORTED: "unsupported",
   TERMINAL_ID_TAKEN: "conflict",
+  TERMINAL_DELETING: "conflict",
   UNAUTHORIZED: "authentication",
   WORKSPACE_BINDING_REQUIRED: "invalid_input",
   WORKTREE_BUSY: "conflict",

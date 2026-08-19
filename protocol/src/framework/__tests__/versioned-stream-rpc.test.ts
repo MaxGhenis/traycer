@@ -25,10 +25,10 @@ describe("validateVersionedStreamRpcRegistry", () => {
     expect(() => {
       validateVersionedStreamRpcRegistry(hostStreamRpcRegistry);
     }).not.toThrow();
-    // Each side bumped a DIFFERENT stream: this branch took `epic.subscribe`
-    // to @1.4, the incoming mainline took `chat.subscribe` to @1.7.
-    expect(hostStreamRpcRegistry["epic.subscribe"][1].latestMinor).toBe(4);
-    expect(hostStreamRpcRegistry["chat.subscribe"][1].latestMinor).toBe(7);
+    // This branch's three status minors re-minted ABOVE the mainline's
+    // roomId minor (@1.2): durability @1.3, promotion @1.4, s5 pass @1.5.
+    expect(hostStreamRpcRegistry["epic.subscribe"][1].latestMinor).toBe(5);
+    expect(hostStreamRpcRegistry["chat.subscribe"][1].latestMinor).toBe(6);
     expect(
       hostStreamRpcRegistry["notifications.subscribe"][1].latestMinor,
     ).toBe(1);

@@ -6,7 +6,15 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { useLayoutEffect, type ReactNode } from "react";
 import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import { TabGroupView } from "@/components/epic-canvas/canvas/tab-group-view";
@@ -67,15 +75,19 @@ interface TestState {
    * fixture on the live render path.
    */
   readonly unreachableHostIds: Set<string>;
-  /** Value the `useReactiveActiveHostId` mock returns; null matches the
+  /** Value the `useAddressableHostId` mock returns; null matches the
    * provider-less default the older fixtures render under. */
-  activeHostId: string | null;
+  sessionHostId: string | null;
   /** Per-chat `fatalClose.code` the `useExistingChatSessionFatalClose` mock
    * answers; unlisted chat ids answer `null` (no fatal close observed). */
   readonly fatalCloseCodeByChatId: Map<string, string>;
   /** Chat ids the `useCloudChatList` mock answers as present
    * (chat-sync-v2 ticket 36's same-host cloud-known exemption). */
   readonly cloudKnownChatIds: Set<string>;
+  /** Whether the cloud list is still resolving, answered, or failed. */
+  cloudListState: "pending" | "success" | "error" | "unsupported";
+  /** Whether `epic.listChatRecords` has answered for this epic session. */
+  chatRecordListAuthoritative: boolean;
   /**
    * Per-chat record-plane retraction, as `useEpicChatRetraction` reads it off
    * `OpenEpicState.chatRetractions` (multi-host-chats record layer). Unlisted
@@ -94,9 +106,11 @@ const testState = vi.hoisted((): TestState => ({
   missingArtifactIds: new Set(),
   stableTileSurfaceHostEnabled: false,
   unreachableHostIds: new Set(),
-  activeHostId: null,
+  sessionHostId: null,
   fatalCloseCodeByChatId: new Map(),
   cloudKnownChatIds: new Set(),
+  cloudListState: "success",
+  chatRecordListAuthoritative: true,
   chatRetractionByChatId: new Map(),
 }));
 
@@ -158,6 +172,8 @@ vi.mock("@/lib/epic-selectors", () => ({
   useEpicLiveArtifactTitleGenerating: () => false,
   useEpicPermissionRole: () => "owner",
   useEpicSnapshotLoaded: () => true,
+  useEpicChatRecordListAuthoritative: () =>
+    testState.chatRecordListAuthoritative,
   useMaybeEpicTuiAgentHarnessId: () => null,
   useRegisteredEpicActiveAgentIds: () => new Set<string>(),
   useRegisteredEpicNodeArchived: () => false,
@@ -194,15 +210,19 @@ vi.mock("@/hooks/agent/use-host-reachability", () => ({
   }),
 }));
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => testState.activeHostId,
+// The host whose PROJECTION the record gate judges refs against - the Epic
+// session's (the canvas host), not the app-wide one this suite used to seed.
+// `testState.sessionHostId` is that input; "same host" in the arms below
+// means "same as the session".
+vi.mock("@/components/epic-canvas/hooks/use-canvas-host-id", () => ({
+  useCanvasHostId: () => testState.sessionHostId,
 }));
 
-// ticket 36's same-host cloud-known exemption reads these two - stubbed at
-// the same hook boundary as the pair above, for the same reason
-// (provider-less suite).
-vi.mock("@/lib/host", () => ({
-  useHostClient: () => null,
+// ticket 36's same-host cloud-known exemption reads the cloud list on the
+// Epic session's client - stubbed at the same hook boundary as the pair
+// above, for the same reason (provider-less suite).
+vi.mock("@/hooks/epic/use-epic-session-host-client", () => ({
+  useEpicSessionHostClient: () => null,
 }));
 
 // Rows are built as WHOLE `CloudChatSummary` values, not as the subset the
@@ -213,12 +233,20 @@ vi.mock("@/lib/host", () => ({
 // substitution this suite exists to assert. The return annotation is the
 // gate: the next field the row gains fails `compile` here instead of
 // quietly turning these tests red in CI.
-vi.mock("@/hooks/chats/use-cloud-chat-queries", () => ({
-  useCloudChatList: () => ({
-    data:
-      testState.cloudKnownChatIds.size === 0
-        ? undefined
-        : {
+vi.mock("@/hooks/chats/use-cloud-chat-queries", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/hooks/chats/use-cloud-chat-queries")
+  >()),
+  useCloudChatList: (args: { readonly enabled: boolean }) => {
+    const isEnabled = args.enabled;
+    const isSuccess = isEnabled && testState.cloudListState === "success";
+    const isError =
+      isEnabled &&
+      (testState.cloudListState === "error" ||
+        testState.cloudListState === "unsupported");
+    return {
+      data: isSuccess
+        ? {
             chats: [...testState.cloudKnownChatIds].map(
               (chatId): CloudChatSummary => ({
                 identity: { taskId: "epic-1", chatId, ownerUserId: "user-1" },
@@ -237,11 +265,23 @@ vi.mock("@/hooks/chats/use-cloud-chat-queries", () => ({
                 isOwnedByViewer: true,
               }),
             ),
-          },
-    isError: false,
-    isPending: false,
-    isFetching: false,
-  }),
+          }
+        : undefined,
+      error: isError
+        ? {
+            code:
+              testState.cloudListState === "unsupported"
+                ? "E_HOST_UNSUPPORTED"
+                : "E_HOST_UNAVAILABLE",
+          }
+        : null,
+      isEnabled,
+      isError,
+      isSuccess,
+      isPending: isEnabled && testState.cloudListState === "pending",
+      isFetching: false,
+    };
+  },
 }));
 
 // tab-group-view imports ChatDeadTileBannerContainer straight from chat-tile,
@@ -797,6 +837,13 @@ describe("<TabGroupView /> stable tile surface host routing (switch ON)", () => 
     testState.unmounts.clear();
     testState.deferredClicks.clear();
     testState.missingArtifactIds.clear();
+    testState.unreachableHostIds.clear();
+    testState.fatalCloseCodeByChatId.clear();
+    testState.cloudKnownChatIds.clear();
+    testState.cloudListState = "success";
+    testState.chatRecordListAuthoritative = true;
+    testState.chatRetractionByChatId.clear();
+    testState.sessionHostId = null;
     testState.stableTileSurfaceHostEnabled = false;
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     useTabsStore.setState(useTabsStore.getInitialState(), true);
@@ -828,6 +875,7 @@ describe("<TabGroupView /> stable tile surface host routing (switch ON)", () => 
 
   it("keeps a remote-deleted chat on DeletedArtifactBody (not hosted) even with the switch ON", async () => {
     testState.stableTileSurfaceHostEnabled = true;
+    testState.sessionHostId = CHAT.hostId;
     const tabs = [CHAT];
     testState.missingArtifactIds.add(CHAT.id);
     seedCanvas(tabs, CHAT.instanceId);
@@ -848,6 +896,7 @@ describe("<TabGroupView /> stable tile surface host routing (switch ON)", () => 
 
   it("reports the remote-deletion transition into the shared registry so membership can react", async () => {
     testState.stableTileSurfaceHostEnabled = true;
+    testState.sessionHostId = CHAT.hostId;
     const tabs = [CHAT];
     seedCanvas(tabs, CHAT.instanceId);
     const { container, rerender } = render(
@@ -884,6 +933,7 @@ describe("<TabGroupView /> stable tile surface host routing (switch ON)", () => 
 
   it("design-review F2 residual: a real StableTileSurfaceHost sibling loses the hosted owner in the SAME pre-paint commit as the inline flip", async () => {
     testState.stableTileSurfaceHostEnabled = true;
+    testState.sessionHostId = CHAT.hostId;
     const tabs = [CHAT];
     seedCanvas(tabs, CHAT.instanceId);
     // `seedCanvas` does not set `openTabOrder`; `getHeaderTabs()` (the
@@ -1247,8 +1297,10 @@ describe("<TabGroupView /> published-copy fallback for an unreachable bound host
     testState.unreachableHostIds.clear();
     testState.fatalCloseCodeByChatId.clear();
     testState.cloudKnownChatIds.clear();
+    testState.cloudListState = "success";
+    testState.chatRecordListAuthoritative = true;
     testState.chatRetractionByChatId.clear();
-    testState.activeHostId = null;
+    testState.sessionHostId = null;
     testState.stableTileSurfaceHostEnabled = false;
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     useTabsStore.setState(useTabsStore.getInitialState(), true);
@@ -1262,7 +1314,7 @@ describe("<TabGroupView /> published-copy fallback for an unreachable bound host
 
   it("renders the published copy + dead-tile banner instead of the live chat body", async () => {
     testState.unreachableHostIds.add(CHAT.hostId);
-    testState.activeHostId = "host-B";
+    testState.sessionHostId = "host-B";
     seedCanvas([CHAT], CHAT.instanceId);
     const { container } = render(groupView([CHAT], CHAT.instanceId, true));
 
@@ -1289,7 +1341,7 @@ describe("<TabGroupView /> published-copy fallback for an unreachable bound host
 
   it("flips back to the live chat surface when the bound host returns", async () => {
     testState.unreachableHostIds.add(CHAT.hostId);
-    testState.activeHostId = "host-B";
+    testState.sessionHostId = "host-B";
     seedCanvas([CHAT], CHAT.instanceId);
     const { container, rerender } = render(
       groupView([CHAT], CHAT.instanceId, true),
@@ -1320,7 +1372,7 @@ describe("<TabGroupView /> published-copy fallback for an unreachable bound host
 
   it("stays on the live surface when the copy identity cannot be derived (no active host)", async () => {
     testState.unreachableHostIds.add(CHAT.hostId);
-    testState.activeHostId = null;
+    testState.sessionHostId = null;
     seedCanvas([CHAT], CHAT.instanceId);
     const { container } = render(groupView([CHAT], CHAT.instanceId, true));
 
@@ -1336,7 +1388,7 @@ describe("<TabGroupView /> published-copy fallback for an unreachable bound host
 
   it("does not substitute when the unreachable bound host IS the active host", async () => {
     testState.unreachableHostIds.add(CHAT.hostId);
-    testState.activeHostId = CHAT.hostId;
+    testState.sessionHostId = CHAT.hostId;
     seedCanvas([CHAT], CHAT.instanceId);
     const { container } = render(groupView([CHAT], CHAT.instanceId, true));
 
@@ -1352,7 +1404,7 @@ describe("<TabGroupView /> published-copy fallback for an unreachable bound host
 
   it("shows the lock icon on the live chat tab's strip entry while unreachable", async () => {
     testState.unreachableHostIds.add(CHAT.hostId);
-    testState.activeHostId = "host-B";
+    testState.sessionHostId = "host-B";
     seedCanvas([CHAT], CHAT.instanceId);
     const { container, rerender } = render(
       groupView([CHAT], CHAT.instanceId, true),
@@ -1380,7 +1432,7 @@ describe("<TabGroupView /> published-copy fallback for an unreachable bound host
   it("drops the instance from hosted-surface membership while the fallback is active (switch ON)", async () => {
     testState.stableTileSurfaceHostEnabled = true;
     testState.unreachableHostIds.add(CHAT.hostId);
-    testState.activeHostId = "host-B";
+    testState.sessionHostId = "host-B";
     seedHostedTopLevelTab();
     seedCanvas([CHAT], CHAT.instanceId);
     const { container, rerender } = render(
@@ -1432,7 +1484,7 @@ describe("<TabGroupView /> published-copy fallback for a confirmed-absent chat o
     testState.fatalCloseCodeByChatId.clear();
     testState.cloudKnownChatIds.clear();
     testState.chatRetractionByChatId.clear();
-    testState.activeHostId = null;
+    testState.sessionHostId = null;
     testState.stableTileSurfaceHostEnabled = false;
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     useTabsStore.setState(useTabsStore.getInitialState(), true);
@@ -1450,7 +1502,7 @@ describe("<TabGroupView /> published-copy fallback for a confirmed-absent chat o
     // have attempted the open first; this test starts from that landed
     // state, the same way `useExistingChatSessionFatalClose` observes it).
     testState.fatalCloseCodeByChatId.set(CHAT.id, "CHAT_NOT_VISIBLE");
-    testState.activeHostId = "host-B";
+    testState.sessionHostId = "host-B";
     seedCanvas([CHAT], CHAT.instanceId);
     const { container } = render(groupView([CHAT], CHAT.instanceId, true));
 
@@ -1474,7 +1526,7 @@ describe("<TabGroupView /> published-copy fallback for a confirmed-absent chat o
 
   it("keeps the live (generic-error) surface for a SAME-HOST confirmed-absent chat", async () => {
     testState.fatalCloseCodeByChatId.set(CHAT.id, "CHAT_NOT_VISIBLE");
-    testState.activeHostId = CHAT.hostId;
+    testState.sessionHostId = CHAT.hostId;
     seedCanvas([CHAT], CHAT.instanceId);
     const { container } = render(groupView([CHAT], CHAT.instanceId, true));
 
@@ -1490,7 +1542,7 @@ describe("<TabGroupView /> published-copy fallback for a confirmed-absent chat o
 
   it("does NOT substitute for an unrelated fatal close (e.g. CHAT_INVALID) - only CHAT_NOT_VISIBLE triggers this arm", async () => {
     testState.fatalCloseCodeByChatId.set(CHAT.id, "CHAT_INVALID");
-    testState.activeHostId = "host-B";
+    testState.sessionHostId = "host-B";
     seedCanvas([CHAT], CHAT.instanceId);
     const { container } = render(groupView([CHAT], CHAT.instanceId, true));
 
@@ -1506,7 +1558,7 @@ describe("<TabGroupView /> published-copy fallback for a confirmed-absent chat o
 
   it("flips to the live surface once the confirmed-absent signal clears (e.g. a fresh subscribe attempt)", async () => {
     testState.fatalCloseCodeByChatId.set(CHAT.id, "CHAT_NOT_VISIBLE");
-    testState.activeHostId = "host-B";
+    testState.sessionHostId = "host-B";
     seedCanvas([CHAT], CHAT.instanceId);
     const { container, rerender } = render(
       groupView([CHAT], CHAT.instanceId, true),
@@ -1544,6 +1596,17 @@ describe("<TabGroupView /> published-copy fallback for a confirmed-absent chat o
 // this shape, because ticket 49 widened its record gate to let a cloud-known
 // chat subscribe).
 describe("<TabGroupView /> published-copy fallback for a same-host chat with no local record (tickets 36 + 49)", () => {
+  beforeEach(() => {
+    testState.missingArtifactIds.clear();
+    testState.unreachableHostIds.clear();
+    testState.fatalCloseCodeByChatId.clear();
+    testState.cloudKnownChatIds.clear();
+    testState.cloudListState = "success";
+    testState.chatRecordListAuthoritative = true;
+    testState.chatRetractionByChatId.clear();
+    testState.sessionHostId = null;
+  });
+
   afterEach(() => {
     cleanup();
     testState.mounts.clear();
@@ -1553,7 +1616,7 @@ describe("<TabGroupView /> published-copy fallback for a same-host chat with no 
     testState.fatalCloseCodeByChatId.clear();
     testState.cloudKnownChatIds.clear();
     testState.chatRetractionByChatId.clear();
-    testState.activeHostId = null;
+    testState.sessionHostId = null;
     testState.stableTileSurfaceHostEnabled = false;
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     useTabsStore.setState(useTabsStore.getInitialState(), true);
@@ -1572,7 +1635,7 @@ describe("<TabGroupView /> published-copy fallback for a same-host chat with no 
   // own connected host.
   it("keeps the LIVE chat surface for a same-host record-less cloud-known chat while its owner is REACHABLE", async () => {
     testState.missingArtifactIds.add(CHAT.id);
-    testState.activeHostId = CHAT.hostId;
+    testState.sessionHostId = CHAT.hostId;
     testState.cloudKnownChatIds.add(CHAT.id);
     seedCanvas([CHAT], CHAT.instanceId);
     const { container } = render(groupView([CHAT], CHAT.instanceId, true));
@@ -1601,7 +1664,7 @@ describe("<TabGroupView /> published-copy fallback for a same-host chat with no 
 
   it("still substitutes the locked published copy when the same-host owner is UNREACHABLE", async () => {
     testState.missingArtifactIds.add(CHAT.id);
-    testState.activeHostId = CHAT.hostId;
+    testState.sessionHostId = CHAT.hostId;
     testState.unreachableHostIds.add(CHAT.hostId);
     testState.cloudKnownChatIds.add(CHAT.id);
     seedCanvas([CHAT], CHAT.instanceId);
@@ -1634,7 +1697,7 @@ describe("<TabGroupView /> published-copy fallback for a same-host chat with no 
     // itself refusing the chat. `chat-tile.tsx` produces this terminate only
     // because its record gate now lets a cloud-known chat open.
     testState.missingArtifactIds.add(CHAT.id);
-    testState.activeHostId = CHAT.hostId;
+    testState.sessionHostId = CHAT.hostId;
     testState.cloudKnownChatIds.add(CHAT.id);
     seedCanvas([CHAT], CHAT.instanceId);
     const { container, rerender } = render(
@@ -1670,13 +1733,13 @@ describe("<TabGroupView /> published-copy fallback for a same-host chat with no 
     ).toBeNull();
   });
 
-  it("does NOT substitute, and does not render published-chat's DeletedArtifactBody either, when the same-host chat has no local record and is NOT cloud-known", async () => {
+  it("renders the deleted body once both authoritative lists answer without the same-host chat", async () => {
     // Neither reap-exempted (not cloud-known) nor live (no local record) -
     // this is what a stale persisted tab reduces to once nothing anywhere
     // attests to the chat. `computeIsRemoteDeleted` renders
     // `DeletedArtifactBody`, not a silent no-op and not the copy-ladder.
     testState.missingArtifactIds.add(CHAT.id);
-    testState.activeHostId = CHAT.hostId;
+    testState.sessionHostId = CHAT.hostId;
     seedCanvas([CHAT], CHAT.instanceId);
     const { container } = render(groupView([CHAT], CHAT.instanceId, true));
 
@@ -1690,12 +1753,96 @@ describe("<TabGroupView /> published-copy fallback for a same-host chat with no 
     ).toBeNull();
   });
 
+  it("keeps the live surface while the cloud list is still resolving after restart", async () => {
+    testState.missingArtifactIds.add(CHAT.id);
+    testState.sessionHostId = CHAT.hostId;
+    testState.cloudListState = "pending";
+    seedCanvas([CHAT], CHAT.instanceId);
+    const { container } = render(groupView([CHAT], CHAT.instanceId, true));
+
+    await waitFor(() => {
+      expect(
+        container.querySelector(`[data-testid="tile-${CHAT.id}"]`),
+      ).not.toBeNull();
+    });
+    expect(
+      container.querySelector('[data-testid="deleted-node-body"]'),
+    ).toBeNull();
+  });
+
+  it("keeps the live surface when the cloud list fails transiently", async () => {
+    testState.missingArtifactIds.add(CHAT.id);
+    testState.sessionHostId = CHAT.hostId;
+    testState.cloudListState = "error";
+    seedCanvas([CHAT], CHAT.instanceId);
+    const { container } = render(groupView([CHAT], CHAT.instanceId, true));
+
+    await waitFor(() => {
+      expect(
+        container.querySelector(`[data-testid="tile-${CHAT.id}"]`),
+      ).not.toBeNull();
+    });
+    expect(
+      container.querySelector('[data-testid="deleted-node-body"]'),
+    ).toBeNull();
+  });
+
+  it("treats E_HOST_UNSUPPORTED as authoritative cloud absence on a doc-only host", async () => {
+    testState.missingArtifactIds.add(CHAT.id);
+    testState.sessionHostId = CHAT.hostId;
+    testState.cloudListState = "unsupported";
+    seedCanvas([CHAT], CHAT.instanceId);
+    const { container } = render(groupView([CHAT], CHAT.instanceId, true));
+
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="deleted-node-body"]'),
+      ).not.toBeNull();
+    });
+    expect(
+      container.querySelector(`[data-testid="tile-${CHAT.id}"]`),
+    ).toBeNull();
+  });
+
+  it("keeps the live surface until the local chat-record list answers after restart", async () => {
+    testState.missingArtifactIds.add(CHAT.id);
+    testState.sessionHostId = CHAT.hostId;
+    testState.chatRecordListAuthoritative = false;
+    seedCanvas([CHAT], CHAT.instanceId);
+    const { container } = render(groupView([CHAT], CHAT.instanceId, true));
+
+    await waitFor(() => {
+      expect(
+        container.querySelector(`[data-testid="tile-${CHAT.id}"]`),
+      ).not.toBeNull();
+    });
+    expect(
+      container.querySelector('[data-testid="deleted-node-body"]'),
+    ).toBeNull();
+  });
+
+  it("does not convict a chat while the active host identity is unresolved", async () => {
+    testState.missingArtifactIds.add(CHAT.id);
+    testState.sessionHostId = null;
+    seedCanvas([CHAT], CHAT.instanceId);
+    const { container } = render(groupView([CHAT], CHAT.instanceId, true));
+
+    await waitFor(() => {
+      expect(
+        container.querySelector(`[data-testid="tile-${CHAT.id}"]`),
+      ).not.toBeNull();
+    });
+    expect(
+      container.querySelector('[data-testid="deleted-node-body"]'),
+    ).toBeNull();
+  });
+
   it("does not substitute when the same-host chat still HAS a local record, even if also cloud-known", async () => {
     // liveArtifact !== null here (CHAT.id not in missingArtifactIds) - the
     // live tile renders normally, exactly today's behavior. Cloud-known
     // alone is never sufficient; it only matters once there is no local
     // record to explain the tile with.
-    testState.activeHostId = CHAT.hostId;
+    testState.sessionHostId = CHAT.hostId;
     testState.cloudKnownChatIds.add(CHAT.id);
     seedCanvas([CHAT], CHAT.instanceId);
     const { container } = render(groupView([CHAT], CHAT.instanceId, true));
@@ -1714,7 +1861,7 @@ describe("<TabGroupView /> published-copy fallback for a same-host chat with no 
     // Unreachable owner is what puts this tab on the copy in the first place
     // now; the flip under test is still the record's arrival.
     testState.missingArtifactIds.add(CHAT.id);
-    testState.activeHostId = CHAT.hostId;
+    testState.sessionHostId = CHAT.hostId;
     testState.unreachableHostIds.add(CHAT.hostId);
     testState.cloudKnownChatIds.add(CHAT.id);
     seedCanvas([CHAT], CHAT.instanceId);
@@ -1765,8 +1912,10 @@ describe("<TabGroupView /> open-tab retraction from the record plane", () => {
     testState.unreachableHostIds.clear();
     testState.fatalCloseCodeByChatId.clear();
     testState.cloudKnownChatIds.clear();
+    testState.cloudListState = "success";
+    testState.chatRecordListAuthoritative = true;
     testState.chatRetractionByChatId.clear();
-    testState.activeHostId = null;
+    testState.sessionHostId = null;
     testState.stableTileSurfaceHostEnabled = false;
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     useTabsStore.setState(useTabsStore.getInitialState(), true);
@@ -1788,8 +1937,10 @@ describe("<TabGroupView /> open-tab retraction from the record plane", () => {
     // `computeIsRemoteDeleted` and this renders the live tile forever - the
     // stale transcript of a chat the host has destroyed.
     testState.missingArtifactIds.add(CHAT.id);
-    testState.activeHostId = CHAT.hostId;
-    testState.cloudKnownChatIds.add(CHAT.id);
+    testState.sessionHostId = CHAT.hostId;
+    // Positive deletion evidence must outrank both unresolved absence gates.
+    testState.cloudListState = "pending";
+    testState.chatRecordListAuthoritative = false;
     seedCanvas([CHAT], CHAT.instanceId);
     const { container, rerender } = render(
       groupView([CHAT], CHAT.instanceId, true),
@@ -1830,7 +1981,7 @@ describe("<TabGroupView /> open-tab retraction from the record plane", () => {
     // to the published-copy substitution, which offers to clone a transcript
     // the server has just stopped serving this viewer.
     testState.missingArtifactIds.add(CHAT.id);
-    testState.activeHostId = CHAT.hostId;
+    testState.sessionHostId = CHAT.hostId;
     testState.cloudKnownChatIds.add(CHAT.id);
     seedCanvas([CHAT], CHAT.instanceId);
     const { container, rerender } = render(
@@ -1878,7 +2029,7 @@ describe("<TabGroupView /> open-tab retraction from the record plane", () => {
     // is newer still AND about a different subject, so naming the host would
     // send the reader to inspect a machine that has nothing to do with it.
     testState.missingArtifactIds.add(CHAT.id);
-    testState.activeHostId = "host-B";
+    testState.sessionHostId = "host-B";
     testState.unreachableHostIds.add(CHAT.hostId);
     testState.chatRetractionByChatId.set(CHAT.id, "revoked");
     seedCanvas([CHAT], CHAT.instanceId);
@@ -1897,7 +2048,7 @@ describe("<TabGroupView /> open-tab retraction from the record plane", () => {
 
   it("changes nothing for a chat with no retraction", async () => {
     testState.missingArtifactIds.add(CHAT.id);
-    testState.activeHostId = CHAT.hostId;
+    testState.sessionHostId = CHAT.hostId;
     testState.cloudKnownChatIds.add(CHAT.id);
     // A retraction for a DIFFERENT chat must not reach this tab.
     testState.chatRetractionByChatId.set("chat-other", "deleted");

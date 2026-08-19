@@ -184,6 +184,30 @@ describe("resolveProviderRateLimitViewState", () => {
       lastGoodAt: null,
     });
   });
+
+  // The Settings half of the still-running suppression. Suppressing `isError`
+  // alone left this resolver falling through to `empty`, so the usage card
+  // rendered BLANK for the whole collection window and then popped to data -
+  // the silent half of the transition the suppression exists to remove.
+  it("is loading, not empty, while a suppressed read is being collected", () => {
+    const state = resolveProviderRateLimitViewState({
+      isPending: false,
+      isFetching: true,
+      isError: false,
+      envelope: undefined,
+    });
+    expect(state.kind).toBe("loading");
+  });
+
+  it("is still empty when nothing is in flight and nothing failed", () => {
+    const state = resolveProviderRateLimitViewState({
+      isPending: false,
+      isFetching: false,
+      isError: false,
+      envelope: undefined,
+    });
+    expect(state.kind).toBe("empty");
+  });
 });
 
 describe("resolvePopoverProviderRateLimitState", () => {
@@ -217,6 +241,21 @@ describe("resolvePopoverProviderRateLimitState", () => {
     expect(state.kind).toBe("error");
   });
 
+  // The COLD half of the still-running suppression. With no envelope there is
+  // nothing to fall back on, so inferring the failure from "idle with no data"
+  // reported one even though the caller had already suppressed it - and then
+  // went quietly green when the delayed collection landed. That is the exact
+  // visible-failure-then-silent-success transition the suppression removes.
+  it("stays cold when an idle no-data read had its failure suppressed", () => {
+    const state = resolvePopoverProviderRateLimitState({
+      isPending: false,
+      isFetching: false,
+      isError: false,
+      envelope: undefined,
+    });
+    expect(state.kind).toBe("cold");
+  });
+
   it("surfaces the provider's own authoritative unavailable reason, not retained", () => {
     const state = resolvePopoverProviderRateLimitState({
       isPending: false,
@@ -224,7 +263,11 @@ describe("resolvePopoverProviderRateLimitState", () => {
       isError: false,
       envelope: envelopeOf(UNAVAILABLE),
     });
-    expect(state).toEqual({ kind: "unavailable", reason: "cli_not_found" });
+    expect(state).toEqual({
+      kind: "unavailable",
+      provider: "codex",
+      reason: "cli_not_found",
+    });
   });
 
   it("is ready and not degraded for a fresh available snapshot", () => {
@@ -292,7 +335,11 @@ describe("resolvePopoverProviderRateLimitState", () => {
         lastFailureAt: 1_000,
       },
     });
-    expect(state).toEqual({ kind: "unavailable", reason: "timeout" });
+    expect(state).toEqual({
+      kind: "unavailable",
+      provider: "codex",
+      reason: "timeout",
+    });
   });
 });
 
@@ -394,6 +441,34 @@ describe("resolveProviderPlanLabel", () => {
         prepaidBalance: null,
       }),
     ).toBe("SuperGrok");
+  });
+
+  it("returns Go for an available OpenCode snapshot", () => {
+    expect(
+      resolveProviderPlanLabel({
+        provider: "opencode",
+        available: true,
+        credentialGeneration: "gen-1",
+        fiveHour: {
+          status: "ok",
+          usedPercent: 10,
+          resetsAt: 1,
+          durationMinutes: 300,
+        },
+        weekly: {
+          status: "ok",
+          usedPercent: 20,
+          resetsAt: 1,
+          durationMinutes: 10_080,
+        },
+        monthly: {
+          status: "ok",
+          usedPercent: 30,
+          resetsAt: 1,
+          durationMinutes: null,
+        },
+      }),
+    ).toBe("Go");
   });
 
   it("is null when Grok did not report a subscriptionTier", () => {

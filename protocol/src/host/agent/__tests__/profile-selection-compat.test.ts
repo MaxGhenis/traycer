@@ -18,6 +18,9 @@ import {
   agentGetProviderProfileRateLimitsDowngradeV20ToV10,
   agentGetProviderProfileRateLimitsDowngradeV30ToV10,
   agentGetProviderProfileRateLimitsDowngradeV30ToV20,
+  agentGetProviderProfileRateLimitsDowngradeV40ToV10,
+  agentGetProviderProfileRateLimitsDowngradeV40ToV20,
+  agentGetProviderProfileRateLimitsDowngradeV40ToV30,
   agentGetProviderProfileRateLimitsRequestSchema,
   agentGetProviderProfileRateLimitsResponseSchema,
   agentGetProviderProfileRateLimitsUpgradeV10ToV20,
@@ -570,9 +573,9 @@ describe("optional-method capability negotiation", () => {
       split.manifest["agent.getProviderProfileRateLimits"],
     ).toBeUndefined();
     expect(split.manifest["agent.configure"]).toBeUndefined();
-    // v4.0 is the advertised latest: the v1.1.9 tags froze v3.0 with the
-    // pre-Hugging-Face id sets, so `huggingface` opened a new major on all
-    // three methods (as omp did on v3.0 before it).
+    // list/configure and rate-limit reads all sit on the v4.0 line: the
+    // OpenCode arm and credentialGeneration ride major 4 rather than a
+    // separate 5, since 4 has never shipped.
     expect(split.optionalManifest["agent.listProviderProfiles"]).toEqual({
       major: 4,
       minor: 0,
@@ -947,6 +950,107 @@ describe("agent.getProviderProfileRateLimits v1 <-> v2 hermes-provider translati
         usageUpdatedAt: null,
       });
     expect(ompDowngraded.ok).toBe(false);
+  });
+});
+
+describe("agent.getProviderProfileRateLimits v4 OpenCode downgrade", () => {
+  const openCodeAvailable = {
+    rateLimits: {
+      provider: "opencode" as const,
+      available: true as const,
+      credentialGeneration: "gen-opencode-1",
+      fiveHour: {
+        status: "ok" as const,
+        usedPercent: 10,
+        resetsAt: 1_784_678_400_000,
+        durationMinutes: 300,
+      },
+      weekly: {
+        status: "ok" as const,
+        usedPercent: 20,
+        resetsAt: 1_785_283_200_000,
+        durationMinutes: 10_080,
+      },
+      monthly: {
+        status: "ok" as const,
+        usedPercent: 30,
+        resetsAt: 1_787_011_200_000,
+        durationMinutes: null,
+      },
+    },
+    usageUpdatedAt: 1_784_678_400_000,
+  };
+
+  const openCodeUnsupported = {
+    rateLimits: {
+      provider: "opencode" as const,
+      available: false as const,
+      reason: "unsupported_provider" as const,
+    },
+    usageUpdatedAt: 1_784_678_400_000,
+  };
+
+  it("degrades an available OpenCode snapshot to unsupported_provider on every v4 bridge", () => {
+    expect(
+      agentGetProviderProfileRateLimitsDowngradeV40ToV30.downgradeResponse(
+        openCodeAvailable,
+      ),
+    ).toEqual({ ok: true, value: openCodeUnsupported });
+    expect(
+      agentGetProviderProfileRateLimitsDowngradeV40ToV20.downgradeResponse(
+        openCodeAvailable,
+      ),
+    ).toEqual({ ok: true, value: openCodeUnsupported });
+    expect(
+      agentGetProviderProfileRateLimitsDowngradeV40ToV10.downgradeResponse(
+        openCodeAvailable,
+      ),
+    ).toEqual({ ok: true, value: openCodeUnsupported });
+  });
+
+  // The AVAILABLE arm is the one the maps rewrite; an already-unavailable
+  // OpenCode row passes them untouched and is degraded by the frozen re-parse
+  // alone. That is only safe because `opencode` is a member of the pinned
+  // `providerIdSchemaV40` enum, so the older `available: false` arm accepts the
+  // id rather than failing the union - the collapse onto 4.0 made this path
+  // reachable for every peer, not just a hypothetical 5.0 one.
+  it("strips the cache generation from an unavailable OpenCode snapshot on every v4 bridge, keeping its reason", () => {
+    const openCodeUnavailable = {
+      rateLimits: {
+        provider: "opencode" as const,
+        available: false as const,
+        reason: "usage_fetch_failed" as const,
+        credentialGeneration: "gen-opencode-1",
+      },
+      usageUpdatedAt: 1_784_678_400_000,
+    };
+    const expected = {
+      ok: true,
+      value: {
+        rateLimits: {
+          provider: "opencode" as const,
+          available: false as const,
+          reason: "usage_fetch_failed" as const,
+        },
+        usageUpdatedAt: 1_784_678_400_000,
+      },
+    };
+
+    expect(
+      agentGetProviderProfileRateLimitsDowngradeV40ToV30.downgradeResponse(
+        openCodeUnavailable,
+      ),
+    ).toEqual(expected);
+    expect(
+      agentGetProviderProfileRateLimitsDowngradeV40ToV20.downgradeResponse(
+        openCodeUnavailable,
+      ),
+    ).toEqual(expected);
+    expect(
+      agentGetProviderProfileRateLimitsDowngradeV40ToV10.downgradeResponse(
+        openCodeUnavailable,
+      ),
+    ).toEqual(expected);
   });
 });
 

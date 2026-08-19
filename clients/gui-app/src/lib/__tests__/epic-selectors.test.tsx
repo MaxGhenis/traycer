@@ -9,9 +9,11 @@ import type {
 import {
   __getOpenEpicRegistryForTests,
   EpicSessionContext,
+  handleHostIds,
 } from "@/lib/registries/epic-session-registry";
 import {
   deriveEpicCloudFreshnessView,
+  useEpicArtifactRecords,
   useEpicChatHarnessId,
   useEpicAgentRoleClaims,
   useEpicAgentRoleClaimsByAgentId,
@@ -24,6 +26,11 @@ import {
 const featureSettings = vi.hoisted(() => ({ enabled: true }));
 vi.mock("@/hooks/runner/use-runner-feature-settings-query", () => ({
   useAgentRolesEnabled: () => featureSettings.enabled,
+}));
+// The app-wide addressable host, deliberately DIFFERENT from any session
+// host below: the record fallback must never read it (Codex #1243 T-49).
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => "host-addressable",
 }));
 import {
   createOpenEpicStore,
@@ -225,6 +232,30 @@ describe("useEpicChatHarnessId", () => {
     });
 
     expect(result.current).toBeNull();
+  });
+});
+
+describe("useEpicArtifactRecords", () => {
+  it("stamps chat and artifact records with the SESSION handle's host, not the app-wide addressable one", () => {
+    // During an A→B re-point the A-backed Epic stays rendered while the
+    // addressable host already answers B; every record stamped here is copied
+    // by its consumers (`AgentReferenceChip`, the route-focus opener) into a
+    // tile ref bound for life. The fallback is the handle's own host.
+    const handle = createHandle("epic-records-host");
+    handleHostIds.set(handle, "host-session");
+    handle.store.setState({
+      chats: {
+        allIds: ["chat-1"],
+        byId: { "chat-1": chat("chat-1", "claude") },
+      },
+    });
+    const { result } = renderHook(() => useEpicArtifactRecords(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    const record = result.current.find((row) => row.id === "chat-1");
+    expect(record).toBeDefined();
+    expect(record?.hostId).toBe("host-session");
   });
 });
 

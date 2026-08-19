@@ -74,6 +74,20 @@ const EMPTY_LIST_TASKS_RESPONSE: ListTasksResponse = {
   hasMore: false,
 };
 
+const UNKNOWN_TASK_CONTEXTS: GetTaskContextsResponse = {
+  tasks: {
+    [OPEN_EPIC_ID]: { status: "unknown", reason: "transport" },
+  },
+};
+
+// A v1.0 host's nullable row is upgraded at the transport boundary before the
+// reconciler sees it. The protocol schema suite covers that upgrade itself.
+const LEGACY_TASK_CONTEXTS: GetTaskContextsResponse = {
+  tasks: {
+    [OPEN_EPIC_ID]: { status: "unknown", reason: "legacy" },
+  },
+};
+
 const compatibleHostStatus: HostStatusResponse = {
   ready: true,
   hostVersion: "1.2.3",
@@ -350,7 +364,7 @@ describe("EpicTabExistenceReconciler fail-closed paths", () => {
     queryClient.clear();
   });
 
-  it("closes no tabs while the lookup is still in flight", async () => {
+  it("closes only after the lookup confirms the epic is absent", async () => {
     recordNegotiatedHostMethods(localSnapshot.hostId, [
       "host.status",
       "epic.getTaskContexts",
@@ -370,15 +384,52 @@ describe("EpicTabExistenceReconciler fail-closed paths", () => {
     });
     expect(collectOpenEpicIds()).toContain(OPEN_EPIC_ID);
 
-    // Resolving with the id unconfirmed prunes it - the same fixture that had
-    // to leave the tab open while pending. Without this the test would pass
-    // even if the reconciler never concluded anything at all.
+    // A successful batch with an explicit confirmed-absent row is the only
+    // result that may prune the tab. Without this assertion the test could
+    // pass even if the reconciler never concluded anything at all.
     act(() => {
-      resolveLookup({ tasks: { [OPEN_EPIC_ID]: null } });
+      resolveLookup({
+        tasks: { [OPEN_EPIC_ID]: { status: "confirmed-absent" } },
+      });
     });
     await waitFor(() => {
       expect(collectOpenEpicIds()).not.toContain(OPEN_EPIC_ID);
     });
+    queryClient.clear();
+  });
+
+  it.each([
+    {
+      label: "an explicit unknown row",
+      response: UNKNOWN_TASK_CONTEXTS,
+    },
+    {
+      label: "a legacy host row upgraded to unknown",
+      response: LEGACY_TASK_CONTEXTS,
+    },
+  ])("closes no tabs for $label", async ({ response }) => {
+    recordNegotiatedHostMethods(localSnapshot.hostId, [
+      "host.status",
+      "epic.getTaskContexts",
+    ]);
+    const getTaskContexts = vi.fn(
+      (_params: GetTaskContextsRequest): GetTaskContextsResponse => response,
+    );
+
+    const queryClient = mountReconciler({ getTaskContexts });
+
+    await waitFor(() => {
+      expect(getTaskContexts).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(
+        queryClient
+          .getQueryCache()
+          .getAll()
+          .some((query) => query.state.status === "success"),
+      ).toBe(true);
+    });
+    expect(collectOpenEpicIds()).toContain(OPEN_EPIC_ID);
     queryClient.clear();
   });
 });
@@ -415,6 +466,13 @@ function cloudHomedListTasksRow(
 function confirmedRow(
   taskId: string,
 ): NonNullable<GetTaskContextsResponse["tasks"][string]> {
+  return {
+    status: "found",
+    task: confirmedTaskLight(taskId),
+  };
+}
+
+function confirmedTaskLight(taskId: string) {
   return {
     epic: {
       light: {
@@ -509,29 +567,8 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
           // the local-homed exemption rather than the "missing" default.
           tasks[taskId] =
             taskId === LOCAL_HOME_EPIC_ID || taskId === STALE_EPIC_ID
-              ? null
-              : {
-                  epic: {
-                    light: {
-                      id: taskId,
-                      title: "Confirmed",
-                      initialUserPrompt: "",
-                      ticketCount: 0,
-                      specCount: 0,
-                      storyCount: 0,
-                      reviewCount: 0,
-                      status: "active",
-                      createdAt: 1,
-                      updatedAt: 2,
-                      createdBy: "user-1",
-                      version: "1",
-                    },
-                    permission: null,
-                    repos: [],
-                    workspaces: [],
-                    roomInfo: null,
-                  },
-                };
+              ? { status: "confirmed-absent" as const }
+              : confirmedRow(taskId);
         }
         return { tasks };
       },
@@ -587,7 +624,9 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
           // STALE_EPIC_ID is answered null (positively deleted).
           if (taskId === LOCAL_HOME_EPIC_ID) continue;
           tasks[taskId] =
-            taskId === STALE_EPIC_ID ? null : confirmedRow(taskId);
+            taskId === STALE_EPIC_ID
+              ? { status: "confirmed-absent" as const }
+              : confirmedRow(taskId);
         }
         return { tasks };
       },
@@ -624,7 +663,9 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
         const tasks: GetTaskContextsResponse["tasks"] = {};
         for (const taskId of params.taskIds) {
           tasks[taskId] =
-            taskId === STALE_EPIC_ID ? null : confirmedRow(taskId);
+            taskId === STALE_EPIC_ID
+              ? { status: "confirmed-absent" as const }
+              : confirmedRow(taskId);
         }
         return { tasks };
       },
@@ -654,7 +695,7 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
     queryClient.clear();
   });
 
-  it("keeps a LISTED epic open even without a home marker, so a promotion racing the two RPCs cannot force-close it", async () => {
+  it("keeps an epic the host could not classify open, so a promotion racing the reconcile cannot force-close it", async () => {
     recordNegotiatedHostMethods(localSnapshot.hostId, [
       "host.status",
       "epic.getTaskContexts",
@@ -663,40 +704,25 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
     useEpicCanvasStore.getState().openEpicTab(STALE_EPIC_ID, "Stale Epic");
 
     // The race this closes: `getTaskContexts` answered from BEFORE the
-    // promotion (no row yet on the cloud side it consults), `listTasks` from
-    // after it (row present, now cloud-homed so `home` is gone). Existence is
-    // what the list proves; the home marker only decides the separate
-    // force-close exemption, and conflating them made a demonstrably-existing
-    // epic closable.
+    // promotion, when the cloud side it consults has no row yet. The honest
+    // wire answer there is the explicit `unknown` resolution arm - never
+    // `confirmed-absent`, which is reserved for a positively-known deletion -
+    // and only a positive absence may force-close. The `listTasks` page from
+    // after the promotion carries the row cloud-homed (no `home` marker), so
+    // the durable exemption set rightly does not include it either.
     const getTaskContexts = vi.fn(
       (params: GetTaskContextsRequest): GetTaskContextsResponse => {
         const tasks: GetTaskContextsResponse["tasks"] = {};
         for (const taskId of params.taskIds) {
           tasks[taskId] =
-            taskId === LOCAL_HOME_EPIC_ID || taskId === STALE_EPIC_ID
-              ? null
-              : {
-                  epic: {
-                    light: {
-                      id: taskId,
-                      title: "Confirmed",
-                      initialUserPrompt: "",
-                      ticketCount: 0,
-                      specCount: 0,
-                      storyCount: 0,
-                      reviewCount: 0,
-                      status: "active",
-                      createdAt: 1,
-                      updatedAt: 2,
-                      createdBy: "user-1",
-                      version: "1",
-                    },
-                    permission: null,
-                    repos: [],
-                    workspaces: [],
-                    roomInfo: null,
-                  },
-                };
+            taskId === LOCAL_HOME_EPIC_ID
+              ? {
+                  status: "unknown" as const,
+                  reason: "not-found-or-not-permitted" as const,
+                }
+              : taskId === STALE_EPIC_ID
+                ? { status: "confirmed-absent" as const }
+                : confirmedRow(taskId);
         }
         return { tasks };
       },

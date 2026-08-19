@@ -214,6 +214,7 @@ function makeFakeListRef(node: HTMLDivElement): FakeListRef {
   const current: LegendListRef = {
     clearCaches: notImplemented,
     flashScrollIndicators: notImplemented,
+    getAnimatableRef: () => node,
     getNativeScrollRef: () => node,
     getScrollableNode: () => node,
     getScrollResponder: () => null,
@@ -680,6 +681,41 @@ describe("useChatTimelineFollowLatch", () => {
     result.current.followEndIfPermitted();
 
     expect(listRef.scrollToEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a scrollbar drag through pointerup until its delayed scroll report", () => {
+    const node = shim.makeNode({
+      scrollTop: 1000,
+      scrollHeight: 1500,
+      clientHeight: 500,
+    });
+    const listRef = makeFakeListRef(node);
+    const onFollowIntentChange = vi.fn();
+    const { result } = renderHook(() =>
+      useChatTimelineFollowLatch(listRef, true, true, {
+        onFollowIntentChange,
+        onReaderGesture: undefined,
+        isCorrectionSuppressed: undefined,
+        resolveSuppressedEndLanding: undefined,
+      }),
+    );
+
+    result.current.noteReaderGesture({
+      direction: "indeterminate",
+      freezeInFlightScroll: true,
+      publishesReaderPosition: true,
+    });
+    // The compositor has moved the thumb, but under long-list main-thread
+    // pressure pointer completion and layout maintenance can run before the
+    // coalesced native scroll event is delivered.
+    shim.setGeometry(node, { scrollTop: 200 });
+    node.dispatchEvent(new PointerEvent("pointerup"));
+    shim.setGeometry(node, { scrollHeight: 1700 });
+    result.current.followEndIfPermitted();
+    fireNativeScroll(node);
+
+    expect(listRef.scrollToEnd).not.toHaveBeenCalled();
+    expect(onFollowIntentChange).toHaveBeenLastCalledWith(false);
   });
 
   it("converges a toward-end reader landing when content grows before scroll delivery", () => {

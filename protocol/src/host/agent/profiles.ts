@@ -26,7 +26,9 @@ import {
   providerProfileRateLimitStatusSchema,
 } from "@traycer/protocol/host/provider-schemas";
 import {
+  mapCursorAvailableToUnavailable,
   mapGrokAvailableToUnavailable,
+  mapOpenCodeAvailableToUnavailable,
   providerRateLimitsSchema,
   providerRateLimitsSchemaV40,
   providerRateLimitsSchemaV50,
@@ -497,11 +499,19 @@ export const agentGetProviderProfileRateLimitsV30 = defineRpcContract({
   responseSchema: agentGetProviderProfileRateLimitsResponseSchemaV3,
 });
 
+// The LIVE line: ranges over `providerRateLimitsSchema` rather than a frozen
+// snapshot, because `4` is the newest major and no released peer has ever
+// negotiated it (the newest released baseline tops out at `3`).
+export const agentGetProviderProfileRateLimitsResponseSchemaV4 = z.object({
+  rateLimits: providerRateLimitsSchema,
+  usageUpdatedAt: z.number().nullable(),
+});
+
 export const agentGetProviderProfileRateLimitsV40 = defineRpcContract({
   method: "agent.getProviderProfileRateLimits",
   schemaVersion: { major: 4, minor: 0 } as const,
   requestSchema: agentGetProviderProfileRateLimitsRequestSchema,
-  responseSchema: agentGetProviderProfileRateLimitsResponseSchema,
+  responseSchema: agentGetProviderProfileRateLimitsResponseSchemaV4,
 });
 
 export const agentGetProviderProfileRateLimitsUpgradeV10ToV20 =
@@ -659,8 +669,18 @@ export const agentGetProviderProfileRateLimitsDowngradeV40ToV30 =
       // unrepresentable, and this response carries exactly one provider - so
       // fail closed rather than mis-decode. The message names no provider so
       // it stays honest as the enum grows.
+      //
+      // Cursor DOES degrade rather than fail closed: `"cursor"` is in the
+      // frozen v6.0 provider enum, so the unavailable row is representable
+      // here, and an older client is better served by an honest "usage isn't
+      // available" than by an error it cannot act on.
       const parsed =
-        agentGetProviderProfileRateLimitsResponseSchemaV3.safeParse(response);
+        agentGetProviderProfileRateLimitsResponseSchemaV3.safeParse({
+          ...response,
+          rateLimits: mapCursorAvailableToUnavailable(
+            mapOpenCodeAvailableToUnavailable(response.rateLimits),
+          ),
+        });
       if (!parsed.success) {
         return {
           ok: false,
@@ -686,9 +706,15 @@ export const agentGetProviderProfileRateLimitsDowngradeV40ToV20 =
     downgradeResponse: (response) => {
       // Same rule as the v4->v3 bridge against the narrower v2.0 enum: the
       // frozen v2.0 union keeps grok, so only post-v5.0 providers (omp,
-      // huggingface) fail closed here.
+      // huggingface) fail closed here. Cursor degrades for the same reason it
+      // does there - `"cursor"` is in the frozen v5.0 provider enum too.
       const parsed =
-        agentGetProviderProfileRateLimitsResponseSchemaV2.safeParse(response);
+        agentGetProviderProfileRateLimitsResponseSchemaV2.safeParse({
+          ...response,
+          rateLimits: mapCursorAvailableToUnavailable(
+            mapOpenCodeAvailableToUnavailable(response.rateLimits),
+          ),
+        });
       if (!parsed.success) {
         return {
           ok: false,
@@ -716,8 +742,13 @@ export const agentGetProviderProfileRateLimitsDowngradeV40ToV10 =
       // frozen v1.0 union predates the grok available arm, so a grok-available
       // snapshot becomes the `unsupported_provider` row a v1.0 host returns for
       // grok today (shared map). Post-v4.0 providers (Hermes, omp, huggingface)
-      // stay unrepresentable and still fail closed.
-      const rateLimits = mapGrokAvailableToUnavailable(response.rateLimits);
+      // stay unrepresentable and still fail closed. Cursor degrades here too:
+      // `"cursor"` is in the frozen v4.0 provider enum.
+      const rateLimits = mapGrokAvailableToUnavailable(
+        mapCursorAvailableToUnavailable(
+          mapOpenCodeAvailableToUnavailable(response.rateLimits),
+        ),
+      );
       const parsed =
         agentGetProviderProfileRateLimitsResponseSchemaV1.safeParse({
           ...response,
@@ -736,6 +767,7 @@ export const agentGetProviderProfileRateLimitsDowngradeV40ToV10 =
       return { ok: true, value: parsed.data };
     },
   });
+
 
 // ─── `agent.configure@1.0` / `2.0` ─────────────────────────────────────────
 //

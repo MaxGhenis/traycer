@@ -7,6 +7,7 @@ import {
   epicSubscribeServerFrameSchemaV12,
   epicSubscribeServerFrameSchemaV13,
   epicSubscribeServerFrameSchemaV14,
+  epicSubscribeServerFrameSchemaV15,
   epicSubscribeV10,
 } from "@traycer/protocol/host/epic/subscribe";
 
@@ -21,7 +22,7 @@ import {
 
 describe("epic.subscribe@1.0 server frames", () => {
   it("parses a binary-bearing snapshot frame", () => {
-    const parsed = epicSubscribeServerFrameSchema.parse({
+    const parsed = epicSubscribeServerFrameSchemaV10.parse({
       kind: "snapshot",
       epicId: "epic-1",
       meta: {
@@ -109,7 +110,7 @@ describe("epic.subscribe@1.0 server frames", () => {
       pauseReason: "access-revoked" as const,
       hasBinaryPayload: false as const,
     };
-    expect(epicSubscribeServerFrameSchemaV12.parse(frame)).toMatchObject(frame);
+    expect(epicSubscribeServerFrameSchemaV13.parse(frame)).toMatchObject(frame);
     const legacy = epicSubscribeServerFrameSchemaV11.parse(frame);
     expect(legacy).toEqual({
       kind: "cloudSyncStatus",
@@ -119,7 +120,7 @@ describe("epic.subscribe@1.0 server frames", () => {
     });
   });
 
-  it("@1.4 carries the s5 status keys and @1.3 strips them", () => {
+  it("@1.5 carries the s5 status keys and @1.4 strips them", () => {
     const frame = {
       kind: "cloudSyncStatus" as const,
       epicId: "epic-1",
@@ -133,10 +134,10 @@ describe("epic.subscribe@1.0 server frames", () => {
       },
       hasBinaryPayload: false as const,
     };
-    expect(epicSubscribeServerFrameSchemaV14.parse(frame)).toMatchObject(frame);
-    // An older renderer keeps exactly its @1.3 rendering: the new KEYS are
+    expect(epicSubscribeServerFrameSchemaV15.parse(frame)).toMatchObject(frame);
+    // An older renderer keeps exactly its @1.4 rendering: the new KEYS are
     // stripped rather than refused, which is what makes the minor additive.
-    expect(epicSubscribeServerFrameSchemaV13.parse(frame)).toEqual({
+    expect(epicSubscribeServerFrameSchemaV14.parse(frame)).toEqual({
       kind: "cloudSyncStatus",
       epicId: "epic-1",
       status: "connected",
@@ -146,8 +147,8 @@ describe("epic.subscribe@1.0 server frames", () => {
     });
   });
 
-  it("@1.4 makes an unarmed session and an unknown durability expressible", () => {
-    const parsed = epicSubscribeServerFrameSchemaV14.parse({
+  it("@1.5 makes an unarmed session and an unknown durability expressible", () => {
+    const parsed = epicSubscribeServerFrameSchemaV15.parse({
       kind: "cloudSyncStatus",
       epicId: "epic-1",
       status: "connected",
@@ -161,7 +162,7 @@ describe("epic.subscribe@1.0 server frames", () => {
     });
   });
 
-  it("@1.4 VALUE growth is emission-gated: @1.3 refuses the new enum members", () => {
+  it("@1.5 VALUE growth is emission-gated: @1.4 refuses the new enum members", () => {
     // Unlike a new key, a new enum value is REFUSED by the older minor rather
     // than stripped - so the host must gate these on the negotiated version.
     for (const widened of [
@@ -178,17 +179,17 @@ describe("epic.subscribe@1.0 server frames", () => {
         ...widened,
       };
       expect(
-        epicSubscribeServerFrameSchemaV14.safeParse(frame).success,
+        epicSubscribeServerFrameSchemaV15.safeParse(frame).success,
         JSON.stringify(widened),
       ).toBe(true);
       expect(
-        epicSubscribeServerFrameSchemaV13.safeParse(frame).success,
+        epicSubscribeServerFrameSchemaV14.safeParse(frame).success,
         JSON.stringify(widened),
       ).toBe(false);
     }
   });
 
-  it("@1.4 keeps the three pause reasons the frozen minors already spoke", () => {
+  it("@1.5 keeps the pause reasons the frozen minors already spoke", () => {
     for (const pauseReason of [
       "entitlement-lapsed",
       "access-revoked",
@@ -201,16 +202,16 @@ describe("epic.subscribe@1.0 server frames", () => {
         pauseReason,
         hasBinaryPayload: false as const,
       };
-      expect(epicSubscribeServerFrameSchemaV14.parse(frame)).toMatchObject(
+      expect(epicSubscribeServerFrameSchemaV15.parse(frame)).toMatchObject(
         frame,
       );
-      expect(epicSubscribeServerFrameSchemaV12.parse(frame)).toMatchObject(
+      expect(epicSubscribeServerFrameSchemaV13.parse(frame)).toMatchObject(
         frame,
       );
     }
   });
 
-  it("@1.4 cannot claim `current` freshness without a reconciliation timestamp", () => {
+  it("@1.5 cannot claim `current` freshness without a reconciliation timestamp", () => {
     const timestamped = {
       kind: "cloudSyncStatus" as const,
       epicId: "epic-1",
@@ -222,19 +223,19 @@ describe("epic.subscribe@1.0 server frames", () => {
       },
       hasBinaryPayload: false as const,
     };
-    expect(epicSubscribeServerFrameSchemaV14.parse(timestamped)).toMatchObject(
+    expect(epicSubscribeServerFrameSchemaV15.parse(timestamped)).toMatchObject(
       timestamped,
     );
     // The whole point of the conservative datum: no timestamp, no `current`.
     expect(
-      epicSubscribeServerFrameSchemaV14.safeParse({
+      epicSubscribeServerFrameSchemaV15.safeParse({
         ...timestamped,
         freshness: { kind: "freshnessUnknown", state: "current" },
       }).success,
     ).toBe(false);
     for (const state of ["local-copy", "syncing", "stale"] as const) {
       expect(
-        epicSubscribeServerFrameSchemaV14.safeParse({
+        epicSubscribeServerFrameSchemaV15.safeParse({
           ...timestamped,
           freshness: { kind: "freshnessUnknown", state },
         }).success,
@@ -270,6 +271,85 @@ describe("epic.subscribe@1.0 server frames", () => {
         hasBinaryPayload: true,
       }),
     ).toThrow();
+  });
+});
+
+describe("epic.subscribe@1.2 snapshot room identity (@1.0/@1.1 meta frozen)", () => {
+  const snapshotWithRoomId = {
+    kind: "snapshot",
+    epicId: "epic-1",
+    meta: {
+      schemaVersion: "1.0.0",
+      roomId: "room-x",
+      epicLight: null,
+      permissionRole: "owner",
+      repos: [],
+      workspaces: [],
+      repoMapping: [],
+      workspaceFolders: [],
+      unresolvedRepos: [],
+      hostStateVectorBase64: "AQ==",
+    },
+    hasBinaryPayload: true,
+  };
+
+  it("strips roomId when a snapshot frame carrying it is parsed under the frozen @1.0 meta shape", () => {
+    const parsed = epicSubscribeServerFrameSchemaV10.parse(snapshotWithRoomId);
+    if (parsed.kind !== "snapshot") {
+      throw new Error("expected snapshot frame");
+    }
+    // A @1.0 peer discards what a @1.2 host sends - exactly why the host
+    // needs no emission gate for this key (`subscribe.ts`).
+    expect("roomId" in parsed.meta).toBe(false);
+  });
+
+  it("strips roomId when a snapshot frame carrying it is parsed under the frozen @1.1 meta shape", () => {
+    const parsed = epicSubscribeServerFrameSchemaV11.parse(snapshotWithRoomId);
+    if (parsed.kind !== "snapshot") {
+      throw new Error("expected snapshot frame");
+    }
+    expect("roomId" in parsed.meta).toBe(false);
+  });
+
+  it("retains an optional room identity on a snapshot frame", () => {
+    const parsed = epicSubscribeServerFrameSchemaV12.parse(snapshotWithRoomId);
+
+    if (parsed.kind !== "snapshot") {
+      throw new Error("expected snapshot frame");
+    }
+    expect(parsed.meta.roomId).toBe("room-x");
+  });
+
+  it("parses a snapshot frame with no roomId at all under @1.2", () => {
+    // Pins `.optional()` on `roomId`. The GUI client parses every server
+    // frame with the LATEST schema regardless of the negotiated minor
+    // (`epic-stream-client.ts`), so an @1.0/@1.1 host's snapshot frame -
+    // which never carries this key - must stay parseable at a @1.2-capable
+    // client. If `roomId` were ever tightened to required, that frame would
+    // fail to parse, and the client's parse-failure path returns silently,
+    // leaving the canvas stuck on its loading skeleton forever. This test is
+    // what catches a future "tighten roomId to required" edit.
+    const parsed = epicSubscribeServerFrameSchemaV12.parse({
+      kind: "snapshot",
+      epicId: "epic-1",
+      meta: {
+        schemaVersion: "1.0.0",
+        epicLight: null,
+        permissionRole: "owner",
+        repos: [],
+        workspaces: [],
+        repoMapping: [],
+        workspaceFolders: [],
+        unresolvedRepos: [],
+        hostStateVectorBase64: "AQ==",
+      },
+      hasBinaryPayload: true,
+    });
+
+    if (parsed.kind !== "snapshot") {
+      throw new Error("expected snapshot frame");
+    }
+    expect(parsed.meta.roomId).toBeUndefined();
   });
 });
 
@@ -709,7 +789,21 @@ describe("epic.subscribe dirtySnapshot + dirty deltas version gate (@1.0 frozen,
     ).toThrow();
   });
 
-  it("@1.1 still accepts every @1.0 frame kind - additive, nothing dropped", () => {
+  it("@1.2 still accepts dirtySnapshot, artifactRoomDirty and rootDirty - additive over @1.1", () => {
+    const artifactRoomDirty = epicSubscribeServerFrameSchemaV12.parse(
+      artifactRoomDirtyFrame,
+    );
+    expect(artifactRoomDirty.kind).toBe("artifactRoomDirty");
+
+    const rootDirty = epicSubscribeServerFrameSchemaV12.parse(rootDirtyFrame);
+    expect(rootDirty.kind).toBe("rootDirty");
+
+    const dirtySnapshot =
+      epicSubscribeServerFrameSchemaV12.parse(dirtySnapshotFrame);
+    expect(dirtySnapshot.kind).toBe("dirtySnapshot");
+  });
+
+  it("@1.1 and @1.2 still accept every @1.0 frame kind - additive, nothing dropped", () => {
     const v10Fixtures: ReadonlyArray<Record<string, unknown>> = [
       {
         kind: "snapshot",
@@ -726,6 +820,20 @@ describe("epic.subscribe dirtySnapshot + dirty deltas version gate (@1.0 frozen,
           hostStateVectorBase64: "AQ==",
         },
         hasBinaryPayload: true,
+      },
+      {
+        kind: "earlyMeta",
+        epicId: "epic-1",
+        meta: {
+          epicLight: null,
+          permissionRole: "owner",
+          repos: [],
+          workspaces: [],
+          repoMapping: [],
+          workspaceFolders: [],
+          unresolvedRepos: [],
+        },
+        hasBinaryPayload: false,
       },
       { kind: "update", epicId: "epic-1", hasBinaryPayload: true },
       { kind: "awareness", epicId: "epic-1", hasBinaryPayload: true },
@@ -803,6 +911,12 @@ describe("epic.subscribe dirtySnapshot + dirty deltas version gate (@1.0 frozen,
       ).not.toThrow();
       expect(() =>
         epicSubscribeServerFrameSchemaV11.parse(fixture),
+      ).not.toThrow();
+      // The @1.2 union was built by splicing a new snapshot frame in front of
+      // the shared non-snapshot frames - this proves nothing was lost in
+      // that splice.
+      expect(() =>
+        epicSubscribeServerFrameSchemaV12.parse(fixture),
       ).not.toThrow();
     }
   });

@@ -13,8 +13,8 @@ import {
   useEpicTab,
 } from "@/stores/epics/canvas/store";
 import { isTileRefRecordLive } from "@/stores/epics/canvas/canvas-selectors";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
-import { useHostClient } from "@/lib/host";
+import { useCanvasHostId } from "@/components/epic-canvas/hooks/use-canvas-host-id";
+import { useEpicSessionHostClient } from "@/hooks/epic/use-epic-session-host-client";
 import {
   cloudChatListAuthorizesRecordSweep,
   useCloudChatList,
@@ -23,6 +23,7 @@ import { cloudRowIsViewersOwn } from "@/lib/chats/unified-chat-list";
 import { collectPanes } from "@/stores/epics/canvas/tile-tree";
 import {
   useEpicArtifactRecords,
+  useEpicChatRecordListAuthoritative,
   useEpicLastFocusedArtifactId,
   useEpicSnapshotLoaded,
   useEpicTitle,
@@ -91,10 +92,11 @@ export function useEpicRouteSynchronization(
   // never-adopted chat apart from a genuinely deleted one for
   // `isTileRefRecordLive` below. `useCloudChatList`'s TanStack Query cache is
   // shared with the sidebar's own call for this same epic - no extra
-  // network traffic from reading it a second time here.
-  const appHostClient = useHostClient();
+  // network traffic from reading it a second time here - which holds only
+  // because both resolve the SAME client: the Epic session's.
+  const sessionHostClient = useEpicSessionHostClient();
   const cloudChats = useCloudChatList({
-    client: appHostClient,
+    client: sessionHostClient,
     taskId: epicId,
     enabled: epicId.length > 0,
   });
@@ -419,12 +421,18 @@ export function useEpicRouteSynchronization(
     handle.store.getState().setLastFocusedArtifactId(activeArtifactId);
   }, [snapshotLoaded, activeArtifactId, handle]);
 
-  // The host whose projection feeds `records` - the app-wide active host.
+  // The host whose projection feeds `records` - the EPIC SESSION's host, not
+  // the app-wide active one this used to read. The two differ for the whole
+  // of a re-point that is establishing and after one that failed: the
+  // provider keeps the previous handle rendered, so `records` are still host
+  // A's while the app-wide pointer says B. Policing against B closed the
+  // wrong tabs - B-bound tiles judged against A's records read as deleted.
   // Cross-host chat tiles are exempt from record policing (see
-  // `isTileRefRecordLive`); everything else is judged against this host's
-  // projection, which is also correct across a host switch (the records
-  // swap with the host, and so does the policing identity).
-  const activeHostId = useReactiveActiveHostId();
+  // `isTileRefRecordLive`); everything else is judged against the session
+  // host's projection, and the policing identity moves WITH the records - on
+  // a committed re-point both flip together, never one before the other.
+  const activeHostId = useCanvasHostId();
+  const chatRecordListAuthoritative = useEpicChatRecordListAuthoritative();
 
   // Close any open tab whose underlying record was removed (sidebar delete,
   // server-side cascade, or remote delete by another collaborator). The
@@ -475,7 +483,11 @@ export function useEpicRouteSynchronization(
           isTileRefRecordLive(
             tab,
             pendingCreateArtifactIds,
-            { hasLiveRecord, isCloudKnown },
+            {
+              hasLiveRecord,
+              isCloudKnown,
+              recordListAuthorizesChatAbsence: chatRecordListAuthoritative,
+            },
             activeHostId,
           )
         ) {
@@ -487,6 +499,7 @@ export function useEpicRouteSynchronization(
   }, [
     snapshotLoaded,
     cloudChatsAuthorizeSweep,
+    chatRecordListAuthoritative,
     canvas,
     records,
     cloudChats.data,

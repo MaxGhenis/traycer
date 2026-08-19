@@ -53,6 +53,7 @@ type CanvasStoreSlice = Pick<
 >;
 
 interface TestState {
+  sessionHostId: string | null;
   activeArtifactId: string | null;
   autoOpenTarget: {
     readonly id: string;
@@ -73,6 +74,7 @@ interface TestState {
    * (`isOwnedByViewer: false`) - rows the sweep's liveness set must ignore,
    * because the substitution resolver refuses to serve them. */
   cloudCollaboratorChatIds: ReadonlySet<string>;
+  chatRecordListAuthoritative: boolean;
   canvasStore: CanvasStoreSlice;
   openEpicState: {
     readonly setLastFocusedArtifactId: Mock;
@@ -81,6 +83,7 @@ interface TestState {
 }
 
 const testState = vi.hoisted<TestState>(() => ({
+  sessionHostId: "host-1",
   activeArtifactId: null,
   autoOpenTarget: null,
   nestedFocusEnabled: false,
@@ -92,6 +95,7 @@ const testState = vi.hoisted<TestState>(() => ({
   records: [],
   cloudChatIds: new Set<string>(),
   cloudCollaboratorChatIds: new Set<string>(),
+  chatRecordListAuthoritative: true,
   canvasStore: {
     renameTab: vi.fn(),
     openTileInTab: vi.fn(),
@@ -152,9 +156,22 @@ vi.mock("@/stores/epics/canvas/store", async (importOriginal) => {
 
 vi.mock("@/lib/epic-selectors", () => ({
   useEpicArtifactRecords: () => testState.records,
+  useEpicChatRecordListAuthoritative: () =>
+    testState.chatRecordListAuthoritative,
   useEpicLastFocusedArtifactId: () => null,
   useEpicSnapshotLoaded: () => true,
   useEpicTitle: () => "",
+}));
+
+// The host whose projection feeds `records` - the Epic session's (the canvas
+// host), which is the policing identity `isTileRefRecordLive` judges against.
+// This suite used to seed the app-wide read; the sync no longer reads it.
+vi.mock("@/components/epic-canvas/hooks/use-canvas-host-id", () => ({
+  useCanvasHostId: () => testState.sessionHostId,
+}));
+
+vi.mock("@/hooks/epic/use-epic-session-host-client", () => ({
+  useEpicSessionHostClient: () => null,
 }));
 
 vi.mock("@/lib/epic-auto-open", () => ({
@@ -279,6 +296,7 @@ function resetStores(): void {
     artifactByEpicId: {},
   });
   testState.activeArtifactId = null;
+  testState.sessionHostId = "host-1";
   testState.nestedFocusEnabled = false;
   testState.useRealCanvasStore = false;
   testState.navigate.mockClear();
@@ -293,6 +311,7 @@ function resetStores(): void {
   testState.records = [];
   testState.cloudChatIds = new Set();
   testState.cloudCollaboratorChatIds = new Set();
+  testState.chatRecordListAuthoritative = true;
   vi.mocked(testState.canvasStore.renameTab).mockClear();
   vi.mocked(testState.canvasStore.openTileInTab).mockClear();
   vi.mocked(testState.canvasStore.applyNestedRouteFocus).mockClear();
@@ -1007,6 +1026,65 @@ describe("useEpicRouteSynchronization", () => {
       TAB_ID,
       "group-1",
       "removed-chat",
+    );
+  });
+
+  it("does not close a same-host chat until the local record list is authoritative", async () => {
+    testState.autoOpenTarget = null;
+    testState.chatRecordListAuthoritative = false;
+    const unansweredChat: EpicCanvasTileRef = {
+      id: "record-list-unanswered-chat",
+      instanceId: "inst-record-list-unanswered-chat",
+      type: "chat",
+      name: "Record list unanswered",
+      hostId: "host-1",
+    };
+    const removedSpec: EpicCanvasTileRef = {
+      id: "removed-spec",
+      instanceId: "inst-removed-spec",
+      type: "spec",
+      name: "Removed spec",
+      hostId: "host-1",
+    };
+    testState.canvasRoot = {
+      kind: "pane",
+      id: "group-1",
+      tabInstanceIds: [unansweredChat.instanceId, removedSpec.instanceId],
+      activeTabId: unansweredChat.instanceId,
+      previewTabId: null,
+      activationHistory: [unansweredChat.instanceId],
+    };
+    testState.canvasTiles = {
+      [unansweredChat.instanceId]: unansweredChat,
+      [removedSpec.instanceId]: removedSpec,
+    };
+
+    renderHook(
+      (intent: EpicRouteFocusIntent) => useEpicRouteSynchronization(intent),
+      {
+        initialProps: {
+          epicId: EPIC_ID,
+          tabId: TAB_ID,
+          focusedAt: undefined,
+          focusArtifactId: undefined,
+          focusThreadId: undefined,
+          focusPaneId: undefined,
+          focusTileInstanceId: undefined,
+        },
+      },
+    );
+
+    await waitFor(() => {
+      expect(testState.canvasStore.closeCanvasTab).toHaveBeenCalledWith(
+        TAB_ID,
+        "group-1",
+        removedSpec.instanceId,
+      );
+    });
+    expect(testState.canvasStore.closeCanvasTab).not.toHaveBeenCalledWith(
+      TAB_ID,
+      "group-1",
+      unansweredChat.instanceId,
     );
   });
 

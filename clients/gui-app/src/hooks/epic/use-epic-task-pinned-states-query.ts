@@ -3,6 +3,7 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import type { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
 import {
   GET_TASK_CONTEXTS_MAX_IDS,
+  isFoundTaskContext,
   type GetTaskContextsResponse,
 } from "@traycer/protocol/host/epic/unary-schemas";
 import { useHostQueries } from "@/hooks/host/use-host-queries";
@@ -75,14 +76,15 @@ export function combineTaskPinnedStateResults(
   const pinnedStates = new Map<string, TaskPinnedState>();
   for (const result of results) {
     if (result.data === undefined) continue;
-    // Absent (a `@1.0` host, or one that predates the key) means the host did
-    // not answer, so no id is marked local and the pin action keeps exactly
-    // its released behaviour. An EMPTY array is a real answer: none are.
+    // Absent (a pre-`@1.2` host, or one that predates the key) means the host
+    // did not answer, so no id is marked local and the pin action keeps
+    // exactly its released behaviour. An EMPTY array is a real answer: none.
     const localHomed = result.data.localHomedTaskIds;
     const localHomedSet =
       localHomed === undefined ? null : new Set<string>(localHomed);
-    for (const task of Object.values(result.data.tasks)) {
-      if (task === null) continue;
+    for (const resolution of Object.values(result.data.tasks)) {
+      if (!isFoundTaskContext(resolution)) continue;
+      const task = resolution.task;
       const epicId = task.epic?.light?.id;
       if (epicId === undefined) continue;
       // Carried through rather than collapsed into the boolean. Collapsing it

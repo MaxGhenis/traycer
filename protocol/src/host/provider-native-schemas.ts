@@ -395,6 +395,9 @@ export const providerSkillsCapabilityActionSchema = z.enum([
   "create",
   "import",
   "remove",
+  "inspect",
+  "edit",
+  "update",
 ]);
 export type ProviderSkillsCapabilityAction = z.infer<
   typeof providerSkillsCapabilityActionSchema
@@ -404,6 +407,11 @@ export const providerSkillsCapabilitiesSchema = z.object({
   /**
    * Action → supported scopes table. Empty array means the action is not
    * offered for any scope.
+   *
+   * `inspect` / `edit` / `update` are the skew gate for the picker/edit
+   * composer. They are optional so an older host (or a descriptor that has
+   * not advertised them yet) still parses; a GUI seeing no `inspect` uses
+   * legacy single-shot `import`. Do not default them - absent is the signal.
    */
   actionScopes: z.object({
     list: z.array(providerNativeScopeSchema),
@@ -411,6 +419,9 @@ export const providerSkillsCapabilitiesSchema = z.object({
     create: z.array(providerNativeScopeSchema),
     import: z.array(providerNativeScopeSchema),
     remove: z.array(providerNativeScopeSchema),
+    inspect: z.array(providerNativeScopeSchema).optional(),
+    edit: z.array(providerNativeScopeSchema).optional(),
+    update: z.array(providerNativeScopeSchema).optional(),
   }),
 });
 export type ProviderSkillsCapabilities = z.infer<
@@ -827,8 +838,51 @@ export const providerSkillSchema = z.object({
   description: z.string().nullable(),
   path: z.string(),
   source: providerSkillSourceBadgeSchema,
+  /**
+   * Provenance display line ("Imported from <source>"). Omitted or null when
+   * the skill was authored locally or has no recorded origin.
+   */
+  origin: z.string().nullable().optional(),
+  /**
+   * True when a foreign real directory occupies a would-be link target.
+   * Omitted means this is not a conflict row.
+   */
+  conflict: z.boolean().optional(),
 });
 export type ProviderSkill = z.infer<typeof providerSkillSchema>;
+
+/**
+ * Frozen skill row as of the `providers.list@7.0` cut. Live
+ * {@link providerSkillSchema} grew `origin` / `conflict`; v7.0 must not.
+ */
+export const providerSkillSchemaV70Preimage = z.object({
+  name: z.string(),
+  description: z.string().nullable(),
+  path: z.string(),
+  source: providerSkillSourceBadgeSchema,
+});
+export type ProviderSkillV70Preimage = z.infer<
+  typeof providerSkillSchemaV70Preimage
+>;
+
+export const providerSkillInspectCandidateSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().nullable(),
+  relPath: z.string().min(1),
+  installed: z.boolean(),
+});
+export type ProviderSkillInspectCandidate = z.infer<
+  typeof providerSkillInspectCandidateSchema
+>;
+
+export const providersSkillsInspectResultSchema = z.object({
+  token: z.string().min(1),
+  commitSha: z.string().min(1),
+  candidates: z.array(providerSkillInspectCandidateSchema),
+});
+export type ProvidersSkillsInspectResult = z.infer<
+  typeof providersSkillsInspectResultSchema
+>;
 
 // ── Mutation action payloads ───────────────────────────────────────────────
 
@@ -889,9 +943,8 @@ export type ProvidersPluginsMutateAction = z.infer<
   typeof providersPluginsMutateActionSchema
 >;
 
-export const providersSkillsMutateActionSchema = z.discriminatedUnion(
-  "action",
-  [
+export const providersSkillsMutateActionSchema = z
+  .discriminatedUnion("action", [
     z.object({
       action: z.literal("add"),
       /**
@@ -930,14 +983,63 @@ export const providersSkillsMutateActionSchema = z.discriminatedUnion(
        * provider-scoped (its store is inherently provider-native).
        */
       providerScoped: z.boolean(),
+      /**
+       * Inspect-session token from a prior `inspect`. Omitted on the legacy
+       * single-shot import path.
+       */
+      token: z.string().min(1).optional(),
+      /**
+       * Candidate names selected in the picker. Omitted on the legacy
+       * single-shot import path.
+       */
+      names: z.array(z.string().min(1)).optional(),
+    }),
+    z.object({
+      action: z.literal("inspect"),
+      /**
+       * File, URL, `owner/repo`, tree URL, or `npx skills add …` wrapper.
+       */
+      source: z.string().min(1),
+      /**
+       * Dest-root scope used to mark candidates `installed`. Same axis as
+       * the mutation envelope's `scope`.
+       */
+      scope: providerNativeScopeSchema,
+    }),
+    z.object({
+      action: z.literal("edit"),
+      path: z.string().min(1),
+      /** SHA-256 of the exact SKILL.md text the editor loaded. */
+      expectedHash: z.string().regex(/^[0-9a-f]{64}$/),
+      name: z.string().min(1),
+      description: z.string(),
+      body: z.string(),
+    }),
+    z.object({
+      action: z.literal("update"),
+      name: z.string().min(1),
+      path: z.string().min(1),
+      /**
+       * Required to clobber local edits (canon hash ≠ recorded
+       * `installedHash`). Omitted / false is a dry check that must not write.
+       */
+      confirm: z.boolean().optional(),
     }),
     z.object({
       action: z.literal("remove"),
       name: z.string().min(1),
       path: z.string().min(1),
     }),
-  ],
-);
+  ])
+  .superRefine((value, ctx) => {
+    if (value.action !== "import") return;
+    if ((value.token === undefined) === (value.names === undefined)) return;
+    ctx.addIssue({
+      code: "custom",
+      path: value.token === undefined ? ["token"] : ["names"],
+      message: "token and names must be provided together",
+    });
+  });
 export type ProvidersSkillsMutateAction = z.infer<
   typeof providersSkillsMutateActionSchema
 >;
@@ -1035,6 +1137,48 @@ export const nativeListResultSchema = z.union([
 ]);
 export type NativeListResult = z.infer<typeof nativeListResultSchema>;
 
+/**
+ * Frozen list result as of the `providers.list@7.0` cut. Live
+ * {@link nativeListResultSchema} grew `origin` / `conflict` on skill rows;
+ * v7.0 must not. Other arms stay pointed at the live object schemas they
+ * already used - those have not grown.
+ */
+const nativeListSuccessResultSchemaV70Preimage = z.discriminatedUnion("kind", [
+  z.object({
+    ok: z.literal(true),
+    kind: z.literal("mcp"),
+    servers: z.array(providerMcpServerSchema),
+  }),
+  z.object({
+    ok: z.literal(true),
+    kind: z.literal("plugins"),
+    plugins: z.array(providerPluginSchema),
+  }),
+  z.object({
+    ok: z.literal(true),
+    kind: z.literal("skills"),
+    skills: z.array(providerSkillSchemaV70Preimage),
+  }),
+  z.object({
+    ok: z.literal(true),
+    kind: z.literal("mcpDiscover"),
+    server: providerMcpServerSchema,
+  }),
+  z.object({
+    ok: z.literal(true),
+    kind: z.literal("pluginIcon"),
+    icon: providerPluginIconSchema,
+  }),
+]);
+
+export const nativeListResultSchemaV70Preimage = z.union([
+  nativeListSuccessResultSchemaV70Preimage,
+  providerNativeErrorResultSchema,
+]);
+export type NativeListResultV70Preimage = z.infer<
+  typeof nativeListResultSchemaV70Preimage
+>;
+
 // ── Carrier payloads: mutate (providers.setEnabled@2.1) ────────────────────
 
 /**
@@ -1063,7 +1207,20 @@ export const nativeMutationSchema = z
       mutation: providersSkillsMutateActionSchema,
     }),
   ])
-  .superRefine(refineProviderNativeScope);
+  .superRefine((value, ctx) => {
+    refineProviderNativeScope(value, ctx);
+    if (
+      value.kind === "skills" &&
+      value.mutation.action === "inspect" &&
+      value.mutation.scope !== value.scope
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["mutation", "scope"],
+        message: "inspect scope must match the mutation scope",
+      });
+    }
+  });
 export type NativeMutation = z.infer<typeof nativeMutationSchema>;
 
 const nativeMutationSuccessResultSchema = z.discriminatedUnion("kind", [
@@ -1081,6 +1238,11 @@ const nativeMutationSuccessResultSchema = z.discriminatedUnion("kind", [
     ok: z.literal(true),
     kind: z.literal("skills"),
     skills: z.array(providerSkillSchema),
+  }),
+  z.object({
+    ok: z.literal(true),
+    kind: z.literal("skillsInspect"),
+    ...providersSkillsInspectResultSchema.shape,
   }),
 ]);
 
@@ -1905,17 +2067,24 @@ export type ModelProviderAuthResult = z.infer<
   typeof modelProviderAuthResultSchema
 >;
 
-// ── Frozen v7.0 native payloads ────────────────────────────────────────────
+// ── v7.0 pre-image native payloads ─────────────────────────────────────────
 //
-// The capability descriptor as the frozen `providers.list@7.0` line carries
-// it, hand-copied. `providerCliStateSchemaV70` reads the whole descriptor
+// The capability descriptor as it stood BEFORE `modelProviders` landed,
+// hand-copied. `providerCliStateSchemaV70Preimage` reads the whole descriptor
 // through one `.catch()`, which is what makes growth here FATAL rather than
 // additive: one unknown enum member fails its array, then the object, and the
-// `.catch()` serves the empty default - a v7.0 peer would lose MCP, Plugins
-// and Skills over a value it merely could not read. So every closed enum
-// reachable from the descriptor is copied; the bridge down from the head line
-// projects live growth away (see `projectNativeCapabilitiesToV70`) instead of
-// letting a reparse hit that trap.
+// `.catch()` serves the empty default - a reader would lose MCP, Plugins and
+// Skills over a value it merely could not read. So every closed enum reachable
+// from the descriptor is copied, and any projection down from the live
+// descriptor must STRIP that growth rather than let a reparse hit the trap.
+// There is no such projection today - the collapse deleted the hop that needed
+// one; see the note at the end of this section before writing the next.
+//
+// Only the copies that actually DIVERGED from live carry `Preimage`. The enums
+// below that still equal their live counterparts keep a bare `V70`, because an
+// unchanged shape is still exactly what v7.0 serializes - that name blocks
+// nothing, and `provider-model-providers-compat.test.ts` fails the day one of
+// them stops matching live.
 //
 // The deep JSON-Schema snapshot in
 // `__tests__/__fixtures__/frozen-catalog-lines.ts` pins the v7.0 shape end to
@@ -1932,22 +2101,22 @@ export const providerEnvOverrideScopeSchemaV70 = z.enum([
   "native-config-only",
 ]);
 
-export const providerSettingsTabSchemaV70 = z.enum([
+export const providerSettingsTabSchemaV70Preimage = z.enum([
   "general",
   "env",
   "usage",
   "mcp",
   "plugins",
   "skills",
-  // `modelProviders` is NOT here. The tab rides the live enum (the v8.0 head
-  // line); a v7.0 peer receives `supportedTabs` through
-  // `projectNativeCapabilitiesToV70` below, which FILTERS the array rather
-  // than reparsing it - the enum rejects a whole array for one unknown
-  // member, and the capability object's `.catch()` would then serve an empty
-  // default, costing the peer MCP, Plugins and Skills over one tab id.
+  // `modelProviders` is NOT here. The tab rides the live enum, which v7.0 now
+  // binds directly. Anything that produces this pre-image shape must FILTER
+  // `supportedTabs` rather than reparse it - this enum rejects a whole array
+  // for one unknown member, and the capability object's `.catch()` would then
+  // serve an empty default, costing the reader MCP, Plugins and Skills over a
+  // single tab id.
 ]);
-export type ProviderSettingsTabV70 = z.infer<
-  typeof providerSettingsTabSchemaV70
+export type ProviderSettingsTabV70Preimage = z.infer<
+  typeof providerSettingsTabSchemaV70Preimage
 >;
 
 export const providerMcpTransportSchemaV70 = z.enum(["stdio", "http", "sse"]);
@@ -2027,7 +2196,7 @@ export const providerPluginsCapabilitiesSchemaV70 = z.object({
   traycerSessionToolsNotice: z.boolean(),
 });
 
-export const providerSkillsCapabilitiesSchemaV70 = z.object({
+export const providerSkillsCapabilitiesSchemaV70Preimage = z.object({
   actionScopes: z.object({
     list: z.array(providerNativeScopeSchemaV70),
     add: z.array(providerNativeScopeSchemaV70),
@@ -2036,6 +2205,9 @@ export const providerSkillsCapabilitiesSchemaV70 = z.object({
     remove: z.array(providerNativeScopeSchemaV70),
   }),
 });
+export type ProviderSkillsCapabilitiesV70Preimage = z.infer<
+  typeof providerSkillsCapabilitiesSchemaV70Preimage
+>;
 
 /**
  * Frozen capability descriptor as shipped on the `providers.list@7.0` line.
@@ -2049,25 +2221,25 @@ export const providerSkillsCapabilitiesSchemaV70 = z.object({
  * live trees. Pointing them at the live trees would have pinned the OUTER
  * object while leaving every enum inside it free to grow - and this descriptor
  * is the one place where growth is not merely leaked but fatal, because
- * `providerCliStateSchemaV70` reads the whole thing through one `.catch()`.
+ * `providerCliStateSchemaV70Preimage` reads the whole thing through one `.catch()`.
  */
-export const providerNativeCapabilitiesSchemaV70 = z.object({
-  supportedTabs: z.array(providerSettingsTabSchemaV70),
+export const providerNativeCapabilitiesSchemaV70Preimage = z.object({
+  supportedTabs: z.array(providerSettingsTabSchemaV70Preimage),
   envOverrideScope: providerEnvOverrideScopeSchemaV70.optional(),
   mcp: providerMcpCapabilitiesSchemaV70.nullable(),
   plugins: providerPluginsCapabilitiesSchemaV70.nullable(),
-  skills: providerSkillsCapabilitiesSchemaV70.nullable(),
+  skills: providerSkillsCapabilitiesSchemaV70Preimage.nullable(),
 });
-export type ProviderNativeCapabilitiesV70 = z.infer<
-  typeof providerNativeCapabilitiesSchemaV70
+export type ProviderNativeCapabilitiesV70Preimage = z.infer<
+  typeof providerNativeCapabilitiesSchemaV70Preimage
 >;
 
 /**
- * The v7.0-shaped counterpart of {@link DEFAULT_PROVIDER_NATIVE_CAPABILITIES},
- * used by the frozen v7.0 state's own `.catch()` so that line keeps decoding
- * exactly as it does today.
+ * The pre-image counterpart of {@link DEFAULT_PROVIDER_NATIVE_CAPABILITIES},
+ * used by `providerCliStateSchemaV70Preimage`'s own `.catch()` so that shape
+ * keeps decoding exactly as it does today.
  */
-export const DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70: ProviderNativeCapabilitiesV70 =
+export const DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70_PREIMAGE: ProviderNativeCapabilitiesV70Preimage =
   {
     supportedTabs: ["general", "env", "usage"],
     mcp: null,
@@ -2075,29 +2247,23 @@ export const DEFAULT_PROVIDER_NATIVE_CAPABILITIES_V70: ProviderNativeCapabilitie
     skills: null,
   };
 
-/**
- * Project a live capability descriptor to the frozen v7.0 shape for the
- * v8->v7 response bridge.
- *
- * Two cuts, made in different ways on purpose:
- *
- * 1. `supportedTabs` is FILTERED before the parse, never reparsed:
- *    `z.array(enum)` rejects a whole array for one unknown member, the
- *    capability object fails with it, and the `.catch()` on the v7.0 state
- *    would then serve the empty default - a v7.0 client would lose MCP,
- *    Plugins AND Skills over one tab id it never knew.
- * 2. `modelProviders` is dropped. The v7.0 line does not model it; the
- *    strict reparse through `providerNativeCapabilitiesSchemaV70` is what
- *    performs the drop, and the destructure writes it out so the projection
- *    reads as the contract it is.
- */
-export function projectNativeCapabilitiesToV70(
-  capabilities: ProviderNativeCapabilities,
-): ProviderNativeCapabilitiesV70 {
-  const v70Tabs = new Set<string>(providerSettingsTabSchemaV70.options);
-  const { modelProviders: _modelProviders, ...rest } = capabilities;
-  return providerNativeCapabilitiesSchemaV70.parse({
-    ...rest,
-    supportedTabs: capabilities.supportedTabs.filter((tab) => v70Tabs.has(tab)),
-  });
-}
+// A `projectNativeCapabilitiesToV70Preimage` used to sit here, feeding the
+// v8->v7 response bridge. The release collapsed v8.0 into v7.0 and deleted that
+// hop, which left the projection with no production caller at all - only its
+// own tests - so it is gone rather than kept warm by them.
+//
+// What it decided is worth more than what it executed, so the three cuts stay
+// written down. Whoever opens v8.0 needs a projection back and has to make them
+// again:
+//
+// 1. FILTER `supportedTabs` before the parse; never reparse it. `z.array(enum)`
+//    rejects a whole array over one unknown member, the capability object fails
+//    with it, and the `.catch()` on the pre-image state then serves the empty
+//    default - the peer loses MCP, Plugins AND Skills over a single tab id it
+//    never knew. This is the trap every closed enum above is copied to avoid.
+// 2. Drop `modelProviders` by destructuring it out as well as letting the
+//    strict reparse through `providerNativeCapabilitiesSchemaV70Preimage`
+//    perform the drop, so the projection reads as the contract it is.
+// 3. Drop the Skills `inspect` / `edit` / `update` actionScopes. The pre-image
+//    table does not model them, and a live descriptor that advertises them must
+//    not leak those keys into the pre-image shape.

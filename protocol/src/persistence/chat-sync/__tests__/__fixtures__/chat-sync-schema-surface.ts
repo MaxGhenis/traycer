@@ -15,7 +15,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 0
+              "const": 1
             }
           },
           "required": [
@@ -67,6 +67,42 @@ export const chatSyncSchemaSurfaceBaseline = {
             {
               "type": "null"
             }
+          ]
+        },
+        "cdc": {
+          "type": "object",
+          "properties": {
+            "algorithm": {
+              "type": "string",
+              "const": "fastcdc-gear-v1"
+            },
+            "mask": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "target": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "min": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "algorithm",
+            "mask",
+            "target",
+            "min",
+            "max"
           ]
         },
         "core": {
@@ -248,11 +284,39 @@ export const chatSyncSchemaSurfaceBaseline = {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991
+              },
+              "firstSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "lastSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordCount": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "firstRecordId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastRecordId": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
               "sha256",
-              "byteLength"
+              "byteLength",
+              "firstSeq",
+              "lastSeq",
+              "recordCount",
+              "firstRecordId",
+              "lastRecordId"
             ]
           }
         },
@@ -280,11 +344,39 @@ export const chatSyncSchemaSurfaceBaseline = {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991
+              },
+              "firstSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "lastSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordCount": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "firstRecordId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastRecordId": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
               "sha256",
-              "byteLength"
+              "byteLength",
+              "firstSeq",
+              "lastSeq",
+              "recordCount",
+              "firstRecordId",
+              "lastRecordId"
             ]
           }
         },
@@ -342,6 +434,7 @@ export const chatSyncSchemaSurfaceBaseline = {
         "parentHeadSha256",
         "throughRecordSeq",
         "capturedAt",
+        "cdc",
         "core",
         "messageShards",
         "events",
@@ -364,7 +457,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 0
+              "const": 1
             }
           },
           "required": [
@@ -419,6 +512,43 @@ export const chatSyncSchemaSurfaceBaseline = {
               "type": "null"
             }
           ]
+        },
+        "cdc": {
+          "type": "object",
+          "properties": {
+            "algorithm": {
+              "type": "string",
+              "const": "fastcdc-gear-v1"
+            },
+            "mask": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "target": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "min": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "algorithm",
+            "mask",
+            "target",
+            "min",
+            "max"
+          ],
+          "additionalProperties": false
         },
         "core": {
           "type": "object",
@@ -607,11 +737,39 @@ export const chatSyncSchemaSurfaceBaseline = {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991
+              },
+              "firstSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "lastSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordCount": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "firstRecordId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastRecordId": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
               "sha256",
-              "byteLength"
+              "byteLength",
+              "firstSeq",
+              "lastSeq",
+              "recordCount",
+              "firstRecordId",
+              "lastRecordId"
             ],
             "additionalProperties": false
           }
@@ -933,11 +1091,39 @@ export const chatSyncSchemaSurfaceBaseline = {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991
+              },
+              "firstSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "lastSeq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordCount": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "firstRecordId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastRecordId": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
               "sha256",
-              "byteLength"
+              "byteLength",
+              "firstSeq",
+              "lastSeq",
+              "recordCount",
+              "firstRecordId",
+              "lastRecordId"
             ],
             "additionalProperties": false
           }
@@ -1001,6 +1187,7 @@ export const chatSyncSchemaSurfaceBaseline = {
         "throughRecordSeq",
         "capturedAt",
         "minReaderVersion",
+        "cdc",
         "core",
         "messageShards",
         "events",
@@ -1026,7 +1213,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 0
+              "const": 1
             }
           },
           "required": [
@@ -1101,7 +1288,7 @@ export const chatSyncSchemaSurfaceBaseline = {
             },
             "minor": {
               "type": "number",
-              "const": 0
+              "const": 1
             }
           },
           "required": [
@@ -2006,6 +2193,200 @@ export const chatSyncSchemaSurfaceBaseline = {
                                                 }
                                               ]
                                             },
+                                            "managedCommand": {
+                                              "default": null,
+                                              "anyOf": [
+                                                {
+                                                  "anyOf": [
+                                                    {
+                                                      "type": "object",
+                                                      "properties": {
+                                                        "event": {
+                                                          "type": "string",
+                                                          "const": "restarted"
+                                                        },
+                                                        "commandId": {
+                                                          "type": "string"
+                                                        },
+                                                        "description": {
+                                                          "type": "string"
+                                                        },
+                                                        "monitoring": {
+                                                          "type": "boolean"
+                                                        },
+                                                        "effectiveCommand": {
+                                                          "type": "string"
+                                                        },
+                                                        "effectiveCwd": {
+                                                          "type": "string"
+                                                        },
+                                                        "commandChanged": {
+                                                          "type": "boolean"
+                                                        },
+                                                        "cwdChanged": {
+                                                          "type": "boolean"
+                                                        },
+                                                        "outcome": {
+                                                          "oneOf": [
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "running"
+                                                                },
+                                                                "pid": {
+                                                                  "type": "integer",
+                                                                  "minimum": -9007199254740991,
+                                                                  "maximum": 9007199254740991
+                                                                },
+                                                                "startedAtMs": {
+                                                                  "type": "number"
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "pid",
+                                                                "startedAtMs"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "stopped"
+                                                                },
+                                                                "stoppedAtMs": {
+                                                                  "type": "number"
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "stoppedAtMs"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "exited"
+                                                                },
+                                                                "exitCode": {
+                                                                  "anyOf": [
+                                                                    {
+                                                                      "type": "integer",
+                                                                      "minimum": -9007199254740991,
+                                                                      "maximum": 9007199254740991
+                                                                    },
+                                                                    {
+                                                                      "type": "null"
+                                                                    }
+                                                                  ]
+                                                                },
+                                                                "signal": {
+                                                                  "anyOf": [
+                                                                    {
+                                                                      "type": "string"
+                                                                    },
+                                                                    {
+                                                                      "type": "null"
+                                                                    }
+                                                                  ]
+                                                                },
+                                                                "exitedAtMs": {
+                                                                  "type": "number"
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "exitCode",
+                                                                "signal",
+                                                                "exitedAtMs"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            },
+                                                            {
+                                                              "type": "object",
+                                                              "properties": {
+                                                                "state": {
+                                                                  "type": "string",
+                                                                  "const": "interrupted"
+                                                                },
+                                                                "interruptedAtMs": {
+                                                                  "type": "number"
+                                                                }
+                                                              },
+                                                              "required": [
+                                                                "state",
+                                                                "interruptedAtMs"
+                                                              ],
+                                                              "additionalProperties": false
+                                                            }
+                                                          ]
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "event",
+                                                        "commandId",
+                                                        "description",
+                                                        "monitoring",
+                                                        "effectiveCommand",
+                                                        "effectiveCwd",
+                                                        "commandChanged",
+                                                        "cwdChanged",
+                                                        "outcome"
+                                                      ],
+                                                      "additionalProperties": false
+                                                    },
+                                                    {
+                                                      "type": "object",
+                                                      "properties": {
+                                                        "event": {
+                                                          "default": "started",
+                                                          "type": "string",
+                                                          "const": "started"
+                                                        },
+                                                        "commandId": {
+                                                          "type": "string"
+                                                        },
+                                                        "description": {
+                                                          "type": "string"
+                                                        },
+                                                        "monitoring": {
+                                                          "type": "boolean"
+                                                        },
+                                                        "cwd": {
+                                                          "default": null,
+                                                          "anyOf": [
+                                                            {
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "type": "null"
+                                                            }
+                                                          ]
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "event",
+                                                        "commandId",
+                                                        "description",
+                                                        "monitoring",
+                                                        "cwd"
+                                                      ],
+                                                      "additionalProperties": false
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "null"
+                                                }
+                                              ]
+                                            },
                                             "progress": {
                                               "default": null,
                                               "anyOf": [
@@ -2192,6 +2573,7 @@ export const chatSyncSchemaSurfaceBaseline = {
                                             "taskTodoItems",
                                             "error",
                                             "agentMessageSend",
+                                            "managedCommand",
                                             "progress",
                                             "backgroundOutput",
                                             "startedAt",

@@ -4,11 +4,16 @@ import { LivePulse } from "@/components/ui/live-pulse";
 import { useEpicSyncPillState } from "@/lib/epic-selectors";
 import type { EpicSyncPillState } from "@/lib/epic-sync-pill-state";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
+import {
+  useEpicChatBackupStatus,
+  type EpicChatBackupStatus,
+} from "@/components/epic-canvas/panels/epic-chat-backup-status";
 import { cn } from "@/lib/utils";
 
 /**
- * Small inline sync pill that the active Epic header renders so users can
- * tell at a glance whether their work has actually reached the cloud.
+ * Small inline status pill that the active Epic header renders. It selects the
+ * highest-severity signal across artifact/Yjs durability and chat publication,
+ * keeping chat backup on the dot + tooltip instead of a permanent sidebar row.
  *
  * It is deliberately NOT a connection indicator. It used to be one - it read
  * the renderer↔host stream status alone - and that is why it read "All changes
@@ -23,19 +28,30 @@ import { cn } from "@/lib/utils";
  * unreachable) and flush on reconnect; the pill is the only indicator - there
  * is no banner during reconnect.
  */
-export function EpicConnectionPill() {
+export interface EpicConnectionPillProps {
+  readonly epicId: string;
+}
+
+export function EpicConnectionPill(props: EpicConnectionPillProps) {
   const derived = useEpicSyncPillState();
   const state = useSyncPillDisplayState(derived);
+  const chatBackupStatus = useEpicChatBackupStatus(props.epicId);
   // Visuals use the settled state to avoid strobing; the tooltip uses the raw
   // verdict so it can truthfully say synced during the positive settle hold.
-  const indicator = indicatorFor(state);
-  const rawIndicator = indicatorFor(derived);
-  const tooltip = rawIndicator.tooltip;
+  const selected = highestSeverityIndicator(
+    indicatorFor(state),
+    chatBackupStatus,
+  );
+  const rawSelected = highestSeverityIndicator(
+    indicatorFor(derived),
+    chatBackupStatus,
+  );
+  const { indicator } = selected;
 
   return (
     <>
       <TooltipWrapper
-        label={tooltip}
+        label={rawSelected.indicator.tooltip}
         side="top"
         sideOffset={undefined}
         align={undefined}
@@ -44,7 +60,8 @@ export function EpicConnectionPill() {
           type="button"
           data-testid="epic-connection-pill"
           data-status={state}
-          aria-label={rawIndicator.ariaLabel}
+          data-source={selected.source}
+          aria-label={rawSelected.indicator.ariaLabel}
           className={cn(
             "inline-flex items-center gap-1 text-ui-xs font-medium text-current focus:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             indicator.containerClassName,
@@ -55,7 +72,7 @@ export function EpicConnectionPill() {
         </button>
       </TooltipWrapper>
       <span className="sr-only" role="status" aria-live="polite">
-        {warningAnnouncement(state, indicator)}
+        {warningAnnouncement(state, rawSelected)}
       </span>
     </>
   );
@@ -63,19 +80,25 @@ export function EpicConnectionPill() {
 
 function warningAnnouncement(
   state: EpicSyncPillState,
-  indicator: PillIndicator,
+  selected: SelectedIndicator,
 ): string | null {
-  // `unprotected` is the only state here that reports a RISK rather than a
-  // stage, so it is the one that most needs the live region: the red pill
-  // appears while focus is elsewhere, and an `aria-label` swap on an unfocused
-  // button is not announced.
+  if (
+    selected.source === "chat-backup" &&
+    selected.indicator.severity === "warning"
+  ) {
+    return selected.indicator.ariaLabel;
+  }
+  // `unprotected` is the only sync-pill state here that reports a RISK rather
+  // than a stage, so it is the one that most needs the live region: the red
+  // pill appears while focus is elsewhere, and an `aria-label` swap on an
+  // unfocused button is not announced.
   switch (state) {
     case "offlineWithUnsavedChanges":
     case "offlineWithHostPending":
     case "offlineChangesSavedLocally":
     case "unprotected":
     case "offline":
-      return indicator.ariaLabel;
+      return selected.indicator.ariaLabel;
     default:
       return null;
   }
@@ -132,6 +155,7 @@ function useSyncPillDisplayState(
 }
 
 interface PillIndicator {
+  readonly severity: "steady" | "activity" | "warning" | "danger";
   readonly containerClassName: string;
   readonly dotClassName: string;
   readonly label: string | null;
@@ -139,6 +163,11 @@ interface PillIndicator {
   readonly pulse: "active" | "idle" | null;
   readonly tooltip: string | null;
   readonly ariaLabel: string;
+}
+
+interface SelectedIndicator {
+  readonly source: "artifact" | "chat-backup";
+  readonly indicator: PillIndicator;
 }
 
 function ConnectionPillDot(props: { indicator: PillIndicator }) {
@@ -176,6 +205,44 @@ const QUIET_CONTAINER_CLASS =
 const AMBER_CONTAINER_CLASS =
   "rounded-md bg-amber-500/10 px-2 py-0.5 text-amber-700 dark:text-amber-400";
 
+const SEVERITY_RANK: Record<PillIndicator["severity"], number> = {
+  steady: 0,
+  activity: 1,
+  warning: 2,
+  danger: 3,
+};
+
+function highestSeverityIndicator(
+  artifactIndicator: PillIndicator,
+  chatBackupStatus: EpicChatBackupStatus | null,
+): SelectedIndicator {
+  if (chatBackupStatus === null) {
+    return { source: "artifact", indicator: artifactIndicator };
+  }
+  const chatIndicator = indicatorForChatBackup(chatBackupStatus);
+  // A tie stays with artifact/Yjs sync: those warnings can mean the newest
+  // bytes exist only in this renderer, while chat backup always starts from a
+  // durable local chat. Chat backup still wins over steady/activity sync.
+  return SEVERITY_RANK[chatIndicator.severity] >
+    SEVERITY_RANK[artifactIndicator.severity]
+    ? { source: "chat-backup", indicator: chatIndicator }
+    : { source: "artifact", indicator: artifactIndicator };
+}
+
+function indicatorForChatBackup(status: EpicChatBackupStatus): PillIndicator {
+  return {
+    severity: status.severity,
+    containerClassName: QUIET_CONTAINER_CLASS,
+    dotClassName:
+      status.severity === "warning" ? "bg-amber-500" : "bg-muted-foreground",
+    label: null,
+    showAgentSpinner: false,
+    pulse: null,
+    tooltip: status.tooltip,
+    ariaLabel: status.ariaLabel,
+  };
+}
+
 function indicatorFor(state: EpicSyncPillState): PillIndicator {
   switch (state) {
     // Icon-only: the steady state is the one users see ~always, so it earns no
@@ -185,6 +252,7 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
     // glyph the user has to hover to read.
     case "synced":
       return {
+        severity: "steady",
         containerClassName: QUIET_CONTAINER_CLASS,
         dotClassName: "",
         label: null,
@@ -199,6 +267,7 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
     case "syncing":
     case "hostPending":
       return {
+        severity: "activity",
         containerClassName: QUIET_CONTAINER_CLASS,
         dotClassName: "",
         label: null,
@@ -209,6 +278,7 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
       };
     case "offlineWithUnsavedChanges":
       return {
+        severity: "warning",
         containerClassName: AMBER_CONTAINER_CLASS,
         dotClassName: "text-amber-500",
         label: "Offline — saving changes…",
@@ -221,6 +291,7 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
       };
     case "offlineWithHostPending":
       return {
+        severity: "warning",
         containerClassName: AMBER_CONTAINER_CLASS,
         dotClassName: "bg-amber-500",
         label: "Offline — changes pending",
@@ -236,6 +307,7 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
     // persists the outstanding updates and replays them on reconnect.
     case "offlineChangesSavedLocally":
       return {
+        severity: "warning",
         containerClassName: AMBER_CONTAINER_CLASS,
         dotClassName: "bg-amber-500",
         label: "Offline — changes saved locally",
@@ -253,6 +325,7 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
     // it inches away.
     case "storedLocally":
       return {
+        severity: "steady",
         containerClassName: QUIET_CONTAINER_CLASS,
         dotClassName: "",
         label: null,
@@ -268,6 +341,7 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
     // "pending"; there is nothing holding the work at all.
     case "unprotected":
       return {
+        severity: "danger",
         containerClassName:
           "rounded-md bg-destructive/10 px-2 py-0.5 text-destructive",
         dotClassName: "bg-destructive",
@@ -285,6 +359,7 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
     // possible).
     case "connected":
       return {
+        severity: "activity",
         containerClassName: QUIET_CONTAINER_CLASS,
         dotClassName: "bg-muted-foreground",
         label: "Connected",
@@ -298,6 +373,7 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
     // window's memory, so "saved locally" would be a lie.
     case "connecting":
       return {
+        severity: "warning",
         containerClassName: AMBER_CONTAINER_CLASS,
         dotClassName: "text-amber-500",
         label: "Connecting…",
@@ -308,6 +384,7 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
       };
     case "reconnecting":
       return {
+        severity: "warning",
         containerClassName: AMBER_CONTAINER_CLASS,
         dotClassName: "text-amber-500",
         label: "Reconnecting…",
@@ -318,6 +395,7 @@ function indicatorFor(state: EpicSyncPillState): PillIndicator {
       };
     case "offline":
       return {
+        severity: "danger",
         containerClassName:
           "rounded-md bg-red-500/10 px-2 py-0.5 text-red-700 dark:text-red-400",
         dotClassName: "bg-red-500",

@@ -1,6 +1,7 @@
 import {
   memo,
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useMemo,
@@ -42,6 +43,7 @@ import { ReportIssueAction } from "@/components/report-issue/report-issue-action
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { DeleteTasksDialog } from "@/components/epics/delete-tasks-dialog";
 import { SweepWorktreesDialog } from "@/components/epics/sweep-worktrees-dialog";
+import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
 import {
   Tooltip,
   TooltipContent,
@@ -80,6 +82,7 @@ import {
 } from "@/components/home/data/home-page.data";
 import { EpicsFilterPopover } from "@/components/epics/epics-filter-popover";
 import { EpicsSortMenu } from "@/components/epics/epics-sort-menu";
+import { useHistoryListKeyboardNav } from "@/components/epics/use-history-list-keyboard-nav";
 import { NotificationIndicatorIcon } from "@/components/notifications/notification-indicator-icon";
 import { useSurfaceNotificationIndicatorState } from "@/components/notifications/notification-indicator-context";
 import { NotificationIndicatorsProvider } from "@/components/notifications/notification-indicators-provider";
@@ -433,6 +436,7 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
   // candidate.
   const [sweepEpicIds, setSweepEpicIds] =
     useState<ReadonlyArray<string> | null>(null);
+  const sweepHostClient = useHostClientForHostId(null);
   const requestSweep = useCallback(
     (epicId: string) => {
       if (!selectionEnabled) return;
@@ -560,6 +564,13 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
   const showPageSearch = variant === "page";
   const showToolbarSearch = variant === "picker";
 
+  // ArrowDown out of the search box walks the results; ArrowUp off the first
+  // row lands back in the query. At most one of the two search placements is
+  // ever mounted, so a single ref covers whichever one is live.
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const keyboardNav = useHistoryListKeyboardNav(searchInputRef, listRef);
+
   return (
     <TooltipProvider>
       <section
@@ -571,10 +582,12 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
       >
         {showPageSearch ? (
           <PanelSearchInput
+            inputRef={searchInputRef}
             value={search.query}
             onChange={(next) => {
               updateSearch({ query: next });
             }}
+            onKeyDown={keyboardNav.onSearchKeyDown}
             isFetching={isFetching}
             focusOnMount={props.autoFocusSearch}
             placement="page"
@@ -584,10 +597,12 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
           leading={
             showToolbarSearch ? (
               <PanelSearchInput
+                inputRef={searchInputRef}
                 value={search.query}
                 onChange={(next) => {
                   updateSearch({ query: next });
                 }}
+                onKeyDown={keyboardNav.onSearchKeyDown}
                 isFetching={isFetching}
                 focusOnMount={props.autoFocusSearch}
                 placement="toolbar"
@@ -665,6 +680,8 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
               worktreesByEpicId={worktreesByEpicId}
               openEpicIds={openEpicIdSet}
               completeness={view.completeness}
+              listRef={listRef}
+              onRowKeyDown={keyboardNav.onRowKeyDown}
             />
           </div>
         </NotificationIndicatorsProvider>
@@ -684,6 +701,11 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
       />
       <SweepWorktreesDialog
         epicIds={sweepEpicIds}
+        // The Epics list is app chrome: its sweep proves and sweeps the
+        // app-wide host's worktrees (the following client - `null` resolves
+        // to the effective host's requester, the same seam the landing
+        // composer's following state uses).
+        hostClient={sweepHostClient}
         taskTitle={sweepTaskTitle}
         onOpenChange={(open) => {
           if (!open) setSweepEpicIds(null);
@@ -705,15 +727,18 @@ function hasActiveHistoryFilters(search: HistorySearchState): boolean {
 }
 
 interface PanelSearchInputProps {
+  /** Owned by the panel body so ArrowUp off the first row can return here. */
+  readonly inputRef: RefObject<HTMLInputElement | null>;
   readonly value: string;
   readonly onChange: (next: string) => void;
+  readonly onKeyDown: (event: React.KeyboardEvent<HTMLInputElement>) => void;
   readonly isFetching: boolean;
   readonly focusOnMount: boolean;
   readonly placement: "page" | "toolbar";
 }
 
 function PanelSearchInput(props: PanelSearchInputProps): ReactNode {
-  const inputRef = useRef<HTMLInputElement>(null);
+  const { inputRef } = props;
   // Defer the focus to the next frame so it lands after Radix Dialog's
   // own mount focus-trap runs (the modal host wraps this surface). A
   // synchronous focus here would be clobbered by the dialog's
@@ -727,7 +752,7 @@ function PanelSearchInput(props: PanelSearchInputProps): ReactNode {
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [focusOnMount]);
+  }, [focusOnMount, inputRef]);
   return (
     <div
       className={cn(
@@ -754,6 +779,7 @@ function PanelSearchInput(props: PanelSearchInputProps): ReactNode {
           onChange={(event) => {
             props.onChange(event.target.value);
           }}
+          onKeyDown={props.onKeyDown}
           placeholder="Search by title, repo, branch, or PR"
           aria-label="Search tasks"
         />
@@ -1000,6 +1026,9 @@ interface EpicsListBodyProps {
   >;
   readonly openEpicIds: ReadonlySet<string>;
   readonly completeness: ListTasksCompleteness | null;
+  /** Anchors the arrow-key traversal: DOM order inside it is row order. */
+  readonly listRef: RefObject<HTMLUListElement | null>;
+  readonly onRowKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
 }
 
 function EpicsListBody(props: EpicsListBodyProps): ReactNode {
@@ -1028,6 +1057,8 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
     worktreesByEpicId,
     openEpicIds,
     completeness,
+    listRef,
+    onRowKeyDown,
   } = props;
 
   // Partitioned, not sorted into place. A preserved orphan is not a task with
@@ -1107,6 +1138,7 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
                 key={item.id}
                 item={item}
                 {...rowProps}
+                onRowKeyDown={onRowKeyDown}
                 isSelected={selectedIds.has(item.epicId)}
                 isPinPending={pendingSetPinnedEpicIds.has(item.epicId)}
                 worktrees={
@@ -1119,7 +1151,11 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
         </section>
       ) : null}
       {ordinaryItems.length > 0 ? (
-        <ul className="flex flex-col gap-2" data-testid="epics-list-rows">
+        <ul
+          ref={listRef}
+          className="flex flex-col gap-2"
+          data-testid="epics-list-rows"
+        >
           {ordinaryItems.map((item) => (
             <EpicsListRow
               key={item.id}
@@ -1138,6 +1174,7 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
               openInNewWindowAvailable={openInNewWindowAvailable}
               worktrees={worktreesByEpicId.get(item.epicId) ?? EMPTY_WORKTREES}
               isOpen={openEpicIds.has(item.epicId)}
+              onRowKeyDown={onRowKeyDown}
             />
           ))}
         </ul>
@@ -1290,6 +1327,8 @@ interface EpicsListRowProps {
   readonly openInNewWindowAvailable: boolean;
   readonly worktrees: readonly WorktreeHostEntryV12[];
   readonly isOpen: boolean;
+  /** Arrow-key traversal, bound to whichever control covers the whole card. */
+  readonly onRowKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
 }
 
 function HistoryRowTrailingMetadata(props: {
@@ -1358,6 +1397,7 @@ const EpicsListRow = memo(function EpicsListRow(props: EpicsListRowProps) {
     openInNewWindowAvailable,
     worktrees,
     isOpen,
+    onRowKeyDown,
   } = props;
   const isPhase = item.taskType === "phase";
   const rowSweep = useHistoryRowSweep({
@@ -1550,6 +1590,7 @@ const EpicsListRow = memo(function EpicsListRow(props: EpicsListRowProps) {
       deleteDisabledTooltip={deleteDisabledTooltip}
       onToggleSelection={toggleEpicSelection}
       onBlockUnavailableDelete={blockUnavailableDeleteAction}
+      onRowKeyDown={onRowKeyDown}
     />
   ) : (
     <Link
@@ -1564,7 +1605,9 @@ const EpicsListRow = memo(function EpicsListRow(props: EpicsListRowProps) {
         focusTileInstanceId: undefined,
       }}
       onClick={openEpicRow}
+      onKeyDown={onRowKeyDown}
       aria-label={`Open task ${displayTitle}`}
+      data-history-row-target=""
       className="absolute inset-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
     />
   );
@@ -1767,7 +1810,7 @@ function HistoryPinControl(props: {
           aria-disabled={cloudOnly || undefined}
           disabled={props.isPending}
           className={cn(
-            "pointer-events-auto flex size-5 shrink-0 items-center justify-center rounded-sm outline-none transition-[color,opacity] hover:bg-muted focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-wait",
+            "pointer-events-auto flex size-5 shrink-0 items-center justify-center rounded-sm outline-none transition-[color,opacity] hover:bg-foreground/5 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-wait",
             historyPinClassName(cloudOnly, props.item.isPinned),
           )}
           onClick={() => {
@@ -1901,7 +1944,7 @@ function HistoryRowSweepControl(props: {
             aria-label={`Sweep worktrees for ${props.displayTitle}`}
             aria-haspopup="dialog"
             data-testid="epics-list-row-sweep"
-            className="absolute right-11 top-1/2 -translate-y-1/2 opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover:opacity-100"
+            className="absolute right-11 top-1/2 -translate-y-1/2 opacity-0 transition-opacity hover:bg-foreground/5 focus-visible:opacity-100 group-hover:opacity-100"
             onClick={props.sweep.requestSweep}
           >
             <Paintbrush />
@@ -1994,7 +2037,7 @@ function HistoryTitleEditControl(props: {
         aria-label={`Edit title for ${historyItemDisplayTitle(props.item)}`}
         data-testid="epics-list-row-edit-title"
         disabled={props.isRenamePending}
-        className="pointer-events-auto size-5 opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover:opacity-100"
+        className="pointer-events-auto size-5 opacity-0 transition-opacity hover:bg-foreground/5 focus-visible:opacity-100 group-hover:opacity-100"
         onClick={props.onStartRename}
       >
         <Pencil className="size-3.5" />
@@ -2044,14 +2087,17 @@ function HistorySelectionOverlay(props: {
   readonly onBlockUnavailableDelete: (
     event: React.MouseEvent<HTMLElement>,
   ) => void;
+  readonly onRowKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
 }): ReactNode {
   if (props.canDeleteItem) {
     return (
       <button
         type="button"
         aria-label={`Toggle selection for ${historyItemDisplayTitle(props.item)}`}
+        data-history-row-target=""
         className="absolute inset-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         onClick={props.onToggleSelection}
+        onKeyDown={props.onRowKeyDown}
       />
     );
   }
@@ -2062,8 +2108,10 @@ function HistorySelectionOverlay(props: {
           type="button"
           aria-disabled="true"
           aria-label={`Cannot select ${historyItemDisplayTitle(props.item)}`}
+          data-history-row-target=""
           className="absolute inset-0 cursor-not-allowed rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           onClick={props.onBlockUnavailableDelete}
+          onKeyDown={props.onRowKeyDown}
         />
       </TooltipTrigger>
       <TooltipContent>{props.deleteDisabledTooltip}</TooltipContent>

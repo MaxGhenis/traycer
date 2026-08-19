@@ -55,6 +55,7 @@ vi.mock("../../installer/download-stage", () => ({
       percent: null,
       bytes: null,
       totalBytes: null,
+      workUnits: null,
     });
     return {
       outcome: "short-circuit",
@@ -125,6 +126,7 @@ vi.mock("../../installer/apply", () => ({
       percent: null,
       bytes: null,
       totalBytes: null,
+      workUnits: null,
     });
     return { outcome: "no-op", installedVersion: "1.0.0" };
   },
@@ -858,6 +860,23 @@ describe("traycer CLI entrypoint registration", () => {
     // already proves it).
     expect(cmd.helpInformation()).not.toContain("--if-idle");
     expectRunnerFlags(cmd, "host restart");
+  });
+
+  it("host restart and host stop both expose a user-facing --force option", () => {
+    // Unlike `--if-idle`, `--force` is the user's own escape hatch out of a
+    // busy denial - it must be visible in `--help`, not hidden.
+    const program = buildProgram();
+    for (const path of [
+      ["host", "restart"],
+      ["host", "stop"],
+    ] as const) {
+      const cmd = expectCommand(program, path);
+      const flags = cmd.options.map((o) => o.long);
+      expect(flags, `'${path.join(" ")}' is missing '--force'`).toContain(
+        "--force",
+      );
+      expect(cmd.helpInformation()).toContain("--force");
+    }
   });
 
   it("host available exposes --include-pre-releases for RC registry inspection", () => {

@@ -52,8 +52,8 @@ const skillMocks = vi.hoisted(() => ({
   listScopes: [] as ProviderNativeScope[],
 }));
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => "host-1",
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => "host-1",
 }));
 
 vi.mock("@/lib/host", () => ({
@@ -148,12 +148,31 @@ vi.mock("@/hooks/providers/use-providers-skills-mutate-mutation", () => ({
       skillMocks.mutateCalls.push(variables);
       skillMocks.mutate(variables, opts);
     },
+    mutateAsync: (variables: {
+      providerId: string;
+      scope: ProviderNativeScope;
+      workspaceRoot: string | null;
+      mutation: ProvidersSkillsMutateAction;
+      suppressToast: boolean;
+    }) => {
+      skillMocks.mutateCalls.push(variables);
+      skillMocks.mutate(variables);
+      return Promise.resolve({
+        kind: "skills" as const,
+        skills: skillMocks.skills,
+      });
+    },
     isPending: skillMocks.mutateIsPending,
   }),
 }));
 
 vi.mock("@/hooks/workspace/use-read-file-query", () => ({
-  useWorkspaceReadFile: () => ({
+  useWorkspaceReadFile: (
+    _client: unknown,
+    _workspacePath: string | null,
+    _filePath: string | null,
+    _cacheKeyIdentity: ReadonlyArray<unknown> | undefined,
+  ) => ({
     data: {
       content: '---\nname: find-skills\ndescription: "Helps"\n---\n\n# Body\n',
       truncated: false,
@@ -210,13 +229,18 @@ function skillsState(): ProviderCliState {
 
 function seedWorkspace(): void {
   useWorkspaceFoldersStore.setState({
-    folders: ["/Users/dev/app"],
-    folderInfoByPath: {
-      "/Users/dev/app": {
-        path: "/Users/dev/app",
-        name: "app",
-        repoIdentifier: null,
-        hostId: "host-1",
+    byHost: {
+      "host-1": {
+        folders: ["/Users/dev/app"],
+        folderInfoByPath: {
+          "/Users/dev/app": {
+            path: "/Users/dev/app",
+            name: "app",
+            repoIdentifier: null,
+            hostId: "host-1",
+          },
+        },
+        primaryPath: null,
       },
     },
   });
@@ -333,8 +357,13 @@ describe("<ProviderSkillsTab /> scope (F5)", () => {
 
   it("shows project-needs-workspace empty state when project has no root", () => {
     useWorkspaceFoldersStore.setState({
-      folders: [],
-      folderInfoByPath: {},
+      byHost: {
+        "host-1": {
+          folders: [],
+          folderInfoByPath: {},
+          primaryPath: null,
+        },
+      },
     });
     nativeScopeResolvedWorkspaceMocks.folders = [];
     useProvidersWorkspaceSelectionStore.setState({
@@ -355,7 +384,7 @@ describe("<ProviderSkillsTab /> scope (F5)", () => {
     expect(skillMocks.listCalls.every((c) => !c.enabled)).toBe(true);
   });
 
-  it("hides New skill when only project create is advertised while viewing Global", () => {
+  it("hides Add skill when only project create is advertised while viewing Global", () => {
     // Per-scope authoring gate: project-only create must not appear on Global.
     // Distinct from composer's providerScoped "Available to" control.
     skillMocks.createScopes = ["project"];
@@ -363,10 +392,34 @@ describe("<ProviderSkillsTab /> scope (F5)", () => {
     skillMocks.skills = [FIND_SKILLS];
     render(<ProviderSkillsTab state={skillsState()} />);
 
-    expect(screen.queryByRole("button", { name: /New skill/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Add skill/ })).toBeNull();
 
     chooseScopeOption(/app/);
-    expect(screen.getByRole("button", { name: /New skill/ })).toBeDefined();
+    expect(screen.getByRole("button", { name: /Add skill/ })).toBeDefined();
+  });
+
+  it("shows Available to at project with no provider-sourced rows, and hides it when the scope is not advertised", () => {
+    skillMocks.createScopes = ["project"];
+    skillMocks.importScopes = ["project"];
+    skillMocks.skills = [FIND_SKILLS];
+    render(<ProviderSkillsTab state={skillsState()} />);
+
+    expect(screen.queryByRole("button", { name: /Add skill/ })).toBeNull();
+    expect(screen.queryByText("Available to")).toBeNull();
+    expect(screen.queryByLabelText(/Codex only/)).toBeNull();
+
+    chooseScopeOption(/app/);
+    fireEvent.click(screen.getByRole("button", { name: /Add skill/ }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("Available to");
+    expect(screen.getByLabelText(/Codex only/)).toBeDefined();
+    expect(screen.getByLabelText(/Every provider/)).toBeDefined();
+    expect(screen.getByText("~/.agents/skills")).toBeDefined();
+
+    fireEvent.click(screen.getByLabelText(/Codex only/));
+    expect(screen.getByText("Codex's own skills folder")).toBeDefined();
+    expect(screen.queryByText(/\.codex\/skills/)).toBeNull();
   });
 
   it("does not present the scope picker as an Available-to / providerScoped control", () => {
@@ -383,7 +436,7 @@ describe("<ProviderSkillsTab /> scope (F5)", () => {
     expect(location.textContent).not.toMatch(/Available to/i);
     expect(location.textContent).not.toMatch(/providerScoped/i);
 
-    fireEvent.click(screen.getByRole("button", { name: /New skill/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Add skill/ }));
     // Composer is a separate surface; its "Available to" copy must not appear
     // as a second location picker label on the dialog title/description.
     const dialog = screen.getByRole("dialog");

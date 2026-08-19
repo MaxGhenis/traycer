@@ -13,6 +13,7 @@ import { useFileTreeStore } from "@/stores/file-tree/file-tree-store";
 import { useHistorySearchStore } from "@/stores/home/history-search-store";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
 import { useRateLimitPopoverStore } from "@/stores/rate-limits/rate-limit-popover-store";
+import { useResourceMonitorStore } from "@/stores/resources/resource-monitor-store";
 import { useHostUpdateBannerStore } from "@/stores/settings/host-update-banner-store";
 import { useKeybindingStore } from "@/stores/settings/keybinding-store";
 import { useLocalSnapshotClearStore } from "@/stores/settings/local-snapshot-clear-store";
@@ -22,8 +23,10 @@ import { useSettingsSectionStore } from "@/stores/tabs/settings-section-store";
 import { useTabsStore } from "@/stores/tabs/store";
 import { useAppLocalNotificationsStore } from "@/stores/notifications/app-local-notifications-store";
 import { useWorkspaceFoldersStore } from "@/stores/workspace/workspace-folders-store";
+import { useSetupTerminalsStore } from "@/stores/worktree/setup-terminals";
 import { useWorktreeIntentMemoryStore } from "@/stores/worktree/worktree-intent-memory-store";
 import { useWorktreeIntentStagingStore } from "@/stores/worktree/worktree-intent-staging-store";
+import { useSurfaceHostSelectionStore } from "@/stores/host/surface-host-selection-store";
 
 // Call-site regression guard for the full persist-name chain:
 //   catalog leaf (keys.ts) → STORE_KEYS[camelName] → the store's persist call.
@@ -113,11 +116,21 @@ const STORE_PERSIST_NAME_CASES: ReadonlyArray<
     useRateLimitPopoverStore,
     "traycer-gui-app:rate-limit-popover",
   ],
+  [
+    "useResourceMonitorStore",
+    useResourceMonitorStore,
+    "traycer-gui-app:resource-monitor",
+  ],
   ["useTabsStore", useTabsStore, "traycer-gui-app:tabs"],
   [
     "useWorkspaceFoldersStore",
     useWorkspaceFoldersStore,
     "traycer-gui-app:workspace-folders",
+  ],
+  [
+    "useSetupTerminalsStore",
+    useSetupTerminalsStore,
+    "traycer-gui-app:setup-terminals",
   ],
 
   // ── Scoped singletons (initial `anon` bucket at construction) ─────────────
@@ -150,6 +163,11 @@ const STORE_PERSIST_NAME_CASES: ReadonlyArray<
     "useAppLocalNotificationsStore",
     useAppLocalNotificationsStore,
     "traycer-gui-app:app-local-notifications:anon",
+  ],
+  [
+    "useSurfaceHostSelectionStore",
+    useSurfaceHostSelectionStore,
+    "traycer-gui-app:surface-host-selection:anon",
   ],
 ];
 

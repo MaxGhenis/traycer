@@ -1,7 +1,7 @@
 import type {
   EpicCloudFreshness,
   EpicCloudSyncStatus,
-  EpicDurabilityStatusV14,
+  EpicDurabilityStatusV15,
   EpicLocalProtection,
 } from "@traycer/protocol/host/epic/subscribe";
 import type { StreamConnectionStatus } from "@traycer-clients/shared/host-transport/i-stream-session";
@@ -119,13 +119,13 @@ export interface EpicSyncPillInputs {
    */
   readonly hasConnectedOnce: boolean;
   /**
-   * Input 7 - where the host says the epic is durable (`epic.subscribe@1.4`).
+   * Input 7 - where the host says the epic is durable (`epic.subscribe@1.5`).
    *
    * `undefined` is NOT "fine". At `@1.4` an absent key means unknown, and the
    * pill's calm claim has to be licensed by a positive statement - see
    * {@link syncedClaimIsHonest}.
    */
-  readonly durability: EpicDurabilityStatusV14 | undefined;
+  readonly durability: EpicDurabilityStatusV15 | undefined;
   /**
    * Input 8 - whether this session has local WAL protection (`@1.4`).
    *

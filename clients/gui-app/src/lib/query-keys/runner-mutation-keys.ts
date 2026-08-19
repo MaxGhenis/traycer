@@ -140,6 +140,27 @@ export const runnerQueryKeys = {
   // serialised.
   traycerHostStatus: (traycerCli: object) =>
     ["runner.traycer.hostStatus", traycerCli] as const,
+  // The host-status read on a shell with no CLI at all (mobile, web). A key of
+  // its own so the disabled query can never collide with a real runner's.
+  traycerHostStatusDisabled: () =>
+    ["runner.traycer.hostStatus", "disabled"] as const,
+  /**
+   * A PRIVATE host-status entry, one per mount of a reader that needs a sample
+   * it took itself rather than whatever the shared entry holds
+   * (`LocalBootstrapAttempts`, mounting on a settled failure). A key nothing
+   * else has used has no entry and no in-flight retryer, so the fetch cannot
+   * be deduplicated onto a request that started before the failure.
+   *
+   * It EXTENDS `traycerHostStatus` rather than standing beside it, and that is
+   * load-bearing: the recovery mutations invalidate the shared key by partial
+   * match, and only a prefix extension is still reached by them.
+   */
+  traycerHostStatusFreshRead: (traycerCli: object, readId: number) =>
+    [
+      ...runnerQueryKeys.traycerHostStatus(traycerCli),
+      "fresh-read",
+      readId,
+    ] as const,
   traycerShellConfig: (traycerCli: object) =>
     ["runner.traycer.shellConfig", traycerCli] as const,
   traycerShellList: (traycerCli: object) =>
@@ -191,6 +212,9 @@ export const runnerQueryKeys = {
     ["runner.host.doctor", management] as const,
   hostCliManifest: (management: object) =>
     ["runner.host.cliManifest", management] as const,
+  // Same no-bridge placeholder contract as `hostInstalledRecordUnavailable`.
+  hostCliManifestUnavailable: () =>
+    ["runner.host.cliManifest", "unavailable"] as const,
   hostName: (management: object) => ["runner.host.name", management] as const,
   // Direct removal-sentinel read used by the host gate, independent of
   // `ensureHost`'s one-shot auto-provision result.

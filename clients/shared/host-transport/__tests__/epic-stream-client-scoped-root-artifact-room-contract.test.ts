@@ -36,6 +36,7 @@ import {
   EpicStreamClient,
   type EpicStreamCallbacks,
 } from "../epic-stream-client";
+import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
 
 class StubStreamWebSocket implements StreamWebSocketLike {
   onopen: ((event: WebSocketOpenEvent) => void) | null = null;
@@ -109,6 +110,7 @@ function makeWsStreamClient(
     bearer: () => ctx?.credentials ?? null,
     auth: null,
     hostCredentialMint: null,
+    evidence: NO_TRANSPORT_EVIDENCE,
     webSocketFactory: factory,
     dialTimeoutMs: 1000,
     openAckTimeoutMs: 1000,
@@ -323,13 +325,14 @@ describe("EpicStreamClient scoped root/artifact-room contract (B6)", () => {
     });
     completeHandshake(sockets[0]);
 
-    // Durability routing extends the existing frame at @1.2, and the s5 status
-    // pass extends it again at @1.4, while an older peer still negotiates and
-    // receives its frozen @1.1 frame set.
+    // @1.2 added roomId on the snapshot frame's meta, durability routing
+    // extends the cloudSyncStatus frame at @1.3, and the s5 status pass
+    // extends it again at @1.5, while an older peer still negotiates and
+    // receives its frozen frame set.
     expect(parseText(sockets[0].textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 4 },
+      schemaVersion: { major: 1, minor: 5 },
       params: { epicId: "epic-1" },
     });
     client.close();

@@ -12,6 +12,7 @@ import {
 } from "@traycer-clients/shared/epic/epic-version";
 import {
   GET_TASK_CONTEXTS_MAX_IDS,
+  isConfirmedAbsentTaskContext,
   type GetTaskContextsResponse,
   type ListTasksResponse,
 } from "@traycer/protocol/host/epic/unary-schemas";
@@ -26,7 +27,6 @@ import { useHostQuery } from "@/hooks/host/use-host-query";
 import { useHostQueries } from "@/hooks/host/use-host-queries";
 import { useHostMethodSupport } from "@/hooks/host/use-host-supports-method";
 import { useReactiveHostReadiness } from "@/hooks/host/use-reactive-host-readiness";
-import { missingEpicIds } from "@/lib/epics/epic-tab-existence";
 import { wasEpicCreatedThisSession } from "@/lib/epics/session-created-epics";
 import { getOpenEpicRegistry } from "@/lib/registries/epic-session-registry";
 import { useWindowsBridgeHydrated } from "@/providers/windows-bridge-context";
@@ -57,14 +57,15 @@ import {
  *  - any batch is still pending, or failed for any reason including
  *    `E_HOST_UNSUPPORTED` - no ids are treated as missing.
  *
- * Reading an absent/failed response as "no epics exist" would make
- * `missingEpicIds` return every open tab and close all of them.
+ * Reading an ambiguous or failed response as absence would close tabs that
+ * may still exist, so only a positive absence result is actionable.
  *
  * Local-homed epics: pure cloud `getTaskContexts` cannot see unpromoted
- * epics. The host-merged first page of `epic.listTasks` carries them with
- * `home: "local"` (durable via the home registry). Those ids are unioned into
- * the existing set and also excluded as force-close candidates, so a local
- * epic's tab survives app relaunch without relying on session-scoped
+ * epics, and a cloud `confirmed-absent` can name an epic whose never-uploaded
+ * local edits are deliberately preserved. The host-merged first page of
+ * `epic.listTasks` carries local-homed rows with `home: "local"` (durable via
+ * the home registry); those ids are excluded as force-close candidates, so a
+ * local epic's tab survives app relaunch without relying on session-scoped
  * exemptions.
  */
 const RECONCILE_METHOD = "epic.getTaskContexts" as const;
@@ -165,16 +166,16 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileRun }) {
   // value is a fresh `Set` per computation, so the effect below can re-run on
   // an unrelated render; `completionAppliedRef` keeps the apply once-only, as
   // it did for the paginated implementation.
-  const contextsExistence = useHostQueries<
+  const confirmedAbsentEpicIds = useHostQueries<
     HostRpcRegistry,
     typeof RECONCILE_METHOD,
-    ReconcileExistence | null
+    ReadonlySet<string> | null
   >({
     client,
     requests,
     cacheKeyIdentity: `${props.run.identity}|${props.run.attempt}`,
     options: { enabled: true },
-    combine: combineExistingEpicIds,
+    combine: combineConfirmedAbsentEpicIds,
   });
 
   // First page of host-merged listTasks carries every local-homed epic
@@ -200,31 +201,13 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileRun }) {
     options: { enabled: true },
   });
 
-  const listedEpicIds = useMemo((): ReadonlySet<string> | null => {
-    if (!localHomeListQuery.isSuccess) return null;
-    return listedEpicIdsFromListTasks(localHomeListQuery.data);
-  }, [localHomeListQuery.data, localHomeListQuery.isSuccess]);
-
   const localHomedEpicIds = useMemo((): ReadonlySet<string> | null => {
     if (!localHomeListQuery.isSuccess) return null;
     return localHomedEpicIdsFromListTasks(localHomeListQuery.data);
   }, [localHomeListQuery.data, localHomeListQuery.isSuccess]);
 
-  // EVERY listed epic is positive existence evidence; only the `home: "local"`
-  // subset earns the separate force-close exemption. Conflating the two made
-  // existence conditional on an OPTIONAL marker, so a promotion completing
-  // between the two RPCs - `getTaskContexts` answering from before it,
-  // `listTasks` from after - dropped the now-cloud-homed row from the union
-  // and force-closed a tab whose epic demonstrably exists.
-  const existingEpicIds = useMemo((): ReadonlySet<string> | null => {
-    if (contextsExistence === null) return null;
-    if (listedEpicIds === null) return null;
-    if (listedEpicIds.size === 0) return contextsExistence.confirmed;
-    return new Set([...contextsExistence.confirmed, ...listedEpicIds]);
-  }, [contextsExistence, listedEpicIds]);
-
   useEffect(() => {
-    if (existingEpicIds === null) return;
+    if (confirmedAbsentEpicIds === null) return;
     if (localHomedEpicIds === null) return;
     if (completionAppliedRef.current) return;
     completionAppliedRef.current = true;
@@ -242,109 +225,59 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileRun }) {
     //
     // Local-homed epics (`home: "local"` on the host-merged listTasks row) are
     // also never force-close candidates. That marker is durable across app
-    // relaunches (host home registry), not session-scoped.
+    // relaunches (host home registry), not session-scoped - and a cloud
+    // `confirmed-absent` can name an epic whose never-uploaded local edits
+    // are deliberately preserved (the orphan-recovery case).
     //
-    // Two refusals guard the destructive step itself:
-    //
-    //  - An id ABSENT from a successful `getTaskContexts` response is the
-    //    host's INDETERMINATE answer ("this host could not classify it"),
-    //    which is a distinct wire fact from `null` ("deleted"). Closing over
-    //    it force-closed local tabs whenever the host's local store was
-    //    unavailable at relaunch.
-    //  - A first page whose `completeness.localRows` reports `truncated` did
-    //    not carry every local-homed epic, so the force-close exemption set
-    //    is incomplete and no destructive reconciliation may rest on it.
+    // A first page whose `completeness.localRows` reports `truncated` did
+    // not carry every local-homed epic, so the force-close exemption set
+    // is incomplete and no destructive reconciliation may rest on it.
     const localRowsTruncated =
       localHomeListQuery.isSuccess &&
       localHomeListQuery.data.completeness?.localRows === "truncated";
-    const answeredEpicIds = contextsExistence?.answered ?? new Set<string>();
     const staleEpicIds = localRowsTruncated
       ? []
-      : closableStaleEpicIds(
-          missingEpicIds(openEpicIds, existingEpicIds).filter((epicId) =>
-            answeredEpicIds.has(epicId),
-          ),
-          localHomedEpicIds,
-        );
+      : closableStaleEpicIds([...confirmedAbsentEpicIds], localHomedEpicIds);
     if (staleEpicIds.length > 0) {
       useComposerRunSettingsStore.getState().clearEpicRunSettings(staleEpicIds);
       tabCommandCoordinator.handleEpicAccessLoss(staleEpicIds);
     }
   }, [
-    contextsExistence,
-    existingEpicIds,
+    confirmedAbsentEpicIds,
     localHomeListQuery.data,
     localHomeListQuery.isSuccess,
     localHomedEpicIds,
-    openEpicIds,
   ]);
 
   return null;
 }
 
 /**
- * The subset of `openEpicIds` the host positively confirmed, or `null` when
- * existence has not been established for every requested id.
+ * The subset of open epic ids the host positively confirmed absent, or `null`
+ * when a batch has not completed successfully. `unknown` and legacy `null`
+ * rows deliberately stay out of this set: only a current host's explicit
+ * `confirmed-absent` arm may close a tab.
  *
  * `null` covers pending batches and ANY failure - a transport error, and
  * specifically `E_HOST_UNSUPPORTED` from a host that does not carry the
  * method. Do not soften this into an empty set: `useEpicGetTaskContexts`
  * deliberately degrades unsupported to an empty map because its callers only
  * enrich titles, but here an empty set means "every open tab is stale".
- *
- * A confirmed id is one whose response row is non-null AND carries an epic
- * `light` - a row that resolves to a phase, or an epic row without `light`, is
- * not an existing epic, matching what the epic-filtered sweep counted.
  */
-type ReconcileExistence = {
-  /** Ids the host POSITIVELY confirmed as existing epics. */
-  readonly confirmed: ReadonlySet<string>;
-  /**
-   * Ids the host ANSWERED at all - with a row or with `null`. An id absent
-   * from a successful response is the resolver's deliberate indeterminate
-   * encoding ("could not classify; do not treat as deleted"), and only
-   * answered ids may become force-close candidates.
-   */
-  readonly answered: ReadonlySet<string>;
-};
-
-function combineExistingEpicIds(
+function combineConfirmedAbsentEpicIds(
   results: Array<UseQueryResult<GetTaskContextsResponse, HostRpcError>>,
-): ReconcileExistence | null {
+): ReadonlySet<string> | null {
   if (results.length === 0) return null;
-  const existingEpicIds = new Set<string>();
-  const answeredEpicIds = new Set<string>();
+  const confirmedAbsentEpicIds = new Set<string>();
   for (const result of results) {
     if (!result.isSuccess) return null;
-    for (const [taskId, task] of Object.entries(result.data.tasks)) {
-      answeredEpicIds.add(taskId);
-      if (task === null) continue;
-      const epic = task.epic;
-      if (epic === null || epic === undefined) continue;
-      if (epic.light === null) continue;
-      existingEpicIds.add(taskId);
+    for (const [taskId, resolution] of Object.entries(result.data.tasks)) {
+      if (isConfirmedAbsentTaskContext(resolution)) {
+        confirmedAbsentEpicIds.add(taskId);
+      }
     }
   }
-  return { confirmed: existingEpicIds, answered: answeredEpicIds };
-}
-
-/**
- * Every epic row on the page, home marker or not.
- *
- * The host answered the request, so each row it returned is an epic that
- * exists - which is a strictly stronger statement than "carries `home:
- * local`", and the only one existence reconciliation is entitled to act on.
- */
-function listedEpicIdsFromListTasks(
-  page: ListTasksResponse,
-): ReadonlySet<string> {
-  const listed = new Set<string>();
-  for (const task of page.tasks) {
-    const epicId = task.epic?.light?.id;
-    if (typeof epicId !== "string" || epicId.length === 0) continue;
-    listed.add(epicId);
-  }
-  return listed;
+  return confirmedAbsentEpicIds;
 }
 
 /** The durable force-close exemption, which IS marker-conditional. */

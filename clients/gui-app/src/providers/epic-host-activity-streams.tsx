@@ -6,6 +6,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { ReactNode } from "react";
+import { acquireHostConnection } from "@traycer-clients/shared/host-client/host-connection-registry";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
 import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
@@ -80,9 +81,19 @@ function EpicHostActivityStream(props: {
   const onAuthError = props.onAuthError;
   useEffect(() => {
     if (streamClient === null) return;
-    const dispose = openAgentActivityStream(hostId, streamClient, onAuthError);
+    // This host's ONE reconnect policy, leased for the stream's lifetime so
+    // the engine (and its backoff state) is shared with any other stream owner
+    // addressing the same host.
+    const connection = acquireHostConnection(hostId);
+    const dispose = openAgentActivityStream(
+      hostId,
+      connection.reconnect,
+      streamClient,
+      onAuthError,
+    );
     return () => {
       dispose();
+      connection.release();
       // The disposer nulls its `currentClient` BEFORE closing, so the close
       // callback that would normally wipe this slice is ignored. Nothing else
       // in production calls `resetHost`, so without this the host's agent ids

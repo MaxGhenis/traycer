@@ -1,5 +1,29 @@
+import type { HostLeaseSnapshot } from "@traycer-clients/shared/host-selection/selection-authority-contract";
 import type { HostScopeOption } from "@/components/settings/host-scope/host-scope-model";
 import type { HostScope } from "@/components/settings/host-scope/use-host-scope";
+import type { HostOptions } from "@/components/settings/host-scope/use-host-options";
+
+/**
+ * A lease for one host, for suites that drive `buildHostScopeOptions` directly.
+ *
+ * TAKES THE HOST ID AS ITS FIRST ARGUMENT, deliberately and unavoidably. The
+ * builder looks each row's lease up BY ID, and sealed probe P12 showed what a
+ * fixture that hides that costs: degrading `useHostLease`'s `find(hostId)` to
+ * `leases[0]` SURVIVED its probe, because every suite seeded exactly one lease
+ * and a wrong-host answer was indistinguishable from a right one. A helper
+ * that defaulted the id would rebuild that blind spot here, one layer down.
+ *
+ * Any assertion about lease-derived health owes at least two hosts with
+ * DIFFERENT verdicts; `host-scope-model.test.ts` carries that pin.
+ */
+export function hostLeaseFixture(
+  hostId: string,
+  dead: HostLeaseSnapshot["dead"],
+): HostLeaseSnapshot {
+  return dead === null
+    ? { hostId, status: "ready", dead: null }
+    : { hostId, status: "dead", dead };
+}
 
 /**
  * A ready `HostScope` for panel tests.
@@ -22,6 +46,7 @@ export function hostScopeOptionFixture(
     isActive: true,
     connectable: true,
     planRestricted: false,
+    settingUp: false,
     registered: true,
     platform: "darwin-arm64",
     version: "1.4.2",
@@ -74,7 +99,43 @@ export function hostScopeFixture(overrides: Partial<HostScope>): HostScope {
     client: null,
     setHostId: () => undefined,
     makeActive: () => undefined,
+    isActivating: false,
     isLoading: false,
+    listsFailed: false,
+    retryLists: () => undefined,
+    nowMs: 0,
+    ...overrides,
+  };
+}
+
+/**
+ * A resolved `HostOptions` for suites that render a picker but are not about
+ * the host LIST.
+ *
+ * It exists because unifying the pickers moved every surface from a narrow,
+ * easily-stubbed directory query onto `useHostOptions`, which composes six
+ * hooks (the runner host, the local service snapshot, the installed record,
+ * both list queries, the plan gate). A suite that used to stub one hook now
+ * has to stand up all of them — so it mocks at THIS boundary instead, exactly
+ * as the panel suites mock `useHostScope` rather than its internals.
+ *
+ * A suite whose subject IS the merge belongs in `host-scope-model`'s tests,
+ * where the real builder runs: a test that supplies this fixture can only
+ * prove what the picker does with a list, never that the list is right.
+ */
+export function hostOptionsFixture(
+  overrides: Partial<HostOptions>,
+): HostOptions {
+  const hosts = overrides.hosts ?? [
+    hostScopeOptionFixture({ hostId: "host-a" }),
+  ];
+  return {
+    hosts,
+    activeHostId: hosts[0]?.hostId ?? null,
+    isLoading: false,
+    directoryResolved: true,
+    directoryFailed: false,
+    listsResolved: true,
     listsFailed: false,
     retryLists: () => undefined,
     nowMs: 0,

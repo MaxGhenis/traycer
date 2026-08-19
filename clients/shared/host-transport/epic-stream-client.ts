@@ -3,8 +3,8 @@ import {
   epicSubscribeServerFrameSchema,
   type EpicArtifactRoomAvailability,
   type EpicCloudSyncStatus,
-  type EpicDurabilityPauseReasonV14,
-  type EpicDurabilityStatusV14,
+  type EpicDurabilityPauseReasonV15,
+  type EpicDurabilityStatusV15,
   type EpicCloudFreshness,
   type EpicLocalProtection,
   type EpicMigrationPhase,
@@ -239,32 +239,32 @@ export interface EpicStreamClientOptions {
 /**
  * The `epic.subscribe` minor that introduced `durability: "unknown"`,
  * `localProtection`, and `freshness`. Named once here because it is the ONE
- * fact that makes an absent leg readable, and a literal `1.4` spelled at the
+ * fact that makes an absent leg readable, and a literal `1.5` spelled at the
  * comparison site is a literal nobody updates when the next minor lands.
  */
-const EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION = { major: 1, minor: 4 } as const;
+const EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION = { major: 1, minor: 5 } as const;
 
 /**
  * The durability half of a `cloudSyncStatus` frame, as ONE value.
  *
- * Grouped rather than passed as four positional arguments: `@1.4` made this
+ * Grouped rather than passed as four positional arguments: `@1.5` made this
  * four legs that are read TOGETHER (see the absence rule below), and four
  * trailing `undefined`s at a call site is exactly how a leg ends up in the
  * wrong slot.
  *
  * ABSENT MEANS UNKNOWN on every field, never "synced" and never "protected".
- * These used to be projected down onto the frozen `@1.3` unions, so a host
+ * These used to be projected down onto the frozen `@1.4` unions, so a host
  * saying `unknown` reached the renderer as `undefined` and rendered as the
- * calm value - the ambiguity `epic.subscribe@1.4` exists to remove.
+ * calm value - the ambiguity `epic.subscribe@1.5` exists to remove.
  */
 export type EpicCloudSyncDurability = {
-  readonly durability: EpicDurabilityStatusV14 | undefined;
-  readonly pauseReason: EpicDurabilityPauseReasonV14 | undefined;
+  readonly durability: EpicDurabilityStatusV15 | undefined;
+  readonly pauseReason: EpicDurabilityPauseReasonV15 | undefined;
   readonly promotionState: EpicPromotionState | undefined;
   /** Whether this session has local WAL protection. */
   readonly localProtection: EpicLocalProtection | undefined;
   /**
-   * How the served document stands relative to the cloud - `@1.4`,
+   * How the served document stands relative to the cloud - `@1.5`,
    * `s5-mirror-first-serving`.
    *
    * Carried in the same value as the durability legs because it is read WITH
@@ -277,14 +277,14 @@ export type EpicCloudSyncDurability = {
    */
   readonly freshness: EpicCloudFreshness | undefined;
   /**
-   * Whether the peer that sent this frame speaks the `@1.4` durability legs
+   * Whether the peer that sent this frame speaks the `@1.5` durability legs
    * at all - carried WITH them because it is the only thing that makes their
    * absence readable.
    *
-   * Every `@1.4` key above is optional on the wire, and the schema's absence
+   * Every `@1.5` key above is optional on the wire, and the schema's absence
    * rule says an absent one means UNKNOWN. A renderer with only the values in
    * hand cannot honour that: absence looks identical whether it came from a
-   * `@1.3` peer that has no opinion (render as before) or a `@1.4` peer that
+   * `@1.4` peer that has no opinion (render as before) or a `@1.5` peer that
    * declined to state one (render conservatively). Probing presence to tell
    * them apart resolves the permitted omission as "old peer", which is the
    * silence-reads-as-reassurance inference this minor exists to break.
@@ -501,7 +501,7 @@ export class EpicStreamClient {
       case "cloudSyncStatus": {
         this.callbacks.onCloudSyncStatus(
           frame.status,
-          // Passed through at their `@1.4` width now that the renderer half of
+          // Passed through at their `@1.5` width now that the renderer half of
           // the s5 status pass exists. The projection that used to sit here
           // narrowed `durability: "unknown"` to `undefined`, which handed the
           // renderer exactly the ambiguity this minor was added to remove.

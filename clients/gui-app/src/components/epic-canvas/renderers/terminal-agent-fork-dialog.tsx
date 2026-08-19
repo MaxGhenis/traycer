@@ -27,6 +27,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { HarnessModelPicker } from "@/components/home/pickers/harness-model-picker";
 import { ActiveHostWorkspaceControls } from "@/components/home/host-workspace-selector/host-workspace-selector";
+import { isHostSwitcherListInteraction } from "@/components/settings/host-scope/host-switcher-portal";
 import { SurfaceActivityProvider } from "@/components/home/composer/surface-activity-context";
 import { useSurfaceActivity } from "@/components/home/composer/surface-activity-hooks";
 import { useFocusedPaneModalOpen } from "@/components/epic-tabs/pane-visibility-context";
@@ -214,8 +215,8 @@ function TerminalAgentForkDialogBody(props: TerminalAgentForkDialogProps) {
     draft: "",
   }));
   const stagingKey = useMemo(
-    () => pendingForkTerminalAgentStagingKey(epicId),
-    [epicId],
+    () => pendingForkTerminalAgentStagingKey(hostId, epicId),
+    [hostId, epicId],
   );
   const settingsSeed = useMemo(() => {
     if (target === null) return null;
@@ -231,12 +232,14 @@ function TerminalAgentForkDialogBody(props: TerminalAgentForkDialogProps) {
   // host), so no separate resolution is needed at this call site. Never
   // authoritative: this dialog has no reauth gate of its own, so a
   // genuinely-tombstoned source profile must be corrected to ambient here
-  // rather than silently submitted to `createAgent.create`.
+  // rather than silently submitted to `createAgent.create`. The catalog reads
+  // through the same fixed client, so the fork offers this host's harnesses
+  // and models.
   const toolbarStore = useComposerToolbarStore(
     null,
     fallbackSeedSource(settingsSeed, hostClient),
     null,
-    true,
+    { hostClient, hostId, tuiOnly: true },
   );
   const createAgent = useCreateTuiAgentForClient(hostClient, hostId);
   const validateForkProfile = useValidateTuiForkProfile(hostClient);
@@ -518,12 +521,13 @@ function TerminalAgentForkDialogBody(props: TerminalAgentForkDialogProps) {
       stagingKey,
       seedIntent: target.workspaceSeed.intent,
       fallbackWorkspace: target.workspaceSeed.workspace,
+      hostId,
     });
     const worktreeIntent = launchWorkspace.worktreeIntent;
     if (worktreeIntent !== null) {
       useWorktreeIntentMemoryStore
         .getState()
-        .setEpicIntent(epicId, worktreeIntent, Date.now());
+        .setEpicIntent(epicId, hostId, worktreeIntent, Date.now());
     }
     setStatus(
       worktreeIntent !== null && worktreeIntent.entries.length > 0
@@ -607,6 +611,7 @@ function TerminalAgentForkDialogBody(props: TerminalAgentForkDialogProps) {
     canSubmit,
     createAgent,
     epicId,
+    hostId,
     onOpenChange,
     sourceHarnessProfiles,
     sourceProfileId,
@@ -629,6 +634,15 @@ function TerminalAgentForkDialogBody(props: TerminalAgentForkDialogProps) {
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="max-h-[92vh] w-[min(94vw,48rem)] gap-3 sm:max-w-[min(94vw,48rem)]"
+        // Same portal rule as the worktree pickers: the host switcher's list
+        // mounts outside this dialog, so a click in it reads as an interaction
+        // from outside. Dismissing on that would throw away the form someone is
+        // in the middle of filling, for the crime of choosing a host in it.
+        onInteractOutside={(event) => {
+          if (isHostSwitcherListInteraction(event.target)) {
+            event.preventDefault();
+          }
+        }}
         onOpenAutoFocus={(event) => {
           // Continue mode starts on the real picker control, using that
           // control's normal focus treatment instead of drawing a ring around
@@ -758,7 +772,7 @@ function TerminalAgentForkDialogBody(props: TerminalAgentForkDialogProps) {
             </div>
             <section
               aria-label="Run location"
-              className="min-w-0 rounded-lg border border-border/60 bg-muted/20 p-3"
+              className="min-w-0 rounded-lg border border-border/60 bg-foreground/3 p-3"
             >
               <ActiveHostWorkspaceControls
                 disabled={false}

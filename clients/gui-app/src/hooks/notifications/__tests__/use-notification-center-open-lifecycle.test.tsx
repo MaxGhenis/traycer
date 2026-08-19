@@ -42,8 +42,8 @@ const directoryRef = vi.hoisted(() => ({
   } | null,
 }));
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => activeHostIdRef.value,
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => activeHostIdRef.value,
 }));
 
 // The notification centre reads its host from `useNotificationHost` (the local

@@ -10,8 +10,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { EpicDurabilityBadge } from "../epic-durability-badge";
 import type {
   EpicCloudFreshness,
-  EpicDurabilityPauseReasonV14,
-  EpicDurabilityStatusV14,
+  EpicDurabilityPauseReasonV15,
+  EpicDurabilityStatusV15,
   EpicLocalProtection,
   EpicPromotionState,
 } from "@traycer/protocol/host/epic/subscribe";
@@ -23,8 +23,8 @@ import type {
  * type error. The type argument states the same intent where no fixer reaches.
  */
 const durability = vi.hoisted<{
-  status: EpicDurabilityStatusV14 | null;
-  pauseReason: EpicDurabilityPauseReasonV14 | null;
+  status: EpicDurabilityStatusV15 | null;
+  pauseReason: EpicDurabilityPauseReasonV15 | null;
   promotionState: EpicPromotionState | null;
   /**
    * `null` is a PRE-`@1.4` peer, which is what every case written before the
@@ -40,7 +40,7 @@ const durability = vi.hoisted<{
    */
   cloudFreshness: EpicCloudFreshness | null;
   /**
-   * Whether the fixture's peer negotiated `epic.subscribe@1.4`. Defaults to
+   * Whether the fixture's peer negotiated `epic.subscribe@1.5`. Defaults to
    * TRUE because that is what every case in this suite is describing - a host
    * that speaks the durability legs. The pre-`@1.4` peer is its own case and
    * sets it false explicitly.

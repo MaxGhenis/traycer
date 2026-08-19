@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
   fireEvent,
@@ -6,19 +6,35 @@ import {
   screen,
   within,
 } from "@testing-library/react";
+import { MockRunnerHost } from "@traycer-clients/shared/host-client/mock/mock-runner-host";
 import type { ProviderRateLimits } from "@traycer/protocol/host";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { formatResetFullDateTime } from "@/lib/relative-time";
+import { RunnerHostContext } from "@/providers/runner-host-context";
 import {
   ClaudeRateLimitView,
   CodexRateLimitView,
+  CursorRateLimitView,
   GrokRateLimitView,
   HuggingFaceRateLimitView,
   KiloCodeRateLimitView,
+  OpenCodeRateLimitView,
   OpenRouterRateLimitView,
   ProviderRateLimitBody,
   ProviderRateLimitDetail,
 } from "../provider-rate-limit-views";
+
+const openExternalLinkMock = vi.hoisted(() => ({
+  isPending: false,
+  mutate: vi.fn(),
+}));
+
+vi.mock("@/hooks/runner/use-open-external-link-mutation", () => ({
+  useRunnerOpenExternalLink: () => ({
+    mutate: openExternalLinkMock.mutate,
+    isPending: openExternalLinkMock.isPending,
+  }),
+}));
 
 type CodexRateLimits = Extract<ProviderRateLimits, { provider: "codex" }>;
 type ClaudeRateLimits = Extract<
@@ -31,9 +47,14 @@ type OpenRouterRateLimits = Extract<
 >;
 type KiloCodeRateLimits = Extract<ProviderRateLimits, { provider: "kilocode" }>;
 type GrokRateLimits = Extract<ProviderRateLimits, { provider: "grok" }>;
+type CursorRateLimits = Extract<ProviderRateLimits, { provider: "cursor" }>;
 type HuggingFaceRateLimits = Extract<
   ProviderRateLimits,
   { provider: "huggingface" }
+>;
+type OpenCodeRateLimits = Extract<
+  ProviderRateLimits,
+  { provider: "opencode"; available: true }
 >;
 
 const NOW = Date.now();
@@ -49,6 +70,7 @@ function formatGrokPeriodDate(epochMs: number): string {
 
 afterEach(() => {
   cleanup();
+  openExternalLinkMock.isPending = false;
 });
 
 describe("CodexRateLimitView (extended fields)", () => {
@@ -871,6 +893,115 @@ describe("GrokRateLimitView", () => {
   });
 });
 
+describe("OpenCodeRateLimitView", () => {
+  const openCode: OpenCodeRateLimits = {
+    provider: "opencode",
+    available: true,
+    credentialGeneration: "gen-1",
+    fiveHour: {
+      status: "ok",
+      usedPercent: 12,
+      resetsAt: NOW + 60 * 60 * 1000,
+      durationMinutes: 300,
+    },
+    weekly: {
+      status: "ok",
+      usedPercent: 20,
+      resetsAt: NOW + 3 * 24 * 60 * 60 * 1000,
+      durationMinutes: 10_080,
+    },
+    monthly: {
+      status: "ok",
+      usedPercent: 30,
+      resetsAt: NOW + 20 * 24 * 60 * 60 * 1000,
+      durationMinutes: null,
+    },
+  };
+
+  it("renders the 5-hour, Weekly, and Monthly rows", () => {
+    render(<OpenCodeRateLimitView data={openCode} />);
+    expect(screen.getByText("5-hour")).toBeTruthy();
+    expect(screen.getByText("12% used")).toBeTruthy();
+    expect(screen.getByText("Weekly")).toBeTruthy();
+    expect(screen.getByText("20% used")).toBeTruthy();
+    expect(screen.getByText("Monthly")).toBeTruthy();
+    expect(screen.getByText("30% used")).toBeTruthy();
+    expect(screen.queryByText("Go limit reached")).toBeNull();
+  });
+
+  it("lets rate-limited status win over a low percentage", () => {
+    const { container } = render(
+      <OpenCodeRateLimitView
+        data={{
+          ...openCode,
+          fiveHour: { ...openCode.fiveHour, status: "rate-limited" },
+        }}
+      />,
+    );
+    expect(screen.getByText("Go limit reached")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Go quota is exhausted. Free models or Zen balance may still work.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("12% used")).toBeTruthy();
+    expect(container.querySelectorAll(".bg-red-500").length).toBeGreaterThan(0);
+  });
+
+  it("does not retain a rate-limited badge or red bar after that window expires", () => {
+    const { container } = render(
+      <OpenCodeRateLimitView
+        data={{
+          ...openCode,
+          fiveHour: {
+            ...openCode.fiveHour,
+            status: "rate-limited",
+            resetsAt: NOW - 1,
+          },
+        }}
+      />,
+    );
+    expect(screen.queryByText("Go limit reached")).toBeNull();
+    expect(container.querySelector(".bg-red-500")).toBeNull();
+  });
+
+  it("renders Manage Go pointing at the OpenCode auth page", () => {
+    render(<OpenCodeRateLimitView data={openCode} />);
+    const link = screen.getByRole("link", { name: "Manage Go" });
+    expect(link.getAttribute("href")).toBe("https://opencode.ai/auth");
+  });
+
+  it("renders Manage Go as a disabled native button while the runner open is pending", () => {
+    // Regression: with a bound runner the pending state used to stay an
+    // `aria-disabled` href. It must be a real disabled button so the
+    // accessible name stays "Manage Go" and the click target is not an
+    // active anchor.
+    openExternalLinkMock.isPending = true;
+    render(
+      <RunnerHostContext.Provider
+        value={
+          new MockRunnerHost({
+            signInUrl: "https://auth.traycer.test/sign-in",
+            authnBaseUrl: "https://auth.traycer.test",
+            localHost: null,
+            hosts: [],
+            workspaceFolderPickerPaths: undefined,
+            hasLocalHost: undefined,
+            traycerCli: undefined,
+          })
+        }
+      >
+        <OpenCodeRateLimitView data={openCode} />
+      </RunnerHostContext.Provider>,
+    );
+
+    const action = screen.getByRole("button", { name: "Manage Go" });
+    expect(action.tagName).toBe("BUTTON");
+    expect(action instanceof HTMLButtonElement && action.disabled).toBe(true);
+    expect(screen.queryByRole("link", { name: "Manage Go" })).toBeNull();
+  });
+});
+
 describe("ProviderRateLimitDetail dispatch", () => {
   it("dispatches to the Hugging Face view", () => {
     render(
@@ -959,6 +1090,40 @@ describe("ProviderRateLimitDetail dispatch", () => {
     expect(screen.getByText("Prepaid balance")).toBeTruthy();
     expect(screen.getByText("$8.00")).toBeTruthy();
   });
+
+  it("dispatches to the OpenCode view", () => {
+    render(
+      <ProviderRateLimitDetail
+        data={{
+          provider: "opencode",
+          available: true,
+          credentialGeneration: "gen-1",
+          fiveHour: {
+            status: "ok",
+            usedPercent: 12,
+            resetsAt: NOW + 60 * 60 * 1000,
+            durationMinutes: 300,
+          },
+          weekly: {
+            status: "ok",
+            usedPercent: 20,
+            resetsAt: NOW + 3 * 24 * 60 * 60 * 1000,
+            durationMinutes: 10_080,
+          },
+          monthly: {
+            status: "ok",
+            usedPercent: 30,
+            resetsAt: NOW + 20 * 24 * 60 * 60 * 1000,
+            durationMinutes: null,
+          },
+        }}
+        variant="settings"
+        codexResetAction={null}
+      />,
+    );
+    expect(screen.getByText("5-hour")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Manage Go" })).toBeTruthy();
+  });
 });
 
 describe("ProviderRateLimitBody (unavailable state)", () => {
@@ -979,6 +1144,7 @@ describe("ProviderRateLimitBody (unavailable state)", () => {
           lastFailureAt: NOW,
         }}
         codexResetAction={null}
+        openModelProvidersAction={null}
       />,
     );
     expect(
@@ -986,6 +1152,57 @@ describe("ProviderRateLimitBody (unavailable state)", () => {
         "Usage limits unavailable - not available for this account",
       ),
     ).toBeTruthy();
+  });
+
+  it("offers Open Model Providers for an OpenCode 401 and hides it for a missing-key 403", () => {
+    const openModelProviders = vi.fn();
+    render(
+      <ProviderRateLimitBody
+        isPending={false}
+        isFetching={false}
+        isError={false}
+        envelope={{
+          latest: {
+            provider: "opencode",
+            available: false,
+            reason: "insufficient_permissions",
+          },
+          lastGood: null,
+          lastGoodAt: null,
+          lastFailureAt: NOW,
+        }}
+        codexResetAction={null}
+        openModelProvidersAction={openModelProviders}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Model Providers" }),
+    );
+    expect(openModelProviders).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    render(
+      <ProviderRateLimitBody
+        isPending={false}
+        isFetching={false}
+        isError={false}
+        envelope={{
+          latest: {
+            provider: "opencode",
+            available: false,
+            reason: "rate_limits_not_available",
+          },
+          lastGood: null,
+          lastGoodAt: null,
+          lastFailureAt: NOW,
+        }}
+        codexResetAction={null}
+        openModelProvidersAction={openModelProviders}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Open Model Providers" }),
+    ).toBeNull();
   });
 });
 
@@ -1016,10 +1233,115 @@ describe("ProviderRateLimitBody (Codex reset action)", () => {
           lastFailureAt: null,
         }}
         codexResetAction={() => <button type="button">Use reset</button>}
+        openModelProvidersAction={null}
       />,
     );
 
     expect(screen.getByText("3 available")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Use reset" })).toBeTruthy();
+  });
+});
+
+describe("CursorRateLimitView", () => {
+  const CYCLE_END = NOW + 29 * 24 * 60 * 60 * 1000;
+  const cursor: CursorRateLimits = {
+    provider: "cursor",
+    available: true,
+    cycleStart: NOW - 2 * 24 * 60 * 60 * 1000,
+    cycleEnd: CYCLE_END,
+    cursorModels: {
+      usedPercent: 6,
+      resetsAt: CYCLE_END,
+      durationMinutes: 31 * 24 * 60,
+    },
+    otherModels: {
+      usedPercent: 40,
+      resetsAt: CYCLE_END,
+      durationMinutes: 31 * 24 * 60,
+    },
+    includedLimitUsd: 400,
+    usedUsd: 325.37,
+    remainingUsd: 74.63,
+    bonusUsedUsd: null,
+    onDemandLimitType: "user",
+    onDemandLimitUsd: 1,
+    onDemandUsedUsd: 0.25,
+    onDemandRemainingUsd: 0.75,
+    displayMessage: "You've used 81% of your included usage",
+  };
+
+  it("pairs the Overview's dollars with their own included-usage meter", () => {
+    // Live-account regression, second round: the bucket bars are each
+    // measured against their own unpublished (bonus-inflated) limit, while
+    // the dollars describe Cursor's BLENDED $400 purchased pool (~81%
+    // consumed on the same payload). A bare "$74.63 left of $400" under bars
+    // reading 6% / 40% presented as a broken calculation even though
+    // `remaining` is Cursor's own server-computed field - and dropping the
+    // rows was the wrong fix (the money is the actionable number). The
+    // dollars stay, carried by a credit meter whose fill shares their
+    // denominator, so the row explains itself.
+    render(<CursorRateLimitView data={cursor} variant="popover-overview" />);
+    expect(screen.getByText("Cursor Models")).toBeTruthy();
+    expect(screen.getByText("6% used")).toBeTruthy();
+    expect(screen.getByText("Other Models")).toBeTruthy();
+    expect(screen.getByText("40% used")).toBeTruthy();
+    expect(screen.getByText("Included usage")).toBeTruthy();
+    expect(screen.getByText("$325.37 / $400.00")).toBeTruthy();
+    expect(screen.getByText("Included usage left")).toBeTruthy();
+    expect(screen.getByText("$74.63")).toBeTruthy();
+  });
+
+  it("anchors the detail's money to Cursor's own sentence about the blended pool", () => {
+    render(<CursorRateLimitView data={cursor} variant="settings" />);
+    // The sentence names the pool the meter measures, in Cursor's own words.
+    expect(
+      screen.getByText("You've used 81% of your included usage"),
+    ).toBeTruthy();
+    expect(screen.getByText("Included usage left")).toBeTruthy();
+    expect(screen.getByText("$74.63")).toBeTruthy();
+    expect(screen.getByText("Included usage")).toBeTruthy();
+    expect(screen.getByText("$325.37 / $400.00")).toBeTruthy();
+    // On-demand in real dollars: a $1 limit renders as $1.00, never $100.
+    expect(screen.getByText("On-demand limit")).toBeTruthy();
+    expect(screen.getByText("$1.00")).toBeTruthy();
+    expect(screen.queryByText("$100.00")).toBeNull();
+  });
+
+  it("shows overflow honestly once spend runs past the purchased allowance", () => {
+    // Past $400 the account is on Cursor's bonus grant - nothing is limited
+    // and nothing is billed, so the meter must NOT dress this up as a limit
+    // event: fill pins at 100% in the amber running-low tone (red stays
+    // reserved for the bucket bars, the actual gates), the detail keeps the
+    // REAL spend, "left" clamps at $0.00 instead of going negative, and the
+    // bonus spend gets its own row.
+    const { container } = render(
+      <CursorRateLimitView
+        data={{
+          ...cursor,
+          usedUsd: 412.1,
+          remainingUsd: -12.1,
+          bonusUsedUsd: 12.1,
+        }}
+        variant="popover-overview"
+      />,
+    );
+    expect(screen.getByText("$412.10 / $400.00")).toBeTruthy();
+    expect(screen.getByText("Included usage left")).toBeTruthy();
+    expect(screen.getByText("$0.00")).toBeTruthy();
+    expect(screen.queryByText("-$12.10")).toBeNull();
+    expect(screen.getByText("Bonus usage")).toBeTruthy();
+    expect(screen.getByText("$12.10")).toBeTruthy();
+    expect(container.querySelector(".bg-amber-500")).toBeTruthy();
+    expect(container.querySelector(".bg-red-500")).toBeNull();
+  });
+
+  it("falls back to the billing-cycle range when no bucket was reported", () => {
+    render(
+      <CursorRateLimitView
+        data={{ ...cursor, cursorModels: null, otherModels: null }}
+        variant="settings"
+      />,
+    );
+    expect(screen.getByText("Billing cycle")).toBeTruthy();
   });
 });

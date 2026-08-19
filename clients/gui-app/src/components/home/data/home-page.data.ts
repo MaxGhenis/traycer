@@ -93,7 +93,7 @@ export const EMPTY_LOCAL_HOMED_TASK_IDS: ReadonlySet<string> = new Set();
  * `localHomedTaskIds` is a REQUIRED argument, not an optional one: the two
  * response shapes that feed this projection carry the home marker in two
  * different places. `epic.listTasks@1.3` puts `home` on the row; a `z.record`
- * forced `epic.getTaskContexts@1.1` to put it in a sibling id list instead.
+ * forced `epic.getTaskContexts@1.2` to put it in a sibling id list instead.
  * A caller with the sibling in hand and no parameter to pass it through
  * silently projects every context row as cloud-backed, which is exactly what
  * happened to worktree/branch/PR search hits. Callers with no id list pass
@@ -102,7 +102,7 @@ export const EMPTY_LOCAL_HOMED_TASK_IDS: ReadonlySet<string> = new Set();
 /**
  * Local home, from EITHER carrier.
  *
- * `epic.listTasks@1.3` puts `home` on the row; `epic.getTaskContexts@1.1` had
+ * `epic.listTasks@1.3` puts `home` on the row; `epic.getTaskContexts@1.2` had
  * to put it in a response-level sibling list, because its `tasks` is a
  * `z.record` whose value schema the additivity gate treats as opaque. A row
  * reached through the second path carries no `home` at all, so checking only

@@ -19,9 +19,9 @@ import {
   type EpicAgentActivity,
 } from "@/lib/agent-activity";
 import {
-  createHostStreamReopenScheduler,
   isReopenableHostStreamClose,
-} from "@/lib/host/stream-reopen";
+  type HostReconnectEngine,
+} from "@traycer-clients/shared/host-client/host-connection-reconnect-engine";
 
 /**
  * One host's agent-activity view.
@@ -101,12 +101,21 @@ function patchHost(
  */
 export function openAgentActivityStream(
   hostId: string,
+  /**
+   * THE reconnect policy for this stream's host (redesign P4.1 /
+   * connection-registry §6), acquired from the connection registry by the one
+   * place that opens these streams. This store no longer constructs its own
+   * scheduler: the constants, the terminal-close classification and the
+   * backoff shape live once, in the engine, and each stream still gets its
+   * own independent lane so a sibling stream's refusal cannot pace it.
+   */
+  reconnectEngine: HostReconnectEngine,
   wsStreamClient: IHostStreamClient<HostStreamRpcRegistry>,
   onAuthError: (() => void) | null,
 ): () => void {
   let disposed = false;
   let currentClient: AgentActivityStreamClient | null = null;
-  const reopenScheduler = createHostStreamReopenScheduler(() => {
+  const reopenScheduler = reconnectEngine.openReopenLane(() => {
     const client = currentClient;
     currentClient = null;
     client?.close();

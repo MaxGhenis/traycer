@@ -18,7 +18,7 @@ import { resolveManageSubscriptionUrl } from "@/lib/auth/manage-subscription-url
 import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import type {
-  EpicDurabilityPauseReasonV14,
+  EpicDurabilityPauseReasonV15,
   EpicLocalProtection,
   EpicPromotionState,
 } from "@traycer/protocol/host/epic/subscribe";
@@ -80,7 +80,7 @@ export function EpicDurabilityBadge() {
 
 function EpicDurabilityBadgeContent(props: {
   readonly view: EpicDurabilityView;
-  readonly pauseReason: EpicDurabilityPauseReasonV14 | null;
+  readonly pauseReason: EpicDurabilityPauseReasonV15 | null;
   readonly promotionState: EpicPromotionState | null;
   readonly freshness: EpicCloudFreshnessView;
   readonly freshnessCopy: CloudFreshnessCopy | null;
@@ -131,7 +131,7 @@ function EpicDurabilityBadgeContent(props: {
  */
 function EpicDurabilityRemedies(props: {
   readonly status: "local" | "promoting" | "paused" | "offline" | null;
-  readonly pauseReason: EpicDurabilityPauseReasonV14 | null;
+  readonly pauseReason: EpicDurabilityPauseReasonV15 | null;
 }) {
   const runnerHost = useRunnerHost();
   const exportArtifacts = useEpicExportArtifacts();
@@ -386,7 +386,7 @@ function EpicCloudFreshnessTimestamp(props: {
  * states of an epic that is not going anywhere.
  */
 function exportIsTheRemedy(
-  pauseReason: EpicDurabilityPauseReasonV14 | null,
+  pauseReason: EpicDurabilityPauseReasonV15 | null,
 ): boolean {
   return (
     pauseReason === "access-revoked" ||
@@ -451,7 +451,7 @@ function durabilityRiskCopy(view: EpicDurabilityView): string | null {
  */
 function badgeCopy(
   view: EpicDurabilityView,
-  pauseReason: EpicDurabilityPauseReasonV14 | null,
+  pauseReason: EpicDurabilityPauseReasonV15 | null,
   promotionState: EpicPromotionState | null,
 ): { readonly label: string; readonly className: string } | null {
   // `null`, not "Storage status unknown". This arm is only REACHED now that a
@@ -519,7 +519,7 @@ function badgeCopy(
  * received, so it is the only member here that is a warning rather than a
  * status.
  */
-function pausedCopy(pauseReason: EpicDurabilityPauseReasonV14 | null): {
+function pausedCopy(pauseReason: EpicDurabilityPauseReasonV15 | null): {
   readonly label: string;
   readonly className: string;
 } {

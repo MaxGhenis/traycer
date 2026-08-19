@@ -165,10 +165,19 @@ function codeKeyedMessage(error: HostRpcError, fallback: string): string {
   if (error.code === "WORKTREE_REMOVE_LAST_ENTRY") {
     return "Keep at least one workspace folder linked — add another before removing this one.";
   }
-  if (error.code === "PROVIDER_DISABLED") {
+  return hostErrorToastForSimpleCode(error.code) ?? fallback;
+}
+
+function hostErrorToastForSimpleCode(
+  code: HostRpcError["code"],
+): string | null {
+  if (code === "PROVIDER_DISABLED") {
     return "This provider is disabled. Enable it in Settings → Providers.";
   }
-  return fallback;
+  if (code === "TERMINAL_DELETING") {
+    return "This terminal is being deleted. Try again in a moment.";
+  }
+  return null;
 }
 
 /**

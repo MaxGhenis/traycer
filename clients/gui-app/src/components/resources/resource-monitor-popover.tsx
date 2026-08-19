@@ -1,11 +1,17 @@
 import {
+  use,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
-import type { MouseEvent, PointerEvent } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent,
+  PointerEvent,
+} from "react";
 import {
   useNavigate,
   useRouterState,
@@ -45,18 +51,30 @@ import {
   InputGroupButton,
   InputGroupInput,
 } from "@/components/ui/input-group";
-import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
+import {
+  AgentSpinningDots,
+  MutedAgentSpinner,
+} from "@/components/ui/agent-spinning-dots";
 import { HarnessIcon } from "@/components/home/pickers/harness-icon";
+import { HostSwitcher } from "@/components/settings/host-scope/host-switcher";
+import { isHostScopeUsable } from "@/components/settings/host-scope/host-scope-status";
+import { isHostSwitcherListInteraction } from "@/components/settings/host-scope/host-switcher-portal";
+import { carryViewedHostIntoSettingsScope } from "@/components/settings/host-scope/carry-viewed-host-into-settings";
+import { PlanRestrictedUpgradeAction } from "@/components/settings/host-scope/plan-restricted-upgrade-action";
+import { useScopedStreamBinding } from "@/components/settings/host-scope/use-scoped-stream-binding";
+import type { HostScope } from "@/components/settings/host-scope/use-host-scope";
+import { useResourceMonitorHostScope } from "@/hooks/resources/use-resource-monitor-host-scope";
+import { useRegisteredHostsPollLiveness } from "@/hooks/auth/use-registered-hosts-query";
+import { useSystemTabModalActions } from "@/stores/tabs/use-system-tab-modal";
 import { ManagedCommandMonitorIcon } from "@/components/managed-commands/managed-command-monitor-icon";
 import { ManagedCommandStopButton } from "@/components/managed-commands/managed-command-action-buttons";
 import { useManagedCommandStop } from "@/hooks/managed-command/use-managed-command-lifecycle-mutations";
 import {
   MANAGED_COMMAND_NOUN,
-  managedCommandNoun,
+  managedCommandTitle,
 } from "@/lib/managed-commands/managed-command-copy";
 import { normalizeProviderId } from "@/components/home/data/landing-options";
 import { useResourcesKill } from "@/hooks/resources/use-resources-kill-mutation";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import { agentProviderLabel } from "@/lib/chat/sender-display";
 import {
   DropdownMenu,
@@ -71,13 +89,22 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
+import { registerDynamicActionHandler } from "@/lib/keybindings/dispatch";
+import { formatChordForDisplay } from "@/lib/keybindings/chord";
+import { useBindingForAction } from "@/stores/settings/keybinding-store";
 import {
+  EMPTY_GLOBAL_RESOURCE_PROJECTION,
   useGlobalResourceProjection,
   type GlobalResourceEpicEntry,
+  type GlobalResourceProjection,
 } from "@/stores/resources/resources-registry";
 import { useTitleBarDragSuppression } from "@/stores/layout/title-bar-drag-store";
 import { GlobalResourcesStreamMount } from "@/providers/resources-stream-mount";
-import { useStreamMethodSchemaVersion } from "@/lib/host/stream-runtime-context";
+import { useGlobalResourcesUnsupported } from "@/hooks/resources/use-global-resources-unsupported";
+import {
+  StreamRuntimeContext,
+  useStreamMethodSchemaVersion,
+} from "@/lib/host/stream-runtime-context";
 import type {
   AppResourceUsage,
   OtherResourceUsage,
@@ -95,6 +122,12 @@ import {
   type DesktopAppProcessGroupUsage,
   type DesktopAppResourceUsage,
 } from "@/lib/resources/desktop-app-resource-usage";
+import { queryClient } from "@/lib/query-client";
+import type { PlainTerminalCollection } from "@/lib/terminals/plain-terminal-authority";
+import {
+  rejectClosedPlainTerminalRestore,
+  retainedPlainTerminalTombstoneBlocksClosedRestore,
+} from "@/lib/terminals/plain-terminal-presentation-invalidation";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import type { NavigateNestedFocus } from "@/lib/epic-nested-focus-navigation";
 import type { NestedFocusTarget } from "@/lib/epic-nested-focus-route";
@@ -121,6 +154,7 @@ import type {
   EpicNodeRef,
   EpicViewTab,
 } from "@/stores/epics/canvas/types";
+import { NO_HOST_OPTION_REFUSALS } from "@/components/settings/host-scope/host-option-model";
 
 type ResourceSortOption = "memory" | "cpu" | "name" | "tab";
 type NavigateFn = UseNavigateResult<string>;
@@ -296,22 +330,155 @@ interface RowActionTargetIndexInput {
 
 const NO_EXPANDED_PROCESSES: ReadonlySet<string> = new Set();
 
+/**
+ * Marks the panel body so `PopoverContent`'s `onInteractOutside` can tell an
+ * interaction that really is outside from one Radix only reports that way
+ * because the sort menu's own layer is on top. A DOM marker rather than a ref
+ * handed down: the guard lives on the element's ANCESTOR, so a ref would have
+ * to cross a component boundary as a prop, which nothing else here needs.
+ */
+const RESOURCE_MONITOR_PANEL_ATTRIBUTE = "data-resource-monitor-panel";
+const RESOURCE_SEARCH_ATTRIBUTE = "data-resource-search";
+const RESOURCE_NAVIGATION_KEY_ATTRIBUTE = "data-resource-navigation-key";
+const RESOURCE_ACTION_KEY_ATTRIBUTE = "data-resource-action-key";
+const RESOURCE_CONFIRMATION_ATTRIBUTE = "data-resource-confirmation";
+
 // For process rows that can never expand (e.g. the host's single root process).
 function noProcessToggle(): void {}
 
+function resourceNavigationButtons(
+  panel: HTMLDivElement,
+): ReadonlyArray<HTMLButtonElement> {
+  return Array.from(
+    panel.querySelectorAll<HTMLButtonElement>(
+      `button[${RESOURCE_NAVIGATION_KEY_ATTRIBUTE}]:not(:disabled)`,
+    ),
+  );
+}
+
+function moveResourceNavigationFocus(
+  panel: HTMLDivElement,
+  current: HTMLElement,
+  direction: 1 | -1,
+): boolean {
+  const rows = resourceNavigationButtons(panel);
+  if (rows.length === 0) return false;
+  const currentIndex = rows.findIndex((row) => row === current);
+  let nextIndex: number;
+  if (currentIndex >= 0) {
+    nextIndex = (currentIndex + direction + rows.length) % rows.length;
+  } else {
+    nextIndex = direction > 0 ? 0 : rows.length - 1;
+  }
+  rows[nextIndex]?.focus();
+  return true;
+}
+
+function armResourceRowAction(
+  panel: HTMLDivElement,
+  navigationKey: string,
+): boolean {
+  const actionContainer = Array.from(
+    panel.querySelectorAll<HTMLElement>(`[${RESOURCE_ACTION_KEY_ATTRIBUTE}]`),
+  ).find(
+    (element) =>
+      element.getAttribute(RESOURCE_ACTION_KEY_ATTRIBUTE) === navigationKey,
+  );
+  const button = actionContainer?.querySelector<HTMLButtonElement>("button");
+  if (button === undefined || button === null || button.disabled) return false;
+  button.click();
+  return true;
+}
+
+/**
+ * Header trigger for the resource monitor, scoped to the host its own picker
+ * selected.
+ *
+ * The scope is resolved HERE, above both the stream mount and the panel, and
+ * re-provided as this subtree's `StreamRuntimeContext`. That one swap is what
+ * re-targets the whole surface: `resources.subscribe` is a STREAM, so unlike
+ * the usage popover (whose reads are unary RPCs behind `HostRuntimeContext`)
+ * the transport that has to move is the streaming one. The unary context is
+ * deliberately left alone — every mutation this panel fires already pins its
+ * own transient client to the row's `hostId` (`resources.kill`,
+ * `managedCommand.stop`), and the host directory the picker itself reads is
+ * app-wide.
+ *
+ * `useScopedStreamBinding` returns null while the pick is the active host, or
+ * while it has not resolved to its own client — in both cases the value below
+ * falls back to the AMBIENT binding, which is exactly what this subtree read
+ * before there was a picker at all.
+ *
+ * The provider is rendered unconditionally, and that is load-bearing rather
+ * than tidiness: mounting it only when a scoped binding exists changes the
+ * element type at this position the moment a pick resolves, so React would
+ * unmount the whole subtree and take the popover's own `open` state with it —
+ * closing the panel the instant a host was chosen from the picker inside it.
+ */
 export function ResourceMonitorPopover(props: ResourceMonitorPopoverProps) {
+  const { scope, hasExplicitPick } = useResourceMonitorHostScope();
+  const scopedStreamBinding = useScopedStreamBinding(scope);
+  const ambientStreamBinding = use(StreamRuntimeContext);
+  return (
+    <StreamRuntimeContext.Provider
+      value={scopedStreamBinding ?? ambientStreamBinding}
+    >
+      <ScopedResourceMonitorPopover
+        className={props.className}
+        scope={scope}
+        hasExplicitPick={hasExplicitPick}
+        streamBoundToScope={
+          !hasExplicitPick ||
+          scope.isViewingActive ||
+          scopedStreamBinding !== null
+        }
+      />
+    </StreamRuntimeContext.Provider>
+  );
+}
+
+function ScopedResourceMonitorPopover(props: {
+  readonly className: string | undefined;
+  readonly scope: HostScope;
+  readonly hasExplicitPick: boolean;
+  /** The provided stream client is the picked host's, not a fallback. */
+  readonly streamBoundToScope: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const chord = useBindingForAction("app.resources.open");
+  useEffect(
+    () =>
+      registerDynamicActionHandler("app.resources.open", () => {
+        setOpen(true);
+      }),
+    [],
+  );
   // While the panel is open, let the header drop its title-bar drag regions so a
   // click on the (otherwise event-swallowing) drag area dismisses the popover.
   useTitleBarDragSuppression("resource-monitor", open);
+  const scope = props.scope;
+  const tooltipLabel = watchesNamedHost(scope, props.hasExplicitPick)
+    ? `Resources · ${scope.hostLabel}`
+    : "Resources";
+  const tooltip =
+    chord === null
+      ? tooltipLabel
+      : `${tooltipLabel} (${formatChordForDisplay(chord)})`;
 
   return (
     <>
-      <GlobalResourcesStreamMount />
+      {/* Held out of the tree entirely under an unresolved pick, rather than
+          mounted and ignored: this mount OPENS a stream, and one opened on the
+          ambient host would be sampling processes on a machine nobody asked
+          about — and would then have to be disowned by every reader below. */}
+      {props.streamBoundToScope ? <GlobalResourcesStreamMount /> : null}
       <Popover open={open} onOpenChange={setOpen}>
         <TooltipWrapper
-          label="Resources"
+          // The host belongs in the label only when it is NOT the obvious one.
+          // Naming the active host on every hover would train people to ignore
+          // the one case the words exist for.
+          label={tooltip}
           side="top"
           sideOffset={6}
           align={undefined}
@@ -338,6 +505,9 @@ export function ResourceMonitorPopover(props: ResourceMonitorPopoverProps) {
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
             onClose={() => setOpen(false)}
+            scope={scope}
+            hasExplicitPick={props.hasExplicitPick}
+            streamBoundToScope={props.streamBoundToScope}
           />
         ) : null}
       </Popover>
@@ -506,28 +676,550 @@ function selectionActionCopy(
   };
 }
 
+/**
+ * The popover surface: the host picker row, then either the panel or the
+ * reason there isn't one.
+ *
+ * The sort menu's open flag lives HERE rather than with the control it belongs
+ * to because `PopoverContent`'s `onInteractOutside` reads it, and that handler
+ * cannot be pushed down past the element it guards. The panel itself is found
+ * by DOM marker instead (`RESOURCE_MONITOR_PANEL_ATTRIBUTE`).
+ */
 function ResourceMonitorContent(props: {
   readonly searchQuery: string;
   readonly onSearchQueryChange: (value: string) => void;
   readonly onClose: () => void;
+  readonly scope: HostScope;
+  readonly hasExplicitPick: boolean;
+  /** The provided stream client is the picked host's, not a fallback. */
+  readonly streamBoundToScope: boolean;
+}) {
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const scope = props.scope;
+  // The picker earns its row once there is a choice to make. One host means one
+  // possible answer, and a control whose only outcome is the state you are
+  // already in is chrome. The `vanished` exception is not a choice but a way
+  // OUT: a pick that no longer resolves must never leave someone stranded on a
+  // notice with the only control that could clear it hidden.
+  const showHostPicker =
+    scope.hosts.length > 1 || scope.vanishedHostId !== null;
+  // Everything below reads through this subtree's stream binding, and a PICK
+  // that is not `ready` did not produce one - so every process, every total and
+  // every kill target would describe the AMBIENT host under the name this
+  // header just printed.
+  //
+  // Gated on there being a pick at all, because without one the ambient host is
+  // not a substitution for anything: it is the host this surface has always
+  // reported, and blanking it on a routine blip would take a working monitor
+  // away from every single-host user for a picker they never opened.
+  const scopeUnusable =
+    props.hasExplicitPick && !isHostScopeUsable(scope.status);
+  // A reachable host whose stream cannot serve this subscription is a THIRD
+  // outcome, and it is terminal: nothing will ever attribute a usable global
+  // projection to this machine, whether because the mount declined to acquire
+  // or because the stream it did open negotiated a version too old to carry
+  // one. Only checked while watching another host — following the active one,
+  // an old host still has the per-epic fallback, which is genuinely its data.
+  //
+  // Gated on the stream actually being BOUND to the pick, because the pre-check
+  // half of this verdict is read from whichever client the context is serving.
+  // While a pick's own binding is unresolved (still dialling, or backing off
+  // after a close) that is the AMBIENT one, and an old ambient host would have
+  // us report the picked machine as outdated on evidence collected from a
+  // different computer entirely. Unbound, we have not asked this host anything
+  // yet. The stream half carries its own, stricter attribution check, since the
+  // registry entry it reads is a singleton that can outlive a swap.
+  const resourcesUnsupported = useGlobalResourcesUnsupported(scope.hostId);
+  const streamIncompatible =
+    props.streamBoundToScope &&
+    watchesNamedHost(scope, props.hasExplicitPick) &&
+    resourcesUnsupported;
+
+  return (
+    <PopoverContent
+      align="end"
+      sideOffset={8}
+      collisionPadding={12}
+      role="dialog"
+      aria-label="Resources"
+      className="w-[min(92vw,34rem)] gap-0 overflow-hidden rounded-xl p-0"
+      onOpenAutoFocus={(event) => event.preventDefault()}
+      // Keep the panel open when focus moves elsewhere (switching tabs, a task
+      // finishing load and autofocusing its content, a terminal grabbing
+      // focus). Only a genuine outside pointer click or Escape should dismiss
+      // it; those go through onPointerDownOutside / onEscapeKeyDown, not here.
+      onFocusOutside={(event) => event.preventDefault()}
+      // Radix owns a document-level Escape listener, so the inline row
+      // confirmation cannot protect the containing popover through React event
+      // propagation alone. Keep the popover mounted while that confirmation
+      // consumes Escape and restores focus to its row.
+      onEscapeKeyDown={(event) => {
+        const activeElement = document.activeElement;
+        if (
+          activeElement instanceof Element &&
+          activeElement.closest(`[${RESOURCE_CONFIRMATION_ATTRIBUTE}]`) !== null
+        ) {
+          event.preventDefault();
+        }
+      }}
+      onInteractOutside={(event) => {
+        const target = event.target;
+        // The host switcher's own list is a nested Radix popover, so it portals
+        // OUTSIDE this content and every click in it reads as an interaction
+        // outside. Without this, opening the picker closed the surface the
+        // picker exists to scope, and no host could ever be chosen. Shared with
+        // every other container that embeds it.
+        if (
+          target instanceof Element &&
+          isHostSwitcherListInteraction(target)
+        ) {
+          event.preventDefault();
+          return;
+        }
+        if (!sortMenuOpen) return;
+        if (!(target instanceof Element)) return;
+        if (target.closest(`[${RESOURCE_MONITOR_PANEL_ATTRIBUTE}]`) !== null) {
+          event.preventDefault();
+        }
+      }}
+    >
+      {showHostPicker ? (
+        <ResourceMonitorHostPickerRow scope={scope} onClose={props.onClose} />
+      ) : null}
+      <ResourceMonitorBody
+        searchQuery={props.searchQuery}
+        onSearchQueryChange={props.onSearchQueryChange}
+        onClose={props.onClose}
+        scope={scope}
+        hasExplicitPick={props.hasExplicitPick}
+        scopeUnusable={scopeUnusable}
+        streamIncompatible={streamIncompatible}
+        sortMenuOpen={sortMenuOpen}
+        onSortMenuOpenChange={setSortMenuOpen}
+      />
+    </PopoverContent>
+  );
+}
+
+/**
+ * Which of the card's three mutually exclusive bodies is showing. Split out so
+ * the choice reads as the ordered set of questions it is — can this scope be
+ * read at all, then can its host serve this stream, then show it — rather than
+ * as nested ternaries in the middle of the card.
+ *
+ * The order matters: an unreachable host has no negotiated stream to judge, so
+ * asking about compatibility first would report an old host as merely offline.
+ */
+function ResourceMonitorBody(props: {
+  readonly searchQuery: string;
+  readonly onSearchQueryChange: (value: string) => void;
+  readonly onClose: () => void;
+  readonly scope: HostScope;
+  readonly hasExplicitPick: boolean;
+  readonly scopeUnusable: boolean;
+  readonly streamIncompatible: boolean;
+  readonly sortMenuOpen: boolean;
+  readonly onSortMenuOpenChange: (open: boolean) => void;
+}) {
+  if (props.scopeUnusable) {
+    return <ResourceMonitorHostUnavailableNotice scope={props.scope} />;
+  }
+  if (props.streamIncompatible) {
+    return <ResourceMonitorHostIncompatibleNotice scope={props.scope} />;
+  }
+  return (
+    <ResourceMonitorPanel
+      searchQuery={props.searchQuery}
+      onSearchQueryChange={props.onSearchQueryChange}
+      onClose={props.onClose}
+      scope={props.scope}
+      hasExplicitPick={props.hasExplicitPick}
+      sortMenuOpen={props.sortMenuOpen}
+      onSortMenuOpenChange={props.onSortMenuOpenChange}
+    />
+  );
+}
+
+/**
+ * The host row above the panel: which machine's processes this surface is
+ * reporting. It heads the whole card rather than sitting inside the list,
+ * because it scopes every section in it - the host app, the task trees and the
+ * Other roots alike.
+ *
+ * `HostSwitcher` is Settings' picker, reused rather than re-skinned, on the
+ * same terms as the usage popover's row: the two surfaces answer different
+ * questions (administer vs. watch) but the rows answer the same one - which
+ * machine is this, can I reach it, which one is active - and a second picker
+ * over one concept is how two vocabularies for it start.
+ */
+function ResourceMonitorHostPickerRow(props: {
+  readonly scope: HostScope;
+  readonly onClose: () => void;
+}) {
+  const { openSettings } = useSystemTabModalActions();
+  // The registry list this picker renders is served by a NON-polling observer;
+  // the Settings sidebar is normally the surface that opts the window into the
+  // liveness poll. When this popover is the only host-list surface mounted, a
+  // row would otherwise keep an Online dot from the last registry DTO until
+  // something else happened to refetch - so this picker carries the same opt-in
+  // for exactly as long as it is on screen.
+  useRegisteredHostsPollLiveness();
+  const scope = props.scope;
+  return (
+    // Full-bleed on purpose: the strip's own edges ARE the card's, so the
+    // picker's list can drop from it at exactly the card's width. Padding here
+    // would inset the trigger, and with it the list anchored to the trigger,
+    // leaving a few pixels of card showing down both sides of the open list.
+    <div
+      className="flex shrink-0 items-center border-b"
+      data-testid="resource-monitor-host-picker-row"
+    >
+      <HostSwitcher
+        hosts={scope.hosts}
+        selected={scope.host}
+        activeHostId={scope.activeHostId}
+        onSelect={scope.setHostId}
+        refusalByHostId={NO_HOST_OPTION_REFUSALS}
+        inertExceptHostId={null}
+        // Managing hosts - adding, renaming, updating, removing - is Settings'
+        // job, with its own dialogs and failure states; this popover watches
+        // processes. So the list ends in one link to where that work already
+        // lives, rather than a second copy of one verb from it.
+        action={{
+          kind: "manage-hosts",
+          onSelect: () => {
+            props.onClose();
+            carryViewedHostIntoSettingsScope(scope.hostId);
+            openSettings({ section: "host", resetToGeneral: false });
+          },
+        }}
+        surface="panel-header"
+        intent="view"
+        disabled={false}
+        isLoading={scope.isLoading}
+        listsFailed={scope.listsFailed}
+        onRetryLists={scope.retryLists}
+      />
+    </div>
+  );
+}
+
+/**
+ * Why this surface is showing nothing rather than showing the active host's
+ * processes under another host's name. Each branch names the remedy it has,
+ * because the three states differ in exactly that: `vanished` needs the pick
+ * dropped, `unreachable` needs the machine back, `connecting` needs a moment.
+ */
+function ResourceMonitorHostUnavailableNotice(props: {
+  readonly scope: HostScope;
+}) {
+  const scope = props.scope;
+  if (scope.status === "connecting") {
+    return (
+      <div
+        className="flex items-center justify-center gap-2 px-3.5 py-8 text-ui-sm text-muted-foreground"
+        data-testid="resource-monitor-host-connecting"
+      >
+        <MutedAgentSpinner />
+        Finding {scope.hostLabel}…
+      </div>
+    );
+  }
+  // A plan-gated host is not an offline one, and the copy below would send
+  // someone to debug a network that is working: the machine is up, this app
+  // just may not attach to it remotely on the current plan. The scope gate
+  // makes exactly this distinction for the Settings panels
+  // (`host-scope-gate.tsx`), and a picker that can land on the same host owes
+  // the same answer and the same remedy.
+  if (scope.host?.planRestricted === true) {
+    return (
+      <div
+        role="status"
+        className="flex flex-col items-center gap-2 px-6 py-8 text-center"
+        data-testid="resource-monitor-host-plan-restricted"
+      >
+        <p className="max-w-[40ch] text-ui-sm font-medium text-foreground">
+          Reading {scope.hostLabel} needs a paid plan
+        </p>
+        <p className="max-w-[40ch] text-ui-sm text-muted-foreground">
+          It keeps working on its own machine. This app just can&apos;t attach
+          to it remotely on the current plan, so its processes can&apos;t be
+          streamed here.
+        </p>
+        <PlanRestrictedUpgradeAction />
+        <button
+          type="button"
+          onClick={scope.returnToActive}
+          className="rounded-md px-1 py-0.5 text-ui-sm text-primary transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          data-testid="resource-monitor-host-return-to-active"
+        >
+          Show the active host
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div
+      role="status"
+      className="flex flex-col items-center gap-2 px-6 py-8 text-center"
+      data-testid="resource-monitor-host-unavailable"
+    >
+      <p className="max-w-[40ch] text-ui-sm font-medium text-foreground">
+        {scope.status === "vanished"
+          ? `${scope.hostLabel} is no longer connected`
+          : `Can't reach ${scope.hostLabel}`}
+      </p>
+      <p className="max-w-[40ch] text-ui-sm text-muted-foreground">
+        {scope.status === "vanished"
+          ? "It was removed or signed out, so its processes can't be read."
+          : "Process trees are streamed from the host itself, so they're unavailable while it's offline."}
+      </p>
+      <button
+        type="button"
+        onClick={scope.returnToActive}
+        className="rounded-md px-1 py-0.5 text-ui-sm text-primary transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        data-testid="resource-monitor-host-return-to-active"
+      >
+        Show the active host
+      </button>
+    </div>
+  );
+}
+
+/**
+ * A host that is reachable, answering, and simply too old to stream its
+ * processes to this window.
+ *
+ * It gets its own notice rather than the waiting copy because the difference is
+ * whether anything is coming: `unreachable` may recover on its own, but a host
+ * that did not negotiate the global subscription will not start, and a spinner
+ * over that says something untrue for as long as the pick stands. The remedy is
+ * named for the same reason — it is an action on the other machine, not
+ * something this window can retry.
+ */
+function ResourceMonitorHostIncompatibleNotice(props: {
+  readonly scope: HostScope;
+}) {
+  const scope = props.scope;
+  return (
+    <div
+      role="status"
+      className="flex flex-col items-center gap-2 px-6 py-8 text-center"
+      data-testid="resource-monitor-host-incompatible"
+    >
+      <p className="max-w-[40ch] text-ui-sm font-medium text-foreground">
+        {scope.hostLabel} can&apos;t report its processes
+      </p>
+      <p className="max-w-[40ch] text-ui-sm text-muted-foreground">
+        It&apos;s running an older Traycer host, which doesn&apos;t stream
+        resource usage. Update it to see its processes here.
+      </p>
+      <button
+        type="button"
+        onClick={scope.returnToActive}
+        className="rounded-md px-1 py-0.5 text-ui-sm text-primary transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        data-testid="resource-monitor-host-return-to-active"
+      >
+        Show the active host
+      </button>
+    </div>
+  );
+}
+
+/**
+ * What "nothing here yet" means, which differs by who is being watched.
+ *
+ * Under a pick this covers a host whose stream has not been attributed to it
+ * yet: the transport is still resolving, or a swap left the projection still
+ * naming the machine we just stopped watching. Naming the machine keeps that
+ * honest instead of implying data is on its way from a host this window is not
+ * actually reading. A host that will NEVER be attributed — one too old to serve
+ * a global stream — is not one of these: it gets a terminal notice rather than
+ * a wait that cannot end (`ResourceMonitorHostIncompatibleNotice`).
+ */
+function resourceMonitorWaitingCopy(
+  scope: HostScope,
+  hasExplicitPick: boolean,
+): string {
+  return watchesNamedHost(scope, hasExplicitPick)
+    ? `Waiting for ${scope.hostLabel}…`
+    : "Waiting for resource data.";
+}
+
+/**
+ * Whether this surface is reporting a machine the user NAMED — the question
+ * every "are we watching someone else" branch actually wants answered.
+ *
+ * `isViewingActive` cannot answer it. It is `isFollowing`, which requires a
+ * RESOLVED host, so it reads false throughout the cold-start window before the
+ * host lists reply — during which there is no pick, nothing is named on screen,
+ * and treating the surface as if it were watching another machine blanks a
+ * working monitor and can accuse the ambient host of being unable to report.
+ * The pick is what the person did; `isViewingActive` is a fact about lists that
+ * happens to correlate once they load.
+ *
+ * The second half stands because naming the active host on a surface already
+ * following it is noise — but it is only ever consulted once a pick exists.
+ */
+function watchesNamedHost(scope: HostScope, hasExplicitPick: boolean): boolean {
+  return hasExplicitPick && !scope.isViewingActive;
+}
+
+/** Everything watching another machine changes about what this panel reads. */
+interface ResourceMonitorHostReading {
+  /**
+   * Where a kill goes for rows that carry no host of their own - the "Other"
+   * roots. Owner rows route by their own `owner.hostId` and never consult this.
+   */
+  readonly killHostId: string | null;
+  readonly projection: GlobalResourceProjection;
+  readonly desktopApp: DesktopAppResourceUsage | null;
+}
+
+/**
+ * Whether "Traycer Desktop" — the Electron shell, which is THIS computer's
+ * process — belongs in the reading.
+ *
+ * The test is the machine's IDENTITY, not whether the surface happens to be
+ * following the active selection. Those come apart in both directions: the
+ * active host can itself be a remote machine (counting the local shell there
+ * attributes this computer's memory to another one, over a "RAM share"
+ * denominator its numerator never came from), and someone can explicitly pick
+ * the machine they are sitting at while the active host is elsewhere — where
+ * the row is exactly what they asked for.
+ *
+ * With no host resolved the answer is "we do not know which machine this is
+ * describing", and the row stays hidden — which is also what it did before
+ * there was a picker, since `isViewingActive` is itself false until a host
+ * resolves (`isFollowing` requires one). Reaching for `isViewingActive` as a
+ * cold-start fallback here looks like it preserves something and cannot: it is
+ * false in exactly the case it would be consulted.
+ */
+function readingShowsLocalDesktop(scope: HostScope): boolean {
+  return scope.host?.isLocalMachine === true;
+}
+
+/**
+ * Reconcile the panel's three host-dependent inputs in ONE place, so the
+ * "which machine is this" question is answered once rather than re-derived
+ * beside every consumer — the shape of mistake where the totals move to the
+ * picked host and the kill route quietly does not.
+ *
+ * Following the active host every answer is what it was before the picker
+ * existed; nothing about a single-host window changes.
+ */
+function resolveResourceMonitorHostReading(input: {
+  readonly scope: HostScope;
+  readonly hasExplicitPick: boolean;
+  readonly streamed: GlobalResourceProjection;
+  readonly localDesktopApp: DesktopAppResourceUsage | null;
+}): ResourceMonitorHostReading {
+  // ONE value answers "which machine is this reading about", and it answers it
+  // for both the data and the actions. Deriving the kill target from a second
+  // reader of the active host — `useAddressableHostId`, which this used to
+  // call — is what let the two disagree: on an ambient host swap it moved to
+  // the new machine a commit before the stream transport did, so the panel
+  // showed the old host's processes with kills aimed at the new one. That
+  // needed no picker to happen, and no pick to reproduce.
+  return {
+    killHostId: input.scope.hostId,
+    projection: attributedProjection(
+      input.scope,
+      input.hasExplicitPick,
+      input.streamed,
+    ),
+    desktopApp: readingShowsLocalDesktop(input.scope)
+      ? input.localDesktopApp
+      : null,
+  };
+}
+
+/**
+ * The projection, or nothing, according to what this surface is CLAIMING —
+ * and the two claims differ, so the burden of proof does too.
+ *
+ * The projection is a module singleton that outlives any one transport, so it
+ * can describe a machine the current reading was not opened against: a host
+ * swap still in flight (ambient or scoped — the registry entry is named at
+ * acquire time, one commit before the replacement binding reaches context), or
+ * a pick just dropped, where the entry still carries the abandoned host's name.
+ *
+ * **Under a pick** the surface is accountable to a machine the person named, so
+ * it owes positive proof: the projection must say this host, or there is
+ * nothing to show. An unattributed projection is not good enough — that is
+ * exactly the pre-v1.1 per-epic fallback, which rides the ambient transport and
+ * would put one machine's processes under another's name.
+ *
+ * **With no pick** nothing on screen names a machine; the only thing that can
+ * go wrong is a kill routed at a host these rows did not come from. So refuse
+ * what can be PROVEN foreign and nothing more. A scope that has not resolved
+ * its host id — every cold start, between the ambient stream connecting and the
+ * host lists answering — proves nothing, and has no kill target either
+ * (`defaultHostId` is null, so the Other roots offer no action). Demanding
+ * proof there would blank a working monitor on every launch to defend a name it
+ * never prints.
+ *
+ * The branch is `hasExplicitPick`, NOT `isViewingActive`. The latter is false
+ * throughout that same cold-start window (see `watchesNamedHost`), so keying on
+ * it puts the strict branch in charge of exactly the case the permissive branch
+ * exists for — which is the bug this comment used to describe as fixed.
+ */
+function attributedProjection(
+  scope: HostScope,
+  hasExplicitPick: boolean,
+  streamed: GlobalResourceProjection,
+): GlobalResourceProjection {
+  if (hasExplicitPick) {
+    return streamed.hostId !== null && streamed.hostId === scope.hostId
+      ? streamed
+      : EMPTY_GLOBAL_RESOURCE_PROJECTION;
+  }
+  const provablyAnotherMachine =
+    streamed.hostId !== null &&
+    scope.hostId !== null &&
+    streamed.hostId !== scope.hostId;
+  return provablyAnotherMachine ? EMPTY_GLOBAL_RESOURCE_PROJECTION : streamed;
+}
+
+/**
+ * The panel itself, mounted only once the surface is bound to the host it
+ * names. Split from `ResourceMonitorContent` so the reads below are not
+ * mounted at all under an unusable scope.
+ */
+function ResourceMonitorPanel(props: {
+  readonly searchQuery: string;
+  readonly onSearchQueryChange: (value: string) => void;
+  readonly onClose: () => void;
+  readonly scope: HostScope;
+  readonly hasExplicitPick: boolean;
+  readonly sortMenuOpen: boolean;
+  readonly onSortMenuOpenChange: (open: boolean) => void;
 }) {
   const [sortOption, setSortOption] = useState<ResourceSortOption>("tab");
   const searchQuery = props.searchQuery;
-  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const scope = props.scope;
+  const sortMenuOpen = props.sortMenuOpen;
+  const setSortMenuOpen = props.onSortMenuOpenChange;
   const [expandedOwners, setExpandedOwners] = useState<Set<string>>(
     () => new Set(),
   );
   const [expandedProcesses, setExpandedProcesses] = useState<Set<string>>(
     () => new Set(),
   );
-  // The global projection streams a single host (the default host's transport),
-  // so every owner/Other pid in it belongs to this host - the kill route for
-  // the harness-less "Other" roots, which carry no owner hostId of their own.
-  const defaultHostId = useReactiveActiveHostId();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const sortTriggerRef = useRef<HTMLButtonElement | null>(null);
   const dismissingSortMenuRef = useRef(false);
-  const projection = useGlobalResourceProjection();
+  const streamedProjection = useGlobalResourceProjection();
+  const localDesktopApp = useDesktopAppResourceUsage();
+  const reading = resolveResourceMonitorHostReading({
+    scope,
+    hasExplicitPick: props.hasExplicitPick,
+    streamed: streamedProjection,
+    localDesktopApp,
+  });
+  const defaultHostId = reading.killHostId;
+  const projection = reading.projection;
+  const desktopApp = reading.desktopApp;
   const resourcesVersion = useStreamMethodSchemaVersion("resources.subscribe");
   const { tasks } = useCloudEpicTasksQuery(undefined, { enabled: true });
   const canvas = useResourceCanvasSnapshot();
@@ -539,7 +1231,6 @@ function ResourceMonitorContent(props: {
   });
   const activeEpicId = readActiveEpicIdFromPath(activePathname);
   const activeTabId = readActiveEpicTabIdFromPath(activePathname);
-  const desktopApp = useDesktopAppResourceUsage();
   const supportsHostTree = resourcesSubscribeV12Supported(resourcesVersion);
   const summary = useMemo(
     () =>
@@ -558,7 +1249,13 @@ function ResourceMonitorContent(props: {
     ],
   );
 
-  const canvasIndex = useMemo(() => buildCanvasResourceIndex(canvas), [canvas]);
+  const tombstoneEvidence = usePlainTerminalTombstoneEvidence();
+  const canvasIndex = useMemo(() => {
+    // Not read by the builder directly - it is the Query-side input the
+    // builder's tombstone gate reads, so the index has to re-derive with it.
+    void tombstoneEvidence;
+    return buildCanvasResourceIndex(canvas);
+  }, [canvas, tombstoneEvidence]);
   const recordByOwner = useMemo(() => buildRecordByOwner(canvas), [canvas]);
   const epicTitleById = useMemo(() => buildEpicTitleById(tasks), [tasks]);
   const taskRows = useMemo(
@@ -729,244 +1426,264 @@ function ResourceMonitorContent(props: {
     event.stopPropagation();
   };
 
-  return (
-    <PopoverContent
-      align="end"
-      sideOffset={8}
-      collisionPadding={12}
-      role="dialog"
-      aria-label="Resources"
-      className="w-[min(92vw,34rem)] gap-0 overflow-hidden rounded-xl p-0"
-      onOpenAutoFocus={(event) => event.preventDefault()}
-      // Keep the panel open when focus moves elsewhere (switching tabs, a task
-      // finishing load and autofocusing its content, a terminal grabbing
-      // focus). Only a genuine outside pointer click or Escape should dismiss
-      // it; those go through onPointerDownOutside / onEscapeKeyDown, not here.
-      onFocusOutside={(event) => event.preventDefault()}
-      onInteractOutside={(event) => {
-        if (!sortMenuOpen) return;
-        if (!(event.target instanceof Node)) return;
-        if (panelRef.current?.contains(event.target) === true) {
+  const handlePanelKeyDown = (
+    event: ReactKeyboardEvent<HTMLDivElement>,
+  ): void => {
+    if (!(event.target instanceof HTMLElement)) return;
+    const target = event.target;
+    const isSearch = target.hasAttribute(RESOURCE_SEARCH_ATTRIBUTE);
+    const navigationKey = target.getAttribute(
+      RESOURCE_NAVIGATION_KEY_ATTRIBUTE,
+    );
+    if (isSearch || navigationKey !== null) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        if (
+          moveResourceNavigationFocus(
+            panelRef.current ?? event.currentTarget,
+            target,
+            event.key === "ArrowDown" ? 1 : -1,
+          )
+        ) {
           event.preventDefault();
+          event.stopPropagation();
         }
-      }}
+        return;
+      }
+    }
+    if (navigationKey !== null && event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      target.click();
+      return;
+    }
+    if (
+      navigationKey !== null &&
+      (event.key === "Delete" || event.key === "Backspace") &&
+      armResourceRowAction(
+        panelRef.current ?? event.currentTarget,
+        navigationKey,
+      )
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+
+  return (
+    <div
+      ref={panelRef}
+      {...{ [RESOURCE_MONITOR_PANEL_ATTRIBUTE]: "" }}
+      className="min-w-0"
+      onPointerDownCapture={dismissSortMenuFromPanelClick}
+      onClickCapture={swallowDismissedSortMenuClick}
+      onKeyDownCapture={handlePanelKeyDown}
     >
-      <div
-        ref={panelRef}
-        className="min-w-0"
-        onPointerDownCapture={dismissSortMenuFromPanelClick}
-        onClickCapture={swallowDismissedSortMenuClick}
-      >
-        <div className="border-b border-border/60 px-3.5 pb-3 pt-3">
-          <div className="flex items-center justify-between gap-3">
-            <h4 className="min-w-0 flex-1 truncate text-ui-sm font-medium text-foreground">
-              Resources
-            </h4>
-            <div className="flex shrink-0 items-center gap-1">
-              {rowActions.selectionMode ? (
-                // Selection mode replaces the header controls wholesale (the
-                // sort dropdown included), mirroring the chat navigator's
-                // Select all / Cancel / destructive-action toolbar.
-                <div className="flex items-center gap-0.5">
-                  <SelectAllToggle
-                    allSelected={rowActions.allVisibleSelected}
-                    onSelectAll={rowActions.selectAllVisible}
-                    onDeselectAll={rowActions.deselectAllVisible}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    className="h-6 px-1.5 text-muted-foreground hover:text-foreground"
-                    aria-label="Cancel selection"
-                    onClick={rowActions.cancelSelection}
-                  >
-                    <X className="mr-1 size-3.5" />
-                    Cancel
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    className={cn(
-                      "h-6 px-1.5",
-                      selectionCopy.destructive
-                        ? "text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                    disabled={
-                      rowActions.selectedCount === 0 || rowActions.isPending
-                    }
-                    aria-label={selectionCopy.ariaLabel}
-                    onClick={rowActions.runSelected}
-                  >
-                    {selectionCopy.text}
-                    {rowActions.isPending ? (
-                      <AgentSpinningDots
-                        className="ml-1"
-                        testId={undefined}
-                        variant={undefined}
-                      />
-                    ) : null}
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    className="text-muted-foreground hover:text-foreground"
-                    aria-label="Select processes to kill"
-                    onClick={rowActions.enterSelection}
-                  >
-                    <ListChecks className="size-3.5" />
-                  </Button>
-                  <DropdownMenu
-                    modal={false}
-                    open={sortMenuOpen}
-                    onOpenChange={setSortMenuOpen}
-                  >
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        ref={sortTriggerRef}
-                        type="button"
-                        className="flex h-6 items-center gap-1 rounded-sm px-1.5 text-ui-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                        aria-label="Sort resource rows"
-                      >
-                        <ArrowDownNarrowWide className="size-3.5" />
-                        <span>{SORT_LABELS[sortOption]}</span>
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-40">
-                      <DropdownMenuRadioGroup
-                        value={sortOption}
-                        onValueChange={(value) => {
-                          if (isResourceSortOption(value)) setSortOption(value);
-                        }}
-                      >
-                        <DropdownMenuRadioItem value="memory">
-                          Memory
-                        </DropdownMenuRadioItem>
-                        <DropdownMenuRadioItem value="cpu">
-                          CPU
-                        </DropdownMenuRadioItem>
-                        <DropdownMenuRadioItem value="name">
-                          Name
-                        </DropdownMenuRadioItem>
-                        <DropdownMenuRadioItem value="tab">
-                          Tab order
-                        </DropdownMenuRadioItem>
-                      </DropdownMenuRadioGroup>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </>
-              )}
-            </div>
-          </div>
-
-          <ResourceSearchInput
-            value={searchQuery}
-            onChange={updateSearchQuery}
-          />
-
-          {summary === null ? (
-            <div className="mt-4 text-ui-xs text-muted-foreground">
-              Waiting for resource data.
-            </div>
-          ) : (
-            <>
-              <div className="mt-3 grid grid-cols-3 divide-x divide-border/50">
-                <MetricBlock
-                  label="CPU"
-                  value={formatCpuPercent(summary.cpuPercent)}
+      <div className="border-b border-border/60 px-3.5 pb-3 pt-3">
+        <div className="flex items-center justify-between gap-3">
+          <h4 className="min-w-0 flex-1 truncate text-ui-sm font-medium text-foreground">
+            Resources
+          </h4>
+          <div className="flex shrink-0 items-center gap-1">
+            {rowActions.selectionMode ? (
+              // Selection mode replaces the header controls wholesale (the
+              // sort dropdown included), mirroring the chat navigator's
+              // Select all / Cancel / destructive-action toolbar.
+              <div className="flex items-center gap-0.5">
+                <SelectAllToggle
+                  allSelected={rowActions.allVisibleSelected}
+                  onSelectAll={rowActions.selectAllVisible}
+                  onDeselectAll={rowActions.deselectAllVisible}
                 />
-                <MetricBlock
-                  label="Memory"
-                  value={formatMemoryBytes(summary.rssBytes)}
-                />
-                <MetricBlock
-                  label="RAM share"
-                  value={formatCpuPercent(memorySharePercent)}
-                />
-              </div>
-              <div
-                className="mt-3 h-1 w-full overflow-hidden rounded-full bg-muted/60"
-                role="progressbar"
-                aria-label="Tracked RAM share"
-                aria-valuenow={Math.round(memorySharePercent)}
-                aria-valuemin={0}
-                aria-valuemax={100}
-              >
-                <div
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="h-6 px-1.5 text-muted-foreground hover:text-foreground"
+                  aria-label="Cancel selection"
+                  onClick={rowActions.cancelSelection}
+                >
+                  <X className="mr-1 size-3.5" />
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
                   className={cn(
-                    "h-full rounded-full transition-[width] duration-300",
-                    memoryShareBarClass(memorySharePercent),
+                    "h-6 px-1.5",
+                    selectionCopy.destructive
+                      ? "text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      : "text-muted-foreground hover:text-foreground",
                   )}
-                  style={{
-                    width: `${Math.min(100, Math.max(0, memorySharePercent))}%`,
-                  }}
-                />
+                  disabled={
+                    rowActions.selectedCount === 0 || rowActions.isPending
+                  }
+                  aria-label={selectionCopy.ariaLabel}
+                  onClick={rowActions.runSelected}
+                >
+                  {selectionCopy.text}
+                  {rowActions.isPending ? (
+                    <AgentSpinningDots
+                      className="ml-1"
+                      testId={undefined}
+                      variant={undefined}
+                    />
+                  ) : null}
+                </Button>
               </div>
-            </>
-          )}
+            ) : (
+              <>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground hover:text-foreground"
+                  aria-label="Select processes to kill"
+                  onClick={rowActions.enterSelection}
+                >
+                  <ListChecks className="size-3.5" />
+                </Button>
+                <DropdownMenu
+                  modal={false}
+                  open={sortMenuOpen}
+                  onOpenChange={setSortMenuOpen}
+                >
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      ref={sortTriggerRef}
+                      type="button"
+                      className="flex h-6 items-center gap-1 rounded-sm px-1.5 text-ui-xs text-muted-foreground transition-colors hover:bg-foreground/8 hover:text-foreground"
+                      aria-label="Sort resource rows"
+                    >
+                      <ArrowDownNarrowWide className="size-3.5" />
+                      <span>{SORT_LABELS[sortOption]}</span>
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-40">
+                    <DropdownMenuRadioGroup
+                      value={sortOption}
+                      onValueChange={(value) => {
+                        if (isResourceSortOption(value)) setSortOption(value);
+                      }}
+                    >
+                      <DropdownMenuRadioItem value="memory">
+                        Memory
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="cpu">
+                        CPU
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="name">
+                        Name
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="tab">
+                        Tab order
+                      </DropdownMenuRadioItem>
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </>
+            )}
+          </div>
         </div>
 
-        <div className="max-h-[min(58vh,36rem)] overflow-y-auto">
-          {search.desktopApp === null ? null : (
-            <DesktopAppResourceSection
-              app={search.desktopApp}
-              sortOption={sortOption}
-              searchQuery={searchQuery}
-            />
-          )}
-          {search.hostApp === null ? null : (
-            <HostAppResourceSection app={search.hostApp} />
-          )}
-          {summary === null ? null : (
-            <div className="py-1">
-              {!search.active && search.taskRows.length === 0 ? (
-                <div className="px-3.5 py-4 text-center text-ui-xs text-muted-foreground">
-                  No active task process trees.
-                </div>
-              ) : (
-                search.taskRows.map((task) => (
-                  <TaskResourceSection
-                    key={task.entry.epicId}
-                    task={task}
-                    searchQuery={searchQuery}
-                    liveOwnerTitleByKey={liveOwnerTitleByKey}
-                    expandedOwners={expandedOwners}
-                    expandedProcesses={expandedProcesses}
-                    sortOption={sortOption}
-                    onToggleOwner={toggleOwner}
-                    onToggleProcess={toggleProcess}
-                    onOpenOwner={openOwner}
-                    actions={rowActions.api}
-                  />
-                ))
-              )}
-              {search.other === null ? null : (
-                <OtherResourceSection
-                  other={search.other}
+        <ResourceSearchInput value={searchQuery} onChange={updateSearchQuery} />
+
+        {summary === null ? (
+          <div className="mt-4 text-ui-xs text-muted-foreground">
+            {resourceMonitorWaitingCopy(scope, props.hasExplicitPick)}
+          </div>
+        ) : (
+          <>
+            <div className="mt-3 grid grid-cols-3 divide-x divide-border/50">
+              <MetricBlock
+                label="CPU"
+                value={formatCpuPercent(summary.cpuPercent)}
+              />
+              <MetricBlock
+                label="Memory"
+                value={formatMemoryBytes(summary.rssBytes)}
+              />
+              <MetricBlock
+                label="RAM share"
+                value={formatCpuPercent(memorySharePercent)}
+              />
+            </div>
+            <div
+              className="mt-3 h-1 w-full overflow-hidden rounded-full bg-foreground/6"
+              role="progressbar"
+              aria-label="Tracked RAM share"
+              aria-valuenow={Math.round(memorySharePercent)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div
+                className={cn(
+                  "h-full rounded-full transition-[width] duration-300",
+                  memoryShareBarClass(memorySharePercent),
+                )}
+                style={{
+                  width: `${Math.min(100, Math.max(0, memorySharePercent))}%`,
+                }}
+              />
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="max-h-[min(58vh,36rem)] overflow-y-auto">
+        {search.desktopApp === null ? null : (
+          <DesktopAppResourceSection
+            app={search.desktopApp}
+            sortOption={sortOption}
+            searchQuery={searchQuery}
+          />
+        )}
+        {search.hostApp === null ? null : (
+          <HostAppResourceSection app={search.hostApp} />
+        )}
+        {summary === null ? null : (
+          <div className="py-1">
+            {!search.active && search.taskRows.length === 0 ? (
+              <div className="px-3.5 py-4 text-center text-ui-xs text-muted-foreground">
+                No active task process trees.
+              </div>
+            ) : (
+              search.taskRows.map((task) => (
+                <TaskResourceSection
+                  key={task.entry.epicId}
+                  task={task}
                   searchQuery={searchQuery}
+                  liveOwnerTitleByKey={liveOwnerTitleByKey}
+                  expandedOwners={expandedOwners}
                   expandedProcesses={expandedProcesses}
                   sortOption={sortOption}
+                  onToggleOwner={toggleOwner}
                   onToggleProcess={toggleProcess}
+                  onOpenOwner={openOwner}
                   actions={rowActions.api}
-                  killHostId={defaultHostId}
                 />
-              )}
-              {search.noResults ? (
-                <div className="px-3.5 py-6 text-center text-ui-xs text-muted-foreground">
-                  No resources match “{searchQuery.trim()}”.
-                </div>
-              ) : null}
-            </div>
-          )}
-        </div>
+              ))
+            )}
+            {search.other === null ? null : (
+              <OtherResourceSection
+                other={search.other}
+                searchQuery={searchQuery}
+                expandedProcesses={expandedProcesses}
+                sortOption={sortOption}
+                onToggleProcess={toggleProcess}
+                actions={rowActions.api}
+                killHostId={defaultHostId}
+              />
+            )}
+            {search.noResults ? (
+              <div className="px-3.5 py-6 text-center text-ui-xs text-muted-foreground">
+                No resources match “{searchQuery.trim()}”.
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
-    </PopoverContent>
+    </div>
   );
 }
 
@@ -1065,6 +1782,7 @@ function ResourceSearchInput(props: {
       </InputGroupAddon>
       <InputGroupInput
         ref={inputRef}
+        {...{ [RESOURCE_SEARCH_ATTRIBUTE]: "" }}
         type="search"
         value={props.value}
         onChange={(event) => props.onChange(event.target.value)}
@@ -1170,7 +1888,7 @@ function DesktopAppProcessGroupRow(props: {
   readonly usage: DesktopAppProcessGroupUsage;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 px-3.5 py-1 pl-7 text-muted-foreground transition-colors hover:bg-muted/40">
+    <div className="flex items-center justify-between gap-3 px-3.5 py-1 pl-7 text-muted-foreground transition-colors hover:bg-foreground/5">
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 truncate text-ui-xs">{props.label}</span>
       </div>
@@ -1536,18 +2254,48 @@ interface ResourceRowActionApi {
 }
 
 /**
- * Per-row kill affordance: hidden until the row is hovered/focused, then a
- * two-step INLINE confirm (no modal) - the trash icon arms, swapping to a
- * "Kill / cancel" pair. Escaping hover disarms it. Mirrors the chat-nav
- * `StopAffordance` reveal + the sidebar destructive-ghost styling.
+ * Per-row destructive affordance: hidden until the row is hovered/focused,
+ * then a two-step INLINE confirm (no modal). The keyboard path deliberately
+ * lands on Confirm after Delete/Backspace arms it, making Enter the second,
+ * distinct confirmation key; Escape dismisses and restores row focus.
  */
-function KillRowButton(props: {
-  readonly target: KillTarget;
+function ConfirmableRowAction(props: {
+  readonly target: RowActionTarget;
   readonly label: string;
-  readonly onKill: (target: KillTarget) => void;
-  readonly isKilling: boolean;
+  readonly onRun: (target: RowActionTarget) => void;
+  readonly isPending: boolean;
 }) {
   const [armed, setArmed] = useState(false);
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const verb = props.target.kind === "kill" ? "kill" : "stop";
+  const arm = (): void => {
+    returnFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setArmed(true);
+  };
+  const disarm = (): void => {
+    setArmed(false);
+    window.requestAnimationFrame(() => returnFocusRef.current?.focus());
+  };
+  useLayoutEffect(() => {
+    if (armed) confirmRef.current?.focus();
+  }, [armed]);
+  const confirm = (): void => {
+    props.onRun(props.target);
+    setArmed(false);
+  };
+  const cancelFromKeyboard = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+  ): void => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    disarm();
+  };
+
   if (armed) {
     // Armed confirm floats over the row's right edge as a small panel (the
     // row wrapper is `relative`), instead of squeezing beside the metrics -
@@ -1555,22 +2303,39 @@ function KillRowButton(props: {
     return (
       <>
         <span className={ROW_ACTION_SLOT} />
-        <span className="absolute inset-y-0 right-2 z-30 my-auto flex h-7 items-center gap-0.5 rounded-md border border-border/60 bg-popover px-1 shadow-sm">
+        <span
+          {...{ [RESOURCE_CONFIRMATION_ATTRIBUTE]: "" }}
+          className="absolute inset-y-0 right-2 z-30 my-auto flex h-7 items-center gap-0.5 rounded-md border border-border/60 bg-popover px-1 shadow-sm"
+        >
           <Button
+            ref={confirmRef}
             type="button"
             variant="ghost"
             size="xs"
             className="h-5 px-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
-            disabled={props.isKilling}
-            aria-label={`Confirm kill ${props.label}`}
+            disabled={props.isPending}
+            aria-label={`Confirm ${verb} ${props.label}`}
+            aria-keyshortcuts="Enter"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                cancelFromKeyboard(event);
+                return;
+              }
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              event.stopPropagation();
+              confirm();
+            }}
             onClick={(event) => {
               event.stopPropagation();
-              props.onKill(props.target);
-              setArmed(false);
+              confirm();
             }}
           >
             Confirm
-            {props.isKilling ? (
+            <span aria-hidden className="ml-1 text-muted-foreground">
+              ↵
+            </span>
+            {props.isPending ? (
               <AgentSpinningDots
                 className="ml-1"
                 testId={undefined}
@@ -1584,37 +2349,56 @@ function KillRowButton(props: {
             size="xs"
             className="h-5 px-1.5 text-muted-foreground hover:text-foreground"
             aria-label={`Keep ${props.label} running`}
+            aria-keyshortcuts="Escape"
+            onKeyDown={cancelFromKeyboard}
             onClick={(event) => {
               event.stopPropagation();
-              setArmed(false);
+              disarm();
             }}
           >
             Cancel
+            <span aria-hidden className="ml-1">
+              Esc
+            </span>
           </Button>
         </span>
       </>
     );
   }
-  // Text label, not an icon: a bin reads as "delete this agent's state" and a
-  // stop glyph reads as "stop the turn", but this only terminates the process
-  // tree. The word carries the meaning unambiguously.
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="xs"
-      className={cn(
-        "h-6 shrink-0 px-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive",
-        ROW_HOVER_REVEAL,
+    <span {...{ [RESOURCE_ACTION_KEY_ATTRIBUTE]: props.target.key }}>
+      {props.target.kind === "stop" ? (
+        <ManagedCommandStopButton
+          commandId={props.target.commandId}
+          ariaLabel={`Stop ${props.label}`}
+          isPending={props.isPending}
+          className={ROW_HOVER_REVEAL}
+          onStop={arm}
+        />
+      ) : (
+        <>
+          {/* Text label, not an icon: a bin reads as "delete this agent's
+              state" and a stop glyph reads as "stop the turn", but this only
+              terminates the process tree. The word carries the meaning. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className={cn(
+              "h-6 shrink-0 px-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive",
+              ROW_HOVER_REVEAL,
+            )}
+            aria-label={`Kill ${props.label}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              arm();
+            }}
+          >
+            Kill
+          </Button>
+        </>
       )}
-      aria-label={`Kill ${props.label}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        setArmed(true);
-      }}
-    >
-      Kill
-    </Button>
+    </span>
   );
 }
 
@@ -1691,26 +2475,13 @@ function OwnerRowActionCell(props: {
   if (actions === null || target === null || actions.selectionMode) {
     return <span className={ROW_ACTION_SLOT} />;
   }
-  if (target.kind === "stop") {
-    return (
-      <span className={ROW_ACTION_SLOT}>
-        <ManagedCommandStopButton
-          commandId={target.commandId}
-          ariaLabel={`Stop ${props.label}`}
-          isPending={actions.isPending}
-          className={ROW_HOVER_REVEAL}
-          onStop={() => actions.runOne(target)}
-        />
-      </span>
-    );
-  }
   return (
     <span className={ROW_ACTION_SLOT}>
-      <KillRowButton
+      <ConfirmableRowAction
         target={target}
         label={props.label}
-        onKill={actions.runOne}
-        isKilling={actions.isPending}
+        onRun={actions.runOne}
+        isPending={actions.isPending}
       />
     </span>
   );
@@ -1877,6 +2648,14 @@ function OwnerProviderIcon(props: {
  * created (rendered as sub-rows of the same shape, above), then its own OS
  * process tree. A shell has no shells of its own, so the recursion is two deep.
  */
+function resourceNavigationKey(
+  canOpen: boolean,
+  selecting: boolean,
+  rowKey: string,
+): string | undefined {
+  return canOpen && !selecting ? rowKey : undefined;
+}
+
 function OwnerTreeRow(props: {
   readonly row: OwnerDisplayRow;
   readonly depth: number;
@@ -1930,8 +2709,8 @@ function OwnerTreeRow(props: {
     <div>
       <div
         className={cn(
-          "group relative flex items-center pr-3.5 transition-colors hover:bg-muted/50",
-          selected && "bg-muted/40",
+          "group relative flex items-center pr-3.5 transition-colors hover:bg-foreground/5",
+          selected && "bg-foreground/5",
           visibleExpanded && "sticky z-10 bg-popover",
         )}
         style={{
@@ -1952,6 +2731,13 @@ function OwnerTreeRow(props: {
           type="button"
           onClick={rowClick}
           disabled={!selecting && !props.row.canOpen}
+          {...{
+            [RESOURCE_NAVIGATION_KEY_ATTRIBUTE]: resourceNavigationKey(
+              props.row.canOpen,
+              selecting,
+              rowKey,
+            ),
+          }}
           className={cn(
             "flex min-w-0 flex-1 items-center justify-between gap-3 py-1.5 pl-1 text-left transition-colors",
             props.row.canOpen
@@ -1972,7 +2758,6 @@ function OwnerTreeRow(props: {
                   props.row.snapshot.harnessId,
                   owner.kind,
                   props.row.snapshot.activeProcessName,
-                  props.row.snapshot.managedCommand,
                 )}
               </span>
             </div>
@@ -2130,11 +2915,11 @@ function ProcessRowKillCell(props: {
     return <span className={ROW_ACTION_SLOT} />;
   }
   return (
-    <KillRowButton
+    <ConfirmableRowAction
       target={target}
       label={props.label}
-      onKill={actions.runOne}
-      isKilling={actions.isPending}
+      onRun={actions.runOne}
+      isPending={actions.isPending}
     />
   );
 }
@@ -2213,7 +2998,7 @@ function ProcessTreeRow(props: {
   const rowKey = processRowKey(process);
   const selected = selecting && actions.isSelected(rowKey);
   const rowClassName =
-    "flex min-w-0 flex-1 items-center justify-between gap-3 py-1 pl-3.5 text-left text-muted-foreground transition-colors hover:bg-muted/40";
+    "flex min-w-0 flex-1 items-center justify-between gap-3 py-1 pl-3.5 text-left text-muted-foreground transition-colors hover:bg-foreground/5";
   const rowStyle = {
     paddingLeft: `calc(1.25rem + ${props.ownerDepth + depth} * 1rem)`,
   };
@@ -2266,7 +3051,7 @@ function ProcessTreeRow(props: {
         }
         className={cn(
           rowClassName,
-          "outline-none focus-visible:bg-muted/40 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+          "outline-none focus-visible:bg-foreground/5 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
         )}
         style={rowStyle}
       >
@@ -2289,7 +3074,7 @@ function ProcessTreeRow(props: {
         onClick={() => props.onToggleExpand(processRowKey(process))}
         className={cn(
           rowClassName,
-          "outline-none focus-visible:bg-muted/40 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-default",
+          "outline-none focus-visible:bg-foreground/5 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-default",
         )}
         style={rowStyle}
       >
@@ -2302,7 +3087,7 @@ function ProcessTreeRow(props: {
       <div
         className={cn(
           "group relative flex items-center pr-3.5",
-          selected && "bg-muted/40",
+          selected && "bg-foreground/5",
           expanded && "sticky z-10 bg-popover",
         )}
         style={expanded ? { top: props.stickyTop } : undefined}
@@ -2740,12 +3525,11 @@ function ownerMetadataSearchTerms(
   const snapshot = row.snapshot;
   return [
     label,
-    ownerKindLabel(snapshot.owner.kind, snapshot.managedCommand),
+    ownerKindLabel(snapshot.owner.kind),
     harnessProviderSubtitle(
       snapshot.harnessId,
       snapshot.owner.kind,
       snapshot.activeProcessName,
-      snapshot.managedCommand,
     ),
     snapshot.owner.ownerId,
     snapshot.owner.hostId,
@@ -3163,6 +3947,51 @@ function filterOwnerProcessRowsForSearch(
   };
 }
 
+/**
+ * Retained-tombstone evidence that `buildCanvasResourceIndex` consults through
+ * `retainedPlainTerminalTombstoneBlocksClosedRestore`. It lives in Query, not
+ * in the canvas snapshot, so the index has to observe it separately: a
+ * tombstone that arrives before its presentation fanout leaves the closed-tile
+ * row visible while `openResourceOwner` already rejects it, which reads to the
+ * user as a click that does nothing. Only the tombstoned ids and the live
+ * revision that could overtake them are folded in, so an ordinary projection
+ * tick does not churn the index.
+ */
+function plainTerminalTombstoneEvidence(): string {
+  const parts: string[] = [];
+  for (const [queryKey, collection] of queryClient.getQueriesData<
+    PlainTerminalCollection | undefined
+  >({
+    predicate: (query) => query.queryKey[2] === "terminal.plain.list",
+  })) {
+    if (collection === undefined) continue;
+    for (const [terminalId, revision] of Object.entries(
+      collection.deletedRevisionById,
+    )) {
+      const live = collection.terminalsById[terminalId]?.record.revision ?? -1;
+      parts.push(
+        `${String(queryKey[1])}:${terminalId}:${String(revision)}:${String(live)}`,
+      );
+    }
+  }
+  return parts.sort().join("|");
+}
+
+function subscribeToPlainTerminalTombstones(
+  onStoreChange: () => void,
+): () => void {
+  return queryClient.getQueryCache().subscribe(onStoreChange);
+}
+
+function usePlainTerminalTombstoneEvidence(): string {
+  // A string snapshot, so an unrelated cache event re-derives it but does not
+  // re-render. This panel only mounts while the popover is open.
+  return useSyncExternalStore(
+    subscribeToPlainTerminalTombstones,
+    plainTerminalTombstoneEvidence,
+  );
+}
+
 function buildCanvasResourceIndex(
   canvas: CanvasResourceSnapshot,
 ): CanvasResourceIndex {
@@ -3230,6 +4059,15 @@ function buildCanvasResourceIndex(
     )) {
       const node = payload?.node;
       if (node === undefined || !isOwnerNodeRef(node)) continue;
+      if (
+        retainedPlainTerminalTombstoneBlocksClosedRestore({
+          queryClient,
+          epicId: tab.epicId,
+          node,
+        })
+      ) {
+        continue;
+      }
       const ownerKind = resourceOwnerKindForRef(node);
       if (ownerKind === null) continue;
       const key = ownerKey(tab.epicId, ownerKind, node.id);
@@ -3365,12 +4203,23 @@ function openResourceOwner(args: {
   // from the resource snapshot or an artifact record.
   const closedTile = args.row.closedTile;
   if (closedTile !== null) {
+    if (
+      rejectClosedPlainTerminalRestore({
+        queryClient,
+        epicId: snapshot.owner.epicId,
+        node: closedTile.node,
+      })
+    ) {
+      return false;
+    }
     commitOwnerFocus({
       epicId: snapshot.owner.epicId,
       tabId: closedTile.tabId,
       name: undefined,
       focus: focusForOwner(snapshot),
-      preparation: { kind: "open-tile", node: closedTile.node },
+      // A preserved tile the human already chose to keep once: reopening it is
+      // a return to their own tab, not a glance at a new one.
+      preparation: { kind: "open-tile", node: closedTile.node, preview: false },
       navigate: args.navigate,
       navigateNested: args.navigateNested,
       activeEpicId: args.activeEpicId,
@@ -3395,6 +4244,10 @@ function openResourceOwner(args: {
           commandId: snapshot.owner.ownerId,
           hostId: snapshot.owner.hostId,
         }),
+        // Same glance every other shell door is (see
+        // `useOpenManagedCommandOutput`): jumping from a resource row to the
+        // log is a look, and the strip should not keep it unasked.
+        preview: true,
       },
       navigate: args.navigate,
       navigateNested: args.navigateNested,
@@ -3429,6 +4282,7 @@ function openResourceOwner(args: {
         name: record.name,
         hostId: record.hostId,
       },
+      preview: false,
     },
     navigate: args.navigate,
     navigateNested: args.navigateNested,
@@ -3495,7 +4349,9 @@ function prepareResourceTarget(
 ): NestedFocusTarget | null {
   const canvas = useEpicCanvasStore.getState();
   if (preparation.kind === "open-tile") {
-    return canvas.prepareOpenTileInTabFocusTarget(tabId, preparation.node);
+    return preparation.preview
+      ? canvas.prepareOpenTilePreviewInTabFocusTarget(tabId, preparation.node)
+      : canvas.prepareOpenTileInTabFocusTarget(tabId, preparation.node);
   }
   return canvas.prepareSetActiveTileTabFocusTarget(
     tabId,
@@ -3593,10 +4449,7 @@ function isResourceSortOption(value: string): value is ResourceSortOption {
   );
 }
 
-function ownerKindLabel(
-  kind: ResourceOwnerKindWireV14,
-  managedCommand: ManagedCommandOwnerWire | null,
-): string {
+function ownerKindLabel(kind: ResourceOwnerKindWireV14): string {
   // Several owner kinds render side by side here, so a raw Terminal has to stay
   // distinguishable from an Agent using the Terminal interface - qualification
   // is warranted. It uses the interface axis rather than coining "Chat agent" /
@@ -3607,10 +4460,8 @@ function ownerKindLabel(
   if (kind === "managed-command") {
     // The KIND, not this shell's name: it sits in a column of classes
     // ("Terminal", "Agent (Chat)"), and a monitor is a shell. The row title
-    // beside it is where the monitor flag speaks. "Managed command" is the
-    // fallback for a host that sent the owner without naming it, which
-    // nothing does today.
-    return managedCommand === null ? "Managed command" : MANAGED_COMMAND_NOUN;
+    // beside it is where the monitor flag speaks.
+    return MANAGED_COMMAND_NOUN;
   }
   return "Agent (Chat)";
 }
@@ -3620,17 +4471,17 @@ function ownerKindLabel(
  * has - it is not a canvas node, so none of the tile/record fallbacks the
  * other owner kinds walk apply to it.
  *
- * Named by the monitor flag, exactly as the Shells list names the same shell:
- * the owner frame carries `monitoring` precisely so one process tree is not
- * labelled two different ways.
+ * Straight through `managedCommandTitle`, exactly as the Shells list names the
+ * same shell: the owner frame carries `monitoring` precisely so one process
+ * tree is not labelled two different ways. An owner the host sent without
+ * naming (nothing does today) falls back to the umbrella noun rather than to a
+ * third one - "Managed command" is the term the UI does not use.
  */
 function managedCommandLabel(
   managedCommand: ManagedCommandOwnerWire | null,
 ): string {
-  if (managedCommand === null) return "Managed command";
-  const noun = managedCommandNoun(managedCommand.monitoring);
-  const description = managedCommand.description;
-  return description === "" ? noun : `${noun} · ${description}`;
+  if (managedCommand === null) return MANAGED_COMMAND_NOUN;
+  return managedCommandTitle(managedCommand);
 }
 
 // Subtitle beside the provider icon. Always non-empty so the icon never sits
@@ -3641,21 +4492,15 @@ function harnessProviderSubtitle(
   harnessId: string | null,
   kind: ResourceOwnerKindWireV14,
   activeProcessName: string | null,
-  managedCommand: ManagedCommandOwnerWire | null,
 ): string {
   // A managed command already names itself in the row title, so its subtitle
   // spends the width on what is actually running instead of repeating it.
   if (kind === "managed-command") {
-    return (
-      activeProcessName ??
-      (managedCommand === null ? "Managed command" : MANAGED_COMMAND_NOUN)
-    );
+    return activeProcessName ?? MANAGED_COMMAND_NOUN;
   }
   const providerId = harnessId === null ? null : normalizeProviderId(harnessId);
   const base =
-    providerId === null
-      ? ownerKindLabel(kind, managedCommand)
-      : agentProviderLabel(providerId);
+    providerId === null ? ownerKindLabel(kind) : agentProviderLabel(providerId);
   return activeProcessName === null ? base : `${base} · ${activeProcessName}`;
 }
 
@@ -3703,7 +4548,7 @@ function ownerLabel(
   if (liveArtifactTitle !== null) return liveArtifactTitle;
   if (ref !== null) return ref.name;
   if (record !== null) return record.name;
-  return ownerKindLabel(snapshot.owner.kind, snapshot.managedCommand);
+  return ownerKindLabel(snapshot.owner.kind);
 }
 
 function canOpenOwner(

@@ -44,7 +44,10 @@ interface Harness {
   openMock: Mock;
   isUnreadMock: Mock<(args: { artifactId: string }) => boolean>;
   artifactsById: Record<string, { updatedAt: number }>;
-  /** Drives the >= ARTIFACT_SEARCH_MIN_COUNT gate on the search affordance. */
+  /**
+   * The Epic's artifact ids. Drives the availability gate: EMPTY withholds
+   * search entirely (and closes an open one); any non-empty value offers it.
+   */
   artifactIds: ReadonlyArray<string>;
 }
 
@@ -66,9 +69,29 @@ vi.mock("@/hooks/epic/use-epic-search-artifacts-query", () => ({
     return harness.result;
   },
 }));
-vi.mock("@/lib/host", () => ({ useHostClient: () => ({}) }));
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => harness.hostId,
+// The two host reads this box makes, mocked as DISTINGUISHABLE pairs. The
+// search box is a sidebar - outside every tile `TabHostProvider` - and both of
+// its reads belong to the Epic SESSION: the client the search runs on, and the
+// id that binds every opened hit's tile for life. They used to come from two
+// different sources (`useHostClient()` and `useAddressableHostId()` beside
+// it), so a re-point that left the sidebar live searched one machine and
+// opened the results as tiles bound to another.
+//
+// The ambient pair is still mocked, with different values, so a regression to
+// either one fails on the VALUE rather than on an absence.
+const clients = vi.hoisted(() => ({
+  ambient: { label: "ambient-client" },
+  session: { label: "session-client" },
+}));
+vi.mock("@/lib/host", () => ({ useHostClient: () => clients.ambient }));
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => "host-ambient",
+}));
+vi.mock("@/hooks/epic/use-epic-session-host-client", () => ({
+  useEpicSessionHostClient: () => clients.session,
+}));
+vi.mock("@/hooks/epic/use-epic-session-host-id", () => ({
+  useEpicSessionHostId: () => harness.hostId,
 }));
 vi.mock("@/providers/use-open-epic-handle", () => ({
   useOpenEpicHandle: () => ({ store: { getState: () => ({}) } }),
@@ -114,7 +137,6 @@ import {
   ArtifactPanelSearchShell,
   ArtifactSearchBox,
 } from "@/components/epic-canvas/sidebar/epic-sidebar-artifact-search";
-import { ARTIFACT_SEARCH_MIN_COUNT } from "@/components/epic-canvas/sidebar/artifact-search-availability";
 import {
   panelHeaderSearchSurfaceKey,
   usePanelHeaderSearchStore,
@@ -334,6 +356,21 @@ describe("ArtifactSearchBox", () => {
     expect(screen.getByTestId("epic-artifact-search-loading")).toBeTruthy();
     expect(harness.lastArgs?.enabled).toBe(true);
     expect(harness.lastArgs?.query).toBe("auth");
+  });
+
+  it("searches on the Epic session's client, not the ambient one", () => {
+    harness.result = loadingResult();
+    renderBox({
+      tabId: DEFAULT_TAB_ID,
+      searchQuery: "auth",
+      debouncedQuery: "auth",
+      epicId: "epic-1",
+    });
+    // Identity, and both directions: the second line is what fails if someone
+    // restores `useHostClient()` here, since that mock returns a real object
+    // and would satisfy a bare "a client was passed" assertion.
+    expect(harness.lastArgs?.client).toBe(clients.session);
+    expect(harness.lastArgs?.client).not.toBe(clients.ambient);
   });
 
   it("renders ranked results without redundant match-source badges and announces the count", () => {
@@ -798,20 +835,14 @@ describe("ArtifactPanelSearchShell", () => {
     return <div data-testid={testId}>artifact tree</div>;
   }
 
-  /** Enough artifacts that the search affordance is available. */
-  function withSearchableArtifactCount() {
-    harness.artifactIds = Array.from(
-      { length: ARTIFACT_SEARCH_MIN_COUNT },
-      (_unused, index) => `art-${index}`,
-    );
-  }
-
   function renderShell(args: {
     readonly searchOpen: boolean;
     readonly tabId: string;
     readonly epicId: string;
   }) {
-    withSearchableArtifactCount();
+    // Search is withheld only from an Epic with NO artifacts, so the default
+    // for these tests is the ordinary case: at least one.
+    if (harness.artifactIds.length === 0) harness.artifactIds = ["art-0"];
     if (args.searchOpen) {
       openArtifactsSearch(args.tabId, "");
     }
@@ -855,11 +886,28 @@ describe("ArtifactPanelSearchShell", () => {
     expect(screen.getByLabelText("Search artifacts")).toBeTruthy();
   });
 
-  it("ignores type-to-filter below the artifact-count threshold", () => {
-    harness.artifactIds = Array.from(
-      { length: ARTIFACT_SEARCH_MIN_COUNT - 1 },
-      (_unused, index) => `art-${index}`,
+  // Regression: search was once gated on the Epic holding >= 10 artifacts,
+  // which silently removed both this path and the header menu item from most
+  // Epics. The only threshold now is emptiness - a ONE-artifact Epic searches.
+  it("enters search mode on an Epic holding a single artifact", () => {
+    harness.artifactIds = ["art-0"];
+    render(
+      <ShellHarness epicId={DEFAULT_EPIC_ID} tabId={DEFAULT_TAB_ID}>
+        {defaultTreeStub("tree-stub")}
+      </ShellHarness>,
     );
+    fireEvent.keyDown(screen.getByTestId("epic-artifact-tree-region"), {
+      key: "a",
+    });
+    expect(searchOpenInStore(DEFAULT_TAB_ID)).toBe(true);
+    expect(searchQueryInStore(DEFAULT_TAB_ID)).toBe("a");
+  });
+
+  // The other half of that boundary: an Epic with nothing to match offers no
+  // way in, so typing at its "No artifacts yet." tree cannot open a search
+  // whose header item is not there either.
+  it("ignores type-to-filter on an Epic with no artifacts", () => {
+    harness.artifactIds = [];
     render(
       <ShellHarness epicId={DEFAULT_EPIC_ID} tabId={DEFAULT_TAB_ID}>
         {defaultTreeStub("tree-stub")}
@@ -869,6 +917,34 @@ describe("ArtifactPanelSearchShell", () => {
       key: "a",
     });
     expect(searchOpenInStore(DEFAULT_TAB_ID)).toBe(false);
+  });
+
+  // Regression: the gate first only blocked ENTERING search. An Epic whose last
+  // artifact was deleted while search was already open kept `searchOpen` true,
+  // so the header went on advertising a search over "No artifacts yet."
+  it("closes an already-open search when the last artifact disappears", () => {
+    harness.artifactIds = ["art-0"];
+    openArtifactsSearch(DEFAULT_TAB_ID, "");
+    const view = render(
+      <ShellHarness epicId={DEFAULT_EPIC_ID} tabId={DEFAULT_TAB_ID}>
+        {defaultTreeStub("tree-stub")}
+      </ShellHarness>,
+    );
+    expect(searchOpenInStore(DEFAULT_TAB_ID)).toBe(true);
+    expect(screen.getByLabelText("Search artifacts")).toBeTruthy();
+
+    // The last artifact goes - deleted here, by a collaborator, or elsewhere.
+    harness.artifactIds = [];
+    view.rerender(
+      <ShellHarness epicId={DEFAULT_EPIC_ID} tabId={DEFAULT_TAB_ID}>
+        {defaultTreeStub("tree-stub")}
+      </ShellHarness>,
+    );
+
+    // The store flag itself must clear: the panel header reads it independently,
+    // so leaving it set would strand an empty search row above the tree.
+    expect(searchOpenInStore(DEFAULT_TAB_ID)).toBe(false);
+    expect(screen.queryByLabelText("Search artifacts")).toBeNull();
   });
 
   it("ignores modified keys so shortcuts still reach their handlers", () => {
@@ -1043,10 +1119,9 @@ describe("ArtifactPanelSearchShell dual-surface isolation", () => {
     harness.result = successResult(
       ready([hit({ artifactId: "a1", title: "Shared hit" })], false),
     );
-    harness.artifactIds = Array.from(
-      { length: ARTIFACT_SEARCH_MIN_COUNT },
-      (_unused, index) => `art-${index}`,
-    );
+    // These surfaces are about tab isolation, not the availability gate. Both
+    // Epics need an artifact or the shell closes their search on mount.
+    harness.artifactIds = ["a1"];
     harness.epicNodeRef = { id: "a1", type: "ticket" };
   });
 

@@ -49,6 +49,8 @@ import {
   getTaskContextsRequestSchema,
   getTaskContextsResponseSchema,
   getTaskContextsResponseSchemaV10,
+  getTaskContextsResponseSchemaV11,
+  isFoundTaskContext,
   listTasksRequestSchema,
   listTasksRequestSchemaV11,
   listTasksResponseSchema,
@@ -79,6 +81,8 @@ import {
   recordEpicViewedResponseSchema,
   revokeEpicCollaboratorRequestSchema,
   revokeEpicCollaboratorResponseSchema,
+  chatPublicationStateRequestSchema,
+  chatPublicationStateResponseSchema,
   setChatArchivedRequestSchema,
   setChatArchivedResponseSchema,
   setCommentThreadResolvedRequestSchema,
@@ -95,12 +99,17 @@ import {
   updateEpicRequestSchema,
   updateEpicResponseSchema,
 } from "@traycer/protocol/host/epic/unary-schemas";
+import type {
+  GetTaskContextsResponse,
+  GetTaskContextsResponseV10,
+} from "@traycer/protocol/host/epic/unary-schemas";
 import {
   epicSubscribeV10,
   epicSubscribeV11,
   epicSubscribeV12,
   epicSubscribeV13,
   epicSubscribeV14,
+  epicSubscribeV15,
 } from "@traycer/protocol/host/epic/subscribe";
 import {
   listCloudChatPayloadsRequestSchema,
@@ -133,7 +142,13 @@ import {
 import {
   listChatRecordsRequestSchema,
   listChatRecordsResponseSchema,
+  getChatRunSettingsRequestSchema,
+  getChatRunSettingsResponseSchema,
 } from "@traycer/protocol/host/epic/chat-records";
+import {
+  readChatAttachmentRequestSchema,
+  readChatAttachmentResponseSchema,
+} from "@traycer/protocol/host/epic/chat-attachment";
 
 // `epic.listTasks@1.0` - frozen pre-pinning host entry point for the CloudData
 // task-list query. Both request and response preserve the released wire shape.
@@ -278,13 +293,25 @@ export const epicGetTaskContextsV10 = defineRpcContract({
   responseSchema: getTaskContextsResponseSchemaV10,
 });
 
-// `epic.getTaskContexts@1.1` adds the same optional per-row `home` marker
-// `epic.listTasks@1.3` already carries, so the tab strip can tell a local epic
-// from a cloud one on the only method it uses (`s5-parity-gaps` gap 4).
-// Request unchanged; `@1.0` stays frozen and simply strips the key.
+// v1.1 replaces v1.0's ambiguous nullable row with an explicit resolution
+// outcome. The request is unchanged. A v1.0 response upgrades every legacy
+// null to `unknown` because an old host could not establish why it was absent.
 export const epicGetTaskContextsV11 = defineRpcContract({
   method: "epic.getTaskContexts",
   schemaVersion: { major: 1, minor: 1 } as const,
+  requestSchema: getTaskContextsRequestSchema,
+  responseSchema: getTaskContextsResponseSchemaV11,
+});
+
+// `epic.getTaskContexts@1.2` adds the optional sibling `localHomedTaskIds` id
+// list (see `unary-schemas.ts` for why it is a sibling rather than the per-row
+// `home` marker `epic.listTasks@1.3` carries), so the tab strip can tell a
+// local epic from a cloud one on the only method it uses (`s5-parity-gaps`
+// gap 4). Request unchanged; `@1.0`/`@1.1` stay frozen and simply strip the
+// key.
+export const epicGetTaskContextsV12 = defineRpcContract({
+  method: "epic.getTaskContexts",
+  schemaVersion: { major: 1, minor: 2 } as const,
   requestSchema: getTaskContextsRequestSchema,
   responseSchema: getTaskContextsResponseSchema,
 });
@@ -296,12 +323,51 @@ export const epicGetTaskContextsUpgradeV10ToV11 = defineUpgradePath<
   from: epicGetTaskContextsV10.schemaVersion,
   to: epicGetTaskContextsV11.schemaVersion,
   upgradeRequest: (request) => request,
-  // No synthesized `home`. An older host did not answer the question, and
-  // absence already means "cloud or unknown" - which is the reading that keeps
-  // the pin action enabled, so inventing `"cloud"` here would be indis-
-  // tinguishable from the defect.
+  upgradeResponse: (response) => ({
+    tasks: Object.fromEntries(
+      Object.entries(response.tasks).map(([taskId, task]) => [
+        taskId,
+        task === null
+          ? { status: "unknown" as const, reason: "legacy" as const }
+          : { status: "found" as const, task },
+      ]),
+    ),
+  }),
+});
+
+export const epicGetTaskContextsUpgradeV11ToV12 = defineUpgradePath<
+  typeof epicGetTaskContextsV11,
+  typeof epicGetTaskContextsV12
+>({
+  from: epicGetTaskContextsV11.schemaVersion,
+  to: epicGetTaskContextsV12.schemaVersion,
+  upgradeRequest: (request) => request,
+  // No synthesized `localHomedTaskIds`. An older host did not answer the
+  // question, and absence already means "cloud or unknown" - which is the
+  // reading that keeps the pin action enabled, so inventing an id list here
+  // would be indistinguishable from the defect.
   upgradeResponse: (response) => response,
 });
+
+/**
+ * A v1.0 caller cannot represent the v1.1 row union. Host dispatch uses this
+ * at the negotiated-version boundary, preserving its released nullable wire
+ * shape while the canonical resolver continues to return the latest contract.
+ * (The v1.2 sibling key needs no projection of its own: a v1.0 body drops it
+ * here, and a v1.1 peer's frozen schema strips it at parse time.)
+ */
+export function projectEpicGetTaskContextsResponseToV10(
+  response: GetTaskContextsResponse,
+): GetTaskContextsResponseV10 {
+  return {
+    tasks: Object.fromEntries(
+      Object.entries(response.tasks).map(([taskId, resolution]) => [
+        taskId,
+        isFoundTaskContext(resolution) ? resolution.task : null,
+      ]),
+    ),
+  };
+}
 
 // `epic.create@1.0` - host-side entry point for the CloudData epic create
 // mutation. The host request accepts local workspace paths before they are
@@ -444,6 +510,11 @@ export const epicCreateChatV11 = defineRpcContract({
 // `boundary: "assistantMessage"` and leaves every other field untouched.
 // `null`/`undefined` pass through unchanged (no fork requested). The response
 // is identical between the two minors.
+//
+// `sourceOwnerUserId` is filled with the honest `null` - "the client genuinely
+// does not know who owns this" - which the host reads as "no hint" and falls
+// back to its own registry facts exactly as before. A v1.0 caller has no owner
+// hint to give: the field did not exist on its fork source at all.
 export const epicCreateChatUpgradeV10ToV11 = defineUpgradePath<
   typeof epicCreateChatV10,
   typeof epicCreateChatV11
@@ -466,10 +537,12 @@ export const epicCreateChatUpgradeV10ToV11 = defineUpgradePath<
             assistantMessageId: request.forkSource.assistantMessageId,
             interviewBlockId: request.forkSource.interviewBlockId,
             carriedInterviews: request.forkSource.carriedInterviews,
+            sourceOwnerUserId: null,
           },
   }),
   upgradeResponse: (response) => response,
 });
+
 
 export const epicRenameChatV10 = defineRpcContract({
   method: "epic.renameChat",
@@ -546,6 +619,19 @@ export const epicSetChatArchivedV10 = defineRpcContract({
   schemaVersion: { major: 1, minor: 0 } as const,
   requestSchema: setChatArchivedRequestSchema,
   responseSchema: setChatArchivedResponseSchema,
+});
+
+/**
+ * Optional (non-floor) capability - see the registry entry for why a new method
+ * NAME may only ride the optional channel. Old source hosts simply do not
+ * advertise it, the caller gets `E_HOST_UNSUPPORTED` for this call alone, and
+ * the fork dialog treats that as "unknown" rather than as "unpublished".
+ */
+export const epicChatPublicationStateV10 = defineRpcContract({
+  method: "epic.chatPublicationState",
+  schemaVersion: { major: 1, minor: 0 } as const,
+  requestSchema: chatPublicationStateRequestSchema,
+  responseSchema: chatPublicationStateResponseSchema,
 });
 
 export const epicPrepareArtifactImageV10 = defineRpcContract({
@@ -705,14 +791,6 @@ export const epicSearchArtifactsV10 = defineRpcContract({
   responseSchema: searchArtifactsResponseSchema,
 });
 
-export {
-  epicSubscribeV10,
-  epicSubscribeV11,
-  epicSubscribeV12,
-  epicSubscribeV13,
-  epicSubscribeV14,
-};
-
 // ---- Cloud chat reads (host as byte pipe) ------------------------------ //
 //
 // Five brand-new v1.0 methods, none on `RELEASED_FLOOR_METHOD_NAMES`, all
@@ -832,3 +910,38 @@ export const epicListChatRecordsV10 = defineRpcContract({
   requestSchema: listChatRecordsRequestSchema,
   responseSchema: listChatRecordsResponseSchema,
 });
+
+// One chat image attachment's bytes, resolved by the VIEWER's tab host (local
+// disk store first, cloud blob pass-through second). Optional and off the
+// released floor like every other read above it: a host that predates it
+// answers `E_HOST_UNSUPPORTED` and the client falls back to the epic
+// doc-replica read, which is that host's only byte source anyway - so the
+// degrade arm is today's behavior, not a degraded one. See
+// `chat-attachment.ts` for why `chatId` is a required request field.
+export const epicReadChatAttachmentV10 = defineRpcContract({
+  method: "epic.readChatAttachment",
+  schemaVersion: { major: 1, minor: 0 } as const,
+  requestSchema: readChatAttachmentRequestSchema,
+  responseSchema: readChatAttachmentResponseSchema,
+});
+
+// The per-chat run-settings tuple the row above deliberately does not carry.
+// Optional and host-local for the same reason as the list: it answers out of
+// this host's own chat store. A client without it renders the harness mark the
+// row already gave it, which is exactly what such a host's client showed
+// before this method existed.
+export const epicGetChatRunSettingsV10 = defineRpcContract({
+  method: "epic.getChatRunSettings",
+  schemaVersion: { major: 1, minor: 0 } as const,
+  requestSchema: getChatRunSettingsRequestSchema,
+  responseSchema: getChatRunSettingsResponseSchema,
+});
+
+export {
+  epicSubscribeV10,
+  epicSubscribeV11,
+  epicSubscribeV12,
+  epicSubscribeV13,
+  epicSubscribeV14,
+  epicSubscribeV15,
+};
