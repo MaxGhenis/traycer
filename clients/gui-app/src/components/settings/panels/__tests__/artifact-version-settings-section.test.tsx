@@ -1,9 +1,22 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ArtifactVersionSettingsGetResponse } from "@traycer/protocol/host/epic/artifact-versions";
+import type {
+  ArtifactVersionSettingsCommandResponse,
+  ArtifactVersionSettingsGetResponse,
+} from "@traycer/protocol/host/epic/artifact-versions";
 
 interface MutationConfig {
   readonly method: string;
+  readonly onSuccess?: (
+    data: Readonly<Record<string, unknown>>,
+    variables: Readonly<Record<string, unknown>>,
+  ) => void;
 }
 
 const state = vi.hoisted(() => ({
@@ -13,6 +26,13 @@ const state = vi.hoisted(() => ({
     readonly method: string;
     readonly variables: Readonly<Record<string, unknown>>;
   }>,
+  mutationOnSuccessByMethod: new Map<
+    string,
+    (
+      data: Readonly<Record<string, unknown>>,
+      variables: Readonly<Record<string, unknown>>,
+    ) => void
+  >(),
   snapshot: {
     settings: {
       enabled: true,
@@ -43,12 +63,17 @@ vi.mock("@/hooks/host/use-host-query", () => ({
 }));
 
 vi.mock("@/hooks/host/use-host-scoped-mutation", () => ({
-  useHostScopedMutationForClient: (_client: null, config: MutationConfig) => ({
-    isPending: false,
-    mutate: (variables: Readonly<Record<string, unknown>>) => {
-      state.mutationCalls.push({ method: config.method, variables });
-    },
-  }),
+  useHostScopedMutationForClient: (_client: null, config: MutationConfig) => {
+    if (config.onSuccess !== undefined) {
+      state.mutationOnSuccessByMethod.set(config.method, config.onSuccess);
+    }
+    return {
+      isPending: false,
+      mutate: (variables: Readonly<Record<string, unknown>>) => {
+        state.mutationCalls.push({ method: config.method, variables });
+      },
+    };
+  },
 }));
 
 import { ArtifactVersionSettingsSection } from "../artifact-version-settings-section";
@@ -71,6 +96,7 @@ describe("<ArtifactVersionSettingsSection />", () => {
     state.supportedMethods = new Set(SETTINGS_METHODS);
     state.supportCalls = [];
     state.mutationCalls = [];
+    state.mutationOnSuccessByMethod = new Map();
     state.snapshot = {
       settings: {
         enabled: true,
@@ -209,5 +235,77 @@ describe("<ArtifactVersionSettingsSection />", () => {
         variables: {},
       },
     ]);
+  });
+
+  it("shows the command banner on mutation success and defers to a later query result for the storage row", () => {
+    const { rerender } = render(
+      <ArtifactVersionSettingsSection client={null} hostId="host-a" enabled />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Days"), {
+      target: { value: "7" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save retention" }));
+    fireEvent.click(screen.getByRole("button", { name: "Prune and save" }));
+
+    const onSuccess = state.mutationOnSuccessByMethod.get(
+      "epic.artifactVersionSettings.setRetentionPolicy",
+    );
+    if (onSuccess === undefined) {
+      throw new Error("setRetentionPolicy mutation never registered onSuccess");
+    }
+    const commandResponse = {
+      settings: {
+        enabled: true,
+        retentionDays: 7,
+        maxVersionsPerArtifact: 100,
+        maxBytesPerArtifact: 16 * 1024 * 1024,
+      },
+      storage: {
+        referencedBytes: 2 * 1024 * 1024,
+        reclaimableBytes: 512 * 1024,
+      },
+      effects: {
+        captureStopped: false,
+        captureResumed: false,
+        driftEpicIds: [],
+        observationsPruned: 3,
+        contentRowsPruned: 3,
+        blobsDeleted: 1,
+        bytesDeleted: 512 * 1024,
+      },
+    } satisfies ArtifactVersionSettingsCommandResponse;
+    act(() => {
+      onSuccess(commandResponse, {
+        retentionDays: 7,
+        maxVersionsPerArtifact: 100,
+        maxBytesPerArtifact: 16 * 1024 * 1024,
+      });
+    });
+
+    expect(
+      screen.getByText(/3 observations pruned; 512\.0 KB reclaimed\./u),
+    ).toBeTruthy();
+
+    state.snapshot = {
+      settings: {
+        enabled: true,
+        retentionDays: 7,
+        maxVersionsPerArtifact: 100,
+        maxBytesPerArtifact: 16 * 1024 * 1024,
+      },
+      storage: {
+        referencedBytes: 2 * 1024 * 1024,
+        reclaimableBytes: 256 * 1024,
+      },
+    };
+    rerender(
+      <ArtifactVersionSettingsSection client={null} hostId="host-a" enabled />,
+    );
+
+    expect(screen.getByText("256.0 KB reclaimable")).toBeTruthy();
+    expect(
+      screen.getByText(/3 observations pruned; 512\.0 KB reclaimed\./u),
+    ).toBeTruthy();
   });
 });

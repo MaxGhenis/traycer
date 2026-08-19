@@ -23,4 +23,7 @@ export const epicMutationKeys = {
   finishArtifactImage: () => ["epic.finishArtifactImage"] as const,
   addImageToArtifact: () => ["epic.addImageToArtifact"] as const,
   archiveChats: () => ["epic.archiveChats"] as const,
+  loadOlderArtifactVersions: () => ["epic.loadOlderArtifactVersions"] as const,
+  restoreArtifactVersion: () => ["epic.restoreArtifactVersion"] as const,
+  reviveDeletedArtifact: () => ["epic.reviveDeletedArtifact"] as const,
 };

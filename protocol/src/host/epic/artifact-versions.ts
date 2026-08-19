@@ -176,12 +176,12 @@ export const artifactVersionsRestoreResponseSchema = z.discriminatedUnion(
       reason: z.enum([
         "storage_full",
         "journal_cap",
-        "target-not-found",
-        "missing-blob",
-        "artifact-not-live",
-        "kind-mismatch",
-        "body-unavailable",
-        "missing-images",
+        "target_not_found",
+        "missing_blob",
+        "artifact_not_live",
+        "kind_mismatch",
+        "body_unavailable",
+        "missing_images",
       ]),
     }),
   ],
@@ -203,7 +203,7 @@ export const deletedArtifactEntrySchema = z.object({
   deletedAt: z.number().int().nonnegative(),
   versionCount: z.number().int().nonnegative(),
   lastContentHash: hashSchema.nullable(),
-  unrestorable: z.enum(["missing-scalars", "missing-blob"]).nullable(),
+  unrestorable: z.enum(["missing_scalars", "missing_blob"]).nullable(),
 });
 export type DeletedArtifactEntry = z.infer<typeof deletedArtifactEntrySchema>;
 
@@ -236,15 +236,23 @@ export type DeletedArtifactsReviveResponse = z.infer<
   typeof deletedArtifactsReviveResponseSchema
 >;
 
+export const MAX_ARTIFACT_VERSION_RETENTION_DAYS = 3650;
+export const MAX_ARTIFACT_VERSIONS_PER_ARTIFACT = 10_000;
+export const MAX_ARTIFACT_VERSION_BYTES_PER_ARTIFACT = 1024 * 1024 * 1024;
+
 export const artifactVersionSettingsSchema = z.object({
   enabled: z.boolean(),
-  retentionDays: z.number().int().min(1).max(3650),
-  maxVersionsPerArtifact: z.number().int().min(1).max(10_000),
+  retentionDays: z.number().int().min(1).max(MAX_ARTIFACT_VERSION_RETENTION_DAYS),
+  maxVersionsPerArtifact: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_ARTIFACT_VERSIONS_PER_ARTIFACT),
   maxBytesPerArtifact: z
     .number()
     .int()
     .min(1)
-    .max(1024 * 1024 * 1024),
+    .max(MAX_ARTIFACT_VERSION_BYTES_PER_ARTIFACT),
 });
 export type ArtifactVersionSettings = z.infer<
   typeof artifactVersionSettingsSchema

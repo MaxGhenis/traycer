@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   checkCompatibility,
+  mergeConnectionManifests,
   splitConnectionManifest,
 } from "@traycer/protocol/framework/index";
 import { releasedMethodNames } from "@traycer/protocol/host/__tests__/__fixtures__/released-method-names";
@@ -43,31 +44,52 @@ describe("artifact-versioning handshake compatibility", () => {
     },
   );
 
-  it("keeps an old client compatible with a new host", () => {
-    const oldClientManifest = current.manifest;
+  it("keeps the floor manifest compatible with itself from the host role, with the artifact-version family absent from both sides", () => {
+    const floorManifest = current.manifest;
     expect(
       checkCompatibility(
         hostRpcRegistry,
-        current.manifest,
-        oldClientManifest,
+        floorManifest,
+        floorManifest,
         "host",
       ),
     ).toEqual({ ok: true });
+    for (const method of ARTIFACT_VERSION_METHODS) {
+      expect(floorManifest[method]).toBeUndefined();
+    }
   });
 
-  it("keeps a new client compatible with an old host and degrades history per call", () => {
-    const oldHostManifest = current.manifest;
+  it("keeps the floor manifest compatible with itself from the client role and degrades history per call", () => {
+    const floorManifest = current.manifest;
     expect(
       checkCompatibility(
         hostRpcRegistry,
-        current.manifest,
-        oldHostManifest,
+        floorManifest,
+        floorManifest,
         "client",
       ),
     ).toEqual({ ok: true });
     for (const method of ARTIFACT_VERSION_METHODS) {
-      expect(oldHostManifest[method]).toBeUndefined();
+      expect(floorManifest[method]).toBeUndefined();
       expect(hostRpcRegistry[method].degrade).toEqual({ kind: "unsupported" });
+    }
+  });
+
+  it("keeps two peers that both advertise the optional artifact-versioning family compatible", () => {
+    const negotiatedManifest = mergeConnectionManifests(
+      current.manifest,
+      current.optionalManifest,
+    );
+    expect(
+      checkCompatibility(
+        hostRpcRegistry,
+        negotiatedManifest,
+        negotiatedManifest,
+        "host",
+      ),
+    ).toEqual({ ok: true });
+    for (const method of ARTIFACT_VERSION_METHODS) {
+      expect(negotiatedManifest[method]).toEqual({ major: 1, minor: 0 });
     }
   });
 });

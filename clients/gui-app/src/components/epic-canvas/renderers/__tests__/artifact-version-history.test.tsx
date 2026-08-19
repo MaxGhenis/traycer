@@ -77,6 +77,7 @@ const state = vi.hoisted(() => ({
     threadCount: 0,
     currentHash: "b".repeat(64),
   } satisfies ArtifactVersionsRestoreResponse,
+  restoreExecute: null as ArtifactVersionsRestoreResponse | null,
 }));
 
 vi.mock("@/components/epic-canvas/hooks/use-tab-host-id", () => ({
@@ -175,6 +176,14 @@ vi.mock("@/hooks/host/use-host-scoped-mutation", () => ({
         variables.mode === "preflight"
       ) {
         options?.onSuccess?.(state.restorePreflight);
+        return;
+      }
+      if (
+        config.method === "epic.artifactVersions.restore" &&
+        variables.mode === "execute" &&
+        state.restoreExecute !== null
+      ) {
+        options?.onSuccess?.(state.restoreExecute);
       }
     },
   }),
@@ -280,6 +289,7 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
       threadCount: 0,
       currentHash: HASH_B,
     };
+    state.restoreExecute = null;
   });
 
   afterEach(() => {
@@ -506,7 +516,7 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
         deletedAt: 1_700_000_000_000,
         versionCount: 2,
         lastContentHash: HASH_A,
-        unrestorable: "missing-scalars",
+        unrestorable: "missing_scalars",
       },
       {
         artifactId: "artifact-blob",
@@ -514,7 +524,7 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
         deletedAt: 1_700_000_100_000,
         versionCount: 1,
         lastContentHash: HASH_B,
-        unrestorable: "missing-blob",
+        unrestorable: "missing_blob",
       },
     ];
     openHistory();
@@ -536,5 +546,156 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
     })) {
       expect(button.hasAttribute("disabled")).toBe(true);
     }
+  });
+
+  it("renders the clean restore outcome banner and badge", () => {
+    state.historyEntries = [
+      observation("observation-original", "Original snapshot"),
+      observation("observation-restored", "Restored snapshot"),
+    ];
+    state.blobByObservationId.set("observation-original", {
+      contentHash: HASH_A,
+      markdown: "original body",
+    });
+    state.restoreExecute = {
+      kind: "outcome",
+      status: "clean",
+      newObservationId: "observation-restored",
+    };
+
+    openHistory();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore this version" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore as new version" }),
+    );
+
+    expect(screen.getByText("Restored as a new version.")).toBeTruthy();
+    expect(screen.getByText("Restored")).toBeTruthy();
+  });
+
+  it("renders the renormalized restore outcome banner and badge", () => {
+    state.historyEntries = [
+      observation("observation-original", "Original snapshot"),
+      observation("observation-restored", "Restored snapshot"),
+    ];
+    state.blobByObservationId.set("observation-original", {
+      contentHash: HASH_A,
+      markdown: "original body",
+    });
+    state.restoreExecute = {
+      kind: "outcome",
+      status: "renormalized",
+      newObservationId: "observation-restored",
+    };
+
+    openHistory();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore this version" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore as new version" }),
+    );
+
+    expect(
+      screen.getByText(
+        "Restored. Content was re-normalized by a newer editor version — formatting may differ slightly.",
+        { exact: false },
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("re-normalized by a newer editor version — review"),
+    ).toBeTruthy();
+  });
+
+  it("renders the degraded restore outcome banner and badge", () => {
+    state.historyEntries = [
+      observation("observation-original", "Original snapshot"),
+      observation("observation-restored", "Restored snapshot"),
+    ];
+    state.blobByObservationId.set("observation-original", {
+      contentHash: HASH_A,
+      markdown: "original body",
+    });
+    state.restoreExecute = {
+      kind: "outcome",
+      status: "degraded",
+      newObservationId: "observation-restored",
+    };
+
+    openHistory();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore this version" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore as new version" }),
+    );
+
+    expect(
+      screen.getByText(
+        "Restored as a new version with missing image content. The new row is marked Body only.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Restored with missing image content"),
+    ).toBeTruthy();
+  });
+
+  it("re-runs preflight after a restore conflict and clears the refreshing state", () => {
+    state.historyEntries = [
+      observation("observation-target", "Target snapshot"),
+    ];
+    state.blobByObservationId.set("observation-target", {
+      contentHash: HASH_A,
+      markdown: "target body",
+    });
+    state.restoreExecute = { kind: "conflict", currentHash: HASH_A };
+
+    openHistory();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore this version" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore as new version" }),
+    );
+
+    const preflightCalls = state.mutationCalls.filter(
+      (call) =>
+        call.method === "epic.artifactVersions.restore" &&
+        call.variables.mode === "preflight",
+    );
+    expect(preflightCalls).toHaveLength(2);
+    expect(
+      screen.getByRole("button", { name: "Restore as new version" }),
+    ).toBeTruthy();
+  });
+
+  it("shows the unavailable copy when an execute call reports unavailable", () => {
+    state.historyEntries = [
+      observation("observation-target", "Target snapshot"),
+    ];
+    state.blobByObservationId.set("observation-target", {
+      contentHash: HASH_A,
+      markdown: "target body",
+    });
+    state.restoreExecute = { kind: "unavailable", reason: "missing_blob" };
+
+    openHistory();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore this version" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore as new version" }),
+    );
+
+    expect(
+      screen.getByText("The saved body for this version is missing."),
+    ).toBeTruthy();
   });
 });

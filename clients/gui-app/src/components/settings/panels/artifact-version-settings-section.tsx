@@ -1,9 +1,12 @@
 import { useState, type ReactNode } from "react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@traycer/protocol/host/index";
-import type {
-  ArtifactVersionSettings,
-  ArtifactVersionSettingsCommandResponse,
+import {
+  MAX_ARTIFACT_VERSION_BYTES_PER_ARTIFACT,
+  MAX_ARTIFACT_VERSION_RETENTION_DAYS,
+  MAX_ARTIFACT_VERSIONS_PER_ARTIFACT,
+  type ArtifactVersionSettings,
+  type ArtifactVersionSettingsCommandResponse,
 } from "@traycer/protocol/host/epic/artifact-versions";
 import { Button } from "@/components/ui/button";
 import {
@@ -56,6 +59,10 @@ function formatBytes(value: number): string {
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
+
+const MAX_ARTIFACT_VERSION_MEGABYTES_PER_ARTIFACT = Math.floor(
+  MAX_ARTIFACT_VERSION_BYTES_PER_ARTIFACT / (1024 * 1024),
+);
 
 function boundedInteger(
   value: string,
@@ -155,7 +162,7 @@ export function ArtifactVersionSettingsSection(props: {
   });
 
   if (!supported) return null;
-  const snapshot = committed ?? query.data ?? null;
+  const snapshot = query.data ?? committed ?? null;
   if (snapshot === null) {
     return (
       <SettingsGroup
@@ -179,18 +186,18 @@ export function ArtifactVersionSettingsSection(props: {
     retentionDays: boundedInteger(
       retentionDays ?? "",
       settings.retentionDays,
-      3650,
+      MAX_ARTIFACT_VERSION_RETENTION_DAYS,
     ),
     maxVersionsPerArtifact: boundedInteger(
       maxVersions ?? "",
       settings.maxVersionsPerArtifact,
-      10_000,
+      MAX_ARTIFACT_VERSIONS_PER_ARTIFACT,
     ),
     maxBytesPerArtifact:
       boundedInteger(
         maxMegabytes ?? "",
         Math.ceil(settings.maxBytesPerArtifact / (1024 * 1024)),
-        1024,
+        MAX_ARTIFACT_VERSION_MEGABYTES_PER_ARTIFACT,
       ) *
       1024 *
       1024,
@@ -252,7 +259,7 @@ export function ArtifactVersionSettingsSection(props: {
                   id="artifact-retention-days"
                   type="number"
                   min={1}
-                  max={3650}
+                  max={MAX_ARTIFACT_VERSION_RETENTION_DAYS}
                   value={retentionDays ?? String(settings.retentionDays)}
                   onChange={(event) => setRetentionDays(event.target.value)}
                 />
@@ -266,7 +273,7 @@ export function ArtifactVersionSettingsSection(props: {
                   id="artifact-retention-versions"
                   type="number"
                   min={1}
-                  max={10_000}
+                  max={MAX_ARTIFACT_VERSIONS_PER_ARTIFACT}
                   value={maxVersions ?? String(settings.maxVersionsPerArtifact)}
                   onChange={(event) => setMaxVersions(event.target.value)}
                 />
@@ -280,7 +287,7 @@ export function ArtifactVersionSettingsSection(props: {
                   id="artifact-retention-megabytes"
                   type="number"
                   min={1}
-                  max={1024}
+                  max={MAX_ARTIFACT_VERSION_MEGABYTES_PER_ARTIFACT}
                   value={
                     maxMegabytes ??
                     String(

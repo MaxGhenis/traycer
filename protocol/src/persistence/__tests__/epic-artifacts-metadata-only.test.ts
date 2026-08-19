@@ -183,5 +183,19 @@ describe("epic artifact schema metadata-only contract", () => {
       assignee: null,
       status: null,
     });
+
+    const story = storyArtifactSchema.parse({
+      kind: "story",
+      ...BASE_ARTIFACT_FIELDS,
+      assignee: "user-2",
+      status: 1,
+    });
+    expect(
+      buildDeletedEpicArtifact(story, "2026-08-14T00:00:00.000Z"),
+    ).toMatchObject({
+      kind: "story",
+      assignee: "user-2",
+      status: 1,
+    });
   });
 });

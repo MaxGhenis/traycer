@@ -19,10 +19,11 @@ export class ArtifactVersionHistoryErrorBoundary extends Component<
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
-    appLogger.warn("[artifact-version-history] renderer failed", {
-      error: error.message,
-      componentStack: info.componentStack ?? null,
-    });
+    appLogger.error(
+      "[artifact-version-history] renderer failed",
+      { componentStack: info.componentStack ?? null },
+      error,
+    );
   }
 
   override render(): ReactNode {

@@ -46,11 +46,11 @@ import {
 } from "@/components/ui/sheet";
 import { useHostQuery } from "@/hooks/host/use-host-query";
 import { useHostScopedMutationForClient } from "@/hooks/host/use-host-scoped-mutation";
-import { useHostSupportsMethod } from "@/hooks/host/use-host-supports-method";
 import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
+import { useArtifactVersionHistoryAvailable } from "@/hooks/epic/use-artifact-version-history-available";
 import { useEpicTileNavigation } from "@/hooks/epic/use-epic-tile-navigation";
 import { epicNodeRefForNodeId } from "@/lib/epic-selectors";
-import { hostQueryKeys } from "@/lib/query-keys";
+import { epicMutationKeys, hostQueryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 import { useMaybeOpenEpicHandle } from "@/providers/use-open-epic-handle";
 
@@ -81,12 +81,12 @@ const RESTORE_UNAVAILABLE_COPY: Readonly<
 > = {
   storage_full: "The host has no room to create the new version.",
   journal_cap: "The host's recovery journal is full.",
-  "target-not-found": "This version is no longer in history.",
-  "missing-blob": "The saved body for this version is missing.",
-  "artifact-not-live": "This artifact is no longer live.",
-  "kind-mismatch": "This version belongs to a different artifact kind.",
-  "body-unavailable": "The artifact body is currently unavailable.",
-  "missing-images": "Some referenced images are missing.",
+  target_not_found: "This version is no longer in history.",
+  missing_blob: "The saved body for this version is missing.",
+  artifact_not_live: "This artifact is no longer live.",
+  kind_mismatch: "This version belongs to a different artifact kind.",
+  body_unavailable: "The artifact body is currently unavailable.",
+  missing_images: "Some referenced images are missing.",
 };
 
 const PROVENANCE_LABELS: Readonly<
@@ -173,7 +173,11 @@ function deleteDetail(
   provenance: Extract<Provenance, { readonly kind: "delete" }>,
 ): string | null {
   const actor = provenance.actorKind?.replaceAll("_", " ") ?? null;
-  if (actor === null) return provenance.deleteOpId;
+  if (actor === null) {
+    return provenance.deleteOpId === null
+      ? null
+      : `Deleted · operation ${provenance.deleteOpId}`;
+  }
   return provenance.deleteOpId === null
     ? `Deleted by ${actor}`
     : `Deleted by ${actor} · operation ${provenance.deleteOpId}`;
@@ -303,43 +307,13 @@ export function ArtifactVersionHistoryEntryPoint(props: {
 function ArtifactVersionHistoryEntryPointContent(props: {
   readonly artifactId: string;
 }): ReactNode {
+  const available = useArtifactVersionHistoryAvailable();
   const openEpicHandle = useMaybeOpenEpicHandle();
   const hostId = useTabHostId();
   const client = useTabHostClient();
-  const supportsList = useHostSupportsMethod(
-    hostId,
-    "epic.artifactVersions.list",
-  );
-  const supportsBlob = useHostSupportsMethod(
-    hostId,
-    "epic.artifactVersions.getBlob",
-  );
-  const supportsRestore = useHostSupportsMethod(
-    hostId,
-    "epic.artifactVersions.restore",
-  );
-  const supportsDeletedList = useHostSupportsMethod(
-    hostId,
-    "epic.deletedArtifacts.list",
-  );
-  const supportsRevive = useHostSupportsMethod(
-    hostId,
-    "epic.deletedArtifacts.revive",
-  );
-  const supportsSettings = useHostSupportsMethod(
-    hostId,
-    "epic.artifactVersionSettings.get",
-  );
-  const supported =
-    supportsList &&
-    supportsBlob &&
-    supportsRestore &&
-    supportsDeletedList &&
-    supportsRevive &&
-    supportsSettings;
   const [open, setOpen] = useState(false);
 
-  if (!supported || openEpicHandle === null) return null;
+  if (!available || openEpicHandle === null) return null;
 
   return (
     <>
@@ -424,12 +398,12 @@ function ArtifactVersionHistorySheet(props: {
     method: "epic.deletedArtifacts.list",
     params: { epicId: props.epicId },
     cacheKeyIdentity: undefined,
-    options: { enabled: props.open && mode === "deleted" },
+    options: { enabled: props.open },
   });
 
   const loadOlder = useHostScopedMutationForClient(props.client, {
     method: "epic.artifactVersions.list",
-    mutationKey: ["artifact-version-history-load-older"],
+    mutationKey: epicMutationKeys.loadOlderArtifactVersions(),
     errorMessage: "Couldn't load older versions",
     invalidateMethods: [],
     onSuccess: (response) => {
@@ -501,13 +475,13 @@ function ArtifactVersionHistorySheet(props: {
 
   const restore = useHostScopedMutationForClient(props.client, {
     method: "epic.artifactVersions.restore",
-    mutationKey: ["artifact-version-restore"],
+    mutationKey: epicMutationKeys.restoreArtifactVersion(),
     errorMessage: "Couldn't restore this version",
     invalidateMethods: ["epic.artifactVersions.list"],
   });
   const revive = useHostScopedMutationForClient(props.client, {
     method: "epic.deletedArtifacts.revive",
-    mutationKey: ["deleted-artifact-revive"],
+    mutationKey: epicMutationKeys.reviveDeletedArtifact(),
     errorMessage: "Couldn't restore this artifact",
     invalidateMethods: [
       "epic.deletedArtifacts.list",
@@ -628,6 +602,8 @@ function ArtifactVersionHistorySheet(props: {
             <DeletedArtifactsView
               entries={deleted.data?.entries ?? []}
               loading={deleted.isLoading}
+              error={deleted.isError}
+              onRetry={() => void deleted.refetch()}
               pendingArtifactId={
                 revive.isPending ? revive.variables.artifactId : null
               }
@@ -652,7 +628,24 @@ function ArtifactVersionHistorySheet(props: {
                 {history.isLoading ? (
                   <p className="p-4 text-muted-foreground">Loading history…</p>
                 ) : null}
-                {!history.isLoading && entries.length === 0 ? (
+                {history.isError ? (
+                  <div className="p-4">
+                    <p className="text-muted-foreground">
+                      Couldn&apos;t load version history.
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => void history.refetch()}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                ) : null}
+                {!history.isLoading &&
+                !history.isError &&
+                entries.length === 0 ? (
                   <p className="p-4 text-muted-foreground">
                     No versions captured yet.
                   </p>
@@ -759,7 +752,7 @@ function VersionObservationList(props: {
     return (
       <div key={entry.observationId}>
         {showDay ? (
-          <p className="border-b bg-muted/25 px-3 py-1.5 text-ui-xs font-medium text-muted-foreground">
+          <p className="border-b bg-foreground/5 px-3 py-1.5 text-ui-xs font-medium text-muted-foreground">
             {day}
           </p>
         ) : null}
@@ -1010,10 +1003,10 @@ function RestoreVersionDialog(props: {
 function deletedArtifactUnavailableCopy(
   reason: DeletedArtifactEntry["unrestorable"],
 ): string | null {
-  if (reason === "missing-scalars") {
+  if (reason === "missing_scalars") {
     return "Cannot restore: the artifact's title, kind, or tree position is missing.";
   }
-  if (reason === "missing-blob") {
+  if (reason === "missing_blob") {
     return "Cannot restore: the saved artifact body is missing.";
   }
   return null;
@@ -1022,6 +1015,8 @@ function deletedArtifactUnavailableCopy(
 function DeletedArtifactsView(props: {
   readonly entries: readonly DeletedArtifactEntry[];
   readonly loading: boolean;
+  readonly error: boolean;
+  readonly onRetry: () => void;
   readonly pendingArtifactId: string | null;
   readonly onBack: () => void;
   readonly onRevive: (artifactId: string) => void;
@@ -1035,7 +1030,22 @@ function DeletedArtifactsView(props: {
       {props.loading ? (
         <p className="text-muted-foreground">Loading deleted artifacts…</p>
       ) : null}
-      {!props.loading && props.entries.length === 0 ? (
+      {props.error ? (
+        <div>
+          <p className="text-muted-foreground">
+            Couldn&apos;t load deleted artifacts.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={props.onRetry}
+          >
+            Retry
+          </Button>
+        </div>
+      ) : null}
+      {!props.loading && !props.error && props.entries.length === 0 ? (
         <p className="text-muted-foreground">
           No deleted artifacts are retained.
         </p>

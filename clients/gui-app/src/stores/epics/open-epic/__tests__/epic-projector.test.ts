@@ -298,8 +298,12 @@ describe("epic-projector", () => {
         "createdManually",
         "assignee",
         "status",
+        "deletedAt",
       ]),
     );
+    const deletedAt: unknown = tombstone.get("deletedAt");
+    expect(typeof deletedAt).toBe("string");
+    expect(Number.isNaN(Date.parse(deletedAt as string))).toBe(false);
     handle.dispose();
   });
 
