@@ -22,7 +22,11 @@
  * Resumability across a host restart is free rather than engineered: import is
  * idempotent per `(harness, nativeSessionId)` (the chat id is derived from the
  * pair), so re-submitting a partially-completed selection set re-imports
- * nothing and reports the finished ones as `skipped_already_imported`.
+ * nothing and reports the finished ones as `skipped_already_imported`. Note
+ * what that does and does not promise: a restart drops the run, and the host
+ * resumes NOTHING on its own - picking the remainder back up requires a client
+ * to re-submit, which is safe precisely because the re-submission is
+ * idempotent.
  *
  * There is no cancel in v1.
  *

@@ -7,20 +7,24 @@
  * does; there is no background scanning. Reads are metadata-only and strictly
  * read-only: a scan never writes, moves, or deletes anything the vendor owns.
  *
- * Groups stream as they are resolved rather than arriving as one list, because
- * the first repo's sessions are useful to render while a large `~/.claude`
- * tree is still being walked, and because a provider that is slow or absent
- * must not hold up the ones that answered.
+ * Groups are emitted AFTER the walk, one frame per folder, rather than as one
+ * list. They cannot stream during the walk: a folder's membership spans
+ * providers, so "this folder is complete" is not knowable until every provider
+ * has been walked. The frame that genuinely arrives early is `providerFailed`,
+ * which is sent the moment a provider gives up - which is what lets the wizard
+ * grey that provider out while the rest of the scan is still running.
  *
  * Server frames:
  *
  * - `started`        - emitted once, before any directory is opened.
- * - `group`          - one repo folder's worth of candidates.
+ * - `group`          - one repo folder's worth of candidates, complete. Sent
+ *                      after every provider has been walked.
  * - `providerFailed` - one provider could not be scanned at all; the others
- *                      keep streaming. A frame rather than a field on
- *                      `complete` so the wizard can grey that provider's
- *                      section out WHILE the scan is still running, which is
- *                      exactly when the user is looking at it.
+ *                      keep walking. The one frame that is live: it is sent
+ *                      during the walk rather than as a field on `complete`, so
+ *                      the wizard can grey that provider's section out WHILE
+ *                      the scan is still running, which is exactly when the
+ *                      user is looking at it.
  * - `complete`       - terminal frame; carries the totals the header shows.
  * - `pong`           - heartbeat response.
  *
