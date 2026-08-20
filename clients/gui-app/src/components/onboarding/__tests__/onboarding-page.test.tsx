@@ -39,13 +39,17 @@ vi.mock("@/components/onboarding/onboarding-theme-picker", () => ({
   OnboardingThemePicker: () => <div data-testid="theme-picker-stub" />,
 }));
 
+vi.mock("@/components/session-import/session-import-wizard", () => ({
+  SessionImportWizard: () => <div data-testid="session-import-wizard-stub" />,
+}));
+
 vi.mock("@/components/onboarding/onboarding-diorama", () => ({
   OnboardingDiorama: (props: {
     readonly stage: number;
     readonly agentGuide: OnboardingAgentGuideState;
   }) => (
     <div data-testid="onboarding-diorama-stub" data-stage={props.stage}>
-      {props.stage === 4 ? (
+      {props.stage === 5 ? (
         <>
           <textarea
             data-testid="mock-agent-guide-input"
@@ -146,17 +150,16 @@ function createRunnerHost() {
 }
 
 async function advanceToStage(stage: number): Promise<void> {
-  const current = Number(
-    screen.getByTestId("onboarding-diorama-stub").getAttribute("data-stage"),
-  );
+  const currentActId = screen
+    .getByTestId("onboarding-act")
+    .getAttribute("data-act-id");
+  const current = ONBOARDING_ACTS.findIndex((act) => act.id === currentActId);
   for (let index = current; index < stage; index++) {
     fireEvent.click(screen.getByTestId("onboarding-advance"));
     await waitFor(() => {
       expect(
-        screen
-          .getByTestId("onboarding-diorama-stub")
-          .getAttribute("data-stage"),
-      ).toBe(String(index + 1));
+        screen.getByTestId("onboarding-act").getAttribute("data-act-id"),
+      ).toBe(ONBOARDING_ACTS[index + 1].id);
     });
   }
 }
@@ -293,7 +296,7 @@ describe("OnboardingPage", () => {
     windowOpenMock.mockRestore();
   });
 
-  it("advances through all five acts while keeping the Figma continue label", async () => {
+  it("advances through every act while keeping the Figma continue label", async () => {
     renderPage({ replay: false });
 
     const lastActIndex = ONBOARDING_ACTS.length - 1;
@@ -303,10 +306,8 @@ describe("OnboardingPage", () => {
       fireEvent.click(advanceButton);
       await waitFor(() => {
         expect(
-          screen
-            .getByTestId("onboarding-diorama-stub")
-            .getAttribute("data-stage"),
-        ).toBe(String(index + 1));
+          screen.getByTestId("onboarding-act").getAttribute("data-act-id"),
+        ).toBe(ONBOARDING_ACTS[index + 1].id);
       });
     }
 
@@ -352,7 +353,7 @@ describe("OnboardingPage", () => {
     };
     renderPage({ replay: false });
 
-    await advanceToStage(4);
+    await advanceToStage(5);
 
     const input = screen.getByTestId<HTMLTextAreaElement>(
       "mock-agent-guide-input",
@@ -364,10 +365,8 @@ describe("OnboardingPage", () => {
 
     await waitFor(() => {
       expect(
-        screen
-          .getByTestId("onboarding-diorama-stub")
-          .getAttribute("data-stage"),
-      ).toBe("5");
+        screen.getByTestId("onboarding-act").getAttribute("data-act-id"),
+      ).toBe("command-theme");
     });
     expect(setGlobalGuideMock).not.toHaveBeenCalled();
 
@@ -391,7 +390,7 @@ describe("OnboardingPage", () => {
     };
     renderPage({ replay: false });
 
-    await advanceToStage(4);
+    await advanceToStage(5);
 
     const input = screen.getByRole<HTMLTextAreaElement>("textbox", {
       name: "Agent selection guide",
@@ -424,7 +423,7 @@ describe("OnboardingPage", () => {
     };
     renderPage({ replay: false });
 
-    await advanceToStage(4);
+    await advanceToStage(5);
 
     const input = screen.getByRole<HTMLTextAreaElement>("textbox", {
       name: "Agent selection guide",
@@ -450,7 +449,7 @@ describe("OnboardingPage", () => {
     guideQueryState = { data: undefined, isError: true };
     renderPage({ replay: false });
 
-    await advanceToStage(4);
+    await advanceToStage(5);
 
     // The optional guide keeps spinning (editor disabled) since the read never
     // resolved, but it must not block onboarding: Skip and Advance stay enabled.
@@ -485,7 +484,7 @@ describe("OnboardingPage", () => {
     };
     const { rerender } = renderPage({ replay: false });
 
-    await advanceToStage(4);
+    await advanceToStage(5);
 
     const input = screen.getByTestId<HTMLTextAreaElement>(
       "mock-agent-guide-input",
@@ -553,7 +552,7 @@ describe("OnboardingPage", () => {
     };
     const { rerender } = renderPage({ replay: false });
 
-    await advanceToStage(4);
+    await advanceToStage(5);
 
     expect(
       screen.getByTestId<HTMLTextAreaElement>("mock-agent-guide-input").value,
@@ -583,7 +582,7 @@ describe("OnboardingPage", () => {
   it("shows existing guide content without replacing it with provider defaults", async () => {
     const { rerender } = renderPage({ replay: false });
 
-    await advanceToStage(4);
+    await advanceToStage(5);
 
     const input = screen.getByTestId<HTMLTextAreaElement>(
       "mock-agent-guide-input",

@@ -310,6 +310,8 @@ function ActCopy(props: {
 
   return (
     <m.div
+      data-testid="onboarding-act"
+      data-act-id={act.id}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
