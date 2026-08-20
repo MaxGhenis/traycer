@@ -22,6 +22,7 @@ import type {
   UserMessageSender,
 } from "@traycer/protocol/persistence/epic/schemas";
 import type { TokenUsage } from "@traycer/protocol/persistence/epic/foundation";
+import { importedProvenance } from "@traycer/protocol/persistence/epic/chat-events";
 import type {
   BackgroundItem,
   ChatQueuedPromptItem,
@@ -141,7 +142,11 @@ import {
   buildSubmittedChatJSONContent,
   type SlashCommandCatalog,
 } from "@/lib/composer/tiptap-json-content";
-import { buildChatRunSettings } from "@/lib/composer/chat-run-settings";
+import {
+  buildChatRunSettings,
+  importedChatSettingsSeed,
+} from "@/lib/composer/chat-run-settings";
+import type { ProviderId } from "@/components/home/data/landing-options";
 import {
   deriveWorktreeBindingWorkspaceAvailability,
   effectiveMissingWorktreePaths,
@@ -1489,6 +1494,8 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     ) ?? null;
   const activeEditingQueueItemId = editingQueueItem?.queueItemId ?? null;
   const chatSettingsSeed = state.chat?.settings ?? null;
+  const importedSourceProvider =
+    importedProvenance(state.events)?.sourceProvider ?? null;
   const {
     composerFallbackSettingsSeed,
     epicRunSettings,
@@ -1499,6 +1506,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     currentEpicId,
     persistedChatSettings: chatSettingsSeed,
     defaultRunSettings,
+    importedSourceProvider,
   });
   useInitializeChatComposerSettings({
     snapshotLoaded: state.snapshotLoaded,
@@ -2540,6 +2548,8 @@ function useChatTileComposerSettingsSeeds(input: {
   readonly currentEpicId: string;
   readonly persistedChatSettings: ChatRunSettings | null;
   readonly defaultRunSettings: ChatRunSettings;
+  /** The provider an imported chat came from, `null` for a native chat. */
+  readonly importedSourceProvider: ProviderId | null;
 }) {
   // This tile's composer is bound to the TAB host for life, so its last-run
   // fallback seeds read that host's buckets and the on-send write below lands
@@ -2559,9 +2569,21 @@ function useChatTileComposerSettingsSeeds(input: {
     );
   const epicRunSettings =
     settingsFromEpicRunSettingsEntry(epicRunSettingsEntry);
-  const composerFallbackSettingsSeed = fallbackSettingsSeedForChatComposer(
-    epicRunSettings,
-    globalLastRunSettings,
+  const { defaultRunSettings, importedSourceProvider } = input;
+  const composerFallbackSettingsSeed = useMemo(
+    () =>
+      fallbackSettingsSeedForChatComposer({
+        epicRunSettings,
+        globalLastRunSettings,
+        defaultRunSettings,
+        importedSourceProvider,
+      }),
+    [
+      epicRunSettings,
+      globalLastRunSettings,
+      defaultRunSettings,
+      importedSourceProvider,
+    ],
   );
   const initialComposerSettings = currentSettingsForChatTile({
     liveSettings: null,
@@ -2655,11 +2677,27 @@ function useChatWorkspaceAvailability(
   );
 }
 
-function fallbackSettingsSeedForChatComposer(
-  epicRunSettings: ChatRunSettings | null,
-  globalLastRunSettings: ChatRunSettings | null,
-): ChatRunSettings | null {
-  return epicRunSettings ?? globalLastRunSettings;
+/**
+ * What seeds this chat's composer until (or unless) the chat's own settings do.
+ *
+ * For a native chat that is the last-used pair, epic-scoped first. An imported
+ * chat overrides the PROVIDER with the one it was imported from - see
+ * `importedChatSettingsSeed` - because a chat whose own settings never resolved
+ * would otherwise continue a Codex transcript under whatever the user last ran.
+ */
+function fallbackSettingsSeedForChatComposer(input: {
+  readonly epicRunSettings: ChatRunSettings | null;
+  readonly globalLastRunSettings: ChatRunSettings | null;
+  readonly defaultRunSettings: ChatRunSettings;
+  readonly importedSourceProvider: ProviderId | null;
+}): ChatRunSettings | null {
+  const remembered = input.epicRunSettings ?? input.globalLastRunSettings;
+  if (input.importedSourceProvider === null) return remembered;
+  return importedChatSettingsSeed(
+    remembered,
+    input.defaultRunSettings,
+    input.importedSourceProvider,
+  );
 }
 
 function settingsFromEpicRunSettingsEntry(

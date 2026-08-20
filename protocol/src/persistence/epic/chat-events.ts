@@ -194,3 +194,31 @@ export const chatImportedMetadataSchema = z.object({
   sourceCwd: z.string(),
 });
 export type ChatImportedMetadata = z.infer<typeof chatImportedMetadataSchema>;
+
+/**
+ * A chat's import provenance, or `null` for a chat Traycer created itself.
+ *
+ * Lives beside the schema because both sides read it: the host's first-turn
+ * context guard and the renderer's provenance row and composer seeding all have
+ * to agree on what "this chat came from somewhere else" means, and a second
+ * reading of the same bag is how they would drift apart.
+ *
+ * Keyed off the EVENT rather than any session state - the event is appended
+ * once, as the chat's first, and the log is append-only, so unlike a session
+ * chain or an anchor this fact cannot be edited, trimmed, or rewound away.
+ *
+ * Returns `null` for a `chat.imported` event whose metadata does not parse
+ * rather than throwing: the caller's question is "was this imported, and from
+ * what", and a malformed bag cannot answer the second half. Degrading to "not
+ * imported" costs a provenance row; throwing would cost the whole transcript.
+ */
+export function importedProvenance(
+  events: readonly ChatEvent[],
+): ChatImportedMetadata | null {
+  for (const event of events) {
+    if (event.type !== "chat.imported") continue;
+    const parsed = chatImportedMetadataSchema.safeParse(event.metadata);
+    if (parsed.success) return parsed.data;
+  }
+  return null;
+}
