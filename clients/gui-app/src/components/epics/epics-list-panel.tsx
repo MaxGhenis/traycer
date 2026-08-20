@@ -81,6 +81,7 @@ import { EpicsFilterPopover } from "@/components/epics/epics-filter-popover";
 import { EpicsSortMenu } from "@/components/epics/epics-sort-menu";
 import { NotificationIndicatorIcon } from "@/components/notifications/notification-indicator-icon";
 import { useSurfaceNotificationIndicatorState } from "@/components/notifications/notification-indicator-context";
+import { SessionImportPromptRow } from "@/components/session-import/session-import-prompt-row";
 import { NotificationIndicatorsProvider } from "@/components/notifications/notification-indicators-provider";
 import {
   useHistoryQuery,
@@ -591,6 +592,7 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
         />
         <NotificationIndicatorsProvider indicators={notificationIndicators}>
           <div className="min-h-0 flex-1 overflow-y-auto pb-10">
+            <SessionImportPromptRow />
             <EpicsListBody
               error={error}
               isPending={isPending}

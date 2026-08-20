@@ -310,6 +310,13 @@ export const PERSIST_STORES = [
     leaf: "github-mention-filters",
     kind: "static",
   },
+  // Dismissal of the quiet "bring your CLI sessions over" row above the task
+  // list. One flag, never re-armed.
+  {
+    camelName: "sessionImportPrompt",
+    leaf: "session-import-prompt",
+    kind: "static",
+  },
 
   // ── Non-zustand keys ─────────────────────────────────────────────────────
   // `last-route:<windowId>` — per-window router history (persistent-history.ts).
