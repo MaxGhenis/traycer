@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ArtifactVersionObservationEntry,
   ArtifactVersionsRestoreResponse,
-  DeletedArtifactEntry,
 } from "@traycer/protocol/host/epic/artifact-versions";
 import { EpicSessionContext } from "@/lib/registries/epic-session-registry";
 import { EpicViewTabContext } from "@/components/epic-canvas/view-tab-context";
@@ -72,7 +71,6 @@ const state = vi.hoisted(() => ({
     readonly node: OpenedChatNode;
   }>,
   historyEntries: [] as ArtifactVersionObservationEntry[],
-  deletedEntries: [] as DeletedArtifactEntry[],
   settingsEnabled: true,
   blobByObservationId: new Map<
     string,
@@ -131,13 +129,6 @@ vi.mock("@/hooks/host/use-host-query", () => ({
     if (args.method === "epic.artifactVersions.list") {
       return {
         data: { entries: state.historyEntries, nextCursor: null },
-        isLoading: false,
-        isError: false,
-      };
-    }
-    if (args.method === "epic.deletedArtifacts.list") {
-      return {
-        data: { entries: state.deletedEntries },
         isLoading: false,
         isError: false,
       };
@@ -223,8 +214,6 @@ const HISTORY_METHODS = [
   "epic.artifactVersions.list",
   "epic.artifactVersions.getBlob",
   "epic.artifactVersions.restore",
-  "epic.deletedArtifacts.list",
-  "epic.deletedArtifacts.revive",
   "epic.artifactVersionSettings.get",
 ] as const;
 
@@ -303,7 +292,6 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
     state.nodeRefCalls = [];
     state.openedChats = [];
     state.historyEntries = [];
-    state.deletedEntries = [];
     state.settingsEnabled = true;
     state.blobByObservationId.clear();
     state.restorePreflight = {
@@ -336,6 +324,17 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
     state.historyEntries = [observation("observation-a", "Originating chat")];
     openHistory();
     closeHistory();
+  });
+
+  it("keeps artifact history scoped to the live artifact", () => {
+    openHistory();
+
+    expect(screen.queryByTestId("artifact-history-tab-deleted")).toBeNull();
+    expect(
+      state.queryCalls.some(
+        (query) => query.method === "epic.deletedArtifacts.list",
+      ),
+    ).toBe(false);
   });
 
   it("maximizes the panel and hides the resize handle", () => {
@@ -378,7 +377,7 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
   });
 
   it("stays hidden unless every negotiated history method is supported", () => {
-    state.supportedMethods.delete("epic.deletedArtifacts.revive");
+    state.supportedMethods.delete("epic.artifactVersions.restore");
 
     renderHistory();
 
@@ -560,44 +559,6 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
         bodyOnly: true,
       },
     });
-  });
-
-  it("distinguishes missing metadata from a missing saved body", () => {
-    state.deletedEntries = [
-      {
-        artifactId: "artifact-scalars",
-        title: "Lost metadata",
-        deletedAt: 1_700_000_000_000,
-        versionCount: 2,
-        lastContentHash: HASH_A,
-        unrestorable: "missing_scalars",
-      },
-      {
-        artifactId: "artifact-blob",
-        title: "Lost body",
-        deletedAt: 1_700_000_100_000,
-        versionCount: 1,
-        lastContentHash: HASH_B,
-        unrestorable: "missing_blob",
-      },
-    ];
-    openHistory();
-
-    fireEvent.mouseDown(screen.getByTestId("artifact-history-tab-deleted"));
-
-    expect(
-      screen.getByText(
-        "Cannot restore: the artifact's title, kind, or tree position is missing.",
-      ),
-    ).toBeTruthy();
-    expect(
-      screen.getByText("Cannot restore: the saved artifact body is missing."),
-    ).toBeTruthy();
-    for (const button of screen.getAllByRole("button", {
-      name: "Restore artifact",
-    })) {
-      expect(button.hasAttribute("disabled")).toBe(true);
-    }
   });
 
   it("renders the clean restore outcome banner and badge", () => {

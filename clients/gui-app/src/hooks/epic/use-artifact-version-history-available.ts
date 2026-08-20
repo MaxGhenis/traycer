@@ -27,14 +27,6 @@ export function useArtifactVersionHistoryAvailable(): boolean {
     hostId,
     "epic.artifactVersions.restore",
   );
-  const supportsDeletedList = useHostSupportsMethod(
-    hostId,
-    "epic.deletedArtifacts.list",
-  );
-  const supportsRevive = useHostSupportsMethod(
-    hostId,
-    "epic.deletedArtifacts.revive",
-  );
   const supportsSettings = useHostSupportsMethod(
     hostId,
     "epic.artifactVersionSettings.get",
@@ -44,8 +36,6 @@ export function useArtifactVersionHistoryAvailable(): boolean {
     supportsList &&
     supportsBlob &&
     supportsRestore &&
-    supportsDeletedList &&
-    supportsRevive &&
     supportsSettings
   );
 }

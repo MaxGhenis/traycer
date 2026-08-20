@@ -1,0 +1,18 @@
+import { useCallback } from "react";
+import { useEpicTileNavigation } from "@/hooks/epic/use-epic-tile-navigation";
+import { makeDeletedArtifactsTileRef } from "@/stores/epics/canvas/tile-schema/deleted-artifacts-tile";
+
+/** Opens or focuses the epic's deduplicated deleted-artifacts tile. */
+export function useOpenDeletedArtifacts(
+  epicId: string,
+  hostId: string | null,
+): () => void {
+  const tileNavigation = useEpicTileNavigation();
+  return useCallback(() => {
+    if (hostId === null) return;
+    tileNavigation.openTileInEpic(
+      epicId,
+      makeDeletedArtifactsTileRef(epicId, hostId),
+    );
+  }, [epicId, hostId, tileNavigation]);
+}

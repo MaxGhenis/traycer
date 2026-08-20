@@ -11,7 +11,6 @@ import {
 import type {
   ArtifactVersionObservationEntry,
   ArtifactVersionsRestoreResponse,
-  DeletedArtifactEntry,
 } from "@traycer/protocol/host/epic/artifact-versions";
 import { useQueryClient } from "@tanstack/react-query";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
@@ -30,7 +29,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import {
   DiffContentFrame,
@@ -57,8 +55,6 @@ import { epicNodeRefForNodeId } from "@/lib/epic-selectors";
 import { epicMutationKeys, hostQueryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 import { useMaybeOpenEpicHandle } from "@/providers/use-open-epic-handle";
-
-type HistoryMode = "versions" | "deleted";
 
 interface RestorePreflight {
   readonly imagesMissing: readonly string[];
@@ -378,7 +374,6 @@ function ArtifactVersionHistoryPanel(props: {
 }): ReactNode {
   const tileNavigation = useEpicTileNavigation();
   const viewTabId = useEpicViewTabId();
-  const [mode, setMode] = useState<HistoryMode>("versions");
   const [maximized, setMaximized] = useState(false);
   const panelWidthPx = useArtifactVersionHistoryPanelWidthPx();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -399,7 +394,7 @@ function ArtifactVersionHistoryPanel(props: {
       limit: 200,
     },
     cacheKeyIdentity: undefined,
-    options: { enabled: mode === "versions" },
+    options: { enabled: true },
   });
   const settings = useHostQuery({
     client: props.client,
@@ -408,14 +403,6 @@ function ArtifactVersionHistoryPanel(props: {
     cacheKeyIdentity: undefined,
     options: { enabled: true },
   });
-  const deleted = useHostQuery({
-    client: props.client,
-    method: "epic.deletedArtifacts.list",
-    params: { epicId: props.epicId },
-    cacheKeyIdentity: undefined,
-    options: { enabled: true },
-  });
-
   const loadOlder = useHostScopedMutationForClient(props.client, {
     method: "epic.artifactVersions.list",
     mutationKey: epicMutationKeys.loadOlderArtifactVersions(),
@@ -464,7 +451,7 @@ function ArtifactVersionHistoryPanel(props: {
     cacheKeyIdentity:
       selected?.contentHash === undefined ? undefined : [selected.contentHash],
     options: {
-      enabled: mode === "versions" && selected !== null && selected.available,
+      enabled: selected !== null && selected.available,
     },
   });
   const comparisonBlob = useHostQuery({
@@ -480,7 +467,7 @@ function ArtifactVersionHistoryPanel(props: {
         ? undefined
         : [comparison.entry.contentHash],
     options: {
-      enabled: mode === "versions" && comparison !== null,
+      enabled: comparison !== null,
     },
   });
 
@@ -489,15 +476,6 @@ function ArtifactVersionHistoryPanel(props: {
     mutationKey: epicMutationKeys.restoreArtifactVersion(),
     errorMessage: "Couldn't restore this version",
     invalidateMethods: ["epic.artifactVersions.list"],
-  });
-  const revive = useHostScopedMutationForClient(props.client, {
-    method: "epic.deletedArtifacts.revive",
-    mutationKey: epicMutationKeys.reviveDeletedArtifact(),
-    errorMessage: "Couldn't restore this artifact",
-    invalidateMethods: [
-      "epic.deletedArtifacts.list",
-      "epic.artifactVersions.list",
-    ],
   });
   const queryClient = useQueryClient();
 
@@ -602,33 +580,9 @@ function ArtifactVersionHistoryPanel(props: {
       >
         {maximized ? null : <ArtifactVersionHistoryPanelResizeHandle />}
         <header className="flex min-w-0 shrink-0 items-center gap-2 border-b px-2 py-1.5">
-          <Tabs
-            className="min-w-0 flex-1"
-            value={mode}
-            onValueChange={(value) => {
-              if (value === "versions" || value === "deleted") {
-                setMode(value);
-              }
-            }}
-          >
-            <TabsList>
-              <TabsTrigger
-                value="versions"
-                data-testid="artifact-history-tab-versions"
-              >
-                Versions
-              </TabsTrigger>
-              <TabsTrigger
-                value="deleted"
-                data-testid="artifact-history-tab-deleted"
-              >
-                Deleted
-                {deleted.data === undefined || deleted.data.entries.length === 0
-                  ? ""
-                  : ` (${deleted.data.entries.length})`}
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
+          <h2 className="min-w-0 flex-1 truncate px-1 text-ui-sm font-medium">
+            Version history
+          </h2>
           <div className="flex shrink-0 items-center gap-0.5">
             <TooltipWrapper
               label={maximized ? "Restore panel size" : "Maximize panel"}
@@ -669,111 +623,94 @@ function ArtifactVersionHistoryPanel(props: {
           </div>
         </header>
 
-        {mode === "deleted" ? (
-          <DeletedArtifactsView
-            entries={deleted.data?.entries ?? []}
-            loading={deleted.isLoading}
-            error={deleted.isError}
-            onRetry={() => void deleted.refetch()}
-            pendingArtifactId={
-              revive.isPending ? revive.variables.artifactId : null
-            }
-            onRevive={(artifactId) =>
-              revive.mutate({ epicId: props.epicId, artifactId })
-            }
-          />
-        ) : (
-          <div className="grid min-h-0 flex-1 grid-cols-[minmax(13rem,0.7fr)_minmax(0,1.3fr)] overflow-hidden">
-            <div className="min-h-0 overflow-y-auto border-r">
-              {settings.data?.settings.enabled === false ? (
-                <div className="m-3 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-ui-sm">
-                  <p className="font-medium">
-                    Version history is off — turn it on in Settings.
-                  </p>
-                  <p className="mt-1 text-muted-foreground">
-                    Existing versions remain available below.
-                  </p>
-                </div>
-              ) : null}
-              {history.isLoading ? (
-                <p className="p-4 text-muted-foreground">Loading history…</p>
-              ) : null}
-              {history.isError ? (
-                <div className="p-4">
-                  <p className="text-muted-foreground">
-                    Couldn&apos;t load version history.
-                  </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-2"
-                    onClick={() => void history.refetch()}
-                  >
-                    Retry
-                  </Button>
-                </div>
-              ) : null}
-              {!history.isLoading &&
-              !history.isError &&
-              entries.length === 0 ? (
-                <p className="p-4 text-muted-foreground">
-                  No versions captured yet.
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(13rem,0.7fr)_minmax(0,1.3fr)] overflow-hidden">
+          <div className="min-h-0 overflow-y-auto border-r">
+            {settings.data?.settings.enabled === false ? (
+              <div className="m-3 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-ui-sm">
+                <p className="font-medium">
+                  Version history is off — turn it on in Settings.
                 </p>
-              ) : null}
-              <VersionObservationList
-                entries={availableEntries}
-                selectedId={selected === null ? null : selected.observationId}
-                outcome={outcome}
-                onSelect={setSelectedId}
-                onOpenChat={openProvenanceChat}
-              />
-              {nextCursor === null ? null : (
-                <div className="border-t p-3">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="w-full"
-                    disabled={loadOlder.isPending}
-                    onClick={() =>
-                      loadOlder.mutate({
-                        epicId: props.epicId,
-                        artifactId: props.artifactId,
-                        cursor: nextCursor,
-                        limit: 200,
-                      })
-                    }
-                  >
-                    Load older versions
-                  </Button>
-                </div>
-              )}
-              {unavailableCount > 0 ? (
-                <p className="border-t p-3 text-ui-xs text-muted-foreground">
-                  {unavailableCount} older{" "}
-                  {unavailableCount === 1 ? "version is" : "versions are"}{" "}
-                  unavailable from this machine.
+                <p className="mt-1 text-muted-foreground">
+                  Existing versions remain available below.
                 </p>
-              ) : null}
-            </div>
-            <VersionDiffView
-              artifactId={props.artifactId}
-              selected={selected}
-              comparisonLabel={comparison?.label ?? null}
-              comparisonObservationId={comparison?.entry.observationId ?? null}
-              beforeMarkdown={
-                comparison === null
-                  ? null
-                  : (comparisonBlob.data?.markdown ?? null)
-              }
-              afterMarkdown={selectedBlob.data?.markdown ?? null}
-              loading={selectedBlob.isLoading || comparisonBlob.isLoading}
-              outcome={outcome?.status ?? null}
-              onRestore={() => {
-                if (selected !== null) requestPreflight(selected, false);
-              }}
+              </div>
+            ) : null}
+            {history.isLoading ? (
+              <p className="p-4 text-muted-foreground">Loading history…</p>
+            ) : null}
+            {history.isError ? (
+              <div className="p-4">
+                <p className="text-muted-foreground">
+                  Couldn&apos;t load version history.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2"
+                  onClick={() => void history.refetch()}
+                >
+                  Retry
+                </Button>
+              </div>
+            ) : null}
+            {!history.isLoading && !history.isError && entries.length === 0 ? (
+              <p className="p-4 text-muted-foreground">
+                No versions captured yet.
+              </p>
+            ) : null}
+            <VersionObservationList
+              entries={availableEntries}
+              selectedId={selected === null ? null : selected.observationId}
+              outcome={outcome}
+              onSelect={setSelectedId}
+              onOpenChat={openProvenanceChat}
             />
+            {nextCursor === null ? null : (
+              <div className="border-t p-3">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-full"
+                  disabled={loadOlder.isPending}
+                  onClick={() =>
+                    loadOlder.mutate({
+                      epicId: props.epicId,
+                      artifactId: props.artifactId,
+                      cursor: nextCursor,
+                      limit: 200,
+                    })
+                  }
+                >
+                  Load older versions
+                </Button>
+              </div>
+            )}
+            {unavailableCount > 0 ? (
+              <p className="border-t p-3 text-ui-xs text-muted-foreground">
+                {unavailableCount} older{" "}
+                {unavailableCount === 1 ? "version is" : "versions are"}{" "}
+                unavailable from this machine.
+              </p>
+            ) : null}
           </div>
-        )}
+          <VersionDiffView
+            artifactId={props.artifactId}
+            selected={selected}
+            comparisonLabel={comparison?.label ?? null}
+            comparisonObservationId={comparison?.entry.observationId ?? null}
+            beforeMarkdown={
+              comparison === null
+                ? null
+                : (comparisonBlob.data?.markdown ?? null)
+            }
+            afterMarkdown={selectedBlob.data?.markdown ?? null}
+            loading={selectedBlob.isLoading || comparisonBlob.isLoading}
+            outcome={outcome?.status ?? null}
+            onRestore={() => {
+              if (selected !== null) requestPreflight(selected, false);
+            }}
+          />
+        </div>
       </aside>
 
       <RestoreVersionDialog
@@ -1204,92 +1141,5 @@ function RestoreVersionDialog(props: {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function deletedArtifactUnavailableCopy(
-  reason: DeletedArtifactEntry["unrestorable"],
-): string | null {
-  if (reason === "missing_scalars") {
-    return "Cannot restore: the artifact's title, kind, or tree position is missing.";
-  }
-  if (reason === "missing_blob") {
-    return "Cannot restore: the saved artifact body is missing.";
-  }
-  return null;
-}
-
-function DeletedArtifactsView(props: {
-  readonly entries: readonly DeletedArtifactEntry[];
-  readonly loading: boolean;
-  readonly error: boolean;
-  readonly onRetry: () => void;
-  readonly pendingArtifactId: string | null;
-  readonly onRevive: (artifactId: string) => void;
-}): ReactNode {
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto p-4">
-      {props.loading ? (
-        <p className="text-muted-foreground">Loading deleted artifacts…</p>
-      ) : null}
-      {props.error ? (
-        <div>
-          <p className="text-muted-foreground">
-            Couldn&apos;t load deleted artifacts.
-          </p>
-          <Button
-            variant="outline"
-            size="sm"
-            className="mt-2"
-            onClick={props.onRetry}
-          >
-            Retry
-          </Button>
-        </div>
-      ) : null}
-      {!props.loading && !props.error && props.entries.length === 0 ? (
-        <p className="text-muted-foreground">
-          No deleted artifacts are retained.
-        </p>
-      ) : null}
-      <div className="space-y-2">
-        {props.entries.map((entry) => {
-          const reason = deletedArtifactUnavailableCopy(entry.unrestorable);
-          return (
-            <div
-              key={entry.artifactId}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"
-            >
-              <div>
-                <p className="font-medium">
-                  {entry.title ?? "Untitled artifact"}
-                </p>
-                <p className="text-ui-xs text-muted-foreground">
-                  Deleted {formatCapturedAt(entry.deletedAt)} ·{" "}
-                  {entry.versionCount}{" "}
-                  {entry.versionCount === 1 ? "version" : "versions"}
-                </p>
-                {reason === null ? null : (
-                  <p className="mt-1 text-ui-xs text-amber-600 dark:text-amber-400">
-                    {reason}
-                  </p>
-                )}
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={
-                  reason !== null ||
-                  props.pendingArtifactId === entry.artifactId
-                }
-                onClick={() => props.onRevive(entry.artifactId)}
-              >
-                Restore artifact
-              </Button>
-            </div>
-          );
-        })}
-      </div>
-    </div>
   );
 }
