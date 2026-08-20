@@ -196,6 +196,35 @@ describe("<ArtifactVersionSettingsSection />", () => {
     expect(state.mutationCalls).toEqual([]);
   });
 
+  it("keeps a non-mebibyte host byte cap when only days change", () => {
+    state.snapshot = {
+      ...state.snapshot,
+      settings: {
+        ...state.snapshot.settings,
+        maxBytesPerArtifact: 1_500_000,
+      },
+    };
+
+    renderSettings();
+
+    fireEvent.change(screen.getByLabelText("Days"), {
+      target: { value: "14" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save retention" }));
+    fireEvent.click(screen.getByRole("button", { name: "Prune and save" }));
+
+    expect(state.mutationCalls).toEqual([
+      {
+        method: "epic.artifactVersionSettings.setRetentionPolicy",
+        variables: {
+          retentionDays: 14,
+          maxVersionsPerArtifact: 100,
+          maxBytesPerArtifact: 1_500_000,
+        },
+      },
+    ]);
+  });
+
   it("uses the three narrow settings commands", () => {
     renderSettings();
 

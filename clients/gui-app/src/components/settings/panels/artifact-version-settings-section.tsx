@@ -194,13 +194,15 @@ export function ArtifactVersionSettingsSection(props: {
       MAX_ARTIFACT_VERSIONS_PER_ARTIFACT,
     ),
     maxBytesPerArtifact:
-      boundedInteger(
-        maxMegabytes ?? "",
-        Math.ceil(settings.maxBytesPerArtifact / (1024 * 1024)),
-        MAX_ARTIFACT_VERSION_MEGABYTES_PER_ARTIFACT,
-      ) *
-      1024 *
-      1024,
+      maxMegabytes === null
+        ? settings.maxBytesPerArtifact
+        : boundedInteger(
+            maxMegabytes,
+            Math.ceil(settings.maxBytesPerArtifact / (1024 * 1024)),
+            MAX_ARTIFACT_VERSION_MEGABYTES_PER_ARTIFACT,
+          ) *
+          1024 *
+          1024,
   };
   const tightensRetention =
     draft.retentionDays < settings.retentionDays ||
