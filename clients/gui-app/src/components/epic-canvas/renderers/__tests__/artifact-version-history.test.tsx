@@ -19,6 +19,13 @@ import {
   type EpicStreamClientFactory,
   type OpenEpicStoreHandle,
 } from "@/stores/epics/open-epic/store";
+import {
+  clampArtifactVersionHistoryPanelWidthPx,
+  DEFAULT_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+  MAX_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+  MIN_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+  useArtifactVersionHistoryPanelStore,
+} from "@/stores/epics/artifact-version-history-panel-store";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -266,11 +273,22 @@ function renderHistory(): RenderResult {
 function openHistory(): RenderResult {
   const result = renderHistory();
   fireEvent.click(screen.getByTestId("artifact-version-history-entry"));
+  expect(screen.queryByTestId("artifact-version-history-entry")).toBeNull();
+  expect(screen.getByTestId("artifact-version-history-panel")).toBeTruthy();
   return result;
+}
+
+function closeHistory(): void {
+  fireEvent.click(screen.getByTestId("artifact-version-history-close"));
+  expect(screen.queryByTestId("artifact-version-history-panel")).toBeNull();
+  expect(screen.getByTestId("artifact-version-history-entry")).toBeTruthy();
 }
 
 describe("<ArtifactVersionHistoryEntryPoint />", () => {
   beforeEach(() => {
+    useArtifactVersionHistoryPanelStore.setState({
+      panelWidthPx: DEFAULT_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+    });
     epicHandle = createOpenEpicStore({
       epicId: "epic-a",
       streamClientFactory: noopEpicStreamClientFactory,
@@ -306,12 +324,43 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
   it("closes without throwing when the Epic session tears down", () => {
     state.historyEntries = [observation("observation-a", "Originating chat")];
     const result = openHistory();
-    expect(screen.getByTestId("artifact-version-history-sheet")).toBeTruthy();
 
     expect(() => result.rerender(historyTree(null))).not.toThrow();
 
-    expect(screen.queryByTestId("artifact-version-history-sheet")).toBeNull();
+    expect(screen.queryByTestId("artifact-version-history-panel")).toBeNull();
+    expect(screen.queryByTestId("artifact-version-history-entry")).toBeNull();
     expect(screen.queryByText("Version history unavailable")).toBeNull();
+  });
+
+  it("unmounts the panel and restores the entry button when closed", () => {
+    state.historyEntries = [observation("observation-a", "Originating chat")];
+    openHistory();
+    closeHistory();
+  });
+
+  it("maximizes the panel and hides the resize handle", () => {
+    state.historyEntries = [observation("observation-a", "Originating chat")];
+    openHistory();
+
+    expect(
+      screen.getByTestId("artifact-version-history-resize-handle"),
+    ).toBeTruthy();
+    const maximize = screen.getByTestId("artifact-version-history-maximize");
+    expect(maximize.getAttribute("aria-label")).toBe("Maximize panel");
+
+    fireEvent.click(maximize);
+
+    expect(maximize.getAttribute("aria-label")).toBe("Restore panel size");
+    expect(
+      screen.queryByTestId("artifact-version-history-resize-handle"),
+    ).toBeNull();
+
+    fireEvent.click(maximize);
+
+    expect(maximize.getAttribute("aria-label")).toBe("Maximize panel");
+    expect(
+      screen.getByTestId("artifact-version-history-resize-handle"),
+    ).toBeTruthy();
   });
 
   it("contains unexpected history faults at the artifact header", () => {
@@ -700,5 +749,40 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
     expect(
       screen.getByText("The saved body for this version is missing."),
     ).toBeTruthy();
+  });
+});
+
+describe("clampArtifactVersionHistoryPanelWidthPx", () => {
+  it("clamps finite widths to the configured min and max", () => {
+    expect(clampArtifactVersionHistoryPanelWidthPx(300)).toBe(
+      MIN_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+    );
+    expect(clampArtifactVersionHistoryPanelWidthPx(500.4)).toBe(500);
+    expect(clampArtifactVersionHistoryPanelWidthPx(1200)).toBe(
+      MAX_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+    );
+  });
+
+  it("falls back to the default width for non-finite values", () => {
+    expect(clampArtifactVersionHistoryPanelWidthPx(Number.NaN)).toBe(
+      DEFAULT_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+    );
+    expect(
+      clampArtifactVersionHistoryPanelWidthPx(Number.POSITIVE_INFINITY),
+    ).toBe(DEFAULT_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX);
+  });
+
+  it("persists clamped widths through the panel store setter", () => {
+    useArtifactVersionHistoryPanelStore.getState().setPanelWidthPx(2000);
+    expect(useArtifactVersionHistoryPanelStore.getState().panelWidthPx).toBe(
+      MAX_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+    );
+    useArtifactVersionHistoryPanelStore.getState().setPanelWidthPx(100);
+    expect(useArtifactVersionHistoryPanelStore.getState().panelWidthPx).toBe(
+      MIN_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+    );
+    useArtifactVersionHistoryPanelStore.setState({
+      panelWidthPx: DEFAULT_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+    });
   });
 });

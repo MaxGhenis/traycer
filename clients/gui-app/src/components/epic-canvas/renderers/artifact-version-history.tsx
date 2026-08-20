@@ -1,9 +1,12 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangleIcon,
   HistoryIcon,
   InfoIcon,
+  Maximize2Icon,
+  Minimize2Icon,
   RotateCcwIcon,
+  XIcon,
 } from "lucide-react";
 import type {
   ArtifactVersionObservationEntry,
@@ -27,13 +30,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import {
@@ -41,6 +37,17 @@ import {
   DiffContentPrimitive,
 } from "@/components/diff/diff-content-primitive";
 import { buildSnapshotUnifiedPatch } from "@/lib/diff/snapshot-diff-patch";
+import {
+  pointerDragHandleAxisClassName,
+  usePointerDragCommit,
+} from "@/components/epic-canvas/canvas/use-pointer-drag-commit";
+import {
+  DEFAULT_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+  MAX_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+  MIN_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+  useArtifactVersionHistoryPanelStore,
+  useArtifactVersionHistoryPanelWidthPx,
+} from "@/stores/epics/artifact-version-history-panel-store";
 import { useHostQuery } from "@/hooks/host/use-host-query";
 import { useHostScopedMutationForClient } from "@/hooks/host/use-host-scoped-mutation";
 import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
@@ -321,8 +328,8 @@ function ArtifactVersionHistoryEntryPointContent(props: {
 
   if (!available || openEpicHandle === null) return null;
 
-  return (
-    <>
+  if (!open) {
+    return (
       <div className="pointer-events-none absolute top-2 right-2 z-10 flex items-center">
         <span className="pointer-events-auto flex shrink-0 items-center rounded-md border border-border/60 bg-canvas/80 px-0.5 shadow-sm backdrop-blur-sm">
           <TooltipWrapper
@@ -344,24 +351,25 @@ function ArtifactVersionHistoryEntryPointContent(props: {
           </TooltipWrapper>
         </span>
       </div>
-      <ArtifactVersionHistorySheet
-        open={open}
-        onOpenChange={setOpen}
-        artifactId={props.artifactId}
-        epicId={openEpicHandle.epicId}
-        hostId={hostId}
-        client={client}
-        openEpicHandle={openEpicHandle}
-      />
-    </>
+    );
+  }
+
+  return (
+    <ArtifactVersionHistoryPanel
+      artifactId={props.artifactId}
+      epicId={openEpicHandle.epicId}
+      hostId={hostId}
+      client={client}
+      openEpicHandle={openEpicHandle}
+      onClose={() => setOpen(false)}
+    />
   );
 }
 
-// This coordinates the restore union and both sheet modes as one state machine.
+// This coordinates the restore union and both panel modes as one state machine.
 // eslint-disable-next-line complexity
-function ArtifactVersionHistorySheet(props: {
-  readonly open: boolean;
-  readonly onOpenChange: (open: boolean) => void;
+function ArtifactVersionHistoryPanel(props: {
+  readonly onClose: () => void;
   readonly artifactId: string;
   readonly epicId: string;
   readonly hostId: string;
@@ -371,6 +379,8 @@ function ArtifactVersionHistorySheet(props: {
   const tileNavigation = useEpicTileNavigation();
   const viewTabId = useEpicViewTabId();
   const [mode, setMode] = useState<HistoryMode>("versions");
+  const [maximized, setMaximized] = useState(false);
+  const panelWidthPx = useArtifactVersionHistoryPanelWidthPx();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [restoreTarget, setRestoreTarget] =
     useState<ArtifactVersionObservationEntry | null>(null);
@@ -389,21 +399,21 @@ function ArtifactVersionHistorySheet(props: {
       limit: 200,
     },
     cacheKeyIdentity: undefined,
-    options: { enabled: props.open && mode === "versions" },
+    options: { enabled: mode === "versions" },
   });
   const settings = useHostQuery({
     client: props.client,
     method: "epic.artifactVersionSettings.get",
     params: {},
     cacheKeyIdentity: undefined,
-    options: { enabled: props.open },
+    options: { enabled: true },
   });
   const deleted = useHostQuery({
     client: props.client,
     method: "epic.deletedArtifacts.list",
     params: { epicId: props.epicId },
     cacheKeyIdentity: undefined,
-    options: { enabled: props.open },
+    options: { enabled: true },
   });
 
   const loadOlder = useHostScopedMutationForClient(props.client, {
@@ -454,11 +464,7 @@ function ArtifactVersionHistorySheet(props: {
     cacheKeyIdentity:
       selected?.contentHash === undefined ? undefined : [selected.contentHash],
     options: {
-      enabled:
-        props.open &&
-        mode === "versions" &&
-        selected !== null &&
-        selected.available,
+      enabled: mode === "versions" && selected !== null && selected.available,
     },
   });
   const comparisonBlob = useHostQuery({
@@ -474,7 +480,7 @@ function ArtifactVersionHistorySheet(props: {
         ? undefined
         : [comparison.entry.contentHash],
     options: {
-      enabled: props.open && mode === "versions" && comparison !== null,
+      enabled: mode === "versions" && comparison !== null,
     },
   });
 
@@ -579,158 +585,196 @@ function ArtifactVersionHistorySheet(props: {
 
   return (
     <>
-      <Sheet open={props.open} onOpenChange={props.onOpenChange}>
-        <SheetContent
-          className="w-full data-[side=right]:sm:max-w-3xl data-[side=right]:xl:max-w-4xl"
-          data-testid="artifact-version-history-sheet"
-        >
-          <SheetHeader className="gap-3 border-b pr-12">
-            <div className="space-y-1.5">
-              <SheetTitle>History</SheetTitle>
-              <SheetDescription>
-                {mode === "versions"
-                  ? "Saved versions of this artifact, newest first."
-                  : "Artifacts that can still be restored from local history."}
-              </SheetDescription>
-            </div>
-            <Tabs
-              value={mode}
-              onValueChange={(value) => {
-                if (value === "versions" || value === "deleted") {
-                  setMode(value);
-                }
-              }}
+      <aside
+        aria-label="Version history"
+        data-testid="artifact-version-history-panel"
+        data-artifact-version-history-panel
+        // User-adjustable width (drag the left edge), persisted across tiles;
+        // the `70%` cap mirrors the handle's live-drag cap so the artifact
+        // body always keeps space. Maximized covers the tile instead.
+        className={cn(
+          "flex min-w-0 shrink-0 flex-col border-l border-border bg-background",
+          maximized
+            ? "absolute inset-0 z-20 w-full border-l-0"
+            : "relative max-w-[70%]",
+        )}
+        style={maximized ? undefined : { width: panelWidthPx }}
+      >
+        {maximized ? null : <ArtifactVersionHistoryPanelResizeHandle />}
+        <header className="flex min-w-0 shrink-0 items-center gap-2 border-b px-2 py-1.5">
+          <Tabs
+            className="min-w-0 flex-1"
+            value={mode}
+            onValueChange={(value) => {
+              if (value === "versions" || value === "deleted") {
+                setMode(value);
+              }
+            }}
+          >
+            <TabsList>
+              <TabsTrigger
+                value="versions"
+                data-testid="artifact-history-tab-versions"
+              >
+                Versions
+              </TabsTrigger>
+              <TabsTrigger
+                value="deleted"
+                data-testid="artifact-history-tab-deleted"
+              >
+                Deleted
+                {deleted.data === undefined || deleted.data.entries.length === 0
+                  ? ""
+                  : ` (${deleted.data.entries.length})`}
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <TooltipWrapper
+              label={maximized ? "Restore panel size" : "Maximize panel"}
+              side="bottom"
+              sideOffset={undefined}
+              align={undefined}
             >
-              <TabsList>
-                <TabsTrigger
-                  value="versions"
-                  data-testid="artifact-history-tab-versions"
-                >
-                  Versions
-                </TabsTrigger>
-                <TabsTrigger
-                  value="deleted"
-                  data-testid="artifact-history-tab-deleted"
-                >
-                  Deleted
-                  {deleted.data === undefined ||
-                  deleted.data.entries.length === 0
-                    ? ""
-                    : ` (${deleted.data.entries.length})`}
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-          </SheetHeader>
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                aria-label={maximized ? "Restore panel size" : "Maximize panel"}
+                data-testid="artifact-version-history-maximize"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => setMaximized((current) => !current)}
+              >
+                {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
+              </Button>
+            </TooltipWrapper>
+            <TooltipWrapper
+              label="Close history"
+              side="bottom"
+              sideOffset={undefined}
+              align={undefined}
+            >
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Close history"
+                data-testid="artifact-version-history-close"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={props.onClose}
+              >
+                <XIcon />
+              </Button>
+            </TooltipWrapper>
+          </div>
+        </header>
 
-          {mode === "deleted" ? (
-            <DeletedArtifactsView
-              entries={deleted.data?.entries ?? []}
-              loading={deleted.isLoading}
-              error={deleted.isError}
-              onRetry={() => void deleted.refetch()}
-              pendingArtifactId={
-                revive.isPending ? revive.variables.artifactId : null
-              }
-              onRevive={(artifactId) =>
-                revive.mutate({ epicId: props.epicId, artifactId })
-              }
-            />
-          ) : (
-            <div className="grid min-h-0 flex-1 grid-cols-[minmax(13rem,0.7fr)_minmax(0,1.3fr)] overflow-hidden">
-              <div className="min-h-0 overflow-y-auto border-r">
-                {settings.data?.settings.enabled === false ? (
-                  <div className="m-3 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-ui-sm">
-                    <p className="font-medium">
-                      Version history is off — turn it on in Settings.
-                    </p>
-                    <p className="mt-1 text-muted-foreground">
-                      Existing versions remain available below.
-                    </p>
-                  </div>
-                ) : null}
-                {history.isLoading ? (
-                  <p className="p-4 text-muted-foreground">Loading history…</p>
-                ) : null}
-                {history.isError ? (
-                  <div className="p-4">
-                    <p className="text-muted-foreground">
-                      Couldn&apos;t load version history.
-                    </p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="mt-2"
-                      onClick={() => void history.refetch()}
-                    >
-                      Retry
-                    </Button>
-                  </div>
-                ) : null}
-                {!history.isLoading &&
-                !history.isError &&
-                entries.length === 0 ? (
-                  <p className="p-4 text-muted-foreground">
-                    No versions captured yet.
+        {mode === "deleted" ? (
+          <DeletedArtifactsView
+            entries={deleted.data?.entries ?? []}
+            loading={deleted.isLoading}
+            error={deleted.isError}
+            onRetry={() => void deleted.refetch()}
+            pendingArtifactId={
+              revive.isPending ? revive.variables.artifactId : null
+            }
+            onRevive={(artifactId) =>
+              revive.mutate({ epicId: props.epicId, artifactId })
+            }
+          />
+        ) : (
+          <div className="grid min-h-0 flex-1 grid-cols-[minmax(13rem,0.7fr)_minmax(0,1.3fr)] overflow-hidden">
+            <div className="min-h-0 overflow-y-auto border-r">
+              {settings.data?.settings.enabled === false ? (
+                <div className="m-3 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-ui-sm">
+                  <p className="font-medium">
+                    Version history is off — turn it on in Settings.
                   </p>
-                ) : null}
-                <VersionObservationList
-                  entries={availableEntries}
-                  selectedId={selected === null ? null : selected.observationId}
-                  outcome={outcome}
-                  onSelect={setSelectedId}
-                  onOpenChat={openProvenanceChat}
-                />
-                {nextCursor === null ? null : (
-                  <div className="border-t p-3">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="w-full"
-                      disabled={loadOlder.isPending}
-                      onClick={() =>
-                        loadOlder.mutate({
-                          epicId: props.epicId,
-                          artifactId: props.artifactId,
-                          cursor: nextCursor,
-                          limit: 200,
-                        })
-                      }
-                    >
-                      Load older versions
-                    </Button>
-                  </div>
-                )}
-                {unavailableCount > 0 ? (
-                  <p className="border-t p-3 text-ui-xs text-muted-foreground">
-                    {unavailableCount} older{" "}
-                    {unavailableCount === 1 ? "version is" : "versions are"}{" "}
-                    unavailable from this machine.
+                  <p className="mt-1 text-muted-foreground">
+                    Existing versions remain available below.
                   </p>
-                ) : null}
-              </div>
-              <VersionDiffView
-                artifactId={props.artifactId}
-                selected={selected}
-                comparisonLabel={comparison?.label ?? null}
-                comparisonObservationId={
-                  comparison?.entry.observationId ?? null
-                }
-                beforeMarkdown={
-                  comparison === null
-                    ? null
-                    : (comparisonBlob.data?.markdown ?? null)
-                }
-                afterMarkdown={selectedBlob.data?.markdown ?? null}
-                loading={selectedBlob.isLoading || comparisonBlob.isLoading}
-                outcome={outcome?.status ?? null}
-                onRestore={() => {
-                  if (selected !== null) requestPreflight(selected, false);
-                }}
+                </div>
+              ) : null}
+              {history.isLoading ? (
+                <p className="p-4 text-muted-foreground">Loading history…</p>
+              ) : null}
+              {history.isError ? (
+                <div className="p-4">
+                  <p className="text-muted-foreground">
+                    Couldn&apos;t load version history.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    onClick={() => void history.refetch()}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              ) : null}
+              {!history.isLoading &&
+              !history.isError &&
+              entries.length === 0 ? (
+                <p className="p-4 text-muted-foreground">
+                  No versions captured yet.
+                </p>
+              ) : null}
+              <VersionObservationList
+                entries={availableEntries}
+                selectedId={selected === null ? null : selected.observationId}
+                outcome={outcome}
+                onSelect={setSelectedId}
+                onOpenChat={openProvenanceChat}
               />
+              {nextCursor === null ? null : (
+                <div className="border-t p-3">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full"
+                    disabled={loadOlder.isPending}
+                    onClick={() =>
+                      loadOlder.mutate({
+                        epicId: props.epicId,
+                        artifactId: props.artifactId,
+                        cursor: nextCursor,
+                        limit: 200,
+                      })
+                    }
+                  >
+                    Load older versions
+                  </Button>
+                </div>
+              )}
+              {unavailableCount > 0 ? (
+                <p className="border-t p-3 text-ui-xs text-muted-foreground">
+                  {unavailableCount} older{" "}
+                  {unavailableCount === 1 ? "version is" : "versions are"}{" "}
+                  unavailable from this machine.
+                </p>
+              ) : null}
             </div>
-          )}
-        </SheetContent>
-      </Sheet>
+            <VersionDiffView
+              artifactId={props.artifactId}
+              selected={selected}
+              comparisonLabel={comparison?.label ?? null}
+              comparisonObservationId={comparison?.entry.observationId ?? null}
+              beforeMarkdown={
+                comparison === null
+                  ? null
+                  : (comparisonBlob.data?.markdown ?? null)
+              }
+              afterMarkdown={selectedBlob.data?.markdown ?? null}
+              loading={selectedBlob.isLoading || comparisonBlob.isLoading}
+              outcome={outcome?.status ?? null}
+              onRestore={() => {
+                if (selected !== null) requestPreflight(selected, false);
+              }}
+            />
+          </div>
+        )}
+      </aside>
 
       <RestoreVersionDialog
         target={restoreTarget}
@@ -746,6 +790,120 @@ function ArtifactVersionHistorySheet(props: {
         onConfirm={executeRestore}
       />
     </>
+  );
+}
+
+interface PanelDragState {
+  readonly startWidth: number;
+  readonly maxWidth: number;
+  readonly panelElement: HTMLElement;
+  readonly initialStyleWidth: string;
+  latestWidth: number;
+}
+
+/**
+ * Live drag additionally caps the panel at 70% of the tile so the artifact
+ * body always keeps space; the shell's render-time `max-w-[70%]` mirrors it.
+ */
+const MAX_PANEL_DRAG_FRACTION = 0.7;
+const KEYBOARD_RESIZE_STEP_PX = 24;
+
+function isHistoryPanelElement(
+  element: Element | null,
+): element is HTMLElement {
+  return (
+    element instanceof HTMLElement &&
+    element.dataset.artifactVersionHistoryPanel !== undefined
+  );
+}
+
+/**
+ * Width handle on the panel's LEFT edge, on the shared `usePointerDragCommit`
+ * state machine - the same mechanics as the comm-graph detail panel's handle:
+ * the panel is docked RIGHT, so dragging left GROWS it and the grow arrow key
+ * is ArrowLeft. Per-frame direct `style.width` mutation, one store commit on
+ * release, double-click resets to the default width.
+ */
+function ArtifactVersionHistoryPanelResizeHandle() {
+  const panelWidthPx = useArtifactVersionHistoryPanelWidthPx();
+  const setPanelWidthPx = useArtifactVersionHistoryPanelStore(
+    (s) => s.setPanelWidthPx,
+  );
+  const dragRef = useRef<PanelDragState | null>(null);
+
+  const sliderProps = usePointerDragCommit({
+    axis: "horizontal",
+    onDragStart: (event) => {
+      const panelElement = event.currentTarget.parentElement;
+      const container = panelElement?.parentElement ?? null;
+      if (!isHistoryPanelElement(panelElement) || container === null) {
+        return false;
+      }
+      const containerWidth = container.getBoundingClientRect().width;
+      if (containerWidth <= 0) return false;
+      const startWidth = panelElement.getBoundingClientRect().width;
+      dragRef.current = {
+        startWidth,
+        maxWidth: Math.min(
+          MAX_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+          containerWidth * MAX_PANEL_DRAG_FRACTION,
+        ),
+        panelElement,
+        initialStyleWidth: panelElement.style.width,
+        latestWidth: startWidth,
+      };
+      return true;
+    },
+    onDragFrame: (deltaPx) => {
+      const drag = dragRef.current;
+      if (drag === null) return;
+      // Right-docked: the pointer moving LEFT (negative delta) grows the panel.
+      const nextWidth = Math.min(
+        drag.maxWidth,
+        Math.max(
+          MIN_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX,
+          drag.startWidth - deltaPx,
+        ),
+      );
+      drag.latestWidth = nextWidth;
+      // Direct DOM mutation - zero React renders while the pointer moves.
+      drag.panelElement.style.width = `${nextWidth}px`;
+    },
+    onDragCommit: () => {
+      const drag = dragRef.current;
+      dragRef.current = null;
+      if (drag === null) return;
+      setPanelWidthPx(drag.latestWidth);
+    },
+    onDragCancel: () => {
+      const drag = dragRef.current;
+      dragRef.current = null;
+      if (drag === null) return;
+      drag.panelElement.style.width = drag.initialStyleWidth;
+    },
+    onReset: () => {
+      setPanelWidthPx(DEFAULT_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX);
+    },
+    onKeyNudge: (nudgeDirection) => {
+      // Mirrored axis: ArrowRight (direction 1) SHRINKS a right-docked panel.
+      setPanelWidthPx(panelWidthPx - nudgeDirection * KEYBOARD_RESIZE_STEP_PX);
+    },
+  });
+
+  return (
+    <div
+      {...sliderProps}
+      aria-valuenow={panelWidthPx}
+      aria-valuemin={MIN_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX}
+      aria-valuemax={MAX_ARTIFACT_VERSION_HISTORY_PANEL_WIDTH_PX}
+      aria-label="Resize version history panel"
+      data-testid="artifact-version-history-resize-handle"
+      className={cn(
+        "absolute inset-y-0 left-0 z-10 w-1.5 -translate-x-1/2 ring-offset-background focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-hidden",
+        "before:pointer-events-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:border-l before:border-transparent before:transition-colors before:content-[''] hover:before:border-ring/50 focus-visible:before:border-ring/50",
+        pointerDragHandleAxisClassName("horizontal"),
+      )}
+    />
   );
 }
 

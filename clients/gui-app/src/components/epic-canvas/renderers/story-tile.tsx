@@ -140,15 +140,17 @@ export function StoryTile(props: StoryTileProps) {
       <div className="flex items-center gap-2 border-b border-canvas-border/40 px-6 py-2">
         <StatusPill artifactId={props.node.id} artifactType="story" />
       </div>
-      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div className="relative flex min-h-0 flex-1">
+        <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+          <CollabTileBody
+            node={props.node}
+            viewTabId={props.viewTabId}
+            tileId={props.tileId}
+            isActive={props.isActive}
+            testId="story-tile"
+          />
+        </div>
         <ArtifactVersionHistoryEntryPoint artifactId={props.node.id} />
-        <CollabTileBody
-          node={props.node}
-          viewTabId={props.viewTabId}
-          tileId={props.tileId}
-          isActive={props.isActive}
-          testId="story-tile"
-        />
       </div>
     </div>
   );
