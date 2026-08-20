@@ -22,6 +22,7 @@ import type {
   SessionImportGroup,
 } from "@traycer/protocol/host/session-import/candidate";
 import type { SessionImportScanTotals } from "@traycer/protocol/host/session-import/scan";
+import type { StreamCloseReason } from "@traycer-clients/shared/host-transport/i-stream-session";
 import type {
   SessionImportScanCallbacks,
   SessionImportScanClientOptions,
@@ -89,6 +90,36 @@ vi.mock("@/lib/analytics", () => ({
   Analytics: { getInstance: () => ({ track: analyticsTrackMock }) },
   AnalyticsEvent: { SessionImportStarted: "session_import_started" },
 }));
+
+/**
+ * The wizard navigates through the shared epic-open helper, so the assertion
+ * that matters here is "the row asked for that epic" - the helper's own
+ * empty-draft/tab-intent behaviour is covered where it lives.
+ */
+const openEpicFromListMock = vi.hoisted(() =>
+  vi.fn<
+    (
+      navigate: unknown,
+      epicId: string,
+      pathname: string,
+      options: { readonly title: string | undefined; readonly source: string },
+    ) => void
+  >(),
+);
+vi.mock("@/lib/commands/actions/open-epic-from-list", () => ({
+  openEpicFromList: openEpicFromListMock,
+}));
+
+const navigateMock = vi.hoisted(() => vi.fn());
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@tanstack/react-router")>();
+  return {
+    ...actual,
+    useNavigate: () => navigateMock,
+    useRouter: () => ({ state: { location: { pathname: "/tasks" } } }),
+  };
+});
 
 import { SessionImportWizard } from "@/components/session-import/session-import-wizard";
 import { useSessionImportRunStore } from "@/stores/session-import/session-import-run-store";
@@ -203,6 +234,16 @@ function renderWizard(onImportStarted: () => void): void {
   );
 }
 
+const FATAL_CLOSE: StreamCloseReason = {
+  kind: "fatalError",
+  details: {
+    code: "INTERNAL",
+    reason: "The host stopped answering mid-scan.",
+    incompatibleMethods: null,
+    upgradeGuidance: null,
+  },
+};
+
 function requireCallbacks(): SessionImportScanCallbacks {
   const callbacks = scanClient.callbacks;
   if (callbacks === null) {
@@ -223,6 +264,8 @@ function requireGroupElement(groupKey: string): HTMLElement {
 }
 
 beforeEach(() => {
+  openEpicFromListMock.mockClear();
+  navigateMock.mockClear();
   scanClient.callbacks = null;
   scanClient.close.mockClear();
   startSessionImportRunMock.mockClear();
@@ -339,17 +382,132 @@ describe("<SessionImportWizard />", () => {
     const rows = screen.getAllByTestId("session-import-row");
     expect(rows).toHaveLength(3);
 
-    const disabledRows = rows.filter((row) => row.hasAttribute("disabled"));
-    expect(disabledRows).toHaveLength(2);
-    for (const row of disabledRows) {
-      expect(row.getAttribute("aria-checked")).toBe("false");
+    const unavailableRows = rows.filter(
+      (row) => row.getAttribute("data-selectable") === "false",
+    );
+    expect(unavailableRows).toHaveLength(2);
+    for (const row of unavailableRows) {
+      expect(row.getAttribute("aria-checked")).not.toBe("true");
     }
 
-    const enabledRow = rows.find((row) => !row.hasAttribute("disabled"));
-    if (enabledRow === undefined) {
-      throw new Error("Expected exactly one enabled row.");
-    }
-    expect(enabledRow.getAttribute("aria-checked")).toBe("true");
+    const selectableRows = rows.filter(
+      (row) => row.getAttribute("data-selectable") === "true",
+    );
+    expect(selectableRows).toHaveLength(1);
+    expect(selectableRows[0].getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("keeps an unavailable row's tooltip reachable and refuses to toggle it", () => {
+    renderWizard(vi.fn());
+    const callbacks = requireCallbacks();
+
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/a",
+          sessions: [
+            importableCandidate("claude", "s1", "Importable session"),
+            unreadableCandidate("claude", "s2", "Broken session"),
+          ],
+        }),
+      );
+    });
+    fireEvent.click(screen.getByTestId("session-import-group-toggle"));
+
+    const row = screen.getByRole("checkbox", { name: "Broken session" });
+    // A DOM-disabled button emits no pointer events in a real browser, which
+    // is exactly what used to silence this tooltip. jsdom dispatches to
+    // disabled nodes anyway, so the absent attribute is the honest proxy.
+    expect(row.hasAttribute("disabled")).toBe(false);
+    expect(row.getAttribute("aria-disabled")).toBe("true");
+
+    fireEvent.focus(row);
+    expect(screen.getByRole("tooltip").textContent).toContain(
+      "Corrupt session file",
+    );
+
+    fireEvent.click(row);
+    expect(screen.getByTestId("session-import-submit").textContent).toBe(
+      "Import 1 session",
+    );
+  });
+
+  it("opens the task an already-imported session became, letting the dialog close first", () => {
+    const onClose = vi.fn();
+    render(
+      <SessionImportWizard
+        surface="dialog"
+        onImportStarted={vi.fn()}
+        secondaryAction={{ label: "Close", onSelect: onClose }}
+      />,
+    );
+    const callbacks = requireCallbacks();
+
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/a",
+          sessions: [
+            alreadyInTraycerCandidate("claude", "s1", "Already there"),
+          ],
+        }),
+      );
+    });
+    fireEvent.click(screen.getByTestId("session-import-group-toggle"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Already there" }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(openEpicFromListMock).toHaveBeenCalledTimes(1);
+    const [, epicId, pathname, options] = openEpicFromListMock.mock.calls[0];
+    expect(epicId).toBe("epic-1");
+    expect(pathname).toBe("/tasks");
+    expect(options.title).toBe("Already there");
+  });
+
+  it("counts only pickable sessions in the footer's denominator", () => {
+    renderWizard(vi.fn());
+    const callbacks = requireCallbacks();
+
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/a",
+          sessions: [
+            importableCandidate("claude", "s1", "Importable session"),
+            alreadyInTraycerCandidate("claude", "s2", "Already there"),
+            unreadableCandidate("claude", "s3", "Broken session"),
+          ],
+        }),
+      );
+    });
+
+    expect(
+      screen.getByTestId("session-import-selection-count").textContent,
+    ).toBe("1 of 1 selected");
+  });
+
+  it("shows the scan's own failure inline, with the groups it already delivered still on screen", () => {
+    renderWizard(vi.fn());
+    const callbacks = requireCallbacks();
+
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/a",
+          sessions: [importableCandidate("claude", "s1", "Claude session")],
+        }),
+      );
+    });
+    act(() => {
+      callbacks.onConnectionStatus("closed", FATAL_CLOSE);
+    });
+
+    expect(
+      screen.getByTestId("session-import-scan-error").textContent,
+    ).toContain("The host stopped answering mid-scan.");
+    expect(screen.getAllByTestId("session-import-group")).toHaveLength(1);
+    expect(screen.queryByTestId("session-import-empty")).toBeNull();
   });
 
   it("clears and restores one group's selection via its own checkbox, leaving the other group alone", () => {

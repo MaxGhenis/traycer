@@ -3478,6 +3478,64 @@ describe("useRenderedMessages imported chat marker integration", () => {
     expect(segment.sourceCwd).toBe("/repo/work");
   });
 
+  it("pins the provenance row at the top, above the transcript it introduces", () => {
+    const { result } = renderRenderedMessages({
+      messages: [userMessage("m1"), userMessage("m2")],
+      events: [
+        importedEvent({
+          eventId: "import-1",
+          // The import necessarily happened AFTER every message it carries in,
+          // which is what a plain `createdAt` sort files at the very bottom.
+          timestamp: 9_000,
+          metadata: {
+            sourceProvider: "claude",
+            nativeSessionId: "native-session-1",
+            importedAt: 9_000,
+            sourceCwd: "/repo/work",
+          },
+        }),
+      ],
+    });
+
+    expect(result.current.map((message) => message.id)).toEqual([
+      "imported-chat-marker:import-1",
+      "m1",
+      "m2",
+    ]);
+  });
+
+  it("sits above even a pinned genesis setup card", () => {
+    const { result } = renderRenderedMessages({
+      messages: [userMessage("m1")],
+      events: [
+        setupEvent({
+          eventId: "s-running",
+          type: "setup.running",
+          timestamp: 1500,
+          metadata: { workspacePath: "/repo", terminalSessionId: "term-1" },
+        }),
+        importedEvent({
+          eventId: "import-1",
+          timestamp: 9_000,
+          metadata: {
+            sourceProvider: "claude",
+            nativeSessionId: "native-session-1",
+            importedAt: 9_000,
+            sourceCwd: "/repo/work",
+          },
+        }),
+      ],
+    });
+
+    // Provenance first: the workspace the card describes was bound to this
+    // chat after the transcript already existed somewhere else.
+    expect(result.current.map((message) => message.id)).toEqual([
+      "imported-chat-marker:import-1",
+      "setup-card:owner-1:0:1500",
+      "m1",
+    ]);
+  });
+
   it("derives distinct row ids from the event id so two imports never collide", () => {
     const { result } = renderRenderedMessages({
       messages: [],

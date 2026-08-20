@@ -29,12 +29,23 @@ export function useSessionImportScan(active: boolean): SessionImportScanHandle {
     SESSION_IMPORT_INITIAL_STATE,
   );
   const clientRef = useRef<SessionImportScanClient | null>(null);
+  // Tells the two restarts apart. The FIRST subscription of an active wizard is
+  // the user opening it; every later one is the transport coming back under
+  // them, which must not throw away the selection they are halfway through.
+  const subscribedRef = useRef(false);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      subscribedRef.current = false;
+      return;
+    }
     if (wsStreamClient === null) return;
 
-    dispatch({ kind: "scanRestarted" });
+    dispatch({
+      kind: "scanRestarted",
+      reason: subscribedRef.current ? "reconnect" : "fresh",
+    });
+    subscribedRef.current = true;
     const client = new SessionImportScanClient({
       wsStreamClient,
       providers: null,

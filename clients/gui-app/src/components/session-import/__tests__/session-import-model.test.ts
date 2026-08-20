@@ -184,6 +184,8 @@ describe("buildSessionImportView - disabled rows", () => {
     expect(row.selectable).toBe(false);
     expect(row.selected).toBe(false);
     expect(row.unavailableLabel).toBe("In Traycer");
+    // The row is unselectable but not inert: it opens the task it became.
+    expect(row.epicId).toBe("epic-1");
   });
 
   it("projects an unreadable row's unavailableDetail with both the reason label and the raw detail", () => {
@@ -207,6 +209,7 @@ describe("buildSessionImportView - disabled rows", () => {
     const row = view.groups[0]?.rows[0];
 
     expect(row.selectable).toBe(false);
+    expect(row.epicId).toBeNull();
     expect(row.unavailableDetail).toContain(
       sessionImportFailureLabel("source_unreadable"),
     );
@@ -396,6 +399,37 @@ describe("buildSessionImportView - search + provider filter", () => {
     expect(view.selectedCount).toBe(2);
   });
 
+  it("counts only pickable sessions in selectableSessions, whatever the filters hide", () => {
+    const importable = candidate({ nativeSessionId: "s1" });
+    const alreadyImported = candidate({
+      nativeSessionId: "s2",
+      state: { kind: "already_in_traycer", epicId: "epic-1", chatId: "chat-1" },
+    });
+    const unreadable = candidate({
+      nativeSessionId: "s3",
+      state: {
+        kind: "unreadable",
+        reason: "source_unreadable",
+        detail: "corrupt",
+      },
+    });
+    const arrivingGroup = group(folderLocation("/repo/a"), [
+      importable,
+      alreadyImported,
+      unreadable,
+    ]);
+
+    const state = applyActions([
+      { kind: "scanGroupArrived", group: arrivingGroup },
+      { kind: "queryChanged", query: "nothing-matches-this" },
+    ]);
+    const view = buildSessionImportView(state);
+
+    expect(view.totalSessions).toBe(3);
+    expect(view.selectableSessions).toBe(1);
+    expect(view.selectedCount).toBe(1);
+  });
+
   it("limits visibleSelectionKeys to visible selectable rows, and visibleSelectionSet toggles exactly those", () => {
     const claudeCandidate = candidate({
       harness: "claude",
@@ -515,13 +549,69 @@ describe("sessionImportWizardReducer - frame folding into view state", () => {
     );
   });
 
-  it("clears groups/selection/phase on scanRestarted but preserves query and providerFilter", () => {
+  it("replaces an earlier failure for the same harness rather than reporting it twice", () => {
+    const stale: SessionImportProviderFailure = {
+      harness: "codex",
+      reason: "source_unreadable",
+      detail: "first attempt",
+    };
+    const corrected: SessionImportProviderFailure = {
+      harness: "codex",
+      reason: "internal_error",
+      detail: "second attempt",
+    };
+    const otherHarness: SessionImportProviderFailure = {
+      harness: "claude",
+      reason: "internal_error",
+      detail: "unrelated",
+    };
+
+    const state = applyActions([
+      { kind: "scanProviderFailed", failure: stale },
+      { kind: "scanProviderFailed", failure: otherHarness },
+      { kind: "scanProviderFailed", failure: corrected },
+    ]);
+
+    expect(state.providerFailures).toEqual([otherHarness, corrected]);
+  });
+
+  it("keeps selection and expanded folders across a reconnect restart, including a deliberate untick", () => {
+    const kept = candidate({ nativeSessionId: "s1" });
+    const unticked = candidate({ nativeSessionId: "s2" });
+    const arrivingGroup = group(folderLocation("/repo/a"), [kept, unticked]);
+    const groupKey = sessionImportGroupKey(arrivingGroup.location);
+
+    const state = applyActions([
+      { kind: "scanGroupArrived", group: arrivingGroup },
+      {
+        kind: "sessionToggled",
+        selectionKey: sessionImportSelectionKey("claude", "s2"),
+      },
+      { kind: "groupExpansionToggled", groupKey },
+      { kind: "scanRestarted", reason: "reconnect" },
+      // The reconnected scan re-reads the same folders and re-delivers them.
+      { kind: "scanGroupArrived", group: arrivingGroup },
+    ]);
+
+    expect(state.selected).toEqual(
+      new Set([sessionImportSelectionKey("claude", "s1")]),
+    );
+    expect(state.expandedGroups.has(groupKey)).toBe(true);
+    expect(state.phase).toBe("scanning");
+    expect(state.totals).toBeNull();
+  });
+
+  it("clears groups/selection/expansion/phase on a fresh scanRestarted but preserves query and providerFilter", () => {
     const arrivingGroup = group(folderLocation("/repo/a"), [
       candidate({ nativeSessionId: "s1" }),
     ]);
 
     const state = applyActions([
       { kind: "scanGroupArrived", group: arrivingGroup },
+      {
+        kind: "groupExpansionToggled",
+        groupKey: sessionImportGroupKey(arrivingGroup.location),
+      },
       { kind: "queryChanged", query: "login" },
       { kind: "providerFilterChanged", providerFilter: "codex" },
       {
@@ -534,11 +624,12 @@ describe("sessionImportWizardReducer - frame folding into view state", () => {
           unreadable: 0,
         },
       },
-      { kind: "scanRestarted" },
+      { kind: "scanRestarted", reason: "fresh" },
     ]);
 
     expect(state.groups).toEqual([]);
     expect(state.selected.size).toBe(0);
+    expect(state.expandedGroups.size).toBe(0);
     expect(state.phase).toBe("scanning");
     expect(state.totals).toBeNull();
     expect(state.query).toBe("login");

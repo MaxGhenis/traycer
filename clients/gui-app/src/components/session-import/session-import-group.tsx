@@ -40,19 +40,54 @@ function SelectionBox(props: {
   );
 }
 
+/**
+ * Its own component so the shared 60s clock behind `useCompactRelativeTime`
+ * repaints just this label, instead of waking every row it ticks under.
+ */
+function SessionRowTimestamp(props: {
+  readonly updatedAt: number;
+  readonly tone: SessionImportTone;
+}) {
+  const { updatedAt, tone } = props;
+  const when = useCompactRelativeTime(updatedAt);
+  return (
+    <span
+      className={cn(
+        "min-w-10 shrink-0 truncate text-right text-ui-xs",
+        tone.faint,
+      )}
+    >
+      {when}
+    </span>
+  );
+}
+
 function SessionRow(props: {
   readonly row: SessionImportRowView;
   readonly tone: SessionImportTone;
   readonly onToggle: (selectionKey: string) => void;
+  readonly onOpenEpic: (epicId: string, title: string) => void;
 }) {
-  const { row, tone, onToggle } = props;
+  const { row, tone, onToggle, onOpenEpic } = props;
   const { candidate } = row;
-  const when = useCompactRelativeTime(candidate.updatedAt);
   const meta: string[] = [];
   if (candidate.messageCount !== null) {
     meta.push(`${candidate.messageCount} messages`);
   }
-  if (candidate.hasSubagents) meta.push("sub-agents");
+  if (candidate.hasSubagents) meta.push("with sub-agents");
+
+  // An already-imported session cannot be ticked, but it is not a dead end
+  // either: the whole row is the way back to the task it became. Keeping that
+  // on the row rather than on the "In Traycer" label keeps the file's rule
+  // that nothing nests a button inside a button.
+  const opensEpic = !row.selectable && row.epicId !== null;
+  const activate = (): void => {
+    if (row.selectable) {
+      onToggle(row.selectionKey);
+      return;
+    }
+    if (row.epicId !== null) onOpenEpic(row.epicId, row.title);
+  };
 
   return (
     <TooltipWrapper
@@ -63,17 +98,21 @@ function SessionRow(props: {
     >
       <button
         type="button"
-        role="checkbox"
-        aria-checked={row.selected}
+        role={opensEpic ? "button" : "checkbox"}
+        aria-checked={opensEpic ? undefined : row.selected}
+        // `aria-disabled`, never the `disabled` attribute: a disabled button
+        // emits no pointer events, so the tooltip explaining WHY the row is
+        // unavailable could never open - which is the only explanation the
+        // user gets.
+        aria-disabled={!row.selectable && !opensEpic}
         aria-label={row.title}
-        disabled={!row.selectable}
         data-testid="session-import-row"
         data-selectable={row.selectable}
-        onClick={() => onToggle(row.selectionKey)}
+        onClick={activate}
         className={cn(
           "flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors",
-          row.selectable ? tone.rowHover : "opacity-55",
-          !row.selectable && "cursor-default",
+          row.selectable || opensEpic ? tone.rowHover : "cursor-default",
+          !row.selectable && "opacity-55",
         )}
       >
         <SelectionBox
@@ -94,13 +133,20 @@ function SessionRow(props: {
           </span>
         ) : null}
         {row.unavailableLabel !== null ? (
-          <span className={cn("shrink-0 text-ui-xs", tone.faint)}>
+          <span
+            className={cn(
+              "shrink-0 text-ui-xs",
+              tone.faint,
+              // Underlined only when there is somewhere to go, so "In Traycer"
+              // reads as the link it is - clicking it lands on the row, which
+              // is what opens the task.
+              opensEpic && "underline underline-offset-2",
+            )}
+          >
             {row.unavailableLabel}
           </span>
         ) : null}
-        <span className={cn("w-10 shrink-0 text-right text-ui-xs", tone.faint)}>
-          {when}
-        </span>
+        <SessionRowTimestamp updatedAt={candidate.updatedAt} tone={tone} />
       </button>
     </TooltipWrapper>
   );
@@ -112,6 +158,7 @@ export function SessionImportGroupItem(props: {
   readonly onToggleExpanded: (groupKey: string) => void;
   readonly onSetGroupSelection: (groupKey: string, selected: boolean) => void;
   readonly onToggleSession: (selectionKey: string) => void;
+  readonly onOpenEpic: (epicId: string, title: string) => void;
 }) {
   const {
     group,
@@ -119,6 +166,7 @@ export function SessionImportGroupItem(props: {
     onToggleExpanded,
     onSetGroupSelection,
     onToggleSession,
+    onOpenEpic,
   } = props;
 
   return (
@@ -231,6 +279,7 @@ export function SessionImportGroupItem(props: {
               row={row}
               tone={tone}
               onToggle={onToggleSession}
+              onOpenEpic={onOpenEpic}
             />
           ))}
         </div>

@@ -72,8 +72,18 @@ export const SESSION_IMPORT_INITIAL_STATE: SessionImportWizardState = {
   providerFilter: "all",
 };
 
+/**
+ * Why the scan is starting over. `reconnect` is the transport coming back under
+ * a wizard the user is already working in; `fresh` is the wizard (re)opening.
+ * The two want opposite things from the selection the user has made so far.
+ */
+export type SessionImportScanRestartReason = "fresh" | "reconnect";
+
 export type SessionImportWizardAction =
-  | { readonly kind: "scanRestarted" }
+  | {
+      readonly kind: "scanRestarted";
+      readonly reason: SessionImportScanRestartReason;
+    }
   | { readonly kind: "scanGroupArrived"; readonly group: SessionImportGroup }
   | {
       readonly kind: "scanProviderFailed";
@@ -143,7 +153,23 @@ function applyScanFrame(
 ): SessionImportWizardState {
   switch (action.kind) {
     case "scanRestarted": {
-      // Keep the filters the user typed; the results below them are replaced.
+      if (action.reason === "reconnect") {
+        // The stream dropped and came back over the SAME folders, so the rows
+        // the user has been ticking are the rows the host is about to re-send.
+        // Nothing below the filters is thrown away - not even the groups:
+        // re-delivered ones are ignored by the dedupe in `scanGroupArrived`,
+        // which is also what keeps a deliberate UNTICK from being undone by
+        // that case's pre-select-on-arrival rule.
+        return {
+          ...state,
+          phase: "scanning",
+          totals: null,
+          providerFailures: [],
+          scanErrorDetail: null,
+        };
+      }
+      // A fresh scan starts clean: last visit's picks may already have been
+      // imported. Only the filters the user typed survive.
       return {
         ...SESSION_IMPORT_INITIAL_STATE,
         query: state.query,
@@ -178,9 +204,16 @@ function applyScanFrame(
       };
     }
     case "scanProviderFailed": {
+      // A harness is in exactly one state per scan, so a second failure for it
+      // corrects the first rather than adding a second thing to report.
       return {
         ...state,
-        providerFailures: [...state.providerFailures, action.failure],
+        providerFailures: [
+          ...state.providerFailures.filter(
+            (failure) => failure.harness !== action.failure.harness,
+          ),
+          action.failure,
+        ],
       };
     }
     case "scanCompleted": {
@@ -263,6 +296,8 @@ export interface SessionImportRowView {
   readonly title: string;
   readonly selected: boolean;
   readonly selectable: boolean;
+  /** The task an already-imported session became, so the row can open it. */
+  readonly epicId: string | null;
   /** Short reason a row is not selectable, e.g. "In Traycer". */
   readonly unavailableLabel: string | null;
   /** The long form, for the row's tooltip. */
@@ -293,6 +328,12 @@ export interface SessionImportWizardView {
   readonly groups: ReadonlyArray<SessionImportGroupView>;
   /** Every session the scan has produced, before search / provider filter. */
   readonly totalSessions: number;
+  /**
+   * How many of those could ever be ticked. The footer's denominator, because
+   * counting rows the user is not allowed to pick makes "3 of 40 selected"
+   * read as an unfinished job when it is in fact everything on offer.
+   */
+  readonly selectableSessions: number;
   /** How many survive the current filters. */
   readonly matchedSessions: number;
   /** Everything ticked, filtered-out rows included - that is what submits. */
@@ -363,8 +404,9 @@ function rowView(
       title,
       selected: false,
       selectable: false,
+      epicId: state.epicId,
       unavailableLabel: "In Traycer",
-      unavailableDetail: "Already imported - open it from your task list.",
+      unavailableDetail: "Already imported - open the task it became.",
     };
   }
   if (state.kind === "unreadable") {
@@ -374,6 +416,7 @@ function rowView(
       title,
       selected: false,
       selectable: false,
+      epicId: null,
       unavailableLabel: "Unreadable",
       unavailableDetail: `${sessionImportFailureLabel(state.reason)}: ${state.detail}`,
     };
@@ -384,6 +427,7 @@ function rowView(
     title,
     selected: selected.has(selectionKey),
     selectable: true,
+    epicId: null,
     unavailableLabel: null,
     unavailableDetail: null,
   };
@@ -434,11 +478,14 @@ export function buildSessionImportView(
   const groups: SessionImportGroupView[] = [];
   const visibleSelectionKeys: string[] = [];
   let totalSessions = 0;
+  let selectableSessions = 0;
   let matchedSessions = 0;
 
   for (const group of state.groups) {
     const path = group.location.path;
+    const selectable = group.sessions.filter(isImportable);
     totalSessions += group.sessions.length;
+    selectableSessions += selectable.length;
 
     const matching = group.sessions.filter(
       (candidate) =>
@@ -456,7 +503,6 @@ export function buildSessionImportView(
       if (row.selectable) visibleSelectionKeys.push(row.selectionKey);
     }
 
-    const selectable = group.sessions.filter(isImportable);
     const selectedCount = selectable.filter((candidate) =>
       state.selected.has(
         sessionImportSelectionKey(candidate.harness, candidate.nativeSessionId),
@@ -480,6 +526,7 @@ export function buildSessionImportView(
   return {
     groups,
     totalSessions,
+    selectableSessions,
     matchedSessions,
     selectedCount: state.selected.size,
     filtered: needle.length > 0 || state.providerFilter !== "all",

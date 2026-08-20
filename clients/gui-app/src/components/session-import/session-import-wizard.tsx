@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { Search } from "lucide-react";
 import type { GuiHarnessId } from "@traycer/protocol/host/index";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
@@ -6,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
+import { openEpicFromList } from "@/lib/commands/actions/open-epic-from-list";
 import {
   buildSessionImportSubmission,
   buildSessionImportView,
@@ -55,6 +57,22 @@ export function SessionImportWizard(props: {
 
   const { state, dispatch } = useSessionImportScan(runIdle);
   const view = useMemo(() => buildSessionImportView(state), [state]);
+
+  const navigate = useNavigate();
+  // `useRouter` is stable; the live pathname is read off `router.state` at open
+  // time rather than subscribed to, so routing does not re-render a live scan.
+  const router = useRouter();
+
+  const openImportedEpic = (epicId: string, title: string): void => {
+    // The dialog surface is modal, so it has to let go of the screen before the
+    // task it is sending the user to opens behind it. Onboarding passes no
+    // secondary action and simply routes.
+    if (secondaryAction !== null) secondaryAction.onSelect();
+    openEpicFromList(navigate, epicId, router.state.location.pathname, {
+      title,
+      source: "direct_ui",
+    });
+  };
 
   const providerOptions = useMemo(() => {
     const harnesses = new Set<GuiHarnessId>();
@@ -194,6 +212,18 @@ export function SessionImportWizard(props: {
         </div>
       </div>
 
+      {state.scanErrorDetail !== null ? (
+        <p
+          data-testid="session-import-scan-error"
+          className={cn(
+            "shrink-0 rounded-md px-2.5 py-1.5 text-ui-xs",
+            tone.warningSurface,
+          )}
+        >
+          The scan stopped before it finished. {state.scanErrorDetail}
+        </p>
+      ) : null}
+
       {state.providerFailures.map((failure) => (
         <p
           key={failure.harness}
@@ -223,6 +253,7 @@ export function SessionImportWizard(props: {
             onToggleSession={(selectionKey) =>
               dispatch({ kind: "sessionToggled", selectionKey })
             }
+            onOpenEpic={openImportedEpic}
           />
         ))}
         {state.phase === "scanning" ? (
@@ -248,8 +279,11 @@ export function SessionImportWizard(props: {
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-        <span className={cn("text-ui-xs", tone.faint)}>
-          {view.selectedCount} of {view.totalSessions} selected
+        <span
+          data-testid="session-import-selection-count"
+          className={cn("text-ui-xs", tone.faint)}
+        >
+          {view.selectedCount} of {view.selectableSessions} selected
         </span>
         <div className="flex items-center gap-2">
           {secondaryAction !== null ? (

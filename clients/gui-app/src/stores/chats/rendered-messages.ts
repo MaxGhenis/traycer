@@ -1280,7 +1280,9 @@ export function useRenderedMessages(
     );
 
     // `baseRows` = everything that sorts by `createdAt`. Assembled before the
-    // cards so the common case can early-out without the anchor machinery.
+    // cards so the common case can early-out without the anchor machinery. The
+    // imported-chat markers are deliberately NOT here - they are pinned (see
+    // `pinImportedChatMarkers`), so sorting them would only file them wrongly.
     const baseRows = [
       ...persisted,
       ...activeTurn,
@@ -1288,7 +1290,6 @@ export function useRenderedMessages(
       ...live,
       ...stoppedWithoutAssistantRecords,
       ...forkedChatLinkMessages,
-      ...importedChatMarkerMessages,
       ...trailing,
     ];
 
@@ -1296,7 +1297,10 @@ export function useRenderedMessages(
     // `createdAt` sort. Skips the per-render anchor Set/Map/weave entirely. This
     // memo re-runs on every streamed delta, so the no-card path must stay cheap.
     if (setupCardEntries.length === 0) {
-      return baseRows.sort((a, b) => a.createdAt - b.createdAt);
+      return pinImportedChatMarkers(
+        importedChatMarkerMessages,
+        baseRows.sort((a, b) => a.createdAt - b.createdAt),
+      );
     }
 
     // Pin the chat's GENESIS setup card to the top - but ONLY when window 0 is
@@ -1355,7 +1359,10 @@ export function useRenderedMessages(
       }
       woven = interleaved;
     }
-    return pinGenesisCard ? [setupCardEntries[0].message, ...woven] : woven;
+    return pinImportedChatMarkers(
+      importedChatMarkerMessages,
+      pinGenesisCard ? [setupCardEntries[0].message, ...woven] : woven,
+    );
   }, [
     persisted,
     activeTurn,
@@ -1495,6 +1502,24 @@ function buildForkedChatLinkMessages(
       },
     ];
   });
+}
+
+/**
+ * Pin the imported-chat provenance markers above everything else.
+ *
+ * Two reasons they cannot sort by `createdAt` like ordinary rows. Their
+ * timestamp is the IMPORT time, which is later than every message they
+ * introduce, so a chronological sort files them at the very bottom - under the
+ * transcript they are meant to introduce. And what they say ("Imported from
+ * Claude Code") is about the whole chat's origin, which is why they sit above
+ * even a pinned genesis setup card: the workspace that card describes was
+ * bound to this chat after the transcript already existed elsewhere.
+ */
+function pinImportedChatMarkers(
+  markers: ReadonlyArray<ChatMessageModel>,
+  rows: ReadonlyArray<ChatMessageModel>,
+): ReadonlyArray<ChatMessageModel> {
+  return markers.length === 0 ? rows : [...markers, ...rows];
 }
 
 /**
