@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { Search } from "lucide-react";
 import type { GuiHarnessId } from "@traycer/protocol/host/index";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
@@ -43,6 +43,16 @@ export function SessionImportWizard(props: {
   const tone = sessionImportTone(surface);
   const runStatus = useSessionImportRunStore((state) => state.status);
   const runIdle = runStatus === "idle";
+
+  // Opening the wizard retires a FINISHED run's summary, so a second visit
+  // scans afresh instead of re-reading last time's result. Mount-only on
+  // purpose: a run that finishes while this is open still shows its summary,
+  // because that summary is what the user is waiting for.
+  useEffect(() => {
+    const run = useSessionImportRunStore.getState();
+    if (run.status === "complete" || run.status === "error") run.reset();
+  }, []);
+
   const { state, dispatch } = useSessionImportScan(runIdle);
   const view = useMemo(() => buildSessionImportView(state), [state]);
 
@@ -114,7 +124,10 @@ export function SessionImportWizard(props: {
           <div
             role="radiogroup"
             aria-label="Filter by provider"
-            className={cn("flex shrink-0 items-center gap-0.5 rounded-md border p-0.5", tone.border)}
+            className={cn(
+              "flex shrink-0 items-center gap-0.5 rounded-md border p-0.5",
+              tone.border,
+            )}
           >
             <ProviderFilterOption
               label="All"
@@ -122,7 +135,10 @@ export function SessionImportWizard(props: {
               active={state.providerFilter === "all"}
               tone={tone}
               onSelect={(value) =>
-                dispatch({ kind: "providerFilterChanged", providerFilter: value })
+                dispatch({
+                  kind: "providerFilterChanged",
+                  providerFilter: value,
+                })
               }
             />
             {providerOptions.map((harness) => (
@@ -182,7 +198,10 @@ export function SessionImportWizard(props: {
         <p
           key={failure.harness}
           data-testid="session-import-provider-failure"
-          className={cn("shrink-0 rounded-md px-2.5 py-1.5 text-ui-xs", tone.warningSurface)}
+          className={cn(
+            "shrink-0 rounded-md px-2.5 py-1.5 text-ui-xs",
+            tone.warningSurface,
+          )}
         >
           {harnessDisplayName(failure.harness)} sessions could not be read.{" "}
           {failure.detail}
@@ -223,10 +242,7 @@ export function SessionImportWizard(props: {
             data-testid="session-import-empty"
             className={cn("px-1 py-6 text-center text-ui-sm", tone.muted)}
           >
-            {emptyMessage(
-              state.phase === "failed",
-              view.totalSessions > 0,
-            )}
+            {emptyMessage(state.phase === "failed", view.totalSessions > 0)}
           </p>
         ) : null}
       </div>

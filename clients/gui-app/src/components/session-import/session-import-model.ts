@@ -165,7 +165,10 @@ function applyScanFrame(
       for (const candidate of action.group.sessions) {
         if (!isImportable(candidate)) continue;
         selected.add(
-          sessionImportSelectionKey(candidate.harness, candidate.nativeSessionId),
+          sessionImportSelectionKey(
+            candidate.harness,
+            candidate.nativeSessionId,
+          ),
         );
       }
       return {
@@ -446,7 +449,9 @@ export function buildSessionImportView(
     matchedSessions += matching.length;
     if (matching.length === 0) continue;
 
-    const rows = matching.map((candidate) => rowView(candidate, state.selected));
+    const rows = matching.map((candidate) =>
+      rowView(candidate, state.selected),
+    );
     for (const row of rows) {
       if (row.selectable) visibleSelectionKeys.push(row.selectionKey);
     }
@@ -463,9 +468,7 @@ export function buildSessionImportView(
       name: folderDisplayName(path),
       path,
       missingFolder: group.location.kind === "missing_folder",
-      expanded: state.expandedGroups.has(
-        sessionImportGroupKey(group.location),
-      ),
+      expanded: state.expandedGroups.has(sessionImportGroupKey(group.location)),
       providerCounts: providerCountsFor(group.sessions),
       rows,
       selectableCount: selectable.length,

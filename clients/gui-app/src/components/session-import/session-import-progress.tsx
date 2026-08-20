@@ -149,7 +149,9 @@ function FailureGroup(props: {
             <span className={cn("min-w-0 truncate text-ui-xs", tone.muted)}>
               {entry.title}
             </span>
-            <span className={cn("min-w-0 flex-1 truncate text-ui-xs", tone.faint)}>
+            <span
+              className={cn("min-w-0 flex-1 truncate text-ui-xs", tone.faint)}
+            >
               {entry.detail}
             </span>
           </li>

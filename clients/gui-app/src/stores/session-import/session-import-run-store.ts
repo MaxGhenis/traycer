@@ -18,11 +18,7 @@ import { sessionImportSelectionKey } from "@/components/session-import/session-i
  */
 
 export type SessionImportRunStatus =
-  | "idle"
-  | "starting"
-  | "running"
-  | "complete"
-  | "error";
+  "idle" | "starting" | "running" | "complete" | "error";
 
 export interface SessionImportProgressEntry {
   readonly selectionKey: string;

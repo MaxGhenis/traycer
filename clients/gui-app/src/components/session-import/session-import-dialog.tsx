@@ -12,9 +12,7 @@ import { SessionImportWizard } from "@/components/session-import/session-import-
  * already started (spec §5) - the run belongs to the app-wide controller, and
  * this dialog is only a window onto it.
  */
-export function SessionImportDialog(props: {
-  readonly onClose: () => void;
-}) {
+export function SessionImportDialog(props: { readonly onClose: () => void }) {
   const { onClose } = props;
   return (
     <Dialog

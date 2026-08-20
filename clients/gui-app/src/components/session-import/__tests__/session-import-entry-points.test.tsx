@@ -1,9 +1,4 @@
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionImportStatusResponse } from "@traycer/protocol/host/session-import/contracts";
@@ -233,7 +228,9 @@ describe("SessionImportSettingsRow (via GeneralSettingsPanel)", () => {
 
     expect(screen.getByTestId("settings-import-sessions")).toBeTruthy();
     expect(
-      screen.getByText("Bring sessions from Claude Code and Codex in as tasks."),
+      screen.getByText(
+        "Bring sessions from Claude Code and Codex in as tasks.",
+      ),
     ).toBeTruthy();
   });
 

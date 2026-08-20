@@ -281,9 +281,7 @@ describe("useSessionImportRunStore", () => {
         .getState()
         .applyProgress(entryFor("claude", "s1", IMPORTED));
 
-      expect(useSessionImportRunStore.getState().lastTitle).toBe(
-        "My Session",
-      );
+      expect(useSessionImportRunStore.getState().lastTitle).toBe("My Session");
     });
 
     it("a progress entry whose key is not in titles leaves lastTitle at its previous value", () => {

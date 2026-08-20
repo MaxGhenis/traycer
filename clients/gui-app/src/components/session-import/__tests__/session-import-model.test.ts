@@ -105,10 +105,9 @@ describe("sessionImportWizardReducer - selection defaults as groups stream in", 
 
   it("pre-selects importable candidates in a missing_folder group too", () => {
     const orphaned = candidate({ nativeSessionId: "s1" });
-    const arrivingGroup = group(
-      { kind: "missing_folder", path: "/gone" },
-      [orphaned],
-    );
+    const arrivingGroup = group({ kind: "missing_folder", path: "/gone" }, [
+      orphaned,
+    ]);
 
     const state = applyActions([
       { kind: "scanGroupArrived", group: arrivingGroup },
@@ -225,10 +224,7 @@ describe("buildSessionImportView - group header counts and tri-state", () => {
       nativeSessionId: "other",
       title: "Refactor styles",
     });
-    const arrivingGroup = group(folderLocation("/repo/a"), [
-      matching,
-      other,
-    ]);
+    const arrivingGroup = group(folderLocation("/repo/a"), [matching, other]);
 
     const state = applyActions([
       { kind: "scanGroupArrived", group: arrivingGroup },
@@ -376,8 +372,14 @@ describe("buildSessionImportView - search + provider filter", () => {
   });
 
   it("narrows matchedSessions via the provider filter without changing totalSessions or selectedCount", () => {
-    const claudeCandidate = candidate({ harness: "claude", nativeSessionId: "c1" });
-    const codexCandidate = candidate({ harness: "codex", nativeSessionId: "x1" });
+    const claudeCandidate = candidate({
+      harness: "claude",
+      nativeSessionId: "c1",
+    });
+    const codexCandidate = candidate({
+      harness: "codex",
+      nativeSessionId: "x1",
+    });
     const arrivingGroup = group(folderLocation("/repo/a"), [
       claudeCandidate,
       codexCandidate,
@@ -395,8 +397,14 @@ describe("buildSessionImportView - search + provider filter", () => {
   });
 
   it("limits visibleSelectionKeys to visible selectable rows, and visibleSelectionSet toggles exactly those", () => {
-    const claudeCandidate = candidate({ harness: "claude", nativeSessionId: "c1" });
-    const codexCandidate = candidate({ harness: "codex", nativeSessionId: "x1" });
+    const claudeCandidate = candidate({
+      harness: "claude",
+      nativeSessionId: "c1",
+    });
+    const codexCandidate = candidate({
+      harness: "codex",
+      nativeSessionId: "x1",
+    });
     const alreadyImported = candidate({
       harness: "claude",
       nativeSessionId: "c2",
@@ -602,7 +610,11 @@ describe("groupSessionImportFailures", () => {
     };
 
     const outcomes: ReadonlyArray<SessionImportOutcomeEntry> = [
-      { selectionKey: knownKey, nativeSessionId: "s1", outcome: failedOutcomeA },
+      {
+        selectionKey: knownKey,
+        nativeSessionId: "s1",
+        outcome: failedOutcomeA,
+      },
       {
         selectionKey: sessionImportSelectionKey("claude", "s2"),
         nativeSessionId: "s2",
@@ -624,7 +636,9 @@ describe("groupSessionImportFailures", () => {
 
     expect(groups).toHaveLength(1);
     expect(groups[0]?.reason).toBe("source_unreadable");
-    expect(groups[0]?.label).toBe(sessionImportFailureLabel("source_unreadable"));
+    expect(groups[0]?.label).toBe(
+      sessionImportFailureLabel("source_unreadable"),
+    );
     expect(groups[0]?.entries).toEqual([
       { selectionKey: knownKey, title: "Fix login bug", detail: "disk error" },
       {

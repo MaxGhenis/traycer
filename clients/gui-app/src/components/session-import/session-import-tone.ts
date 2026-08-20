@@ -71,7 +71,8 @@ const DIALOG_TONE: SessionImportTone = {
     "bg-amber-500/10 text-amber-700 dark:bg-amber-400/10 dark:text-amber-300",
   input: "",
   filterActive: "bg-foreground/10 text-foreground",
-  filterIdle: "text-muted-foreground hover:bg-foreground/6 hover:text-foreground",
+  filterIdle:
+    "text-muted-foreground hover:bg-foreground/6 hover:text-foreground",
   checkbox: "",
   primaryButton: "",
   secondaryButton: "",

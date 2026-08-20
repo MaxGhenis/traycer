@@ -87,9 +87,7 @@ function SessionRow(props: {
           harnessId={candidate.harness}
           className={cn("size-3.5", tone.muted)}
         />
-        <span
-          className={cn("min-w-0 flex-1 truncate text-ui-sm", tone.strong)}
-        >
+        <span className={cn("min-w-0 flex-1 truncate text-ui-sm", tone.strong)}>
           {row.title}
         </span>
         {meta.length > 0 ? (
@@ -102,9 +100,7 @@ function SessionRow(props: {
             {row.unavailableLabel}
           </span>
         ) : null}
-        <span
-          className={cn("w-10 shrink-0 text-right text-ui-xs", tone.faint)}
-        >
+        <span className={cn("w-10 shrink-0 text-right text-ui-xs", tone.faint)}>
           {when}
         </span>
       </button>
@@ -133,7 +129,9 @@ export function SessionImportGroupItem(props: {
       data-group-key={group.groupKey}
       className={cn("overflow-hidden rounded-lg border", tone.border)}
     >
-      <div className={cn("flex w-full min-w-0 items-center", tone.groupSurface)}>
+      <div
+        className={cn("flex w-full min-w-0 items-center", tone.groupSurface)}
+      >
         <button
           type="button"
           role="checkbox"
@@ -146,10 +144,7 @@ export function SessionImportGroupItem(props: {
           disabled={group.selectableCount === 0}
           data-testid="session-import-group-select"
           onClick={() =>
-            onSetGroupSelection(
-              group.groupKey,
-              group.selectionState !== "all",
-            )
+            onSetGroupSelection(group.groupKey, group.selectionState !== "all")
           }
           className="flex shrink-0 items-center py-2.5 pr-1.5 pl-2.5"
         >
