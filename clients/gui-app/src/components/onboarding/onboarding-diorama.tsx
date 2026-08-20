@@ -32,6 +32,10 @@ import {
 } from "lucide-react";
 import { AgentSelectionGuideEditorSurface } from "@/components/agent-selection-guide-editor-surface";
 import { HarnessIcon } from "@/components/home/pickers/harness-icon";
+import {
+  ONBOARDING_ACTS,
+  type OnboardingActId,
+} from "@/components/onboarding/onboarding-acts";
 import { OnboardingClaudeTui } from "@/components/onboarding/onboarding-claude-tui";
 import { OnboardingOpencodeTui } from "@/components/onboarding/onboarding-opencode-tui";
 import { ProviderList } from "@/components/providers/provider-list";
@@ -320,13 +324,27 @@ const THEME_DOCK_SWATCHES = [
   ["#0b0e14", "#e6b450", "Ayu"],
 ] as const;
 
+/**
+ * Keyed by act id, not by index: acts get inserted (session import landed
+ * between providers and delegation), and an index ladder answers a shifted
+ * question silently - every scene after the new act would drift one act early.
+ * `null` is an act that shows no mini-app at all; the page does not render the
+ * diorama for it, and this map is where that fact is stated.
+ */
+const SCENE_BY_ACT_ID: Record<OnboardingActId, SceneId | null> = {
+  "task-tabs": "task-tabs",
+  navigation: "navigation",
+  "task-context": "task-context",
+  providers: "providers",
+  "session-import": null,
+  "agent-guide": "agent-guide",
+  "command-theme": "command-theme",
+};
+
 function sceneForStage(stage: number): SceneId {
-  if (stage === 0) return "task-tabs";
-  if (stage === 1) return "navigation";
-  if (stage === 2) return "task-context";
-  if (stage === 3) return "providers";
-  if (stage === 4) return "agent-guide";
-  return "command-theme";
+  const act = ONBOARDING_ACTS[stage];
+  if (act === undefined) return "command-theme";
+  return SCENE_BY_ACT_ID[act.id] ?? "command-theme";
 }
 
 export function OnboardingDiorama(props: OnboardingDioramaProps) {

@@ -11,6 +11,7 @@ import { TopLevelTabHost } from "@/components/layout/top-level-tab-host";
 import { TopLevelSurfaceActivationProvider } from "@/components/layout/top-level-surface-activation-provider";
 import { HostScopeReady } from "@/components/layout/host-readiness-controller";
 import { MigrationRunController } from "@/components/migration/migration-run-controller";
+import { SessionImportRunController } from "@/components/session-import/session-import-run-controller";
 import { LandingTerminalHost } from "@/components/home/terminal-panel/landing-terminal-host";
 import { OpenFolderDialog } from "@/components/open-folder-dialog";
 import { RemoteFolderPickerDialog } from "@/components/remote-folder-picker-dialog";
@@ -75,6 +76,7 @@ export function AppShell(props: AppShellProps) {
               <RemoteFolderPickerDialog />
               <QuitInterceptBridge />
               <MigrationRunController />
+              <SessionImportRunController />
               <MigrationBlockingModalHost />
               {/* Test-only probe: binds the active hostId to a hidden DOM
                 attribute so the mobile-cardinality integration tests can

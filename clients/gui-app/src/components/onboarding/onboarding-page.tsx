@@ -16,10 +16,12 @@ import geistPixelSquareUrl from "@/assets/fonts/GeistPixel-Square.woff2?url";
 import onboardingBackdropUrl from "@/assets/brand/gradient-bg.jpg?url";
 import { BrandMark } from "@/components/auth/cinematic-backdrop";
 import {
+  actUsesSoloStage,
   ONBOARDING_ACTS,
   type OnboardingAct,
 } from "@/components/onboarding/onboarding-acts";
 import { OnboardingDetectedAgents } from "@/components/onboarding/onboarding-detected-agents";
+import { SessionImportWizard } from "@/components/session-import/session-import-wizard";
 import {
   OnboardingDiorama,
   type OnboardingAgentGuideState,
@@ -293,10 +295,14 @@ const ONBOARDING_STYLE = `
   }
 }`;
 
-function ActCopy(props: { act: OnboardingAct }) {
-  const { act } = props;
+function ActCopy(props: {
+  readonly act: OnboardingAct;
+  /** Advances the tour once the import is under way; it runs in background. */
+  readonly onSessionImportStarted: () => void;
+}) {
+  const { act, onSessionImportStarted } = props;
   const headingRef = useRef<HTMLHeadingElement | null>(null);
-  const isAgentsAct = act.addon === "agents";
+  const isSoloAct = actUsesSoloStage(act);
 
   useEffect(() => {
     headingRef.current?.focus({ preventScroll: true });
@@ -310,7 +316,7 @@ function ActCopy(props: { act: OnboardingAct }) {
       transition={{ duration: 0.28, ease: ACT_EASE }}
       className={cn(
         "onboarding-copy flex min-h-0 w-full flex-col items-center text-center lg:items-start lg:text-left",
-        isAgentsAct && "h-full",
+        isSoloAct && "h-full",
       )}
     >
       <p className="onboarding-copy-kicker hidden font-mono leading-normal font-medium tracking-[0.07em] text-white/55 uppercase lg:block">
@@ -328,9 +334,18 @@ function ActCopy(props: { act: OnboardingAct }) {
           {act.body}
         </p>
       </div>
-      {isAgentsAct ? (
+      {act.addon === "agents" ? (
         <div className="onboarding-addon flex min-h-0 w-full flex-1 flex-col self-center overflow-hidden pt-1 text-left lg:self-start">
           <OnboardingDetectedAgents />
+        </div>
+      ) : null}
+      {act.addon === "session-import" ? (
+        <div className="onboarding-addon flex min-h-0 w-full flex-1 flex-col self-center overflow-hidden pt-2 text-left lg:self-start">
+          <SessionImportWizard
+            surface="onboarding"
+            onImportStarted={onSessionImportStarted}
+            secondaryAction={null}
+          />
         </div>
       ) : null}
       {act.addon === "theme" ? (
@@ -679,7 +694,7 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
               className={cn(
                 "onboarding-stage-content relative mx-auto grid h-full min-h-0 w-full max-w-[104rem] items-start overflow-hidden",
                 // The providers act needs a stretched copy rail so its list can scroll.
-                act.addon === "agents" && "onboarding-stage-content--solo",
+                actUsesSoloStage(act) && "onboarding-stage-content--solo",
               )}
             >
               <div className="onboarding-copy-rail flex min-h-0 min-w-0 flex-col items-center lg:items-start">
@@ -689,7 +704,11 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
 
                 <div className="mt-7 w-full min-w-0">
                   <AnimatePresence mode="wait" initial={false}>
-                    <ActCopy key={act.id} act={act} />
+                    <ActCopy
+                      key={act.id}
+                      act={act}
+                      onSessionImportStarted={advance}
+                    />
                   </AnimatePresence>
                 </div>
               </div>
@@ -706,6 +725,9 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
                   // mini-app when stacked. (Command-theme keeps its diorama,
                   // which itself shows just the Cmd+K palette when stacked.)
                   act.addon === "agents" && "max-lg:hidden",
+                  // Session import has no mini-app to preview: its stage IS the
+                  // real wizard, reading the user's real machine.
+                  act.addon === "session-import" && "hidden",
                 )}
               >
                 {/* Fade the mini-app in place on each act so it never slides up

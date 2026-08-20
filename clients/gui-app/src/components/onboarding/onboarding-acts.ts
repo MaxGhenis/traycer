@@ -3,6 +3,7 @@ export type OnboardingActId =
   | "navigation"
   | "task-context"
   | "providers"
+  | "session-import"
   | "agent-guide"
   | "command-theme";
 
@@ -11,7 +12,17 @@ export interface OnboardingAct {
   readonly eyebrow: string;
   readonly title: string;
   readonly body: string;
-  readonly addon: "agents" | "theme" | null;
+  readonly addon: "agents" | "session-import" | "theme" | null;
+}
+
+/**
+ * Acts whose addon IS the act - a live panel that needs the copy rail's full
+ * height and drops the mini-app when the layout stacks. Named here rather than
+ * spelled out at each of the page's three checks, so adding another full-bleed
+ * act cannot half-land.
+ */
+export function actUsesSoloStage(act: OnboardingAct): boolean {
+  return act.addon === "agents" || act.addon === "session-import";
 }
 
 /**
@@ -47,15 +58,22 @@ export const ONBOARDING_ACTS: ReadonlyArray<OnboardingAct> = [
     addon: "agents",
   },
   {
+    id: "session-import",
+    eyebrow: "ACT 05 - YOUR WORK",
+    title: "Bring your\nsessions with you",
+    body: "Work you already started in Claude Code or Codex can come with you as tasks. Pick what to bring; the import runs while you carry on.",
+    addon: "session-import",
+  },
+  {
     id: "agent-guide",
-    eyebrow: "ACT 05 - DELEGATION",
+    eyebrow: "ACT 06 - DELEGATION",
     title: "Tell Traycer\nhow to choose",
     body: "Set the rules once. Traycer follows them every time it spawns a child agent, so you're not re-deciding per task.",
     addon: null,
   },
   {
     id: "command-theme",
-    eyebrow: "ACT 06 - FLOW",
+    eyebrow: "ACT 07 - FLOW",
     title: "Move fast.\nMake it yours.",
     body: "Use Cmd+K to create, jump, launch, and switch without breaking flow. Pick a theme before you enter; terminals and app surfaces follow it together.",
     addon: "theme",
