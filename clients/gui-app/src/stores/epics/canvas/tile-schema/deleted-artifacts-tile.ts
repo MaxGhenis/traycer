@@ -7,8 +7,8 @@ import { readTileInstanceId } from "./instance-id";
 
 export const DELETED_ARTIFACTS_TILE_NAME = "Deleted artifacts";
 
-export function deletedArtifactsTileId(epicId: string): string {
-  return `deleted-artifacts:${epicId}`;
+export function deletedArtifactsTileId(epicId: string, hostId: string): string {
+  return `deleted-artifacts:${encodeURIComponent(hostId)}:${encodeURIComponent(epicId)}`;
 }
 
 export function makeDeletedArtifactsTileRef(
@@ -16,7 +16,7 @@ export function makeDeletedArtifactsTileRef(
   hostId: string,
 ): DeletedArtifactsTileRef {
   return {
-    id: deletedArtifactsTileId(epicId),
+    id: deletedArtifactsTileId(epicId, hostId),
     instanceId: uuidv4(),
     type: TILE_KIND_DELETED_ARTIFACTS,
     name: DELETED_ARTIFACTS_TILE_NAME,
@@ -41,7 +41,7 @@ function parseDeletedArtifactsTileRef(
     return null;
   }
   return {
-    id: deletedArtifactsTileId(value.epicId),
+    id: deletedArtifactsTileId(value.epicId, value.hostId),
     instanceId: readTileInstanceId(value.instanceId),
     type: TILE_KIND_DELETED_ARTIFACTS,
     name:

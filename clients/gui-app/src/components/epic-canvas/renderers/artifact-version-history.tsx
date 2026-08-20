@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangleIcon,
   HistoryIcon,
@@ -381,6 +381,7 @@ function ArtifactVersionHistoryPanel(props: {
     useState<ArtifactVersionObservationEntry | null>(null);
   const [preflight, setPreflight] = useState<RestorePreflight | null>(null);
   const [preflightRefreshing, setPreflightRefreshing] = useState(false);
+  const [preflightFailed, setPreflightFailed] = useState(false);
   const [unavailable, setUnavailable] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<OutcomeNotice | null>(null);
   const [pagination, setPagination] = useState<HistoryPagination | null>(null);
@@ -485,6 +486,7 @@ function ArtifactVersionHistoryPanel(props: {
   ): void => {
     setRestoreTarget(entry);
     setUnavailable(null);
+    setPreflightFailed(false);
     setPreflightRefreshing(conflict);
     restore.mutate(
       {
@@ -496,6 +498,7 @@ function ArtifactVersionHistoryPanel(props: {
       {
         onSuccess: (response) => {
           setPreflightRefreshing(false);
+          setPreflightFailed(false);
           if (response.kind === "preflight") {
             setPreflight(response);
             return;
@@ -505,7 +508,12 @@ function ArtifactVersionHistoryPanel(props: {
             setUnavailable(RESTORE_UNAVAILABLE_COPY[response.reason]);
           }
         },
-        onError: () => setPreflightRefreshing(false),
+        onError: () => {
+          setPreflightRefreshing(false);
+          setPreflight(null);
+          setPreflightFailed(true);
+          setUnavailable("Couldn't check the current artifact. Try again.");
+        },
       },
     );
   };
@@ -528,6 +536,7 @@ function ArtifactVersionHistoryPanel(props: {
             return;
           }
           if (response.kind === "unavailable") {
+            setPreflightFailed(false);
             setUnavailable(RESTORE_UNAVAILABLE_COPY[response.reason]);
             return;
           }
@@ -705,7 +714,12 @@ function ArtifactVersionHistoryPanel(props: {
             }
             afterMarkdown={selectedBlob.data?.markdown ?? null}
             loading={selectedBlob.isLoading || comparisonBlob.isLoading}
+            failed={selectedBlob.isError || comparisonBlob.isError}
             outcome={outcome?.status ?? null}
+            onRetry={() => {
+              if (selectedBlob.isError) void selectedBlob.refetch();
+              if (comparisonBlob.isError) void comparisonBlob.refetch();
+            }}
             onRestore={() => {
               if (selected !== null) requestPreflight(selected, false);
             }}
@@ -717,12 +731,17 @@ function ArtifactVersionHistoryPanel(props: {
         target={restoreTarget}
         preflight={preflight}
         unavailable={unavailable}
+        retryable={preflightFailed}
         refreshing={preflightRefreshing}
         pending={restore.isPending}
         onCancel={() => {
           setRestoreTarget(null);
           setPreflight(null);
+          setPreflightFailed(false);
           setUnavailable(null);
+        }}
+        onRetry={() => {
+          if (restoreTarget !== null) requestPreflight(restoreTarget, false);
         }}
         onConfirm={executeRestore}
       />
@@ -943,22 +962,24 @@ function VersionDiffView(props: {
   readonly beforeMarkdown: string | null;
   readonly afterMarkdown: string | null;
   readonly loading: boolean;
+  readonly failed: boolean;
   readonly outcome: OutcomeNotice["status"] | null;
+  readonly onRetry: () => void;
   readonly onRestore: () => void;
 }): ReactNode {
   const unchanged =
     props.comparisonLabel !== null &&
     props.afterMarkdown !== null &&
     props.beforeMarkdown === props.afterMarkdown;
-  const patch = useMemo(() => {
-    if (props.afterMarkdown === null) return null;
-    return buildSnapshotUnifiedPatch({
-      filePath: `${props.artifactId}.md`,
-      beforeContent: props.beforeMarkdown ?? "",
-      afterContent: props.afterMarkdown,
-      ignoreWhitespace: false,
-    });
-  }, [props.artifactId, props.beforeMarkdown, props.afterMarkdown]);
+  const patch =
+    props.afterMarkdown === null
+      ? null
+      : buildSnapshotUnifiedPatch({
+          filePath: `${props.artifactId}.md`,
+          beforeContent: props.beforeMarkdown ?? "",
+          afterContent: props.afterMarkdown,
+          ignoreWhitespace: false,
+        });
   if (props.selected === null) {
     return (
       <p className="p-5 text-muted-foreground">
@@ -1001,9 +1022,11 @@ function VersionDiffView(props: {
       </div>
       <VersionDiffBody
         loading={props.loading}
+        failed={props.failed}
         unchanged={unchanged}
         patch={patch}
         cacheScope={`artifact-version:${props.selected.observationId}:${props.comparisonObservationId ?? "none"}`}
+        onRetry={props.onRetry}
       />
     </div>
   );
@@ -1011,11 +1034,33 @@ function VersionDiffView(props: {
 
 function VersionDiffBody(props: {
   readonly loading: boolean;
+  readonly failed: boolean;
   readonly unchanged: boolean;
   readonly patch: string | null;
   readonly cacheScope: string;
+  readonly onRetry: () => void;
 }): ReactNode {
-  if (props.loading || props.patch === null) {
+  if (props.loading) {
+    return <p className="p-4 text-muted-foreground">Loading comparison…</p>;
+  }
+  if (props.failed) {
+    return (
+      <div className="p-4">
+        <p className="text-muted-foreground">
+          Couldn&apos;t load this version&apos;s body.
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-2"
+          onClick={props.onRetry}
+        >
+          Retry
+        </Button>
+      </div>
+    );
+  }
+  if (props.patch === null) {
     return <p className="p-4 text-muted-foreground">Loading comparison…</p>;
   }
   if (props.unchanged) {
@@ -1053,9 +1098,11 @@ function RestoreVersionDialog(props: {
   readonly target: ArtifactVersionObservationEntry | null;
   readonly preflight: RestorePreflight | null;
   readonly unavailable: string | null;
+  readonly retryable: boolean;
   readonly refreshing: boolean;
   readonly pending: boolean;
   readonly onCancel: () => void;
+  readonly onRetry: () => void;
   readonly onConfirm: () => void;
 }): ReactNode {
   return (
@@ -1117,29 +1164,49 @@ function RestoreVersionDialog(props: {
         )}
         {props.unavailable === null ? null : (
           <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
-            {props.unavailable}
+            <p>{props.unavailable}</p>
+            {props.retryable ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={props.onRetry}
+              >
+                Retry
+              </Button>
+            ) : null}
           </div>
         )}
-        <DialogFooter>
-          <Button variant="outline" onClick={props.onCancel}>
-            Cancel
-          </Button>
-          <Button
-            onClick={props.onConfirm}
-            disabled={
-              props.preflight === null ||
-              props.unavailable !== null ||
-              props.refreshing ||
-              props.pending
-            }
-          >
-            {props.preflight !== null &&
-            props.preflight.imagesMissing.length > 0
-              ? "Restore body only"
-              : "Restore as new version"}
-          </Button>
-        </DialogFooter>
+        <RestoreVersionDialogFooter {...props} />
       </DialogContent>
     </Dialog>
+  );
+}
+
+function RestoreVersionDialogFooter(props: {
+  readonly preflight: RestorePreflight | null;
+  readonly unavailable: string | null;
+  readonly refreshing: boolean;
+  readonly pending: boolean;
+  readonly onCancel: () => void;
+  readonly onConfirm: () => void;
+}): ReactNode {
+  const disabled =
+    props.preflight === null ||
+    props.unavailable !== null ||
+    props.refreshing ||
+    props.pending;
+  const restoresBodyOnly =
+    props.preflight !== null && props.preflight.imagesMissing.length > 0;
+
+  return (
+    <DialogFooter>
+      <Button variant="outline" onClick={props.onCancel}>
+        Cancel
+      </Button>
+      <Button onClick={props.onConfirm} disabled={disabled}>
+        {restoresBodyOnly ? "Restore body only" : "Restore as new version"}
+      </Button>
+    </DialogFooter>
   );
 }

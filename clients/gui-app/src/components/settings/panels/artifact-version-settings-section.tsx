@@ -24,6 +24,7 @@ import { SettingsRow } from "@/components/settings/settings-row";
 import { useHostQuery } from "@/hooks/host/use-host-query";
 import { useHostScopedMutationForClient } from "@/hooks/host/use-host-scoped-mutation";
 import { useHostSupportsMethod } from "@/hooks/host/use-host-supports-method";
+import { epicMutationKeys } from "@/lib/query-keys/epic-mutation-keys";
 
 type ConfirmAction = "disable" | "retention" | "clear" | null;
 
@@ -83,7 +84,7 @@ function commandEffectCopy(
   if (effects.captureResumed) {
     return effects.driftEpicIds.length === 0
       ? "Capture resumed on this host."
-      : `Capture resumed. ${effects.driftEpicIds.length} ${effects.driftEpicIds.length === 1 ? "Task has" : "Tasks have"} edits from while history was off.`;
+      : `Capture resumed. ${effects.driftEpicIds.length} ${effects.driftEpicIds.length === 1 ? "task has" : "tasks have"} edits made while history was off.`;
   }
   if (effects.observationsPruned > 0 || effects.bytesDeleted > 0) {
     return `${effects.observationsPruned} ${effects.observationsPruned === 1 ? "observation" : "observations"} pruned; ${formatBytes(effects.bytesDeleted)} reclaimed.`;
@@ -133,14 +134,14 @@ export function ArtifactVersionSettingsSection(props: {
 
   const setEnabled = useHostScopedMutationForClient(props.client, {
     method: "epic.artifactVersionSettings.setEnabled",
-    mutationKey: ["artifact-version-settings-enabled"],
+    mutationKey: epicMutationKeys.setArtifactVersionCaptureEnabled(),
     errorMessage: "Couldn't update version history",
     invalidateMethods: ["epic.artifactVersionSettings.get"],
     onSuccess: (result) => setCommitted(result),
   });
   const setRetention = useHostScopedMutationForClient(props.client, {
     method: "epic.artifactVersionSettings.setRetentionPolicy",
-    mutationKey: ["artifact-version-settings-retention"],
+    mutationKey: epicMutationKeys.setArtifactVersionRetentionPolicy(),
     errorMessage: "Couldn't update the retention policy",
     invalidateMethods: [
       "epic.artifactVersionSettings.get",
@@ -151,7 +152,7 @@ export function ArtifactVersionSettingsSection(props: {
   });
   const clearHistory = useHostScopedMutationForClient(props.client, {
     method: "epic.artifactVersionSettings.clearHistory",
-    mutationKey: ["artifact-version-settings-clear"],
+    mutationKey: epicMutationKeys.clearArtifactVersionHistory(),
     errorMessage: "Couldn't clear version history",
     invalidateMethods: [
       "epic.artifactVersionSettings.get",

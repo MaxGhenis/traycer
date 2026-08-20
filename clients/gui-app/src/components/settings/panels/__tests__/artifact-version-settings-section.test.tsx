@@ -142,11 +142,10 @@ describe("<ArtifactVersionSettingsSection />", () => {
 
     renderSettings();
 
-    expect(
-      screen
-        .getByRole("button", { name: "Clear version history…" })
-        .hasAttribute("disabled"),
-    ).toBe(false);
+    const clearButton = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Clear version history…",
+    });
+    expect(clearButton.disabled).toBe(false);
   });
 
   it("explains each destructive settings confirmation before mutation", () => {

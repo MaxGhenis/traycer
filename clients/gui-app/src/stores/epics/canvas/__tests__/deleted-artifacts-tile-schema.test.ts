@@ -13,13 +13,16 @@ const EPIC_ID = "epic-a";
 const HOST_ID = "host-a";
 
 describe("deleted-artifacts tile schema", () => {
-  it("uses one stable content id per epic with fresh tab instances", () => {
+  it("uses one stable content id per epic and host with fresh tab instances", () => {
     const first = makeDeletedArtifactsTileRef(EPIC_ID, HOST_ID);
     const second = makeDeletedArtifactsTileRef(EPIC_ID, HOST_ID);
 
-    expect(first.id).toBe(deletedArtifactsTileId(EPIC_ID));
+    expect(first.id).toBe(deletedArtifactsTileId(EPIC_ID, HOST_ID));
     expect(second.id).toBe(first.id);
     expect(second.instanceId).not.toBe(first.instanceId);
+    expect(makeDeletedArtifactsTileRef(EPIC_ID, "host-b").id).not.toBe(
+      first.id,
+    );
     expect(isTileRefRecordBacked(first)).toBe(false);
   });
 
@@ -34,7 +37,7 @@ describe("deleted-artifacts tile schema", () => {
 
     expect(parsed).toEqual({
       ...ref,
-      id: deletedArtifactsTileId(EPIC_ID),
+      id: deletedArtifactsTileId(EPIC_ID, HOST_ID),
     });
   });
 });

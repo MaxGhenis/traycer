@@ -1,37 +1,80 @@
-import { renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { beforeEach, describe, expect, it } from "vitest";
 import { deletedArtifactsTileId } from "@/stores/epics/canvas/tile-schema/deleted-artifacts-tile";
-import type { EpicCanvasTileRef } from "@/stores/epics/canvas/types";
-
-const navigation = vi.hoisted(() => ({
-  openTileInEpic: vi.fn<(epicId: string, node: EpicCanvasTileRef) => null>(
-    () => null,
-  ),
-}));
-
-vi.mock("@/hooks/epic/use-epic-tile-navigation", () => ({
-  useEpicTileNavigation: () => navigation,
-}));
+import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import type {
+  DeletedArtifactsTileRef,
+  EpicCanvasState,
+} from "@/stores/epics/canvas/types";
 
 import { useOpenDeletedArtifacts } from "../use-open-deleted-artifacts";
 
 describe("useOpenDeletedArtifacts", () => {
-  beforeEach(() => navigation.openTileInEpic.mockClear());
+  beforeEach(() => {
+    window.localStorage.clear();
+    useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
+  });
 
-  it("reopens with the same content id so the canvas focuses the existing tile", () => {
+  function deletedTiles(
+    canvas: EpicCanvasState | undefined,
+  ): DeletedArtifactsTileRef[] {
+    if (canvas === undefined) return [];
+    return Object.values(canvas.tilesByInstanceId).filter(
+      (tile): tile is DeletedArtifactsTileRef =>
+        tile !== undefined && tile.type === "deleted-artifacts",
+    );
+  }
+
+  it("reopens through the real canvas store and focuses the existing tile", () => {
     const { result } = renderHook(() =>
       useOpenDeletedArtifacts("epic-a", "host-a"),
     );
 
-    result.current();
-    result.current();
+    act(() => result.current());
+    const tabId =
+      useEpicCanvasStore.getState().mostRecentTabIdByEpicId["epic-a"];
+    if (tabId === undefined) throw new Error("Expected an epic tab");
+    const firstCanvas = useEpicCanvasStore.getState().canvasByTabId[tabId];
+    if (firstCanvas === undefined) throw new Error("Expected an epic canvas");
+    const first = deletedTiles(firstCanvas);
+    expect(first).toHaveLength(1);
 
-    expect(navigation.openTileInEpic).toHaveBeenCalledTimes(2);
-    const first = navigation.openTileInEpic.mock.calls[0][1];
-    const second = navigation.openTileInEpic.mock.calls[1][1];
-    expect(first.id).toBe(deletedArtifactsTileId("epic-a"));
-    expect(second.id).toBe(first.id);
-    expect(second.instanceId).not.toBe(first.instanceId);
+    act(() => result.current());
+    const reopenedCanvas = useEpicCanvasStore.getState().canvasByTabId[tabId];
+    const reopened = deletedTiles(reopenedCanvas);
+
+    expect(reopened).toHaveLength(1);
+    expect(reopened).toEqual(first);
+    expect(reopened.map((tile) => tile.id)).toEqual([
+      deletedArtifactsTileId("epic-a", "host-a"),
+    ]);
+  });
+
+  it("opens a separate lifetime-bound tile when the same epic changes hosts", () => {
+    const { result, rerender } = renderHook(
+      ({ hostId }: { readonly hostId: string }) =>
+        useOpenDeletedArtifacts("epic-a", hostId),
+      { initialProps: { hostId: "host-a" } },
+    );
+
+    act(() => result.current());
+    rerender({ hostId: "host-b" });
+    act(() => result.current());
+
+    const tabId =
+      useEpicCanvasStore.getState().mostRecentTabIdByEpicId["epic-a"];
+    if (tabId === undefined) throw new Error("Expected an epic tab");
+    const canvas = useEpicCanvasStore.getState().canvasByTabId[tabId];
+    if (canvas === undefined) throw new Error("Expected an epic canvas");
+    const opened = deletedTiles(canvas);
+
+    expect(opened).toHaveLength(2);
+    expect(new Set(opened.map((tile) => tile.id))).toEqual(
+      new Set([
+        deletedArtifactsTileId("epic-a", "host-a"),
+        deletedArtifactsTileId("epic-a", "host-b"),
+      ]),
+    );
   });
 
   it("does not open without a session host", () => {
@@ -39,8 +82,8 @@ describe("useOpenDeletedArtifacts", () => {
       useOpenDeletedArtifacts("epic-a", null),
     );
 
-    result.current();
+    act(() => result.current());
 
-    expect(navigation.openTileInEpic).not.toHaveBeenCalled();
+    expect(useEpicCanvasStore.getState().openTabOrder).toEqual([]);
   });
 });

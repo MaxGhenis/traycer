@@ -26,4 +26,10 @@ export const epicMutationKeys = {
   loadOlderArtifactVersions: () => ["epic.loadOlderArtifactVersions"] as const,
   restoreArtifactVersion: () => ["epic.restoreArtifactVersion"] as const,
   reviveDeletedArtifact: () => ["epic.reviveDeletedArtifact"] as const,
+  setArtifactVersionCaptureEnabled: () =>
+    ["epic.setArtifactVersionCaptureEnabled"] as const,
+  setArtifactVersionRetentionPolicy: () =>
+    ["epic.setArtifactVersionRetentionPolicy"] as const,
+  clearArtifactVersionHistory: () =>
+    ["epic.clearArtifactVersionHistory"] as const,
 };

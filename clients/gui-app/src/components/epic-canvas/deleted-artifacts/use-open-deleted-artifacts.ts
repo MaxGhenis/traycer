@@ -1,4 +1,3 @@
-import { useCallback } from "react";
 import { useEpicTileNavigation } from "@/hooks/epic/use-epic-tile-navigation";
 import { makeDeletedArtifactsTileRef } from "@/stores/epics/canvas/tile-schema/deleted-artifacts-tile";
 
@@ -8,11 +7,11 @@ export function useOpenDeletedArtifacts(
   hostId: string | null,
 ): () => void {
   const tileNavigation = useEpicTileNavigation();
-  return useCallback(() => {
+  return () => {
     if (hostId === null) return;
     tileNavigation.openTileInEpic(
       epicId,
       makeDeletedArtifactsTileRef(epicId, hostId),
     );
-  }, [epicId, hostId, tileNavigation]);
+  };
 }

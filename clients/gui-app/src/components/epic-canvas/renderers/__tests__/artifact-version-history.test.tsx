@@ -9,6 +9,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ArtifactVersionObservationEntry,
+  ArtifactVersionsListResponse,
   ArtifactVersionsRestoreResponse,
 } from "@traycer/protocol/host/epic/artifact-versions";
 import { EpicSessionContext } from "@/lib/registries/epic-session-registry";
@@ -43,6 +44,9 @@ interface MutationOptions {
 
 interface MutationConfig {
   readonly method: string;
+  readonly onSuccess?: (
+    response: ArtifactVersionsListResponse | ArtifactVersionsRestoreResponse,
+  ) => void;
 }
 
 interface OpenedChatNode {
@@ -71,17 +75,25 @@ const state = vi.hoisted(() => ({
     readonly node: OpenedChatNode;
   }>,
   historyEntries: [] as ArtifactVersionObservationEntry[],
+  historyNextCursor: null as string | null,
+  historyIsError: false,
+  historyDataUpdatedAt: 1,
+  historyRefetchCalls: 0,
+  olderEntries: [] as ArtifactVersionObservationEntry[],
   settingsEnabled: true,
   blobByObservationId: new Map<
     string,
     { readonly contentHash: string; readonly markdown: string }
   >(),
+  blobErrorObservationIds: new Set<string>(),
+  blobRefetchCalls: [] as string[],
   restorePreflight: {
     kind: "preflight",
     imagesMissing: [] as string[],
     threadCount: 0,
     currentHash: "b".repeat(64),
   } satisfies ArtifactVersionsRestoreResponse,
+  preflightError: false,
   restoreExecute: null as ArtifactVersionsRestoreResponse | null,
 }));
 
@@ -128,9 +140,18 @@ vi.mock("@/hooks/host/use-host-query", () => ({
     state.queryCalls.push(args);
     if (args.method === "epic.artifactVersions.list") {
       return {
-        data: { entries: state.historyEntries, nextCursor: null },
+        data: state.historyIsError
+          ? undefined
+          : {
+              entries: state.historyEntries,
+              nextCursor: state.historyNextCursor,
+            },
         isLoading: false,
-        isError: false,
+        isError: state.historyIsError,
+        dataUpdatedAt: state.historyDataUpdatedAt,
+        refetch: () => {
+          state.historyRefetchCalls += 1;
+        },
       };
     }
     if (args.method === "epic.artifactVersionSettings.get") {
@@ -149,13 +170,21 @@ vi.mock("@/hooks/host/use-host-query", () => ({
       };
     }
     const observationId = args.params.observationId;
+    const blobFailed =
+      typeof observationId === "string" &&
+      state.blobErrorObservationIds.has(observationId);
     return {
       data:
-        typeof observationId === "string"
+        typeof observationId === "string" && !blobFailed
           ? state.blobByObservationId.get(observationId)
           : undefined,
       isLoading: false,
-      isError: false,
+      isError: blobFailed,
+      refetch: () => {
+        if (typeof observationId === "string") {
+          state.blobRefetchCalls.push(observationId);
+        }
+      },
     };
   },
 }));
@@ -169,10 +198,18 @@ vi.mock("@/hooks/host/use-host-scoped-mutation", () => ({
       options: MutationOptions | undefined,
     ) => {
       state.mutationCalls.push({ method: config.method, variables });
+      if (config.method === "epic.artifactVersions.list") {
+        config.onSuccess?.({ entries: state.olderEntries, nextCursor: null });
+        return;
+      }
       if (
         config.method === "epic.artifactVersions.restore" &&
         variables.mode === "preflight"
       ) {
+        if (state.preflightError) {
+          options?.onError?.();
+          return;
+        }
         options?.onSuccess?.(state.restorePreflight);
         return;
       }
@@ -292,14 +329,22 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
     state.nodeRefCalls = [];
     state.openedChats = [];
     state.historyEntries = [];
+    state.historyNextCursor = null;
+    state.historyIsError = false;
+    state.historyDataUpdatedAt = 1;
+    state.historyRefetchCalls = 0;
+    state.olderEntries = [];
     state.settingsEnabled = true;
     state.blobByObservationId.clear();
+    state.blobErrorObservationIds.clear();
+    state.blobRefetchCalls = [];
     state.restorePreflight = {
       kind: "preflight",
       imagesMissing: [],
       threadCount: 0,
       currentHash: HASH_B,
     };
+    state.preflightError = false;
     state.restoreExecute = null;
   });
 
@@ -335,6 +380,47 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
         (query) => query.method === "epic.deletedArtifacts.list",
       ),
     ).toBe(false);
+  });
+
+  it("loads older versions and drops accumulated pages after a first-page refetch", () => {
+    state.historyEntries = [observation("observation-new", "Newest")];
+    state.historyNextCursor = "older-cursor";
+    state.olderEntries = [observation("observation-old", "Older")];
+    const result = openHistory();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Load older versions" }),
+    );
+
+    expect(screen.getByText("Newest")).toBeTruthy();
+    expect(screen.getByText("Older")).toBeTruthy();
+    expect(state.mutationCalls).toContainEqual({
+      method: "epic.artifactVersions.list",
+      variables: {
+        epicId: "epic-a",
+        artifactId: "artifact-a",
+        cursor: "older-cursor",
+        limit: 200,
+      },
+    });
+
+    state.historyEntries = [observation("observation-refetched", "Refetched")];
+    state.historyNextCursor = null;
+    state.historyDataUpdatedAt = 2;
+    result.rerender(historyTree(epicHandle));
+
+    expect(screen.getByText("Refetched")).toBeTruthy();
+    expect(screen.queryByText("Older")).toBeNull();
+  });
+
+  it("shows a retry control when history loading fails", () => {
+    state.historyIsError = true;
+    openHistory();
+
+    expect(screen.getByText("Couldn't load version history.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(state.historyRefetchCalls).toBe(1);
   });
 
   it("maximizes the panel and hides the resize handle", () => {
@@ -518,6 +604,19 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
     ).toBeTruthy();
   });
 
+  it("shows a retry control when a version body cannot be loaded", () => {
+    state.historyEntries = [
+      observation("observation-failed-body", "Failed body"),
+    ];
+    state.blobErrorObservationIds.add("observation-failed-body");
+    openHistory();
+
+    expect(screen.getByText("Couldn't load this version's body.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(state.blobRefetchCalls).toEqual(["observation-failed-body"]);
+  });
+
   it("restores missing-image history as a new body-only version", () => {
     state.historyEntries = [
       observation("observation-target", "Target snapshot"),
@@ -686,6 +785,35 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
     expect(
       screen.getByRole("button", { name: "Restore as new version" }),
     ).toBeTruthy();
+  });
+
+  it("surfaces a failed restore preflight and allows retry", () => {
+    state.historyEntries = [
+      observation("observation-target", "Target snapshot"),
+    ];
+    state.blobByObservationId.set("observation-target", {
+      contentHash: HASH_A,
+      markdown: "target body",
+    });
+    state.preflightError = true;
+    openHistory();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore this version" }),
+    );
+
+    expect(
+      screen.getByText("Couldn't check the current artifact. Try again."),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(
+      state.mutationCalls.filter(
+        (call) =>
+          call.method === "epic.artifactVersions.restore" &&
+          call.variables.mode === "preflight",
+      ),
+    ).toHaveLength(2);
   });
 
   it("shows the unavailable copy when an execute call reports unavailable", () => {
