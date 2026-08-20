@@ -1,11 +1,8 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { diffLines, type Change } from "diff";
 import {
   AlertTriangleIcon,
-  ArrowLeftIcon,
-  Clock3Icon,
+  HistoryIcon,
   InfoIcon,
-  MoreHorizontalIcon,
   RotateCcwIcon,
 } from "lucide-react";
 import type {
@@ -31,19 +28,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   Sheet,
   SheetContent,
   SheetDescription,
-  SheetFooter,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
+import {
+  DiffContentFrame,
+  DiffContentPrimitive,
+} from "@/components/diff/diff-content-primitive";
+import { buildSnapshotUnifiedPatch } from "@/lib/diff/snapshot-diff-patch";
 import { useHostQuery } from "@/hooks/host/use-host-query";
 import { useHostScopedMutationForClient } from "@/hooks/host/use-host-scoped-mutation";
 import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
@@ -117,8 +114,17 @@ const DAY_FORMATTER = new Intl.DateTimeFormat(undefined, {
   day: "numeric",
 });
 
+const TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+});
+
 function formatCapturedAt(value: number): string {
   return CAPTURED_AT_FORMATTER.format(value);
+}
+
+function formatCapturedTime(value: number): string {
+  return TIME_FORMATTER.format(value);
 }
 
 function dayLabel(value: number): string {
@@ -317,28 +323,27 @@ function ArtifactVersionHistoryEntryPointContent(props: {
 
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="ml-auto text-muted-foreground"
-            aria-label="Artifact actions"
-            data-testid="artifact-header-menu"
+      <div className="pointer-events-none absolute top-2 right-2 z-10 flex items-center">
+        <span className="pointer-events-auto flex shrink-0 items-center rounded-md border border-border/60 bg-canvas/80 px-0.5 shadow-sm backdrop-blur-sm">
+          <TooltipWrapper
+            label="Version history"
+            side="bottom"
+            sideOffset={undefined}
+            align={undefined}
           >
-            <MoreHorizontalIcon className="size-4" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem
-            onSelect={() => setOpen(true)}
-            data-testid="artifact-version-history-entry"
-          >
-            <Clock3Icon className="size-4" />
-            Version History
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="Version history"
+              data-testid="artifact-version-history-entry"
+              onClick={() => setOpen(true)}
+            >
+              <HistoryIcon className="size-3.5" />
+            </Button>
+          </TooltipWrapper>
+        </span>
+      </div>
       <ArtifactVersionHistorySheet
         open={open}
         onOpenChange={setOpen}
@@ -561,14 +566,6 @@ function ArtifactVersionHistorySheet(props: {
     );
   };
 
-  const diff = useMemo(() => {
-    if (selectedBlob.data === undefined) return [];
-    return diffLines(
-      comparisonBlob.data?.markdown ?? "",
-      selectedBlob.data.markdown,
-    );
-  }, [comparisonBlob.data?.markdown, selectedBlob.data]);
-
   const openProvenanceChat = (chatId: string): void => {
     if (viewTabId === null) return;
     const ref = epicNodeRefForNodeId(
@@ -584,18 +581,45 @@ function ArtifactVersionHistorySheet(props: {
     <>
       <Sheet open={props.open} onOpenChange={props.onOpenChange}>
         <SheetContent
-          className="w-full sm:max-w-2xl"
+          className="w-full data-[side=right]:sm:max-w-3xl data-[side=right]:xl:max-w-4xl"
           data-testid="artifact-version-history-sheet"
         >
-          <SheetHeader className="border-b pr-12">
-            <SheetTitle>
-              {mode === "versions" ? "Version history" : "Deleted artifacts"}
-            </SheetTitle>
-            <SheetDescription>
-              {mode === "versions"
-                ? "Saved observations from this host, in capture order."
-                : "Artifacts that can still be restored from local history."}
-            </SheetDescription>
+          <SheetHeader className="gap-3 border-b pr-12">
+            <div className="space-y-1.5">
+              <SheetTitle>History</SheetTitle>
+              <SheetDescription>
+                {mode === "versions"
+                  ? "Saved versions of this artifact, newest first."
+                  : "Artifacts that can still be restored from local history."}
+              </SheetDescription>
+            </div>
+            <Tabs
+              value={mode}
+              onValueChange={(value) => {
+                if (value === "versions" || value === "deleted") {
+                  setMode(value);
+                }
+              }}
+            >
+              <TabsList>
+                <TabsTrigger
+                  value="versions"
+                  data-testid="artifact-history-tab-versions"
+                >
+                  Versions
+                </TabsTrigger>
+                <TabsTrigger
+                  value="deleted"
+                  data-testid="artifact-history-tab-deleted"
+                >
+                  Deleted
+                  {deleted.data === undefined ||
+                  deleted.data.entries.length === 0
+                    ? ""
+                    : ` (${deleted.data.entries.length})`}
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
           </SheetHeader>
 
           {mode === "deleted" ? (
@@ -607,13 +631,12 @@ function ArtifactVersionHistorySheet(props: {
               pendingArtifactId={
                 revive.isPending ? revive.variables.artifactId : null
               }
-              onBack={() => setMode("versions")}
               onRevive={(artifactId) =>
                 revive.mutate({ epicId: props.epicId, artifactId })
               }
             />
           ) : (
-            <div className="grid min-h-0 flex-1 grid-cols-[minmax(12rem,0.8fr)_minmax(0,1.2fr)] overflow-hidden">
+            <div className="grid min-h-0 flex-1 grid-cols-[minmax(13rem,0.7fr)_minmax(0,1.3fr)] overflow-hidden">
               <div className="min-h-0 overflow-y-auto border-r">
                 {settings.data?.settings.enabled === false ? (
                   <div className="m-3 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-ui-sm">
@@ -686,9 +709,18 @@ function ArtifactVersionHistorySheet(props: {
                 ) : null}
               </div>
               <VersionDiffView
+                artifactId={props.artifactId}
                 selected={selected}
                 comparisonLabel={comparison?.label ?? null}
-                diff={diff}
+                comparisonObservationId={
+                  comparison?.entry.observationId ?? null
+                }
+                beforeMarkdown={
+                  comparison === null
+                    ? null
+                    : (comparisonBlob.data?.markdown ?? null)
+                }
+                afterMarkdown={selectedBlob.data?.markdown ?? null}
                 loading={selectedBlob.isLoading || comparisonBlob.isLoading}
                 outcome={outcome?.status ?? null}
                 onRestore={() => {
@@ -697,21 +729,6 @@ function ArtifactVersionHistorySheet(props: {
               />
             </div>
           )}
-
-          {mode === "versions" ? (
-            <SheetFooter className="border-t">
-              <Button
-                variant="ghost"
-                className="justify-start"
-                onClick={() => setMode("deleted")}
-              >
-                Deleted artifacts
-                {deleted.data === undefined
-                  ? null
-                  : ` (${deleted.data.entries.length})`}
-              </Button>
-            </SheetFooter>
-          ) : null}
         </SheetContent>
       </Sheet>
 
@@ -752,14 +769,15 @@ function VersionObservationList(props: {
     return (
       <div key={entry.observationId}>
         {showDay ? (
-          <p className="border-b bg-foreground/5 px-3 py-1.5 text-ui-xs font-medium text-muted-foreground">
+          <p className="sticky top-0 z-[1] border-b bg-background/95 px-3 py-1.5 text-ui-xs font-medium text-muted-foreground backdrop-blur-sm">
             {day}
           </p>
         ) : null}
         <div
           className={cn(
-            "border-b transition-colors hover:bg-foreground/5",
-            props.selectedId === entry.observationId && "bg-foreground/10",
+            "border-b border-l-2 border-l-transparent transition-colors hover:bg-foreground/5",
+            props.selectedId === entry.observationId &&
+              "border-l-primary bg-foreground/8",
           )}
         >
           <button
@@ -767,17 +785,17 @@ function VersionObservationList(props: {
             aria-label={`Select version ${entry.observationId}`}
             data-testid={`artifact-version-observation-${entry.observationId}`}
             onClick={() => props.onSelect(entry.observationId)}
-            className="w-full px-3 pt-3 pb-2 text-left"
+            className="w-full px-3 py-2.5 text-left"
           >
-            <span className="flex items-center justify-between gap-2">
-              <Badge variant="outline" className="font-medium">
+            <span className="flex items-baseline justify-between gap-2">
+              <span className="text-ui-sm font-medium">
                 {PROVENANCE_LABELS[entry.provenance.kind]}
-              </Badge>
-              <span className="text-ui-xs text-muted-foreground">
-                {formatCapturedAt(entry.capturedAt)}
+              </span>
+              <span className="shrink-0 text-ui-xs text-muted-foreground tabular-nums">
+                {formatCapturedTime(entry.capturedAt)}
               </span>
             </span>
-            <span className="mt-2 flex flex-wrap gap-1">
+            <span className="mt-1.5 flex flex-wrap gap-1 empty:hidden">
               {renormalizedByEditorUpdate ? (
                 <Badge
                   variant="outline"
@@ -822,20 +840,30 @@ function VersionObservationList(props: {
   });
 }
 
-function diffPartKind(part: Change): "added" | "removed" | "unchanged" {
-  if (part.added) return "added";
-  if (part.removed) return "removed";
-  return "unchanged";
-}
-
 function VersionDiffView(props: {
+  readonly artifactId: string;
   readonly selected: ArtifactVersionObservationEntry | null;
   readonly comparisonLabel: string | null;
-  readonly diff: readonly Change[];
+  readonly comparisonObservationId: string | null;
+  readonly beforeMarkdown: string | null;
+  readonly afterMarkdown: string | null;
   readonly loading: boolean;
   readonly outcome: OutcomeNotice["status"] | null;
   readonly onRestore: () => void;
 }): ReactNode {
+  const unchanged =
+    props.comparisonLabel !== null &&
+    props.afterMarkdown !== null &&
+    props.beforeMarkdown === props.afterMarkdown;
+  const patch = useMemo(() => {
+    if (props.afterMarkdown === null) return null;
+    return buildSnapshotUnifiedPatch({
+      filePath: `${props.artifactId}.md`,
+      beforeContent: props.beforeMarkdown ?? "",
+      afterContent: props.afterMarkdown,
+      ignoreWhitespace: false,
+    });
+  }, [props.artifactId, props.beforeMarkdown, props.afterMarkdown]);
   if (props.selected === null) {
     return (
       <p className="p-5 text-muted-foreground">
@@ -853,10 +881,7 @@ function VersionDiffView(props: {
       {props.outcome === "renormalized" ? (
         <p className="border-b border-blue-500/30 bg-blue-500/10 px-4 py-2 text-ui-sm text-blue-700 dark:text-blue-300">
           Restored. Content was re-normalized by a newer editor version —
-          formatting may differ slightly.{" "}
-          <a href="#artifact-version-diff" className="underline">
-            Review changes
-          </a>
+          formatting may differ slightly.
         </p>
       ) : null}
       {props.outcome === "degraded" ? (
@@ -865,13 +890,13 @@ function VersionDiffView(props: {
           marked Body only.
         </p>
       ) : null}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b p-3">
-        <div>
-          <p className="font-medium">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-2.5">
+        <div className="min-w-0">
+          <p className="text-ui-sm font-medium">
             {formatCapturedAt(props.selected.capturedAt)}
           </p>
           <p className="text-ui-xs text-muted-foreground">
-            {props.comparisonLabel ?? "Saved content"}
+            {props.comparisonLabel ?? "Oldest saved version — shown in full"}
           </p>
         </div>
         <Button size="sm" onClick={props.onRestore}>
@@ -879,29 +904,53 @@ function VersionDiffView(props: {
           Restore this version
         </Button>
       </div>
-      {props.loading ? (
-        <p className="p-4 text-muted-foreground">Loading comparison…</p>
-      ) : (
-        <pre
-          id="artifact-version-diff"
-          className="min-h-0 flex-1 overflow-auto p-4 font-mono text-ui-xs whitespace-pre-wrap"
-        >
-          {props.diff.map((part) => (
-            <span
-              key={`${diffPartKind(part)}-${part.count}-${part.value}`}
-              className={cn(
-                "block",
-                part.added &&
-                  "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-                part.removed && "bg-destructive/10 text-destructive",
-              )}
-            >
-              {part.value}
-            </span>
-          ))}
-        </pre>
-      )}
+      <VersionDiffBody
+        loading={props.loading}
+        unchanged={unchanged}
+        patch={patch}
+        cacheScope={`artifact-version:${props.selected.observationId}:${props.comparisonObservationId ?? "none"}`}
+      />
     </div>
+  );
+}
+
+function VersionDiffBody(props: {
+  readonly loading: boolean;
+  readonly unchanged: boolean;
+  readonly patch: string | null;
+  readonly cacheScope: string;
+}): ReactNode {
+  if (props.loading || props.patch === null) {
+    return <p className="p-4 text-muted-foreground">Loading comparison…</p>;
+  }
+  if (props.unchanged) {
+    return (
+      <p className="p-4 text-muted-foreground">
+        The body matches the compared version — this capture recorded a metadata
+        change (title, status, or kind).
+      </p>
+    );
+  }
+  return (
+    <DiffContentFrame
+      sizing="fill"
+      banner={null}
+      scrollContainerRef={null}
+      onScroll={null}
+      fileIdentity={null}
+    >
+      <DiffContentPrimitive
+        patch={props.patch}
+        cacheScope={props.cacheScope}
+        mode="unified"
+        wordWrap
+        backgrounds
+        lineNumbers={false}
+        indicatorStyle="bars"
+        fileHeaders={false}
+        isEmptyFile={false}
+      />
+    </DiffContentFrame>
   );
 }
 
@@ -1018,15 +1067,10 @@ function DeletedArtifactsView(props: {
   readonly error: boolean;
   readonly onRetry: () => void;
   readonly pendingArtifactId: string | null;
-  readonly onBack: () => void;
   readonly onRevive: (artifactId: string) => void;
 }): ReactNode {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-4">
-      <Button variant="ghost" size="sm" className="mb-3" onClick={props.onBack}>
-        <ArrowLeftIcon className="size-4" />
-        Back to history
-      </Button>
       {props.loading ? (
         <p className="text-muted-foreground">Loading deleted artifacts…</p>
       ) : null}

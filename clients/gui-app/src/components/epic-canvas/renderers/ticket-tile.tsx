@@ -132,15 +132,17 @@ export function TicketTile(props: TicketTileProps) {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b border-canvas-border/40 px-6 py-2">
         <StatusPill artifactId={props.node.id} artifactType="ticket" />
-        <ArtifactVersionHistoryEntryPoint artifactId={props.node.id} />
       </div>
-      <CollabTileBody
-        node={props.node}
-        viewTabId={props.viewTabId}
-        tileId={props.tileId}
-        isActive={props.isActive}
-        testId="ticket-tile"
-      />
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <ArtifactVersionHistoryEntryPoint artifactId={props.node.id} />
+        <CollabTileBody
+          node={props.node}
+          viewTabId={props.viewTabId}
+          tileId={props.tileId}
+          isActive={props.isActive}
+          testId="ticket-tile"
+        />
+      </div>
     </div>
   );
 }

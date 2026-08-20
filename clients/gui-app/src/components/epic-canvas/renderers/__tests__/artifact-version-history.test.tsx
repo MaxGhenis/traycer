@@ -194,6 +194,13 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 
+vi.mock("@/components/diff/diff-content-primitive", () => ({
+  DiffContentFrame: (props: { readonly children: ReactNode }) => props.children,
+  DiffContentPrimitive: (props: { readonly patch: string }) => (
+    <pre data-testid="diff-content">{props.patch}</pre>
+  ),
+}));
+
 import { ArtifactVersionHistoryEntryPoint } from "../artifact-version-history";
 
 const noopEpicStreamClientFactory: EpicStreamClientFactory = () => ({
@@ -258,8 +265,6 @@ function renderHistory(): RenderResult {
 
 function openHistory(): RenderResult {
   const result = renderHistory();
-  // Radix opens dropdown triggers on pointerdown, not click.
-  fireEvent.pointerDown(screen.getByTestId("artifact-header-menu"));
   fireEvent.click(screen.getByTestId("artifact-version-history-entry"));
   return result;
 }
@@ -329,7 +334,7 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
     renderHistory();
 
     expect(new Set(state.supportCalls)).toEqual(new Set(HISTORY_METHODS));
-    expect(screen.queryByTestId("artifact-header-menu")).toBeNull();
+    expect(screen.queryByTestId("artifact-version-history-entry")).toBeNull();
   });
 
   it("preserves capture order while using observation identity for duplicate content", () => {
@@ -529,9 +534,7 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
     ];
     openHistory();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /^Deleted artifacts/u }),
-    );
+    fireEvent.mouseDown(screen.getByTestId("artifact-history-tab-deleted"));
 
     expect(
       screen.getByText(
