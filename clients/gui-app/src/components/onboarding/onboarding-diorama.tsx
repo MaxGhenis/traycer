@@ -342,9 +342,9 @@ const SCENE_BY_ACT_ID: Record<OnboardingActId, SceneId | null> = {
 };
 
 function sceneForStage(stage: number): SceneId {
-  const act = ONBOARDING_ACTS[stage];
-  if (act === undefined) return "command-theme";
-  return SCENE_BY_ACT_ID[act.id] ?? "command-theme";
+  // `stage` is the onboarding store's clamped step, so the index is total -
+  // same assumption `OnboardingPage` makes when it reads the act itself.
+  return SCENE_BY_ACT_ID[ONBOARDING_ACTS[stage].id] ?? "command-theme";
 }
 
 export function OnboardingDiorama(props: OnboardingDioramaProps) {

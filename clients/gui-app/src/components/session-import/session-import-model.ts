@@ -106,9 +106,40 @@ export function isImportable(candidate: SessionImportCandidate): boolean {
   return candidate.state.kind === "importable";
 }
 
+/**
+ * Split in two along the only line that matters here: frames the HOST sends
+ * and actions the USER takes. They share a state object but never each other's
+ * reasoning, and reading either half whole is worth more than seeing all ten
+ * cases in one switch.
+ */
 export function sessionImportWizardReducer(
   state: SessionImportWizardState,
   action: SessionImportWizardAction,
+): SessionImportWizardState {
+  switch (action.kind) {
+    case "scanRestarted":
+    case "scanGroupArrived":
+    case "scanProviderFailed":
+    case "scanCompleted":
+    case "scanFailed":
+      return applyScanFrame(state, action);
+    default:
+      return applyUserAction(state, action);
+  }
+}
+
+type SessionImportScanFrameAction = Extract<
+  SessionImportWizardAction,
+  { readonly kind: `scan${string}` }
+>;
+type SessionImportUserAction = Exclude<
+  SessionImportWizardAction,
+  SessionImportScanFrameAction
+>;
+
+function applyScanFrame(
+  state: SessionImportWizardState,
+  action: SessionImportScanFrameAction,
 ): SessionImportWizardState {
   switch (action.kind) {
     case "scanRestarted": {
@@ -158,6 +189,14 @@ export function sessionImportWizardReducer(
       if (state.phase === "complete") return state;
       return { ...state, phase: "failed", scanErrorDetail: action.detail };
     }
+  }
+}
+
+function applyUserAction(
+  state: SessionImportWizardState,
+  action: SessionImportUserAction,
+): SessionImportWizardState {
+  switch (action.kind) {
     case "sessionToggled": {
       const selected = new Set(state.selected);
       if (selected.has(action.selectionKey)) {
