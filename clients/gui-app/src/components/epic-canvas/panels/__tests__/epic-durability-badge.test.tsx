@@ -413,9 +413,9 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
 
     renderBadge();
 
-    expect(
-      screen.getByTestId("epic-durability-badge").textContent,
-    ).toContain("Local backup status unknown");
+    expect(screen.getByTestId("epic-durability-badge").textContent).toContain(
+      "Local backup status unknown",
+    );
   });
 
   it("draws over a cloud-durable epic that is only a local copy, which the badge could not previously say", () => {

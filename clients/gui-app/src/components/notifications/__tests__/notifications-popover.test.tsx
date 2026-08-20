@@ -1236,9 +1236,7 @@ describe("NotificationsPopover", () => {
           .beforeUpdatedAt,
       ).toBeTypeOf("number");
     });
-    expect(
-      useAppLocalNotificationsStore.getState().orderedIds,
-    ).toHaveLength(0);
+    expect(useAppLocalNotificationsStore.getState().orderedIds).toHaveLength(0);
   });
 
   it("uses the same clear-notifications action for the local host feed", async () => {

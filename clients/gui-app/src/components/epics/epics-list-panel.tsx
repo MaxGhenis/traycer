@@ -1154,10 +1154,7 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
         </section>
       ) : null}
       {ordinaryItems.length > 0 ? (
-        <ul
-          className="flex flex-col gap-2"
-          data-testid="epics-list-rows"
-        >
+        <ul className="flex flex-col gap-2" data-testid="epics-list-rows">
           {ordinaryItems.map((item) => (
             <EpicsListRow
               key={item.id}
