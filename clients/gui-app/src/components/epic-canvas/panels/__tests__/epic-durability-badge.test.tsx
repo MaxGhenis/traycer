@@ -404,6 +404,43 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
     expect(badge.textContent).not.toContain("Storage status unknown");
   });
 
+  it("draws the unknown protection beside a STATED local durability", () => {
+    // The cloudDurable arm above was fixed first, and covering only that arm
+    // left the more dangerous sibling: `durability: "local"` renders "Stored
+    // locally", which tells the reader their work is on this disk, while
+    // `unknown` says no WAL is known to hold it. Pixel-identical to `armed`
+    // until this case existed.
+    durability.status = "local";
+    durability.pauseReason = null;
+    durability.promotionState = null;
+    durability.localProtection = "unknown";
+
+    renderBadge();
+
+    const badge = screen.getByTestId("epic-durability-badge");
+    expect(badge.getAttribute("data-local-protection")).toBe("unknown");
+    // Both axes, not one replacing the other - the status keeps its own
+    // remedies and the protection doubt is stated beside it.
+    expect(badge.textContent).toContain("Stored locally");
+    expect(badge.textContent).toContain("Local backup status unknown");
+  });
+
+  it("colours an unknown protection as doubt, never as the loss treatment", () => {
+    // `unavailable` is a stated fact about work that will be lost and earns
+    // the destructive colour. An absence of a statement is not that, and
+    // painting the two the same way trades one dishonesty for another.
+    durability.status = "local";
+    durability.pauseReason = null;
+    durability.promotionState = null;
+    durability.localProtection = "unknown";
+
+    renderBadge();
+
+    const badge = screen.getByTestId("epic-durability-badge");
+    expect(badge.className).toContain("bg-amber-500/10");
+    expect(badge.className).not.toContain("bg-destructive/10");
+  });
+
   it("draws over a cloud-durable epic whose protection key a @1.5 peer OMITTED", () => {
     // Same case reached the other way: absence from a peer that speaks the
     // legs is the wire contract's `unknown`, so it must render identically.

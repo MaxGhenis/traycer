@@ -1239,6 +1239,68 @@ describe("NotificationsPopover", () => {
     expect(useAppLocalNotificationsStore.getState().orderedIds).toHaveLength(0);
   });
 
+  it("says which rows survive Clear all while the cloud feed is disconnected", async () => {
+    // The button stays live here ON PURPOSE - the host, app-local and
+    // collaboration lanes are all still clearable - but the cloud leg cannot
+    // run, and an `unavailable` response is neither queued nor retried. The
+    // unconditional copy promised that everything visible would be
+    // permanently cleared while the cloud rows stayed on screen.
+    notificationFeedMode.value = "cloud";
+    bindHostClient();
+    useCloudNotificationsStore.getState().applySnapshot({
+      rows: [cloudDone("entry-cloud-stranded", null)],
+      summary: { totalCount: 1, unreadCount: 1, attentionCount: 0 },
+      version: 7,
+    });
+    applyHostSnapshot([hostDone("entry-local", 100, null)], {
+      unreadCount: 1,
+      attentionCount: 0,
+    });
+    useCloudNotificationsStore.getState().setConnectionState("unavailable");
+    const captured: TargetCapture = {
+      epicId: null,
+      tabId: null,
+      focusArtifactId: null,
+      focusThreadId: null,
+    };
+    const { router } = buildRouterWithCapture(captured, () => undefined);
+    renderRouter(router);
+
+    fireEvent.click(await screen.findByTestId("notifications-clear-all"));
+
+    expect(
+      screen.getByText(/except the cloud ones/, { exact: false }),
+    ).toBeDefined();
+  });
+
+  it("keeps the unqualified Clear all promise when the cloud feed is reachable", async () => {
+    // The vacuity guard: copy that always warned would pass the case above
+    // while telling every ordinary user their cloud rows will not be cleared.
+    notificationFeedMode.value = "cloud";
+    bindHostClient();
+    useCloudNotificationsStore.getState().applySnapshot({
+      rows: [cloudDone("entry-cloud-ok", null)],
+      summary: { totalCount: 1, unreadCount: 1, attentionCount: 0 },
+      version: 8,
+    });
+    const captured: TargetCapture = {
+      epicId: null,
+      tabId: null,
+      focusArtifactId: null,
+      focusThreadId: null,
+    };
+    const { router } = buildRouterWithCapture(captured, () => undefined);
+    renderRouter(router);
+
+    fireEvent.click(await screen.findByTestId("notifications-clear-all"));
+
+    expect(
+      screen.getByText(
+        "This permanently clears every notification currently visible in this feed.",
+      ),
+    ).toBeDefined();
+  });
+
   it("uses the same clear-notifications action for the local host feed", async () => {
     bindHostClient();
     applyHostSnapshot([hostDone("entry-local", 100, null)], {

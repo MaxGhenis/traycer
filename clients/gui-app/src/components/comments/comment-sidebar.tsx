@@ -9,8 +9,7 @@ import type { HostClient } from "@traycer-clients/shared/host-client/host-client
 import type { HostRpcRegistry } from "@/lib/host";
 import { useEpicCommentThreadsForClient } from "@/hooks/comments/use-epic-comment-threads";
 import {
-  commentsHaveNoCloudRoom,
-  useEpicDurabilityPauseReason,
+  useEpicCommentsHaveNoCloudRoom,
   useEpicDurabilityStatus,
 } from "@/lib/epic-selectors";
 import type { EpicDurabilityStatusV15 } from "@traycer/protocol/host/epic/subscribe";
@@ -78,11 +77,10 @@ export function CommentSidebar(props: CommentSidebarProps) {
   // Covers the `promoting` window too - see `commentsHaveNoCloudRoom`. Keyed
   // on exactly `"local"`, this gate re-enabled comments mid-promotion against
   // a null provider and the user got a generic RPC failure for a state the
-  // host can name.
-  const localCommentsUnavailable = commentsHaveNoCloudRoom(
-    durabilityStatus,
-    useEpicDurabilityPauseReason(),
-  );
+  // host can name. The STICKY hook holds that answer across a stream
+  // reconnect, which clears the store's durability slots and would otherwise
+  // re-open the panel against the same absent room.
+  const localCommentsUnavailable = useEpicCommentsHaveNoCloudRoom();
 
   const query = useEpicCommentThreadsForClient({
     client: hostClient,

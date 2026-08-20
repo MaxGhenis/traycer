@@ -93,7 +93,7 @@ function EpicDurabilityBadgeContent(props: {
   const status = viewStatus(props.view);
   const protection = viewProtection(props.view);
   const badge = badgeCopy(props.view, props.pauseReason, props.promotionState);
-  const riskLabel = durabilityRiskCopy(props.view);
+  const risk = durabilityRiskCopy(props.view);
   const freshnessState =
     props.freshness.kind === "stated" ? props.freshness.state : null;
   return (
@@ -109,17 +109,22 @@ function EpicDurabilityBadgeContent(props: {
         // The risk outranks the status for COLOUR even though it does not
         // replace it for text: a pill that says "No local backup" in the calm
         // muted treatment is the same understatement in a different medium.
-        riskLabel !== null
-          ? "bg-destructive/10 text-destructive"
+        // `doubt` outranks it too - an unknown backup is not a detail to bury
+        // under "Stored locally" - but in amber, not in the loss colour.
+        risk !== null
+          ? durabilityRiskClassName(risk.tone)
           : (badge ?? props.freshnessCopy)?.className,
       )}
     >
       {badge === null ? null : <span>{badge.label}</span>}
-      <EpicDurabilityRiskLabel label={riskLabel} separated={badge !== null} />
+      <EpicDurabilityRiskLabel
+        label={risk === null ? null : risk.label}
+        separated={badge !== null}
+      />
       {props.freshnessCopy === null ? null : (
         <EpicCloudFreshnessLabel
           copy={props.freshnessCopy}
-          separated={badge !== null || riskLabel !== null}
+          separated={badge !== null || risk !== null}
         />
       )}
       <EpicDurabilityRemedies status={status} pauseReason={props.pauseReason} />
@@ -170,6 +175,18 @@ function EpicDurabilityRemedies(props: {
       ) : null}
     </>
   );
+}
+
+/**
+ * The badge-wide treatment a protection statement earns. Kept beside the
+ * label rather than inside {@link durabilityRiskCopy}'s return so the two
+ * unknown renderings - this one and `badgeCopy`'s cloudDurable arm - stay
+ * visibly the same amber instead of drifting apart as two literals.
+ */
+function durabilityRiskClassName(tone: "risk" | "doubt"): string {
+  return tone === "risk"
+    ? "bg-destructive/10 text-destructive"
+    : "bg-amber-500/10 text-amber-700 dark:text-amber-300";
 }
 
 /** The protection-risk segment, composed after the status label. */
@@ -423,6 +440,21 @@ function viewProtection(view: EpicDurabilityView): EpicLocalProtection | null {
 }
 
 /**
+ * What the protection axis contributes beside a stated status.
+ *
+ * `tone` exists because the axis carries two different KINDS of statement and
+ * one treatment cannot serve both. `unavailable` is a stated fact about work
+ * that will be lost and earns the destructive treatment; `unknown` is the
+ * absence of a statement, and painting an absence in the same alarm colour as
+ * a confirmed loss is its own dishonesty - the amber `badgeCopy` already uses
+ * for every other unknown is the matching one.
+ */
+interface EpicDurabilityRisk {
+  readonly label: string;
+  readonly tone: "risk" | "doubt";
+}
+
+/**
  * The protection axis rendered BESIDE a stated status, not instead of it.
  *
  * `localProtection` and `durability` are separate axes in the wire contract,
@@ -438,9 +470,25 @@ function viewProtection(view: EpicDurabilityView): EpicLocalProtection | null {
  * remedies down with it, and "which of these two true things matters more" is
  * not a question the badge has to answer.
  */
-function durabilityRiskCopy(view: EpicDurabilityView): string | null {
+function durabilityRiskCopy(
+  view: EpicDurabilityView,
+): EpicDurabilityRisk | null {
   if (view.kind !== "stated" && view.kind !== "cloudDurable") return null;
-  return view.protection === "unavailable" ? "No local backup" : null;
+  if (view.protection === "unavailable") {
+    return { label: "No local backup", tone: "risk" };
+  }
+  // The `stated` sibling of `badgeCopy`'s cloudDurable unknown arm, and the
+  // reason that arm was not enough on its own: a stated status answers WHERE
+  // the epic lives, `localProtection` answers whether this session's edits are
+  // held anywhere, and `unknown` on the second beside `local` on the first is
+  // the exact reading `@1.5` exists to forbid - "Stored locally" telling the
+  // reader their work is on this disk when no WAL is known to hold it.
+  // `cloudDurable` is excluded because `badgeCopy` names it there already, and
+  // one badge saying it twice is worse than saying it once.
+  if (view.kind === "stated" && view.protection === "unknown") {
+    return { label: "Local backup status unknown", tone: "doubt" };
+  }
+  return null;
 }
 
 /**

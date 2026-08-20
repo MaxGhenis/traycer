@@ -228,10 +228,23 @@ function cloudUpState(inputs: EpicSyncPillInputs): EpicSyncPillState {
   // that edits live only in the document and are lost on process exit,
   // graceful quit included. The rule stated at `syncedClaimIsHonest` applies
   // here identically - a calm claim needs a POSITIVE statement behind it.
-  // `unknown` claims nothing either way and stays neutral; a pre-`@1.4` peer
-  // (null) cannot express any of this and keeps its released rendering.
   if (inputs.localProtection === "unavailable") return "unprotected";
   if (inputs.localProtection === "unknown") return "connected";
+  // An OMITTED key splits the same two ways `syncedClaimIsHonest` splits it,
+  // and for the same reason: the probe-by-presence identifies a peer that
+  // SENT the key, the handshake identifies one that COULD have. A negotiated
+  // `@1.4` peer that omitted it is stating UNKNOWN per the schema's own
+  // absence rule, and `storedLocally` is every bit as positive a claim as
+  // `synced` - it tells the reader the bytes are on this disk.
+  //
+  // The negotiated check is what makes the rule uniform rather than what makes
+  // it reachable: only a `@1.4` peer can send the `local` / `promoting`
+  // durability this arm requires, so a pre-`@1.4` frame never arrives here at
+  // all. Stated the same way as its sibling so neither can be read as
+  // licensing an absence.
+  if (inputs.localProtection === undefined && inputs.durabilityLegsNegotiated) {
+    return "connected";
+  }
   return "storedLocally";
 }
 

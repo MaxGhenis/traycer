@@ -18,6 +18,7 @@ import {
   useEpicAgentRoleClaims,
   useEpicAgentRoleClaimsByAgentId,
   useEpicAgentReference,
+  useEpicCommentsHaveNoCloudRoom,
   useEpicSyncPillState,
   useMaybeEpicTuiAgentHarnessId,
   useRegisteredEpicLiveArtifactTitles,
@@ -501,6 +502,94 @@ function createHandle(epicId: string): OpenEpicStoreHandle {
   handles.push(handle);
   return handle;
 }
+
+describe("useEpicCommentsHaveNoCloudRoom", () => {
+  it("holds a no-cloud-room answer across a subscription cycle's reset", () => {
+    // A stream reconnect clears `durabilityStatus` and its pause reason so the
+    // new cycle cannot inherit the old one's claims. The raw predicate reads
+    // that `null` as "comments are fine" - the unsafe direction for a GATE -
+    // and briefly re-enables the shortcut, toolbar, popovers and thread query
+    // against a local-homed epic that still has no cloud room. A draft begun
+    // in that window is wiped by the very frame that restores the gate.
+    const handle = createHandle("epic-comment-gate-sticky");
+    handle.store.setState({
+      durabilityStatus: null,
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: "local",
+      retainedDurabilityPauseReason: null,
+      durabilityLegsNegotiated: true,
+    });
+
+    const { result } = renderHook(() => useEpicCommentsHaveNoCloudRoom(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    expect(result.current).toBe(true);
+  });
+
+  it("holds a HAS-cloud-room answer across the same reset", () => {
+    // The load-bearing half. Both the latch and a blanket
+    // "gate whenever silent" answer `true` above, so that case alone cannot
+    // tell them apart - and a blanket gate would disable comments on every
+    // ordinary cloud epic for the whole reconnect window. Only the retained
+    // fact distinguishes an epic KNOWN to have a room from one nothing has
+    // spoken about.
+    const handle = createHandle("epic-comment-gate-cloud");
+    handle.store.setState({
+      durabilityStatus: null,
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: "cloud",
+      retainedDurabilityPauseReason: null,
+      durabilityLegsNegotiated: true,
+    });
+
+    const { result } = renderHook(() => useEpicCommentsHaveNoCloudRoom(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    expect(result.current).toBe(false);
+  });
+
+  it("keeps comments enabled for a peer that never negotiated the durability legs", () => {
+    // The cohort a conservative default would otherwise disable FOREVER: a
+    // pre-`@1.4` host cannot emit `durability` at all, so its `null` is not a
+    // cycle that has yet to answer - it is a peer that never will, and it has
+    // always had working comments.
+    const handle = createHandle("epic-comment-gate-legacy");
+    handle.store.setState({
+      durabilityStatus: null,
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: null,
+      durabilityLegsNegotiated: false,
+    });
+
+    const { result } = renderHook(() => useEpicCommentsHaveNoCloudRoom(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    expect(result.current).toBe(false);
+  });
+
+  it("prefers THIS cycle's statement over the retained one", () => {
+    // The retained fact is a fallback for silence, never an override: an epic
+    // that finishes promoting says `cloud` and comments must come back at once
+    // rather than waiting for the retained value to age out.
+    const handle = createHandle("epic-comment-gate-current-wins");
+    handle.store.setState({
+      durabilityStatus: "cloud",
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: "local",
+      retainedDurabilityPauseReason: null,
+      durabilityLegsNegotiated: true,
+    });
+
+    const { result } = renderHook(() => useEpicCommentsHaveNoCloudRoom(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    expect(result.current).toBe(false);
+  });
+});
 
 function openEpicWrapper(handle: OpenEpicStoreHandle) {
   return function OpenEpicWrapper(props: { readonly children: ReactNode }) {

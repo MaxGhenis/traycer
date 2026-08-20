@@ -148,6 +148,43 @@ function isMarkAllReadDisabled(input: {
   return input.unreadCount === 0 && actionableHostAttention === 0;
 }
 
+/**
+ * What "Clear all" is about to do, which since the mixed-mode fan-out is not
+ * always what the old unconditional sentence claimed.
+ *
+ * The fan-out clears every lane the feed renders, but the CLOUD leg is the one
+ * that needs the relay, and an `unavailable` response is neither queued nor
+ * retried - it just marks the feed unavailable and leaves the rows in the last
+ * snapshot, still on screen. {@link isClearAllDisabled} keeps the button live
+ * in exactly that case ON PURPOSE, so the reachable lanes stay clearable, and
+ * that decision is what makes the copy rather than the gate the thing to fix:
+ * narrowing the button back down would take the working lanes with it.
+ *
+ * Conditioned on there being cloud rows to strand, not merely on the
+ * connection: with an empty or absent cloud snapshot the original sentence is
+ * still exactly true and a warning about nothing is its own noise.
+ */
+function clearAllConfirmDescription(input: {
+  readonly feedMode: NotificationFeedMode;
+  readonly cloudHasSnapshot: boolean;
+  readonly cloudConnectionState: CloudNotificationsConnectionState;
+  readonly cloudTotalCount: number;
+}): string {
+  const cloudRowsStayBehind =
+    input.feedMode === "cloud" &&
+    input.cloudHasSnapshot &&
+    input.cloudTotalCount > 0 &&
+    input.cloudConnectionState !== "connected";
+  if (cloudRowsStayBehind) {
+    return (
+      "This permanently clears every notification except the cloud ones. " +
+      "The cloud feed is disconnected, so those stay in the list until it " +
+      "reconnects."
+    );
+  }
+  return "This permanently clears every notification currently visible in this feed.";
+}
+
 function isClearAllDisabled(input: {
   readonly feedMode: NotificationFeedMode;
   readonly cloudHasSnapshot: boolean;
@@ -587,7 +624,12 @@ export function NotificationsPopover(
         open={clearAllConfirmOpen}
         onOpenChange={setClearAllConfirmOpen}
         title="Clear all notifications?"
-        description="This permanently clears every notification currently visible in this feed."
+        description={clearAllConfirmDescription({
+          feedMode,
+          cloudHasSnapshot,
+          cloudConnectionState,
+          cloudTotalCount,
+        })}
         cascadeSummary={null}
         actionLabel="Clear all"
         isPending={false}

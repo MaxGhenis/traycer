@@ -479,6 +479,24 @@ export interface OpenEpicState {
    * arrive here as `null`, and this bit is what separates them.
    */
   readonly durabilityLegsNegotiated: boolean;
+  /**
+   * The last durability the host actually STATED, kept across subscription
+   * cycles - unlike {@link durabilityStatus}, which a reconnect clears.
+   *
+   * The two answer different questions. `durabilityStatus` is "what has THIS
+   * cycle's peer told us", and clearing it is right: last cycle's answer is no
+   * evidence about this one. But where an epic is durable is a property of the
+   * EPIC - a local-homed epic does not acquire a cloud room by reconnecting -
+   * and a gate that fails dangerous on silence needs the retained fact rather
+   * than the cycle's.
+   *
+   * Written only by a positive statement, so it never manufactures an answer
+   * the host has not given, and cleared by `requestFreshSnapshot`, which
+   * bootstraps from scratch rather than reconnecting.
+   */
+  readonly retainedDurabilityStatus?: EpicDurabilityStatusV15 | null;
+  /** The pause reason observed beside {@link retainedDurabilityStatus}. */
+  readonly retainedDurabilityPauseReason?: EpicDurabilityPauseReasonV15 | null;
   /** `true` only after a cloud-status frame for this exact open cycle. */
   readonly hasFreshCloudSyncStatus: boolean;
   /**
@@ -997,6 +1015,23 @@ export function createOpenEpicStore(
   let localProtection: EpicLocalProtection | null = null;
   let cloudFreshness: EpicCloudFreshness | null = null;
   let durabilityLegsNegotiated = false;
+  /**
+   * The last durability the host actually STATED for this epic, kept across
+   * subscription cycles.
+   *
+   * `durabilityStatus` is cycle-scoped on purpose: last cycle's answer is not
+   * evidence about this cycle's peer, so a reconnect clears it. But where an
+   * epic is DURABLE is a property of the epic, not of the connection - a
+   * local-homed epic does not acquire a cloud room by reconnecting - and gates
+   * that fail dangerous on an absent answer need the retained fact rather than
+   * the cycle's silence. See `useEpicCommentsHaveNoCloudRoom`.
+   *
+   * Only a positive statement writes it, so it never manufactures an answer
+   * the host has not given. Cleared by `requestFreshSnapshot`, which
+   * bootstraps the epic from scratch.
+   */
+  let retainedDurabilityStatus: EpicDurabilityStatusV15 | null = null;
+  let retainedDurabilityPauseReason: EpicDurabilityPauseReasonV15 | null = null;
   let hasFreshCloudSyncStatus = false;
   let currentStatus: StreamConnectionStatus = "connecting";
   // Flips true on the first successful connect so a later drop reads as
@@ -2008,6 +2043,8 @@ export function createOpenEpicStore(
           | "localProtection"
           | "cloudFreshness"
           | "durabilityLegsNegotiated"
+          | "retainedDurabilityStatus"
+          | "retainedDurabilityPauseReason"
           | "hasFreshCloudSyncStatus"
           | "hasConnectedOnce"
         > => ({
@@ -2020,6 +2057,8 @@ export function createOpenEpicStore(
           localProtection,
           cloudFreshness,
           durabilityLegsNegotiated,
+          retainedDurabilityStatus,
+          retainedDurabilityPauseReason,
           hasFreshCloudSyncStatus,
           hasConnectedOnce,
         });
@@ -2579,6 +2618,10 @@ export function createOpenEpicStore(
                 durable.durability === "paused"
                   ? (durable.pauseReason ?? null)
                   : null;
+              if (durabilityStatus !== null) {
+                retainedDurabilityStatus = durabilityStatus;
+                retainedDurabilityPauseReason = durabilityPauseReason;
+              }
               durabilityPromotionState = durable.promotionState ?? null;
               localProtection = durable.localProtection ?? null;
               cloudFreshness = durable.freshness ?? null;
@@ -2728,6 +2771,12 @@ export function createOpenEpicStore(
           localProtection = null;
           cloudFreshness = null;
           durabilityLegsNegotiated = false;
+          // Cleared HERE and not on an ordinary cycle reset: a re-subscribe is
+          // the same epic reconnecting, while this is a bootstrap from
+          // scratch, and carrying a retained durability across it would be the
+          // previous epic session answering for a new one.
+          retainedDurabilityStatus = null;
+          retainedDurabilityPauseReason = null;
           const cycleDurabilityState = resetDurabilityProofForOpenCycle();
           // A fresh re-subscribe bootstraps from scratch, so the next connect is
           // "connecting", not "reconnecting": clear the latch and let only a

@@ -208,11 +208,69 @@ export function commentsHaveNoCloudRoom(
   );
 }
 
+/**
+ * {@link commentsHaveNoCloudRoom}, held across a subscription cycle's reset.
+ *
+ * ## Why the raw predicate is not enough AT A GATE
+ *
+ * The open-epic store clears `durabilityStatus` and `durabilityPauseReason`
+ * whenever a subscription cycle starts, deliberately: last cycle's answer is
+ * not evidence about this cycle's peer. So between a reconnect and the
+ * replacement `cloudSyncStatus` frame the predicate sees `null` and answers
+ * `false`.
+ *
+ * For the sync pill an unknown collapses toward silence, which is the safe
+ * direction. Here it collapses the other way: `false` re-enables the comment
+ * shortcut, toolbar, popovers and thread query against an epic that still has
+ * no cloud room. A draft begun in that window is wiped by the very frame that
+ * restores the gate, and a request sent from it could only fail.
+ *
+ * The latch is sound because a cloud comment room is a property of the EPIC,
+ * not of the subscription cycle - a local-homed epic does not acquire one by
+ * reconnecting. Only a POSITIVE statement writes it, `null` leaves the
+ * previous answer standing, and it is keyed by epic so a different one never
+ * inherits it.
+ *
+ * ## Why the absent statement still splits two ways
+ *
+ * Treating every `null` as "gate it" would disable comments FOREVER on any
+ * peer below `@1.4`, which cannot emit the key at all - the population that
+ * has always had working comments. `durabilityLegsNegotiated` separates a peer
+ * that has not answered YET from one that CANNOT, exactly as it does in the
+ * sync pill: the first waits behind the conservative gate, the second keeps
+ * its released behaviour.
+ */
 export function useEpicCommentsHaveNoCloudRoom(): boolean {
-  return commentsHaveNoCloudRoom(
-    useEpicDurabilityStatus(),
-    useEpicDurabilityPauseReason(),
+  const status = useEpicDurabilityStatus();
+  const pauseReason = useEpicDurabilityPauseReason();
+  // `useMaybeEpicStore`, matching every sibling above: this gate renders in
+  // the comments sidebar, which mounts outside an Epic session in its own
+  // tests and in any host-scoped surface that has no open epic.
+  const retainedStatus = useMaybeEpicStore(
+    (s) => s.retainedDurabilityStatus ?? null,
+    null,
   );
+  const retainedPauseReason = useMaybeEpicStore(
+    (s) => s.retainedDurabilityPauseReason ?? null,
+    null,
+  );
+  const durabilityLegsNegotiated = useMaybeEpicStore(
+    (s) => s.durabilityLegsNegotiated,
+    false,
+  );
+  // This cycle's own answer wins whenever it has one.
+  if (status !== null) return commentsHaveNoCloudRoom(status, pauseReason);
+  // No statement yet. A peer that never negotiated the legs cannot produce
+  // one at all, so gating on its silence would disable comments forever on
+  // every pre-`@1.4` host - the population that has always had them.
+  if (!durabilityLegsNegotiated) return false;
+  if (retainedStatus !== null) {
+    return commentsHaveNoCloudRoom(retainedStatus, retainedPauseReason);
+  }
+  // A negotiated peer that has not spoken yet, about an epic nothing has ever
+  // said anything about. Withholding the affordance is the only direction
+  // here that cannot offer an action the host will reject.
+  return true;
 }
 
 /**

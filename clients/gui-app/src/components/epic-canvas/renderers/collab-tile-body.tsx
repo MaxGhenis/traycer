@@ -33,9 +33,7 @@ import {
   useEpicArtifactBodyAvailability,
   useEpicArtifactBodyAwareness,
   useEpicArtifactFragment,
-  commentsHaveNoCloudRoom,
-  useEpicDurabilityPauseReason,
-  useEpicDurabilityStatus,
+  useEpicCommentsHaveNoCloudRoom,
   useEpicPermissionRole,
   useEpicSnapshotLoaded,
   useOpenEpicId,
@@ -276,7 +274,6 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
     awareness,
   } = props;
   const role = useEpicPermissionRole();
-  const durabilityStatus = useEpicDurabilityStatus();
   const profile = useAuthStore((s) => s.profile);
   const editable = role === "owner" || role === "editor";
   const [linkPopoverOpen, setLinkPopoverOpen] = useState(false);
@@ -307,10 +304,12 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
   //
   // `commentsHaveNoCloudRoom`, not `!== "local"`: the reserved-but-pre-cutover
   // `promoting` window has the same null provider and used to slip through.
-  const noCloudRoom = commentsHaveNoCloudRoom(
-    durabilityStatus,
-    useEpicDurabilityPauseReason(),
-  );
+  //
+  // The STICKY hook rather than the bare predicate: a stream reconnect clears
+  // the store's durability slots, and for the few frames before the
+  // replacement arrives the raw answer flips to "comments are fine" on an epic
+  // that has no room - long enough to start a draft the restored gate wipes.
+  const noCloudRoom = useEpicCommentsHaveNoCloudRoom();
   const commentsSupported = commentArtifactKind !== null && !noCloudRoom;
   const setDraft = useCommentThreadsStore((s) => s.setDraft);
   const setActiveThread = useCommentThreadsStore((s) => s.setActiveThread);

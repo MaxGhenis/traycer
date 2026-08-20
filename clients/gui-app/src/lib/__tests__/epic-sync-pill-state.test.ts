@@ -330,6 +330,23 @@ describe("deriveEpicSyncPillState", () => {
       ).toBe("storedLocally");
     });
 
+    it("does not claim saved-on-device when a NEGOTIATED peer omits the protection key", () => {
+      // The sibling of the synced-claim case above, and the path that kept
+      // reading an absence as protection after that one was fixed.
+      // `storedLocally` tells the reader their bytes are on this disk, which
+      // is every bit as positive a claim as "All changes synced" - a
+      // negotiated `@1.4` peer omitting the optional key is stating UNKNOWN
+      // per the schema's own absence rule, and unknown licenses neither.
+      expect(
+        deriveEpicSyncPillState({
+          ...HEALTHY_INPUTS,
+          durability: "local",
+          localProtection: undefined,
+          durabilityLegsNegotiated: true,
+        }),
+      ).toBe("connected");
+    });
+
     it("does not claim saved-on-device while protection is UNAVAILABLE", () => {
       // "Stored locally" is a durability claim, and the local-room connection
       // satisfying `cloudSyncStatus: "connected"` says nothing about it: an
