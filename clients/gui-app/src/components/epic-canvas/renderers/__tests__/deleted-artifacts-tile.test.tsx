@@ -5,9 +5,17 @@ import { makeDeletedArtifactsTileRef } from "@/stores/epics/canvas/tile-schema/d
 
 const state = vi.hoisted(() => ({
   entries: [] as DeletedArtifactEntry[],
+  blobs: new Map<string, string>(),
   loading: false,
   error: false,
+  previewLoading: false,
+  previewError: false,
   pendingArtifactId: null as string | null,
+  queryCalls: [] as Array<{
+    readonly method: string;
+    readonly params: Record<string, unknown>;
+    readonly enabled: boolean;
+  }>,
   mutations: [] as Array<{
     readonly epicId: string;
     readonly artifactId: string;
@@ -19,12 +27,43 @@ vi.mock("@/hooks/host/use-tab-host-client", () => ({
 }));
 
 vi.mock("@/hooks/host/use-host-query", () => ({
-  useHostQuery: () => ({
-    data: { entries: state.entries },
-    isLoading: state.loading,
-    isError: state.error,
-    refetch: vi.fn(),
-  }),
+  useHostQuery: (args: {
+    readonly method: string;
+    readonly params: Record<string, unknown>;
+    readonly options: { readonly enabled?: boolean } | null;
+  }) => {
+    const enabled = args.options?.enabled ?? true;
+    state.queryCalls.push({
+      method: args.method,
+      params: args.params,
+      enabled,
+    });
+    if (args.method === "epic.deletedArtifacts.list") {
+      return {
+        data: { entries: state.entries },
+        isLoading: state.loading,
+        isError: state.error,
+        refetch: vi.fn(),
+      };
+    }
+    const observationId = String(args.params.observationId);
+    const markdown = state.blobs.get(observationId);
+    return {
+      data:
+        enabled && markdown !== undefined
+          ? { contentHash: "a".repeat(64), markdown }
+          : undefined,
+      isLoading: enabled && state.previewLoading,
+      isError: enabled && state.previewError,
+      refetch: vi.fn(),
+    };
+  },
+}));
+
+vi.mock("@/markdown/traycer-markdown", () => ({
+  TraycerMarkdown: (props: { readonly children: string }) => (
+    <div data-testid="markdown-preview">{props.children}</div>
+  ),
 }));
 
 vi.mock("@/hooks/host/use-host-scoped-mutation", () => ({
@@ -55,9 +94,13 @@ function renderTile(): void {
 describe("<DeletedArtifactsTile />", () => {
   beforeEach(() => {
     state.entries = [];
+    state.blobs = new Map();
     state.loading = false;
     state.error = false;
+    state.previewLoading = false;
+    state.previewError = false;
     state.pendingArtifactId = null;
+    state.queryCalls = [];
     state.mutations = [];
   });
 
@@ -82,6 +125,7 @@ describe("<DeletedArtifactsTile />", () => {
         deletedAt: 1_700_000_000_000,
         versionCount: 3,
         lastContentHash: "a".repeat(64),
+        lastObservationId: "observation-a",
         unrestorable: null,
       },
     ];
@@ -102,6 +146,7 @@ describe("<DeletedArtifactsTile />", () => {
         deletedAt: 1_700_000_000_000,
         versionCount: 2,
         lastContentHash: "a".repeat(64),
+        lastObservationId: "observation-scalars",
         unrestorable: "missing_scalars",
       },
       {
@@ -110,6 +155,7 @@ describe("<DeletedArtifactsTile />", () => {
         deletedAt: 1_700_000_100_000,
         versionCount: 1,
         lastContentHash: "b".repeat(64),
+        lastObservationId: "observation-blob",
         unrestorable: "missing_blob",
       },
     ];
@@ -128,5 +174,52 @@ describe("<DeletedArtifactsTile />", () => {
     })) {
       expect(button.hasAttribute("disabled")).toBe(true);
     }
+  });
+
+  it("previews the latest saved body and follows artifact selection", () => {
+    state.entries = [
+      {
+        artifactId: "artifact-a",
+        title: "First plan",
+        deletedAt: 1_700_000_000_000,
+        versionCount: 3,
+        lastContentHash: "a".repeat(64),
+        lastObservationId: "observation-a",
+        unrestorable: null,
+      },
+      {
+        artifactId: "artifact-b",
+        title: "Second plan",
+        deletedAt: 1_700_000_100_000,
+        versionCount: 2,
+        lastContentHash: "b".repeat(64),
+        lastObservationId: "observation-b",
+        unrestorable: null,
+      },
+    ];
+    state.blobs = new Map([
+      ["observation-a", "# First saved body"],
+      ["observation-b", "# Second saved body"],
+    ]);
+
+    renderTile();
+
+    expect(screen.getByText("# First saved body")).toBeTruthy();
+    expect(
+      state.queryCalls.some(
+        (call) =>
+          call.method === "epic.artifactVersions.getBlob" &&
+          call.enabled &&
+          call.params.observationId === "observation-a",
+      ),
+    ).toBe(true);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Preview deleted artifact Second plan",
+      }),
+    );
+
+    expect(screen.getByText("# Second saved body")).toBeTruthy();
   });
 });

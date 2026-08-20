@@ -203,6 +203,7 @@ export const deletedArtifactEntrySchema = z.object({
   deletedAt: z.number().int().nonnegative(),
   versionCount: z.number().int().nonnegative(),
   lastContentHash: hashSchema.nullable(),
+  lastObservationId: z.string().min(1).nullable(),
   unrestorable: z.enum(["missing_scalars", "missing_blob"]).nullable(),
 });
 export type DeletedArtifactEntry = z.infer<typeof deletedArtifactEntrySchema>;

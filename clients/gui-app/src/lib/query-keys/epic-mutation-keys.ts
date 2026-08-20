@@ -32,4 +32,5 @@ export const epicMutationKeys = {
     ["epic.setArtifactVersionRetentionPolicy"] as const,
   clearArtifactVersionHistory: () =>
     ["epic.clearArtifactVersionHistory"] as const,
+  deleteArtifact: () => ["epic.deleteArtifact"] as const,
 };
