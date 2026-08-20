@@ -354,7 +354,8 @@ function SessionImportSettingsRow() {
     : (status?.active ?? null);
   const lastCompleted = status?.lastCompleted ?? null;
 
-  let description = "Bring sessions from Claude Code and Codex in as tasks.";
+  let description =
+    "Bring sessions you have already run in Claude Code or Codex into Traycer as tasks.";
   if (active !== null) {
     description = `Importing ${active.done} of ${active.total}…`;
   } else if (lastCompleted !== null) {

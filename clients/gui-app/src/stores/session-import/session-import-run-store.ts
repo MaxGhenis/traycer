@@ -35,6 +35,12 @@ export interface SessionImportRunState {
   readonly outcomes: ReadonlyMap<string, SessionImportProgressEntry>;
   /** Display titles captured at submit; empty when we attached mid-run. */
   readonly titles: ReadonlyMap<string, string>;
+  /**
+   * True when the host answered our subscribe by attaching us to a run that
+   * was already in flight. The selections we submitted were NOT started, so
+   * every surface reading this run has to say whose progress it is showing.
+   */
+  readonly attached: boolean;
   /** The session the last frame was about - the progress line's caption. */
   readonly lastTitle: string | null;
   /** Authoritative counts, present only once the run reports `complete`. */
@@ -46,6 +52,7 @@ interface SessionImportRunActions {
   readonly applyStarted: (input: {
     readonly runId: string;
     readonly total: number;
+    readonly attached: boolean;
   }) => void;
   readonly applyProgress: (entry: SessionImportProgressEntry) => void;
   readonly applyComplete: (input: {
@@ -62,6 +69,7 @@ const INITIAL_STATE: SessionImportRunState = {
   total: 0,
   outcomes: new Map(),
   titles: new Map(),
+  attached: false,
   lastTitle: null,
   finalCounts: null,
 };
@@ -113,14 +121,18 @@ export const useSessionImportRunStore = create<
       status: "starting",
       titles,
     }),
-  applyStarted: ({ runId, total }) =>
-    set((prev) =>
+  applyStarted: ({ runId, total, attached }) =>
+    set((prev) => {
+      // Attaching means the host was already importing someone else's
+      // selections; ours were never started, so the titles captured at submit
+      // would caption a run they have nothing to do with.
+      const titles = attached ? INITIAL_STATE.titles : prev.titles;
       // A different run id means this is not the run we were tracking; drop
       // the stale outcomes rather than mixing two runs' progress.
-      prev.runId !== null && prev.runId !== runId
-        ? { ...INITIAL_STATE, status: "running", runId, total }
-        : { ...prev, status: "running", runId, total },
-    ),
+      return prev.runId !== null && prev.runId !== runId
+        ? { ...INITIAL_STATE, status: "running", runId, total, attached }
+        : { ...prev, status: "running", runId, total, attached, titles };
+    }),
   applyProgress: (entry) =>
     set((prev) => {
       const outcomes = new Map(prev.outcomes);

@@ -17,6 +17,7 @@ import {
   type MessengerFactory,
 } from "@/lib/host";
 import { HostStreamProvider } from "@/lib/host/stream-runtime";
+import { SessionImportRunController } from "@/components/session-import/session-import-run-controller";
 import {
   HostReadinessControllerProvider,
   HostScopeReady,
@@ -225,6 +226,13 @@ function TraycerAuthenticatedRuntime(props: TraycerAuthenticatedRuntimeProps) {
                               <WorktreeChangedStreamMount />
                               <ChatRecordsStreamMount />
                             </HostScopeReady>
+                            {/* Above the shell split on purpose: the onboarding
+                                tour renders through `StandaloneShell`, not
+                                `AppShell`, so a mount inside the app shell left
+                                the tour's Import button with no run handle to
+                                call. This is the lowest node both shells share
+                                that still has the host stream. */}
+                            <SessionImportRunController />
                             <AppLocalNotificationsPersistLifecycleBridge>
                               <ReadingPositionPersistLifecycleBridge>
                                 <NotificationsSessionProvider

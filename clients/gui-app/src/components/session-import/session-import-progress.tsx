@@ -6,7 +6,10 @@ import {
   groupSessionImportFailures,
   type SessionImportFailureGroupView,
 } from "@/components/session-import/session-import-model";
-import type { SessionImportTone } from "@/components/session-import/session-import-tone";
+import type {
+  SessionImportSurface,
+  SessionImportTone,
+} from "@/components/session-import/session-import-tone";
 import {
   sessionImportDoneCount,
   sessionImportIsRunning,
@@ -34,6 +37,7 @@ export function SessionImportProgress(props: {
       done: sessionImportDoneCount(state),
       lastTitle: state.lastTitle,
       running: sessionImportIsRunning(state),
+      attached: state.attached,
       outcomes: state.outcomes,
       titles: state.titles,
       finalCounts: state.finalCounts,
@@ -64,11 +68,20 @@ export function SessionImportProgress(props: {
           variant={undefined}
         />
         <p className={cn("text-ui-sm font-medium", tone.strong)}>
-          Importing {run.done} of {run.total}
+          Importing {run.done} of {run.total}…
         </p>
         {run.lastTitle !== null ? (
           <p className={cn("max-w-md truncate text-ui-xs", tone.faint)}>
             {run.lastTitle}
+          </p>
+        ) : null}
+        {run.attached ? (
+          <p
+            data-testid="session-import-progress-attached"
+            className={cn("max-w-md text-ui-xs", tone.muted)}
+          >
+            An import was already running - showing its progress. Your selection
+            was not started.
           </p>
         ) : null}
         <p className={cn("text-ui-xs", tone.muted)}>
@@ -85,7 +98,7 @@ export function SessionImportProgress(props: {
         className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 py-10 text-center"
       >
         <p className={cn("text-ui-sm font-medium", tone.strong)}>
-          Lost track of the import
+          Traycer lost track of the import
         </p>
         <p className={cn("max-w-md text-ui-xs", tone.muted)}>
           It may still be running on your machine. Reopen this from Settings to
@@ -107,7 +120,11 @@ export function SessionImportProgress(props: {
             : `Imported ${counts.imported} ${counts.imported === 1 ? "session" : "sessions"}`}
         </p>
         <p className={cn("text-ui-xs", tone.muted)}>
-          {summaryLine(counts.skippedAlreadyImported, counts.failed)}
+          {summaryLine(
+            counts.skippedAlreadyImported,
+            counts.failed,
+            tone.surface,
+          )}
         </p>
       </div>
       {failures.map((group) => (
@@ -117,13 +134,20 @@ export function SessionImportProgress(props: {
   );
 }
 
-function summaryLine(skipped: number, failed: number): string {
+function summaryLine(
+  skipped: number,
+  failed: number,
+  surface: SessionImportSurface,
+): string {
   const parts: string[] = [];
   if (skipped > 0) parts.push(`${skipped} already in Traycer`);
   if (failed > 0) parts.push(`${failed} could not be imported`);
-  return parts.length === 0
-    ? "Your tasks are in the list on the left."
-    : parts.join(" · ");
+  if (parts.length > 0) return parts.join(" · ");
+  // Mid-tour there is no task list to point at yet - it is behind the acts the
+  // user has not reached.
+  return surface === "onboarding"
+    ? "They'll be in your task list when you finish the tour."
+    : "Your tasks are in the list on the left.";
 }
 
 function FailureGroup(props: {

@@ -229,7 +229,7 @@ describe("SessionImportSettingsRow (via GeneralSettingsPanel)", () => {
     expect(screen.getByTestId("settings-import-sessions")).toBeTruthy();
     expect(
       screen.getByText(
-        "Bring sessions from Claude Code and Codex in as tasks.",
+        "Bring sessions you have already run in Claude Code or Codex into Traycer as tasks.",
       ),
     ).toBeTruthy();
   });
@@ -247,6 +247,7 @@ describe("SessionImportSettingsRow (via GeneralSettingsPanel)", () => {
     useSessionImportRunStore.getState().applyStarted({
       runId: "run-live",
       total: 5,
+      attached: false,
     });
     useSessionImportRunStore.getState().applyProgress(
       progressEntryFrom({

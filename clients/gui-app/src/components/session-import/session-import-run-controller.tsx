@@ -8,7 +8,7 @@ import {
 } from "@traycer-clients/shared/host-transport/session-import-run-client";
 import { useHostClient } from "@/lib/host";
 import { useWsStreamClient } from "@/lib/host/stream-runtime-context";
-import { hostQueryKeys } from "@/lib/query-keys";
+import { hostQueryKeys, sessionImportQueryKeys } from "@/lib/query-keys";
 import {
   progressEntryFrom,
   useSessionImportRunStore,
@@ -62,6 +62,7 @@ export function SessionImportRunController(): null {
             useSessionImportRunStore.getState().applyStarted({
               runId: payload.runId,
               total: payload.total,
+              attached: payload.attached,
             });
           },
           onProgress: (payload: SessionImportRunProgressPayload) => {
@@ -78,6 +79,9 @@ export function SessionImportRunController(): null {
             // Settings entry's `lastCompleted` are both stale the instant the
             // run lands.
             if (hostIdAtStart !== null) {
+              void queryClient.invalidateQueries({
+                queryKey: sessionImportQueryKeys.status(hostIdAtStart),
+              });
               void queryClient.invalidateQueries({
                 queryKey: hostQueryKeys.scope(hostIdAtStart),
               });

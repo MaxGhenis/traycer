@@ -1201,6 +1201,10 @@ const EVENT_PROPERTY_KEYS = new Map<AnalyticsEvent, ReadonlyArray<string>>([
     ["last_step"],
   ),
   ...eventKeyEntries([AnalyticsEvent.OnboardingThemeChanged], ["theme"]),
+  ...eventKeyEntries(
+    [AnalyticsEvent.SessionImportStarted],
+    ["surface", "session_count", "group_count"],
+  ),
   ...eventKeyEntries([AnalyticsEvent.AgentGuideSaved], ["customized"]),
   ...eventKeyEntries(
     [AnalyticsEvent.ProviderProfileLinkStarted],
@@ -1577,6 +1581,11 @@ const EVENT_EXACT_PROPERTY_VALUES = new Map<string, ReadonlySet<string>>([
     new Set(["center", "toast", "native"]),
   ),
   ...eventValueEntries(
+    [AnalyticsEvent.SessionImportStarted],
+    "surface",
+    new Set(["dialog", "onboarding"]),
+  ),
+  ...eventValueEntries(
     [
       AnalyticsEvent.NotificationActivationCompleted,
       AnalyticsEvent.NotificationPageLoaded,
@@ -1671,9 +1680,11 @@ const COUNT_PROPERTY_KEYS = new Set<string>([
   "attachment_count",
   "failed_count",
   "file_count",
+  "group_count",
   "open_tabs",
   "requested_count",
   "script_count",
+  "session_count",
   "succeeded_count",
   "workspace_count",
 ]);

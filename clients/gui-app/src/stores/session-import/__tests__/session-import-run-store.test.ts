@@ -51,7 +51,7 @@ describe("useSessionImportRunStore", () => {
       useSessionImportRunStore.getState().markStarting(titles);
       useSessionImportRunStore
         .getState()
-        .applyStarted({ runId: "run-1", total: 2 });
+        .applyStarted({ runId: "run-1", total: 2, attached: false });
 
       const entry = entryFor("claude", "s1", IMPORTED);
       useSessionImportRunStore.getState().applyProgress(entry);
@@ -70,7 +70,7 @@ describe("useSessionImportRunStore", () => {
       useSessionImportRunStore.getState().markStarting(new Map());
       useSessionImportRunStore
         .getState()
-        .applyStarted({ runId: "run-1", total: 2 });
+        .applyStarted({ runId: "run-1", total: 2, attached: false });
 
       const first = entryFor("claude", "s1", IMPORTED);
       const second = entryFor("codex", "s2", FAILED);
@@ -84,7 +84,7 @@ describe("useSessionImportRunStore", () => {
       // frame already produced - see the run.ts module doc.
       useSessionImportRunStore
         .getState()
-        .applyStarted({ runId: "run-1", total: 2 });
+        .applyStarted({ runId: "run-1", total: 2, attached: false });
       useSessionImportRunStore.getState().applyProgress(first);
       useSessionImportRunStore.getState().applyProgress(second);
 
@@ -101,7 +101,7 @@ describe("useSessionImportRunStore", () => {
       useSessionImportRunStore.getState().markStarting(new Map());
       useSessionImportRunStore
         .getState()
-        .applyStarted({ runId: "run-1", total: 2 });
+        .applyStarted({ runId: "run-1", total: 2, attached: false });
       useSessionImportRunStore
         .getState()
         .applyProgress(entryFor("claude", "s1", IMPORTED));
@@ -110,7 +110,7 @@ describe("useSessionImportRunStore", () => {
 
       useSessionImportRunStore
         .getState()
-        .applyStarted({ runId: "run-2", total: 5 });
+        .applyStarted({ runId: "run-2", total: 5, attached: false });
 
       const state = useSessionImportRunStore.getState();
       expect(state.runId).toBe("run-2");
@@ -143,7 +143,7 @@ describe("useSessionImportRunStore", () => {
       useSessionImportRunStore.getState().markStarting(new Map());
       useSessionImportRunStore
         .getState()
-        .applyStarted({ runId: "run-1", total: 1 });
+        .applyStarted({ runId: "run-1", total: 1, attached: false });
       useSessionImportRunStore
         .getState()
         .applyProgress(entryFor("claude", "a", IMPORTED));
@@ -218,7 +218,7 @@ describe("useSessionImportRunStore", () => {
       useSessionImportRunStore.getState().markStarting(new Map());
       useSessionImportRunStore
         .getState()
-        .applyStarted({ runId: "run-1", total: 1 });
+        .applyStarted({ runId: "run-1", total: 1, attached: false });
       expect(useSessionImportRunStore.getState().status).toBe("running");
 
       useSessionImportRunStore
@@ -248,7 +248,7 @@ describe("useSessionImportRunStore", () => {
       useSessionImportRunStore.getState().markStarting(new Map());
       useSessionImportRunStore
         .getState()
-        .applyStarted({ runId: "run-1", total: 1 });
+        .applyStarted({ runId: "run-1", total: 1, attached: false });
       useSessionImportRunStore.getState().applyError();
       expect(useSessionImportRunStore.getState().status).toBe("error");
 
@@ -257,7 +257,7 @@ describe("useSessionImportRunStore", () => {
       useSessionImportRunStore.getState().markStarting(new Map());
       useSessionImportRunStore
         .getState()
-        .applyStarted({ runId: "run-1", total: 1 });
+        .applyStarted({ runId: "run-1", total: 1, attached: false });
       useSessionImportRunStore.getState().applyComplete({
         runId: "run-1",
         counts: { imported: 1, skippedAlreadyImported: 0, failed: 0 },
@@ -276,7 +276,7 @@ describe("useSessionImportRunStore", () => {
 
       useSessionImportRunStore
         .getState()
-        .applyStarted({ runId: "run-1", total: 1 });
+        .applyStarted({ runId: "run-1", total: 1, attached: false });
       useSessionImportRunStore
         .getState()
         .applyProgress(entryFor("claude", "s1", IMPORTED));
@@ -294,7 +294,7 @@ describe("useSessionImportRunStore", () => {
       useSessionImportRunStore.getState().markStarting(titles);
       useSessionImportRunStore
         .getState()
-        .applyStarted({ runId: "run-1", total: 2 });
+        .applyStarted({ runId: "run-1", total: 2, attached: false });
       useSessionImportRunStore
         .getState()
         .applyProgress(entryFor("claude", "s1", IMPORTED));
@@ -309,6 +309,53 @@ describe("useSessionImportRunStore", () => {
       expect(useSessionImportRunStore.getState().lastTitle).toBe(
         "Known Session",
       );
+    });
+  });
+
+  describe("attaching to a run already in flight", () => {
+    it("keeps `attached` and drops the titles this window submitted", () => {
+      const key = sessionImportSelectionKey("claude", "s1");
+      useSessionImportRunStore
+        .getState()
+        .markStarting(new Map([[key, "My Session"]]));
+
+      useSessionImportRunStore
+        .getState()
+        .applyStarted({ runId: "someone-elses-run", total: 4, attached: true });
+
+      const state = useSessionImportRunStore.getState();
+      expect(state.attached).toBe(true);
+      expect(state.titles.size).toBe(0);
+      // Our selections were never started, so a frame from the running import
+      // must not be captioned with one of our session titles.
+      useSessionImportRunStore
+        .getState()
+        .applyProgress(entryFor("claude", "s1", IMPORTED));
+      expect(useSessionImportRunStore.getState().lastTitle).toBeNull();
+    });
+
+    it("a normal start keeps the titles and leaves `attached` false", () => {
+      const key = sessionImportSelectionKey("claude", "s1");
+      const titles = new Map([[key, "My Session"]]);
+      useSessionImportRunStore.getState().markStarting(titles);
+      useSessionImportRunStore
+        .getState()
+        .applyStarted({ runId: "run-1", total: 1, attached: false });
+
+      const state = useSessionImportRunStore.getState();
+      expect(state.attached).toBe(false);
+      expect(state.titles).toEqual(titles);
+    });
+
+    it("reset clears `attached`", () => {
+      useSessionImportRunStore.getState().markStarting(new Map());
+      useSessionImportRunStore
+        .getState()
+        .applyStarted({ runId: "run-1", total: 1, attached: true });
+      expect(useSessionImportRunStore.getState().attached).toBe(true);
+
+      useSessionImportRunStore.getState().reset();
+      expect(useSessionImportRunStore.getState().attached).toBe(false);
     });
   });
 

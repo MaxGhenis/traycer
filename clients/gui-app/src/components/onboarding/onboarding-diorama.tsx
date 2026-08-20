@@ -341,15 +341,26 @@ const SCENE_BY_ACT_ID: Record<OnboardingActId, SceneId | null> = {
   "command-theme": "command-theme",
 };
 
-function sceneForStage(stage: number): SceneId {
+function sceneForStage(stage: number): SceneId | null {
   // `stage` is the onboarding store's clamped step, so the index is total -
   // same assumption `OnboardingPage` makes when it reads the act itself.
-  return SCENE_BY_ACT_ID[ONBOARDING_ACTS[stage].id] ?? "command-theme";
+  return SCENE_BY_ACT_ID[ONBOARDING_ACTS[stage].id];
 }
 
 export function OnboardingDiorama(props: OnboardingDioramaProps) {
-  const { stage, agentGuide } = props;
-  const scene = sceneForStage(stage);
+  const scene = sceneForStage(props.stage);
+  // `null` is an act that shows no mini-app (session import). Defaulting to a
+  // scene here would mount the command-theme mini-app - animations and all -
+  // behind an act that deliberately hides the diorama.
+  if (scene === null) return null;
+  return <DioramaScene scene={scene} agentGuide={props.agentGuide} />;
+}
+
+function DioramaScene(props: {
+  readonly scene: SceneId;
+  readonly agentGuide: OnboardingAgentGuideState;
+}) {
+  const { scene, agentGuide } = props;
   const reducedMotion = useReducedMotion() === true;
   const [taskIndex, setTaskIndex] = useState(0);
   const dragLayerRef = useRef<HTMLDivElement>(null);

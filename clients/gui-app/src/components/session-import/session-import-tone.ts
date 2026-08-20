@@ -13,6 +13,12 @@
 export type SessionImportSurface = "onboarding" | "dialog";
 
 export interface SessionImportTone {
+  /**
+   * The ground this bundle was built for. Copy differs by surface as well as
+   * colour - "your tasks are in the list on the left" is a lie during the
+   * tour, where the task list is still several acts away.
+   */
+  readonly surface: SessionImportSurface;
   /** Row and header titles. */
   readonly strong: string;
   /** Secondary metadata: counts, dates, paths. */
@@ -35,6 +41,7 @@ export interface SessionImportTone {
 }
 
 const ONBOARDING_TONE: SessionImportTone = {
+  surface: "onboarding",
   strong: "text-white",
   muted: "text-white/60",
   faint: "text-white/40",
@@ -54,6 +61,7 @@ const ONBOARDING_TONE: SessionImportTone = {
 };
 
 const DIALOG_TONE: SessionImportTone = {
+  surface: "dialog",
   strong: "text-foreground",
   muted: "text-muted-foreground",
   faint: "text-muted-foreground/70",

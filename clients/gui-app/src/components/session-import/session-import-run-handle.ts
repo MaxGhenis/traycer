@@ -1,4 +1,5 @@
 import type { SessionImportSelection } from "@traycer/protocol/host/session-import/candidate";
+import { appLogger } from "@/lib/logger";
 
 // Module-scoped handle so any surface can start an import without the run
 // stream being owned by - and therefore dying with - the component that asked
@@ -28,5 +29,18 @@ export function getSessionImportStartHandle(): SessionImportStartHandle | null {
 }
 
 export function startSessionImportRun(request: SessionImportRunRequest): void {
-  ref.current?.start(request);
+  const handle = ref.current;
+  if (handle === null) {
+    // The controller is mounted app-wide, so a missing handle means the surface
+    // that asked renders outside it - the shape of the bug where onboarding's
+    // Import button did nothing at all. Nothing here can recover the click, so
+    // the least this can do is not swallow it silently.
+    appLogger.error(
+      "[session-import] import requested with no run controller mounted",
+      { selection_count: request.selections.length },
+      new Error("session import start handle is not registered"),
+    );
+    return;
+  }
+  handle.start(request);
 }
