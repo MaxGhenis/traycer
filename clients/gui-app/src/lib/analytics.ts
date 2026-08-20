@@ -158,8 +158,12 @@ export type AnalyticsOnboardingStep =
   | "command-theme"
   | "navigation"
   | "providers"
+  | "session-import"
   | "task-context"
   | "task-tabs";
+
+/** Which surface opened the import wizard - onboarding act or Settings. */
+export type AnalyticsSessionImportSurface = "dialog" | "onboarding";
 
 export type AnalyticsProviderOperation =
   | "ambient_drift"
@@ -270,6 +274,7 @@ export enum AnalyticsEvent {
   OnboardingCompleted = "onboarding_completed",
   OnboardingSkipped = "onboarding_skipped",
   OnboardingThemeChanged = "onboarding_theme_changed",
+  SessionImportStarted = "session_import_started",
   AgentGuideSaved = "agent_guide_saved",
   ProviderProfileLinkStarted = "provider_profile_link_started",
   ProviderProfileLinkSucceeded = "provider_profile_link_succeeded",
@@ -497,6 +502,17 @@ export interface AnalyticsEventProperties {
   };
   readonly [AnalyticsEvent.OnboardingThemeChanged]: {
     readonly theme: AnalyticsTheme;
+  };
+  /**
+   * A user submitted the session-import wizard. The counts are what the
+   * feature is judged on - how much work people actually bring over, and from
+   * how many repos - and `surface` separates first-run adoption from the
+   * later Settings path.
+   */
+  readonly [AnalyticsEvent.SessionImportStarted]: {
+    readonly surface: AnalyticsSessionImportSurface;
+    readonly session_count: number;
+    readonly group_count: number;
   };
   readonly [AnalyticsEvent.AgentGuideSaved]: { readonly customized: boolean };
   readonly [AnalyticsEvent.ProviderProfileLinkStarted]: SourceProperties & {
