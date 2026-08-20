@@ -172,6 +172,7 @@ function chatFindUnitsForMessage(
   }
 
   // A synthesized row whose single segment is a setup-card / forked-chat-link
+  // / imported-chat-marker
   // renders that segment's own find anchor and no content block (the render side
   // is renderSingleSpecialSegment in chat-message.tsx; both key off the shared
   // singleSpecialSegment predicate), so index the segment.
@@ -422,6 +423,12 @@ function segmentSearchText(segment: MessageSegment): ReadonlyArray<string> {
     case "forked-chat-link":
       return [
         normalizeSearchableText(`Forked from ${segment.sourceChatTitle}`),
+      ];
+    case "imported-chat-marker":
+      return [
+        normalizeSearchableText(
+          `Imported from ${segment.sourceProvider} ${segment.sourceCwd}`,
+        ),
       ];
     case "setup-card":
       return [

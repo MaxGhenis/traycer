@@ -18,6 +18,7 @@ import type {
   ChatRunStatus,
 } from "@traycer/protocol/host/agent/gui/subscribe";
 import { chatQueuedItemSchema } from "@traycer/protocol/host/agent/gui/subscribe";
+import { chatImportedMetadataSchema } from "@traycer/protocol/persistence/epic/chat-events";
 import {
   isNoOpCheckpointEntry,
   turnCheckpointManifestSchema,
@@ -1006,6 +1007,11 @@ export function useRenderedMessages(
     [input.events, viewTabId],
   );
 
+  const importedChatMarkerMessages = useMemo(
+    () => buildImportedChatMarkerMessages(input.events),
+    [input.events],
+  );
+
   // The live row's blocks merge INTO a persisted turn only when a persisted
   // assistant message already shares its `turnId` (multi-record / post-snapshot
   // turns). The store routes streamed deltas to EITHER `messages` or
@@ -1282,6 +1288,7 @@ export function useRenderedMessages(
       ...live,
       ...stoppedWithoutAssistantRecords,
       ...forkedChatLinkMessages,
+      ...importedChatMarkerMessages,
       ...trailing,
     ];
 
@@ -1356,6 +1363,7 @@ export function useRenderedMessages(
     live,
     stoppedWithoutAssistantRecords,
     forkedChatLinkMessages,
+    importedChatMarkerMessages,
     setupCardRows,
     setupCardEntries,
     activeRunState,
@@ -1467,6 +1475,55 @@ function buildForkedChatLinkMessages(
             sourceChatId,
             sourceChatTitle,
             sourceHostId,
+          },
+        ],
+        structuredContent: null,
+        attachments: [],
+        settings: null,
+        createdAt: event.timestamp,
+        completedAt: null,
+        stopped: null,
+        persistentMessageId: null,
+        senderLabel: null,
+        assistantMeta: null,
+        statusLabel: null,
+        runState: null,
+        agentSenderInfo: null,
+        agentMessage: null,
+        sessionAnchor: null,
+        steerBadge: null,
+      },
+    ];
+  });
+}
+
+/**
+ * Project a `chat.imported` event into the transcript's provenance row.
+ *
+ * Parsed through the schema rather than read field by field: the metadata bag
+ * is untyped on the wire, and a half-written one should produce no row at all
+ * rather than a row that says "Imported from undefined".
+ */
+function buildImportedChatMarkerMessages(
+  events: ReadonlyArray<ChatEvent>,
+): ReadonlyArray<ChatMessageModel> {
+  return events.flatMap((event) => {
+    if (event.type !== "chat.imported") return [];
+    const parsed = chatImportedMetadataSchema.safeParse(event.metadata);
+    if (!parsed.success) return [];
+    const id = `imported-chat-marker:${event.eventId}`;
+    return [
+      {
+        id,
+        role: "system",
+        content: "",
+        segments: [
+          {
+            id: `${id}:marker`,
+            kind: "imported-chat-marker",
+            sourceProvider: parsed.data.sourceProvider,
+            importedAt: parsed.data.importedAt,
+            sourceCwd: parsed.data.sourceCwd,
           },
         ],
         structuredContent: null,
