@@ -30,9 +30,7 @@ function SelectionBox(props: {
       aria-hidden
       className={cn(
         "flex size-4 shrink-0 items-center justify-center rounded-[0.25rem] border transition-colors",
-        filled
-          ? "border-primary bg-primary text-primary-foreground"
-          : cn("border-current/40", tone.faint),
+        filled ? tone.checkboxFilled : cn("border-current/40", tone.faint),
         disabled && "opacity-40",
       )}
     >

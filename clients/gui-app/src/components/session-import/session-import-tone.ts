@@ -20,17 +20,16 @@ export interface SessionImportTone {
   /** Tertiary: disabled rows, hints. */
   readonly faint: string;
   readonly border: string;
-  readonly divider: string;
   readonly rowHover: string;
   /** The collapsed group header's own fill. */
   readonly groupSurface: string;
   readonly chip: string;
-  readonly warning: string;
   readonly warningSurface: string;
   readonly input: string;
   readonly filterActive: string;
   readonly filterIdle: string;
-  readonly checkbox: string;
+  /** The ticked/indeterminate checkbox fill. */
+  readonly checkboxFilled: string;
   readonly primaryButton: string;
   readonly secondaryButton: string;
 }
@@ -40,18 +39,15 @@ const ONBOARDING_TONE: SessionImportTone = {
   muted: "text-white/60",
   faint: "text-white/40",
   border: "border-white/12",
-  divider: "bg-white/10",
   rowHover: "hover:bg-white/[0.07]",
   groupSurface: "bg-white/[0.04]",
   chip: "bg-white/10 text-white/70",
-  warning: "text-amber-200/90",
   warningSurface: "bg-amber-300/10 text-amber-100/90",
   input:
     "border-white/15 bg-white/[0.06] text-white placeholder:text-white/35 focus-visible:border-white/35 focus-visible:ring-white/20",
   filterActive: "bg-white/15 text-white",
   filterIdle: "text-white/55 hover:bg-white/10 hover:text-white/85",
-  checkbox:
-    "border-white/35 data-[state=checked]:border-white data-[state=checked]:bg-white data-[state=checked]:text-black",
+  checkboxFilled: "border-white bg-white text-black",
   primaryButton:
     "bg-white text-black hover:bg-white/85 disabled:pointer-events-none disabled:opacity-45",
   secondaryButton: "text-white/70 hover:bg-white/10 hover:text-white",
@@ -62,18 +58,16 @@ const DIALOG_TONE: SessionImportTone = {
   muted: "text-muted-foreground",
   faint: "text-muted-foreground/70",
   border: "border-border/60",
-  divider: "bg-border",
   rowHover: "hover:bg-foreground/6",
   groupSurface: "bg-foreground/[0.04]",
   chip: "bg-foreground/8 text-muted-foreground",
-  warning: "text-amber-600 dark:text-amber-400",
   warningSurface:
     "bg-amber-500/10 text-amber-700 dark:bg-amber-400/10 dark:text-amber-300",
   input: "",
   filterActive: "bg-foreground/10 text-foreground",
   filterIdle:
     "text-muted-foreground hover:bg-foreground/6 hover:text-foreground",
-  checkbox: "",
+  checkboxFilled: "border-primary bg-primary text-primary-foreground",
   primaryButton: "",
   secondaryButton: "",
 };

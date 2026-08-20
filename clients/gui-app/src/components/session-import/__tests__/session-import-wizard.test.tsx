@@ -179,7 +179,7 @@ function folderGroup(input: {
 }): SessionImportGroup {
   return {
     location: { kind: "folder", path: input.path, workspaceId: null },
-    sessions: input.sessions,
+    sessions: [...input.sessions],
   };
 }
 
@@ -189,7 +189,7 @@ function missingFolderGroup(input: {
 }): SessionImportGroup {
   return {
     location: { kind: "missing_folder", path: input.path },
-    sessions: input.sessions,
+    sessions: [...input.sessions],
   };
 }
 
