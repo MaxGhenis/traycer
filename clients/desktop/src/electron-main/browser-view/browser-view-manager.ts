@@ -680,6 +680,13 @@ export class BrowserViewManager {
     }
     if (entry.requestedUrl !== input.url) {
       void this.navigate(entry, input.url, false);
+    } else {
+      // Reconcile echo: a reused entry keeps its pre-disconnect status
+      // ("ready"), which a reloaded renderer never observed — "ready" is
+      // only otherwise emitted on a navigation commit, and a same-URL
+      // upsert performs none. Without this echo the fresh renderer sits
+      // in "loading" until its unreachable ceiling fires.
+      this.emitStatus(entry);
     }
     this.attachToCurrentWindow(entry);
     this.applyEntryVisibility(entry);

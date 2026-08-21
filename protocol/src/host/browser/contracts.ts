@@ -881,6 +881,12 @@ const browserSessionsClientFrameSchemaV14 = z.discriminatedUnion("kind", [
 export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
   ...browserSessionsClientFrameSchemaV14.def.options,
   z.object({
+    // Idempotent claim, not a create-only ack. With requestedTabId set this
+    // either acks an outstanding createElectronTab sent to this subscriber,
+    // re-binds the caller's own route, or — same owner scope only — claims a
+    // route whose owning connection is gone (renderer reload / dev-server
+    // restart) or wakes a dormant tab for on-demand restore. A route still
+    // owned by a live connection is rejected.
     kind: z.literal("registerElectronTab"),
     ...requestFrameFields,
     registrationId: z.string(),

@@ -3995,6 +3995,96 @@ describe("BrowserViewManager host window renderer reset (fix round 2)", () => {
     expect(view.visible).toBe(true);
   });
 
+  it("re-upserting the same tile after a renderer reset echoes the entry's current status to the new renderer", () => {
+    const harness = createHarness();
+    makeVisible(harness, BASE_KEY);
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
+
+    // The tile reached "ready" via its own navigation commit before the
+    // reload, so main holds ready while the (future) renderer never saw it.
+    // (event, url, httpStatusCode, statusText, isMainFrame)
+    view.webContents.emit(
+      "did-frame-navigate",
+      {},
+      "https://example.com",
+      200,
+      "OK",
+      true,
+    );
+    expect(harness.statuses.at(-1)).toMatchObject({
+      ...BASE_KEY,
+      status: "ready",
+    });
+    const statusesAfterReloadStart = harness.statuses.length;
+
+    const hostWebContents = harness.windows.get("window-1")?.webContents;
+    if (hostWebContents === undefined) throw new Error("expected host window");
+    hostWebContents.emit(
+      "did-start-navigation",
+      {},
+      "http://localhost:31873/",
+      false,
+      true,
+      1,
+      1,
+    );
+    expect(view.visible).toBe(false);
+
+    // The reloaded renderer re-upserts the identical key with the same URL:
+    // no navigation cycle runs, so the reconcile echo is the only way the
+    // fresh renderer learns the entry is already ready.
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "https://example.com", true),
+    );
+    expect(view.visible).toBe(true);
+    const echoes = harness.statuses.slice(statusesAfterReloadStart);
+    expect(
+      echoes.some(
+        (change) =>
+          change.viewTabId === BASE_KEY.viewTabId &&
+          change.paneId === BASE_KEY.paneId &&
+          change.tileInstanceId === BASE_KEY.tileInstanceId &&
+          change.pageSessionId === BASE_KEY.pageSessionId &&
+          change.status === "ready" &&
+          change.url === "https://example.com",
+      ),
+    ).toBe(true);
+  });
+
+  it("a same-tile upsert with a changed URL navigates instead of echoing stale readiness", () => {
+    const harness = createHarness();
+    makeVisible(harness, BASE_KEY);
+    const view = harness.views[0];
+    if (view === undefined) throw new Error("expected view");
+
+    view.webContents.emit(
+      "did-frame-navigate",
+      {},
+      "https://example.com",
+      200,
+      "OK",
+      true,
+    );
+    const statusesBeforeUpsert = harness.statuses.length;
+
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "https://example.com/next", true),
+    );
+
+    const emitted = harness.statuses.slice(statusesBeforeUpsert);
+    expect(emitted).toHaveLength(1);
+    // navigate() emits loading with the entry's currentUrl; the requested
+    // URL lands in that field only once the navigation commits.
+    expect(emitted[0]).toMatchObject({
+      ...BASE_KEY,
+      status: "loading",
+    });
+    expect(view.webContents.loadUrls).toContain("https://example.com/next");
+  });
+
   it("does not re-show a stale entry that was never re-upserted, even after further recomputes", () => {
     const harness = createHarness();
     makeVisible(harness, BASE_KEY);
