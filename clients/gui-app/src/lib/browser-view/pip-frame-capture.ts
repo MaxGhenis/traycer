@@ -16,7 +16,7 @@ import {
   type DesktopPipCaptureBridge,
 } from "@/lib/browser-view/desktop-pip-capture";
 import {
-  useElectronBrowserTabBinding,
+  useElectronBrowserTabBindingOnHost,
   type ElectronBrowserTabRegistration,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import { incrementPipHeadlessArmRunsForTests } from "@/lib/browser-view/pip-capture-arm-counts";
@@ -54,7 +54,7 @@ export function usePipOwnedFrame(
     sessionId,
     tabId,
   } = pipCaptureCoordinates(snapshot);
-  const binding = useElectronBrowserTabBinding(sessionId, tabId);
+  const binding = useElectronBrowserTabBindingOnHost(sessionId, tabId, hostId);
   const hostEntry = useHostDirectoryEntry(hostId);
   const auth = useStreamAuthRevalidator();
   const client = useHostStreamClientFor(

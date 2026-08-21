@@ -366,7 +366,11 @@ export function handleElectronBrowserTabFrame(
 function releaseElectronTab(
   frame: Extract<BrowserSessionsServerFrame, { kind: "releaseElectronTab" }>,
 ): void {
-  const record = findElectronBrowserTabRecord(frame.sessionId, frame.tabId);
+  const record = findElectronBrowserTabRecord(
+    frame.sessionId,
+    frame.tabId,
+    undefined,
+  );
   if (record === undefined) {
     retainPendingRelease(frame.sessionId, frame.tabId);
     return;
@@ -628,7 +632,11 @@ export function syncElectronBrowserTabDrivers(
   session: BrowserSessionInfo,
 ): void {
   for (const tab of session.tabs) {
-    const record = findElectronBrowserTabBinding(session.sessionId, tab.tabId);
+    const record = findElectronBrowserTabBindingOnHost(
+      session.sessionId,
+      tab.tabId,
+      session.hostId,
+    );
     const setBackgroundThrottling = record?.bridge.setBackgroundThrottling;
     if (record === null || setBackgroundThrottling === undefined) continue;
     void setBackgroundThrottling({
@@ -848,7 +856,15 @@ export function findElectronBrowserTabBinding(
   sessionId: string,
   tabId: string,
 ): ElectronBrowserTabRegistration | null {
-  return findElectronBrowserTabRecord(sessionId, tabId) ?? null;
+  return findElectronBrowserTabRecord(sessionId, tabId, undefined) ?? null;
+}
+
+export function findElectronBrowserTabBindingOnHost(
+  sessionId: string,
+  tabId: string,
+  hostId: string,
+): ElectronBrowserTabRegistration | null {
+  return findElectronBrowserTabRecord(sessionId, tabId, hostId) ?? null;
 }
 
 export function findElectronBrowserTabIdForTile(
@@ -877,13 +893,37 @@ export function useElectronBrowserTabBinding(
       ) ?? null);
 }
 
+export function useElectronBrowserTabBindingOnHost(
+  sessionId: string,
+  tabId: string,
+  hostId: string,
+): ElectronBrowserTabRegistration | null {
+  const registrationId = useSyncExternalStore(
+    subscribeBindingChanges,
+    () =>
+      findElectronBrowserTabBindingOnHost(sessionId, tabId, hostId)
+        ?.registrationId ?? null,
+    () => null,
+  );
+  return registrationId === null
+    ? null
+    : (recordsByRegistrationKey.get(
+        registrationKey(sessionId, registrationId),
+      ) ?? null);
+}
+
 function findElectronBrowserTabRecord(
   sessionId: string,
   tabId: string,
+  hostId: string | undefined,
 ): ElectronBrowserTabRecord | undefined {
   let found: ElectronBrowserTabRecord | undefined;
   for (const record of recordsByRegistrationKey.values()) {
-    if (record.sessionId === sessionId && record.tabId === tabId) {
+    if (
+      record.sessionId === sessionId &&
+      record.tabId === tabId &&
+      (hostId === undefined || record.hostId === hostId)
+    ) {
       found = record;
     }
   }

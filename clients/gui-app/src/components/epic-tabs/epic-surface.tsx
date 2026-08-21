@@ -87,6 +87,7 @@ const COLD_BROWSER_SESSIONS: BrowserSessionsState = {
   items: [],
   errorMessage: null,
   routingChatId: null,
+  retry: () => undefined,
   closeSession: () => undefined,
   requestPromoteState: () =>
     Promise.reject(new Error("Browser sessions are not ready.")),

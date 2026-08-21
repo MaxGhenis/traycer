@@ -45,8 +45,8 @@ vi.mock("@/components/epic-canvas/hooks/use-tile-body-visible", () => ({
   useTileBodyVisible: () => hookState.visible,
 }));
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => "host-test",
+vi.mock("@/components/epic-canvas/hooks/use-canvas-host-id", () => ({
+  useCanvasHostId: () => "host-test",
 }));
 
 vi.mock("@/hooks/host/use-host-directory-entry", () => ({
@@ -62,8 +62,8 @@ vi.mock("@/hooks/host/use-host-stream-client-for", () => ({
   authenticatedOwnerIdentityKey: () => "local\u0000host-test\u0000user-test",
 }));
 
-vi.mock("@/lib/host", () => ({
-  useHostClient: () => hookState.hostClient,
+vi.mock("@/hooks/epic/use-epic-session-host-client", () => ({
+  useEpicSessionHostClient: () => hookState.hostClient,
 }));
 
 const openDurableTransport = vi.hoisted(

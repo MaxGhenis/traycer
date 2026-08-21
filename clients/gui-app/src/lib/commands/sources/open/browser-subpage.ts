@@ -4,9 +4,9 @@
  * invocations never reuse the browser page-session id.
  */
 import { useMemo } from "react";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { openTileIntoTargetGroup } from "@/lib/commands/actions";
+import { useActiveEpicHostId } from "@/lib/commands/sources/open/use-active-epic-projection";
 import {
   DEFAULT_BROWSER_TILE_NAME,
   DEFAULT_BROWSER_TILE_URL,
@@ -19,7 +19,8 @@ import type { CommandContext, CommandItem } from "@/lib/commands/types";
 export function useBrowserOpenerItems(
   ctx: CommandContext,
 ): ReadonlyArray<CommandItem> {
-  const hostId = useReactiveActiveHostId() ?? UNKNOWN_HOST_PLACEHOLDER;
+  const hostId =
+    useActiveEpicHostId(ctx.activeEpicId) ?? UNKNOWN_HOST_PLACEHOLDER;
 
   return useMemo<ReadonlyArray<CommandItem>>(
     () => [

@@ -11,15 +11,15 @@ import {
 import { Maximize2, X } from "lucide-react";
 import type { BrowserTabInfo } from "@traycer/protocol/host/browser/contracts";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
+import { useCanvasHostId } from "@/components/epic-canvas/hooks/use-canvas-host-id";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import {
   browserTabFaviconUrl,
   browserTabHostname,
   resolveTabTitle,
 } from "@/lib/browser-view/browser-tab-display";
-import { findElectronBrowserTabBinding } from "@/lib/browser-view/electron-browser-tab-store";
+import { findElectronBrowserTabBindingOnHost } from "@/lib/browser-view/electron-browser-tab-store";
 import {
   clampPipGeometry,
   defaultPipGeometry,
@@ -528,13 +528,13 @@ function streamHealthTone(health: PipStreamHealth): string {
 
 function resolvePipHostLabel(
   target: PipTarget | null,
-  activeHostId: string | null,
+  canvasHostId: string | null,
   label: string | null,
 ): string | null {
   if (
     target === null ||
-    activeHostId === null ||
-    target.hostId === activeHostId
+    canvasHostId === null ||
+    target.hostId === canvasHostId
   ) {
     return null;
   }
@@ -569,7 +569,7 @@ function usePipTargetMeta(
 } {
   const items = usePipEpicSessionItems(epicId);
   const chats = useEpicChatRecords();
-  const activeHostId = useReactiveActiveHostId();
+  const canvasHostId = useCanvasHostId();
   const hostEntry = useHostDirectoryEntry(target?.hostId ?? "");
   const session =
     target === null
@@ -580,7 +580,7 @@ function usePipTargetMeta(
     chats.find((chat) => chat.id === session?.createdBy.chatId)?.title ?? null;
   const hostLabel = resolvePipHostLabel(
     target,
-    activeHostId,
+    canvasHostId,
     hostEntry?.label ?? null,
   );
   const tabMeta = resolvePipTabMeta(tab);
@@ -613,12 +613,13 @@ function useOpenPipTarget(
       );
       const tab = session?.tabs.find((item) => item.tabId === target.tabId);
       if (session === undefined || tab === undefined) return;
-      const binding = findElectronBrowserTabBinding(
+      const binding = findElectronBrowserTabBindingOnHost(
         target.sessionId,
         target.tabId,
+        target.hostId,
       );
       const existingNative =
-        binding === null || binding.hostId !== target.hostId
+        binding === null
           ? null
           : findOpenTileInTab(viewTabId, {
               id: binding.registrationId,

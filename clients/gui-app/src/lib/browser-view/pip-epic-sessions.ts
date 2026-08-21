@@ -1,7 +1,7 @@
 /**
  * Epic-wide `browser.sessions` fan-in for manual browser PiP.
  *
- * The sidebar's `BrowserSessionsProvider` stays bound to the active host.
+ * The sidebar's `BrowserSessionsProvider` stays bound to the Epic session host.
  * This manager sits beside it: one subscription per reachable host, items
  * tagged with that host's id, and selected-tab captions forwarded to PiP.
  *

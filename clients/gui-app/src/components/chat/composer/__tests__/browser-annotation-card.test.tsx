@@ -162,6 +162,7 @@ function sessionsState(
     items,
     errorMessage: null,
     routingChatId: null,
+    retry: vi.fn(),
     closeSession: vi.fn(),
     requestPromoteState: vi.fn(),
     requestLendStorage: vi.fn(),

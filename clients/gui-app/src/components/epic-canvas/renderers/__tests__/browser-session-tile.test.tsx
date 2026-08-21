@@ -54,6 +54,7 @@ const sessionsState = vi.hoisted<{
     items: [],
     errorMessage: null,
     routingChatId: "chat-route",
+    retry: vi.fn(),
     closeSession: vi.fn(),
     requestPromoteState: vi.fn(),
     requestLendStorage: vi.fn(),
@@ -78,14 +79,35 @@ const peekHarness = vi.hoisted<{
 
 vi.mock("@/components/epic-canvas/renderers/browser-sessions-context", () => ({
   useBrowserSessionsContext: () => sessionsState.value,
+  useMaybeBrowserSessionsContext: () => null,
 }));
 
 vi.mock("@/components/epic-canvas/hooks/use-tab-host-id", () => ({
   useTabHostId: () => "host-test",
 }));
 
+vi.mock("@/components/epic-canvas/hooks/use-canvas-host-id", () => ({
+  useCanvasHostId: () => "host-test",
+}));
+
+vi.mock("@/hooks/epic/use-epic-nested-focus-navigation", () => ({
+  useEpicNestedFocusNavigation:
+    () =>
+    (_epicId: string, _tabId: string, prepare: () => unknown): unknown =>
+      prepare(),
+}));
+
 vi.mock("@/components/epic-canvas/hooks/use-tile-body-visible", () => ({
   useTileBodyVisible: () => true,
+}));
+
+vi.mock("@/hooks/browser/use-browser-annotation-session", () => ({
+  useBrowserAnnotationSession: () => ({
+    isActive: false,
+    canStart: false,
+    zoomLocked: false,
+    toggle: vi.fn(),
+  }),
 }));
 
 vi.mock("@/providers/use-runner-host", () => ({
@@ -335,6 +357,7 @@ function renderTile(
     items: [sessionFor(status)],
     errorMessage: null,
     routingChatId: "chat-route",
+    retry: vi.fn(),
     closeSession: vi.fn(),
     requestPromoteState: vi.fn(),
     requestLendStorage: vi.fn(),
@@ -374,6 +397,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       items: [],
       errorMessage: null,
       routingChatId: "chat-route",
+      retry: vi.fn(),
       closeSession: vi.fn(),
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
@@ -390,6 +414,43 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
     expect(
       screen.getByText("Browser tab is no longer available."),
     ).toBeTruthy();
+  });
+
+  it("closes the canvas tile after a previously-live tab is confirmed removed", async () => {
+    sessionsState.value = {
+      lifecycle: "live",
+      items: [sessionFor("ready")],
+      errorMessage: null,
+      routingChatId: "chat-route",
+      retry: vi.fn(),
+      closeSession: vi.fn(),
+      requestPromoteState: vi.fn(),
+      requestLendStorage: vi.fn(),
+    };
+    const ids = seedCanvas(NODE);
+    const view = render(
+      <BrowserSessionTile
+        node={NODE}
+        viewTabId={ids.viewTabId}
+        paneId={ids.paneId}
+        epicId="epic-1"
+      />,
+    );
+
+    sessionsState.value = { ...sessionsState.value, items: [] };
+    view.rerender(
+      <BrowserSessionTile
+        node={NODE}
+        viewTabId={ids.viewTabId}
+        paneId={ids.paneId}
+        epicId="epic-1"
+      />,
+    );
+
+    await waitFor(() => {
+      const canvas = useEpicCanvasStore.getState().canvasByTabId[ids.viewTabId];
+      expect(canvas?.tilesByInstanceId[NODE.instanceId]).toBeUndefined();
+    });
   });
 
   it("opens dormant tabs via native register/activate path (not screencast first)", () => {
@@ -424,6 +485,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       ],
       errorMessage: null,
       routingChatId: "chat-route",
+      retry: vi.fn(),
       closeSession: vi.fn(),
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
@@ -619,6 +681,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       ],
       errorMessage: null,
       routingChatId: "chat-route",
+      retry: vi.fn(),
       closeSession: vi.fn(),
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
@@ -746,6 +809,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       items: [initialSession],
       errorMessage: null,
       routingChatId: "chat-route",
+      retry: vi.fn(),
       closeSession: vi.fn(),
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
@@ -843,6 +907,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       items: [dormantSession],
       errorMessage: null,
       routingChatId: "chat-route",
+      retry: vi.fn(),
       closeSession: vi.fn(),
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),

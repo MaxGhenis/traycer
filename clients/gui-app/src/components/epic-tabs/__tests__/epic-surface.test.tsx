@@ -88,6 +88,7 @@ vi.mock("@/components/epic-canvas/renderers/browser-session-dock", async () => {
         items: readySessionsState.items,
         errorMessage: null,
         routingChatId: props.routingChatId,
+        retry: () => undefined,
         closeSession: () => undefined,
         requestPromoteState: () =>
           Promise.reject(new Error("not used in epic-surface test")),

@@ -13,6 +13,10 @@ import type {
   BrowserSessionInfo,
   BrowserTabInfo,
 } from "@traycer/protocol/host/browser/contracts";
+import {
+  BROWSER_TILE_DND_TYPE,
+  readEpicCanvasDragSourceData,
+} from "@/components/epic-canvas/dnd/dnd";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   BrowsersPanelActions,
@@ -43,6 +47,97 @@ import type {
   AgentBrowserViewCdpTargetAttachedChange,
   AgentBrowserViewTileHandoffChange,
 } from "@/lib/browser-view/desktop-agent-browser-view";
+import { usePanelHeaderSearchStore } from "@/stores/epics/panel-header-search-store";
+import { usePanelHeaderMenuStore } from "@/stores/epics/panel-header-menu-store";
+
+const dndState = vi.hoisted(() => ({
+  draggables: [] as Array<{
+    readonly id: string | number;
+    readonly data: unknown;
+  }>,
+}));
+
+const browserHostPinState = vi.hoisted(() => ({
+  selection: null as string | null,
+  setSelection: vi.fn((selection: string | null) => {
+    browserHostPinState.selection = selection;
+  }),
+}));
+
+const browserHostProviderState = vi.hoisted(() => ({
+  hostIds: [] as Array<string | null>,
+}));
+
+const browserHostOptionsState = vi.hoisted(() => ({
+  hosts: [
+    { hostId: "host-1", name: "Home Mac", connectable: true },
+    { hostId: "host-2", name: "Work Mac", connectable: true },
+  ],
+  isLoading: false,
+  listsFailed: false,
+  retryLists: vi.fn(),
+}));
+
+vi.mock("@/hooks/host/use-surface-host-pin", () => ({
+  useTabSurfaceKey: (kind: string, tabId: string) => `${kind}:${tabId}`,
+  useSurfaceHostPin: () => ({
+    selection: browserHostPinState.selection,
+    honoredSelection: browserHostPinState.selection,
+    setSelection: browserHostPinState.setSelection,
+    resolvedHostId: browserHostPinState.selection ?? "host-1",
+    followingHostId: "host-1",
+    isPinned: browserHostPinState.selection !== null,
+    latchOnFirstUse: () => undefined,
+  }),
+  useSurfaceHostClient: () => null,
+}));
+
+vi.mock("@/hooks/host/use-host-client-for-host-id", () => ({
+  useHostDirectoryEntryForHostId: (hostId: string | null) => ({
+    label: hostId === "host-2" ? "Work Mac" : "Home Mac",
+  }),
+}));
+
+vi.mock("@/components/settings/host-scope/use-host-options", () => ({
+  useHostOptions: () => ({
+    hosts: browserHostOptionsState.hosts,
+    activeHostId: "host-1",
+    isLoading: browserHostOptionsState.isLoading,
+    listsFailed: browserHostOptionsState.listsFailed,
+    retryLists: browserHostOptionsState.retryLists,
+  }),
+}));
+
+vi.mock("@/components/settings/host-scope/host-option-row", () => ({
+  HostOptionRow: (props: { readonly host: { readonly name: string } }) => (
+    <span>{props.host.name}</span>
+  ),
+}));
+
+vi.mock("@/components/epic-canvas/renderers/browser-session-dock", () => ({
+  BrowserSessionsHostProvider: (props: {
+    readonly hostId: string | null;
+    readonly children: ReactNode;
+  }) => {
+    browserHostProviderState.hostIds.push(props.hostId);
+    return props.children;
+  },
+}));
+
+vi.mock("@dnd-kit/core", () => ({
+  useDraggable: (input: {
+    readonly id: string | number;
+    readonly data: unknown;
+  }) => {
+    dndState.draggables.push(input);
+    return {
+      attributes: {},
+      listeners: {},
+      setNodeRef: () => undefined,
+      isDragging: false,
+    };
+  },
+}));
 
 const closeSession = vi.fn<(sessionId: string) => void>();
 const navigateNested = vi.fn(
@@ -61,6 +156,7 @@ const sessionsState = vi.hoisted<{
     items: [],
     errorMessage: null,
     routingChatId: "chat-driver",
+    retry: vi.fn(),
     closeSession: forwardCloseSession,
     requestPromoteState: vi.fn(),
     requestLendStorage: vi.fn(),
@@ -82,8 +178,8 @@ vi.mock("@/lib/epic-selectors", () => ({
   useEpicChatRecords: () => chatsState.value,
 }));
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => "host-1",
+vi.mock("@/components/epic-canvas/hooks/use-canvas-host-id", () => ({
+  useCanvasHostId: () => "host-1",
 }));
 
 vi.mock("@/hooks/epic/use-epic-nested-focus-navigation", () => ({
@@ -172,9 +268,28 @@ function seedCanvasTab(): void {
 
 describe("BrowsersPanelBody", () => {
   beforeEach(() => {
+    dndState.draggables = [];
+    browserHostPinState.selection = null;
+    browserHostPinState.setSelection.mockClear();
+    browserHostProviderState.hostIds = [];
+    browserHostOptionsState.hosts = [
+      { hostId: "host-1", name: "Home Mac", connectable: true },
+      { hostId: "host-2", name: "Work Mac", connectable: true },
+    ];
+    browserHostOptionsState.isLoading = false;
+    browserHostOptionsState.listsFailed = false;
+    browserHostOptionsState.retryLists.mockClear();
     closeSession.mockReset();
     navigateNested.mockClear();
     resetElectronBrowserTabStoreForTests();
+    usePanelHeaderSearchStore.setState(
+      usePanelHeaderSearchStore.getInitialState(),
+      true,
+    );
+    usePanelHeaderMenuStore.setState(
+      usePanelHeaderMenuStore.getInitialState(),
+      true,
+    );
     seedCanvasTab();
     sessionsState.value = {
       lifecycle: "live",
@@ -228,6 +343,7 @@ describe("BrowsersPanelBody", () => {
       ],
       errorMessage: null,
       routingChatId: "chat-driver",
+      retry: vi.fn(),
       closeSession: forwardCloseSession,
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
@@ -241,7 +357,7 @@ describe("BrowsersPanelBody", () => {
     resetPipStoreForTests();
   });
 
-  it("lists sessions by their active tab's title, with dormant styling and isolated-only badges", () => {
+  it("lists every tab as a flat peer row, with dormant styling and isolated-only badges", () => {
     render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     expect(screen.getByText("Live page")).toBeTruthy();
@@ -254,10 +370,58 @@ describe("BrowsersPanelBody", () => {
     // The old placeholder session name never appears as a row's primary text.
     expect(screen.queryByText("Agent browser")).toBeNull();
 
-    const dormantRow = screen.getByText("Dormant page").closest("div.group");
-    expect(dormantRow?.className.split(/\s+/)).toContain("opacity-60");
-    const liveRow = screen.getByText("Live page").closest("div.group");
-    expect(liveRow?.className.split(/\s+/)).not.toContain("opacity-60");
+    const dormantRow = screen.getByTestId(
+      "epic-browser-sidebar-row-tab-dormant",
+    );
+    expect(dormantRow.className.split(/\s+/)).toContain("opacity-60");
+    const liveRow = screen.getByTestId("epic-browser-sidebar-row-tab-live");
+    expect(liveRow.className.split(/\s+/)).not.toContain("opacity-60");
+    expect(liveRow.className.split(/\s+/)).toContain("cursor-pointer");
+    expect(
+      screen
+        .getByRole("button", { name: /^Live page/i })
+        .className.split(/\s+/),
+    ).toContain("cursor-pointer");
+  });
+
+  it("registers each row as a browser tile drag source", () => {
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+
+    const live = dndState.draggables.find((entry) =>
+      String(entry.id).includes("browser-tile:sess-primary:tab-live"),
+    );
+    expect(live).toBeTruthy();
+    expect(readEpicCanvasDragSourceData(live?.data)).toMatchObject({
+      kind: BROWSER_TILE_DND_TYPE,
+      epicId: "epic-1",
+      viewTabId: "view-tab-1",
+      tile: {
+        type: "browser-session",
+        sessionId: "sess-primary",
+        tabId: "tab-live",
+      },
+    });
+  });
+
+  it("switches only the panel subscription when its host filter is pinned", () => {
+    browserHostPinState.selection = "host-2";
+
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+
+    expect(browserHostProviderState.hostIds).toContain("host-2");
+  });
+
+  it("filters the flat list by title, hostname, or URL", () => {
+    usePanelHeaderSearchStore
+      .getState()
+      .openSearch("view-tab-1", "browsers", "checkout.example");
+
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+
+    expect(screen.getByText("Checkout")).toBeTruthy();
+    expect(screen.queryByText("Live page")).toBeNull();
+    expect(screen.queryByText("Dormant page")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("1 browser result.");
   });
 
   it("gives every row a unique, title-derived accessible close name", () => {
@@ -309,7 +473,7 @@ describe("BrowsersPanelBody", () => {
     expect(screen.getAllByText("127.0.0.1")).toHaveLength(4);
   });
 
-  it("falls back to session ids when duplicate titles also share no origin", () => {
+  it("falls back to tab ids when duplicate titles also share no origin", () => {
     const sessionIds = [
       "sess-fallback-1",
       "sess-fallback-2",
@@ -340,8 +504,8 @@ describe("BrowsersPanelBody", () => {
       .getAllByRole("button", { name: /^Close Checkout \(/ })
       .map((button) => button.getAttribute("aria-label"));
     expect(new Set(closeLabels).size).toBe(sessionIds.length);
-    for (const sessionId of sessionIds) {
-      expect(closeLabels).toContain(`Close Checkout (${sessionId})`);
+    for (const [index] of sessionIds.entries()) {
+      expect(closeLabels).toContain(`Close Checkout (tab-fallback-${index})`);
     }
   });
 
@@ -408,7 +572,7 @@ describe("BrowsersPanelBody", () => {
       ).toBeTruthy();
       expect(
         screen.getByRole("button", {
-          name: `${title}checkout-${index}.example`,
+          name: `${title}, https://checkout-${index}.example`,
         }),
       ).toBeTruthy();
     }
@@ -462,17 +626,45 @@ describe("BrowsersPanelBody", () => {
     expect(screen.getByText("Browser")).toBeTruthy();
     expect(screen.queryByText("Agent browser")).toBeNull();
     expect(screen.queryByText("not a URL")).toBeNull();
-    expect(screen.getByRole("button", { name: "Close Browser" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Close / })).toBeNull();
+    expect(screen.getByText("Old page")).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Open Old page" }).className,
+      screen.getByTestId("epic-browser-sidebar-row-tab-dormant-subrow")
+        .className,
     ).toContain("opacity-60");
     expect(
-      screen.getByText("Browser").closest("div.group")?.className,
+      screen.getByTestId("epic-browser-sidebar-row-tab-invalid-url").className,
     ).not.toContain("opacity-60");
+  });
+
+  it("shows a retryable unavailable state instead of an empty list", () => {
+    const retry = vi.fn();
+    sessionsState.value = {
+      ...sessionsState.value,
+      lifecycle: "failed",
+      items: [],
+      errorMessage: "Host connection failed.",
+      retry,
+    };
+
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+
+    expect(screen.getByText("Browsers unavailable.")).toBeTruthy();
+    expect(screen.queryByText("No browsers yet.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(retry).toHaveBeenCalledOnce();
   });
 
   it("shows drivenBy attribution via real tooltip and opens the driving chat", async () => {
     const user = userEvent.setup();
+    const drivingSession = sessionsState.value.items[0];
+    sessionsState.value = {
+      ...sessionsState.value,
+      items: [
+        { ...drivingSession, hostId: "host-2" },
+        ...sessionsState.value.items.slice(1),
+      ],
+    };
     render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     const driveButton = screen.getByRole("button", {
@@ -492,6 +684,11 @@ describe("BrowsersPanelBody", () => {
     );
     const opened = findOpenArtifactInTab("view-tab-1", "chat-driver");
     expect(opened).not.toBeNull();
+    if (opened === null) throw new Error("expected driving chat tile");
+    expect(
+      useEpicCanvasStore.getState().canvasByTabId["view-tab-1"]
+        ?.tilesByInstanceId[opened.instanceId],
+    ).toMatchObject({ hostId: "host-2" });
   });
 
   it("close sends closeSession (host delete resource)", () => {
@@ -602,6 +799,17 @@ describe("BrowsersPanelBody", () => {
     ).length;
 
     render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+    const liveDrag = dndState.draggables.find((entry) =>
+      String(entry.id).includes("browser-tile:sess-primary:tab-live"),
+    );
+    expect(readEpicCanvasDragSourceData(liveDrag?.data)).toMatchObject({
+      kind: BROWSER_TILE_DND_TYPE,
+      tile: {
+        id: "reg-native-1",
+        type: "agent-browser",
+        sessionId: "sess-primary",
+      },
+    });
     fireEvent.click(screen.getByRole("button", { name: /^Live page/i }));
 
     const afterCount = Object.keys(
@@ -627,12 +835,30 @@ describe("BrowsersPanelBody", () => {
 describe("BrowsersPanelActions", () => {
   beforeEach(() => {
     navigateNested.mockClear();
+    browserHostPinState.selection = null;
+    browserHostPinState.setSelection.mockClear();
+    browserHostOptionsState.hosts = [
+      { hostId: "host-1", name: "Home Mac", connectable: true },
+      { hostId: "host-2", name: "Work Mac", connectable: true },
+    ];
+    browserHostOptionsState.isLoading = false;
+    browserHostOptionsState.listsFailed = false;
+    browserHostOptionsState.retryLists.mockClear();
     seedCanvasTab();
+    usePanelHeaderSearchStore.setState(
+      usePanelHeaderSearchStore.getInitialState(),
+      true,
+    );
+    usePanelHeaderMenuStore.setState(
+      usePanelHeaderMenuStore.getInitialState(),
+      true,
+    );
     sessionsState.value = {
       lifecycle: "live",
       items: [],
       errorMessage: null,
       routingChatId: null,
+      retry: vi.fn(),
       closeSession: forwardCloseSession,
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
@@ -663,5 +889,89 @@ describe("BrowsersPanelActions", () => {
       (tile) => tile !== undefined && tile.type === "browser",
     );
     expect(opened).toBeTruthy();
+  });
+
+  it("opens a new browser on the panel's filtered host", () => {
+    browserHostPinState.selection = "host-2";
+    render(
+      wrapper(<BrowsersPanelActions epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add browser" }));
+
+    const opened = Object.values(
+      useEpicCanvasStore.getState().canvasByTabId["view-tab-1"]
+        ?.tilesByInstanceId ?? {},
+    ).find((tile) => tile !== undefined && tile.type === "browser");
+    expect(opened).toMatchObject({ hostId: "host-2" });
+  });
+
+  it("opens browser search from the header action", () => {
+    render(
+      wrapper(<BrowsersPanelActions epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Search browsers" }));
+
+    expect(
+      usePanelHeaderSearchStore.getState().openBySurfaceKey[
+        JSON.stringify(["view-tab-1", "browsers"])
+      ],
+    ).toBe(true);
+  });
+
+  it("opens the host filter as the final header action", async () => {
+    const user = userEvent.setup();
+    render(
+      wrapper(<BrowsersPanelActions epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Filter browsers by host" }),
+    );
+
+    const filterMenu = screen.getByTestId("epic-browsers-panel-filter-menu");
+    expect(filterMenu.getAttribute("data-side")).toBe("right");
+    await user.click(screen.getByRole("menuitem", { name: "Host, Home Mac" }));
+    const hostMenu = screen.getByTestId("epic-browsers-panel-host-menu");
+    expect(hostMenu.getAttribute("data-side")).toBe("right");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Work Mac" }));
+    expect(browserHostPinState.setSelection).toHaveBeenCalledWith("host-2");
+  });
+
+  it("shows and clears an active host filter", async () => {
+    const user = userEvent.setup();
+    browserHostPinState.selection = "host-2";
+    render(
+      wrapper(<BrowsersPanelActions epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Filter browsers by host, 1 filter active",
+      }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Host, Work Mac" }));
+    fireEvent.click(
+      screen.getByRole("menuitemradio", { name: /Follow active host/ }),
+    );
+
+    expect(browserHostPinState.setSelection).toHaveBeenCalledWith(null);
+  });
+
+  it("loads host choices progressively in the right-side submenu", async () => {
+    const user = userEvent.setup();
+    browserHostOptionsState.hosts = [];
+    browserHostOptionsState.isLoading = true;
+    render(
+      wrapper(<BrowsersPanelActions epicId="epic-1" tabId="view-tab-1" />),
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Filter browsers by host" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Host, Home Mac" }));
+
+    expect(screen.getByText("Loading hosts…")).toBeTruthy();
   });
 });

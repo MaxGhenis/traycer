@@ -24,6 +24,7 @@ import {
   attachElectronBrowserTabStream,
   drainElectronBrowserHandoffs,
   findElectronBrowserTabBinding,
+  findElectronBrowserTabBindingOnHost,
   handleElectronBrowserTabFrame,
   registerElectronBrowserTab,
   resetElectronBrowserTabStoreForTests,
@@ -233,6 +234,51 @@ describe("electron-browser-tab-store (ticket 05/08 epic+host routing)", () => {
         title: "App",
       }),
     ]);
+  });
+
+  it("keeps identical session and tab ids isolated by host", () => {
+    const bridge = new FakeBridge();
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-host-1",
+        sessionId: "shared-session",
+        hostId: HOST,
+        bridge,
+      }),
+    );
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-host-2",
+        sessionId: "shared-session",
+        hostId: OTHER_HOST,
+        bridge,
+      }),
+    );
+    for (const registrationId of ["reg-host-1", "reg-host-2"]) {
+      handleElectronBrowserTabFrame({
+        kind: "electronTabRegistered",
+        hasBinaryPayload: false,
+        requestId: `ack-${registrationId}`,
+        registrationId,
+        sessionId: "shared-session",
+        tabId: "shared-tab",
+      });
+    }
+
+    expect(
+      findElectronBrowserTabBindingOnHost(
+        "shared-session",
+        "shared-tab",
+        HOST,
+      )?.registrationId,
+    ).toBe("reg-host-1");
+    expect(
+      findElectronBrowserTabBindingOnHost(
+        "shared-session",
+        "shared-tab",
+        OTHER_HOST,
+      )?.registrationId,
+    ).toBe("reg-host-2");
   });
 
   it("turns background throttling off for driven tabs and restores it when idle", async () => {

@@ -2,9 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { BrowserSessionInfo } from "@traycer/protocol/host/browser/contracts";
 import { AgentBrowserTile } from "./agent-browser-tile";
 import { BrowserPeekTile } from "./browser-peek-tile";
+import { BrowserSessionsHostProvider } from "./browser-session-dock";
 import { useBrowserSessionsContext } from "./browser-sessions-context";
+import { useCloseCanvasTileWithNestedFocus } from "./use-close-canvas-tile-with-nested-focus";
+import { useCanvasHostId } from "@/components/epic-canvas/hooks/use-canvas-host-id";
+import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
 import {
-  useElectronBrowserTabBinding,
+  useElectronBrowserTabBindingOnHost,
   type ElectronBrowserTabRegistration,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import { appLogger } from "@/lib/logger";
@@ -222,16 +226,36 @@ function BrowserSessionTileBody(props: BrowserSessionTileBodyProps) {
   );
 }
 
-export function BrowserSessionTile(props: BrowserSessionTileProps) {
+function BrowserSessionTileFromProvider(props: BrowserSessionTileProps) {
   const sessions = useBrowserSessionsContext();
   const session = sessions.items.find(
     (item) => item.sessionId === props.node.sessionId,
   );
   const tab = session?.tabs.find((item) => item.tabId === props.node.tabId);
-  const binding = useElectronBrowserTabBinding(
+  const binding = useElectronBrowserTabBindingOnHost(
     props.node.sessionId,
     props.node.tabId,
+    props.node.hostId,
   );
+  const wasAvailableRef = useRef(false);
+  const closeCanvasTile = useCloseCanvasTileWithNestedFocus(
+    props.viewTabId,
+    props.paneId,
+    props.node.instanceId,
+  );
+  useEffect(() => {
+    if (session !== undefined && tab !== undefined) {
+      wasAvailableRef.current = true;
+      return;
+    }
+    if (!wasAvailableRef.current || sessions.lifecycle !== "live") return;
+    closeCanvasTile();
+  }, [
+    closeCanvasTile,
+    session,
+    sessions.lifecycle,
+    tab,
+  ]);
   const { renderHeadless, castGeneration, onMigrated, onActivatedHeadless } =
     useBrowserSessionSwap({
       session,
@@ -253,5 +277,29 @@ export function BrowserSessionTile(props: BrowserSessionTileProps) {
       onMigrated={onMigrated}
       onActivatedHeadless={onActivatedHeadless}
     />
+  );
+}
+
+function CrossHostBrowserSessionTile(props: BrowserSessionTileProps) {
+  const currentSessions = useBrowserSessionsContext();
+  const hostClient = useTabHostClient();
+  return (
+    <BrowserSessionsHostProvider
+      hostId={props.node.hostId}
+      hostClient={hostClient}
+      epicId={props.epicId}
+      routingChatId={currentSessions.routingChatId}
+    >
+      <BrowserSessionTileFromProvider {...props} />
+    </BrowserSessionsHostProvider>
+  );
+}
+
+export function BrowserSessionTile(props: BrowserSessionTileProps) {
+  const canvasHostId = useCanvasHostId();
+  return props.node.hostId === canvasHostId ? (
+    <BrowserSessionTileFromProvider {...props} />
+  ) : (
+    <CrossHostBrowserSessionTile {...props} />
   );
 }

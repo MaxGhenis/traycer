@@ -1,4 +1,6 @@
 import type {
+  AgentBrowserTileRef,
+  BrowserSessionTileRef,
   DropPosition,
   EpicTerminalRef,
   GitDiffTileRef,
@@ -6,6 +8,8 @@ import type {
   WorkspaceFileRef,
 } from "@/stores/epics/canvas/types";
 import {
+  isAgentBrowserTileRef,
+  isBrowserSessionTileRef,
   isGitDiffTileRef,
   isManagedCommandOutputTileRef,
   isWorkspaceFileRef,
@@ -40,6 +44,7 @@ export const PANEL_NODE_FAMILY: Readonly<
 export const ARTIFACT_TAB_DND_TYPE = "artifact-tab";
 export const SIDEBAR_NODE_DND_TYPE = "sidebar-node";
 export const TERMINAL_TILE_DND_TYPE = "terminal-tile";
+export const BROWSER_TILE_DND_TYPE = "browser-tile";
 export const GIT_DIFF_TILE_DND_TYPE = "git-diff-tile";
 export const WORKSPACE_FILE_DND_TYPE = "workspace-file";
 export const WORKSPACE_FOLDER_DND_TYPE = "workspace-folder";
@@ -53,6 +58,7 @@ export const EPIC_CANVAS_DND_SOURCE_TYPES = [
   ARTIFACT_TAB_DND_TYPE,
   SIDEBAR_NODE_DND_TYPE,
   TERMINAL_TILE_DND_TYPE,
+  BROWSER_TILE_DND_TYPE,
   GIT_DIFF_TILE_DND_TYPE,
   WORKSPACE_FILE_DND_TYPE,
   CHAT_ARTIFACT_DND_TYPE,
@@ -111,6 +117,13 @@ export interface EpicCanvasTerminalTileDragData {
   readonly epicId: string;
   readonly viewTabId: string;
   readonly tile: EpicTerminalRef;
+}
+
+export interface EpicCanvasBrowserTileDragData {
+  readonly kind: typeof BROWSER_TILE_DND_TYPE;
+  readonly epicId: string;
+  readonly viewTabId: string;
+  readonly tile: BrowserSessionTileRef | AgentBrowserTileRef;
 }
 
 export interface EpicCanvasGitDiffTileDragData {
@@ -206,6 +219,7 @@ export type EpicCanvasDragSourceData =
   | EpicCanvasArtifactTabDragData
   | EpicCanvasSidebarNodeDragData
   | EpicCanvasTerminalTileDragData
+  | EpicCanvasBrowserTileDragData
   | EpicCanvasGitDiffTileDragData
   | EpicCanvasWorkspaceFileDragData
   | EpicCanvasWorkspaceFolderDragData
@@ -380,6 +394,10 @@ export function getTerminalTileDragId(sessionId: string): string {
   return `terminal-tile:${sessionId}`;
 }
 
+export function getBrowserTileDragId(sessionId: string, tabId: string): string {
+  return `browser-tile:${sessionId}:${tabId}`;
+}
+
 export function getGitDiffTileDragId(tileId: string): string {
   return `git-diff-tile:${tileId}`;
 }
@@ -546,6 +564,21 @@ function readTerminalTileSource(
   return { kind: TERMINAL_TILE_DND_TYPE, ...scope, tile: ref };
 }
 
+function readBrowserTileSource(
+  value: Record<string, unknown>,
+): EpicCanvasDragSourceData | null {
+  const scope = readCanvasSourceScope(value);
+  const ref = parseTileRef(value.tile);
+  if (
+    scope === null ||
+    ref === null ||
+    (!isBrowserSessionTileRef(ref) && !isAgentBrowserTileRef(ref))
+  ) {
+    return null;
+  }
+  return { kind: BROWSER_TILE_DND_TYPE, ...scope, tile: ref };
+}
+
 function readManagedCommandOutputSource(
   value: Record<string, unknown>,
 ): EpicCanvasDragSourceData | null {
@@ -682,6 +715,7 @@ export function readEpicCanvasDragSourceData(
   if (value.kind === SIDEBAR_NODE_DND_TYPE) return readSidebarNodeSource(value);
   if (value.kind === TERMINAL_TILE_DND_TYPE)
     return readTerminalTileSource(value);
+  if (value.kind === BROWSER_TILE_DND_TYPE) return readBrowserTileSource(value);
   if (value.kind === GIT_DIFF_TILE_DND_TYPE)
     return readGitDiffTileSource(value);
   if (value.kind === WORKSPACE_FILE_DND_TYPE)

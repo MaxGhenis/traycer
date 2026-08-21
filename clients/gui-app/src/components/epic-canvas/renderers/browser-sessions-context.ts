@@ -28,6 +28,7 @@ export interface BrowserSessionsState {
   readonly items: readonly BrowserSessionInfo[];
   readonly errorMessage: string | null;
   readonly routingChatId: string | null;
+  readonly retry: () => void;
   readonly closeSession: (sessionId: string) => void;
   readonly requestPromoteState: (
     sessionId: string,

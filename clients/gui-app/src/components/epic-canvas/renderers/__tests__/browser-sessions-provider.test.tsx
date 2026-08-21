@@ -53,8 +53,8 @@ const hookState = vi.hoisted(() => ({
   browserViewBridge: null as CaptureBridge | null,
 }));
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => "host-test",
+vi.mock("@/components/epic-canvas/hooks/use-canvas-host-id", () => ({
+  useCanvasHostId: () => "host-test",
 }));
 
 vi.mock("@/hooks/host/use-host-directory-entry", () => ({
@@ -67,20 +67,21 @@ vi.mock("@/hooks/host/use-host-stream-client-for", () => ({
   authenticatedOwnerIdentityKey: () => hookState.ownerIdentityKey,
 }));
 
-vi.mock("@/lib/host", () => ({
-  useHostClient: () => hookState.hostClient,
+vi.mock("@/hooks/epic/use-epic-session-host-client", () => ({
+  useEpicSessionHostClient: () => hookState.hostClient,
 }));
 
 const openTransport = vi.hoisted(
-  () => (hostId: string): FakeDurableTransport => {
-    hookState.openedHostIds.push(hostId);
-    const transport = hookState.durableTransport;
-    if (transport === null) {
-      throw new Error("expected durable stream transport");
-    }
-    transport.open();
-    return transport;
-  },
+  () =>
+    (hostId: string): FakeDurableTransport => {
+      hookState.openedHostIds.push(hostId);
+      const transport = hookState.durableTransport;
+      if (transport === null) {
+        throw new Error("expected durable stream transport");
+      }
+      transport.open();
+      return transport;
+    },
 );
 
 vi.mock("@/lib/host/use-durable-stream-transport", () => ({

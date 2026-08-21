@@ -21,17 +21,20 @@ import type {
   StreamCloseReason,
   StreamConnectionStatus,
 } from "@traycer-clients/shared/host-transport/i-stream-session";
+import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
+import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/host-stream-client";
+import type { HostRpcRegistry } from "@traycer/protocol/host/index";
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { Button } from "@/components/ui/button";
+import { useCanvasHostId } from "@/components/epic-canvas/hooks/use-canvas-host-id";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { useEpicSessionHostClient } from "@/hooks/epic/use-epic-session-host-client";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
 import {
   authenticatedHostStreamKey,
   authenticatedOwnerIdentityKey,
 } from "@/hooks/host/use-host-stream-client-for";
-import { useHostClient } from "@/lib/host";
 import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { useDurableStreamTransportFactory } from "@/lib/host/use-durable-stream-transport";
 import {
@@ -125,12 +128,41 @@ interface BrowserSessionsRenderState {
   readonly errorMessage: string | null;
 }
 
+function browserSessionsOwnerIdentityKey(
+  hostClient: HostClient<HostRpcRegistry> | null,
+  hostEntry: HostDirectoryEntry | null,
+): string | null {
+  return hostClient === null
+    ? null
+    : authenticatedOwnerIdentityKey(hostClient, hostEntry);
+}
+
 export function BrowserSessionsProvider(props: {
   readonly epicId: string;
   readonly routingChatId: string | null;
   readonly children: ReactNode;
 }) {
-  const hostId = useReactiveActiveHostId();
+  const hostId = useCanvasHostId();
+  const hostClient = useEpicSessionHostClient();
+  return (
+    <BrowserSessionsHostProvider
+      hostId={hostId}
+      hostClient={hostClient}
+      epicId={props.epicId}
+      routingChatId={props.routingChatId}
+    >
+      {props.children}
+    </BrowserSessionsHostProvider>
+  );
+}
+
+export function BrowserSessionsHostProvider(props: {
+  readonly hostId: string | null;
+  readonly hostClient: HostClient<HostRpcRegistry> | null;
+  readonly epicId: string;
+  readonly routingChatId: string | null;
+  readonly children: ReactNode;
+}) {
   const runnerHost = useRunnerHost();
   const browserView = useMemo(
     () => resolveDesktopBrowserViewBridge(runnerHost),
@@ -141,7 +173,8 @@ export function BrowserSessionsProvider(props: {
     [runnerHost],
   );
   const sessions = useBrowserSessions({
-    hostId,
+    hostId: props.hostId,
+    hostClient: props.hostClient,
     epicId: props.epicId,
     chatId: props.routingChatId,
     browserView,
@@ -669,6 +702,7 @@ function isLocalhostCookieScopeOrigin(origin: string): boolean {
 
 interface UseBrowserSessionsArgs {
   readonly hostId: string | null;
+  readonly hostClient: HostClient<HostRpcRegistry> | null;
   readonly epicId: string;
   readonly chatId: string | null;
   readonly browserView: DesktopBrowserViewBridge | null;
@@ -681,11 +715,11 @@ function useBrowserSessions(
   const { hostId, epicId, chatId, browserView, primaryProfileCaptureReady } =
     args;
   const hostEntry = useHostDirectoryEntry(hostId ?? UNKNOWN_HOST_PLACEHOLDER);
-  const globalClient = useHostClient();
   const transportReady =
-    authenticatedHostStreamKey(globalClient, hostEntry) !== null;
-  const ownerIdentityKey = authenticatedOwnerIdentityKey(
-    globalClient,
+    args.hostClient !== null &&
+    authenticatedHostStreamKey(args.hostClient, hostEntry) !== null;
+  const ownerIdentityKey = browserSessionsOwnerIdentityKey(
+    args.hostClient,
     hostEntry,
   );
   const openTransport = useDurableStreamTransportFactory();
@@ -738,6 +772,7 @@ function useBrowserSessions(
       errorMessage: null,
     }),
   );
+  const [retryGeneration, setRetryGeneration] = useState(0);
 
   useEffect(() => {
     if (hostId === null || chatId === null || readyOwner?.hostId !== hostId) {
@@ -858,7 +893,12 @@ function useBrowserSessions(
     openTransport,
     primaryProfileCaptureReady,
     readyOwner,
+    retryGeneration,
   ]);
+
+  const retry = useCallback(() => {
+    setRetryGeneration((current) => current + 1);
+  }, []);
 
   const requestPromoteState = useCallback((sessionId: string) => {
     const session = sessionRef.current;
@@ -932,6 +972,7 @@ function useBrowserSessions(
     lifecycle: stateMatchesOwner ? streamState.lifecycle : "connecting",
     items: stateMatchesOwner ? streamState.items : [],
     errorMessage: stateMatchesOwner ? streamState.errorMessage : null,
+    retry,
     closeSession,
     requestPromoteState,
     requestLendStorage,

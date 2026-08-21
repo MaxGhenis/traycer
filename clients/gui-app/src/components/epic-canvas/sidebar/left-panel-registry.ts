@@ -87,7 +87,7 @@ export const LEFT_PANEL_DEFINITIONS: ReadonlyArray<LeftPanelMetadataDefinition> 
       icon: Globe2,
       isAutoVisible: () => true,
       forcedOnHint: null,
-      supportsHeaderSearch: false,
+      supportsHeaderSearch: true,
     },
     {
       id: "artifacts",
