@@ -32,6 +32,7 @@ describe("agent activity across hosts", () => {
       REMOTE_HOST,
       { [CLOUD_EPIC]: { working: ["remote-agent"], turn: ["remote-agent"] } },
       "local",
+      null,
     );
 
     const activity = getEpicAgentActivity(CLOUD_EPIC);
@@ -44,11 +45,13 @@ describe("agent activity across hosts", () => {
       LOCAL_HOST,
       { [CLOUD_EPIC]: { working: ["local-agent"], turn: [] } },
       "local",
+      null,
     );
     __setHostAgentActivityStateForTests(
       REMOTE_HOST,
       { [CLOUD_EPIC]: { working: ["remote-agent"], turn: ["remote-agent"] } },
       "local",
+      null,
     );
 
     const activity = getEpicAgentActivity(CLOUD_EPIC);
@@ -66,11 +69,13 @@ describe("agent activity across hosts", () => {
       LOCAL_HOST,
       { [CLOUD_EPIC]: { working: ["local-agent"], turn: [] } },
       "local",
+      null,
     );
     __setHostAgentActivityStateForTests(
       REMOTE_HOST,
       { [CLOUD_EPIC]: { working: ["remote-agent"], turn: [] } },
       "local",
+      null,
     );
 
     useAgentActivityStore.getState().resetHost(REMOTE_HOST);
@@ -88,6 +93,7 @@ describe("agent activity across hosts", () => {
       LOCAL_HOST,
       { [CLOUD_EPIC]: { working: ["local-agent"], turn: [] } },
       "local",
+      null,
     );
     const first = getEpicAgentActivity(CLOUD_EPIC);
     const second = getEpicAgentActivity(CLOUD_EPIC);
@@ -101,11 +107,13 @@ describe("agent activity across hosts", () => {
       LOCAL_HOST,
       { [CLOUD_EPIC]: { working: ["local-agent"], turn: [] } },
       "local",
+      null,
     );
     __setHostAgentActivityStateForTests(
       REMOTE_HOST,
       { [CLOUD_EPIC]: { working: ["remote-agent"], turn: [] } },
       "cloud",
+      null,
     );
 
     const first = getEpicAgentActivity(CLOUD_EPIC);
@@ -123,11 +131,13 @@ describe("agent activity across hosts", () => {
       LOCAL_HOST,
       { [CLOUD_EPIC]: { working: ["local-agent"], turn: [] } },
       "local",
+      null,
     );
     __setHostAgentActivityStateForTests(
       REMOTE_HOST,
       { [CLOUD_EPIC]: { working: ["remote-agent"], turn: [] } },
       "cloud",
+      null,
     );
     const before = getEpicAgentActivity(CLOUD_EPIC);
 
@@ -135,6 +145,7 @@ describe("agent activity across hosts", () => {
       REMOTE_HOST,
       { [CLOUD_EPIC]: { working: ["remote-agent-2"], turn: [] } },
       "cloud",
+      null,
     );
 
     const after = getEpicAgentActivity(CLOUD_EPIC);
@@ -150,11 +161,13 @@ describe("agent activity across hosts", () => {
       LOCAL_HOST,
       { [CLOUD_EPIC]: { working: ["local-agent"], turn: [] } },
       "local",
+      null,
     );
     __setHostAgentActivityStateForTests(
       REMOTE_HOST,
       { [CLOUD_EPIC]: { working: ["remote-agent"], turn: [] } },
       "cloud",
+      null,
     );
 
     markAgentActivityReconnecting();

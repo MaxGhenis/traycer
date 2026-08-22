@@ -19,18 +19,27 @@
  *                    carries the snapshot metadata; a Y.Doc snapshot rides
  *                    the paired binary payload. The meta shape is the one
  *                    field that varies by minor: `@1.0`/`@1.1` carry the
- *                    frozen `snapshotMetaEpicSchemaV10`, while **@1.2** adds
- *                    `roomId` (`snapshotMetaEpicSchema`).
+ *                    frozen `snapshotMetaEpicSchemaV10`, **@1.2** adds
+ *                    `roomId` (`snapshotMetaEpicSchemaV12`), and **@1.3**
+ *                    adds `seededFromOffer` (`snapshotMetaEpicSchema`) - the
+ *                    marker that the payload is a DELTA against the state
+ *                    vector the client offered, not a self-sufficient
+ *                    snapshot.
+ *
+ * The open request likewise varies by minor: `@1.0`-`@1.2` carry the frozen
+ * `{epicId}` (`epicSubscribeOpenRequestSchemaV10`), while **@1.3**+ add the
+ * optional `seedOffer` that makes a reattach cost what actually changed
+ * rather than re-shipping the whole document.
  * - `update`       - incremental Y.Doc update for the root Epic doc.
  * - `awareness`    - awareness update (cursors, selections, presence) for
  *                    the root Epic doc.
  * - `permissionChanged` - permission change for the subscribing user.
  * - `cloudSyncStatus`  - host-observed Tiptap/cloud room connection state.
  *                    Also the carrier for the optional status keys added by
- *                    later minors: `durability` / `pauseReason` (**@1.3**),
- *                    `promotionState` (**@1.4**), and the s5 status pass's
+ *                    later minors: `durability` / `pauseReason` (**@1.4**),
+ *                    `promotionState` (**@1.5**), and the s5 status pass's
  *                    widened `pauseReason` + `localProtection` + `freshness`
- *                    (**@1.5**). No new frame kind - it is the same
+ *                    (**@1.6**). No new frame kind - it is the same
  *                    host-observed tick.
  * - `pong`         - heartbeat response.
  * - `artifactRoomSnapshot`  - initial state for a healthy artifact-room doc keyed by
@@ -85,11 +94,83 @@ import {
   earlyMetaEpicSchema,
   snapshotMetaEpicSchema,
   snapshotMetaEpicSchemaV10,
+  snapshotMetaEpicSchemaV12,
 } from "@traycer/protocol/host/epic/snapshot-meta";
 
-export const epicSubscribeOpenRequestSchema = z.object({
+/**
+ * The frozen `@1.0` / `@1.1` / `@1.2` open request, as shipped.
+ *
+ * IMMUTABLE, like every other frozen-per-minor shape in this file. A key added
+ * here would be a same-version wire-shape change on three already-released
+ * lines. `@1.3` extends it below.
+ */
+export const epicSubscribeOpenRequestSchemaV10 = z.object({
   epicId: z.string(),
 });
+export type EpicSubscribeOpenRequestV10 = z.infer<
+  typeof epicSubscribeOpenRequestSchemaV10
+>;
+
+/**
+ * A reattaching client's offer of the root-doc state it ALREADY holds, so the
+ * host can answer with a Yjs delta instead of re-shipping the whole document.
+ *
+ * The two fields travel together as one object rather than as two sibling
+ * request keys because neither is meaningful alone: a state vector without its
+ * provenance is precisely the hazard `@1.2`'s `roomId` was introduced for. The
+ * nesting makes "both or neither" structural, so there is no cross-field
+ * runtime check for a later reader to overlook.
+ */
+export const epicSubscribeClientSeedOfferSchema = z.object({
+  /**
+   * Base64-encoded `Y.encodeStateVector` of the live root Epic doc the client
+   * still holds. The host answers `Y.encodeStateAsUpdate(doc, thisVector)` -
+   * everything it has that the client does not.
+   */
+  stateVectorBase64: z.string().min(1),
+  /**
+   * The room the offered state came from - the `roomId` off the snapshot meta
+   * that seeded this client's doc. The host serves a delta only when this
+   * names the room it is about to encode from, and otherwise falls back to a
+   * full snapshot.
+   *
+   * Required inside the offer, not optional. A major schema migration mints a
+   * NEW room for the same `epicId`, so a state vector alone cannot distinguish
+   * "what this client is missing from this room" from "state belonging to the
+   * pre-migration room": diffing against the latter would union two logically
+   * different documents. A client that cannot name its room - one seeded by a
+   * pre-`@1.2` host, which never sent `roomId` - therefore sends NO offer and
+   * takes a full snapshot rather than guessing.
+   */
+  roomId: z.string().min(1),
+});
+export type EpicSubscribeClientSeedOffer = z.infer<
+  typeof epicSubscribeClientSeedOfferSchema
+>;
+
+/**
+ * The LATEST installed open request (`@1.3`): the frozen shape plus an
+ * optional {@link epicSubscribeClientSeedOfferSchema}.
+ *
+ * `.optional()` and never `.default()`. A `.default()` request field
+ * materializes a key the caller never wrote, which splits the GUI's query
+ * cache between the caller's params and the parsed params for what is
+ * logically one subscription.
+ *
+ * NOTE - the offer needs no capability gate on either side, and that falls out
+ * of the dispatcher rather than being arranged. The host validates params with
+ * the NEGOTIATED contract's `openRequestSchema` and passes the PARSED result
+ * downstream (`stream-dispatcher.ts`), so a client that negotiated `@1.0`-
+ * `@1.2` has this key stripped before any resolver sees it, and a pre-`@1.3`
+ * host strips it the same way because zod objects are non-strict. A client may
+ * therefore offer unconditionally - it cannot know the negotiated minor when
+ * it builds its first open request anyway - and an unrecognized offer degrades
+ * to today's full snapshot with no error on any path.
+ */
+export const epicSubscribeOpenRequestSchema =
+  epicSubscribeOpenRequestSchemaV10.extend({
+    seedOffer: epicSubscribeClientSeedOfferSchema.optional(),
+  });
 export type EpicSubscribeOpenRequest = z.infer<
   typeof epicSubscribeOpenRequestSchema
 >;
@@ -177,7 +258,7 @@ export type EpicDurabilityPauseReason = z.infer<
 >;
 
 /**
- * `@1.5` widening of {@link epicDurabilityPauseReasonSchema} for
+ * `@1.6` widening of {@link epicDurabilityPauseReasonSchema} for
  * **`s5-orphaned-epic-recovery`** (which supersedes
  * `s4-tombstone-pause-reason-surfacing` and absorbs its enum widening).
  *
@@ -214,10 +295,10 @@ export type EpicDurabilityPauseReasonV15 = z.infer<
 >;
 
 /**
- * `@1.5` widening of {@link epicDurabilityStatusSchema} for
+ * `@1.6` widening of {@link epicDurabilityStatusSchema} for
  * **`s5-unarmed-session`** and the status-truthfulness class rule it cites.
  *
- * Through `@1.4` the durability datum is optional and has no indeterminate
+ * Through `@1.5` the durability datum is optional and has no indeterminate
  * member, so "the host cannot answer" and "there is nothing to worry about"
  * are the SAME wire state - an absent key - and the renderer resolves that
  * ambiguity in the reassuring direction. That is precisely the defect: a
@@ -374,7 +455,7 @@ const epicSubscribeSnapshotServerFrameSchemaV10 = z.object({
 /**
  * The frozen `@1.0` frames between `snapshot` and `cloudSyncStatus`. Two frame
  * positions vary by minor - `snapshot` (whose `meta` grows at `@1.2`) and
- * `cloudSyncStatus` (whose optional status keys grow at `@1.3`+) - so the
+ * `cloudSyncStatus` (whose optional status keys grow at `@1.4`+) - so the
  * remainder is split around them and spread into each minor's union instead of
  * being duplicated.
  */
@@ -690,7 +771,7 @@ export const epicSubscribeServerFrameSchemaV11 = z.discriminatedUnion("kind", [
 const epicSubscribeSnapshotServerFrameSchemaV12 = z.object({
   kind: z.literal("snapshot"),
   epicId: z.string(),
-  meta: snapshotMetaEpicSchema,
+  meta: snapshotMetaEpicSchemaV12,
   hasBinaryPayload: z.literal(true),
 });
 
@@ -702,14 +783,69 @@ export const epicSubscribeServerFrameSchemaV12 = z.discriminatedUnion("kind", [
   epicSubscribeRootDirtyServerFrameSchema,
 ]);
 
-// ─── `epic.subscribe@1.3` - additive per-epic durability status ───────────
+// ─── `epic.subscribe@1.3` - additive: delta-seeded reattach ───────────────
+//
+// The open request gains an optional `seedOffer` (the state vector of the root
+// doc a reattaching client still holds), and the `snapshot` frame's `meta`
+// gains `seededFromOffer` marking a payload that is a delta against that
+// offer. `@1.0`-`@1.2` stay installed and FROZEN, on both the request and the
+// meta.
+//
+// Both halves are the SAME kind of additive growth as `@1.2`'s `roomId` - a
+// new PROPERTY on an existing shape, not a new frame KIND - so neither needs
+// an emission gate. But they are safe for DIFFERENT reasons, and the two are
+// chained rather than parallel:
+//
+//   - Response: `seededFromOffer` is @1.2's argument exactly - consumer
+//     tolerance. A peer below `@1.3` parses the meta with its own frozen
+//     schema and strips a key it does not know, so the host may publish
+//     unconditionally.
+//   - Request: STRONGER than tolerance. The dispatcher validates params
+//     against the NEGOTIATED contract and hands the resolver the PARSED
+//     value, so an offer arriving on a connection that settled below `@1.3`
+//     is dropped before any resolver sees it. Not "no harm if it arrives" -
+//     it does not arrive. Note the party: the offer comes from a
+//     `@1.3`-CAPABLE client, which offers unconditionally because it cannot
+//     know the negotiated minor when it builds its first open request. A peer
+//     that predates the field has no `seedOffer` to strip.
+//
+// The chain: the response claim ("can only be set when an offer arrived")
+// holds BECAUSE the request-side gate does. Lose that gate and the response
+// half goes with it.
+//
+// So there is no `supportsDeltaSeed()` sibling to `supportsDirtyFrames()`, and
+// deliberately so: the gate that does not exist has no degraded path to get
+// wrong.
+
+/**
+ * The `@1.3` snapshot frame - identical to
+ * {@link epicSubscribeSnapshotServerFrameSchemaV12} except that `meta` can
+ * carry the delta-seed basis marker. `@1.4`+ keep this exact frame: their
+ * growth rides the `cloudSyncStatus` frame instead.
+ */
+const epicSubscribeSnapshotServerFrameSchemaV13 = z.object({
+  kind: z.literal("snapshot"),
+  epicId: z.string(),
+  meta: snapshotMetaEpicSchema,
+  hasBinaryPayload: z.literal(true),
+});
+
+export const epicSubscribeServerFrameSchemaV13 = z.discriminatedUnion("kind", [
+  epicSubscribeSnapshotServerFrameSchemaV13,
+  ...epicSubscribeSharedNonSnapshotServerFrameSchemasV10,
+  epicSubscribeDirtySnapshotServerFrameSchema,
+  epicSubscribeArtifactRoomDirtyServerFrameSchema,
+  epicSubscribeRootDirtyServerFrameSchema,
+]);
+
+// ─── `epic.subscribe@1.4` - additive per-epic durability status ───────────
 //
 // The fields live on the existing cloudSyncStatus frame, rather than adding a
 // new kind, because it is the same host-observed connection tick. They are
-// optional so a @1.3 GUI remains compatible with an older host. @1.0 through
-// @1.2 remain frozen: the resolver omits these keys unless this minor was
+// optional so a @1.4 GUI remains compatible with an older host. @1.0 through
+// @1.3 remain frozen: the resolver omits these keys unless this minor was
 // negotiated.
-const epicSubscribeCloudSyncStatusServerFrameSchemaV13 = z.object({
+const epicSubscribeCloudSyncStatusServerFrameSchemaV14 = z.object({
   kind: z.literal("cloudSyncStatus"),
   epicId: z.string(),
   status: epicCloudSyncStatusSchema,
@@ -721,24 +857,24 @@ const epicSubscribeCloudSyncStatusServerFrameSchemaV13 = z.object({
   hasBinaryPayload: z.literal(false),
 });
 
-export const epicSubscribeServerFrameSchemaV13 = z.discriminatedUnion("kind", [
-  epicSubscribeSnapshotServerFrameSchemaV12,
+export const epicSubscribeServerFrameSchemaV14 = z.discriminatedUnion("kind", [
+  epicSubscribeSnapshotServerFrameSchemaV13,
   ...epicSubscribeServerFrameSchemasBeforeCloudSyncStatus,
-  epicSubscribeCloudSyncStatusServerFrameSchemaV13,
+  epicSubscribeCloudSyncStatusServerFrameSchemaV14,
   ...epicSubscribeServerFrameSchemasAfterCloudSyncStatus,
   epicSubscribeDirtySnapshotServerFrameSchema,
   epicSubscribeArtifactRoomDirtyServerFrameSchema,
   epicSubscribeRootDirtyServerFrameSchema,
 ]);
 
-// ─── `epic.subscribe@1.4` - additive live promotion state ─────────────────
+// ─── `epic.subscribe@1.5` - additive live promotion state ─────────────────
 //
-// `durability` remains exactly the @1.3 field: existing clients use
+// `durability` remains exactly the @1.4 field: existing clients use
 // `promoting` as they always have. The optional field below gives a negotiated
 // peer the missing distinction between an in-progress upload and a durable,
-// currently wedged reservation. @1.3 remains frozen and the host gates this
+// currently wedged reservation. @1.4 remains frozen and the host gates this
 // key on the negotiated minor.
-const epicSubscribeCloudSyncStatusServerFrameSchemaV14 = z.object({
+const epicSubscribeCloudSyncStatusServerFrameSchemaV15 = z.object({
   kind: z.literal("cloudSyncStatus"),
   epicId: z.string(),
   status: epicCloudSyncStatusSchema,
@@ -748,17 +884,17 @@ const epicSubscribeCloudSyncStatusServerFrameSchemaV14 = z.object({
   hasBinaryPayload: z.literal(false),
 });
 
-export const epicSubscribeServerFrameSchemaV14 = z.discriminatedUnion("kind", [
-  epicSubscribeSnapshotServerFrameSchemaV12,
+export const epicSubscribeServerFrameSchemaV15 = z.discriminatedUnion("kind", [
+  epicSubscribeSnapshotServerFrameSchemaV13,
   ...epicSubscribeServerFrameSchemasBeforeCloudSyncStatus,
-  epicSubscribeCloudSyncStatusServerFrameSchemaV14,
+  epicSubscribeCloudSyncStatusServerFrameSchemaV15,
   ...epicSubscribeServerFrameSchemasAfterCloudSyncStatus,
   epicSubscribeDirtySnapshotServerFrameSchema,
   epicSubscribeArtifactRoomDirtyServerFrameSchema,
   epicSubscribeRootDirtyServerFrameSchema,
 ]);
 
-// ─── `epic.subscribe@1.5` - one additive minor for the s5 status pass ─────
+// ─── `epic.subscribe@1.6` - one additive minor for the s5 status pass ─────
 //
 // THREE tickets land on this one frame because they are three readings of the
 // same host-observed connection tick, and splitting them across three minors
@@ -772,18 +908,18 @@ export const epicSubscribeServerFrameSchemaV14 = z.discriminatedUnion("kind", [
 // - `s5-mirror-first-serving` adds `freshness`, the conservative
 //   last-cloud-sync datum a mirror-first open must paint with.
 //
-// Every key stays optional, so an older GUI negotiates down to @1.4 (or lower)
-// and keeps exactly its current rendering. @1.0 through @1.4 remain FROZEN:
+// Every key stays optional, so an older GUI negotiates down to @1.5 (or lower)
+// and keeps exactly its current rendering. @1.0 through @1.5 remain FROZEN:
 // the two widened enums carry values those minors' schemas REFUSE, so the host
 // gates emission on the negotiated version rather than assuming the peer will
 // tolerate them.
 //
-// ABSENCE RULE for a negotiated @1.5 peer: an absent `durability` or
+// ABSENCE RULE for a negotiated @1.6 peer: an absent `durability` or
 // `localProtection` key means UNKNOWN, never "synced" and never "protected".
 // Optionality here is a wire-compat affordance (an older host on this line may
 // omit them), not permission to render silence as reassurance - that reading
 // is the class of status defect this minor exists to correct.
-const epicSubscribeCloudSyncStatusServerFrameSchemaV15 = z.object({
+const epicSubscribeCloudSyncStatusServerFrameSchemaV16 = z.object({
   kind: z.literal("cloudSyncStatus"),
   epicId: z.string(),
   status: epicCloudSyncStatusSchema,
@@ -795,10 +931,10 @@ const epicSubscribeCloudSyncStatusServerFrameSchemaV15 = z.object({
   hasBinaryPayload: z.literal(false),
 });
 
-export const epicSubscribeServerFrameSchemaV15 = z.discriminatedUnion("kind", [
-  epicSubscribeSnapshotServerFrameSchemaV12,
+export const epicSubscribeServerFrameSchemaV16 = z.discriminatedUnion("kind", [
+  epicSubscribeSnapshotServerFrameSchemaV13,
   ...epicSubscribeServerFrameSchemasBeforeCloudSyncStatus,
-  epicSubscribeCloudSyncStatusServerFrameSchemaV15,
+  epicSubscribeCloudSyncStatusServerFrameSchemaV16,
   ...epicSubscribeServerFrameSchemasAfterCloudSyncStatus,
   epicSubscribeDirtySnapshotServerFrameSchema,
   epicSubscribeArtifactRoomDirtyServerFrameSchema,
@@ -806,7 +942,7 @@ export const epicSubscribeServerFrameSchemaV15 = z.discriminatedUnion("kind", [
 ]);
 
 /** The latest installed shape. Host code builds frames against this. */
-export const epicSubscribeServerFrameSchema = epicSubscribeServerFrameSchemaV15;
+export const epicSubscribeServerFrameSchema = epicSubscribeServerFrameSchemaV16;
 export type EpicSubscribeServerFrame = z.infer<
   typeof epicSubscribeServerFrameSchema
 >;
@@ -857,7 +993,7 @@ export type EpicSubscribeClientFrame = z.infer<
 export const epicSubscribeV10 = defineStreamRpcContract({
   method: "epic.subscribe",
   schemaVersion: { major: 1, minor: 0 } as const,
-  openRequestSchema: epicSubscribeOpenRequestSchema,
+  openRequestSchema: epicSubscribeOpenRequestSchemaV10,
   serverFrameSchema: epicSubscribeServerFrameSchemaV10,
   clientFrameSchema: epicSubscribeClientFrameSchema,
 });
@@ -865,7 +1001,7 @@ export const epicSubscribeV10 = defineStreamRpcContract({
 export const epicSubscribeV11 = defineStreamRpcContract({
   method: "epic.subscribe",
   schemaVersion: { major: 1, minor: 1 } as const,
-  openRequestSchema: epicSubscribeOpenRequestSchema,
+  openRequestSchema: epicSubscribeOpenRequestSchemaV10,
   serverFrameSchema: epicSubscribeServerFrameSchemaV11,
   clientFrameSchema: epicSubscribeClientFrameSchema,
 });
@@ -873,7 +1009,7 @@ export const epicSubscribeV11 = defineStreamRpcContract({
 export const epicSubscribeV12 = defineStreamRpcContract({
   method: "epic.subscribe",
   schemaVersion: { major: 1, minor: 2 } as const,
-  openRequestSchema: epicSubscribeOpenRequestSchema,
+  openRequestSchema: epicSubscribeOpenRequestSchemaV10,
   serverFrameSchema: epicSubscribeServerFrameSchemaV12,
   clientFrameSchema: epicSubscribeClientFrameSchema,
 });
@@ -899,5 +1035,13 @@ export const epicSubscribeV15 = defineStreamRpcContract({
   schemaVersion: { major: 1, minor: 5 } as const,
   openRequestSchema: epicSubscribeOpenRequestSchema,
   serverFrameSchema: epicSubscribeServerFrameSchemaV15,
+  clientFrameSchema: epicSubscribeClientFrameSchema,
+});
+
+export const epicSubscribeV16 = defineStreamRpcContract({
+  method: "epic.subscribe",
+  schemaVersion: { major: 1, minor: 6 } as const,
+  openRequestSchema: epicSubscribeOpenRequestSchema,
+  serverFrameSchema: epicSubscribeServerFrameSchemaV16,
   clientFrameSchema: epicSubscribeClientFrameSchema,
 });

@@ -48,15 +48,18 @@ import {
   listEpicCollaboratorsResponseSchema,
   getTaskContextsRequestSchema,
   getTaskContextsResponseSchema,
+  getTaskContextsResponseSchemaPre12,
   getTaskContextsResponseSchemaV10,
-  getTaskContextsResponseSchemaV11,
+  getTaskContextsResponseSchemaPre13,
   isFoundTaskContext,
   listTasksRequestSchema,
   listTasksRequestSchemaV11,
+  listTasksRequestSchemaPre13,
   listTasksResponseSchema,
   listTasksResponseSchemaV10,
-  listTasksResponseSchemaV12,
-  listTasksResponseSchemaV13,
+  listTasksResponseSchemaPre13,
+  listTasksResponseSchemaPre14,
+  listTasksResponseSchemaPre15,
   prepareArtifactImageRequestSchema,
   prepareArtifactImageResponseSchema,
   removeEpicRepoRequestSchema,
@@ -110,6 +113,7 @@ import {
   epicSubscribeV13,
   epicSubscribeV14,
   epicSubscribeV15,
+  epicSubscribeV16,
 } from "@traycer/protocol/host/epic/subscribe";
 import {
   listCloudChatPayloadsRequestSchema,
@@ -167,7 +171,7 @@ export const epicListTasksV11 = defineRpcContract({
   method: "epic.listTasks",
   schemaVersion: { major: 1, minor: 1 } as const,
   requestSchema: listTasksRequestSchemaV11,
-  responseSchema: listTasksResponseSchemaV12,
+  responseSchema: listTasksResponseSchemaPre13,
 });
 
 export const epicListTasksUpgradeV10ToV11 = defineUpgradePath<
@@ -188,8 +192,8 @@ export const epicListTasksUpgradeV10ToV11 = defineUpgradePath<
 export const epicListTasksV12 = defineRpcContract({
   method: "epic.listTasks",
   schemaVersion: { major: 1, minor: 2 } as const,
-  requestSchema: listTasksRequestSchema,
-  responseSchema: listTasksResponseSchemaV12,
+  requestSchema: listTasksRequestSchemaPre13,
+  responseSchema: listTasksResponseSchemaPre13,
 });
 
 export const epicListTasksUpgradeV11ToV12 = defineUpgradePath<
@@ -202,14 +206,17 @@ export const epicListTasksUpgradeV11ToV12 = defineUpgradePath<
   upgradeResponse: (response) => response,
 });
 
-// `epic.listTasks@1.3` adds the optional per-row `home` marker so the host can
-// union local-homed registry rows into the cloud list without breaking older
-// clients (absence ⇒ treat as cloud / unknown). Request is unchanged from 1.2.
+// `epic.listTasks@1.3` adds the chat-host dimension: a `chatHostIds` filter on
+// the request and a matching `chatHosts` facet group on the response. Both are
+// optional, so a v1.2 request is already a valid latest request - but the
+// version gate is what stops a NEW client from believing an OLD host applied a
+// host filter it silently dropped, which would render an unfiltered list as a
+// filtered one.
 export const epicListTasksV13 = defineRpcContract({
   method: "epic.listTasks",
   schemaVersion: { major: 1, minor: 3 } as const,
   requestSchema: listTasksRequestSchema,
-  responseSchema: listTasksResponseSchemaV13,
+  responseSchema: listTasksResponseSchemaPre14,
 });
 
 export const epicListTasksUpgradeV12ToV13 = defineUpgradePath<
@@ -219,13 +226,36 @@ export const epicListTasksUpgradeV12ToV13 = defineUpgradePath<
   from: epicListTasksV12.schemaVersion,
   to: epicListTasksV13.schemaVersion,
   upgradeRequest: (request) => request,
+  // A v1.2 host never counted chat hosts. `chatHosts` stays absent rather
+  // than becoming `[]`: an empty array reads as "no host has any task", and
+  // the popover would render an empty section instead of falling back.
+  upgradeResponse: (response) => response,
+});
+
+// `epic.listTasks@1.4` adds the optional per-row `home` marker so the host can
+// union local-homed registry rows into the cloud list without breaking older
+// clients (absence ⇒ treat as cloud / unknown). Request is unchanged from 1.3.
+export const epicListTasksV14 = defineRpcContract({
+  method: "epic.listTasks",
+  schemaVersion: { major: 1, minor: 4 } as const,
+  requestSchema: listTasksRequestSchema,
+  responseSchema: listTasksResponseSchemaPre15,
+});
+
+export const epicListTasksUpgradeV13ToV14 = defineUpgradePath<
+  typeof epicListTasksV13,
+  typeof epicListTasksV14
+>({
+  from: epicListTasksV13.schemaVersion,
+  to: epicListTasksV14.schemaVersion,
+  upgradeRequest: (request) => request,
   upgradeResponse: (response) => ({
     ...response,
     tasks: response.tasks.map((task) => ({ ...task })),
   }),
 });
 
-// `epic.listTasks@1.4` - the s5 discovery-honesty minor. TWO tickets land on
+// `epic.listTasks@1.5` - the s5 discovery-honesty minor. TWO tickets land on
 // it because they are two halves of one answer and a client that negotiated
 // only half would render the other half's rows without its caveats:
 //
@@ -236,25 +266,25 @@ export const epicListTasksUpgradeV12ToV13 = defineUpgradePath<
 // - `s5-orphaned-epic-recovery` adds the per-row `preservation` marker, which
 //   is what makes an epic preserved through a refused delete listable at all.
 //
-// Both keys are additive and optional, so `@1.0`-`@1.3` peers keep byte-
+// Both keys are additive and optional, so `@1.0`-`@1.4` peers keep byte-
 // identical payloads: the older response schemas strip them, and the host
 // gates emission on the negotiated minor rather than trusting the strip.
-// Request is unchanged from 1.2.
-export const epicListTasksV14 = defineRpcContract({
+// Request is unchanged from 1.3.
+export const epicListTasksV15 = defineRpcContract({
   method: "epic.listTasks",
-  schemaVersion: { major: 1, minor: 4 } as const,
+  schemaVersion: { major: 1, minor: 5 } as const,
   requestSchema: listTasksRequestSchema,
   responseSchema: listTasksResponseSchema,
 });
 
-export const epicListTasksUpgradeV13ToV14 = defineUpgradePath<
-  typeof epicListTasksV13,
-  typeof epicListTasksV14
+export const epicListTasksUpgradeV14ToV15 = defineUpgradePath<
+  typeof epicListTasksV14,
+  typeof epicListTasksV15
 >({
-  from: epicListTasksV13.schemaVersion,
-  to: epicListTasksV14.schemaVersion,
+  from: epicListTasksV14.schemaVersion,
+  to: epicListTasksV15.schemaVersion,
   upgradeRequest: (request) => request,
-  // No synthesized `completeness`. An upgraded `@1.3` payload came from a host
+  // No synthesized `completeness`. An upgraded `@1.4` payload came from a host
   // that cannot make this statement, and absence is exactly the right reading:
   // manufacturing `cloudPage: "settled"` here would be the reassuring default
   // this minor exists to remove.
@@ -300,20 +330,7 @@ export const epicGetTaskContextsV11 = defineRpcContract({
   method: "epic.getTaskContexts",
   schemaVersion: { major: 1, minor: 1 } as const,
   requestSchema: getTaskContextsRequestSchema,
-  responseSchema: getTaskContextsResponseSchemaV11,
-});
-
-// `epic.getTaskContexts@1.2` adds the optional sibling `localHomedTaskIds` id
-// list (see `unary-schemas.ts` for why it is a sibling rather than the per-row
-// `home` marker `epic.listTasks@1.3` carries), so the tab strip can tell a
-// local epic from a cloud one on the only method it uses (`s5-parity-gaps`
-// gap 4). Request unchanged; `@1.0`/`@1.1` stay frozen and simply strip the
-// key.
-export const epicGetTaskContextsV12 = defineRpcContract({
-  method: "epic.getTaskContexts",
-  schemaVersion: { major: 1, minor: 2 } as const,
-  requestSchema: getTaskContextsRequestSchema,
-  responseSchema: getTaskContextsResponseSchema,
+  responseSchema: getTaskContextsResponseSchemaPre12,
 });
 
 export const epicGetTaskContextsUpgradeV10ToV11 = defineUpgradePath<
@@ -335,12 +352,51 @@ export const epicGetTaskContextsUpgradeV10ToV11 = defineUpgradePath<
   }),
 });
 
+// `epic.getTaskContexts@1.2` carries `chatHostIds` on the found row, matching
+// `epic.listTasks@1.3`. These rows are fetched BY ID and so never pass through
+// the list filter; without the field a client cannot tell whether an id-fetched
+// task belongs to a selected host, and has to choose between showing it
+// unfiltered or dropping it entirely. Both are wrong answers.
+export const epicGetTaskContextsV12 = defineRpcContract({
+  method: "epic.getTaskContexts",
+  schemaVersion: { major: 1, minor: 2 } as const,
+  requestSchema: getTaskContextsRequestSchema,
+  responseSchema: getTaskContextsResponseSchemaPre13,
+});
+
 export const epicGetTaskContextsUpgradeV11ToV12 = defineUpgradePath<
   typeof epicGetTaskContextsV11,
   typeof epicGetTaskContextsV12
 >({
   from: epicGetTaskContextsV11.schemaVersion,
   to: epicGetTaskContextsV12.schemaVersion,
+  upgradeRequest: (request) => request,
+  // `chatHostIds` stays ABSENT on an upgraded v1.1 row rather than becoming
+  // `[]`. An old host did not report no visible chat hosts; it reported
+  // nothing, and only absence lets the local predicate abstain instead of
+  // filtering the row out.
+  upgradeResponse: (response) => response,
+});
+
+// `epic.getTaskContexts@1.3` adds the optional sibling `localHomedTaskIds` id
+// list (see `unary-schemas.ts` for why it is a sibling rather than the per-row
+// `home` marker `epic.listTasks@1.4` carries), so the tab strip can tell a
+// local epic from a cloud one on the only method it uses (`s5-parity-gaps`
+// gap 4). Request unchanged; `@1.0`-`@1.2` stay frozen and simply strip the
+// key.
+export const epicGetTaskContextsV13 = defineRpcContract({
+  method: "epic.getTaskContexts",
+  schemaVersion: { major: 1, minor: 3 } as const,
+  requestSchema: getTaskContextsRequestSchema,
+  responseSchema: getTaskContextsResponseSchema,
+});
+
+export const epicGetTaskContextsUpgradeV12ToV13 = defineUpgradePath<
+  typeof epicGetTaskContextsV12,
+  typeof epicGetTaskContextsV13
+>({
+  from: epicGetTaskContextsV12.schemaVersion,
+  to: epicGetTaskContextsV13.schemaVersion,
   upgradeRequest: (request) => request,
   // No synthesized `localHomedTaskIds`. An older host did not answer the
   // question, and absence already means "cloud or unknown" - which is the
@@ -542,7 +598,6 @@ export const epicCreateChatUpgradeV10ToV11 = defineUpgradePath<
   }),
   upgradeResponse: (response) => response,
 });
-
 
 export const epicRenameChatV10 = defineRpcContract({
   method: "epic.renameChat",
@@ -937,6 +992,13 @@ export const epicGetChatRunSettingsV10 = defineRpcContract({
   responseSchema: getChatRunSettingsResponseSchema,
 });
 
+// The terminal-agent RECORD read (`epic.listTuiAgents@1.0`) lives in
+// `tui-agent-records.ts` beside its schemas - the TUI eviction's sibling of
+// the chat record channel above, optional and host-local for the same
+// reason, and owner-rows-only always (terminal agents are private by user
+// ruling). Exported from there via the epic index, not re-exported here,
+// so `export *` consumers see exactly one binding.
+
 export {
   epicSubscribeV10,
   epicSubscribeV11,
@@ -944,4 +1006,5 @@ export {
   epicSubscribeV13,
   epicSubscribeV14,
   epicSubscribeV15,
+  epicSubscribeV16,
 };

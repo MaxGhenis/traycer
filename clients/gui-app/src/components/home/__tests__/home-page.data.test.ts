@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
-  ListTaskLight,
-  ListTaskLightV13,
+  ListTaskLightPre13,
+  ListTaskLightPre15,
 } from "@traycer/protocol/host/epic/unary-schemas";
 import type { WorktreeHostEntryV12 } from "@traycer/protocol/host/worktree-schemas";
 import {
@@ -32,6 +32,7 @@ function makeItem(
     updatedLabel: overrides.updatedLabel ?? "x",
     updatedBucket: overrides.updatedBucket ?? "today",
     linkedRepos: overrides.linkedRepos ?? [],
+    chatHostIds: overrides.chatHostIds ?? null,
     linkedWorkspaces: overrides.linkedWorkspaces ?? [],
     pullRequestNumbers: overrides.pullRequestNumbers ?? [],
     worktreeBranches: overrides.worktreeBranches ?? [],
@@ -64,6 +65,8 @@ describe("home-page history helpers", () => {
         repoMatchMode: "any",
         workspaces: [],
         workspaceMatchMode: "any",
+        chatHosts: [],
+        chatHostMatchMode: "any",
         ownershipScopes: [],
       }),
     ).toHaveLength(2);
@@ -74,6 +77,8 @@ describe("home-page history helpers", () => {
         repoMatchMode: "all",
         workspaces: [],
         workspaceMatchMode: "any",
+        chatHosts: [],
+        chatHostMatchMode: "any",
         ownershipScopes: [],
       }),
     ).toHaveLength(1);
@@ -254,7 +259,7 @@ describe("home-page history helpers", () => {
   });
 
   it("builds history items from cloud task lights and extracts real repo identifiers", () => {
-    const tasks: ReadonlyArray<ListTaskLight> = [
+    const tasks: ReadonlyArray<ListTaskLightPre13> = [
       {
         epic: {
           light: {
@@ -364,7 +369,7 @@ describe("home-page history helpers", () => {
   });
 
   it("marks host-synthesized local-home task rows for cloud-only pin gating", () => {
-    // `home` is carried on listTasks@1.3 rows; the history builder reads it
+    // `home` is carried on listTasks@1.4 rows; the history builder reads it
     // off the task light the host actually returns.
     const tasks = [
       {
@@ -398,7 +403,7 @@ describe("home-page history helpers", () => {
         phase: null,
         pinned: false,
       },
-    ] as ReadonlyArray<ListTaskLightV13>;
+    ] as ReadonlyArray<ListTaskLightPre15>;
 
     const items = buildHistoryItemsFromTasks(
       tasks,
@@ -412,6 +417,56 @@ describe("home-page history helpers", () => {
       epicId: "epic-local",
       isLocalHome: true,
       isPinned: false,
+    });
+  });
+
+  describe("chat-host filter", () => {
+    const hostItems: ReadonlyArray<HistoryItem> = [
+      makeItem({ id: "a", title: "A", chatHostIds: ["host-1"] }),
+      makeItem({ id: "b", title: "B", chatHostIds: ["host-1", "host-2"] }),
+      makeItem({ id: "c", title: "C", chatHostIds: [] }),
+      // No `chatHostIds` at all - served by a peer too old to report them.
+      makeItem({ id: "d", title: "D", chatHostIds: null }),
+    ];
+
+    function filterByHosts(
+      chatHosts: ReadonlyArray<string>,
+      chatHostMatchMode: "any" | "all",
+    ): ReadonlyArray<string> {
+      return filterHistoryItems(hostItems, {
+        repoNames: [],
+        repoMatchMode: "any",
+        workspaces: [],
+        workspaceMatchMode: "any",
+        chatHosts,
+        chatHostMatchMode,
+        ownershipScopes: [],
+      }).map((item) => item.id);
+    }
+
+    it("matches any selected host and excludes a row with none of them", () => {
+      // "c" reports an empty set - a truthful negative. "d" cannot answer, and
+      // is excluded too: nothing has checked it against the filter.
+      expect(filterByHosts(["host-2"], "any")).toEqual(["b"]);
+    });
+
+    it("requires every selected host under `all`", () => {
+      // "a" has host-1 only, so `all` drops it where `any` keeps it.
+      expect(filterByHosts(["host-1", "host-2"], "any")).toEqual(["a", "b"]);
+      expect(filterByHosts(["host-1", "host-2"], "all")).toEqual(["b"]);
+    });
+
+    it("excludes a row that cannot report its hosts", () => {
+      // "d" reaches this predicate only from a source the server never
+      // filtered - an id-fetched worktree/PR match, or a cached row mid
+      // request. Keeping it would render an unfiltered row as a filtered one.
+      // A peer too old to report the field never gets this far: the version
+      // gate withholds the whole list with an explicit explanation.
+      expect(filterByHosts(["host-9"], "any")).toEqual([]);
+    });
+
+    it("is inert when no host is selected", () => {
+      expect(filterByHosts([], "any")).toEqual(["a", "b", "c", "d"]);
     });
   });
 });

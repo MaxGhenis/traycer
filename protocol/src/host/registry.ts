@@ -117,8 +117,12 @@ import {
   agentInboxSubscribeV10,
   agentInboxSubscribeV11,
   agentInboxSubscribeV12,
+  agentInboxSubscribeV13,
 } from "@traycer/protocol/host/agent/inbox";
-import { agentActivitySubscribeV10 } from "@traycer/protocol/host/agent/activity";
+import {
+  agentActivitySubscribeV10,
+  agentActivitySubscribeV11,
+} from "@traycer/protocol/host/agent/activity";
 import {
   agentRolesClaimUpgradeV10ToV11,
   agentRolesClaimV10,
@@ -296,8 +300,10 @@ import {
   epicGetTaskContextsV10,
   epicGetTaskContextsV11,
   epicGetTaskContextsV12,
+  epicGetTaskContextsV13,
   epicGetTaskContextsUpgradeV10ToV11,
   epicGetTaskContextsUpgradeV11ToV12,
+  epicGetTaskContextsUpgradeV12ToV13,
   epicGrantAccessV10,
   epicChatBackupStatusV10,
   epicChatReplicaReadV10,
@@ -317,10 +323,12 @@ import {
   epicListTasksV12,
   epicListTasksV13,
   epicListTasksV14,
+  epicListTasksV15,
   epicListTasksUpgradeV10ToV11,
   epicListTasksUpgradeV11ToV12,
   epicListTasksUpgradeV12ToV13,
   epicListTasksUpgradeV13ToV14,
+  epicListTasksUpgradeV14ToV15,
   epicMentionEpicsV10,
   epicMentionReviewsV10,
   epicMentionSpecsV10,
@@ -354,9 +362,11 @@ import {
   epicSubscribeV13,
   epicSubscribeV14,
   epicSubscribeV15,
+  epicSubscribeV16,
   epicUpdateArtifactStatusV10,
   epicUpdateTitleV10,
 } from "@traycer/protocol/host/epic/contracts";
+import { epicListTuiAgentsV10 } from "@traycer/protocol/host/epic/tui-agent-records";
 import {
   workspaceBrowseFoldersV10,
   workspaceMentionFilesV10,
@@ -369,6 +379,7 @@ import {
   workspaceListFileTreeV10,
   workspacePrepareFoldersV10,
   workspacePrepareFoldersV11,
+  workspacePrepareFoldersV12,
   workspaceReadFileV10,
   workspaceWriteFileV10,
   workspaceResolvePathsByRepoIdentifiersV10,
@@ -384,14 +395,16 @@ import {
   terminalCreateV20,
   terminalCreateUpgradeV10ToV20,
   terminalKillV10,
-  terminalListDowngradeV22ToV10,
+  terminalListDowngradeV23ToV10,
   terminalListV10,
   terminalListV20,
   terminalListV21,
   terminalListV22,
+  terminalListV23,
   terminalListUpgradeV10ToV20,
   terminalListUpgradeV20ToV21,
   terminalListUpgradeV21ToV22,
+  terminalListUpgradeV22ToV23,
   terminalReadOutputV10,
   terminalRenameV10,
   terminalSubscribeV10,
@@ -402,14 +415,35 @@ import {
   terminalSubscribeV15,
 } from "@traycer/protocol/host/terminal/contracts";
 import {
+  terminalPlainCloseDowngradeV21ToV10,
+  terminalPlainCloseUpgradeV10ToV21,
   terminalPlainCloseV10,
+  terminalPlainCloseV21,
+  terminalPlainCreateDowngradeV21ToV10,
+  terminalPlainCreateUpgradeV10ToV21,
   terminalPlainCreateV10,
+  terminalPlainCreateV21,
+  terminalPlainEnsureRunningDowngradeV21ToV10,
+  terminalPlainEnsureRunningUpgradeV10ToV21,
   terminalPlainEnsureRunningV10,
+  terminalPlainEnsureRunningV21,
+  terminalPlainImportLegacyDowngradeV21ToV10,
+  terminalPlainImportLegacyUpgradeV10ToV21,
   terminalPlainImportLegacyV10,
+  terminalPlainImportLegacyV21,
+  terminalPlainListDowngradeV21ToV10,
+  terminalPlainListUpgradeV10ToV21,
   terminalPlainListV10,
+  terminalPlainListV21,
+  terminalPlainRenameDowngradeV21ToV10,
+  terminalPlainRenameUpgradeV10ToV21,
   terminalPlainRenameV10,
+  terminalPlainRenameV21,
 } from "@traycer/protocol/host/terminal/plain-contracts";
-import { terminalPlainSubscribeListV10 } from "@traycer/protocol/host/terminal/plain-subscribe-list";
+import {
+  terminalPlainSubscribeListV10,
+  terminalPlainSubscribeListV21,
+} from "@traycer/protocol/host/terminal/plain-subscribe-list";
 import {
   hostNotificationHooksSave,
   hostNotificationHooksStatus,
@@ -472,7 +506,10 @@ import {
   epicCommunicationGraphSubscribeV10,
   hostCommunicationGraphCloudFeedSubscribeV10,
 } from "@traycer/protocol/host/epic/communication-graph";
-import { hostChatRecordsSubscribeV10 } from "@traycer/protocol/host/epic/chat-records";
+import {
+  hostChatRecordsSubscribeV10,
+  hostChatRecordsSubscribeV11,
+} from "@traycer/protocol/host/epic/chat-records";
 import { editorOpenPathsV10 } from "@traycer/protocol/host/editor/contracts";
 import {
   gitListChangedFilesV10,
@@ -520,6 +557,8 @@ import {
   worktreeListAllForHostResponseSchemaV14,
   worktreeListAllForHostRequestSchemaV15,
   worktreeListAllForHostResponseSchemaV15,
+  worktreeListAllForHostRequestSchemaV16,
+  worktreeListAllForHostResponseSchemaV16,
   worktreeImportRequestSchema,
   worktreeImportResponseSchema,
   worktreeListBranchesRequestSchema,
@@ -1185,6 +1224,29 @@ export const worktreeListAllForHostUpgradeV14ToV15 = defineUpgradePath<
     worktrees: response.worktrees.map((worktree) => ({
       ...worktree,
       presence: "present" as const,
+    })),
+  }),
+});
+
+export const worktreeListAllForHostV16 = defineRpcContract({
+  method: "worktree.listAllForHost",
+  schemaVersion: { major: 1, minor: 6 } as const,
+  requestSchema: worktreeListAllForHostRequestSchemaV16,
+  responseSchema: worktreeListAllForHostResponseSchemaV16,
+});
+
+export const worktreeListAllForHostUpgradeV15ToV16 = defineUpgradePath<
+  typeof worktreeListAllForHostV15,
+  typeof worktreeListAllForHostV16
+>({
+  from: worktreeListAllForHostV15.schemaVersion,
+  to: worktreeListAllForHostV16.schemaVersion,
+  upgradeRequest: (request) => request,
+  upgradeResponse: (response) => ({
+    ...response,
+    worktrees: response.worktrees.map((worktree) => ({
+      ...worktree,
+      gitUnreadable: false,
     })),
   }),
 });
@@ -3472,6 +3534,20 @@ export const workspacePrepareFoldersUpgradeV10ToV11 = defineUpgradePath<
     recentWorkspaces: null,
   }),
 });
+
+export const workspacePrepareFoldersUpgradeV11ToV12 = defineUpgradePath<
+  typeof workspacePrepareFoldersV11,
+  typeof workspacePrepareFoldersV12
+>({
+  from: workspacePrepareFoldersV11.schemaVersion,
+  to: workspacePrepareFoldersV12.schemaVersion,
+  upgradeRequest: (request) => ({
+    ...request,
+    bumpRecency:
+      request.operation === "recordRecentWorkspace" ? true : null,
+  }),
+  upgradeResponse: (response) => response,
+});
 // Additive upgrade from v1.0: a peer on the frozen v1.0 line predates fork
 // provenance entirely, so its creates carry no fork source. The newer side
 // runs this when bridging a v1.0 peer up to canonical (host: inbound v1.0
@@ -4890,7 +4966,7 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
   },
   "epic.listTasks": {
     1: {
-      latestMinor: 4,
+      latestMinor: 5,
       versions: {
         0: {
           contract: epicListTasksV10,
@@ -4911,6 +4987,10 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
         4: {
           contract: epicListTasksV14,
           upgradeFromPreviousVersion: epicListTasksUpgradeV13ToV14,
+        },
+        5: {
+          contract: epicListTasksV15,
+          upgradeFromPreviousVersion: epicListTasksUpgradeV14ToV15,
         },
       },
       downgradePathsFromLatest: {},
@@ -4949,9 +5029,9 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
     1: {
       // @1.1's new row-union values are projection-gated in host dispatch:
       // a v1.0 caller receives its released nullable rows, never a union arm.
-      // @1.2's `localHomedTaskIds` sibling needs no gate of its own - an
+      // @1.3's `localHomedTaskIds` sibling needs no gate of its own - an
       // older peer's frozen schema strips the optional key at parse time.
-      latestMinor: 2,
+      latestMinor: 3,
       versions: {
         0: {
           contract: epicGetTaskContextsV10,
@@ -4965,6 +5045,10 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
         2: {
           contract: epicGetTaskContextsV12,
           upgradeFromPreviousVersion: epicGetTaskContextsUpgradeV11ToV12,
+        },
+        3: {
+          contract: epicGetTaskContextsV13,
+          upgradeFromPreviousVersion: epicGetTaskContextsUpgradeV12ToV13,
         },
       },
       downgradePathsFromLatest: {},
@@ -4997,7 +5081,7 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
   },
   "workspace.prepareFolders": {
     1: {
-      latestMinor: 1,
+      latestMinor: 2,
       versions: {
         0: {
           contract: workspacePrepareFoldersV10,
@@ -5006,6 +5090,11 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
         1: {
           contract: workspacePrepareFoldersV11,
           upgradeFromPreviousVersion: workspacePrepareFoldersUpgradeV10ToV11,
+        },
+        2: {
+          contract: workspacePrepareFoldersV12,
+          upgradeFromPreviousVersion: workspacePrepareFoldersUpgradeV11ToV12,
+          responseGrowthProjectionGated: true,
         },
       },
       downgradePathsFromLatest: {},
@@ -5932,6 +6021,25 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
     },
     degrade: { kind: "unsupported" },
   },
+  // The terminal-agent record read (the TUI eviction). Optional and
+  // host-local for the reason `epic.listChatRecords` is: it answers out of
+  // this host's own registry. A client talking to a host without it runs
+  // DOC-ONLY - that host still writes the `tuiAgents` map, which is exactly
+  // the projection the renderer already renders - so the degrade arm needs no
+  // surface of its own. Never on the unary released floor.
+  "epic.listTuiAgents": {
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: epicListTuiAgentsV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+    degrade: { kind: "unsupported" },
+  },
   "editor.openPaths": {
     1: {
       latestMinor: 0,
@@ -6122,7 +6230,7 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
       downgradePathsFromLatest: {},
     },
     2: {
-      latestMinor: 2,
+      latestMinor: 3,
       versions: {
         0: {
           contract: terminalListV20,
@@ -6136,8 +6244,12 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
           contract: terminalListV22,
           upgradeFromPreviousVersion: terminalListUpgradeV21ToV22,
         },
+        3: {
+          contract: terminalListV23,
+          upgradeFromPreviousVersion: terminalListUpgradeV22ToV23,
+        },
       },
-      downgradePathsFromLatest: { 1: terminalListDowngradeV22ToV10 },
+      downgradePathsFromLatest: { 1: terminalListDowngradeV23ToV10 },
     },
   },
   // Brand-new v1.0 method on the same `degrade: unsupported` channel as
@@ -6169,10 +6281,8 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
       downgradePathsFromLatest: {},
     },
   },
-  // Durable plain terminals use their own optional family. The released
-  // generic terminal methods also carry terminal-agent sessions and remain
-  // frozen; a peer without this family continues on the legacy client-owned
-  // lifecycle until capability-gated migration is available.
+  // v1.0 is the frozen local-only RC family; v2.1 is the fleet family. They
+  // negotiate as a whole so callers never compose incompatible topologies.
   "terminal.plain.create": {
     degrade: { kind: "unsupported" },
     1: {
@@ -6184,6 +6294,17 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
         },
       },
       downgradePathsFromLatest: {},
+    },
+    2: {
+      latestMinor: 1,
+      versions: {
+        1: {
+          contract: terminalPlainCreateV21,
+          upgradeFromPreviousVersion: terminalPlainCreateUpgradeV10ToV21,
+          semanticMajorBreakFromPreviousMajor: true,
+        },
+      },
+      downgradePathsFromLatest: { 1: terminalPlainCreateDowngradeV21ToV10 },
     },
   },
   "terminal.plain.list": {
@@ -6198,6 +6319,16 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
       },
       downgradePathsFromLatest: {},
     },
+    2: {
+      latestMinor: 1,
+      versions: {
+        1: {
+          contract: terminalPlainListV21,
+          upgradeFromPreviousVersion: terminalPlainListUpgradeV10ToV21,
+        },
+      },
+      downgradePathsFromLatest: { 1: terminalPlainListDowngradeV21ToV10 },
+    },
   },
   "terminal.plain.rename": {
     degrade: { kind: "unsupported" },
@@ -6210,6 +6341,16 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
         },
       },
       downgradePathsFromLatest: {},
+    },
+    2: {
+      latestMinor: 1,
+      versions: {
+        1: {
+          contract: terminalPlainRenameV21,
+          upgradeFromPreviousVersion: terminalPlainRenameUpgradeV10ToV21,
+        },
+      },
+      downgradePathsFromLatest: { 1: terminalPlainRenameDowngradeV21ToV10 },
     },
   },
   "terminal.plain.ensureRunning": {
@@ -6224,6 +6365,20 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
       },
       downgradePathsFromLatest: {},
     },
+    2: {
+      latestMinor: 1,
+      versions: {
+        1: {
+          contract: terminalPlainEnsureRunningV21,
+          upgradeFromPreviousVersion:
+            terminalPlainEnsureRunningUpgradeV10ToV21,
+          semanticMajorBreakFromPreviousMajor: true,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: terminalPlainEnsureRunningDowngradeV21ToV10,
+      },
+    },
   },
   "terminal.plain.close": {
     degrade: { kind: "unsupported" },
@@ -6237,6 +6392,17 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
       },
       downgradePathsFromLatest: {},
     },
+    2: {
+      latestMinor: 1,
+      versions: {
+        1: {
+          contract: terminalPlainCloseV21,
+          upgradeFromPreviousVersion: terminalPlainCloseUpgradeV10ToV21,
+          semanticMajorBreakFromPreviousMajor: true,
+        },
+      },
+      downgradePathsFromLatest: { 1: terminalPlainCloseDowngradeV21ToV10 },
+    },
   },
   "terminal.plain.importLegacy": {
     degrade: { kind: "unsupported" },
@@ -6249,6 +6415,20 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
         },
       },
       downgradePathsFromLatest: {},
+    },
+    2: {
+      latestMinor: 1,
+      versions: {
+        1: {
+          contract: terminalPlainImportLegacyV21,
+          upgradeFromPreviousVersion:
+            terminalPlainImportLegacyUpgradeV10ToV21,
+          semanticMajorBreakFromPreviousMajor: true,
+        },
+      },
+      downgradePathsFromLatest: {
+        1: terminalPlainImportLegacyDowngradeV21ToV10,
+      },
     },
   },
   "worktree.listByWorkspacePaths": {
@@ -6389,7 +6569,7 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
   },
   "worktree.listAllForHost": {
     1: {
-      latestMinor: 5,
+      latestMinor: 6,
       versions: {
         0: {
           contract: worktreeListAllForHostV10,
@@ -6414,6 +6594,10 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
         5: {
           contract: worktreeListAllForHostV15,
           upgradeFromPreviousVersion: worktreeListAllForHostUpgradeV14ToV15,
+        },
+        6: {
+          contract: worktreeListAllForHostV16,
+          upgradeFromPreviousVersion: worktreeListAllForHostUpgradeV15ToV16,
         },
       },
       downgradePathsFromLatest: {},
@@ -7739,7 +7923,7 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
     1: {
       // @1.1 adds additive `dirtySnapshot`, `artifactRoomDirty`, and
       // `rootDirty`; @1.2 adds optional durability keys to cloudSyncStatus;
-      // @1.3 adds the optional live-vs-pending promotion state; @1.4 is the s5
+      // @1.5 adds the optional live-vs-pending promotion state; @1.6 is the s5
       // status pass - a widened `pauseReason` (s5-orphaned-epic-recovery), the
       // `localProtection` datum plus a `durability: "unknown"` member
       // (s5-unarmed-session), and the conservative `freshness` datum
@@ -7755,7 +7939,16 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       // minor parses with its own frozen schema and strips the unknown key
       // (see the @1.2 note in `epic/subscribe.ts` for the full asymmetry).
       // @1.0 and @1.1 keep the pre-roomId meta shape.
-      latestMinor: 5,
+      // @1.3 adds the optional `seedOffer` to the OPEN REQUEST (a reattaching
+      // client's root-doc state vector) and `seededFromOffer` to the snapshot
+      // frame's `meta`, so a reattach transfers what changed instead of the
+      // whole document. Like @1.2 - and unlike @1.1's frame kinds - neither
+      // needs an emission gate: both are new PROPERTIES on existing shapes.
+      // The request half additionally self-gates, because the dispatcher
+      // validates params against the NEGOTIATED contract and passes the parsed
+      // value on, so a sub-@1.3 peer's offer is stripped before any resolver
+      // runs.
+      latestMinor: 6,
       versions: {
         0: {
           contract: epicSubscribeV10,
@@ -7774,6 +7967,9 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
         },
         5: {
           contract: epicSubscribeV15,
+        },
+        6: {
+          contract: epicSubscribeV16,
         },
       },
     },
@@ -7860,14 +8056,21 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       },
     },
   },
-  // Snapshot-first durable plain-terminal collection. Unsupported on older
-  // hosts, where the capability-gated client keeps its legacy local model.
+  // Frozen v1 snapshot/increment stream and v2 replacement-state fleet stream.
   "terminal.plain.subscribeList": {
     1: {
       latestMinor: 0,
       versions: {
         0: {
           contract: terminalPlainSubscribeListV10,
+        },
+      },
+    },
+    2: {
+      latestMinor: 1,
+      versions: {
+        1: {
+          contract: terminalPlainSubscribeListV21,
         },
       },
     },
@@ -7991,7 +8194,8 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       // already-known object is silently dropped by a @1.0/@1.1 monitor's own
       // non-strict zod parse, so the resolver builds the @1.2 shape
       // unconditionally rather than branching on negotiated minor.
-      latestMinor: 2,
+      // @1.3 adds structured stop-initiator provenance to notice frames.
+      latestMinor: 3,
       versions: {
         0: {
           contract: agentInboxSubscribeV10,
@@ -8002,6 +8206,9 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
         2: {
           contract: agentInboxSubscribeV12,
         },
+        3: {
+          contract: agentInboxSubscribeV13,
+        },
       },
     },
   },
@@ -8009,12 +8216,17 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   // production wiring selects cloud everywhere; local remains dormant until an
   // explicit host mode exists. State frames report the selected plane, while
   // renderers never choose a different RPC from entitlement state.
+  // `1.1` stamps `cloudSyncStatus` on cloud-served `state` frames. `1.0` stays
+  // registered verbatim so a `1.1` client bridges down to a `1.0` host.
   "agent.activity.subscribe": {
     1: {
-      latestMinor: 0,
+      latestMinor: 1,
       versions: {
         0: {
           contract: agentActivitySubscribeV10,
+        },
+        1: {
+          contract: agentActivitySubscribeV11,
         },
       },
     },
@@ -8061,12 +8273,20 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   // `epic.listChatRecords` poll remains the record table's only refresh -
   // latency, never missing rows. Never add it to the unary released floor -
   // that list is fail-closed on the name set.
+  // @1.1 adds the terminal-agent delta frames (`tuiUpsert` / `tuiRemove`) -
+  // the TUI eviction's freshness half, riding the same host-scoped stream.
+  // @1.0 stays installed and FROZEN: a client that negotiated it never
+  // receives the new kinds, and the host gates emission on the negotiated
+  // version.
   "host.chatRecords.subscribe": {
     1: {
-      latestMinor: 0,
+      latestMinor: 1,
       versions: {
         0: {
           contract: hostChatRecordsSubscribeV10,
+        },
+        1: {
+          contract: hostChatRecordsSubscribeV11,
         },
       },
     },

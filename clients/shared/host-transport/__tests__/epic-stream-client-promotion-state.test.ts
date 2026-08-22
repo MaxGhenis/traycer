@@ -52,14 +52,18 @@ function makeSessionWithInjector(): {
 }
 
 /**
- * A real typed `IStreamClient` stand-in — `subscribe` +
- * `getMethodSchemaVersion` only, no `as unknown as` cast.
+ * A real typed `IStreamClient` stand-in — `subscribe`,
+ * `subscribeWithParamsProvider` and `getMethodSchemaVersion`, no
+ * `as unknown as` cast. The provider arm returns the same session: this suite
+ * is about the durability legs on `cloudSyncStatus`, not about what the open
+ * request carried.
  */
 function makeTypedStreamClient(
   session: IStreamSession,
 ): IStreamClient<HostStreamRpcRegistry> {
   return {
     subscribe: () => session,
+    subscribeWithParamsProvider: () => session,
     getMethodSchemaVersion: () => NEGOTIATED_SCHEMA_VERSION,
   };
 }
@@ -107,6 +111,9 @@ describe("EpicStreamClient cloudSyncStatus promotionState wire field", () => {
     const client = new EpicStreamClient({
       wsStreamClient,
       epicId: "epic-1",
+      // No offer: this suite drives `cloudSyncStatus` frames, and a cold open
+      // is the case where a seed offer is absent by construction.
+      seedOfferProvider: () => null,
       callbacks: noopCallbacks({
         onCloudSyncStatus: (status, durable) => {
           received.push({

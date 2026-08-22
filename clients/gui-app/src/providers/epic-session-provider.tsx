@@ -44,6 +44,7 @@ import {
   getEpicStreamClientFactoryOverride,
   getEpicSessionHandleHostId,
   getOpenEpicRegistry,
+  handleHostClients,
   handleHostIds,
   releaseOpenEpicSessionIfUnused,
 } from "@/lib/registries/epic-session-registry";
@@ -426,10 +427,11 @@ export function EpicSessionProvider(
     const streamClientFactory: EpicStreamClientFactory = (
       factoryEpicId,
       callbacks,
+      seedOfferProvider,
     ) => {
       const override = getEpicStreamClientFactoryOverride();
       if (override !== null) {
-        return override(factoryEpicId, callbacks);
+        return override(factoryEpicId, callbacks, seedOfferProvider);
       }
       // `targetHostId` is non-null here: the acquire effect gates on it above,
       // and it is a `const`, so that narrowing flows into this factory closure.
@@ -444,6 +446,7 @@ export function EpicSessionProvider(
             wsStreamClient: ws,
             epicId: factoryEpicId,
             callbacks,
+            seedOfferProvider,
           }),
       );
       return {
@@ -811,6 +814,16 @@ export function EpicSessionProvider(
   }, [epicId]);
 
   const handle = ownershipClaimed ? (session?.handle ?? null) : null;
+  // Stamp the SAME client the context below provides onto the handle, for
+  // imperative callers outside this subtree (the DnD reparent commit) that
+  // must address the host the session's records live on. Re-stamped on
+  // every change, unlike `handleHostIds`: the host id is the handle's
+  // transport binding and must not drift, the client is a requester for that
+  // binding and legitimately rotates (reconnect, identity re-point).
+  useEffect(() => {
+    if (handle === null) return;
+    handleHostClients.set(handle, resolvedSessionHostClient);
+  }, [handle, resolvedSessionHostClient]);
   const sessionPresentation = useMemo(
     () => ({
       ...presentation,

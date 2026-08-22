@@ -119,17 +119,17 @@ export interface EpicSyncPillInputs {
    */
   readonly hasConnectedOnce: boolean;
   /**
-   * Input 7 - where the host says the epic is durable (`epic.subscribe@1.5`).
+   * Input 7 - where the host says the epic is durable (`epic.subscribe@1.6`).
    *
-   * `undefined` is NOT "fine". At `@1.4` an absent key means unknown, and the
+   * `undefined` is NOT "fine". At `@1.6` an absent key means unknown, and the
    * pill's calm claim has to be licensed by a positive statement - see
    * {@link syncedClaimIsHonest}.
    */
   readonly durability: EpicDurabilityStatusV15 | undefined;
   /**
-   * Input 8 - whether this session has local WAL protection (`@1.4`).
+   * Input 8 - whether this session has local WAL protection (`@1.6`).
    *
-   * Doubles as the MINOR PROBE, deliberately and by construction: a `@1.4`
+   * Doubles as the MINOR PROBE, deliberately and by construction: a `@1.6`
    * host emits this key on every `cloudSyncStatus` frame unconditionally, so
    * `undefined` identifies a peer on an older minor that cannot express any of
    * this. Such a peer keeps exactly its current rendering rather than being
@@ -138,16 +138,16 @@ export interface EpicSyncPillInputs {
   readonly localProtection: EpicLocalProtection | undefined;
   /**
    * Whether the session's negotiated `epic.subscribe` minor speaks the
-   * `@1.4` durability legs. The probe-by-presence above identifies a peer
+   * `@1.6` durability legs. The probe-by-presence above identifies a peer
    * that SENT the key; this identifies one that COULD have. The schema marks
-   * every `@1.4` leg optional and an absent one means UNKNOWN, so an omission
-   * from a negotiated-`@1.4` peer must stay indeterminate rather than taking
+   * every `@1.6` leg optional and an absent one means UNKNOWN, so an omission
+   * from a negotiated-`@1.6` peer must stay indeterminate rather than taking
    * the legacy calm arm - the same handshake-over-frame-shape rule
    * `deriveEpicDurabilityView` applies.
    */
   readonly durabilityLegsNegotiated: boolean;
   /**
-   * Input 9 - how the served document stands relative to the cloud (`@1.4`,
+   * Input 9 - how the served document stands relative to the cloud (`@1.6`,
    * `s5-mirror-first-serving`).
    *
    * The pill's other eight legs are all about where WORK is going. This one is
@@ -158,7 +158,7 @@ export interface EpicSyncPillInputs {
    *
    * `undefined` keeps today's behaviour exactly. The host omits this key where
    * the question does not apply - a local-homed epic, a cloud row it has no
-   * record of - and a pre-`@1.4` peer cannot send it at all.
+   * record of - and a pre-`@1.6` peer cannot send it at all.
    */
   readonly cloudFreshness: EpicCloudFreshness | undefined;
 }
@@ -233,13 +233,13 @@ function cloudUpState(inputs: EpicSyncPillInputs): EpicSyncPillState {
   // An OMITTED key splits the same two ways `syncedClaimIsHonest` splits it,
   // and for the same reason: the probe-by-presence identifies a peer that
   // SENT the key, the handshake identifies one that COULD have. A negotiated
-  // `@1.4` peer that omitted it is stating UNKNOWN per the schema's own
+  // `@1.6` peer that omitted it is stating UNKNOWN per the schema's own
   // absence rule, and `storedLocally` is every bit as positive a claim as
   // `synced` - it tells the reader the bytes are on this disk.
   //
   // The negotiated check is what makes the rule uniform rather than what makes
-  // it reachable: only a `@1.4` peer can send the `local` / `promoting`
-  // durability this arm requires, so a pre-`@1.4` frame never arrives here at
+  // it reachable: only a `@1.6` peer can send the `local` / `promoting`
+  // durability this arm requires, so a pre-`@1.6` frame never arrives here at
   // all. Stated the same way as its sibling so neither can be read as
   // licensing an absence.
   if (inputs.localProtection === undefined && inputs.durabilityLegsNegotiated) {
@@ -279,12 +279,12 @@ function cloudDownState(inputs: EpicSyncPillInputs): EpicSyncPillState {
  * The rule, stated once here rather than at each caller: a calm claim needs a
  * POSITIVE statement behind it, never an absence.
  *
- * - No `localProtection` at all means a pre-`@1.4` peer, which cannot express
+ * - No `localProtection` at all means a pre-`@1.6` peer, which cannot express
  *   any of this. It keeps its exact current behaviour; degrading it to unknown
  *   would make this minor a breaking change for every older host.
- * - `durability: "cloud"` is the POSITIVE cloud-durable statement the `@1.4`
+ * - `durability: "cloud"` is the POSITIVE cloud-durable statement the `@1.6`
  *   enum now carries, and it is the ONLY durability value that licenses calm.
- *   An absent `durability` from a `@1.4` peer means UNKNOWN - the frame's own
+ *   An absent `durability` from a `@1.6` peer means UNKNOWN - the frame's own
  *   absence rule - and review found the earlier reading here (absence beside
  *   `armed` as the calm arm) resolving a schema-permitted omission into
  *   exactly the silence-as-reassurance this minor exists to break.
@@ -307,8 +307,8 @@ function syncedClaimIsHonest(inputs: EpicSyncPillInputs): boolean {
     inputs.localProtection === undefined &&
     !inputs.durabilityLegsNegotiated
   ) {
-    // A genuinely pre-`@1.4` peer keeps its legacy rendering. A negotiated
-    // `@1.4` peer omitting the optional key falls through: absence is the
+    // A genuinely pre-`@1.6` peer keeps its legacy rendering. A negotiated
+    // `@1.6` peer omitting the optional key falls through: absence is the
     // wire contract's UNKNOWN and cannot license the calm claim.
     return true;
   }

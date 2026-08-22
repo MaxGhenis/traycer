@@ -170,7 +170,13 @@ export interface TaskAssociations {
   workspaces: UserTaskWorkspace[];
 }
 
-export const taskFiltersSchema = z.object({
+// The pre-@1.3 filter shape, shared by every minor from @1.0 through @1.2 -
+// they must all resolve to the SAME schema instance, or the registry's
+// compatibility validator reads the newer field as one an older minor
+// "drops". `hostId` here is the WORKSPACE-association
+// host (it pairs with `workspacePath`), NOT the chat-host filter added in
+// @1.3 - the two dimensions answer different questions and must stay distinct.
+export const taskFiltersSchemaPre13 = z.object({
   query: z.string().optional(),
   taskType: taskTypeSchema.optional(),
   repoIdentifier: z.string().optional(),
@@ -182,6 +188,26 @@ export const taskFiltersSchema = z.object({
   workspacePath: z.string().optional(),
   hostId: z.string().optional(),
   organizationId: z.string().optional(),
+});
+export type TaskFiltersPre13 = z.infer<typeof taskFiltersSchemaPre13>;
+
+/**
+ * `chatHostIds` filters tasks by the hosts that own CHATS in them
+ * (`chats.owner_host_id`), which is what "this task is on that machine" means
+ * to a person: agents live on a host, and a task acquires a host when a chat
+ * is created there. Deliberately not the workspace association above - a
+ * workspace is bound at create and never follows the work.
+ *
+ * Scoped to the caller's OWN live chats. A collaborator's host is a machine
+ * the caller cannot name - their host directory has never seen it - and
+ * surfacing which machine a teammate works on is an association nothing else
+ * in the product exposes. It also sidesteps duplicate chat ids, which the
+ * real readers resolve by an owner-precedence tiebreak that an aggregate
+ * cannot reproduce.
+ */
+export const taskFiltersSchema = taskFiltersSchemaPre13.extend({
+  chatHostIds: z.array(z.string()).optional(),
+  chatHostMatchMode: taskRepoMatchModeSchema.optional(),
 });
 export type TaskFilters = z.infer<typeof taskFiltersSchema>;
 
@@ -499,10 +525,26 @@ export type TaskLight = z.infer<typeof taskLightSchema>;
 export const listTaskLightSchemaV10 = taskLightSchema;
 export type ListTaskLightV10 = z.infer<typeof listTaskLightSchemaV10>;
 
-export const listTaskLightSchema = taskLightSchema.extend({
+export const listTaskLightSchemaPre13 = taskLightSchema.extend({
   pinned: z.boolean().optional(),
 });
-export type ListTaskLight = z.infer<typeof listTaskLightSchema>;
+export type ListTaskLightPre13 = z.infer<typeof listTaskLightSchemaPre13>;
+
+/**
+ * `chatHostIds` are the hosts owning the CALLER'S OWN live chats in this task
+ * - the same scope the `chatHostIds` filter and the `chatHosts` facet apply,
+ * evaluated per row. It is what lets a client re-apply the host filter
+ * locally: to cached rows while a request is in flight, and to rows it fetched
+ * by id (which never passed through the server's filter at all).
+ *
+ * Absent, not `[]`, on a row from a peer that predates the field - the
+ * distinction matters, because `[]` is a truthful "none of my chats anywhere"
+ * and would let a local predicate confidently filter the row OUT.
+ */
+export const listTaskLightSchemaPre14 = listTaskLightSchemaPre13.extend({
+  chatHostIds: z.array(z.string()).optional(),
+});
+export type ListTaskLightPre14 = z.infer<typeof listTaskLightSchemaPre14>;
 
 /**
  * Durable home for an epic as known by the host local-room registry.
@@ -519,11 +561,12 @@ export type ListTaskLight = z.infer<typeof listTaskLightSchema>;
 export const epicListHomeSchema = z.enum(["local", "cloud"]);
 export type EpicListHome = z.infer<typeof epicListHomeSchema>;
 
-// `epic.listTasks@1.3` list row: personal pin bit plus optional durability home.
-export const listTaskLightSchemaV13 = listTaskLightSchema.extend({
+// `epic.listTasks@1.4` list row: @1.3's chat-host dimension plus the optional
+// durability home.
+export const listTaskLightSchemaPre15 = listTaskLightSchemaPre14.extend({
   home: epicListHomeSchema.optional(),
 });
-export type ListTaskLightV13 = z.infer<typeof listTaskLightSchemaV13>;
+export type ListTaskLightPre15 = z.infer<typeof listTaskLightSchemaPre15>;
 
 /**
  * Why a row survived a deletion, on a row the client would otherwise never
@@ -536,33 +579,40 @@ export type ListTaskLightV13 = z.infer<typeof listTaskLightSchemaV13>;
  * surface a pause badge could render on - the epic was durably recorded and
  * permanently unreachable.
  *
- * A closed enum with one member on purpose. The other two `@1.4` delete-path
+ * A closed enum with one member on purpose. The other two `@1.6` delete-path
  * pause reasons are informational states of an epic the user can already see;
  * only this one describes an epic that has to be RE-ADMITTED to discovery.
  */
 export const epicListPreservationSchema = z.enum(["orphaned-local-edits"]);
 export type EpicListPreservation = z.infer<typeof epicListPreservationSchema>;
 
-// `epic.listTasks@1.4` list row: adds the preservation marker.
-export const listTaskLightSchemaV14 = listTaskLightSchemaV13.extend({
+// `epic.listTasks@1.5` list row: adds the preservation marker.
+export const listTaskLightSchema = listTaskLightSchemaPre15.extend({
   preservation: epicListPreservationSchema.optional(),
 });
-export type ListTaskLightV14 = z.infer<typeof listTaskLightSchemaV14>;
+export type ListTaskLight = z.infer<typeof listTaskLightSchema>;
 
 export const listTasksRequestSchemaV11 = z.object({
   limit: z.number(),
   cursor: z.string().optional(),
-  filters: taskFiltersSchema.nullable(),
+  filters: taskFiltersSchemaPre13.nullable(),
   sort: listTasksSortSchemaV11.optional(),
   extensionPhaseVersion: z.string(),
   extensionEpicVersion: z.string(),
 });
-export const listTasksRequestSchema = listTasksRequestSchemaV11.extend({
+export const listTasksRequestSchemaPre13 = listTasksRequestSchemaV11.extend({
   sort: listTasksSortSchema.optional(),
+});
+export type ListTasksRequestPre13 = z.infer<typeof listTasksRequestSchemaPre13>;
+
+export const listTasksRequestSchema = listTasksRequestSchemaPre13.extend({
+  filters: taskFiltersSchema.nullable(),
 });
 export type ListTasksRequest = z.infer<typeof listTasksRequestSchema>;
 
-export const listTasksFacetsSchema = z.object({
+// The pre-@1.3 facet shape, shared by @1.0/@1.1/@1.2 - see the filter note
+// above on why every older minor must point at this one instance.
+export const listTasksFacetsSchemaPre13 = z.object({
   repos: z.array(
     z.object({
       repoIdentifier: taskRepoIdentifierSchema,
@@ -582,39 +632,75 @@ export const listTasksFacetsSchema = z.object({
     }),
   ),
 });
+export type ListTasksFacetsPre13 = z.infer<typeof listTasksFacetsSchemaPre13>;
+
+export const listTasksFacetsSchema = listTasksFacetsSchemaPre13.extend({
+  // Optional rather than required: the whole facets object is already
+  // first-page-only, and a host that upgrades ahead of the cloud tier would
+  // otherwise fail the response parse instead of degrading to "no counts".
+  chatHosts: z
+    .array(
+      z.object({
+        hostId: z.string(),
+        count: z.number(),
+      }),
+    )
+    .optional(),
+});
 export type ListTasksFacets = z.infer<typeof listTasksFacetsSchema>;
 
 export const listTasksResponseSchemaV10 = z.object({
   tasks: z.array(listTaskLightSchemaV10),
   nextCursor: z.string().optional(),
   hasMore: z.boolean(),
-  facets: listTasksFacetsSchema.optional(),
+  facets: listTasksFacetsSchemaPre13.optional(),
 });
 export type ListTasksResponseV10 = z.infer<typeof listTasksResponseSchemaV10>;
 
-// Frozen at the 1.1/1.2 pin-aware shape (no home marker).
-export const listTasksResponseSchemaV12 = z.object({
-  tasks: z.array(listTaskLightSchema),
+export const listTasksResponseSchemaPre13 = z.object({
+  tasks: z.array(listTaskLightSchemaPre13),
   nextCursor: z.string().optional(),
   hasMore: z.boolean(),
-  facets: listTasksFacetsSchema.optional(),
+  facets: listTasksFacetsSchemaPre13.optional(),
 });
-export type ListTasksResponseV12 = z.infer<typeof listTasksResponseSchemaV12>;
+export type ListTasksResponsePre13 = z.infer<
+  typeof listTasksResponseSchemaPre13
+>;
 
-// `epic.listTasks@1.3` response: pin-aware rows plus the optional host-side
-// home marker. FROZEN - `@1.4` adds keys this schema would strip.
-export const listTasksResponseSchemaV13 = z.object({
-  tasks: z.array(listTaskLightSchemaV13),
-  nextCursor: z.string().optional(),
-  hasMore: z.boolean(),
-  facets: listTasksFacetsSchema.optional(),
-});
-export type ListTasksResponseV13 = z.infer<typeof listTasksResponseSchemaV13>;
+// BOTH members move to their @1.3 shapes. Extending only `facets` leaves
+// `tasks` on the frozen pre-1.3 row, and since zod STRIPS unknown keys, every
+// row's `chatHostIds` would be silently discarded at response validation -
+// the field would simply never arrive, with nothing failing.
+//
+// FROZEN at @1.3 - `@1.4` adds a row key this schema would strip. `facets`
+// names the live schema on purpose: the facet shape does not move again on
+// this line, so freezing it would only add a name. Freeze it here the moment
+// a later minor extends `listTasksFacetsSchema`.
+export const listTasksResponseSchemaPre14 = listTasksResponseSchemaPre13.extend(
+  {
+    tasks: z.array(listTaskLightSchemaPre14),
+    facets: listTasksFacetsSchema.optional(),
+  },
+);
+export type ListTasksResponsePre14 = z.infer<
+  typeof listTasksResponseSchemaPre14
+>;
+
+// `epic.listTasks@1.4` response: @1.3's rows plus the optional host-side home
+// marker. FROZEN - `@1.5` adds keys this schema would strip.
+export const listTasksResponseSchemaPre15 = listTasksResponseSchemaPre14.extend(
+  {
+    tasks: z.array(listTaskLightSchemaPre15),
+  },
+);
+export type ListTasksResponsePre15 = z.infer<
+  typeof listTasksResponseSchemaPre15
+>;
 
 /**
  * How complete this page actually is - `s5-offline-history` C6.
  *
- * Through `@1.3` a page that had lost its cloud leg was indistinguishable from
+ * Through `@1.4` a page that had lost its cloud leg was indistinguishable from
  * a complete one: the host swallowed the failure, fell back to an empty body,
  * prepended the local rows, and the client rendered the result under whatever
  * filter chips and sort the user had picked. There was no key on the wire that
@@ -667,15 +753,12 @@ export const listTasksCompletenessSchema = z.object({
 });
 export type ListTasksCompleteness = z.infer<typeof listTasksCompletenessSchema>;
 
-// Latest listTasks response: `@1.4` preservation-marked rows plus the
+// Latest listTasks response: `@1.5` preservation-marked rows plus the
 // completeness statement. Both keys stay optional so an older HOST on this
-// line simply omits them; a `@1.4` client reads absence as "this host cannot
+// line simply omits them; a `@1.5` client reads absence as "this host cannot
 // say", never as "complete".
-export const listTasksResponseSchema = z.object({
-  tasks: z.array(listTaskLightSchemaV14),
-  nextCursor: z.string().optional(),
-  hasMore: z.boolean(),
-  facets: listTasksFacetsSchema.optional(),
+export const listTasksResponseSchema = listTasksResponseSchemaPre15.extend({
+  tasks: z.array(listTaskLightSchema),
   completeness: listTasksCompletenessSchema.optional(),
 });
 export type ListTasksResponse = z.infer<typeof listTasksResponseSchema>;
@@ -729,7 +812,7 @@ export type GetTaskContextsRequest = z.infer<
 >;
 
 export const getTaskContextsResponseSchemaV10 = z.object({
-  tasks: z.record(z.string(), listTaskLightSchema.nullable()),
+  tasks: z.record(z.string(), listTaskLightSchemaPre13.nullable()),
 });
 export type GetTaskContextsResponseV10 = z.infer<
   typeof getTaskContextsResponseSchemaV10
@@ -747,6 +830,20 @@ export const taskContextUnknownReasonSchema = z.enum([
 export type TaskContextUnknownReason = z.infer<
   typeof taskContextUnknownReasonSchema
 >;
+
+export const taskContextResolutionSchemaPre12 = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("found"),
+    task: listTaskLightSchemaPre13,
+  }),
+  z.object({
+    status: z.literal("confirmed-absent"),
+  }),
+  z.object({
+    status: z.literal("unknown"),
+    reason: taskContextUnknownReasonSchema,
+  }),
+]);
 
 export const taskContextResolutionSchema = z.discriminatedUnion("status", [
   z.object({
@@ -782,20 +879,27 @@ export function isConfirmedAbsentTaskContext(
   return result?.status === "confirmed-absent";
 }
 
-/**
- * `epic.getTaskContexts@1.1` response - FROZEN. Rows are the resolution
- * union; the `@1.2` growth below is a sibling key on the response object,
- * never a change to this record's value shape.
- */
-export const getTaskContextsResponseSchemaV11 = z.object({
-  tasks: z.record(z.string(), taskContextResultSchema),
+export const getTaskContextsResponseSchemaPre12 = z.object({
+  tasks: z.record(z.string(), taskContextResolutionSchemaPre12),
 });
-export type GetTaskContextsResponseV11 = z.infer<
-  typeof getTaskContextsResponseSchemaV11
+export type GetTaskContextsResponsePre12 = z.infer<
+  typeof getTaskContextsResponseSchemaPre12
 >;
 
 /**
- * `epic.getTaskContexts@1.2` - which of the returned ids are local-homed.
+ * `epic.getTaskContexts@1.2` response - FROZEN. Rows are the resolution
+ * union; the `@1.3` growth below is a sibling key on the response object,
+ * never a change to this record's value shape.
+ */
+export const getTaskContextsResponseSchemaPre13 = z.object({
+  tasks: z.record(z.string(), taskContextResultSchema),
+});
+export type GetTaskContextsResponsePre13 = z.infer<
+  typeof getTaskContextsResponseSchemaPre13
+>;
+
+/**
+ * `epic.getTaskContexts@1.3` - which of the returned ids are local-homed.
  *
  * The host has always KNOWN this here: the resolver overlays owned local-home
  * rows precisely so a released GUI reconciling its open tabs does not read an
@@ -806,18 +910,18 @@ export type GetTaskContextsResponseV11 = z.infer<
  *
  * ## A sibling id list rather than `home` on the row
  *
- * `epic.listTasks@1.3` puts `home` on the row and this would ideally match it.
+ * `epic.listTasks@1.4` puts `home` on the row and this would ideally match it.
  * It cannot: `tasks` is a `z.record`, which the additivity gate compares
  * structurally as an opaque node, so growing its VALUE schema is a hard
  * compatibility violation even when the added key is optional. Adding an
  * optional sibling property to the response object is the additive shape the
  * gate is built around, and it carries the same fact.
  *
- * Absence means the host did not say - an older host, or a `@1.0`/`@1.1`
+ * Absence means the host did not say - an older host, or a `@1.0`-`@1.2`
  * negotiation - and must be read as cloud-or-unknown, never as local.
  */
 export const getTaskContextsResponseSchema =
-  getTaskContextsResponseSchemaV11.extend({
+  getTaskContextsResponseSchemaPre13.extend({
     localHomedTaskIds: z.array(z.string()).optional(),
   });
 export type GetTaskContextsResponse = z.infer<

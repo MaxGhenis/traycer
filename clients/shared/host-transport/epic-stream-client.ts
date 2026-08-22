@@ -10,6 +10,7 @@ import {
   type EpicMigrationPhase,
   type EpicPromotionState,
   type EpicSubscribeClientFrame,
+  type EpicSubscribeClientSeedOffer,
   type EpicSubscribeServerFrame,
 } from "@traycer/protocol/host/epic/subscribe";
 
@@ -59,6 +60,18 @@ import type { IStreamClient } from "./i-stream-client";
  * forgot about.
  */
 export interface EpicStreamCallbacks {
+  /**
+   * Initial root-doc state for this subscribe cycle.
+   *
+   * `meta.seededFromOffer === true` means `snapshotBytes` is a **delta**
+   * against the state vector this client offered through
+   * `seedOfferProvider`, not a self-sufficient snapshot: it MUST be merged
+   * into the very doc that produced that offer, and MUST NOT be used to
+   * replace a doc or seed a fresh one. Anything else - including a full
+   * snapshot that arrived despite an offer - is self-sufficient and safe to
+   * apply either way. Both cases apply with the same `Y.applyUpdate`, so this
+   * distinction constrains WHICH DOC, never how.
+   */
   readonly onSnapshot: (
     meta: SnapshotMetaEpic,
     snapshotBytes: Uint8Array,
@@ -224,6 +237,26 @@ export interface EpicStreamClientOptions {
   readonly wsStreamClient: IStreamClient<HostStreamRpcRegistry>;
   readonly epicId: string;
   readonly callbacks: EpicStreamCallbacks;
+  /**
+   * Reports the root-doc state this client ALREADY holds, so a reattach can be
+   * served as a delta instead of re-shipping the whole document. Read
+   * immediately before every wire subscribe, including the re-declare after a
+   * reconnect — so it must be a cheap, synchronous, side-effect-free read of
+   * live state, never a cached value computed once.
+   *
+   * Returns `null` whenever there is nothing safe to offer, and the caller is
+   * expected to use that freely: no doc yet (a cold open — first-open cost is
+   * not what this mechanism addresses), or a doc whose originating `roomId` is
+   * unknown, which happens for state seeded by a pre-`@1.2` host that never
+   * reported one. Offering a vector without its room would let the host diff
+   * against a doc from a room a migration has since replaced.
+   *
+   * Required rather than optional: every construction site must decide whether
+   * it can offer state. A wrapper that silently defaulted to "no offer" would
+   * leave the reattach cost this class exists to remove, and would do it
+   * invisibly.
+   */
+  readonly seedOfferProvider: () => EpicSubscribeClientSeedOffer | null;
 }
 
 /**
@@ -239,23 +272,23 @@ export interface EpicStreamClientOptions {
 /**
  * The `epic.subscribe` minor that introduced `durability: "unknown"`,
  * `localProtection`, and `freshness`. Named once here because it is the ONE
- * fact that makes an absent leg readable, and a literal `1.5` spelled at the
+ * fact that makes an absent leg readable, and a literal `1.6` spelled at the
  * comparison site is a literal nobody updates when the next minor lands.
  */
-const EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION = { major: 1, minor: 5 } as const;
+const EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION = { major: 1, minor: 6 } as const;
 
 /**
  * The durability half of a `cloudSyncStatus` frame, as ONE value.
  *
- * Grouped rather than passed as four positional arguments: `@1.5` made this
+ * Grouped rather than passed as four positional arguments: `@1.6` made this
  * four legs that are read TOGETHER (see the absence rule below), and four
  * trailing `undefined`s at a call site is exactly how a leg ends up in the
  * wrong slot.
  *
  * ABSENT MEANS UNKNOWN on every field, never "synced" and never "protected".
- * These used to be projected down onto the frozen `@1.4` unions, so a host
+ * These used to be projected down onto the frozen `@1.5` unions, so a host
  * saying `unknown` reached the renderer as `undefined` and rendered as the
- * calm value - the ambiguity `epic.subscribe@1.5` exists to remove.
+ * calm value - the ambiguity `epic.subscribe@1.6` exists to remove.
  */
 export type EpicCloudSyncDurability = {
   readonly durability: EpicDurabilityStatusV15 | undefined;
@@ -264,7 +297,7 @@ export type EpicCloudSyncDurability = {
   /** Whether this session has local WAL protection. */
   readonly localProtection: EpicLocalProtection | undefined;
   /**
-   * How the served document stands relative to the cloud - `@1.5`,
+   * How the served document stands relative to the cloud - `@1.6`,
    * `s5-mirror-first-serving`.
    *
    * Carried in the same value as the durability legs because it is read WITH
@@ -277,14 +310,14 @@ export type EpicCloudSyncDurability = {
    */
   readonly freshness: EpicCloudFreshness | undefined;
   /**
-   * Whether the peer that sent this frame speaks the `@1.5` durability legs
+   * Whether the peer that sent this frame speaks the `@1.6` durability legs
    * at all - carried WITH them because it is the only thing that makes their
    * absence readable.
    *
-   * Every `@1.5` key above is optional on the wire, and the schema's absence
+   * Every `@1.6` key above is optional on the wire, and the schema's absence
    * rule says an absent one means UNKNOWN. A renderer with only the values in
    * hand cannot honour that: absence looks identical whether it came from a
-   * `@1.4` peer that has no opinion (render as before) or a `@1.5` peer that
+   * `@1.5` peer that has no opinion (render as before) or a `@1.6` peer that
    * declined to state one (render conservatively). Probing presence to tell
    * them apart resolves the permitted omission as "old peer", which is the
    * silence-reads-as-reassurance inference this minor exists to break.
@@ -325,9 +358,24 @@ export class EpicStreamClient {
     this.callbacks = options.callbacks;
     this.closed = false;
 
-    this.session = options.wsStreamClient.subscribe("epic.subscribe", {
-      epicId: options.epicId,
-    });
+    // `subscribeWithParamsProvider`, not `subscribe`: the offer has to be read
+    // at each wire subscribe, because the reattach is the only moment it is
+    // worth anything. Freezing params at construction would send the state the
+    // doc had when the tab opened — on the first subscribe that is `null`
+    // (nothing loaded yet), so every later reconnect would re-request the whole
+    // document, which is the exact behaviour this class exists to remove.
+    this.session = options.wsStreamClient.subscribeWithParamsProvider(
+      "epic.subscribe",
+      () => {
+        const seedOffer = options.seedOfferProvider();
+        // Omit the key entirely rather than sending an explicit `undefined`:
+        // the field is `.optional()`, and absence is the wire encoding of
+        // "no offer".
+        return seedOffer === null
+          ? { epicId: options.epicId }
+          : { epicId: options.epicId, seedOffer };
+      },
+    );
     this.session.onServerFrame((envelope, binaryPayload) => {
       this.handleServerFrame(envelope, binaryPayload);
     });
@@ -501,7 +549,7 @@ export class EpicStreamClient {
       case "cloudSyncStatus": {
         this.callbacks.onCloudSyncStatus(
           frame.status,
-          // Passed through at their `@1.5` width now that the renderer half of
+          // Passed through at their `@1.6` width now that the renderer half of
           // the s5 status pass exists. The projection that used to sit here
           // narrowed `durability: "unknown"` to `undefined`, which handed the
           // renderer exactly the ambiguity this minor was added to remove.

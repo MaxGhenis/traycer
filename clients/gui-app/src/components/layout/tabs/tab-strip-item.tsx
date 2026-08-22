@@ -601,6 +601,7 @@ function TabLeadingIcon(props: {
       runningTitle="Task activity in progress"
       defaultIcon={defaultIcon}
       statusPresentation="message"
+      agentSurface="gui"
     />
   );
 }

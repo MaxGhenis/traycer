@@ -15,7 +15,7 @@ const HEALTHY_INPUTS: EpicSyncPillInputs = {
   hostDirtyState: "clean",
   hasUnsyncedLocalChanges: false,
   hasConnectedOnce: true,
-  // A pre-@1.4 peer, which is what every case in this file was written
+  // A pre-@1.6 peer, which is what every case in this file was written
   // against. The undefined key PLUS a handshake that never negotiated the
   // legs is how the derivation identifies one, so these keep asserting
   // exactly the behaviour they always did.
@@ -103,7 +103,7 @@ describe("deriveEpicSyncPillState", () => {
     expect(result).toBe("offlineWithHostPending");
   });
 
-  it("cloud reconnecting with host-pending work makes no durability claim on a pre-@1.4 peer", () => {
+  it("cloud reconnecting with host-pending work makes no durability claim on a pre-@1.6 peer", () => {
     const result = deriveEpicSyncPillState({
       ...HEALTHY_INPUTS,
       cloudSyncStatus: "reconnecting",
@@ -291,9 +291,9 @@ describe("deriveEpicSyncPillState", () => {
   // epic no cloud has ever seen. Every case below returns `synced` on the
   // pre-fix derivation.
   describe("the synced claim needs a cloud durability fact behind it", () => {
-    it("keeps a negotiated @1.4 peer's omitted legs indeterminate", () => {
-      // The schema marks every `@1.4` leg optional and an absent one means
-      // UNKNOWN. Presence-probing alone read this frame as a pre-`@1.4` peer
+    it("keeps a negotiated @1.6 peer's omitted legs indeterminate", () => {
+      // The schema marks every `@1.6` leg optional and an absent one means
+      // UNKNOWN. Presence-probing alone read this frame as a pre-`@1.6` peer
       // and claimed "All changes synced" off an absence - the negotiated
       // handshake is what tells the two silences apart.
       expect(
@@ -306,7 +306,7 @@ describe("deriveEpicSyncPillState", () => {
       ).toBe("connected");
     });
 
-    it("still claims synced for a genuinely pre-@1.4 peer", () => {
+    it("still claims synced for a genuinely pre-@1.6 peer", () => {
       expect(deriveEpicSyncPillState(HEALTHY_INPUTS)).toBe("synced");
     });
 
@@ -335,7 +335,7 @@ describe("deriveEpicSyncPillState", () => {
       // reading an absence as protection after that one was fixed.
       // `storedLocally` tells the reader their bytes are on this disk, which
       // is every bit as positive a claim as "All changes synced" - a
-      // negotiated `@1.4` peer omitting the optional key is stating UNKNOWN
+      // negotiated `@1.6` peer omitting the optional key is stating UNKNOWN
       // per the schema's own absence rule, and unknown licenses neither.
       expect(
         deriveEpicSyncPillState({
@@ -383,7 +383,7 @@ describe("deriveEpicSyncPillState", () => {
     });
 
     it("does not claim synced on an absent durability key alone", () => {
-      // The @1.4 absence rule. A peer that speaks the minor and says nothing
+      // The @1.6 absence rule. A peer that speaks the minor and says nothing
       // about durability has said UNKNOWN, and the calm claim needs the
       // positive `armed` beside it before it may render.
       expect(
@@ -396,7 +396,7 @@ describe("deriveEpicSyncPillState", () => {
     });
 
     it("claims synced only on the POSITIVE cloud member, never on an absence", () => {
-      // `durability: "cloud"` is the `@1.4` statement the calm claim rests
+      // `durability: "cloud"` is the `@1.6` statement the calm claim rests
       // on. Absence beside `armed` used to buy the same rendering, which let
       // a schema-permitted omission read as "All changes synced".
       expect(
@@ -415,7 +415,7 @@ describe("deriveEpicSyncPillState", () => {
       ).not.toBe("synced");
     });
 
-    it("keeps a pre-@1.4 peer on exactly its old rendering", () => {
+    it("keeps a pre-@1.6 peer on exactly its old rendering", () => {
       expect(deriveEpicSyncPillState(HEALTHY_INPUTS)).toBe("synced");
     });
   });
@@ -461,7 +461,7 @@ describe("deriveEpicSyncPillState", () => {
  */
 describe("cloud freshness gates the synced claim", () => {
   /**
-   * The `@1.4` shape of {@link HEALTHY_INPUTS}: a positively-armed session
+   * The `@1.6` shape of {@link HEALTHY_INPUTS}: a positively-armed session
    * with no local-durability claim, i.e. durable in the cloud. Without a
    * freshness statement this is the one combination that legitimately reads
    * `synced`, which is what makes it the right baseline to perturb.
@@ -486,9 +486,9 @@ describe("cloud freshness gates the synced claim", () => {
     ).toBe("synced");
   });
 
-  it("keeps its exact pre-@1.4 answer when the host says nothing about freshness", () => {
+  it("keeps its exact pre-@1.6 answer when the host says nothing about freshness", () => {
     // The additive property, asserted rather than assumed: the host omits this
-    // key wherever the question does not apply, and a peer below @1.4 cannot
+    // key wherever the question does not apply, and a peer below @1.6 cannot
     // send it at all. Neither may lose its current rendering.
     expect(deriveEpicSyncPillState(CLOUD_DURABLE_ARMED)).toBe("synced");
   });

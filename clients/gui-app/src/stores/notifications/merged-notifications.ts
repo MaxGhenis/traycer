@@ -108,6 +108,10 @@ export interface MergedNotificationRow {
   readonly title: string;
   readonly body: string;
   readonly payload: NotificationPayload | null;
+  /** Presentation identity of an agent lifecycle row. Kept separately from
+   * the normalized navigation payload, where GUI chats and TUI agents both
+   * intentionally route through a chat-shaped target. */
+  readonly agentSurface?: "gui" | "tui" | null;
   readonly hostKind: HostNotificationFeedEntry["kind"] | null;
   readonly appLocalKind: AppLocalNotificationEntry["kind"] | null;
   readonly globalEntry: NotificationEntry | null;
@@ -254,9 +258,11 @@ function useMergedNotificationRows(): ReadonlyArray<MergedNotificationRow> {
       // client-side state - no host or cloud feed can reproduce them - so
       // they ride in the LOCAL lane beside the `home: local` partition rows.
       const localRows = [
-        ...hostIds.map((id) =>
-          rowFromHostEntryForOrigin(hostById[id], notificationHostId),
-        ),
+        ...hostIds
+          .filter((id) => !isAutomaticAgentRecovery(hostById[id]))
+          .map((id) =>
+            rowFromHostEntryForOrigin(hostById[id], notificationHostId),
+          ),
         ...appLocalIds.map((id) => rowFromAppLocalEntry(appLocalById[id])),
         ...orderedGlobalEntries.map((entry) => rowFromGlobalEntry(entry)),
       ];
@@ -265,15 +271,18 @@ function useMergedNotificationRows(): ReadonlyArray<MergedNotificationRow> {
         .filter(
           (row): row is HostNotificationsCloudFeedRow => row !== undefined,
         )
+        .filter((row) => !isAutomaticAgentRecovery(row.entry))
         .map(rowFromCloudFeedRow);
       remoteRows.sort(compareFeedCandidates);
       return [...localRows, ...remoteRows];
     }
     if (feedMode === "upgrade-required") return [];
     const rows: MergedNotificationRow[] = [
-      ...hostIds.map((id) =>
-        rowFromHostEntryForOrigin(hostById[id], notificationHostId),
-      ),
+      ...hostIds
+        .filter((id) => !isAutomaticAgentRecovery(hostById[id]))
+        .map((id) =>
+          rowFromHostEntryForOrigin(hostById[id], notificationHostId),
+        ),
       ...appLocalIds.map((id) => rowFromAppLocalEntry(appLocalById[id])),
       ...orderedGlobalEntries.map((entry) => rowFromGlobalEntry(entry)),
     ];
@@ -474,7 +483,8 @@ function rowFromLocalFeedId(input: {
   if (input.feedMode === "upgrade-required") return null;
   switch (input.parsed.source) {
     case "host":
-      return input.hostEntry === null
+      return input.hostEntry === null ||
+        isAutomaticAgentRecovery(input.hostEntry)
         ? null
         : rowFromHostEntryForOrigin(input.hostEntry, input.hostOriginId);
     case "app-local":
@@ -494,8 +504,31 @@ function rowFromCloudFeedId(input: {
   readonly feedMode: "local" | "cloud" | "upgrade-required";
   readonly cloudRow: HostNotificationsCloudFeedRow | undefined;
 }): MergedNotificationRow | null {
-  if (input.feedMode !== "cloud" || input.cloudRow === undefined) return null;
+  if (
+    input.feedMode !== "cloud" ||
+    input.cloudRow === undefined ||
+    isAutomaticAgentRecovery(input.cloudRow.entry)
+  )
+    return null;
   return rowFromCloudFeedRow(input.cloudRow);
+}
+
+/** A successful non-human turn advances terminal glyph chronology but is not
+ * itself notification history. The durable row must reach cloud indicator
+ * projection, so presentation filters it here instead of deleting it from the
+ * feed upstream. */
+function isAutomaticAgentRecovery(entry: {
+  readonly kind: string;
+  readonly payload: unknown;
+}): boolean {
+  if (entry.kind !== "agent.stopped") return false;
+  const payload = entry.payload;
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    "automaticRecovery" in payload &&
+    payload.automaticRecovery === true
+  );
 }
 
 export function useMergedNotificationRow(
@@ -1417,6 +1450,7 @@ function rowFromHostEntryForOrigin(
     title: presentation.title,
     body: presentation.body,
     payload: payloadFromHostEntry(entry),
+    agentSurface: agentSurfaceFromHostEntry(entry),
     hostKind: entry.kind,
     appLocalKind: null,
     globalEntry: null,
@@ -1499,6 +1533,7 @@ export function rowFromCloudFeedRow(
     title,
     body: fallback.body,
     payload: payloadFromHostEntry(row.entry),
+    agentSurface: agentSurfaceFromHostEntry(row.entry),
     hostKind: row.entry.kind,
     appLocalKind: null,
     globalEntry: null,
@@ -1625,16 +1660,47 @@ function payloadFromHostEntry(
   return known === null ? null : navigationPayloadFromKnown(known);
 }
 
+function agentSurfaceFromHostEntry(
+  entry: HostNotificationFeedEntry,
+): "gui" | "tui" | null {
+  const known = parseKnownHostNotificationPayloadForKind(
+    entry.kind,
+    entry.payload,
+  );
+  if (known === null) return null;
+  if (known.kind === "epic") return "tui";
+  if (
+    known.kind === "chat" ||
+    known.kind === "agent_stalled" ||
+    known.kind === "workspace_operation_failed"
+  ) {
+    return "gui";
+  }
+  return null;
+}
+
 function navigationPayloadFromKnown(
   known: HostNotificationKnownPayload,
 ): NotificationPayload | null {
   switch (known.kind) {
-    case "chat":
+    case "chat": {
+      // A final, unqualified Done describes the current end-state, so it
+      // always opens at the end of the transcript. Failures and qualified
+      // Done rows retain their occurrence anchor.
+      const includeTranscriptAnchor =
+        known.outcome === "errored" || known.backgroundWorkRunning === true;
+      const scrollToEnd =
+        known.outcome === "completed" && known.backgroundWorkRunning !== true;
       return {
         kind: "chat",
         epicId: known.epicId,
         chatId: known.chatId ?? undefined,
+        ...(known.hostId === undefined ? {} : { hostId: known.hostId }),
+        messageId: includeTranscriptAnchor ? known.messageId : undefined,
+        eventId: includeTranscriptAnchor ? known.eventId : undefined,
+        ...(scrollToEnd ? { scrollToEnd: true as const } : {}),
       };
+    }
     case "agent_stalled":
       return { kind: "chat", epicId: known.epicId, chatId: known.chatId };
     case "workspace_operation_failed":

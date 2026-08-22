@@ -56,7 +56,16 @@ vi.mock(
                       }
                     : { status: mocks.authorityStatus },
                 canMutate: mocks.canMutate,
-                collection: { terminalsById: mocks.terminalsById },
+                collection: {
+                  terminalsByIdentity: Object.fromEntries(
+                    Object.entries(mocks.terminalsById).map(
+                      ([terminalId, value]) => [
+                        JSON.stringify([hostId, terminalId]),
+                        value,
+                      ],
+                    ),
+                  ),
+                },
               },
               mutations: { close: { mutateAsync: mocks.closeAsync } },
             });
@@ -88,6 +97,13 @@ vi.mock(
 );
 
 import { LandingTerminalTombstoneRecoveryBridge } from "@/providers/landing-terminal-tombstone-recovery-bridge";
+
+/**
+ * The account axis the wire no longer carries: `hostListItemToDirectoryEntry`
+ * stamps it onto every entry at projection time. These fixtures describe an
+ * entitled account unless a case says otherwise.
+ */
+const PLAN_ALLOWS_REMOTE = true;
 
 const offlineHost: HostDirectoryEntry = {
   hostId: "host-b",
@@ -174,6 +190,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
 
     await waitFor(() => {
       expect(mocks.closeAsync).toHaveBeenCalledWith({
+        hostId: "host-b",
         terminalId: "session-capable",
       });
       expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
@@ -416,6 +433,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
       hostListItemToDirectoryEntry(
         remoteItem("connectable", recentLastSeen),
         relayUrl,
+        PLAN_ALLOWS_REMOTE,
       ),
     ];
     const view = render(<LandingTerminalTombstoneRecoveryBridge />);
@@ -425,6 +443,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
       hostListItemToDirectoryEntry(
         remoteItem("offline", recentLastSeen),
         relayUrl,
+        PLAN_ALLOWS_REMOTE,
       ),
     ];
     view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
@@ -448,6 +467,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
       hostListItemToDirectoryEntry(
         remoteItem("connectable", new Date().toISOString()),
         relayUrl,
+        PLAN_ALLOWS_REMOTE,
       ),
     ];
     view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
@@ -491,6 +511,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
         hostListItemToDirectoryEntry(
           remoteItem(recentLastSeen),
           "wss://relay.example/attach",
+          PLAN_ALLOWS_REMOTE,
         ),
       ];
       const view = render(<LandingTerminalTombstoneRecoveryBridge />);

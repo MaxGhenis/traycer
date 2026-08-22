@@ -44,7 +44,7 @@ export function EpicDurabilityBadge() {
   // `cloudDurable` is the host positively stating that the epic is in the
   // cloud and this session is locally protected, so there is genuinely no
   // badge to draw - that is the ordinary online case and it stays silent.
-  // `legacy` is a pre-`@1.4` peer with no durability answer, which is exactly
+  // `legacy` is a pre-`@1.6` peer with no durability answer, which is exactly
   // the rendering it had before this minor.
   //
   // What used to join them is `indeterminate`, and it does not any more: an
@@ -56,7 +56,7 @@ export function EpicDurabilityBadge() {
     // Cloud durability is calm about the DURABILITY axis only, so silence is
     // licensed by a POSITIVE statement on the protection axis too - never by
     // the absence of one. `unavailable` means offline edits die with the
-    // process; `unknown` is the host saying it cannot tell, which `@1.5`
+    // process; `unknown` is the host saying it cannot tell, which `@1.6`
     // defines as "rendered as unknown, never as protected". Excluding only
     // `unavailable` here left that second case pixel-identical to `armed` -
     // the same silence-as-reassurance inference this minor exists to break,
@@ -272,7 +272,7 @@ function ExportArtifactsAction(props: {
  * nothing, on every epic, forever. This is the one place in the s5 status pass
  * where absence is calm, and it is calm because the host's absence is a
  * STATEMENT of inapplicability rather than a failure to answer - the protocol
- * doc is explicit that a `@1.4` host emits the key wherever it applies.
+ * doc is explicit that a `@1.6` host emits the key wherever it applies.
  *
  * `current` is silent because it is the reassuring answer and the badge's
  * whole design is that it draws only when there is something to say.
@@ -425,7 +425,7 @@ function viewStatus(
     view.kind === "legacy" &&
     view.status !== null &&
     view.status !== "unknown" &&
-    // A pre-`@1.4` peer cannot emit the two `@1.4`-only members; the guard
+    // A pre-`@1.6` peer cannot emit the two `@1.6`-only members; the guard
     // exists for the type, not for a reachable frame.
     view.status !== "cloud"
   ) {
@@ -481,7 +481,7 @@ function durabilityRiskCopy(
   // reason that arm was not enough on its own: a stated status answers WHERE
   // the epic lives, `localProtection` answers whether this session's edits are
   // held anywhere, and `unknown` on the second beside `local` on the first is
-  // the exact reading `@1.5` exists to forbid - "Stored locally" telling the
+  // the exact reading `@1.6` exists to forbid - "Stored locally" telling the
   // reader their work is on this disk when no WAL is known to hold it.
   // `cloudDurable` is excluded because `badgeCopy` names it there already, and
   // one badge saying it twice is worse than saying it once.
@@ -497,7 +497,7 @@ function durabilityRiskCopy(
  * The `indeterminate` arms are the new ones and they are the reason this
  * function exists in this shape. A `switch` over the raw status enum returned
  * `undefined` for anything it did not name, and the caller dereferenced
- * `.label` straight off it - so `@1.4`'s `unknown` member would not have
+ * `.label` straight off it - so `@1.6`'s `unknown` member would not have
  * degraded, it would have thrown. More importantly, the states that reached
  * here as `null` drew NOTHING, which is how an unprotected session came to
  * look exactly like a protected one.
@@ -574,7 +574,7 @@ function badgeCopy(
 }
 
 /**
- * The paused arm, widened for `@1.4`'s three delete-path reasons -
+ * The paused arm, widened for `@1.6`'s three delete-path reasons -
  * `s5-status-truthfulness` instance 2.
  *
  * All three used to arrive as a bare `paused` and render "Sync paused", which

@@ -72,6 +72,16 @@ const RECONCILE_METHOD = "epic.getTaskContexts" as const;
 const LOCAL_HOME_LIST_METHOD = "epic.listTasks" as const;
 const LOCAL_HOME_LIST_LIMIT = 100;
 
+/**
+ * Existence has to stay reasonably fresh - the whole point of the run is to
+ * notice an epic deleted elsewhere - but a run's identity already changes on
+ * every host / user / canvas-rehydration boundary, so the only repeats this
+ * window covers are the ones a plain remount produces (a route change, a
+ * StrictMode double-mount, a window reopened). Half a minute collapses those
+ * into one RPC while still re-asking the host well inside a session.
+ */
+const EXISTENCE_STALE_TIME_MS = 30_000;
+
 export function EpicTabExistenceReconciler() {
   const seed = usePersistedEpicTabReconcileSeed();
   if (seed === null) return null;
@@ -81,10 +91,6 @@ export function EpicTabExistenceReconciler() {
 interface ReconcileSeed {
   readonly identity: string;
   readonly openEpicIds: ReadonlyArray<string>;
-}
-
-interface ReconcileRun extends ReconcileSeed {
-  readonly attempt: number;
 }
 
 function usePersistedEpicTabReconcileSeed(): ReconcileSeed | null {
@@ -136,21 +142,20 @@ function usePersistedEpicTabReconcileSeed(): ReconcileSeed | null {
   }, [identity, openEpicIds]);
 }
 
-let nextReconcileAttempt = 0;
-
+/**
+ * Freezes the id set this run probes. Tabs opened or closed after the run
+ * starts must not re-key the batch: reconciliation is about the set as it was
+ * persisted, and re-keying on every tab gesture would issue one RPC per
+ * gesture. Identity changes remount this component (see the `key` above) and
+ * that is the only thing that starts a new run.
+ */
 function EpicTabReconciliationRun(props: { readonly seed: ReconcileSeed }) {
-  const [run] = useState<ReconcileRun>(() => {
-    nextReconcileAttempt += 1;
-    return {
-      ...props.seed,
-      attempt: nextReconcileAttempt,
-    };
-  });
+  const [run] = useState<ReconcileSeed>(() => props.seed);
 
   return <EpicTabExistenceProbe run={run} />;
 }
 
-function EpicTabExistenceProbe(props: { readonly run: ReconcileRun }) {
+function EpicTabExistenceProbe(props: { readonly run: ReconcileSeed }) {
   const client = useHostClient();
   const completionAppliedRef = useRef(false);
   const openEpicIds = props.run.openEpicIds;
@@ -173,8 +178,8 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileRun }) {
   >({
     client,
     requests,
-    cacheKeyIdentity: `${props.run.identity}|${props.run.attempt}`,
-    options: { enabled: true },
+    cacheKeyIdentity: props.run.identity,
+    options: { enabled: true, staleTime: EXISTENCE_STALE_TIME_MS },
     combine: combineConfirmedAbsentEpicIds,
   });
 
@@ -197,7 +202,11 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileRun }) {
     client,
     method: LOCAL_HOME_LIST_METHOD,
     params: localHomeListParams,
-    cacheKeyIdentity: [props.run.identity, props.run.attempt, "local-home"],
+    // Same identity the existence probe above keys on, plus a discriminator so
+    // the two queries never share a cache entry. `identity` alone carries the
+    // per-run freshness now - the separate attempt counter this used to add is
+    // gone from `ReconcileSeed`.
+    cacheKeyIdentity: [props.run.identity, "local-home"],
     options: { enabled: true },
   });
 

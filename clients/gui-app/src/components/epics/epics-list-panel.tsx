@@ -81,6 +81,7 @@ import {
   DEFAULT_SORT,
 } from "@/components/home/data/home-page.data";
 import { EpicsFilterPopover } from "@/components/epics/epics-filter-popover";
+import { useChatHostFilterSupport } from "@/hooks/home/use-chat-host-filter-support";
 import { EpicsSortMenu } from "@/components/epics/epics-sort-menu";
 import { useHistoryListKeyboardNav } from "@/components/epics/use-history-list-keyboard-nav";
 import { NotificationIndicatorIcon } from "@/components/notifications/notification-indicator-icon";
@@ -360,6 +361,8 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
     chatIds: [],
     enabled: indicatorEpicIds.length > 0,
   });
+  const { chatHostFilterSupported, chatHostFilterUnsupported } =
+    useChatHostFilterGate(hostId, data);
   const availableRepos = view.availableRepos;
   const availableWorkspaces = view.availableWorkspaces;
   const facets = view.facets;
@@ -654,6 +657,7 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
           search={search}
           onSearchChange={updateSearch}
           facets={facets}
+          chatHostFilterSupported={chatHostFilterSupported}
           refresh={{ isFetching, hostId, onRefetch: refetch }}
         />
         <NotificationIndicatorsProvider indicators={notificationIndicators}>
@@ -666,6 +670,7 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
               isPending={isPending}
               isFetching={isFetching}
               hasActiveFilters={hasActiveFilters}
+              chatHostFilterUnsupported={chatHostFilterUnsupported}
               items={items}
               onRetry={handleRetry}
               selectionMode={selectionMode}
@@ -721,10 +726,33 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
   );
 }
 
+/**
+ * The two chat-host gate answers the panel needs, kept together because they
+ * are two faces of one decision: whether to OFFER the filter, and whether the
+ * rows in hand were withheld because it could not be applied.
+ *
+ * "unknown" (no handshake yet) stays OFFERABLE. The manifest fills in on the
+ * first RPC to the host, and hiding the section until then would make it
+ * flicker in on every cold open. A filter actually issued against a host that
+ * turns out to be too old is caught by the fail-closed arm in
+ * `useHistoryQuery`, which withholds rows rather than showing them unfiltered.
+ */
+function useChatHostFilterGate(
+  hostId: string | null,
+  data: HistoryFetchResult | undefined,
+): { chatHostFilterSupported: boolean; chatHostFilterUnsupported: boolean } {
+  const support = useChatHostFilterSupport(hostId);
+  return {
+    chatHostFilterSupported: support !== "unsupported",
+    chatHostFilterUnsupported: data?.chatHostFilterUnsupported ?? false,
+  };
+}
+
 function hasActiveHistoryFilters(search: HistorySearchState): boolean {
   return (
     search.repos.length > 0 ||
     search.workspaces.length > 0 ||
+    search.chatHosts.length > 0 ||
     search.ownershipScopes.length > 0 ||
     (search.sortExplicit && search.sort !== DEFAULT_SORT) ||
     search.query.trim().length > 0
@@ -852,6 +880,7 @@ interface PanelChromeBarProps {
   readonly search: HistorySearchState;
   readonly onSearchChange: (patch: HistorySearchPatch) => void;
   readonly facets: HistoryFacets | undefined;
+  readonly chatHostFilterSupported: boolean;
   readonly refresh: PanelRefreshControls;
 }
 
@@ -947,6 +976,7 @@ function PanelChromeBar(props: PanelChromeBarProps): ReactNode {
               search={props.search}
               onSearchChange={props.onSearchChange}
               facets={props.facets}
+              chatHostFilterSupported={props.chatHostFilterSupported}
             />
             {props.showSelection ? (
               <Button
@@ -1003,11 +1033,35 @@ function describeDeleteTitle(
   return `Delete "${matchTitle}"?`;
 }
 
+/**
+ * Shown when a host filter is active but the serving peer cannot apply it, so
+ * the rows were withheld. Deliberately NOT an empty-history message: the
+ * account's tasks exist, this client just declined to show a list it could not
+ * honestly call filtered.
+ */
+function EpicsListChatHostFilterUnsupported(): ReactNode {
+  return (
+    <div
+      className="flex flex-col items-center justify-center gap-2 py-[min(4rem,12vh)] text-center text-ui-sm text-muted-foreground"
+      data-testid="epics-list-chat-host-filter-unsupported"
+    >
+      <p className="font-medium text-foreground">
+        Can&apos;t filter by host here
+      </p>
+      <p className="max-w-full">
+        This host is running a version that doesn&apos;t support the host
+        filter. Update it, or clear the host filter to see your tasks.
+      </p>
+    </div>
+  );
+}
+
 interface EpicsListBodyProps {
   readonly error: Error | null;
   readonly isPending: boolean;
   readonly isFetching: boolean;
   readonly hasActiveFilters: boolean;
+  readonly chatHostFilterUnsupported: boolean;
   readonly items: ReadonlyArray<HistoryItem>;
   readonly onRetry: () => void;
   readonly selectionMode: boolean;
@@ -1041,6 +1095,7 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
     isPending,
     isFetching,
     hasActiveFilters,
+    chatHostFilterUnsupported,
     items,
     onRetry,
     selectionMode,
@@ -1082,6 +1137,11 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
   }
   if (isPending) {
     return <EpicsListLoading />;
+  }
+  // Ahead of every other empty state: the rows were WITHHELD, not absent, and
+  // "No tasks yet" would be an outright false statement about the account.
+  if (chatHostFilterUnsupported) {
+    return <EpicsListChatHostFilterUnsupported />;
   }
   if (items.length === 0 && !hasActiveFilters) {
     // The notice renders HERE too, and this is the case it matters most for:
@@ -1222,7 +1282,7 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
 /**
  * What this page is NOT, stated once, above the rows.
  *
- * Through `@1.3` a History page that had lost its cloud leg was
+ * Through `@1.4` a History page that had lost its cloud leg was
  * indistinguishable from a complete one: the host swallowed the failure, fell
  * back to an empty body, prepended local rows, and the user read the result
  * under whatever filter chips and sort they had picked. There was nothing on
@@ -1851,6 +1911,7 @@ function HistoryRowLeadingIcon(props: { readonly item: HistoryItem }) {
         <Layers className="size-4 shrink-0 text-muted-foreground group-hover/list-row:text-foreground" />
       }
       statusPresentation="message"
+      agentSurface="gui"
     />
   );
 }

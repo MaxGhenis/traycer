@@ -1,8 +1,6 @@
 import type {
   PermissionRole,
   ListTaskLight,
-  ListTaskLightV13,
-  ListTaskLightV14,
   TaskOwnershipScope,
   TaskWorkspaceIdentifier,
 } from "@traycer/protocol/host/epic/unary-schemas";
@@ -45,6 +43,15 @@ export interface HistoryItem {
   updatedBucket: HistoryRecencyBucket;
   linkedRepos: ReadonlyArray<string>;
   linkedWorkspaces: ReadonlyArray<HistoryWorkspaceRef>;
+  /**
+   * Hosts owning the signed-in user's OWN chats in this task, or `null` when
+   * the serving peer predates the field.
+   *
+   * `null` is not `[]`. An empty array truthfully says "none of my chats live
+   * on any host", which a host filter acts on by excluding the row; `null`
+   * says the row cannot answer at all.
+   */
+  chatHostIds: ReadonlyArray<string> | null;
   pullRequestNumbers: ReadonlyArray<string>;
   worktreeBranches: ReadonlyArray<string>;
   worktreePaths: ReadonlyArray<string>;
@@ -70,6 +77,8 @@ export interface HistoryFilters {
   repoMatchMode: HistoryMatchMode;
   workspaces: ReadonlyArray<HistoryWorkspaceRef>;
   workspaceMatchMode: HistoryMatchMode;
+  chatHosts: ReadonlyArray<string>;
+  chatHostMatchMode: HistoryMatchMode;
   ownershipScopes: ReadonlyArray<HistoryOwnershipScope>;
 }
 
@@ -92,7 +101,7 @@ export const EMPTY_LOCAL_HOMED_TASK_IDS: ReadonlySet<string> = new Set();
 /**
  * `localHomedTaskIds` is a REQUIRED argument, not an optional one: the two
  * response shapes that feed this projection carry the home marker in two
- * different places. `epic.listTasks@1.3` puts `home` on the row; a `z.record`
+ * different places. `epic.listTasks@1.4` puts `home` on the row; a `z.record`
  * forced `epic.getTaskContexts@1.2` to put it in a sibling id list instead.
  * A caller with the sibling in hand and no parameter to pass it through
  * silently projects every context row as cloud-backed, which is exactly what
@@ -102,14 +111,14 @@ export const EMPTY_LOCAL_HOMED_TASK_IDS: ReadonlySet<string> = new Set();
 /**
  * Local home, from EITHER carrier.
  *
- * `epic.listTasks@1.3` puts `home` on the row; `epic.getTaskContexts@1.2` had
+ * `epic.listTasks@1.4` puts `home` on the row; `epic.getTaskContexts@1.3` had
  * to put it in a response-level sibling list, because its `tasks` is a
  * `z.record` whose value schema the additivity gate treats as opaque. A row
  * reached through the second path carries no `home` at all, so checking only
  * the row would read every context-only search hit as cloud-backed.
  */
 function isLocalHomedRow(
-  task: ListTaskLight | ListTaskLightV13 | ListTaskLightV14,
+  task: ListTaskLight,
   epicId: string,
   localHomedTaskIds: ReadonlySet<string>,
 ): boolean {
@@ -117,16 +126,16 @@ function isLocalHomedRow(
   return localHomedTaskIds.has(epicId);
 }
 
-/** `@1.4`'s row-level preservation marker: the cloud task is already deleted
+/** `@1.5`'s row-level preservation marker: the cloud task is already deleted
  * and the row exists only so this device's edits stay reachable. */
 function isPreservedOrphanRow(
-  task: ListTaskLight | ListTaskLightV13 | ListTaskLightV14,
+  task: ListTaskLight,
 ): boolean {
   return "preservation" in task && task.preservation === "orphaned-local-edits";
 }
 
 export function buildHistoryItemsFromTasks(
-  tasks: ReadonlyArray<ListTaskLight | ListTaskLightV13 | ListTaskLightV14>,
+  tasks: ReadonlyArray<ListTaskLight>,
   nowMs: number,
   userId: string | null,
   localHomedTaskIds: ReadonlySet<string>,
@@ -219,6 +228,7 @@ function buildHistoryItem(args: {
     updatedBucket: toHistoryRecencyBucket(light.updatedAt, nowMs),
     linkedRepos: readTaskRepos(task),
     linkedWorkspaces: readTaskWorkspaces(task),
+    chatHostIds: task.chatHostIds ?? null,
     pullRequestNumbers: [],
     worktreeBranches: [],
     worktreePaths: [],
@@ -415,6 +425,46 @@ function matchesRepoFilter(
   return repoNames.some((repoName) => item.linkedRepos.includes(repoName));
 }
 
+/**
+ * Whether a row satisfies the chat-host filter.
+ *
+ * A row whose `chatHostIds` is `null` is EXCLUDED while a host is selected,
+ * because nothing about that row has been checked against the filter. This
+ * predicate runs on rows from three sources and only one of them is
+ * pre-filtered by the server: settled `epic.listTasks` pages. The other two -
+ * tasks fetched by id for a branch/worktree/PR match, and cached rows still
+ * showing while a new request is in flight - never passed through it, so
+ * keeping an unverifiable row there renders an unfiltered result as a
+ * filtered one.
+ *
+ * Abstaining was the earlier choice, on the reasoning that excluding would
+ * silently empty the list against an older peer. That case cannot reach here:
+ * a peer too old to report the field is caught by the version gate in
+ * `useHistoryQuery`, which withholds every row behind an explicit
+ * "can't filter by host here" state. A settled row from a peer that CAN report
+ * always carries the field - `[]` at minimum. So the only rows this exclusion
+ * can reach are the unverified ones, which is exactly the intent.
+ */
+function matchesChatHostFilter(
+  item: HistoryItem,
+  chatHosts: ReadonlyArray<string>,
+  chatHostMatchMode: HistoryMatchMode,
+): boolean {
+  if (chatHosts.length === 0) {
+    return true;
+  }
+  if (item.chatHostIds === null) {
+    return false;
+  }
+
+  const itemHostIds = new Set(item.chatHostIds);
+  if (chatHostMatchMode === "all") {
+    return chatHosts.every((hostId) => itemHostIds.has(hostId));
+  }
+
+  return chatHosts.some((hostId) => itemHostIds.has(hostId));
+}
+
 function matchesWorkspaceFilter(
   item: HistoryItem,
   workspaces: ReadonlyArray<HistoryWorkspaceRef>,
@@ -448,6 +498,11 @@ export function filterHistoryItems(
       return false;
     }
     if (!matchesRepoFilter(item, filters.repoNames, filters.repoMatchMode)) {
+      return false;
+    }
+    if (
+      !matchesChatHostFilter(item, filters.chatHosts, filters.chatHostMatchMode)
+    ) {
       return false;
     }
     return matchesWorkspaceFilter(

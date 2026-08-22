@@ -27,22 +27,22 @@ const durability = vi.hoisted<{
   pauseReason: EpicDurabilityPauseReasonV15 | null;
   promotionState: EpicPromotionState | null;
   /**
-   * `null` is a PRE-`@1.4` peer, which is what every case written before the
+   * `null` is a PRE-`@1.6` peer, which is what every case written before the
    * s5 status pass assumed - and it keeps their exact rendering. The new cases
-   * set a real value, because at `@1.4` this key is always present.
+   * set a real value, because at `@1.6` this key is always present.
    */
   localProtection: EpicLocalProtection | null;
   /**
    * `null` is a host that said NOTHING about freshness, which is every case
-   * written before `s5-mirror-first-serving` - and, at `@1.4`, every epic for
+   * written before `s5-mirror-first-serving` - and, at `@1.6`, every epic for
    * which the question does not apply. Those cases keep their exact
    * rendering, which is what makes the freshness half additive.
    */
   cloudFreshness: EpicCloudFreshness | null;
   /**
-   * Whether the fixture's peer negotiated `epic.subscribe@1.5`. Defaults to
+   * Whether the fixture's peer negotiated `epic.subscribe@1.6`. Defaults to
    * TRUE because that is what every case in this suite is describing - a host
-   * that speaks the durability legs. The pre-`@1.4` peer is its own case and
+   * that speaks the durability legs. The pre-`@1.6` peer is its own case and
    * sets it false explicitly.
    */
   peerSpeaksDurabilityLegs: boolean;
@@ -226,7 +226,7 @@ describe("<EpicDurabilityBadge />", () => {
     expect(badge.getAttribute("data-local-protection")).toBe("unavailable");
   });
 
-  it("treats an absent durability key from a @1.4 peer as unknown, not synced", () => {
+  it("treats an absent durability key from a @1.6 peer as unknown, not synced", () => {
     // The absence rule. `armed` would license the calm rendering; `unknown`
     // may not, and used to.
     durability.status = null;
@@ -242,7 +242,7 @@ describe("<EpicDurabilityBadge />", () => {
   it("stays silent when both legs positively say cloud-durable and armed", () => {
     // The calm case still has to be silent, or the fix is just noise on every
     // healthy online epic. It is licensed by the explicit `"cloud"` member the
-    // `@1.4` enum now carries - never by the absence of the key, which is the
+    // `@1.6` enum now carries - never by the absence of the key, which is the
     // inference the previous fixture encoded and the minor exists to break.
     durability.status = "cloud";
     durability.pauseReason = null;
@@ -254,7 +254,7 @@ describe("<EpicDurabilityBadge />", () => {
     expect(screen.queryByTestId("epic-durability-badge")).toBeNull();
   });
 
-  it("stays silent for a pre-@1.4 peer with no durability answer", () => {
+  it("stays silent for a pre-@1.6 peer with no durability answer", () => {
     // Old hosts keep exactly their current rendering; the minor is additive.
     // The peer is identified by its NEGOTIATED version, not by the absence of
     // the key - see the next case for why those are not the same test.
@@ -269,10 +269,10 @@ describe("<EpicDurabilityBadge />", () => {
     expect(screen.queryByTestId("epic-durability-badge")).toBeNull();
   });
 
-  it("treats an OMITTED localProtection from a @1.4 peer as unknown, not as an old peer", () => {
-    // Every `@1.4` leg is optional on the wire and the schema's absence rule
+  it("treats an OMITTED localProtection from a @1.6 peer as unknown, not as an old peer", () => {
+    // Every `@1.6` leg is optional on the wire and the schema's absence rule
     // says an omitted one means UNKNOWN. A presence probe cannot honour that:
-    // it reads the permitted omission as "pre-@1.4" and falls back to the
+    // it reads the permitted omission as "pre-@1.6" and falls back to the
     // silent rendering, which is silence-as-reassurance - the exact inference
     // this minor exists to break. Identical inputs to the case above except
     // for who is speaking.
@@ -363,7 +363,7 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("stays silent when the host says NOTHING about freshness, so a pre-@1.4 peer is untouched", () => {
+  it("stays silent when the host says NOTHING about freshness, so a pre-@1.6 peer is untouched", () => {
     cloudDurableAndArmed();
     durability.cloudFreshness = null;
 
@@ -387,7 +387,7 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
   });
 
   it("draws over a cloud-durable epic whose protection is UNKNOWN", () => {
-    // `@1.5` defines `unknown` as "rendered as unknown, never as protected".
+    // `@1.6` defines `unknown` as "rendered as unknown, never as protected".
     // The calm return used to exclude only `unavailable`, so this case drew
     // nothing and was pixel-identical to `armed` - the calm answer on one axis
     // silently answering the other.
@@ -441,7 +441,7 @@ describe("<EpicDurabilityBadge /> - cloud freshness", () => {
     expect(badge.className).not.toContain("bg-destructive/10");
   });
 
-  it("draws over a cloud-durable epic whose protection key a @1.5 peer OMITTED", () => {
+  it("draws over a cloud-durable epic whose protection key a @1.6 peer OMITTED", () => {
     // Same case reached the other way: absence from a peer that speaks the
     // legs is the wire contract's `unknown`, so it must render identically.
     cloudDurableAndArmed();
