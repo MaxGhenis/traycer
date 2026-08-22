@@ -60,12 +60,6 @@ vi.mock("@/hooks/host/use-host-query", () => ({
   },
 }));
 
-vi.mock("@/markdown/traycer-markdown", () => ({
-  TraycerMarkdown: (props: { readonly children: string }) => (
-    <div data-testid="markdown-preview">{props.children}</div>
-  ),
-}));
-
 vi.mock("@/hooks/host/use-host-scoped-mutation", () => ({
   useHostScopedMutationForClient: () => ({
     isPending: state.pendingArtifactId !== null,
@@ -204,7 +198,9 @@ describe("<DeletedArtifactsTile />", () => {
 
     renderTile();
 
-    expect(screen.getByText("# First saved body")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "First saved body" }),
+    ).toBeTruthy();
     expect(
       state.queryCalls.some(
         (call) =>
@@ -220,6 +216,8 @@ describe("<DeletedArtifactsTile />", () => {
       }),
     );
 
-    expect(screen.getByText("# Second saved body")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Second saved body" }),
+    ).toBeTruthy();
   });
 });

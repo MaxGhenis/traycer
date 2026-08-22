@@ -292,7 +292,7 @@ function DeletedArtifactPreview(props: {
         ) : null}
         {!props.loading && !props.failed && props.markdown !== null ? (
           <TraycerMarkdown
-            className="mx-auto w-full max-w-4xl px-6 py-5 text-foreground"
+            className="mx-auto w-full max-w-[min(100%,72vw)] px-6 py-5 text-foreground"
             proseSize="normal"
             components={null}
             remarkPlugins={null}
