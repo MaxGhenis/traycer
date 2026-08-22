@@ -319,6 +319,17 @@ export function registerBrowserViewIpc(
     manager.releaseTile(windowId, parseTileKey(payload));
   });
 
+  // BT-202 flicker fix: renderer confirms the replacement frame is decoded
+  // and on screen; only then does the manager move the native view offscreen.
+  bridge.handleInvoke(
+    RunnerHostInvoke.browserViewOverlayPaintAck,
+    (_event, payload) => {
+      if (!isRecordValue(payload)) return;
+      if (typeof payload.overlayId !== "string") return;
+      manager.paintAckOverlay(payload.overlayId);
+    },
+  );
+
   // BT-302/BT-303: the renderer is the source of truth for which app chords
   // outrank guest keystrokes; it pushes its binding tokens at startup.
   bridge.handleInvoke(

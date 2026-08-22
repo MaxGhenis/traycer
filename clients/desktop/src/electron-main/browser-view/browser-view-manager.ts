@@ -456,6 +456,14 @@ interface BrowserViewEntry {
   viewportPreset: BrowserViewViewportPresetId;
   overlayOwnerIds: string[];
   overlaySnapshotStale: boolean;
+  /**
+   * BT-202 two-phase park: true between serving the replacement frame and
+   * the renderer's paint acknowledgement. While pending, the view stays at
+   * its real onscreen geometry so the page never blanks.
+   */
+  overlayAwaitingPaintAck: boolean;
+  /** Set once the parked posture is actually applied (post-ack). */
+  overlayParked: boolean;
   /** Last `visible` value logged by `applyEntryVisibility`, so forensics logging fires only on change. */
   lastLoggedVisible: boolean | null;
   /**
@@ -1857,6 +1865,8 @@ export class BrowserViewManager {
       viewportPreset,
       overlayOwnerIds: [],
       overlaySnapshotStale: false,
+      overlayAwaitingPaintAck: false,
+      overlayParked: false,
       lastLoggedVisible: null,
       rendererResetPending: false,
       control: null,
@@ -2373,7 +2383,13 @@ export class BrowserViewManager {
 
     currentEntry.overlayOwnerIds.push(overlayId);
     currentEntry.overlaySnapshotStale = false;
-    this.parkEntryForOverlay(currentEntry);
+    // BT-202 flicker fix: DO NOT park here. The native view must stay on
+    // screen until the renderer has DECODED and PAINTED the replacement
+    // frame — otherwise there is a guaranteed multi-frame window where the
+    // page pixels are gone but nothing covers the tile yet (the reported
+    // empty-state flash). The renderer acknowledges via `paintAckOverlay`
+    // once img.decode() settles; only then do we move the view offscreen.
+    currentEntry.overlayAwaitingPaintAck = true;
     return {
       ...toTileKey(currentEntry.key),
       dataUrl,
@@ -2389,6 +2405,24 @@ export class BrowserViewManager {
    * converging toward fresh content instead of freezing at occlusion time.
    * Unusable geometry falls back to the legacy hide.
    */
+  /**
+   * BT-202 flicker fix: renderer-side acknowledgement that the replacement
+   * frame for `overlayId`'s tiles is decoded and on screen. Parks every
+   * still-owned, still-pending entry exactly once. Late or duplicate acks —
+   * including after a release — are silent no-ops.
+   */
+  paintAckOverlay(overlayId: string): void {
+    const keyIds = this.overlayEntryKeysByOwnerId.get(overlayId) ?? [];
+    for (const keyId of keyIds) {
+      const entry = this.entriesByKey.get(keyId);
+      if (entry === undefined) continue;
+      if (!entry.overlayOwnerIds.includes(overlayId)) continue;
+      if (!entry.overlayAwaitingPaintAck) continue;
+      entry.overlayAwaitingPaintAck = false;
+      this.parkEntryForOverlay(entry);
+    }
+  }
+
   private parkEntryForOverlay(entry: BrowserViewEntry): void {
     if (
       entry.bounds === null ||
@@ -2412,6 +2446,8 @@ export class BrowserViewManager {
     // The view now sits offscreen; forget the last onscreen rect so release
     // re-applies real geometry instead of coalescing against a stale one.
     entry.lastAppliedBounds = null;
+    entry.overlayParked = true;
+    entry.overlayAwaitingPaintAck = false;
     entry.view.setVisible(true);
   }
 
@@ -2432,6 +2468,7 @@ export class BrowserViewManager {
           return [];
         }
         entry.overlaySnapshotStale = false;
+        entry.overlayAwaitingPaintAck = false;
         this.applyEntryBounds(entry);
         this.applyEntryVisibility(entry);
         return [toTileKey(entry.key)];

@@ -71,6 +71,11 @@ export interface BrowserViewBridgeSurface {
     releaseTile(input: BrowserViewTileKey): Promise<void>;
     /** BT-303: register renderer chords that outrank guest keystrokes. */
     setReservedChords(tokens: readonly string[]): Promise<void>;
+    /**
+     * BT-202 flicker fix: renderer confirms the replacement frame is decoded
+     * and on screen; both managers park their owned tiles on this ack.
+     */
+    overlayPaintAck(overlayId: string): Promise<void>;
     reloadTile(input: BrowserViewTileKey): Promise<void>;
     goBack(input: BrowserViewTileKey): Promise<void>;
     goForward(input: BrowserViewTileKey): Promise<void>;
@@ -215,6 +220,18 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
         const agent = ipcRenderer
           .invoke(RunnerHostInvoke.agentBrowserViewSetReservedChords, {
             tokens,
+          })
+          .catch(() => undefined);
+        await Promise.all([primary, agent]);
+      },
+      overlayPaintAck: async (overlayId) => {
+        const primary = ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewOverlayPaintAck,
+          { overlayId },
+        );
+        const agent = ipcRenderer
+          .invoke(RunnerHostInvoke.agentBrowserViewOverlayPaintAck, {
+            overlayId,
           })
           .catch(() => undefined);
         await Promise.all([primary, agent]);

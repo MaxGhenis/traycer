@@ -199,6 +199,17 @@ export function registerAgentBrowserViewIpc(
     },
   );
 
+  // BT-202 flicker fix: paint acknowledgement for the agent runtime's own
+  // tiles (mirrors the primary manager handler).
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewOverlayPaintAck,
+    (_event, payload) => {
+      if (!isRecordValue(payload)) return;
+      if (typeof payload.overlayId !== "string") return;
+      manager.paintAckOverlay(payload.overlayId);
+    },
+  );
+
   bridge.handleInvoke(
     RunnerHostInvoke.agentBrowserViewRegisterDurableTab,
     (event, payload) => {
@@ -661,4 +672,8 @@ function readReservedChordTokens(payload: unknown): readonly string[] {
   const raw = payload.tokens;
   if (!Array.isArray(raw)) return [];
   return raw.filter((token): token is string => typeof token === "string");
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

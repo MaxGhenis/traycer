@@ -2202,9 +2202,16 @@ describe("BrowserViewManager", () => {
     });
 
     expect(view.webContents.captureVisibleStates).toEqual([true]);
-    // BT-202: the view is parked fully offscreen but stays composited so its
-    // frame feed keeps running; the renderer paints the snapshot over the
-    // vacated region.
+    // Two-phase park: pre-ack the view is untouched at real geometry; the
+    // ack then applies the offscreen posture.
+    expect(view.visible).toBe(true);
+    expect(view.bounds.at(-1)).toMatchObject({
+      x: 0,
+      y: 0,
+      width: 500,
+      height: 300,
+    });
+    harness.manager.paintAckOverlay("command-palette");
     expect(view.visible).toBe(true);
     expect(view.bounds.at(-1)).toMatchObject({
       x: -500,
@@ -2246,6 +2253,7 @@ describe("BrowserViewManager", () => {
       overlayId: "dropdown",
       tiles: [BASE_KEY],
     });
+    harness.manager.paintAckOverlay("dialog");
 
     expect(view.webContents.captureVisibleStates).toEqual([true]);
     expect(view.visible).toBe(true);
@@ -2358,8 +2366,15 @@ describe("BrowserViewManager", () => {
         stale: false,
       },
     ]);
+    // Two-phase park (flicker fix): the view stays at REAL geometry until
+    // the renderer acknowledges the painted replacement frame.
     expect(view.visible).toBe(true);
+    expect(view.bounds.at(-1)).toMatchObject({ x: 0, y: 0, width: 500, height: 300 });
+
+    harness.manager.paintAckOverlay("palette");
+
     expect(view.bounds.at(-1)).toMatchObject({ x: -500, y: -300 });
+    expect(view.visible).toBe(true);
   });
 
   it("marks cached snapshots stale once the freshness window lapses (BT-202)", async () => {
@@ -2404,6 +2419,7 @@ describe("BrowserViewManager", () => {
       overlayId: "palette",
       tiles: [BASE_KEY],
     });
+    harness.manager.paintAckOverlay("palette");
     expect(result.snapshots[0]).toMatchObject({ stale: false });
     expect(harness.snapshotInvalidations).toEqual([]);
 
@@ -2441,6 +2457,8 @@ describe("BrowserViewManager", () => {
       overlayId: "palette",
       tiles: [BASE_KEY],
     });
+    harness.manager.paintAckOverlay("palette");
+    expect(view.bounds.at(-1)).toMatchObject({ x: -500, y: -300 });
 
     // Streamed renderer updates while the menu is open must not move the
     // parked view.
@@ -2478,6 +2496,78 @@ describe("BrowserViewManager", () => {
     harness.manager.releaseTile("window-1", BASE_KEY);
 
     expect(view.webContents.frameSubscriptionEnds).toBe(1);
+  });
+
+  it("never blanks the tile before the paint ack (flicker fix)", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    harness.manager.updateBounds("window-1", {
+      ...BASE_KEY,
+      bounds: { x: 0, y: 0, width: 500, height: 300 },
+    });
+    const view = harness.views[0];
+
+    await harness.manager.occludeForOverlay("window-1", {
+      overlayId: "palette",
+      tiles: [BASE_KEY],
+    });
+
+    // Between occlusion and ack the native view must still be at its real
+    // rect showing live pixels — that is the whole point of the fix.
+    expect(view.bounds.at(-1)).toMatchObject({ x: 0, y: 0 });
+    expect(view.visible).toBe(true);
+  });
+
+  it("duplicate paint acks park exactly once (flicker fix)", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    harness.manager.updateBounds("window-1", {
+      ...BASE_KEY,
+      bounds: { x: 0, y: 0, width: 500, height: 300 },
+    });
+    const view = harness.views[0];
+    await harness.manager.occludeForOverlay("window-1", {
+      overlayId: "palette",
+      tiles: [BASE_KEY],
+    });
+
+    harness.manager.paintAckOverlay("palette");
+    const parkedBounds = view.bounds.length;
+    harness.manager.paintAckOverlay("palette");
+    harness.manager.paintAckOverlay("palette");
+
+    expect(view.bounds.length).toBe(parkedBounds);
+    expect(view.bounds.at(-1)).toMatchObject({ x: -500, y: -300 });
+  });
+
+  it("a late ack after release never parks a restored view (flicker fix)", async () => {
+    const harness = createHarness();
+    harness.manager.upsertTile(
+      "window-1",
+      upsert(BASE_KEY, "http://localhost:3000", true),
+    );
+    harness.manager.updateBounds("window-1", {
+      ...BASE_KEY,
+      bounds: { x: 0, y: 0, width: 500, height: 300 },
+    });
+    const view = harness.views[0];
+    await harness.manager.occludeForOverlay("window-1", {
+      overlayId: "palette",
+      tiles: [BASE_KEY],
+    });
+
+    // User dismissed the overlay before the ack round-trip landed.
+    harness.manager.releaseOverlay("window-1", { overlayId: "palette" });
+    harness.manager.paintAckOverlay("palette");
+
+    expect(view.bounds.every((b) => b.x >= 0 && b.y >= 0)).toBe(true);
+    expect(view.visible).toBe(true);
   });
 
   it("intercepts reserved chords and replays them into the host renderer (BT-302)", async () => {
