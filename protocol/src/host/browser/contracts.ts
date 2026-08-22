@@ -703,6 +703,14 @@ const browserSessionsClientFrameSchemaV10 = z.discriminatedUnion("kind", [
     ...browserSessionReferenceFields,
   }),
   z.object({
+    // Tab-scoped close for the browser sidebar. Names one tab; `closeSession`
+    // remains the whole-session path and the last-tab cleanup.
+    kind: z.literal("closeTab"),
+    ...requestFrameFields,
+    ...browserSessionReferenceFields,
+    tabId: z.string(),
+  }),
+  z.object({
     kind: z.literal("ping"),
     ...textFrameFields,
   }),

@@ -30,6 +30,7 @@ export interface BrowserSessionsState {
   readonly routingChatId: string | null;
   readonly retry: () => void;
   readonly closeSession: (sessionId: string) => void;
+  readonly closeTab: (sessionId: string, tabId: string) => Promise<void>;
   readonly requestPromoteState: (
     sessionId: string,
   ) => Promise<PromoteStateFrame>;

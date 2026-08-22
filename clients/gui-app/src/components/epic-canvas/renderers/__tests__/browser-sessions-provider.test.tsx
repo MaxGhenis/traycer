@@ -1,7 +1,7 @@
 import "../../../../../__tests__/test-browser-apis";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { BrowserSessionsProvider } from "@/components/epic-canvas/renderers/browser-session-dock";
 import { useBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import {
@@ -120,6 +120,7 @@ vi.mock("@/lib/browser-view/desktop-browser-view", async (importOriginal) => {
 class FakeStreamSession {
   readonly sentFrames: Array<Record<string, unknown>> = [];
   readonly droppedFrames: Array<Record<string, unknown>> = [];
+  throwOnNextSend: Error | null = null;
   private readonly dropUntilLive: boolean;
   private transportLive = false;
   private serverHandler:
@@ -140,6 +141,11 @@ class FakeStreamSession {
     frame: Record<string, unknown>,
     _binaryPayload: Uint8Array | null,
   ): void {
+    if (this.throwOnNextSend !== null) {
+      const error = this.throwOnNextSend;
+      this.throwOnNextSend = null;
+      throw error;
+    }
     if (this.dropUntilLive && !this.transportLive) {
       this.droppedFrames.push(frame);
       return;
@@ -340,11 +346,13 @@ const RESTARTED_ENDPOINT = "ws://host-b/stream";
 
 function Probe(): ReactNode {
   const sessions = useBrowserSessionsContext();
+  const [closeTabStatus, setCloseTabStatus] = useState("idle");
   return (
     <div>
       <span data-testid="lifecycle">{sessions.lifecycle}</span>
       <span data-testid="count">{sessions.items.length}</span>
       <span data-testid="routing">{sessions.routingChatId ?? "null"}</span>
+      <span data-testid="close-tab-status">{closeTabStatus}</span>
       <ul>
         {sessions.items.map((session) => (
           <li key={session.sessionId}>{session.name}</li>
@@ -352,6 +360,24 @@ function Probe(): ReactNode {
       </ul>
       <button type="button" onClick={() => sessions.closeSession("sess-1")}>
         close
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setCloseTabStatus("pending");
+          void sessions.closeTab("sess-1", "tab-1").then(
+            () => {
+              setCloseTabStatus("ok");
+            },
+            (error: unknown) => {
+              setCloseTabStatus(
+                error instanceof Error ? error.message : "failed",
+              );
+            },
+          );
+        }}
+      >
+        close-tab
       </button>
     </div>
   );
@@ -712,6 +738,150 @@ describe("BrowserSessionsProvider (ticket 08 epic subscription)", () => {
         sessionId: "sess-1",
       }),
     );
+  });
+
+  it("sends closeTab frames and settles them on actionAck", async () => {
+    renderProvider("chat-alpha");
+    const stream = hookState.streamClient?.sessions[0];
+    act(() => {
+      stream?.emitStatus("open");
+    });
+    act(() => {
+      screen.getByRole("button", { name: "close-tab" }).click();
+    });
+    const sent = stream?.sentFrames.find((frame) => frame.kind === "closeTab");
+    expect(sent).toMatchObject({
+      kind: "closeTab",
+      hasBinaryPayload: false,
+      sessionId: "sess-1",
+      tabId: "tab-1",
+    });
+    expect(typeof sent?.requestId).toBe("string");
+    const requestId =
+      sent !== undefined && typeof sent.requestId === "string"
+        ? sent.requestId
+        : null;
+    expect(requestId).not.toBeNull();
+    if (requestId === null) throw new Error("expected closeTab requestId");
+    act(() => {
+      stream?.emit(
+        {
+          kind: "actionAck",
+          hasBinaryPayload: false,
+          requestId,
+          ok: true,
+          reason: null,
+        },
+        null,
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("close-tab-status").textContent).toBe("ok");
+    });
+  });
+
+  it("rejects closeTab when actionAck is not ok", async () => {
+    renderProvider("chat-alpha");
+    const stream = hookState.streamClient?.sessions[0];
+    act(() => {
+      stream?.emitStatus("open");
+    });
+    act(() => {
+      screen.getByRole("button", { name: "close-tab" }).click();
+    });
+    const sent = stream?.sentFrames.find((frame) => frame.kind === "closeTab");
+    const requestId =
+      sent !== undefined && typeof sent.requestId === "string"
+        ? sent.requestId
+        : null;
+    expect(requestId).not.toBeNull();
+    if (requestId === null) throw new Error("expected closeTab requestId");
+    act(() => {
+      stream?.emit(
+        {
+          kind: "actionAck",
+          hasBinaryPayload: false,
+          requestId,
+          ok: false,
+          reason: "Tab is already gone.",
+        },
+        null,
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("close-tab-status").textContent).toBe(
+        "Tab is already gone.",
+      );
+    });
+  });
+
+  it("rejects closeTab when the stream disconnects", async () => {
+    renderProvider("chat-alpha");
+    const stream = hookState.streamClient?.sessions[0];
+    act(() => {
+      stream?.emitStatus("open");
+    });
+    act(() => {
+      screen.getByRole("button", { name: "close-tab" }).click();
+    });
+    expect(screen.getByTestId("close-tab-status").textContent).toBe("pending");
+    act(() => {
+      stream?.emitStatus("closed");
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("close-tab-status").textContent).toBe(
+        "Browser sessions stream closed.",
+      );
+    });
+  });
+
+  it("rejects closeTab immediately while reconnecting without enqueueing a frame", async () => {
+    renderProvider("chat-alpha");
+    const stream = hookState.streamClient?.sessions[0];
+    act(() => {
+      stream?.emitStatus("open");
+    });
+    act(() => {
+      stream?.emitStatus("reconnecting");
+    });
+    const before = (stream?.sentFrames ?? []).filter(
+      (frame) => frame.kind === "closeTab",
+    ).length;
+    act(() => {
+      screen.getByRole("button", { name: "close-tab" }).click();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("close-tab-status").textContent).toBe(
+        "Browser sessions stream is not ready.",
+      );
+    });
+    expect(
+      (stream?.sentFrames ?? []).filter((frame) => frame.kind === "closeTab"),
+    ).toHaveLength(before);
+  });
+
+  it("rejects closeTab and drops the pending waiter when sendClientFrame throws", async () => {
+    renderProvider("chat-alpha");
+    const stream = hookState.streamClient?.sessions[0];
+    act(() => {
+      stream?.emitStatus("open");
+    });
+    if (stream === undefined) throw new Error("expected stream");
+    stream.throwOnNextSend = new Error("send failed");
+    act(() => {
+      screen.getByRole("button", { name: "close-tab" }).click();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("close-tab-status").textContent).toBe(
+        "send failed",
+      );
+    });
+    act(() => {
+      screen.getByRole("button", { name: "close-tab" }).click();
+    });
+    expect(
+      stream.sentFrames.filter((frame) => frame.kind === "closeTab"),
+    ).toHaveLength(1);
   });
 });
 

@@ -19,6 +19,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { toast } from "sonner";
 import type {
   BrowserSessionInfo,
   BrowserTabDriver,
@@ -76,9 +77,11 @@ import {
 } from "@/hooks/host/use-surface-host-pin";
 import { useHostDirectoryEntryForHostId } from "@/hooks/host/use-host-client-for-host-id";
 import {
-  browserTabFaviconUrl,
-  browserTabHostname,
-  resolveTabTitle,
+  BROWSER_TAB_AGENT_ACTIVITY_MS,
+  browserTabOrigin,
+  disambiguateSecondaryLabels,
+  nextSettledTabIdentity,
+  type SettledTabIdentity,
 } from "@/lib/browser-view/browser-tab-display";
 import { findElectronBrowserTabBindingOnHost } from "@/lib/browser-view/electron-browser-tab-store";
 import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
@@ -115,47 +118,14 @@ import {
 const BROWSERS_PANEL_ID = "browsers";
 const FOLLOW_ACTIVE_HOST_VALUE = "browser-follow-active-host";
 
-/**
- * host:port (not bare hostname) so two localhost dev servers on different
- * ports - the exact case that produced duplicate "127.0.0.1" close labels -
- * read as different origins.
- */
-function tabOriginLabel(url: string): string | null {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-      return null;
-    return parsed.host.length > 0 ? parsed.host : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Unique accessible name for a row's close control. Most rows have a
- * genuinely distinct title and need nothing else; when several tabs
- * resolve to the same title (e.g. several tabs with no page title, all
- * falling back to the same bare host), the origin (host:port) disambiguates;
- * if even that collides, the tab id is the one value guaranteed unique
- * per row - a last resort, not the common case.
- */
 function resolveCloseAriaLabel(
-  tab: BrowserTabInfo,
+  tabId: string,
   title: string,
+  secondaryLabel: string | null,
   isDuplicateTitle: boolean,
 ): string {
   if (!isDuplicateTitle) return `Close ${title}`;
-  const origin = tabOriginLabel(tab.url);
-  if (origin !== null && origin !== title) return `Close ${title} (${origin})`;
-  return `Close ${title} (${tab.tabId})`;
-}
-
-function browserTabProgressLabel(
-  status: BrowserTabInfo["status"],
-): string | null {
-  if (status === "provisioning") return "starting";
-  if (status === "navigating") return "navigating";
-  return null;
+  return `Close ${title} (${secondaryLabel ?? tabId})`;
 }
 
 /**
@@ -439,6 +409,55 @@ function BrowsersPanelBodyFrame(props: LeftPanelSlotProps) {
   );
 }
 
+type BrowserSidebarTabRow = {
+  readonly key: string;
+  readonly session: BrowserSessionInfo;
+  readonly tab: BrowserTabInfo;
+  readonly identity: SettledTabIdentity;
+};
+
+function nextBrowserSidebarTabRows(
+  previous: readonly BrowserSidebarTabRow[],
+  sessions: readonly BrowserSessionInfo[],
+): readonly BrowserSidebarTabRow[] {
+  const previousByKey = new Map(previous.map((row) => [row.key, row]));
+  const next = sessions.flatMap((session) =>
+    session.tabs.map((tab) => {
+      const key = `${session.hostId}:${session.sessionId}:${tab.tabId}`;
+      return {
+        key,
+        session,
+        tab,
+        identity: nextSettledTabIdentity(
+          previousByKey.get(key)?.identity ?? null,
+          tab,
+        ),
+      };
+    }),
+  );
+  const nextByKey = new Map(next.map((row) => [row.key, row]));
+  return [
+    ...previous.flatMap((row) => {
+      const current = nextByKey.get(row.key);
+      return current === undefined ? [] : [current];
+    }),
+    ...next.filter((row) => !previousByKey.has(row.key)),
+  ];
+}
+
+function useBrowserSidebarTabRows(
+  sessions: readonly BrowserSessionInfo[],
+): readonly BrowserSidebarTabRow[] {
+  const [state, setState] = useState(() => ({
+    sessions,
+    rows: nextBrowserSidebarTabRows([], sessions),
+  }));
+  if (state.sessions === sessions) return state.rows;
+  const rows = nextBrowserSidebarTabRows(state.rows, sessions);
+  setState({ sessions, rows });
+  return rows;
+}
+
 function BrowsersPanelBodyLive(props: {
   readonly epicId: string;
   readonly tabId: string;
@@ -450,32 +469,35 @@ function BrowsersPanelBodyLive(props: {
     () => new Map(chats.map((chat) => [chat.id, chat])),
     [chats],
   );
+  const tabs = useBrowserSidebarTabRows(sessions.items);
+  const secondaryByKey = useMemo(
+    () =>
+      disambiguateSecondaryLabels(
+        tabs.map((row) => ({
+          key: row.key,
+          tabId: row.tab.tabId,
+          title: row.identity.title,
+          url: row.identity.url,
+        })),
+      ),
+    [tabs],
+  );
   const duplicateTitles = useMemo(() => {
     const counts = new Map<string, number>();
-    sessions.items.forEach((session) => {
-      session.tabs.forEach((tab) => {
-        const title = resolveTabTitle(tab);
-        counts.set(title, (counts.get(title) ?? 0) + 1);
-      });
+    tabs.forEach((row) => {
+      counts.set(row.identity.title, (counts.get(row.identity.title) ?? 0) + 1);
     });
     const duplicates = new Set<string>();
     counts.forEach((count, title) => {
       if (count > 1) duplicates.add(title);
     });
     return duplicates;
-  }, [sessions.items]);
-  const tabs = useMemo(
-    () =>
-      sessions.items.flatMap((session) =>
-        session.tabs.map((tab) => ({ session, tab })),
-      ),
-    [sessions.items],
-  );
+  }, [tabs]);
   const filteredTabs = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase();
     if (query.length === 0) return tabs;
-    return tabs.filter(({ tab }) =>
-      `${resolveTabTitle(tab)} ${browserTabHostname(tab.url) ?? ""} ${tab.url}`
+    return tabs.filter(({ identity }) =>
+      `${identity.title} ${identity.url}`
         .toLocaleLowerCase()
         .includes(query),
     );
@@ -578,18 +600,20 @@ function BrowsersPanelBodyLive(props: {
           className="space-y-0.5"
           data-testid="epic-browsers-panel-list"
         >
-          {filteredTabs.map(({ session, tab }) => (
+          {filteredTabs.map(({ key, session, tab, identity }) => (
             <BrowserTabRow
-              key={`${session.sessionId}:${tab.tabId}`}
+              key={key}
               epicId={props.epicId}
               viewTabId={props.tabId}
               session={session}
               tab={tab}
+              identity={identity}
+              secondaryLabel={secondaryByKey.get(key) ?? null}
               chatById={chatById}
               duplicateTitles={duplicateTitles}
               onOpenTab={openTab}
               onOpenDrivingChat={openDrivingChat}
-              onClose={sessions.closeSession}
+              onCloseTab={sessions.closeTab}
             />
           ))}
         </ul>
@@ -770,6 +794,8 @@ interface BrowserTabRowProps {
   readonly viewTabId: string;
   readonly session: BrowserSessionInfo;
   readonly tab: BrowserTabInfo;
+  readonly identity: SettledTabIdentity;
+  readonly secondaryLabel: string | null;
   readonly chatById: ReadonlyMap<
     string,
     { readonly id: string; readonly title: string }
@@ -783,7 +809,17 @@ interface BrowserTabRowProps {
     driver: BrowserTabDriver,
     hostId: string,
   ) => void;
-  readonly onClose: (sessionId: string) => void;
+  readonly onCloseTab: (sessionId: string, tabId: string) => Promise<void>;
+}
+
+function browserTabStateLabel(
+  status: BrowserTabInfo["status"],
+  isClosing: boolean,
+): string {
+  if (status === "crashed") return ", failed";
+  if (isClosing) return ", closing";
+  if (status === "dormant") return ", asleep";
+  return "";
 }
 
 function BrowserTabRow(props: BrowserTabRowProps) {
@@ -792,20 +828,23 @@ function BrowserTabRow(props: BrowserTabRowProps) {
     viewTabId,
     session,
     tab,
+    identity,
+    secondaryLabel,
     chatById,
     duplicateTitles,
     onOpenTab,
     onOpenDrivingChat,
-    onClose,
+    onCloseTab,
   } = props;
-  const title = resolveTabTitle(tab);
-  const host = browserTabHostname(tab.url);
-  const isDormant = tab.status === "dormant";
+  const title = identity.title;
   const isFailed = tab.status === "crashed";
-  const progressLabel = browserTabProgressLabel(tab.status);
+  const [closePending, setClosePending] = useState(false);
+  const isClosing = tab.status === "closing" || closePending;
+  const visibleDrivers = useCoalescedBrowserTabDrivers(tab.drivenBy);
   const closeAriaLabel = resolveCloseAriaLabel(
-    tab,
+    tab.tabId,
     title,
+    secondaryLabel,
     duplicateTitles.has(title),
   );
   const tile = useMemo(
@@ -824,6 +863,10 @@ function BrowserTabRow(props: BrowserTabRowProps) {
     session.hostId,
   );
   const nativeRegistrationId = binding?.registrationId ?? null;
+  const navigateNested = useEpicNestedFocusNavigation();
+  const prepareClose = useEpicCanvasStore(
+    (state) => state.prepareCloseCanvasTabFocusTarget,
+  );
   const nativeTile = useEpicCanvasStore((state) => {
     if (nativeRegistrationId === null) return null;
     const canvas = state.canvasByTabId[viewTabId];
@@ -839,6 +882,53 @@ function BrowserTabRow(props: BrowserTabRowProps) {
     }
     return null;
   });
+  const handleClose = useCallback(() => {
+    if (isClosing) return;
+    setClosePending(true);
+    void onCloseTab(session.sessionId, tab.tabId)
+      .then(() => {
+        const pointer = findOpenTileInTab(viewTabId, tile);
+        if (pointer !== null) {
+          navigateNested(epicId, viewTabId, () =>
+            prepareClose(viewTabId, pointer.paneId, pointer.instanceId),
+          );
+        }
+        if (nativeRegistrationId !== null) {
+          const currentNativeTile = findOpenTileInTab(viewTabId, {
+            id: nativeRegistrationId,
+            hostId: session.hostId,
+          });
+          if (currentNativeTile !== null) {
+            navigateNested(epicId, viewTabId, () =>
+              prepareClose(
+                viewTabId,
+                currentNativeTile.paneId,
+                currentNativeTile.instanceId,
+              ),
+            );
+          }
+        }
+      })
+      .catch(() => {
+        toast.error(`Couldn't close ${title}. Try again.`, {
+          duration: Infinity,
+        });
+        setClosePending(false);
+      });
+  }, [
+    epicId,
+    isClosing,
+    nativeRegistrationId,
+    navigateNested,
+    onCloseTab,
+    prepareClose,
+    session.hostId,
+    session.sessionId,
+    tab.tabId,
+    tile,
+    title,
+    viewTabId,
+  ]);
   const isActive = useEpicCanvasStore((state) => {
     const canvas = state.canvasByTabId[viewTabId];
     if (canvas === undefined || canvas.activePaneId === null) return false;
@@ -871,23 +961,24 @@ function BrowserTabRow(props: BrowserTabRowProps) {
     data: dragData,
   });
 
+  const stateLabel = browserTabStateLabel(tab.status, isClosing);
+
   return (
     <li>
       <div
         data-active={isActive}
         data-testid={`epic-browser-sidebar-row-${tab.tabId}`}
         className={cn(
-          "group/browser-row relative flex h-8 min-w-0 cursor-pointer items-center rounded-md transition-colors",
+          "group/browser-row relative grid h-8 min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)_24px_28px] items-center rounded-md transition-colors duration-100 motion-reduce:transition-none",
           isActive
-            ? "bg-accent font-medium text-accent-foreground"
+            ? "bg-accent text-accent-foreground"
             : "text-foreground/75 hover:bg-accent/70 hover:text-accent-foreground",
-          isDormant && "opacity-60",
-          isFailed && "text-destructive",
+          isClosing && "opacity-60",
           isDragging && "cursor-grabbing opacity-60",
         )}
       >
         <TooltipWrapper
-          label={tab.url}
+          label={identity.url}
           side="top"
           sideOffset={undefined}
           align={undefined}
@@ -897,109 +988,277 @@ function BrowserTabRow(props: BrowserTabRowProps) {
             {...attributes}
             {...listeners}
             type="button"
-            aria-label={`${title}, ${tab.url}`}
-            className="flex h-8 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 pr-1 text-left text-ui-sm outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+            aria-label={`${title}, ${identity.url}${stateLabel}`}
+            className="flex h-8 min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 pr-1 text-left text-ui-sm outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
             onClick={() => onOpenTab(session, tab)}
           >
-            <BrowserFavicon tab={tab} />
+            <BrowserFavicon
+              faviconUrl={
+                browserTabOrigin(tab.url) === browserTabOrigin(identity.url)
+                  ? identity.faviconUrl
+                  : null
+              }
+              isolated={session.profile === "isolated"}
+            />
             <span className="flex min-w-0 flex-1 items-baseline gap-1.5 overflow-hidden whitespace-nowrap">
               <span className="min-w-0 flex-1 truncate">{title}</span>
-              {host === null ? null : (
-                <span className="max-w-[45%] shrink truncate text-ui-xs font-normal text-muted-foreground">
-                  {host}
+              {secondaryLabel === null ? null : (
+                <span className="max-w-[42%] min-w-0 shrink truncate text-ui-xs font-normal text-muted-foreground">
+                  {secondaryLabel}
                 </span>
               )}
             </span>
           </button>
         </TooltipWrapper>
-        <div className="flex shrink-0 items-center gap-0.5">
-          {session.profile === "isolated" ? (
-            <span className="shrink-0 rounded-sm border border-amber-500/30 bg-amber-500/10 px-1 py-0.5 text-[0.625rem] leading-none text-amber-700 dark:text-amber-300">
-              isolated
-            </span>
-          ) : null}
-          {tab.drivenBy.map((driver) => {
-            const chatTitle =
-              chatById.get(driver.chatId)?.title ?? driver.chatId;
-            return (
-              <TooltipWrapper
-                key={driver.requestId}
-                label={`Driven by ${chatTitle}`}
-                side="top"
-                sideOffset={undefined}
-                align={undefined}
-              >
-                <button
-                  type="button"
-                  aria-label={`Open driving chat ${chatTitle}`}
-                  className="flex h-6 max-w-24 items-center gap-1 rounded-sm px-1 text-ui-xs font-normal text-blue-500 outline-none hover:bg-blue-500/10 focus-visible:ring-2 focus-visible:ring-ring"
-                  onClick={() => onOpenDrivingChat(driver, session.hostId)}
-                >
-                  <Bot className="size-3" aria-hidden />
-                  <span className="truncate">{chatTitle}</span>
-                </button>
-              </TooltipWrapper>
-            );
-          })}
-          {tab.status === "dormant" ? (
-            <span className="flex h-6 items-center gap-1 px-1 text-ui-xs font-normal text-muted-foreground">
-              <Moon className="size-3" aria-hidden />
-              asleep
-            </span>
-          ) : null}
-          {tab.status === "crashed" ? (
-            <span className="flex h-6 items-center gap-1 px-1 text-ui-xs font-normal text-destructive">
-              <TriangleAlert className="size-3" aria-hidden />
-              failed
-            </span>
-          ) : null}
-          {progressLabel === null ? null : (
-            <span className="flex h-6 items-center gap-1 px-1 text-ui-xs font-normal text-muted-foreground">
-              <AgentSpinningDots
-                className="shrink-0"
-                testId={undefined}
-                variant={undefined}
-              />
-              {progressLabel}
-            </span>
+        <span className="flex size-6 items-center justify-center justify-self-center">
+          <BrowserTabStateSlot
+            isFailed={isFailed}
+            isClosing={isClosing}
+            isDormant={tab.status === "dormant"}
+            drivers={visibleDrivers}
+            chatById={chatById}
+            onOpenDrivingChat={(driver) =>
+              onOpenDrivingChat(driver, session.hostId)
+            }
+          />
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          disabled={isClosing}
+          aria-label={
+            isClosing
+              ? closeAriaLabel.replace("Close ", "Closing ")
+              : closeAriaLabel
+          }
+          data-testid={`epic-browser-sidebar-close-${tab.tabId}`}
+          className={cn(
+            "size-6 cursor-pointer justify-self-center text-muted-foreground opacity-0 transition-opacity duration-100 pointer-events-none motion-reduce:transition-none",
+            "group-focus-within/browser-row:pointer-events-auto group-focus-within/browser-row:opacity-100",
+            "group-hover/browser-row:pointer-events-auto group-hover/browser-row:opacity-100",
+            "group-data-[active=true]/browser-row:pointer-events-auto group-data-[active=true]/browser-row:opacity-100",
+            "hover:bg-destructive/10 hover:text-destructive",
+            "[@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100",
+            (isFailed || isClosing) && "pointer-events-auto opacity-100",
           )}
-          {tab.status === "closing" ? (
-            <span className="px-1 text-ui-xs font-normal text-muted-foreground">
-              closing
-            </span>
-          ) : null}
-          {session.tabs.length === 1 ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-6 text-muted-foreground opacity-0 transition-opacity group-focus-within/browser-row:opacity-100 group-hover/browser-row:opacity-100 group-data-[active=true]/browser-row:opacity-100"
-              aria-label={closeAriaLabel}
-              data-testid={`epic-browser-sidebar-close-${tab.tabId}`}
-              onClick={() => onClose(session.sessionId)}
-            >
-              <X className="size-3.5" aria-hidden />
-            </Button>
-          ) : null}
-        </div>
+          onClick={handleClose}
+        >
+          {isClosing ? (
+            <AgentSpinningDots
+              className="text-muted-foreground"
+              testId={undefined}
+              variant={undefined}
+            />
+          ) : (
+            <X className="size-3.5" aria-hidden />
+          )}
+        </Button>
       </div>
     </li>
   );
 }
 
-function BrowserFavicon(props: { readonly tab: BrowserTabInfo }) {
-  const favicon = browserTabFaviconUrl(props.tab.url);
-  if (favicon === null) {
-    return <Globe2 className="size-3.5 shrink-0 text-muted-foreground" />;
+function BrowserTabStateSlot(props: {
+  readonly isFailed: boolean;
+  readonly isClosing: boolean;
+  readonly isDormant: boolean;
+  readonly drivers: readonly BrowserTabDriver[];
+  readonly chatById: ReadonlyMap<
+    string,
+    { readonly id: string; readonly title: string }
+  >;
+  readonly onOpenDrivingChat: (driver: BrowserTabDriver) => void;
+}) {
+  if (props.isFailed) {
+    return (
+      <TooltipWrapper
+        label="Browser failed. Open to recover."
+        side="top"
+        sideOffset={undefined}
+        align={undefined}
+      >
+        <span
+          className="flex size-6 items-center justify-center text-destructive"
+          aria-hidden
+        >
+          <TriangleAlert className="size-3.5" />
+        </span>
+      </TooltipWrapper>
+    );
   }
+  if (props.isClosing) return null;
+  if (props.drivers.length > 0) {
+    const driver = props.drivers[0];
+    const names = [
+      ...new Set(
+        props.drivers.map(
+          (candidate) =>
+            props.chatById.get(candidate.chatId)?.title ?? candidate.chatId,
+        ),
+      ),
+    ];
+    const label = `Driven by ${names.join(", ")}`;
+    return (
+      <TooltipWrapper
+        label={label}
+        side="top"
+        sideOffset={undefined}
+        align={undefined}
+      >
+        <button
+          type="button"
+          aria-label={`Open driving chat: ${names.join(", ")}`}
+          className="flex size-6 cursor-pointer items-center justify-center rounded-sm text-blue-500 outline-none hover:bg-blue-500/10 focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => props.onOpenDrivingChat(driver)}
+        >
+          <Bot className="size-3.5" aria-hidden />
+        </button>
+      </TooltipWrapper>
+    );
+  }
+  if (props.isDormant) {
+    return (
+      <TooltipWrapper
+        label="Browser asleep"
+        side="top"
+        sideOffset={undefined}
+        align={undefined}
+      >
+        <span
+          className="flex size-6 items-center justify-center text-muted-foreground"
+          aria-hidden
+        >
+          <Moon className="size-3.5" />
+        </span>
+      </TooltipWrapper>
+    );
+  }
+  return null;
+}
+
+function useCoalescedBrowserTabDrivers(
+  drivenBy: readonly BrowserTabDriver[],
+): readonly BrowserTabDriver[] {
+  const [visible, setVisible] = useState<readonly BrowserTabDriver[]>([]);
+  const drivenByRef = useRef(drivenBy);
+  const visibleRef = useRef(visible);
+  const showTimerRef = useRef<number | null>(null);
+  const showChatSignatureRef = useRef<string | null>(null);
+  const hideTimerRef = useRef<number | null>(null);
+  const signature = drivenBy
+    .map((driver) => `${driver.chatId}\0${driver.requestId}`)
+    .join("\x01");
+  const chatSignature = [...new Set(drivenBy.map((driver) => driver.chatId))]
+    .sort()
+    .join("\0");
+
+  useEffect(() => {
+    drivenByRef.current = drivenBy;
+    visibleRef.current = visible;
+  }, [drivenBy, visible]);
+
+  useEffect(() => {
+    const hasDrivers = drivenByRef.current.length > 0;
+    if (hasDrivers) {
+      if (visibleRef.current.length > 0) {
+        const visibleChats = new Set(
+          visibleRef.current.map((driver) => driver.chatId),
+        );
+        const staysWithinVisibleChats = drivenByRef.current.every((driver) =>
+          visibleChats.has(driver.chatId),
+        );
+        if (staysWithinVisibleChats) {
+          if (hideTimerRef.current !== null) {
+            window.clearTimeout(hideTimerRef.current);
+            hideTimerRef.current = null;
+          }
+          setVisible(drivenByRef.current);
+          return;
+        }
+        if (hideTimerRef.current !== null) {
+          window.clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = null;
+        }
+        visibleRef.current = [];
+        setVisible([]);
+      }
+      if (
+        showTimerRef.current !== null &&
+        showChatSignatureRef.current !== chatSignature
+      ) {
+        window.clearTimeout(showTimerRef.current);
+        showTimerRef.current = null;
+      }
+      if (showTimerRef.current !== null) return;
+      showChatSignatureRef.current = chatSignature;
+      showTimerRef.current = window.setTimeout(() => {
+        showTimerRef.current = null;
+        showChatSignatureRef.current = null;
+        setVisible(drivenByRef.current);
+      }, BROWSER_TAB_AGENT_ACTIVITY_MS);
+      return;
+    }
+    if (showTimerRef.current !== null) {
+      window.clearTimeout(showTimerRef.current);
+      showTimerRef.current = null;
+      showChatSignatureRef.current = null;
+    }
+    if (visibleRef.current.length === 0) return;
+    if (hideTimerRef.current !== null) return;
+    hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
+      setVisible([]);
+    }, BROWSER_TAB_AGENT_ACTIVITY_MS);
+  }, [chatSignature, signature]);
+
+  useEffect(
+    () => () => {
+      if (showTimerRef.current !== null) {
+        window.clearTimeout(showTimerRef.current);
+      }
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  return visible;
+}
+
+function BrowserFavicon(props: {
+  readonly faviconUrl: string | null;
+  readonly isolated: boolean;
+}) {
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const faviconUrl = props.faviconUrl;
+  const showImage = faviconUrl !== null && loadedSrc === faviconUrl;
+
   return (
-    <img
-      src={favicon}
-      alt=""
-      className="size-3.5 shrink-0 rounded-sm ring-1 ring-black/10 dark:ring-white/10"
-      onError={(event) => {
-        event.currentTarget.style.visibility = "hidden";
-      }}
-    />
+    <span
+      className={cn(
+        "relative size-4 shrink-0",
+        props.isolated && "rounded-sm ring-1 ring-amber-500/80",
+      )}
+    >
+      {showImage ? null : (
+        <Globe2 className="size-4 text-muted-foreground" aria-hidden />
+      )}
+      {faviconUrl === null ? null : (
+        <img
+          src={faviconUrl}
+          alt=""
+          className={cn(
+            "absolute inset-0 size-4 rounded-sm ring-1 ring-black/10 dark:ring-white/10",
+            showImage ? "opacity-100" : "opacity-0",
+          )}
+          onLoad={() => setLoadedSrc(faviconUrl)}
+          onError={() =>
+            setLoadedSrc((current) => (current === faviconUrl ? null : current))
+          }
+        />
+      )}
+    </span>
   );
 }

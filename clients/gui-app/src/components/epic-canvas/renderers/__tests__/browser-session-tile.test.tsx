@@ -56,6 +56,7 @@ const sessionsState = vi.hoisted<{
     routingChatId: "chat-route",
     retry: vi.fn(),
     closeSession: vi.fn(),
+    closeTab: vi.fn(() => Promise.resolve()),
     requestPromoteState: vi.fn(),
     requestLendStorage: vi.fn(),
   },
@@ -359,6 +360,7 @@ function renderTile(
     routingChatId: "chat-route",
     retry: vi.fn(),
     closeSession: vi.fn(),
+    closeTab: vi.fn(() => Promise.resolve()),
     requestPromoteState: vi.fn(),
     requestLendStorage: vi.fn(),
   };
@@ -399,6 +401,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       routingChatId: "chat-route",
       retry: vi.fn(),
       closeSession: vi.fn(),
+      closeTab: vi.fn(() => Promise.resolve()),
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
     };
@@ -424,6 +427,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       routingChatId: "chat-route",
       retry: vi.fn(),
       closeSession: vi.fn(),
+      closeTab: vi.fn(() => Promise.resolve()),
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
     };
@@ -487,6 +491,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       routingChatId: "chat-route",
       retry: vi.fn(),
       closeSession: vi.fn(),
+      closeTab: vi.fn(() => Promise.resolve()),
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
     };
@@ -683,6 +688,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       routingChatId: "chat-route",
       retry: vi.fn(),
       closeSession: vi.fn(),
+      closeTab: vi.fn(() => Promise.resolve()),
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
     };
@@ -811,6 +817,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       routingChatId: "chat-route",
       retry: vi.fn(),
       closeSession: vi.fn(),
+      closeTab: vi.fn(() => Promise.resolve()),
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
     };
@@ -909,6 +916,7 @@ describe("BrowserSessionTile (ticket 08 pointer view)", () => {
       routingChatId: "chat-route",
       retry: vi.fn(),
       closeSession: vi.fn(),
+      closeTab: vi.fn(() => Promise.resolve()),
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
     };

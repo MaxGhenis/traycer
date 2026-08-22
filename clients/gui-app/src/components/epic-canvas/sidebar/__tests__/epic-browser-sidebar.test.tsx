@@ -1,5 +1,6 @@
 import "../../../../../__tests__/test-browser-apis";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -9,8 +10,10 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import type {
   BrowserSessionInfo,
+  BrowserTabDriver,
   BrowserTabInfo,
 } from "@traycer/protocol/host/browser/contracts";
 import {
@@ -28,6 +31,7 @@ import {
   useEpicCanvasStore,
 } from "@/stores/epics/canvas/store";
 import { makeBrowserSessionTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
+import { BROWSER_TAB_AGENT_ACTIVITY_MS } from "@/lib/browser-view/browser-tab-display";
 import { resetPipStoreForTests } from "@/lib/browser-view/pip-store";
 import {
   findElectronBrowserTabBinding,
@@ -124,6 +128,12 @@ vi.mock("@/components/epic-canvas/renderers/browser-session-dock", () => ({
   },
 }));
 
+vi.mock("sonner", () => ({
+  toast: {
+    error: vi.fn(),
+  },
+}));
+
 vi.mock("@dnd-kit/core", () => ({
   useDraggable: (input: {
     readonly id: string | number;
@@ -140,12 +150,17 @@ vi.mock("@dnd-kit/core", () => ({
 }));
 
 const closeSession = vi.fn<(sessionId: string) => void>();
+const closeTab = vi.fn<(sessionId: string, tabId: string) => Promise<void>>();
 const navigateNested = vi.fn(
   (_epicId: string, _tabId: string, prepare: () => unknown) => prepare(),
 );
 
 function forwardCloseSession(sessionId: string): void {
   closeSession(sessionId);
+}
+
+function forwardCloseTab(sessionId: string, tabId: string): Promise<void> {
+  return closeTab(sessionId, tabId);
 }
 
 const sessionsState = vi.hoisted<{
@@ -158,6 +173,7 @@ const sessionsState = vi.hoisted<{
     routingChatId: "chat-driver",
     retry: vi.fn(),
     closeSession: forwardCloseSession,
+    closeTab: forwardCloseTab,
     requestPromoteState: vi.fn(),
     requestLendStorage: vi.fn(),
   },
@@ -253,6 +269,32 @@ function wrapper(node: ReactNode): ReactNode {
   return <TooltipProvider delayDuration={0}>{node}</TooltipProvider>;
 }
 
+function replaceSessions(items: readonly BrowserSessionInfo[]): void {
+  sessionsState.value = {
+    ...sessionsState.value,
+    items,
+  };
+}
+
+function identitySession(tabInfo: BrowserTabInfo): BrowserSessionInfo {
+  return session({
+    sessionId: "sess-identity",
+    name: "Main",
+    profile: "primary",
+    tabs: [tabInfo],
+  });
+}
+
+function setLiveDrivenBy(drivenBy: readonly BrowserTabDriver[]): void {
+  const current = sessionsState.value.items;
+  const first = current[0];
+  const liveTab = first.tabs[0];
+  replaceSessions([
+    { ...first, tabs: [{ ...liveTab, drivenBy }] },
+    ...current.slice(1),
+  ]);
+}
+
 function seedCanvasTab(): void {
   useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
   useEpicCanvasStore.setState({
@@ -280,6 +322,9 @@ describe("BrowsersPanelBody", () => {
     browserHostOptionsState.listsFailed = false;
     browserHostOptionsState.retryLists.mockClear();
     closeSession.mockReset();
+    closeTab.mockReset();
+    closeTab.mockResolvedValue(undefined);
+    vi.mocked(toast.error).mockClear();
     navigateNested.mockClear();
     resetElectronBrowserTabStoreForTests();
     usePanelHeaderSearchStore.setState(
@@ -345,12 +390,14 @@ describe("BrowsersPanelBody", () => {
       routingChatId: "chat-driver",
       retry: vi.fn(),
       closeSession: forwardCloseSession,
+      closeTab: forwardCloseTab,
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
     };
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     cleanup();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     resetElectronBrowserTabStoreForTests();
@@ -363,25 +410,73 @@ describe("BrowsersPanelBody", () => {
     expect(screen.getByText("Live page")).toBeTruthy();
     expect(screen.getByText("Dormant page")).toBeTruthy();
     expect(screen.getByText("Checkout")).toBeTruthy();
-    expect(screen.getByText("isolated")).toBeTruthy();
-    // The primary-profile session must not render a badge - only the
-    // isolated one earns one, per the row-redesign rule.
+    expect(screen.queryByText("isolated")).toBeNull();
     expect(screen.queryByText("primary")).toBeNull();
-    // The old placeholder session name never appears as a row's primary text.
     expect(screen.queryByText("Agent browser")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /^Dormant page, .*asleep$/ }),
+    ).toBeTruthy();
 
     const dormantRow = screen.getByTestId(
       "epic-browser-sidebar-row-tab-dormant",
     );
-    expect(dormantRow.className.split(/\s+/)).toContain("opacity-60");
+    expect(dormantRow.className.split(/\s+/)).not.toContain("opacity-60");
     const liveRow = screen.getByTestId("epic-browser-sidebar-row-tab-live");
     expect(liveRow.className.split(/\s+/)).not.toContain("opacity-60");
+    expect(liveRow.className.split(/\s+/)).not.toContain("font-medium");
     expect(liveRow.className.split(/\s+/)).toContain("cursor-pointer");
     expect(
       screen
         .getByRole("button", { name: /^Live page/i })
         .className.split(/\s+/),
     ).toContain("cursor-pointer");
+    const isoRow = screen.getByTestId("epic-browser-sidebar-row-tab-iso");
+    expect(isoRow.innerHTML).toContain("ring-amber-500/80");
+  });
+
+  it("keeps existing row order stable and appends newly discovered tabs", () => {
+    const view = render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    const rowIds = (): string[] =>
+      [...screen.getByTestId("epic-browsers-panel-list").children].map(
+        (row) => row.firstElementChild?.getAttribute("data-testid") ?? "",
+      );
+    const initial = [
+      "epic-browser-sidebar-row-tab-live",
+      "epic-browser-sidebar-row-tab-dormant",
+      "epic-browser-sidebar-row-tab-iso",
+    ];
+
+    expect(rowIds()).toEqual(initial);
+    replaceSessions([...sessionsState.value.items].reverse());
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    expect(rowIds()).toEqual(initial);
+
+    replaceSessions([
+      session({
+        sessionId: "sess-new",
+        name: "New browser",
+        profile: "primary",
+        tabs: [
+          tab({
+            tabId: "tab-new",
+            url: "https://new.example",
+            title: "New page",
+          }),
+        ],
+      }),
+      ...sessionsState.value.items,
+    ]);
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    expect(rowIds()).toEqual([
+      ...initial,
+      "epic-browser-sidebar-row-tab-new",
+    ]);
   });
 
   it("registers each row as a browser tile drag source", () => {
@@ -468,29 +563,28 @@ describe("BrowsersPanelBody", () => {
       "Close 127.0.0.1 (127.0.0.1:3000)",
       "Close 127.0.0.1 (127.0.0.1:5173)",
     ]);
-    expect(screen.queryByText("127.0.0.1:3000")).toBeNull();
-    expect(screen.queryByText("127.0.0.1:5173")).toBeNull();
-    expect(screen.getAllByText("127.0.0.1")).toHaveLength(4);
+    expect(screen.getByText("127.0.0.1:3000")).toBeTruthy();
+    expect(screen.getByText("127.0.0.1:5173")).toBeTruthy();
+    expect(screen.getAllByText("127.0.0.1")).toHaveLength(2);
   });
 
-  it("falls back to tab ids when duplicate titles also share no origin", () => {
-    const sessionIds = [
-      "sess-fallback-1",
-      "sess-fallback-2",
-      "sess-fallback-3",
+  it("keeps close names unique when duplicate titles and URLs collide", () => {
+    const tabIds = [
+      "aaaaaaaa-1111-4aaa-aaaa-aaaabbbbcccc",
+      "bbbbbbbb-2222-4bbb-bbbb-bbbbddddffff",
     ];
     sessionsState.value = {
       ...sessionsState.value,
-      items: sessionIds.map((sessionId, index) =>
+      items: tabIds.map((tabId, index) =>
         session({
-          sessionId,
+          sessionId: `sess-fallback-${index}`,
           name: "Agent browser",
           profile: "primary",
           tabs: [
             tab({
-              tabId: `tab-fallback-${index}`,
-              url: "",
-              title: "Checkout",
+              tabId,
+              url: "https://www.hotstar.com/live",
+              title: "JioHotstar",
               viewed: true,
             }),
           ],
@@ -501,12 +595,51 @@ describe("BrowsersPanelBody", () => {
     render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
     const closeLabels = screen
-      .getAllByRole("button", { name: /^Close Checkout \(/ })
+      .getAllByRole("button", { name: /^Close JioHotstar \(/ })
       .map((button) => button.getAttribute("aria-label"));
-    expect(new Set(closeLabels).size).toBe(sessionIds.length);
-    for (const [index] of sessionIds.entries()) {
-      expect(closeLabels).toContain(`Close Checkout (tab-fallback-${index})`);
+    expect(closeLabels).toEqual([
+      "Close JioHotstar (www.hotstar.com/live (cccc))",
+      "Close JioHotstar (www.hotstar.com/live (ffff))",
+    ]);
+  });
+
+  it("keeps duplicate close names disambiguated while pending", () => {
+    closeTab.mockImplementation(() => new Promise<void>(() => undefined));
+    const tabIds = ["tab-duplicate-aaaa", "tab-duplicate-bbbb"];
+    sessionsState.value = {
+      ...sessionsState.value,
+      items: tabIds.map((tabId, index) =>
+        session({
+          sessionId: `sess-duplicate-${index}`,
+          name: "Agent browser",
+          profile: "primary",
+          tabs: [
+            tab({
+              tabId,
+              url: "https://www.hotstar.com/live",
+              title: "JioHotstar",
+              viewed: true,
+            }),
+          ],
+        }),
+      ),
+    };
+
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+    for (const button of screen.getAllByRole("button", {
+      name: /^Close JioHotstar/,
+    })) {
+      fireEvent.click(button);
     }
+
+    expect(
+      screen
+        .getAllByRole("button", { name: /^Closing JioHotstar/ })
+        .map((button) => button.getAttribute("aria-label")),
+    ).toEqual([
+      "Closing JioHotstar (www.hotstar.com/live (aaaa))",
+      "Closing JioHotstar (www.hotstar.com/live (bbbb))",
+    ]);
   });
 
   it("keeps the plain close name when the active title is unique", () => {
@@ -626,12 +759,12 @@ describe("BrowsersPanelBody", () => {
     expect(screen.getByText("Browser")).toBeTruthy();
     expect(screen.queryByText("Agent browser")).toBeNull();
     expect(screen.queryByText("not a URL")).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Close / })).toBeNull();
+    expect(screen.getAllByRole("button", { name: /^Close / })).toHaveLength(2);
     expect(screen.getByText("Old page")).toBeTruthy();
     expect(
       screen.getByTestId("epic-browser-sidebar-row-tab-dormant-subrow")
         .className,
-    ).toContain("opacity-60");
+    ).not.toContain("opacity-60");
     expect(
       screen.getByTestId("epic-browser-sidebar-row-tab-invalid-url").className,
     ).not.toContain("opacity-60");
@@ -656,7 +789,7 @@ describe("BrowsersPanelBody", () => {
   });
 
   it("shows drivenBy attribution via real tooltip and opens the driving chat", async () => {
-    const user = userEvent.setup();
+    vi.useFakeTimers();
     const drivingSession = sessionsState.value.items[0];
     sessionsState.value = {
       ...sessionsState.value,
@@ -666,9 +799,18 @@ describe("BrowsersPanelBody", () => {
       ],
     };
     render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+    expect(
+      screen.queryByRole("button", { name: /Open driving chat/ }),
+    ).toBeNull();
 
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    vi.useRealTimers();
+
+    const user = userEvent.setup();
     const driveButton = screen.getByRole("button", {
-      name: "Open driving chat Checkout agent",
+      name: "Open driving chat: Checkout agent",
     });
     await user.hover(driveButton);
 
@@ -691,11 +833,24 @@ describe("BrowsersPanelBody", () => {
     ).toMatchObject({ hostId: "host-2" });
   });
 
-  it("close sends closeSession (host delete resource)", () => {
+  it("closes the named tab and its pointer tile only after closeTab succeeds", async () => {
     render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
 
+    fireEvent.click(screen.getByRole("button", { name: /^Live page/i }));
+    const pointer = makeBrowserSessionTileRef({
+      name: "Live page",
+      hostId: "host-1",
+      sessionId: "sess-primary",
+      tabId: "tab-live",
+    });
+    expect(findOpenArtifactInTab("view-tab-1", pointer.id)).not.toBeNull();
+
     fireEvent.click(screen.getByRole("button", { name: "Close Live page" }));
-    expect(closeSession).toHaveBeenCalledWith("sess-primary");
+    expect(closeTab).toHaveBeenCalledWith("sess-primary", "tab-live");
+    expect(closeSession).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(findOpenArtifactInTab("view-tab-1", pointer.id)).toBeNull();
+    });
   });
 
   it("row click opens a browser-session pointer tile when none is open", () => {
@@ -749,11 +904,27 @@ describe("BrowsersPanelBody", () => {
     expect(focused?.instanceId).toBe(existing.instanceId);
   });
 
-  it("row click focuses an existing native electron binding tile by registrationId", async () => {
+  it("focuses an existing native tile and closes it only after closeTab succeeds", async () => {
     const bridge = new FakeBridge();
+    useEpicCanvasStore.getState().openTileInTab("view-tab-1", {
+      id: "reg-native-1",
+      sessionId: "sess-primary",
+      instanceId: "native-instance",
+      type: "agent-browser",
+      name: "Live page",
+      hostId: "host-1",
+      url: "https://app.example/live",
+      viewportPreset: "responsive",
+      runtime: "isolated",
+    });
+    const nativeLocation = findOpenArtifactInTab(
+      "view-tab-1",
+      "reg-native-1",
+    );
+    if (nativeLocation === null) throw new Error("expected native tile");
     const tileKey: BrowserViewTileKey = {
       viewTabId: "view-tab-1",
-      paneId: "pane-1",
+      paneId: nativeLocation.paneId,
       tileInstanceId: "native-instance",
       pageSessionId: "reg-native-1",
     };
@@ -781,18 +952,6 @@ describe("BrowsersPanelBody", () => {
     expect(
       findElectronBrowserTabBinding("sess-primary", "tab-live")?.registrationId,
     ).toBe("reg-native-1");
-
-    useEpicCanvasStore.getState().openTileInTab("view-tab-1", {
-      id: "reg-native-1",
-      sessionId: "sess-primary",
-      instanceId: "native-instance",
-      type: "agent-browser",
-      name: "Live page",
-      hostId: "host-1",
-      url: "https://app.example/live",
-      viewportPreset: "responsive",
-      runtime: "isolated",
-    });
     const beforeCount = Object.keys(
       useEpicCanvasStore.getState().canvasByTabId["view-tab-1"]
         ?.tilesByInstanceId ?? {},
@@ -820,6 +979,100 @@ describe("BrowsersPanelBody", () => {
     const focused = findOpenArtifactInTab("view-tab-1", "reg-native-1");
     expect(typeof focused?.paneId).toBe("string");
     expect(focused?.instanceId).toBe("native-instance");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Live page" }));
+    await waitFor(() => {
+      expect(
+        findOpenArtifactInTab("view-tab-1", "reg-native-1"),
+      ).toBeNull();
+    });
+  });
+
+  it("closes the native tile's current pane when close ack arrives after the tile moved", async () => {
+    let resolveClose: (() => void) | undefined;
+    closeTab.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveClose = resolve;
+        }),
+    );
+    const bridge = new FakeBridge();
+    useEpicCanvasStore.getState().openTileInTab("view-tab-1", {
+      id: "chat-driver",
+      instanceId: "chat-instance",
+      type: "chat",
+      name: "Checkout agent",
+      hostId: "host-1",
+    });
+    useEpicCanvasStore.getState().openTileInTab("view-tab-1", {
+      id: "reg-native-1",
+      sessionId: "sess-primary",
+      instanceId: "native-instance",
+      type: "agent-browser",
+      name: "Live page",
+      hostId: "host-1",
+      url: "https://app.example/live",
+      viewportPreset: "responsive",
+      runtime: "isolated",
+    });
+    const originalLocation = findOpenArtifactInTab(
+      "view-tab-1",
+      "reg-native-1",
+    );
+    if (originalLocation === null) throw new Error("expected native tile");
+    const tileKey: BrowserViewTileKey = {
+      viewTabId: "view-tab-1",
+      paneId: originalLocation.paneId,
+      tileInstanceId: "native-instance",
+      pageSessionId: "reg-native-1",
+    };
+    registerElectronBrowserTab({
+      epicId: "epic-1",
+      hostId: "host-1",
+      chatId: "chat-driver",
+      registrationId: "reg-native-1",
+      sessionId: "sess-primary",
+      initialUrl: "https://app.example/live",
+      title: "Live page",
+      tileKey,
+      bridge,
+      onRegistered: null,
+    });
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-reg-moved-close",
+      registrationId: "reg-native-1",
+      sessionId: "sess-primary",
+      tabId: "tab-live",
+    });
+    await Promise.resolve();
+
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+    fireEvent.click(screen.getByRole("button", { name: "Close Live page" }));
+    expect(closeTab).toHaveBeenCalledWith("sess-primary", "tab-live");
+    expect(findOpenArtifactInTab("view-tab-1", "reg-native-1")).not.toBeNull();
+
+    useEpicCanvasStore.getState().splitPaneWithTab("view-tab-1", {
+      sourcePaneId: originalLocation.paneId,
+      tabId: originalLocation.instanceId,
+      targetPaneId: originalLocation.paneId,
+      position: "right",
+    });
+    const movedLocation = findOpenArtifactInTab("view-tab-1", "reg-native-1");
+    expect(movedLocation).not.toBeNull();
+    expect(movedLocation?.paneId).not.toBe(originalLocation.paneId);
+
+    if (resolveClose === undefined) {
+      throw new Error("expected pending close resolution");
+    }
+    act(() => {
+      resolveClose();
+    });
+    await waitFor(() => {
+      expect(findOpenArtifactInTab("view-tab-1", "reg-native-1")).toBeNull();
+    });
+    expect(findOpenArtifactInTab("view-tab-1", "chat-driver")).not.toBeNull();
   });
 
   it("shows the empty state with an Add browser action when there are no sessions", () => {
@@ -829,6 +1082,398 @@ describe("BrowsersPanelBody", () => {
     expect(screen.getByTestId("epic-browsers-panel-empty")).toBeTruthy();
     expect(screen.getByText("No browsers yet.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add browser" })).toBeTruthy();
+  });
+
+  it("holds settled row identity through navigating and provisioning, and never regresses a document title", () => {
+    replaceSessions([
+      identitySession(
+        tab({
+          tabId: "tab-identity",
+          url: "https://thecapitalgrille.com",
+          title: "The Capital Grille",
+          status: "ready",
+        }),
+      ),
+    ]);
+    const view = render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    const row = (): HTMLElement =>
+      screen.getByTestId("epic-browser-sidebar-row-tab-identity");
+
+    expect(screen.getByText("The Capital Grille")).toBeTruthy();
+    expect(screen.getByText("thecapitalgrille.com")).toBeTruthy();
+    const settledFavicon = row().querySelector("img");
+    expect(settledFavicon?.getAttribute("src")).toBe(
+      "https://thecapitalgrille.com/favicon.ico",
+    );
+    expect(row().querySelector(".lucide-earth")).not.toBeNull();
+    if (settledFavicon !== null) fireEvent.load(settledFavicon);
+    expect(row().querySelector(".lucide-earth")).toBeNull();
+    if (settledFavicon !== null) fireEvent.error(settledFavicon);
+    expect(row().querySelector(".lucide-earth")).not.toBeNull();
+    if (settledFavicon !== null) fireEvent.load(settledFavicon);
+
+    replaceSessions([
+      identitySession(
+        tab({
+          tabId: "tab-identity",
+          url: "https://thecapitalgrille.com/menu",
+          title: "thecapitalgrille.com",
+          status: "navigating",
+        }),
+      ),
+    ]);
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    expect(screen.getByText("The Capital Grille")).toBeTruthy();
+    expect(screen.getByText("thecapitalgrille.com")).toBeTruthy();
+    expect(row().querySelector("img")?.getAttribute("src")).toBe(
+      "https://thecapitalgrille.com/favicon.ico",
+    );
+
+    replaceSessions([
+      identitySession(
+        tab({
+          tabId: "tab-identity",
+          url: "https://thecapitalgrille.com/reservations",
+          title: "Loading",
+          status: "provisioning",
+        }),
+      ),
+    ]);
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    expect(screen.getByText("The Capital Grille")).toBeTruthy();
+    expect(screen.queryByText("Loading")).toBeNull();
+
+    replaceSessions([
+      identitySession(
+        tab({
+          tabId: "tab-identity",
+          url: "https://thepier5.com",
+          title: "Waterfront",
+          status: "navigating",
+        }),
+      ),
+    ]);
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    expect(screen.getByText("The Capital Grille")).toBeTruthy();
+    expect(screen.queryByText("Waterfront")).toBeNull();
+    expect(row().querySelector("img")).toBeNull();
+    expect(row().querySelector(".lucide-earth")).not.toBeNull();
+    expect(
+      screen.getByRole("button", {
+        name: "The Capital Grille, https://thecapitalgrille.com",
+      }),
+    ).toBeTruthy();
+
+    replaceSessions([
+      identitySession(
+        tab({
+          tabId: "tab-identity",
+          url: "https://thepier5.com",
+          title: "The Capital Grille",
+          status: "ready",
+        }),
+      ),
+    ]);
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    expect(screen.getByText("The Capital Grille")).toBeTruthy();
+    expect(screen.getByText("thepier5.com")).toBeTruthy();
+    expect(screen.queryByText("thecapitalgrille.com")).toBeNull();
+    expect(
+      screen.getByRole("button", {
+        name: "The Capital Grille, https://thepier5.com",
+      }),
+    ).toBeTruthy();
+    expect(row().querySelector("img")?.getAttribute("src")).toBe(
+      "https://thepier5.com/favicon.ico",
+    );
+  });
+
+  it("matches search against settled identity, not a live redirect URL", () => {
+    replaceSessions([
+      identitySession(
+        tab({
+          tabId: "tab-identity",
+          url: "https://thecapitalgrille.com",
+          title: "The Capital Grille",
+          status: "ready",
+        }),
+      ),
+    ]);
+    const view = render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    usePanelHeaderSearchStore
+      .getState()
+      .openSearch("view-tab-1", "browsers", "thepier5.com");
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    expect(screen.queryByText("The Capital Grille")).toBeNull();
+
+    usePanelHeaderSearchStore
+      .getState()
+      .openSearch("view-tab-1", "browsers", "thecapitalgrille.com");
+    replaceSessions([
+      identitySession(
+        tab({
+          tabId: "tab-identity",
+          url: "https://thepier5.com",
+          title: "Waterfront",
+          status: "navigating",
+        }),
+      ),
+    ]);
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    expect(screen.getByText("The Capital Grille")).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "The Capital Grille, https://thecapitalgrille.com",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("shows generic Browser and the Globe placeholder until a new tab settles", () => {
+    replaceSessions([
+      identitySession(
+        tab({
+          tabId: "tab-new",
+          url: "https://www.thecapitalgrille.com",
+          title: "thecapitalgrille.com",
+          status: "navigating",
+        }),
+      ),
+    ]);
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+
+    const row = screen.getByTestId("epic-browser-sidebar-row-tab-new");
+    expect(screen.getByText("Browser")).toBeTruthy();
+    expect(screen.queryByText("thecapitalgrille.com")).toBeNull();
+    expect(row.querySelector("img")).toBeNull();
+    expect(row.querySelector(".lucide-earth")).not.toBeNull();
+  });
+
+  it("keeps close in the 28px slot with a spinner, leaves canvas tiles open, and restores close after a failed ack", async () => {
+    let rejectClose: ((error: Error) => void) | undefined;
+    closeTab.mockImplementation(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectClose = reject;
+        }),
+    );
+    vi.useFakeTimers();
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+    fireEvent.click(screen.getByRole("button", { name: /^Live page/i }));
+    const expected = makeBrowserSessionTileRef({
+      name: "Live page",
+      hostId: "host-1",
+      sessionId: "sess-primary",
+      tabId: "tab-live",
+    });
+    expect(findOpenArtifactInTab("view-tab-1", expected.id)).not.toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(BROWSER_TAB_AGENT_ACTIVITY_MS);
+    });
+    expect(
+      screen.getByTestId("epic-browser-sidebar-row-tab-live").querySelector(
+        ".lucide-bot",
+      ),
+    ).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Live page" }));
+    vi.useRealTimers();
+    const row = screen.getByTestId("epic-browser-sidebar-row-tab-live");
+    expect(row.className).toContain("grid-cols-[minmax(0,1fr)_24px_28px]");
+    expect(row.querySelector(".lucide-bot")).toBeNull();
+    const pendingClose = screen.getByTestId(
+      "epic-browser-sidebar-close-tab-live",
+    );
+    expect(pendingClose.getAttribute("aria-label")).toBe("Closing Live page");
+    expect(pendingClose.querySelector(".font-mono")).not.toBeNull();
+    expect(pendingClose.querySelector(".lucide-x")).toBeNull();
+    expect(findOpenArtifactInTab("view-tab-1", expected.id)).not.toBeNull();
+    expect(closeSession).not.toHaveBeenCalled();
+    if (rejectClose === undefined) {
+      throw new Error("expected pending close rejection");
+    }
+
+    act(() => {
+      rejectClose(new Error("Browser sessions stream closed."));
+    });
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        "Couldn't close Live page. Try again.",
+        { duration: Infinity },
+      );
+    });
+    const restoredClose = screen.getByRole("button", {
+      name: "Close Live page",
+    });
+    expect(restoredClose.querySelector(".lucide-x")).not.toBeNull();
+    expect(findOpenArtifactInTab("view-tab-1", expected.id)).not.toBeNull();
+  });
+
+  it("ignores agent activity shorter than 400ms", () => {
+    vi.useFakeTimers();
+    const view = render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    expect(
+      screen.queryByRole("button", { name: /Open driving chat/ }),
+    ).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(BROWSER_TAB_AGENT_ACTIVITY_MS - 1);
+    });
+    expect(
+      screen.queryByRole("button", { name: /Open driving chat/ }),
+    ).toBeNull();
+
+    setLiveDrivenBy([]);
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    act(() => {
+      vi.advanceTimersByTime(BROWSER_TAB_AGENT_ACTIVITY_MS);
+    });
+    expect(
+      screen.queryByRole("button", { name: /Open driving chat/ }),
+    ).toBeNull();
+  });
+
+  it("holds one generic bot glyph across adjacent same-chat bursts without in-flow chat titles", () => {
+    vi.useFakeTimers();
+    const view = render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    act(() => {
+      vi.advanceTimersByTime(BROWSER_TAB_AGENT_ACTIVITY_MS);
+    });
+    const liveRow = screen.getByTestId("epic-browser-sidebar-row-tab-live");
+    expect(
+      screen.getByRole("button", { name: "Open driving chat: Checkout agent" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("Checkout agent")).toBeNull();
+    expect(liveRow.querySelectorAll(".lucide-bot")).toHaveLength(1);
+
+    setLiveDrivenBy([]);
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    expect(
+      screen.getByRole("button", { name: "Open driving chat: Checkout agent" }),
+    ).toBeTruthy();
+
+    setLiveDrivenBy([
+      { chatId: "chat-driver", agentRunId: "run-2", requestId: "req-2" },
+    ]);
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    act(() => {
+      vi.advanceTimersByTime(BROWSER_TAB_AGENT_ACTIVITY_MS - 1);
+    });
+    expect(
+      screen.getByRole("button", { name: "Open driving chat: Checkout agent" }),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByTestId("epic-browser-sidebar-row-tab-live")
+        .querySelectorAll(".lucide-bot"),
+    ).toHaveLength(1);
+    expect(screen.queryByText("Checkout agent")).toBeNull();
+
+    setLiveDrivenBy([]);
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    act(() => {
+      vi.advanceTimersByTime(BROWSER_TAB_AGENT_ACTIVITY_MS);
+    });
+    expect(
+      screen.queryByRole("button", { name: /Open driving chat/ }),
+    ).toBeNull();
+  });
+
+  it("does not let a different chat inherit the visible activity grace", () => {
+    vi.useFakeTimers();
+    const view = render(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    act(() => {
+      vi.advanceTimersByTime(BROWSER_TAB_AGENT_ACTIVITY_MS);
+    });
+    expect(
+      screen.getByRole("button", { name: "Open driving chat: Checkout agent" }),
+    ).toBeTruthy();
+
+    setLiveDrivenBy([
+      { chatId: "chat-other", agentRunId: "run-2", requestId: "req-other" },
+    ]);
+    view.rerender(
+      wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />),
+    );
+    expect(
+      screen.queryByRole("button", {
+        name: "Open driving chat: Checkout agent",
+      }),
+    ).toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(BROWSER_TAB_AGENT_ACTIVITY_MS - 1);
+    });
+    expect(
+      screen.queryByRole("button", { name: "Open driving chat: Other chat" }),
+    ).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(
+      screen.getByRole("button", { name: "Open driving chat: Other chat" }),
+    ).toBeTruthy();
+  });
+
+  it("keeps failed rows neutrally identifiable with an alert and visible close", () => {
+    replaceSessions([
+      session({
+        sessionId: "sess-failed",
+        name: "Main",
+        profile: "primary",
+        tabs: [
+          tab({
+            tabId: "tab-failed",
+            url: "https://www.hotstar.com/live",
+            title: "JioHotstar",
+            status: "crashed",
+          }),
+        ],
+      }),
+    ]);
+    render(wrapper(<BrowsersPanelBody epicId="epic-1" tabId="view-tab-1" />));
+
+    const row = screen.getByTestId("epic-browser-sidebar-row-tab-failed");
+    expect(screen.getByText("JioHotstar")).toBeTruthy();
+    expect(row.className.split(/\s+/)).not.toContain("opacity-60");
+    expect(row.querySelector(".lucide-triangle-alert")).not.toBeNull();
+    expect(
+      screen.getByRole("button", { name: /^JioHotstar, .*failed$/ }),
+    ).toBeTruthy();
+    expect(screen.queryByText("failed")).toBeNull();
+    const closeButton = screen.getByRole("button", {
+      name: "Close JioHotstar",
+    });
+    expect(closeButton.className.split(/\s+/)).toContain("opacity-100");
   });
 });
 
@@ -860,6 +1505,7 @@ describe("BrowsersPanelActions", () => {
       routingChatId: null,
       retry: vi.fn(),
       closeSession: forwardCloseSession,
+      closeTab: forwardCloseTab,
       requestPromoteState: vi.fn(),
       requestLendStorage: vi.fn(),
     };

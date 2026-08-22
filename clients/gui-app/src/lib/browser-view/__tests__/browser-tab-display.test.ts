@@ -3,6 +3,8 @@ import type { BrowserTabInfo } from "@traycer/protocol/host/browser/contracts";
 import {
   browserTabFaviconUrl,
   browserTabHostname,
+  disambiguateSecondaryLabels,
+  nextSettledTabIdentity,
   resolveTabTitle,
 } from "@/lib/browser-view/browser-tab-display";
 
@@ -51,5 +53,227 @@ describe("browser-tab-display", () => {
     );
     expect(browserTabFaviconUrl("about:blank")).toBeNull();
     expect(browserTabFaviconUrl("not a URL")).toBeNull();
+  });
+
+  it("holds settled identity through transient navigation and never regresses a document title", () => {
+    const first = nextSettledTabIdentity(
+      null,
+      tab({
+        tabId: "grille",
+        url: "https://thecapitalgrille.com",
+        title: "The Capital Grille",
+        status: "ready",
+      }),
+    );
+    expect(first.title).toBe("The Capital Grille");
+    expect(first.url).toBe("https://thecapitalgrille.com");
+    expect(first.faviconUrl).toBe(
+      "https://thecapitalgrille.com/favicon.ico",
+    );
+
+    const navigating = nextSettledTabIdentity(
+      first,
+      tab({
+        tabId: "grille",
+        url: "https://thecapitalgrille.com/menu",
+        title: "thecapitalgrille.com",
+        status: "navigating",
+      }),
+    );
+    expect(navigating.title).toBe("The Capital Grille");
+    expect(navigating.url).toBe("https://thecapitalgrille.com");
+
+    const provisioning = nextSettledTabIdentity(
+      first,
+      tab({
+        tabId: "grille",
+        url: "https://thecapitalgrille.com/reservations",
+        title: "Loading",
+        status: "provisioning",
+      }),
+    );
+    expect(provisioning.title).toBe("The Capital Grille");
+    expect(provisioning.url).toBe("https://thecapitalgrille.com");
+
+    const originChange = nextSettledTabIdentity(
+      first,
+      tab({
+        tabId: "grille",
+        url: "https://thepier5.com",
+        title: "Waterfront",
+        status: "navigating",
+      }),
+    );
+    expect(originChange).toEqual(first);
+
+    const cancelled = nextSettledTabIdentity(
+      originChange,
+      tab({
+        tabId: "grille",
+        url: "https://thecapitalgrille.com",
+        title: null,
+        status: "ready",
+      }),
+    );
+    expect(cancelled).toEqual(first);
+    expect(cancelled.faviconUrl).toBe(
+      "https://thecapitalgrille.com/favicon.ico",
+    );
+
+    const settledEmpty = nextSettledTabIdentity(
+      navigating,
+      tab({
+        tabId: "grille",
+        url: "https://thecapitalgrille.com/menu",
+        title: null,
+        status: "ready",
+      }),
+    );
+    expect(settledEmpty.title).toBe("The Capital Grille");
+    expect(settledEmpty.hasDocumentTitle).toBe(true);
+
+    const hostnameRegression = nextSettledTabIdentity(
+      first,
+      tab({
+        tabId: "grille",
+        url: "https://www.thecapitalgrille.com/menu",
+        title: "thecapitalgrille.com",
+        status: "ready",
+      }),
+    );
+    expect(hostnameRegression.title).toBe("The Capital Grille");
+    expect(hostnameRegression.hasDocumentTitle).toBe(true);
+
+    const sameTitleOnNewOrigin = nextSettledTabIdentity(
+      first,
+      tab({
+        tabId: "grille",
+        url: "https://thepier5.com",
+        title: "The Capital Grille",
+        status: "ready",
+      }),
+    );
+    expect(sameTitleOnNewOrigin).toMatchObject({
+      title: "The Capital Grille",
+      url: "https://thepier5.com",
+      faviconUrl: "https://thepier5.com/favicon.ico",
+    });
+  });
+
+  it("commits hostname identity when a newly-ready tab never had a document title", () => {
+    const pending = nextSettledTabIdentity(
+      null,
+      tab({
+        tabId: "new",
+        url: "https://www.thecapitalgrille.com",
+        title: null,
+        status: "navigating",
+      }),
+    );
+    const settled = nextSettledTabIdentity(
+      pending,
+      tab({
+        tabId: "new",
+        url: "https://www.thecapitalgrille.com",
+        title: "thecapitalgrille.com",
+        status: "ready",
+      }),
+    );
+    expect(settled).toMatchObject({
+      title: "www.thecapitalgrille.com",
+      url: "https://www.thecapitalgrille.com",
+      hasDocumentTitle: false,
+    });
+  });
+
+  it("keeps a generic identity until a new tab's first navigation settles", () => {
+    const pending = nextSettledTabIdentity(
+      null,
+      tab({
+        tabId: "new",
+        url: "https://www.thecapitalgrille.com",
+        title: null,
+        status: "navigating",
+      }),
+    );
+    expect(pending).toMatchObject({
+      title: "Browser",
+      url: "https://www.thecapitalgrille.com",
+      faviconUrl: null,
+      hasDocumentTitle: false,
+    });
+
+    const pendingProvision = nextSettledTabIdentity(
+      null,
+      tab({
+        tabId: "new-provision",
+        url: "https://www.thecapitalgrille.com",
+        title: "thecapitalgrille.com",
+        status: "provisioning",
+      }),
+    );
+    expect(pendingProvision).toMatchObject({
+      title: "Browser",
+      url: "https://www.thecapitalgrille.com",
+      faviconUrl: null,
+      hasDocumentTitle: false,
+    });
+  });
+
+  it("disambiguates colliding titles with host port or shortest path", () => {
+    const labels = disambiguateSecondaryLabels([
+      {
+        key: "live",
+        tabId: "tab-live",
+        title: "JioHotstar",
+        url: "https://www.hotstar.com/live",
+      },
+      {
+        key: "sports",
+        tabId: "tab-sports",
+        title: "JioHotstar",
+        url: "https://www.hotstar.com/sports",
+      },
+    ]);
+    expect(labels.get("live")).toBe("www.hotstar.com/live");
+    expect(labels.get("sports")).toBe("www.hotstar.com/sports");
+  });
+
+  it("uses a short unique tab-id suffix when title and URL still collide", () => {
+    const labels = disambiguateSecondaryLabels([
+      {
+        key: "a",
+        tabId: "aaaaaaaa-1111-4aaa-aaaa-aaaabbbbcccc",
+        title: "JioHotstar",
+        url: "https://www.hotstar.com/live",
+      },
+      {
+        key: "b",
+        tabId: "bbbbbbbb-2222-4bbb-bbbb-bbbbddddffff",
+        title: "JioHotstar",
+        url: "https://www.hotstar.com/live",
+      },
+    ]);
+    expect(labels.get("a")).toBe("www.hotstar.com/live (cccc)");
+    expect(labels.get("b")).toBe("www.hotstar.com/live (ffff)");
+  });
+
+  it("does not disambiguate matching hosts when titles already differ", () => {
+    const labels = disambiguateSecondaryLabels([
+      {
+        key: "a",
+        tabId: "tab-a",
+        title: "News",
+        url: "https://example.com/news",
+      },
+      {
+        key: "b",
+        tabId: "tab-b",
+        title: "Weather",
+        url: "https://example.com/weather",
+      },
+    ]);
+    expect(labels.get("a")).toBe("example.com");
+    expect(labels.get("b")).toBe("example.com");
   });
 });

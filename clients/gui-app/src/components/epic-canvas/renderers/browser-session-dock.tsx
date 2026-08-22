@@ -105,6 +105,11 @@ type BrowserStorageLendPayload = Extract<
   { readonly kind: "lendStorage" }
 >["storage"];
 
+type PendingCloseRequest = {
+  readonly resolve: () => void;
+  readonly reject: (error: Error) => void;
+};
+
 const browserStorageLendPayloadSchema = z.json();
 
 interface BrowserAuthLendSource {
@@ -764,6 +769,7 @@ function useBrowserSessions(
       }
     >
   >(new Map());
+  const pendingClosesRef = useRef<Map<string, PendingCloseRequest>>(new Map());
   const [streamState, setStreamState] = useState<BrowserSessionsRenderState>(
     () => ({
       client: null,
@@ -773,6 +779,7 @@ function useBrowserSessions(
     }),
   );
   const [retryGeneration, setRetryGeneration] = useState(0);
+  const lifecycleRef = useRef(streamState.lifecycle);
 
   useEffect(() => {
     if (hostId === null || chatId === null || readyOwner?.hostId !== hostId) {
@@ -781,6 +788,7 @@ function useBrowserSessions(
     }
     const pendingPromotes = pendingPromotesRef.current;
     const pendingLends = pendingLendsRef.current;
+    const pendingCloses = pendingClosesRef.current;
     const transport = openTransport(hostId);
     const client = transport.wsStreamClient;
     const stream = (() => {
@@ -810,9 +818,15 @@ function useBrowserSessions(
         : attachElectronBrowserBackgroundTabRoute(epicId, hostId, browserView);
     stream.onStatusChange((status, reason) => {
       if (sessionRef.current !== stream) return;
+      const lifecycle = browserSessionsLifecycle(status, reason);
+      lifecycleRef.current = lifecycle;
       if (status !== "open") {
         captureReadySentForConnection = false;
         electronTabsReplayedForConnection = false;
+        rejectPendingRequests(
+          pendingCloses,
+          new Error("Browser sessions stream closed."),
+        );
       } else {
         if (!electronTabsReplayedForConnection) {
           electronTabsReplayedForConnection = true;
@@ -830,7 +844,6 @@ function useBrowserSessions(
           );
         }
       }
-      const lifecycle = browserSessionsLifecycle(status, reason);
       setStreamState((current) => ({
         client,
         items: current.client === client ? current.items : [],
@@ -862,6 +875,7 @@ function useBrowserSessions(
         },
         pendingPromotes,
         pendingLends,
+        pendingCloses,
         browserView,
         sendClientFrame: (frame) => {
           stream.sendClientFrame(frame, null);
@@ -876,12 +890,16 @@ function useBrowserSessions(
       detachBackgroundRoute?.();
       stream.close();
       transport.close();
-      rejectPendingPromotes(
+      rejectPendingRequests(
         pendingPromotes,
         new Error("Browser sessions stream closed."),
       );
-      rejectPendingLends(
+      rejectPendingRequests(
         pendingLends,
+        new Error("Browser sessions stream closed."),
+      );
+      rejectPendingRequests(
+        pendingCloses,
         new Error("Browser sessions stream closed."),
       );
     };
@@ -963,17 +981,54 @@ function useBrowserSessions(
     );
   }, []);
 
+  const closeTab = useCallback(
+    (sessionId: string, tabId: string): Promise<void> => {
+      const session = sessionRef.current;
+      if (session === null || lifecycleRef.current !== "live") {
+        return Promise.reject(
+          new Error("Browser sessions stream is not ready."),
+        );
+      }
+      const pendingCloses = pendingClosesRef.current;
+      const requestId = crypto.randomUUID();
+      return new Promise<void>((resolve, reject) => {
+        pendingCloses.set(requestId, { resolve, reject });
+        try {
+          session.sendClientFrame(
+            {
+              kind: "closeTab",
+              hasBinaryPayload: false,
+              requestId,
+              sessionId,
+              tabId,
+            },
+            null,
+          );
+        } catch (error) {
+          pendingCloses.delete(requestId);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    },
+    [],
+  );
+
   const stateMatchesOwner =
     chatId !== null &&
     readyOwner?.hostId === hostId &&
     streamState.client !== null;
+  const lifecycle = stateMatchesOwner ? streamState.lifecycle : "connecting";
+  useEffect(() => {
+    lifecycleRef.current = lifecycle;
+  }, [lifecycle]);
 
   return {
-    lifecycle: stateMatchesOwner ? streamState.lifecycle : "connecting",
+    lifecycle,
     items: stateMatchesOwner ? streamState.items : [],
     errorMessage: stateMatchesOwner ? streamState.errorMessage : null,
     retry,
     closeSession,
+    closeTab,
     requestPromoteState,
     requestLendStorage,
   };
@@ -995,6 +1050,7 @@ function handleBrowserSessionRequestFrame(args: {
       readonly reject: (error: Error) => void;
     }
   >;
+  readonly pendingCloses: Map<string, PendingCloseRequest>;
 }): boolean {
   if (args.frame.kind === "promoteState") {
     const pending = args.pendingPromotes.get(args.frame.requestId);
@@ -1010,20 +1066,35 @@ function handleBrowserSessionRequestFrame(args: {
     pending.resolve(args.frame);
     return true;
   }
-  if (args.frame.kind === "actionAck" && !args.frame.ok) {
-    const pending = args.pendingPromotes.get(args.frame.requestId);
-    if (pending !== undefined) {
-      args.pendingPromotes.delete(args.frame.requestId);
-      pending.reject(new Error(args.frame.reason ?? "Browser action failed."));
+  if (args.frame.kind === "actionAck") {
+    const pendingClose = args.pendingCloses.get(args.frame.requestId);
+    if (pendingClose !== undefined) {
+      args.pendingCloses.delete(args.frame.requestId);
+      if (args.frame.ok) pendingClose.resolve();
+      else {
+        pendingClose.reject(
+          new Error(args.frame.reason ?? "Browser action failed."),
+        );
+      }
+      return true;
     }
-    const pendingLend = args.pendingLends.get(args.frame.requestId);
-    if (pendingLend !== undefined) {
-      args.pendingLends.delete(args.frame.requestId);
-      pendingLend.reject(
-        new Error(args.frame.reason ?? "Browser action failed."),
-      );
+    if (!args.frame.ok) {
+      const pending = args.pendingPromotes.get(args.frame.requestId);
+      if (pending !== undefined) {
+        args.pendingPromotes.delete(args.frame.requestId);
+        pending.reject(
+          new Error(args.frame.reason ?? "Browser action failed."),
+        );
+      }
+      const pendingLend = args.pendingLends.get(args.frame.requestId);
+      if (pendingLend !== undefined) {
+        args.pendingLends.delete(args.frame.requestId);
+        pendingLend.reject(
+          new Error(args.frame.reason ?? "Browser action failed."),
+        );
+      }
+      return true;
     }
-    return true;
   }
   return false;
 }
@@ -1045,6 +1116,7 @@ function handleBrowserSessionsFrame(args: {
       readonly reject: (error: Error) => void;
     }
   >;
+  readonly pendingCloses: Map<string, PendingCloseRequest>;
   readonly browserView: DesktopBrowserViewBridge | null;
   readonly sendClientFrame: (frame: BrowserSessionsClientFrame) => void;
 }): void {
@@ -1447,30 +1519,12 @@ function browserSessionsLabel(lifecycle: BrowserSessionsLifecycle): string {
   return "Connecting";
 }
 
-function rejectPendingPromotes(
-  pendingPromotes: Map<
-    string,
-    {
-      readonly resolve: (frame: PromoteStateFrame) => void;
-      readonly reject: (error: Error) => void;
-    }
-  >,
+function rejectPendingRequests<
+  T extends { readonly reject: (error: Error) => void },
+>(
+  pendingRequests: Map<string, T>,
   error: Error,
 ): void {
-  pendingPromotes.forEach((pending) => pending.reject(error));
-  pendingPromotes.clear();
-}
-
-function rejectPendingLends(
-  pendingLends: Map<
-    string,
-    {
-      readonly resolve: (frame: LendResultFrame) => void;
-      readonly reject: (error: Error) => void;
-    }
-  >,
-  error: Error,
-): void {
-  pendingLends.forEach((pending) => pending.reject(error));
-  pendingLends.clear();
+  pendingRequests.forEach((pending) => pending.reject(error));
+  pendingRequests.clear();
 }
