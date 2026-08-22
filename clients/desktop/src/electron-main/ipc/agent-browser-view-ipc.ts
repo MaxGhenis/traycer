@@ -26,6 +26,7 @@ import type {
   BrowserViewViewportPresetId,
 } from "../../ipc-contracts/browser-view-types";
 import {
+  BOUNDS_STREAM_LOG_INTERVAL_MS,
   BrowserViewManager,
   scheduleBrowserViewDebugSnapshot,
   type BrowserViewHostWebContents,
@@ -33,6 +34,7 @@ import {
   type ManagedBrowserView,
   type ManagedContentView,
 } from "../browser-view/browser-view-manager";
+import { hostPlatformFromProcessPlatform } from "../../ipc-contracts/reserved-chords";
 import {
   cancelBrowserViewDownload,
   clearBrowserViewPendingCertificateError,
@@ -174,6 +176,8 @@ export function registerAgentBrowserViewIpc(
     capturePrimaryProfileLocalStorage: () => Promise.resolve(null),
     releaseGraceMs: AGENT_BROWSER_VIEW_RELEASE_GRACE_MS,
     electronCreateDelayMs: 0,
+    boundsStreamLogIntervalMs: BOUNDS_STREAM_LOG_INTERVAL_MS,
+    hostPlatform: hostPlatformFromProcessPlatform(process.platform),
   });
 
   bridge.handleInvoke(
@@ -181,6 +185,17 @@ export function registerAgentBrowserViewIpc(
     (event, payload) => {
       const windowId = readSenderWindowId(bridge, event);
       manager.upsertTile(windowId, parseTileUpsert(payload));
+    },
+  );
+
+  // BT-302/BT-303: the agent manager owns isolated-runtime session tiles, so
+  // reserved-chord registration MUST reach it too — otherwise ⌘K etc. die on
+  // exactly the tiles users browse in. Mirrors the occlusion broadcast shape
+  // (each manager stores its own copy; the renderer pushes to both).
+  bridge.handleInvoke(
+    RunnerHostInvoke.agentBrowserViewSetReservedChords,
+    (_event, payload) => {
+      manager.setReservedChords(readReservedChordTokens(payload));
     },
   );
 
@@ -593,13 +608,18 @@ function toBrowserViewHostWebContents(
   if (!isRecord(value)) return null;
   const on = Reflect.get(value, "on");
   const off = Reflect.get(value, "off");
+  const sendInputEvent = Reflect.get(value, "sendInputEvent");
   if (typeof on !== "function" || typeof off !== "function") return null;
+  if (typeof sendInputEvent !== "function") return null;
   return {
     on: (event, listener) => {
       on.call(value, event, listener);
     },
     off: (event, listener) => {
       off.call(value, event, listener);
+    },
+    sendInputEvent: (event) => {
+      sendInputEvent.call(value, event);
     },
   };
 }
@@ -634,4 +654,11 @@ function readBoolean(value: unknown, field: string): boolean {
 function readFiniteNumber(value: unknown, field: string): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   throw new Error(`Agent browser view ${field} must be a finite number`);
+}
+
+function readReservedChordTokens(payload: unknown): readonly string[] {
+  if (!isRecord(payload)) return [];
+  const raw = payload.tokens;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((token): token is string => typeof token === "string");
 }

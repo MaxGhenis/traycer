@@ -69,6 +69,8 @@ export interface BrowserViewBridgeSurface {
     updateBounds(input: BrowserViewBoundsUpdate): Promise<void>;
     setViewportPreset(input: BrowserViewViewportPresetChange): Promise<void>;
     releaseTile(input: BrowserViewTileKey): Promise<void>;
+    /** BT-303: register renderer chords that outrank guest keystrokes. */
+    setReservedChords(tokens: readonly string[]): Promise<void>;
     reloadTile(input: BrowserViewTileKey): Promise<void>;
     goBack(input: BrowserViewTileKey): Promise<void>;
     goForward(input: BrowserViewTileKey): Promise<void>;
@@ -202,6 +204,21 @@ export function buildBrowserViewBridge(): BrowserViewBridgeSurface {
           RunnerHostInvoke.browserViewRelease,
           input,
         ) as Promise<void>,
+      setReservedChords: async (tokens) => {
+        // BT-303: BOTH manager instances must learn the chord set — user
+        // durable tabs live on the primary runtime, isolated session tiles
+        // on the agent runtime; interception has to cover both.
+        const primary = ipcRenderer.invoke(
+          RunnerHostInvoke.browserViewSetReservedChords,
+          { tokens },
+        );
+        const agent = ipcRenderer
+          .invoke(RunnerHostInvoke.agentBrowserViewSetReservedChords, {
+            tokens,
+          })
+          .catch(() => undefined);
+        await Promise.all([primary, agent]);
+      },
       reloadTile: (input) =>
         ipcRenderer.invoke(
           RunnerHostInvoke.browserViewReload,
