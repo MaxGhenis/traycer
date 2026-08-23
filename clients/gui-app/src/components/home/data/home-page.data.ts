@@ -128,9 +128,7 @@ function isLocalHomedRow(
 
 /** `@1.5`'s row-level preservation marker: the cloud task is already deleted
  * and the row exists only so this device's edits stay reachable. */
-function isPreservedOrphanRow(
-  task: ListTaskLight,
-): boolean {
+function isPreservedOrphanRow(task: ListTaskLight): boolean {
   return "preservation" in task && task.preservation === "orphaned-local-edits";
 }
 

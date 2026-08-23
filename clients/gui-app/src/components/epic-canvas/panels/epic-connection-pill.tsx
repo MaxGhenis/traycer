@@ -80,9 +80,8 @@ export function EpicConnectionPill(props: EpicConnectionPillProps) {
   // The RESOLVED id, not the placeholder: an unresolved canvas host has no
   // activity slice to read, and reporting its absence as a down stream would
   // amber the pill for a host that was never named.
-  const presenceDegraded = useAgentActivityPresenceDegraded(
-    resolvedCanvasHostId,
-  );
+  const presenceDegraded =
+    useAgentActivityPresenceDegraded(resolvedCanvasHostId);
   // Visuals use the settled state to avoid strobing; the tooltip uses the raw
   // verdict so it can truthfully say synced during the positive settle hold.
   const secondarySignals = {

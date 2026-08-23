@@ -172,7 +172,10 @@ const HOST_ID = "host-1";
 function hostSlice(): {
   readonly connectionStatus: string;
   readonly cloudSyncStatus: string | null;
-  readonly byEpic: ReadonlyMap<string, { readonly working: ReadonlySet<string> }>;
+  readonly byEpic: ReadonlyMap<
+    string,
+    { readonly working: ReadonlySet<string> }
+  >;
 } {
   const host = useAgentActivityStore.getState().byHost.get(HOST_ID);
   if (host === undefined) throw new Error(`no activity slice for ${HOST_ID}`);
@@ -229,9 +232,7 @@ describe("agent activity stream epoch handoff", () => {
     // `open` / `connected` from the torn-down first session.
     openAgentActivityStream(HOST_ID, reconnectEngine, secondClient, null);
 
-    expect(hostSlice().connectionStatus).toBe(
-      "connecting",
-    );
+    expect(hostSlice().connectionStatus).toBe("connecting");
     expect(hostSlice().cloudSyncStatus).toBeNull();
   });
 
@@ -254,9 +255,7 @@ describe("agent activity stream epoch handoff", () => {
 
     dispose();
 
-    expect(hostSlice().connectionStatus).toBe(
-      "connecting",
-    );
+    expect(hostSlice().connectionStatus).toBe("connecting");
     expect(hostSlice().cloudSyncStatus).toBeNull();
   });
 
@@ -274,9 +273,9 @@ describe("agent activity stream epoch handoff", () => {
 
     driveToOpenAndConnected(firstSession);
 
-    expect(
-      hostSlice().byEpic.get(EPIC_ID)?.working,
-    ).toEqual(new Set([AGENT_ID]));
+    expect(hostSlice().byEpic.get(EPIC_ID)?.working).toEqual(
+      new Set([AGENT_ID]),
+    );
 
     disposeFirst();
 
@@ -289,8 +288,8 @@ describe("agent activity stream epoch handoff", () => {
 
     // `byEpic` is per-user, not per-stream-epoch: a host switch does not
     // clear it, only the health of the stream that reported it.
-    expect(
-      hostSlice().byEpic.get(EPIC_ID)?.working,
-    ).toEqual(new Set([AGENT_ID]));
+    expect(hostSlice().byEpic.get(EPIC_ID)?.working).toEqual(
+      new Set([AGENT_ID]),
+    );
   });
 });
