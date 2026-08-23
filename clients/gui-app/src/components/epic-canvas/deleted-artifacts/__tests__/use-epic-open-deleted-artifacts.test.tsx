@@ -7,9 +7,9 @@ import type {
   EpicCanvasState,
 } from "@/stores/epics/canvas/types";
 
-import { useOpenDeletedArtifacts } from "../use-open-deleted-artifacts";
+import { useEpicOpenDeletedArtifacts } from "../use-epic-open-deleted-artifacts";
 
-describe("useOpenDeletedArtifacts", () => {
+describe("useEpicOpenDeletedArtifacts", () => {
   beforeEach(() => {
     window.localStorage.clear();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
@@ -27,7 +27,7 @@ describe("useOpenDeletedArtifacts", () => {
 
   it("reopens through the real canvas store and focuses the existing tile", () => {
     const { result } = renderHook(() =>
-      useOpenDeletedArtifacts("epic-a", "host-a"),
+      useEpicOpenDeletedArtifacts("epic-a", "host-a"),
     );
 
     act(() => result.current());
@@ -53,7 +53,7 @@ describe("useOpenDeletedArtifacts", () => {
   it("opens a separate lifetime-bound tile when the same epic changes hosts", () => {
     const { result, rerender } = renderHook(
       ({ hostId }: { readonly hostId: string }) =>
-        useOpenDeletedArtifacts("epic-a", hostId),
+        useEpicOpenDeletedArtifacts("epic-a", hostId),
       { initialProps: { hostId: "host-a" } },
     );
 
@@ -79,7 +79,7 @@ describe("useOpenDeletedArtifacts", () => {
 
   it("does not open without a session host", () => {
     const { result } = renderHook(() =>
-      useOpenDeletedArtifacts("epic-a", null),
+      useEpicOpenDeletedArtifacts("epic-a", null),
     );
 
     act(() => result.current());

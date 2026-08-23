@@ -20,6 +20,7 @@ interface MutationConfig {
 }
 
 const state = vi.hoisted(() => ({
+  queryHasData: true,
   supportedMethods: new Set<string>(),
   supportCalls: [] as string[],
   mutationCalls: [] as Array<{
@@ -56,7 +57,7 @@ vi.mock("@/hooks/host/use-host-supports-method", () => ({
 
 vi.mock("@/hooks/host/use-host-query", () => ({
   useHostQuery: () => ({
-    data: state.snapshot,
+    data: state.queryHasData ? state.snapshot : undefined,
     isLoading: false,
     isError: false,
   }),
@@ -93,6 +94,7 @@ function renderSettings(): void {
 
 describe("<ArtifactVersionSettingsSection />", () => {
   beforeEach(() => {
+    state.queryHasData = true;
     state.supportedMethods = new Set(SETTINGS_METHODS);
     state.supportCalls = [];
     state.mutationCalls = [];
@@ -335,5 +337,37 @@ describe("<ArtifactVersionSettingsSection />", () => {
     expect(
       screen.getByText(/3 observations pruned; 512\.0 KB reclaimed\./u),
     ).toBeTruthy();
+  });
+
+  it("does not show a completed mutation from the previously selected host", () => {
+    const { rerender } = render(
+      <ArtifactVersionSettingsSection client={null} hostId="host-a" enabled />,
+    );
+    const onSuccess = state.mutationOnSuccessByMethod.get(
+      "epic.artifactVersionSettings.setRetentionPolicy",
+    );
+    if (onSuccess === undefined) {
+      throw new Error("setRetentionPolicy mutation never registered onSuccess");
+    }
+    const commandResponse = {
+      ...state.snapshot,
+      effects: {
+        captureStopped: false,
+        captureResumed: false,
+        driftEpicIds: [],
+        observationsPruned: 3,
+        contentRowsPruned: 3,
+        blobsDeleted: 1,
+        bytesDeleted: 512 * 1024,
+      },
+    } satisfies ArtifactVersionSettingsCommandResponse;
+    state.queryHasData = false;
+    rerender(
+      <ArtifactVersionSettingsSection client={null} hostId="host-b" enabled />,
+    );
+    act(() => onSuccess(commandResponse, {}));
+
+    expect(screen.getByText("Loading version history settings…")).toBeTruthy();
+    expect(screen.queryByText(/3 observations pruned/u)).toBeNull();
   });
 });

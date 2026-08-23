@@ -125,8 +125,10 @@ export function ArtifactVersionSettingsSection(props: {
     cacheKeyIdentity: undefined,
     options: { enabled: props.enabled && supported },
   });
-  const [committed, setCommitted] =
-    useState<ArtifactVersionSettingsCommandResponse | null>(null);
+  const [committed, setCommitted] = useState<{
+    readonly hostId: string | null;
+    readonly response: ArtifactVersionSettingsCommandResponse;
+  } | null>(null);
   const [confirm, setConfirm] = useState<ConfirmAction>(null);
   const [retentionDays, setRetentionDays] = useState<string | null>(null);
   const [maxVersions, setMaxVersions] = useState<string | null>(null);
@@ -137,7 +139,8 @@ export function ArtifactVersionSettingsSection(props: {
     mutationKey: epicMutationKeys.setArtifactVersionCaptureEnabled(),
     errorMessage: "Couldn't update version history",
     invalidateMethods: ["epic.artifactVersionSettings.get"],
-    onSuccess: (result) => setCommitted(result),
+    onSuccess: (result) =>
+      setCommitted({ hostId: props.hostId, response: result }),
   });
   const setRetention = useHostScopedMutationForClient(props.client, {
     method: "epic.artifactVersionSettings.setRetentionPolicy",
@@ -148,7 +151,8 @@ export function ArtifactVersionSettingsSection(props: {
       "epic.artifactVersions.list",
       "epic.deletedArtifacts.list",
     ],
-    onSuccess: (result) => setCommitted(result),
+    onSuccess: (result) =>
+      setCommitted({ hostId: props.hostId, response: result }),
   });
   const clearHistory = useHostScopedMutationForClient(props.client, {
     method: "epic.artifactVersionSettings.clearHistory",
@@ -159,11 +163,14 @@ export function ArtifactVersionSettingsSection(props: {
       "epic.artifactVersions.list",
       "epic.deletedArtifacts.list",
     ],
-    onSuccess: (result) => setCommitted(result),
+    onSuccess: (result) =>
+      setCommitted({ hostId: props.hostId, response: result }),
   });
 
   if (!supported) return null;
-  const snapshot = query.data ?? committed ?? null;
+  const committedForHost =
+    committed?.hostId === props.hostId ? committed.response : null;
+  const snapshot = query.data ?? committedForHost;
   if (snapshot === null) {
     return (
       <SettingsGroup
@@ -341,12 +348,13 @@ export function ArtifactVersionSettingsSection(props: {
             </Button>
           }
         />
-        {committed === null ? null : (
+        {committedForHost === null ? null : (
           <p className="border-t border-border/40 px-5 py-3 text-ui-xs text-muted-foreground">
-            {commandEffectCopy(committed)} Current policy:{" "}
-            {committed.settings.retentionDays} days,{" "}
-            {committed.settings.maxVersionsPerArtifact} versions,{" "}
-            {formatBytes(committed.settings.maxBytesPerArtifact)} per artifact.
+            {commandEffectCopy(committedForHost)} Current policy:{" "}
+            {committedForHost.settings.retentionDays} days,{" "}
+            {committedForHost.settings.maxVersionsPerArtifact} versions,{" "}
+            {formatBytes(committedForHost.settings.maxBytesPerArtifact)} per
+            artifact.
           </p>
         )}
       </SettingsGroup>

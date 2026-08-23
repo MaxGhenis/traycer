@@ -675,7 +675,6 @@ function TabItemBody(
     if (rename.isEditing) return;
     onSelect(groupId, tab.instanceId);
     if (
-      isActive &&
       consumeNotificationEntity !== null &&
       (tab.type === "chat" ||
         tab.type === "terminal" ||
@@ -690,7 +689,6 @@ function TabItemBody(
     consumeNotificationEntity,
     epicId,
     groupId,
-    isActive,
     onSelect,
     rename.isEditing,
     tab,
