@@ -54,6 +54,7 @@ import {
 } from "@traycer-clients/shared/host-selection/transport-evidence";
 import { RecordingTransportEvidence } from "../../host-selection/__tests__/recording-transport-evidence";
 import { HOST_RESTARTING_FATAL_CODE } from "@traycer/protocol/framework/index";
+import { TEST_CLIENT_IDENTITY } from "@traycer-clients/shared/test-fixtures/client-identity";
 
 /**
  * StubWebSocket - fully scriptable `StreamWebSocketLike` mirror of the
@@ -164,6 +165,7 @@ function makeClient(options: {
   const ctx =
     options.authToken === null ? null : makeRequestContext(options.authToken);
   return new WsStreamClient({
+    clientIdentity: TEST_CLIENT_IDENTITY,
     registry: hostStreamRpcRegistry,
     endpoint: () => mockLocalHostEntry,
     bearer: () => ctx?.credentials ?? null,
@@ -207,6 +209,7 @@ function makeRotatableClient(
 } {
   const ctx = makeRequestContext(bearer);
   const client = new WsStreamClient({
+    clientIdentity: TEST_CLIENT_IDENTITY,
     registry: hostStreamRpcRegistry,
     endpoint: () => mockLocalHostEntry,
     bearer: () => ctx.credentials,
@@ -240,6 +243,7 @@ function makeClientWithEvidence(options: {
   const ctx =
     options.authToken === null ? null : makeRequestContext(options.authToken);
   return new WsStreamClient({
+    clientIdentity: TEST_CLIENT_IDENTITY,
     registry: hostStreamRpcRegistry,
     endpoint: options.endpoint,
     bearer: () => ctx?.credentials ?? null,
@@ -360,6 +364,14 @@ describe("WsStreamClient", () => {
       buildStreamManifest(hostStreamRpcRegistry),
     );
     expect(openFrame).not.toHaveProperty("optionalManifest");
+    // WHO IS CONNECTING. `/stream` authenticates independently of `/rpc`, so a
+    // stream socket that forgot to identify itself would read to a floored
+    // host as a legacy client no matter what the unary transport sent.
+    expect(openFrame.clientIdentity).toEqual({
+      kind: TEST_CLIENT_IDENTITY.kind,
+      compatibilityEpoch: TEST_CLIENT_IDENTITY.compatibilityEpoch,
+      appVersion: TEST_CLIENT_IDENTITY.appVersion,
+    });
 
     stub.fireText(
       streamOpenAck(buildStreamManifest(hostStreamRpcRegistry), undefined),
@@ -592,6 +604,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: versionSkewRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -687,6 +700,7 @@ describe("WsStreamClient", () => {
     });
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1471,6 +1485,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1527,6 +1542,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1584,6 +1600,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1714,6 +1731,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1773,6 +1791,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1823,6 +1842,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1859,6 +1879,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1908,6 +1929,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1950,6 +1972,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2006,6 +2029,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2057,6 +2081,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2105,6 +2130,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2181,6 +2207,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2219,6 +2246,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2263,6 +2291,7 @@ describe("WsStreamClient", () => {
   it("closing a stream client closes every owned session socket", async () => {
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2372,6 +2401,7 @@ describe("WsStreamClient", () => {
       transportDialability: "dialable",
     };
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => entry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2408,6 +2438,7 @@ describe("WsStreamClient", () => {
       transportDialability: "dialable",
     };
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => entry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2605,6 +2636,7 @@ describe("WsStreamClient UNAUTHORIZED auth recovery", () => {
     initialBackoffMs: number,
   ): WsStreamClient<typeof hostStreamRpcRegistry> {
     return new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       // A fixed bearer the host keeps rejecting (the test's revalidator never
@@ -3184,6 +3216,7 @@ describe("WsStreamClient UNAUTHORIZED auth recovery", () => {
       },
     };
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => ctx.credentials,
@@ -3499,6 +3532,7 @@ describe("WsStreamClient host credential provisioning", () => {
     const token = options.authToken ?? "token-abc";
     const ctx = makeRequestContext(token);
     return new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: options.endpoint,
       bearer: () => ctx.credentials,
@@ -3532,6 +3566,7 @@ describe("WsStreamClient host credential provisioning", () => {
     const token = options.authToken ?? "token-abc";
     const ctx = makeRequestContext(token);
     return new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: options.endpoint,
       bearer: () => ctx.credentials,
