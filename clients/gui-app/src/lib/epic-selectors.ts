@@ -260,13 +260,38 @@ export function useEpicCommentsHaveNoCloudRoom(): boolean {
   );
   // This cycle's own answer wins whenever it has one.
   if (status !== null) return commentsHaveNoCloudRoom(status, pauseReason);
-  // No statement yet. A peer that never negotiated the legs cannot produce
-  // one at all, so gating on its silence would disable comments forever on
-  // every pre-`@1.4` host - the population that has always had them.
-  if (!durabilityLegsNegotiated) return false;
+  // The retained answer is consulted BEFORE the legacy-peer check, and the
+  // order is the whole point of the latch rather than a stylistic choice.
+  //
+  // `startedSubscriptionCycle` resets `durabilityLegsNegotiated` to `false`
+  // in the same block that nulls `durabilityStatus`, because a re-subscribe
+  // can renegotiate onto a different host incarnation. It deliberately does
+  // NOT clear the retained pair. So the exact state a reconnecting local,
+  // promoting or preserved-orphan epic passes through - no status, legs not
+  // yet renegotiated, retained still standing - is the state that reaching
+  // the legacy-peer arm first would answer `false` for, re-enabling the
+  // comment shortcut, toolbar, popovers and thread query against an epic
+  // that still has no cloud room. That is precisely the window this latch
+  // was written to close, so consulting the retained value only after a
+  // check that a reconnect just falsified made the latch inert exactly when
+  // it was needed. (The fixture that covered it set
+  // `durabilityLegsNegotiated: true` by hand, which is the opposite of what
+  // the production reconnect produces - so the ordering read as tested.)
+  //
+  // Reordering cannot regress the pre-`@1.4` population the legacy arm
+  // protects: `retainedDurabilityStatus` is written at exactly one site,
+  // gated on `durabilityStatus !== null`, so only a peer that has actually
+  // emitted a durability status can have one. A host that cannot speak the
+  // key never populates it, falls through, and still gets its released
+  // behaviour from the check below.
   if (retainedStatus !== null) {
     return commentsHaveNoCloudRoom(retainedStatus, retainedPauseReason);
   }
+  // No statement this cycle and none ever retained. A peer that never
+  // negotiated the legs cannot produce one at all, so gating on its silence
+  // would disable comments forever on every pre-`@1.4` host - the population
+  // that has always had them.
+  if (!durabilityLegsNegotiated) return false;
   // A negotiated peer that has not spoken yet, about an epic nothing has ever
   // said anything about. Withholding the affordance is the only direction
   // here that cannot offer an action the host will reject.

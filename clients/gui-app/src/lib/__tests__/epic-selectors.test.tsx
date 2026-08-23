@@ -607,6 +607,35 @@ describe("useEpicCommentsHaveNoCloudRoom", () => {
     expect(result.current).toBe(false);
   });
 
+  it("holds the retained answer through the state a real reconnect produces", () => {
+    // The two tests above hand-set `durabilityLegsNegotiated: true` beside a
+    // null status, and no production transition produces that pair. A
+    // reconnect runs `startedSubscriptionCycle`, which nulls the status AND
+    // resets the legs to `false` in the same block, while deliberately
+    // leaving the retained pair standing - so the real state is the exact
+    // inverse of the fixture, and a gate that consulted the legs before the
+    // retained value answered `false` precisely when the latch was needed.
+    //
+    // Distinguished from the legacy-peer case below it by the retained value
+    // alone: that cohort has never emitted a durability status, so it can
+    // never hold one.
+    const handle = createHandle("epic-comment-gate-reconnect");
+    handle.store.setState({
+      durabilityStatus: null,
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: "paused",
+      retainedDurabilityPauseReason: "orphaned-local-edits-after-cloud-delete",
+      // What the reconnect actually leaves behind.
+      durabilityLegsNegotiated: false,
+    });
+
+    const { result } = renderHook(() => useEpicCommentsHaveNoCloudRoom(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    expect(result.current).toBe(true);
+  });
+
   it("prefers THIS cycle's statement over the retained one", () => {
     // The retained fact is a fallback for silence, never an override: an epic
     // that finishes promoting says `cloud` and comments must come back at once
