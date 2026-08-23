@@ -39,7 +39,9 @@ import {
 } from "@/stores/migration/migration-run-store";
 import { startMigrationRun } from "@/components/migration/migration-run-handle";
 import {
+  isAgentTabSurfacingMode,
   useSettingsStore,
+  type AgentTabSurfacingMode,
   type BrowserLinkDefaultMode,
   type BrowserLinkOpenMode,
 } from "@/stores/settings/settings-store";
@@ -60,6 +62,11 @@ const BROWSER_LINK_DEFAULT_MODE_LABELS: Record<BrowserLinkDefaultMode, string> =
 const BROWSER_LINK_OPEN_MODE_LABELS: Record<BrowserLinkOpenMode, string> = {
   "in-app": "In app",
   external: "External",
+};
+const AGENT_TAB_SURFACING_LABELS: Record<AgentTabSurfacingMode, string> = {
+  pip: "Float (PiP)",
+  tile: "Tile in canvas",
+  off: "Off (background only)",
 };
 const MOD_ENTER_LABEL = `${modLabel()}+Enter`;
 
@@ -156,6 +163,12 @@ export function GeneralSettingsPanel() {
   );
   const setMarkdownBrowserLinkOpenMode = useSettingsStore(
     (s) => s.setMarkdownBrowserLinkOpenMode,
+  );
+  const agentTabSurfacingMode = useSettingsStore(
+    (s) => s.agentTabSurfacingMode,
+  );
+  const setAgentTabSurfacingMode = useSettingsStore(
+    (s) => s.setAgentTabSurfacingMode,
   );
   const browserDevOrigins = useSettingsStore((s) => s.browserDevOrigins);
   const removeBrowserDevOrigin = useSettingsStore(
@@ -291,6 +304,16 @@ export function GeneralSettingsPanel() {
               />
             </>
           ) : null}
+          <SettingsRow
+            label="Agent tab surfacing"
+            description="Choose what happens on your canvas when the agent opens a browser tab: float it picture-in-picture, place a tile, or keep it in the background (sidebar only)."
+            control={
+              <AgentTabSurfacingModeSelect
+                value={agentTabSurfacingMode}
+                onValueChange={setAgentTabSurfacingMode}
+              />
+            }
+          />
           {browserDevOrigins.length > 0 ? (
             <SettingsRow
               label="Detected dev origins"
@@ -499,6 +522,39 @@ interface BrowserLinkOpenModeSelectProps {
   readonly value: BrowserLinkOpenMode;
   readonly disabled: boolean;
   readonly onValueChange: (value: BrowserLinkOpenMode) => void;
+}
+
+interface AgentTabSurfacingModeSelectProps {
+  readonly value: AgentTabSurfacingMode;
+  readonly onValueChange: (value: AgentTabSurfacingMode) => void;
+}
+
+function AgentTabSurfacingModeSelect(
+  props: AgentTabSurfacingModeSelectProps,
+) {
+  return (
+    <Select
+      value={props.value}
+      onValueChange={(value) => {
+        if (isAgentTabSurfacingMode(value)) props.onValueChange(value);
+      }}
+    >
+      <SelectTrigger
+        aria-label="Agent tab surfacing"
+        className="w-[min(42vw,11rem)]"
+        size="sm"
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {Object.entries(AGENT_TAB_SURFACING_LABELS).map(([value, label]) => (
+          <SelectItem key={value} value={value}>
+            {label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
 }
 
 function BrowserLinkOpenModeSelect(props: BrowserLinkOpenModeSelectProps) {

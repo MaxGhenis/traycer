@@ -421,6 +421,7 @@ export function AgentBrowserTile(props: AgentBrowserTileProps) {
                 hostId,
                 sessionId: props.node.sessionId,
                 tabId: durableTabId,
+                origin: "manual",
                 onReady: closeCanvasTile,
                 onError: (message) => toast.error(message),
               });

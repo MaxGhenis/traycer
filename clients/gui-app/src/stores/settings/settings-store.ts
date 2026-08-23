@@ -32,6 +32,15 @@ export type ThemeMode = "system" | "light" | "dark";
 export type EpicNodeIconColorMode = "byType" | "none";
 export type BrowserLinkOpenMode = "in-app" | "external";
 export type BrowserLinkDefaultMode = BrowserLinkOpenMode | "per-kind";
+/**
+ * How a tab the AGENT opens via its browser REPL (`openTab`) is surfaced.
+ * `pip` floats it picture-in-picture, `tile` places it on the epic canvas,
+ * `off` keeps it fully in the background (hidden view + sidebar listing).
+ * Deliberately default-off: surfacing is opt-in, unlike the pre-setting
+ * behavior which always split the canvas.
+ */
+export type AgentTabSurfacingMode = "pip" | "tile" | "off";
+export const DEFAULT_AGENT_TAB_SURFACING_MODE: AgentTabSurfacingMode = "off";
 export type MinimapSide = "left" | "right";
 export type MinimapPlacement = MinimapSide | "hide";
 // Mirrors xterm's `cursorStyle` union; kept as our own type so the settings
@@ -141,6 +150,13 @@ export interface SettingsState {
   /** Origins designated from terminal URL output for the host classifier. */
   browserDevOrigins: ReadonlyArray<string>;
   /**
+   * What happens visually when the agent opens a browser tab. Independent of
+   * `inAppBrowserBetaEnabled`: the agent's REPL tabs are a host capability,
+   * not part of the link-routing beta, and this preference also governs
+   * suppressing them.
+   */
+  agentTabSurfacingMode: AgentTabSurfacingMode;
+  /**
    * Cmd/Ctrl+Enter mid-turn steering. Opt-out (default ON): when enabled,
    * pressing Cmd+Enter while a turn is running on a steer-capable harness sends
    * the composer text as a same-turn steering message that jumps the pending
@@ -186,6 +202,7 @@ export interface SettingsState {
   setMarkdownBrowserLinkOpenMode: (mode: BrowserLinkOpenMode) => void;
   addBrowserDevOrigin: (origin: string) => void;
   removeBrowserDevOrigin: (origin: string) => void;
+  setAgentTabSurfacingMode: (mode: AgentTabSurfacingMode) => void;
   setSteerOnModEnterEnabled: (value: boolean) => void;
   setDiffViewerPreferences: (preferences: DiffViewerPreferences) => void;
   patchDiffViewerPreferences: (patch: DiffViewerPreferencesPatch) => void;
@@ -226,6 +243,7 @@ type PersistedSettingsState = Pick<
   | "terminalBrowserLinkOpenMode"
   | "markdownBrowserLinkOpenMode"
   | "browserDevOrigins"
+  | "agentTabSurfacingMode"
   | "steerOnModEnterEnabled"
   | "diffViewerPreferences"
 >;
@@ -299,6 +317,7 @@ function partializeSettingsState(state: SettingsState): PersistedSettingsState {
     terminalBrowserLinkOpenMode: state.terminalBrowserLinkOpenMode,
     markdownBrowserLinkOpenMode: state.markdownBrowserLinkOpenMode,
     browserDevOrigins: state.browserDevOrigins,
+    agentTabSurfacingMode: state.agentTabSurfacingMode,
     steerOnModEnterEnabled: state.steerOnModEnterEnabled,
     diffViewerPreferences: state.diffViewerPreferences,
   };
@@ -340,6 +359,7 @@ export const useSettingsStore = create<SettingsState>()(
       terminalBrowserLinkOpenMode: "in-app",
       markdownBrowserLinkOpenMode: "in-app",
       browserDevOrigins: [],
+      agentTabSurfacingMode: DEFAULT_AGENT_TAB_SURFACING_MODE,
       steerOnModEnterEnabled: true,
       diffViewerPreferences: DEFAULT_DIFF_VIEWER_PREFERENCES,
       setTheme: makeSetter(set, "theme"),
@@ -435,6 +455,7 @@ export const useSettingsStore = create<SettingsState>()(
             : { browserDevOrigins };
         });
       },
+      setAgentTabSurfacingMode: makeSetter(set, "agentTabSurfacingMode"),
       setSteerOnModEnterEnabled: makeSetter(set, "steerOnModEnterEnabled"),
       setDiffViewerPreferences: makeSetter(set, "diffViewerPreferences"),
       patchDiffViewerPreferences: (patch) => {
@@ -475,6 +496,11 @@ export const useSettingsStore = create<SettingsState>()(
             persistedMinimapSide === "hide"
               ? persistedMinimapSide
               : DEFAULT_MINIMAP_SIDE,
+          agentTabSurfacingMode: isAgentTabSurfacingMode(
+            merged.agentTabSurfacingMode,
+          )
+            ? merged.agentTabSurfacingMode
+            : DEFAULT_AGENT_TAB_SURFACING_MODE,
         };
       },
     },
@@ -483,4 +509,10 @@ export const useSettingsStore = create<SettingsState>()(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function isAgentTabSurfacingMode(
+  value: unknown,
+): value is AgentTabSurfacingMode {
+  return value === "pip" || value === "tile" || value === "off";
 }

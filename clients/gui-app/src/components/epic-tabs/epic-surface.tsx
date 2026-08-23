@@ -1,5 +1,5 @@
 import { useMatch } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { EpicRouteSessionBody } from "@/components/epic-canvas/epic-route-session-body";
 import { EpicSidebarColumn } from "@/components/epic-canvas/sidebar/epic-sidebar-column";
 import {
@@ -8,6 +8,7 @@ import {
 } from "@/components/epic-tabs/pane-visibility-context";
 import { EpicViewTabContext } from "@/components/epic-canvas/view-tab-context";
 import { useTabSurfaceActivity } from "@/components/layout/tab-surface-activity-hooks";
+import { setEpicSurfaceVisibility } from "@/lib/browser-view/agent-tab-surfacing";
 import { EpicSessionProvider } from "@/providers/epic-session-provider";
 import { AgentBrowserPip } from "@/components/epic-canvas/pip/agent-browser-pip";
 import { PipEpicSessionsFeed } from "@/lib/browser-view/use-pip-epic-sessions";
@@ -27,6 +28,14 @@ export interface EpicSurfaceProps {
 /** One independently retained Epic pane: sidebar and canvas share its session. */
 export function EpicSurface(props: EpicSurfaceProps) {
   const activity = useTabSurfaceActivity();
+  // Report visibility for the agent-tab-surfacing pipeline: PiP auto-surfacing
+  // only arms while this epic is the visible surface.
+  useEffect(() => {
+    setEpicSurfaceVisibility(props.epicId, activity.visible);
+    return () => {
+      setEpicSurfaceVisibility(props.epicId, false);
+    };
+  }, [props.epicId, activity.visible]);
   const activeRoute = useMatch({
     from: "/epics/$epicId/$tabId",
     shouldThrow: false,

@@ -18,6 +18,12 @@ export interface PipTarget {
   readonly sessionId: string;
   readonly tabId: string;
   readonly selectionId: string;
+  /**
+   * Who asked for this PiP. The agent-surfacing pipeline never replaces a
+   * `manual` target (explicit user intent) but freely replaces `agent`
+   * targets latest-wins; see `decideAgentTabDisposition`.
+   */
+  readonly origin: "manual" | "agent";
 }
 
 export interface PipCaption {
@@ -57,6 +63,7 @@ export function convertBrowserTabToPip(input: {
   readonly hostId: string;
   readonly sessionId: string;
   readonly tabId: string;
+  readonly origin: "manual" | "agent";
   readonly onReady: () => void;
   readonly onError: (message: string) => void;
 }): void {
@@ -68,6 +75,7 @@ export function convertBrowserTabToPip(input: {
     sessionId: input.sessionId,
     tabId: input.tabId,
     selectionId: `pip-${String(selectionSequence)}`,
+    origin: input.origin,
   };
   const timeout = window.setTimeout(() => {
     failPipConversion(

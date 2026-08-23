@@ -354,9 +354,22 @@ means the drain UI renders NOTHING - never a zero, which would offer to end
   - **Browser (beta)**: In-app browser (beta) (`inAppBrowserBetaEnabled`,
     default off - master toggle for browser tiles and default link routing),
     Web link default + per-kind terminal/markdown link open-mode selects
-    (disabled until the master toggle is on), and a conditional Detected dev
-    origins row. The master toggle's `SettingsRow` carries a standing `risk`
-    paragraph (always rendered, distinct from the conditional `hint` used
+    (disabled until the master toggle is on), Agent tab surfacing
+    (`agentTabSurfacingMode`: `pip` | `tile` | `off`, default `off` - what the
+    GUI does when the AGENT opens a browser tab via its REPL `openTab` tool;
+    deliberately NOT gated by the labs toggle, because it governs suppressing
+    host-driven opens that previously always split the canvas. `pip` floats
+    the tab picture-in-picture unless a user-converted PiP is showing or the
+    epic surface is hidden; `tile` places a canvas tile grouped by session -
+    same-session opens become tabs of one pane - even in hidden epics; `off`
+    answers electron foreground creates with a hidden off-screen view so the
+    agent's open still succeeds, and leaves headless tabs in the sidebar.
+    Disposition decisions live in
+    `lib/browser-view/agent-tab-surfacing.ts`; headless-origin tabs are
+    diffed from `browser.sessions` lifecycle frames in the dock, seeded
+    snapshot-only so surfacing stays ephemeral across reloads), and a
+    conditional Detected dev origins row. The master toggle's `SettingsRow`
+    carries a standing `risk` paragraph (always rendered, distinct from the conditional `hint` used
     for the mock-keychain restart notice below it) disclosing that the agent
     can run code on an attached tab's page - reading or doing anything the
     user could there - and, because every in-app browser tab shares one

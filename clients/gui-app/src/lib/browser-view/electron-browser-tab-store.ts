@@ -9,7 +9,16 @@ import {
   buildCdpResultFrame,
   registerAgentBrowserCdpHandler,
 } from "./agent-browser-cdp-store";
-import { openFreshElectronTileFromBrowserPage } from "./browser-link-routing-core";
+import {
+  decideAgentTabDisposition,
+  isEpicSurfaceVisible,
+  isManualPipActive,
+  openAgentTabInPip,
+  placeAgentElectronTile,
+  trackAgentTabSurfaced,
+  type AgentTabDisposition,
+} from "./agent-tab-surfacing";
+import { useSettingsStore } from "@/stores/settings/settings-store";
 import type {
   AgentBrowserViewCdpDispatch,
   AgentBrowserViewCdpResult,
@@ -440,9 +449,42 @@ function handleCreateElectronTab(
     frame.sourceTabId,
   );
   if (source === null) return false;
-  const tile = openFreshElectronTileFromBrowserPage({
+  // Agent-initiated foreground creates are the only producers of this frame,
+  // so the preference is applied exactly here. Without a resolvable epic the
+  // disposition cannot be computed (older host); keep the historical split.
+  const disposition: AgentTabDisposition =
+    frame.epicId === undefined || frame.hostId === undefined
+      ? { action: "tile", suppressReason: null }
+      : decideAgentTabDisposition({
+          mode: useSettingsStore.getState().agentTabSurfacingMode,
+          epicVisible: isEpicSurfaceVisible(frame.epicId),
+          manualPipActive: isManualPipActive(frame.epicId),
+        });
+  trackAgentTabSurfaced(disposition, "electron-create");
+  const { epicId, hostId } = frame;
+  if (
+    disposition.action !== "tile" &&
+    epicId !== undefined &&
+    hostId !== undefined &&
+    createHiddenElectronTab(frame, {
+      requestedTabId: null,
+      onRegistered:
+        disposition.action === "float"
+          ? (tabId) =>
+              openAgentTabInPip({
+                epicId,
+                hostId,
+                sessionId: frame.sessionId,
+                tabId,
+              })
+          : null,
+    })
+  ) {
+    return true;
+  }
+  const tile = placeAgentElectronTile({
     viewTabId: source.tileKey.viewTabId,
-    paneId: source.tileKey.paneId,
+    anchorPaneId: source.tileKey.paneId,
     hostId: source.hostId,
     sessionId: frame.sessionId,
     url: frame.url,
@@ -459,6 +501,8 @@ function handleCreateElectronTab(
     });
     return true;
   }
+  // The placed tile mounts and registers under `registrationId = tile.id`;
+  // key the pending create so that registration acks THIS request.
   createRequestsByRegistrationKey.set(
     registrationKey(frame.sessionId, tile.id),
     {
@@ -473,6 +517,32 @@ function handleCreateElectronTab(
 function handleBackgroundElectronTabCreate(
   frame: Extract<BrowserSessionsServerFrame, { kind: "createElectronTab" }>,
 ): boolean {
+  return createHiddenElectronTab(frame, {
+    requestedTabId: frame.sourceTabId,
+    onRegistered: null,
+  });
+}
+
+/**
+ * Creates a hidden/off-screen BrowserView for a `createElectronTab` request
+ * without ever opening a canvas pane. Two callers:
+ *
+ * - background placement frames bind `requestedTabId` to their pre-minted
+ *   source tab id;
+ * - suppressed agent foreground creates ("Off"/PiP surfacing) must register
+ *   with `requestedTabId: null` — only background creates may bind a source
+ *   tab id, and the host mints the durable tab id at registration — so their
+ *   desktop entry starts under a client-minted placeholder runtime key until
+ *   `registerDurableTab` rekeys it onto the minted id. `onRegistered` then
+ *   receives that id (the PiP pipeline arms capture against it).
+ */
+function createHiddenElectronTab(
+  frame: Extract<BrowserSessionsServerFrame, { kind: "createElectronTab" }>,
+  plan: {
+    readonly requestedTabId: string | null;
+    readonly onRegistered: ((tabId: string) => void) | null;
+  },
+): boolean {
   const epicId = frame.epicId;
   const hostId = frame.hostId;
   if (epicId === undefined || hostId === undefined) return false;
@@ -480,6 +550,7 @@ function handleBackgroundElectronTabCreate(
   if (bridge?.createBackgroundTab === undefined) return false;
   const createBackgroundTab = bridge.createBackgroundTab.bind(bridge);
   const registrationId = crypto.randomUUID();
+  const runtimeTabId = plan.requestedTabId ?? `pending-${registrationId}`;
   const tileKey: BrowserViewTileKey = {
     viewTabId: "background",
     paneId: "background",
@@ -495,7 +566,7 @@ function handleBackgroundElectronTabCreate(
     requestId: frame.requestId,
     registrationId,
     sessionId: frame.sessionId,
-    tabId: frame.sourceTabId,
+    tabId: runtimeTabId,
     durationMs: 0,
   });
   const seed =
@@ -514,7 +585,7 @@ function handleBackgroundElectronTabCreate(
     requestId: frame.requestId,
     registrationId,
     sessionId: frame.sessionId,
-    tabId: frame.sourceTabId,
+    tabId: runtimeTabId,
     durationMs: 0,
   });
   void seed
@@ -526,14 +597,14 @@ function handleBackgroundElectronTabCreate(
         requestId: frame.requestId,
         registrationId,
         sessionId: frame.sessionId,
-        tabId: frame.sourceTabId,
+        tabId: runtimeTabId,
         durationMs: Date.now() - startedAt,
       });
       const creationStartedAt = Date.now();
       const creation = createBackgroundTab({
         ...tileKey,
         sessionId: frame.sessionId,
-        tabId: frame.sourceTabId,
+        tabId: runtimeTabId,
         url: frame.url,
         seedStorageState: frame.seedStorageState ?? null,
       });
@@ -546,7 +617,7 @@ function handleBackgroundElectronTabCreate(
             requestId: frame.requestId,
             registrationId,
             sessionId: frame.sessionId,
-            tabId: frame.sourceTabId,
+            tabId: runtimeTabId,
             durationMs: Date.now() - creationStartedAt,
           });
         },
@@ -558,7 +629,7 @@ function handleBackgroundElectronTabCreate(
             requestId: frame.requestId,
             registrationId,
             sessionId: frame.sessionId,
-            tabId: frame.sourceTabId,
+            tabId: runtimeTabId,
             durationMs: Date.now() - creationStartedAt,
             cause: error instanceof Error ? error.name : typeof error,
           });
@@ -571,7 +642,7 @@ function handleBackgroundElectronTabCreate(
         requestId: frame.requestId,
         registrationId,
         sessionId: frame.sessionId,
-        tabId: frame.sourceTabId,
+        tabId: runtimeTabId,
         durationMs: Date.now() - startedAt,
       });
       createRequestsByRegistrationKey.set(key, {
@@ -585,12 +656,12 @@ function handleBackgroundElectronTabCreate(
         chatId: null,
         registrationId,
         sessionId: frame.sessionId,
-        requestedTabId: frame.sourceTabId,
+        requestedTabId: plan.requestedTabId,
         initialUrl: frame.url,
         title: null,
         tileKey,
         bridge,
-        onRegistered: null,
+        onRegistered: plan.onRegistered,
         background: true,
       });
       appLogger.info("Electron background tab create stage", {
@@ -600,7 +671,7 @@ function handleBackgroundElectronTabCreate(
         requestId: frame.requestId,
         registrationId,
         sessionId: frame.sessionId,
-        tabId: frame.sourceTabId,
+        tabId: runtimeTabId,
         durationMs: Date.now() - startedAt,
       });
       return creation;
@@ -613,7 +684,7 @@ function handleBackgroundElectronTabCreate(
         .releaseDurableTab?.({
           ...tileKey,
           sessionId: frame.sessionId,
-          tabId: frame.sourceTabId,
+          tabId: runtimeTabId,
         })
         .catch(ignoreRegistrationError);
       sendFrameByEpicHost.get(epicHostKey(epicId, hostId))?.({

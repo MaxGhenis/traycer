@@ -48,6 +48,11 @@ import {
 } from "@/lib/browser-view/browser-tile-control-store";
 import { publishAgentBrowserCdpRequest } from "@/lib/browser-view/agent-browser-cdp-store";
 import {
+  collectNewAgentTabsFromSessionFrame,
+  forgetSeenAgentTabsForSession,
+  surfaceAgentTabsFromSessionFrame,
+} from "@/lib/browser-view/agent-tab-surfacing";
+import {
   attachElectronBrowserBackgroundTabRoute,
   attachElectronBrowserTabStream,
   handleElectronBrowserTabFrame,
@@ -1221,6 +1226,9 @@ function handleBrowserSessionLifecycleFrame(args: {
   if (args.frame.kind === "snapshot") {
     for (const session of args.frame.sessions) {
       syncElectronBrowserTabDrivers(session);
+      // Seed-only: a snapshot replays the full inventory (initial load,
+      // reconnect, renderer reload) and must not re-surface old tabs.
+      collectNewAgentTabsFromSessionFrame(session);
     }
     args.setItems(args.frame.sessions);
     return true;
@@ -1229,16 +1237,24 @@ function handleBrowserSessionLifecycleFrame(args: {
     const session = args.frame.session;
     syncElectronBrowserTabDrivers(session);
     args.setItems((current) => upsertSession(current, session));
+    // A session's inaugural tab stays quiet by design ("tabs only"); this
+    // seeds the seen-tab set so later openTab additions are recognized.
+    collectNewAgentTabsFromSessionFrame(session);
     return true;
   }
   if (args.frame.kind === "sessionUpdated") {
     const session = args.frame.session;
     syncElectronBrowserTabDrivers(session);
     args.setItems((current) => upsertSession(current, session));
+    // Diff against the last seen tabs and apply the agent-tab-surfacing
+    // preference to genuinely new agent-created tabs (headless sessions
+    // never emit createElectronTab frames).
+    surfaceAgentTabsFromSessionFrame(session);
     return true;
   }
   if (args.frame.kind === "sessionClosed") {
     const sessionId = args.frame.sessionId;
+    forgetSeenAgentTabsForSession(sessionId);
     args.setItems((current) =>
       current.filter((session) => session.sessionId !== sessionId),
     );

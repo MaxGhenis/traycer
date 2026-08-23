@@ -743,6 +743,7 @@ export function BrowserTile(props: BrowserTileProps) {
               hostId,
               sessionId: props.node.id,
               tabId: durableTabId,
+              origin: "manual",
               onReady: closeCanvasTile,
               onError: (message) => toast.error(message),
             });

@@ -20,6 +20,7 @@ const EPIC_ID = "epic-1";
 type ConvertOverrides = Partial<{
   readonly sessionId: string;
   readonly tabId: string;
+  readonly origin: "manual" | "agent";
   readonly onReady: () => void;
   readonly onError: (message: string) => void;
 }>;
@@ -30,6 +31,7 @@ function convert(overrides: ConvertOverrides): string {
     hostId: "host-1",
     sessionId: overrides.sessionId ?? "session-1",
     tabId: overrides.tabId ?? "tab-1",
+    origin: overrides.origin ?? "manual",
     onReady: overrides.onReady ?? vi.fn(),
     onError: overrides.onError ?? vi.fn(),
   });
@@ -152,5 +154,15 @@ describe("manual PiP store", () => {
       cellTitle: "Inspect checkout",
     });
     expect(getPipSnapshot(EPIC_ID).caption?.cellTitle).toBe("Inspect checkout");
+  });
+
+  it("records who requested the conversion so agent surfacing can respect it", () => {
+    const selectionId = convert({});
+    completePipConversion(EPIC_ID, selectionId);
+    expect(getPipSnapshot(EPIC_ID).target?.origin).toBe("manual");
+
+    const agentSelectionId = convert({ sessionId: "session-2", origin: "agent" });
+    completePipConversion(EPIC_ID, agentSelectionId);
+    expect(getPipSnapshot(EPIC_ID).target?.origin).toBe("agent");
   });
 });

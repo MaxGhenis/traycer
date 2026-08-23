@@ -1094,6 +1094,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               hostId: tabHostId,
               sessionId: node.sessionId,
               tabId: node.tabId,
+              origin: "manual",
               onReady: closeCanvasTile,
               onError: (message) => toast.error(message),
             });

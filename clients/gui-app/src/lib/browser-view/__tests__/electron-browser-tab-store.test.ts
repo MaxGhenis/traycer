@@ -32,12 +32,22 @@ import {
   updateElectronBrowserTabView,
 } from "@/lib/browser-view/electron-browser-tab-store";
 import { publishAgentBrowserCdpRequest } from "@/lib/browser-view/agent-browser-cdp-store";
+import {
+  resetAgentTabSurfacingForTests,
+  setEpicSurfaceVisibility,
+} from "@/lib/browser-view/agent-tab-surfacing";
+import { getPipSnapshot } from "@/lib/browser-view/pip-store";
 import { appLogger } from "@/lib/logger";
 import { openFreshElectronTileFromBrowserPage } from "@/lib/browser-view/browser-link-routing-core";
 import { createSingleTileCanvas } from "@/stores/epics/canvas/actions";
 import { collectPanes } from "@/stores/epics/canvas/tile-tree";
 import { makeBrowserTileRef } from "@/stores/epics/canvas/tile-schema/browser-tile";
+import {
+  DEFAULT_AGENT_BROWSER_VIEWPORT_PRESET,
+  makeAgentBrowserTileRef,
+} from "@/stores/epics/canvas/tile-schema/agent-browser-tile";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import { useSettingsStore } from "@/stores/settings/settings-store";
 import {
   isAgentBrowserTileRef,
   isBrowserTileRef,
@@ -2040,5 +2050,287 @@ describe("electron-browser-tab-store createElectronTab (ticket 14)", () => {
     }
     expect(isBrowserTileRef(tile)).toBe(true);
     expect(isAgentBrowserTileRef(tile)).toBe(false);
+  });
+});
+
+describe("electron-browser-tab-store agent surfacing dispositions", () => {
+  const VIEW_TAB_ID_SURFACING = "view-surfacing";
+  const SOURCE_BROWSER_SURFACING: BrowserTileRef = makeBrowserTileRef({
+    name: "Source browser",
+    hostId: HOST,
+    url: "https://app.example/source",
+    viewportPreset: "responsive",
+  });
+
+  function seedSourcePaneSurfacing(): {
+    readonly paneId: string;
+    readonly tileKey: BrowserViewTileKey;
+  } {
+    const canvas = createSingleTileCanvas(SOURCE_BROWSER_SURFACING);
+    const pane = collectPanes(canvas.root).at(0);
+    if (pane === undefined) throw new Error("expected a pane");
+    useEpicCanvasStore.setState({
+      tabsById: {
+        [VIEW_TAB_ID_SURFACING]: {
+          tabId: VIEW_TAB_ID_SURFACING,
+          epicId: EPIC,
+          name: "Surfacing",
+        },
+      },
+      canvasByTabId: { [VIEW_TAB_ID_SURFACING]: canvas },
+    });
+    return {
+      paneId: pane.id,
+      tileKey: {
+        viewTabId: VIEW_TAB_ID_SURFACING,
+        paneId: pane.id,
+        tileInstanceId: SOURCE_BROWSER_SURFACING.instanceId,
+        pageSessionId: SOURCE_BROWSER_SURFACING.id,
+      },
+    };
+  }
+
+  afterEach(() => {
+    resetElectronBrowserTabStoreForTests();
+    resetAgentTabSurfacingForTests();
+    useSettingsStore.setState({ agentTabSurfacingMode: "off" });
+    vi.restoreAllMocks();
+  });
+
+  it("answers an off-mode foreground create with a hidden view and a successful ack", async () => {
+    const bridge = new FakeBridge();
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+    attachElectronBrowserBackgroundTabRoute(EPIC, HOST, bridge);
+    const { tileKey } = seedSourcePaneSurfacing();
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-off-source",
+        sessionId: "session-off",
+        bridge,
+        tileKey,
+        initialUrl: "https://app.example/source",
+      }),
+    );
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-off-source-mint",
+      registrationId: "reg-off-source",
+      sessionId: "session-off",
+      tabId: "tab-off-source",
+    });
+    await Promise.resolve();
+    frames.length = 0;
+    const canvasBefore =
+      useEpicCanvasStore.getState().canvasByTabId[VIEW_TAB_ID_SURFACING];
+    const panesBefore =
+      canvasBefore === undefined || canvasBefore.root === null
+        ? 0
+        : collectPanes(canvasBefore.root).length;
+
+    const handled = handleElectronBrowserTabFrame({
+      kind: "createElectronTab",
+      hasBinaryPayload: false,
+      requestId: "req-off-create",
+      sessionId: "session-off",
+      sourceTabId: "tab-off-source",
+      url: "https://example.com/hidden",
+      epicId: EPIC,
+      hostId: HOST,
+    } satisfies BrowserSessionsServerFrame);
+    expect(handled).toBe(true);
+
+    // Hidden view created off-screen; the canvas layout is untouched.
+    await vi.waitFor(() => {
+      expect(bridge.backgroundCreateCalls).toHaveLength(1);
+    });
+    expect(bridge.backgroundCreateCalls[0].url).toBe("https://example.com/hidden");
+    expect(bridge.backgroundCreateCalls[0].viewTabId).toBe("background");
+    const canvasAfter =
+      useEpicCanvasStore.getState().canvasByTabId[VIEW_TAB_ID_SURFACING];
+    const panesAfter =
+      canvasAfter === undefined || canvasAfter.root === null
+        ? 0
+        : collectPanes(canvasAfter.root).length;
+    expect(panesAfter).toBe(panesBefore);
+
+    // Registration must NOT bind the source tab id (foreground claim rule).
+    const registration = frames.find(
+      (frame) => frame.kind === "registerElectronTab",
+    );
+    expect(registration).toBeDefined();
+    if (registration?.kind !== "registerElectronTab") {
+      throw new Error("expected registerElectronTab frame");
+    }
+    expect(registration.requestedTabId).toBeNull();
+
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: registration.requestId,
+      registrationId: registration.registrationId,
+      sessionId: "session-off",
+      tabId: "tab-hidden-minted",
+    });
+    await vi.waitFor(() => {
+      expect(frames).toContainEqual(
+        expect.objectContaining({
+          kind: "electronTabCreated",
+          requestId: "req-off-create",
+          sessionId: "session-off",
+          tabId: "tab-hidden-minted",
+          reason: null,
+        }),
+      );
+    });
+  });
+
+  it("groups a tile-mode foreground create into the session's existing pane without splitting", async () => {
+    useSettingsStore.setState({ agentTabSurfacingMode: "tile" });
+    const bridge = new FakeBridge();
+    attachElectronBrowserTabStream(EPIC, HOST, () => {});
+    // The source pane hosts an AGENT tile of this session, so grouping applies.
+    const agentSourceTile = makeAgentBrowserTileRef({
+      name: "Agent source",
+      hostId: HOST,
+      url: "https://app.example/source",
+      sessionId: "session-group",
+      viewportPreset: DEFAULT_AGENT_BROWSER_VIEWPORT_PRESET,
+      runtime: "isolated",
+    });
+    const canvas = createSingleTileCanvas(agentSourceTile);
+    const pane = collectPanes(canvas.root).at(0);
+    if (pane === undefined) throw new Error("expected a pane");
+    useEpicCanvasStore.setState({
+      tabsById: {
+        [VIEW_TAB_ID_SURFACING]: {
+          tabId: VIEW_TAB_ID_SURFACING,
+          epicId: EPIC,
+          name: "Surfacing",
+        },
+      },
+      canvasByTabId: { [VIEW_TAB_ID_SURFACING]: canvas },
+    });
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-group-source",
+        sessionId: "session-group",
+        bridge,
+        tileKey: {
+          viewTabId: VIEW_TAB_ID_SURFACING,
+          paneId: pane.id,
+          tileInstanceId: agentSourceTile.instanceId,
+          pageSessionId: agentSourceTile.id,
+        },
+        initialUrl: "https://app.example/source",
+      }),
+    );
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-group-source-mint",
+      registrationId: "reg-group-source",
+      sessionId: "session-group",
+      tabId: "tab-group-source",
+    });
+    await Promise.resolve();
+
+    const handled = handleElectronBrowserTabFrame({
+      kind: "createElectronTab",
+      hasBinaryPayload: false,
+      requestId: "req-group-create",
+      sessionId: "session-group",
+      sourceTabId: "tab-group-source",
+      url: "https://example.com/grouped",
+      epicId: EPIC,
+      hostId: HOST,
+    } satisfies BrowserSessionsServerFrame);
+
+    expect(handled).toBe(true);
+    const nextCanvas =
+      useEpicCanvasStore.getState().canvasByTabId[VIEW_TAB_ID_SURFACING];
+    if (nextCanvas === undefined || nextCanvas.root === null) {
+      throw new Error("expected canvas");
+    }
+    // No split: the grouped tab lands in the anchor pane itself.
+    expect(collectPanes(nextCanvas.root)).toHaveLength(1);
+    const anchorPane = collectPanes(nextCanvas.root).find(
+      (candidate) => candidate.id === pane.id,
+    );
+    expect(anchorPane?.tabInstanceIds).toHaveLength(2);
+    expect(nextCanvas.activePaneId).toBe(pane.id);
+  });
+
+  it("arms PiP for a pip-mode foreground create once the hidden view registers", async () => {
+    useSettingsStore.setState({ agentTabSurfacingMode: "pip" });
+    setEpicSurfaceVisibility(EPIC, true);
+    const bridge = new FakeBridge();
+    const frames: BrowserSessionsClientFrame[] = [];
+    attachElectronBrowserTabStream(EPIC, HOST, (frame) => {
+      frames.push(frame);
+    });
+    attachElectronBrowserBackgroundTabRoute(EPIC, HOST, bridge);
+    const { tileKey } = seedSourcePaneSurfacing();
+    registerElectronBrowserTab(
+      baseRegistration({
+        registrationId: "reg-pip-source",
+        sessionId: "session-pip",
+        bridge,
+        tileKey,
+        initialUrl: "https://app.example/source",
+      }),
+    );
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: "req-pip-source-mint",
+      registrationId: "reg-pip-source",
+      sessionId: "session-pip",
+      tabId: "tab-pip-source",
+    });
+    await Promise.resolve();
+    frames.length = 0;
+
+    const handled = handleElectronBrowserTabFrame({
+      kind: "createElectronTab",
+      hasBinaryPayload: false,
+      requestId: "req-pip-create",
+      sessionId: "session-pip",
+      sourceTabId: "tab-pip-source",
+      url: "https://example.com/floating",
+      epicId: EPIC,
+      hostId: HOST,
+    } satisfies BrowserSessionsServerFrame);
+    expect(handled).toBe(true);
+    await vi.waitFor(() => {
+      expect(bridge.backgroundCreateCalls).toHaveLength(1);
+    });
+
+    const registration = frames.find(
+      (frame) => frame.kind === "registerElectronTab",
+    );
+    if (registration?.kind !== "registerElectronTab") {
+      throw new Error("expected registerElectronTab frame");
+    }
+    handleElectronBrowserTabFrame({
+      kind: "electronTabRegistered",
+      hasBinaryPayload: false,
+      requestId: registration.requestId,
+      registrationId: registration.registrationId,
+      sessionId: "session-pip",
+      tabId: "tab-pip-minted",
+    });
+    // onRegistered hands the minted durable tab to the PiP pipeline.
+    await vi.waitFor(() => {
+      expect(getPipSnapshot(EPIC).pendingTarget).toMatchObject({
+        sessionId: "session-pip",
+        tabId: "tab-pip-minted",
+        origin: "agent",
+      });
+    });
+    setEpicSurfaceVisibility(EPIC, false);
   });
 });

@@ -549,6 +549,19 @@ describe("GeneralSettingsPanel", () => {
     expect(useSettingsStore.getState().browserDevOrigins).toEqual([]);
   });
 
+  it("renders the agent tab surfacing row independent of the labs toggle", () => {
+    useSettingsStore.setState({ inAppBrowserBetaEnabled: false });
+
+    renderPanel();
+
+    const select = screen.getByRole("combobox", {
+      name: "Agent tab surfacing",
+    });
+    expect(select).toBeTruthy();
+    expect(select.getAttribute("disabled")).toBeNull();
+    expect(useSettingsStore.getState().agentTabSurfacingMode).toBe("off");
+  });
+
   it("labels the steering chord with the platform modifier", () => {
     renderPanel();
 

@@ -356,6 +356,35 @@ describe("useSettingsStore", () => {
     expect(persisted ?? "").toContain('"browserDevOrigins"');
   });
 
+  it("defaults agent tab surfacing to off", () => {
+    expect(useSettingsStore.getState().agentTabSurfacingMode).toBe("off");
+  });
+
+  it("persists the agent tab surfacing mode", () => {
+    useSettingsStore.getState().setAgentTabSurfacingMode("pip");
+    const persisted = window.localStorage.getItem("traycer-gui-app:settings");
+    expect(persisted ?? "").toContain('"agentTabSurfacingMode":"pip"');
+
+    useSettingsStore.getState().setAgentTabSurfacingMode("tile");
+    const next = window.localStorage.getItem("traycer-gui-app:settings");
+    expect(next ?? "").toContain('"agentTabSurfacingMode":"tile"');
+  });
+
+  it("repairs an invalid persisted agent tab surfacing mode to off", async () => {
+    useSettingsStore.setState({ agentTabSurfacingMode: "pip" });
+    window.localStorage.setItem(
+      "traycer-gui-app:settings",
+      JSON.stringify({
+        state: { agentTabSurfacingMode: "explode" },
+        version: 1,
+      }),
+    );
+
+    await useSettingsStore.persist.rehydrate();
+
+    expect(useSettingsStore.getState().agentTabSurfacingMode).toBe("off");
+  });
+
   it("dedupes, trims, and removes detected browser dev origins", () => {
     for (let index = 0; index < 52; index += 1) {
       useSettingsStore
