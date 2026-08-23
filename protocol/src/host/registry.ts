@@ -200,12 +200,16 @@ import {
 import {
   hostStatusV10,
   hostStatusV11,
+  hostStatusV12,
   hostStatusUpgradeV10ToV11,
+  hostStatusUpgradeV11ToV12,
 } from "@traycer/protocol/host/status/contracts";
 import {
   hostRestartUpgradeV10ToV11,
+  hostRestartUpgradeV11ToV12,
   hostRestartV10,
   hostRestartV11,
+  hostRestartV12,
 } from "@traycer/protocol/host/restart/contracts";
 import {
   hostIdentityGetV10,
@@ -3768,7 +3772,7 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
   },
   "host.status": {
     1: {
-      latestMinor: 1,
+      latestMinor: 2,
       versions: {
         0: {
           contract: hostStatusV10,
@@ -3777,6 +3781,10 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
         1: {
           contract: hostStatusV11,
           upgradeFromPreviousVersion: hostStatusUpgradeV10ToV11,
+        },
+        2: {
+          contract: hostStatusV12,
+          upgradeFromPreviousVersion: hostStatusUpgradeV11ToV12,
         },
       },
       downgradePathsFromLatest: {},
@@ -3788,7 +3796,7 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
     // it with a racy activity read.
     degrade: { kind: "unsupported" },
     1: {
-      latestMinor: 1,
+      latestMinor: 2,
       versions: {
         0: {
           contract: hostRestartV10,
@@ -3797,6 +3805,10 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
         1: {
           contract: hostRestartV11,
           upgradeFromPreviousVersion: hostRestartUpgradeV10ToV11,
+        },
+        2: {
+          contract: hostRestartV12,
+          upgradeFromPreviousVersion: hostRestartUpgradeV11ToV12,
         },
       },
       downgradePathsFromLatest: {},
@@ -7922,7 +7934,7 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   "epic.subscribe": {
     1: {
       // @1.1 adds additive `dirtySnapshot`, `artifactRoomDirty`, and
-      // `rootDirty`; @1.2 adds optional durability keys to cloudSyncStatus;
+      // `rootDirty`; @1.4 adds optional durability keys to cloudSyncStatus;
       // @1.5 adds the optional live-vs-pending promotion state; @1.6 is the s5
       // status pass - a widened `pauseReason` (s5-orphaned-epic-recovery), the
       // `localProtection` datum plus a `durability: "unknown"` member
@@ -7931,8 +7943,13 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       // @1.0 stays installed and FROZEN: a renderer that
       // negotiated it never receives the new kinds, and the resolver gates
       // emission on the negotiated version rather than assuming the peer will
-      // tolerate an unknown frame. The same gating applies to @1.5's two
+      // tolerate an unknown frame. The same gating applies to @1.6's two
       // widened enums, whose new VALUES an older minor's schema refuses.
+      //
+      // The durability ladder sits at @1.4-@1.6 rather than @1.2-@1.4 because
+      // `main` landed the roomInfo (@1.2) and delta-seed (@1.3) minors first;
+      // it was re-minted above them, and its frames build on @1.3's snapshot
+      // frame so a peer above @1.3 keeps receiving `seededFromOffer`.
       //
       // @1.2 adds `roomId` to the snapshot frame's `meta`. Unlike the @1.1
       // frame KINDS, this one needs no emission gate - a peer on an older
