@@ -44,6 +44,7 @@ interface MutationOptions {
 
 interface MutationConfig {
   readonly method: string;
+  readonly invalidateMethods: ReadonlyArray<string>;
   readonly onSuccess?: (
     response: ArtifactVersionsListResponse | ArtifactVersionsRestoreResponse,
   ) => void;
@@ -66,6 +67,8 @@ const state = vi.hoisted(() => ({
     readonly method: string;
     readonly variables: Readonly<Record<string, unknown>>;
   }>,
+  mutationInvalidationsByMethod: new Map<string, ReadonlyArray<string>>(),
+  queryInvalidationCalls: [] as Array<Readonly<Record<string, unknown>>>,
   nodeRefCalls: [] as Array<{
     readonly chatId: string;
     readonly hostId: string;
@@ -190,43 +193,53 @@ vi.mock("@/hooks/host/use-host-query", () => ({
 }));
 
 vi.mock("@/hooks/host/use-host-scoped-mutation", () => ({
-  useHostScopedMutationForClient: (_client: null, config: MutationConfig) => ({
-    isPending: false,
-    variables: { artifactId: "" },
-    mutate: (
-      variables: Readonly<Record<string, unknown>>,
-      options: MutationOptions | undefined,
-    ) => {
-      state.mutationCalls.push({ method: config.method, variables });
-      if (config.method === "epic.artifactVersions.list") {
-        config.onSuccess?.({ entries: state.olderEntries, nextCursor: null });
-        return;
-      }
-      if (
-        config.method === "epic.artifactVersions.restore" &&
-        variables.mode === "preflight"
-      ) {
-        if (state.preflightError) {
-          options?.onError?.();
+  useHostScopedMutationForClient: (_client: null, config: MutationConfig) => {
+    state.mutationInvalidationsByMethod.set(
+      config.method,
+      config.invalidateMethods,
+    );
+    return {
+      isPending: false,
+      variables: { artifactId: "" },
+      mutate: (
+        variables: Readonly<Record<string, unknown>>,
+        options: MutationOptions | undefined,
+      ) => {
+        state.mutationCalls.push({ method: config.method, variables });
+        if (config.method === "epic.artifactVersions.list") {
+          config.onSuccess?.({ entries: state.olderEntries, nextCursor: null });
           return;
         }
-        options?.onSuccess?.(state.restorePreflight);
-        return;
-      }
-      if (
-        config.method === "epic.artifactVersions.restore" &&
-        variables.mode === "execute" &&
-        state.restoreExecute !== null
-      ) {
-        options?.onSuccess?.(state.restoreExecute);
-      }
-    },
-  }),
+        if (
+          config.method === "epic.artifactVersions.restore" &&
+          variables.mode === "preflight"
+        ) {
+          if (state.preflightError) {
+            options?.onError?.();
+            return;
+          }
+          options?.onSuccess?.(state.restorePreflight);
+          return;
+        }
+        if (
+          config.method === "epic.artifactVersions.restore" &&
+          variables.mode === "execute" &&
+          state.restoreExecute !== null
+        ) {
+          options?.onSuccess?.(state.restoreExecute);
+        }
+      },
+    };
+  },
 }));
 
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-query")>()),
-  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+  useQueryClient: () => ({
+    invalidateQueries: (args: Readonly<Record<string, unknown>>) => {
+      state.queryInvalidationCalls.push(args);
+    },
+  }),
 }));
 
 vi.mock("@/components/diff/diff-content-primitive", () => ({
@@ -326,6 +339,8 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
     state.supportCalls = [];
     state.queryCalls = [];
     state.mutationCalls = [];
+    state.mutationInvalidationsByMethod.clear();
+    state.queryInvalidationCalls = [];
     state.nodeRefCalls = [];
     state.openedChats = [];
     state.historyEntries = [];
@@ -633,6 +648,10 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
     };
     openHistory();
 
+    expect(
+      state.mutationInvalidationsByMethod.get("epic.artifactVersions.restore"),
+    ).toEqual([]);
+
     fireEvent.click(
       screen.getByRole("button", { name: "Restore this version" }),
     );
@@ -658,6 +677,7 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
         bodyOnly: true,
       },
     });
+    expect(state.queryInvalidationCalls).toEqual([]);
   });
 
   it("renders the clean restore outcome banner and badge", () => {
@@ -686,6 +706,7 @@ describe("<ArtifactVersionHistoryEntryPoint />", () => {
 
     expect(screen.getByText("Restored as a new version.")).toBeTruthy();
     expect(screen.getByText("Restored")).toBeTruthy();
+    expect(state.queryInvalidationCalls).toHaveLength(1);
   });
 
   it("renders the renormalized restore outcome banner and badge", () => {

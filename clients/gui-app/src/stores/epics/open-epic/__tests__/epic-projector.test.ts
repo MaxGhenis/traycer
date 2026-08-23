@@ -291,6 +291,7 @@ describe("epic-projector", () => {
       kind: "ticket",
       title: "New ticket",
       parentId: null,
+      artifactRoomId: null,
       assignee: "",
       status: 0,
     });
@@ -299,6 +300,7 @@ describe("epic-projector", () => {
         "folderName",
         "createdAt",
         "createdManually",
+        "artifactRoomId",
         "assignee",
         "status",
         "deletedAt",

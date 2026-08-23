@@ -224,7 +224,7 @@ describe("PaneOpener", () => {
       />,
     );
 
-    fireEvent.change(searchInput(), { target: { value: "trash" } });
+    fireEvent.change(searchInput(), { target: { value: "restore" } });
 
     expect(
       screen.queryByRole("option", { name: "Deleted artifacts" }),

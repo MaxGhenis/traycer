@@ -267,7 +267,7 @@ describe("<ArtifactVersionSettingsSection />", () => {
     ]);
   });
 
-  it("shows the command banner on mutation success and defers to a later query result for the storage row", () => {
+  it("shows command results while deferring fields and storage to a later query result", () => {
     const { rerender } = render(
       <ArtifactVersionSettingsSection client={null} hostId="host-a" enabled />,
     );
@@ -320,9 +320,9 @@ describe("<ArtifactVersionSettingsSection />", () => {
     state.snapshot = {
       settings: {
         enabled: true,
-        retentionDays: 7,
-        maxVersionsPerArtifact: 100,
-        maxBytesPerArtifact: 16 * 1024 * 1024,
+        retentionDays: 21,
+        maxVersionsPerArtifact: 250,
+        maxBytesPerArtifact: 32 * 1024 * 1024,
       },
       storage: {
         referencedBytes: 2 * 1024 * 1024,
@@ -334,6 +334,11 @@ describe("<ArtifactVersionSettingsSection />", () => {
     );
 
     expect(screen.getByText("256.0 KB reclaimable")).toBeTruthy();
+    expect(screen.getByLabelText<HTMLInputElement>("Days").value).toBe("21");
+    expect(screen.getByLabelText<HTMLInputElement>("Versions").value).toBe(
+      "250",
+    );
+    expect(screen.getByLabelText<HTMLInputElement>("MB").value).toBe("32");
     expect(
       screen.getByText(/3 observations pruned; 512\.0 KB reclaimed\./u),
     ).toBeTruthy();

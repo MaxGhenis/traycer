@@ -151,8 +151,12 @@ export function ArtifactVersionSettingsSection(props: {
       "epic.artifactVersions.list",
       "epic.deletedArtifacts.list",
     ],
-    onSuccess: (result) =>
-      setCommitted({ hostId: props.hostId, response: result }),
+    onSuccess: (result) => {
+      setCommitted({ hostId: props.hostId, response: result });
+      setRetentionDays(null);
+      setMaxVersions(null);
+      setMaxMegabytes(null);
+    },
   });
   const clearHistory = useHostScopedMutationForClient(props.client, {
     method: "epic.artifactVersionSettings.clearHistory",

@@ -476,7 +476,7 @@ function ArtifactVersionHistoryPanel(props: {
     method: "epic.artifactVersions.restore",
     mutationKey: epicMutationKeys.restoreArtifactVersion(),
     errorMessage: "Couldn't restore this version",
-    invalidateMethods: ["epic.artifactVersions.list"],
+    invalidateMethods: [],
   });
   const queryClient = useQueryClient();
 
