@@ -170,6 +170,61 @@ describe("landing terminal lifecycle", () => {
     ]);
   });
 
+  it("retains prior ambiguity when closing an in-flight retry", () => {
+    const store = useLandingTerminalStore.getState();
+    store.addTab({
+      ...tab({
+        instanceId: "ambiguous-retry",
+        sessionId: "ambiguous-retry-session",
+        hostId: HOST_A,
+      }),
+      pendingCreate: true,
+      createFailure: "ambiguous",
+      createRejectedAtSnapshotEpoch: 3,
+    });
+    store.markCreateAttempt("ambiguous-retry");
+    store.closeTab(LANDING_PAGE_ID, "ambiguous-retry");
+    store.settleFailedCreate(
+      "ambiguous-retry",
+      HOST_A,
+      "ambiguous-retry-session",
+      { mayHaveApplied: false, rejectedAtSnapshotEpoch: 5 },
+    );
+
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+      {
+        hostId: HOST_A,
+        sessionId: "ambiguous-retry-session",
+        createRejectedAmbiguously: true,
+        createRejectedAtSnapshotEpoch: 3,
+      },
+    ]);
+  });
+
+  it("hydrates a raw in-flight create into explicit confirmation", () => {
+    const restored = parsePersistedLandingTerminalState({
+      tabs: [
+        {
+          ...tab({
+            instanceId: "hydrated-create",
+            sessionId: "hydrated-session",
+            hostId: HOST_A,
+          }),
+          pendingCreate: true,
+        },
+      ],
+      activeInstanceId: "hydrated-create",
+      layoutsByLandingPageId: {},
+      pendingKills: [],
+    });
+
+    expect(restored.tabs[0]).toMatchObject({
+      pendingCreate: true,
+      createFailure: "ambiguous",
+      retireOnFreshSnapshot: true,
+    });
+  });
+
   it("keeps probe capability states distinct", () => {
     expect(resolveLandingTerminalAvailability(null, undefined, null)).toBe(
       "no-active-host",

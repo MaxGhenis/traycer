@@ -31,6 +31,8 @@ export interface LandingTerminalTabRef {
   readonly createFailure?: "definitive" | "ambiguous";
   /** Collection epoch observed when an ambiguous create attempt was rejected. */
   readonly createRejectedAtSnapshotEpoch?: number;
+  /** Hydration lost the create callback; wait for the first fresh snapshot. */
+  readonly retireOnFreshSnapshot?: boolean;
   /** In-memory consent to retry a create whose prior result is ambiguous. */
   readonly createRetryRequested?: boolean;
   /** Schema version attached to legacy import evidence. */
@@ -209,6 +211,11 @@ export function parseLandingTerminalTabRef(
       ? {
           createRejectedAtSnapshotEpoch: value.createRejectedAtSnapshotEpoch,
         }
+      : {}),
+    ...(value.pendingCreate === true &&
+    value.createFailure === undefined &&
+    value.hostAuthorityAcknowledged !== true
+      ? { createFailure: "ambiguous", retireOnFreshSnapshot: true }
       : {}),
     ...(isNonNegativeInteger(value.sourceStoreVersion)
       ? { sourceStoreVersion: value.sourceStoreVersion }
@@ -430,14 +437,29 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
               ) {
                 return [pending];
               }
-              return outcome.mayHaveApplied
+              if (outcome.mayHaveApplied) {
+                return [
+                  {
+                    hostId,
+                    sessionId,
+                    createRejectedAmbiguously: true,
+                    createRejectedAtSnapshotEpoch:
+                      outcome.rejectedAtSnapshotEpoch,
+                  },
+                ];
+              }
+              return pending.createRejectedAmbiguously === true
                 ? [
                     {
                       hostId,
                       sessionId,
                       createRejectedAmbiguously: true,
-                      createRejectedAtSnapshotEpoch:
-                        outcome.rejectedAtSnapshotEpoch,
+                      ...(pending.createRejectedAtSnapshotEpoch === undefined
+                        ? {}
+                        : {
+                            createRejectedAtSnapshotEpoch:
+                              pending.createRejectedAtSnapshotEpoch,
+                          }),
                     },
                   ]
                 : [];
@@ -697,7 +719,21 @@ function pendingKillForTab(
 ): LandingTerminalPendingKill | null {
   const base = { hostId: tab.hostId, sessionId: tab.sessionId };
   if (tab.createRetryRequested === true) {
-    return { ...base, pendingCreate: true };
+    return {
+      ...base,
+      pendingCreate: true,
+      ...(tab.createFailure === "ambiguous"
+        ? {
+            createRejectedAmbiguously: true,
+            ...(tab.createRejectedAtSnapshotEpoch === undefined
+              ? {}
+              : {
+                  createRejectedAtSnapshotEpoch:
+                    tab.createRejectedAtSnapshotEpoch,
+                }),
+          }
+        : {}),
+    };
   }
   if (tab.createFailure === "definitive") return null;
   if (tab.createFailure === "ambiguous") {
@@ -709,6 +745,9 @@ function pendingKillForTab(
         : {
             createRejectedAtSnapshotEpoch: tab.createRejectedAtSnapshotEpoch,
           }),
+      ...(tab.retireOnFreshSnapshot === true
+        ? { retireOnFreshSnapshot: true }
+        : {}),
     };
   }
   if (tab.pendingCreate === true) return { ...base, pendingCreate: true };

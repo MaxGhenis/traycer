@@ -1380,16 +1380,10 @@ describe("<LandingTerminalPanel />", () => {
       expect(useLandingTerminalStore.getState().tabs).toHaveLength(0);
     });
     expect(testLayout().panelOpen).toBe(false);
-    // Every closed shell gets its own kill. (The tombstones they were written
-    // with are drained by the reconciliation that follows, once the host list
-    // confirms the sessions are gone - the durable write itself is pinned in
-    // the store test.)
-    before.forEach((tab) => {
-      expect(mocks.kill).toHaveBeenCalledWith({
-        hostId: tab.hostId,
-        sessionId: tab.sessionId,
-      });
-    });
+    // Initial delivery belongs to the app-wide bridge. Reconciliation may
+    // already retire these tombstones from its authoritative absent snapshot,
+    // but the panel itself never sends a competing kill.
+    expect(mocks.kill).not.toHaveBeenCalled();
   });
 
   it("dismisses an offline terminal locally and queues its host kill", () => {
@@ -1614,10 +1608,13 @@ describe("<LandingTerminalPanel />", () => {
     expect(useLandingTerminalStore.getState().tabs[0].instanceId).toBe(
       first.instanceId,
     );
-    expect(mocks.kill).toHaveBeenCalledWith({
-      hostId: second.hostId,
-      sessionId: second.sessionId,
-    });
+    expect(useLandingTerminalStore.getState().pendingKills).toContainEqual(
+      expect.objectContaining({
+        hostId: second.hostId,
+        sessionId: second.sessionId,
+      }),
+    );
+    expect(mocks.kill).not.toHaveBeenCalled();
   });
 
   it("switches terminal tabs with the leader digit chord", async () => {
