@@ -75,6 +75,7 @@ export interface LandingTerminalStoreState {
   ) => void;
   readonly addTab: (tab: LandingTerminalTabRef) => void;
   readonly markCreateDispatched: (instanceId: string) => void;
+  readonly clearCreateDispatched: (instanceId: string) => void;
   readonly activateTab: (instanceId: string) => void;
   readonly renameTab: (instanceId: string, name: string) => void;
   /** Refreshes a derived title without overwriting a user rename. */
@@ -255,6 +256,14 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
               ? { ...tab, createDispatched: true }
               : tab,
           ),
+        })),
+      clearCreateDispatched: (instanceId) =>
+        set((state) => ({
+          tabs: state.tabs.map((tab) => {
+            if (tab.instanceId !== instanceId) return tab;
+            const { createDispatched: _createDispatched, ...retainedTab } = tab;
+            return retainedTab;
+          }),
         })),
       activateTab: (instanceId) =>
         set((state) =>

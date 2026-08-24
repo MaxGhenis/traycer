@@ -55,6 +55,7 @@ describe("durable landing-terminal bootstrap", () => {
       resolveLandingTerminalDurableBootstrapAction({
         projectionStatus: "dormant",
         pendingCreate: false,
+        createDispatched: false,
         active: false,
       }),
     ).toBe("none");
@@ -62,6 +63,7 @@ describe("durable landing-terminal bootstrap", () => {
       resolveLandingTerminalDurableBootstrapAction({
         projectionStatus: "dormant",
         pendingCreate: false,
+        createDispatched: false,
         active: true,
       }),
     ).toBe("ensure-running");
@@ -72,6 +74,7 @@ describe("durable landing-terminal bootstrap", () => {
       resolveLandingTerminalDurableBootstrapAction({
         projectionStatus: "unknown",
         pendingCreate: false,
+        createDispatched: false,
         active: false,
       }),
     ).toBe("none");
@@ -79,6 +82,7 @@ describe("durable landing-terminal bootstrap", () => {
       resolveLandingTerminalDurableBootstrapAction({
         projectionStatus: "unknown",
         pendingCreate: false,
+        createDispatched: false,
         active: true,
       }),
     ).toBe("ensure-running");
@@ -89,6 +93,7 @@ describe("durable landing-terminal bootstrap", () => {
       resolveLandingTerminalDurableBootstrapAction({
         projectionStatus: "missing",
         pendingCreate: true,
+        createDispatched: false,
         active: true,
       }),
     ).toBe("create");
@@ -96,6 +101,7 @@ describe("durable landing-terminal bootstrap", () => {
       resolveLandingTerminalDurableBootstrapAction({
         projectionStatus: "missing",
         pendingCreate: false,
+        createDispatched: false,
         active: true,
       }),
     ).toBe("none");
@@ -103,6 +109,15 @@ describe("durable landing-terminal bootstrap", () => {
       resolveLandingTerminalDurableBootstrapAction({
         projectionStatus: "running",
         pendingCreate: true,
+        createDispatched: false,
+        active: true,
+      }),
+    ).toBe("none");
+    expect(
+      resolveLandingTerminalDurableBootstrapAction({
+        projectionStatus: "missing",
+        pendingCreate: true,
+        createDispatched: true,
         active: true,
       }),
     ).toBe("none");
@@ -122,6 +137,7 @@ describe("durable landing-terminal bootstrap", () => {
         useLandingTerminalDurableLifecycle({
           projectionStatus: props.status,
           pendingCreate: props.pendingCreate,
+          createDispatched: false,
           active: true,
           canMutate: true,
           gridReady: true,
@@ -153,6 +169,7 @@ describe("durable landing-terminal bootstrap", () => {
         useLandingTerminalDurableLifecycle({
           projectionStatus: status,
           pendingCreate: false,
+          createDispatched: false,
           active: true,
           canMutate: true,
           gridReady: true,
@@ -178,6 +195,7 @@ describe("durable landing-terminal bootstrap", () => {
       useLandingTerminalDurableLifecycle({
         projectionStatus: "dormant",
         pendingCreate: false,
+        createDispatched: false,
         active: true,
         canMutate: true,
         gridReady: true,
@@ -210,6 +228,7 @@ describe("durable landing-terminal bootstrap", () => {
       useLandingTerminalDurableLifecycle({
         projectionStatus: "dormant",
         pendingCreate: false,
+        createDispatched: false,
         active: true,
         canMutate: true,
         gridReady: true,
@@ -255,6 +274,7 @@ describe("durable landing-terminal bootstrap", () => {
         useLandingTerminalDurableLifecycle({
           projectionStatus: status,
           pendingCreate: false,
+          createDispatched: false,
           active: true,
           canMutate: true,
           gridReady: true,

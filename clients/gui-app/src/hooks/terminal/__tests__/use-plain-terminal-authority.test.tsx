@@ -1007,6 +1007,7 @@ describe("usePlainTerminalAuthority integration", () => {
       return useLandingTerminalDurableLifecycle({
         projectionStatus: "missing",
         pendingCreate: pending?.pendingCreate === true,
+        createDispatched: false,
         active: true,
         canMutate: true,
         gridReady: true,

@@ -7,10 +7,11 @@ export type LandingTerminalDurableBootstrapAction =
 export function resolveLandingTerminalDurableBootstrapAction(input: {
   readonly projectionStatus: "running" | "dormant" | "unknown" | "missing";
   readonly pendingCreate: boolean;
+  readonly createDispatched: boolean;
   readonly active: boolean;
 }): LandingTerminalDurableBootstrapAction {
   if (input.projectionStatus === "missing") {
-    return input.pendingCreate ? "create" : "none";
+    return input.pendingCreate && !input.createDispatched ? "create" : "none";
   }
   if (
     (input.projectionStatus === "dormant" ||
@@ -38,6 +39,7 @@ export interface LandingTerminalDurableLifecycleResult {
 export function useLandingTerminalDurableLifecycle(args: {
   readonly projectionStatus: "running" | "dormant" | "unknown" | "missing";
   readonly pendingCreate: boolean;
+  readonly createDispatched: boolean;
   readonly active: boolean;
   readonly canMutate: boolean;
   readonly gridReady: boolean;
@@ -50,6 +52,7 @@ export function useLandingTerminalDurableLifecycle(args: {
     active,
     adopt,
     canMutate,
+    createDispatched,
     dispatch,
     gridReady,
     pendingCreate,
@@ -92,6 +95,7 @@ export function useLandingTerminalDurableLifecycle(args: {
     const action = resolveLandingTerminalDurableBootstrapAction({
       projectionStatus,
       pendingCreate,
+      createDispatched,
       active,
     });
     if (action === "none" || !canMutate || !gridReady) return;
@@ -130,6 +134,7 @@ export function useLandingTerminalDurableLifecycle(args: {
     active,
     adopt,
     canMutate,
+    createDispatched,
     dispatch,
     gridReady,
     pendingCreate,

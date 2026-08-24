@@ -203,6 +203,7 @@ function dispatchCapableClose(args: {
       const next = new Set(args.refs.inFlight.current);
       next.delete(args.key);
       args.refs.inFlight.current = next;
+      args.signalRetry();
     });
 }
 
@@ -390,6 +391,7 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
             const next = new Set(inFlightRef.current);
             next.delete(key);
             inFlightRef.current = next;
+            setRetryGeneration((current) => current + 1);
           });
         continue;
       }

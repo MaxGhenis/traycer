@@ -315,21 +315,31 @@ function LandingTerminalDurableBootstrap(
           .getState()
           .markCreateDispatched(props.tab.instanceId);
       }
-      const response =
-        action === "create"
-          ? await createTerminal({
-              terminalId: props.tab.sessionId,
-              scope: INDEPENDENT_SCOPE,
-              cwd: props.tab.cwd,
-              cols: openingGrid.cols,
-              rows: openingGrid.rows,
-            })
-          : await ensureTerminalRunning({
-              hostId: props.tab.hostId,
-              terminalId: props.tab.sessionId,
-              cols: openingGrid.cols,
-              rows: openingGrid.rows,
-            });
+      let response;
+      try {
+        response =
+          action === "create"
+            ? await createTerminal({
+                terminalId: props.tab.sessionId,
+                scope: INDEPENDENT_SCOPE,
+                cwd: props.tab.cwd,
+                cols: openingGrid.cols,
+                rows: openingGrid.rows,
+              })
+            : await ensureTerminalRunning({
+                hostId: props.tab.hostId,
+                terminalId: props.tab.sessionId,
+                cols: openingGrid.cols,
+                rows: openingGrid.rows,
+              });
+      } catch (error: unknown) {
+        if (action === "create") {
+          useLandingTerminalStore
+            .getState()
+            .clearCreateDispatched(props.tab.instanceId);
+        }
+        throw error;
+      }
       return response.terminal;
     },
     [
@@ -355,6 +365,7 @@ function LandingTerminalDurableBootstrap(
     projectionStatus:
       projection === undefined ? "missing" : projection.runtime.status,
     pendingCreate: props.tab.pendingCreate === true,
+    createDispatched: props.tab.createDispatched === true,
     active: props.active,
     canMutate: entry.authority.canMutate,
     gridReady,
