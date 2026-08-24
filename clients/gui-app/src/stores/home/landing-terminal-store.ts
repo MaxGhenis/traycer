@@ -415,7 +415,7 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
                           : "definitive",
                       createRejectedAtSnapshotEpoch: outcome.mayHaveApplied
                         ? outcome.rejectedAtSnapshotEpoch
-                        : undefined,
+                        : tab.createRejectedAtSnapshotEpoch,
                       createRetryRequested: undefined,
                     }
                   : tab,
@@ -695,8 +695,11 @@ function hasPendingKill(
 function pendingKillForTab(
   tab: LandingTerminalTabRef,
 ): LandingTerminalPendingKill | null {
-  if (tab.createFailure === "definitive") return null;
   const base = { hostId: tab.hostId, sessionId: tab.sessionId };
+  if (tab.createRetryRequested === true) {
+    return { ...base, pendingCreate: true };
+  }
+  if (tab.createFailure === "definitive") return null;
   if (tab.createFailure === "ambiguous") {
     return {
       ...base,

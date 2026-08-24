@@ -125,6 +125,51 @@ describe("landing terminal lifecycle", () => {
     useLandingTerminalStore.getState().resetForTests();
   });
 
+  it("keeps the ambiguity epoch when a retry fails definitively", () => {
+    const store = useLandingTerminalStore.getState();
+    store.addTab({
+      ...tab({
+        instanceId: "sticky-ambiguity",
+        sessionId: "sticky-session",
+        hostId: HOST_A,
+      }),
+      pendingCreate: true,
+    });
+    store.settleFailedCreate("sticky-ambiguity", HOST_A, "sticky-session", {
+      mayHaveApplied: true,
+      rejectedAtSnapshotEpoch: 4,
+    });
+    store.markCreateAttempt("sticky-ambiguity");
+    store.settleFailedCreate("sticky-ambiguity", HOST_A, "sticky-session", {
+      mayHaveApplied: false,
+      rejectedAtSnapshotEpoch: 6,
+    });
+
+    expect(useLandingTerminalStore.getState().tabs[0]).toMatchObject({
+      createFailure: "ambiguous",
+      createRejectedAtSnapshotEpoch: 4,
+    });
+  });
+
+  it("tombstones a create retry that is still in flight", () => {
+    const store = useLandingTerminalStore.getState();
+    store.addTab({
+      ...tab({
+        instanceId: "retry-in-flight",
+        sessionId: "retry-session",
+        hostId: HOST_A,
+      }),
+      pendingCreate: true,
+      createFailure: "definitive",
+    });
+    store.markCreateAttempt("retry-in-flight");
+    store.closeTab(LANDING_PAGE_ID, "retry-in-flight");
+
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+      { hostId: HOST_A, sessionId: "retry-session", pendingCreate: true },
+    ]);
+  });
+
   it("keeps probe capability states distinct", () => {
     expect(resolveLandingTerminalAvailability(null, undefined, null)).toBe(
       "no-active-host",

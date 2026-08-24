@@ -411,6 +411,41 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
   });
 
+  it("dispatches a tombstone added after a capable host is already drainable", async () => {
+    mocks.entries = [
+      {
+        ...offlineHost,
+        websocketUrl: "ws://host-b/rpc",
+        transportDialability: "dialable",
+      },
+    ];
+    mocks.authorityStatus = "capable";
+    mocks.canMutate = true;
+    mocks.terminalsById = { "late-session": {} };
+    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => Promise.resolve());
+
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "late-tab",
+      sessionId: "late-session",
+      hostId: "host-b",
+      cwd: "/workspace/project",
+      name: "Late close",
+      titleSource: "default",
+      hostAuthorityAcknowledged: true,
+    });
+    useLandingTerminalStore.getState().closeTab("landing-page", "late-tab");
+    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
+
+    await waitFor(() => {
+      expect(mocks.closeAsync).toHaveBeenCalledWith({
+        hostId: "host-b",
+        terminalId: "late-session",
+      });
+      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+    });
+  });
+
   it("keeps a tombstone until an in-flight capable create appears", async () => {
     vi.useFakeTimers();
     mocks.entries = [

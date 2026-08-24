@@ -360,7 +360,7 @@ function pendingKillReadyForDispatch(args: {
   return (
     args.routeRecovered ||
     args.retry?.due === true ||
-    (args.pending.pendingCreate === true && args.retry === undefined) ||
+    args.retry === undefined ||
     args.pending.createRejectedAmbiguously === true
   );
 }
