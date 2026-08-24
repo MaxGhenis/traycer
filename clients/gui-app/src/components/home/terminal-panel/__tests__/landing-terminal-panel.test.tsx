@@ -1491,7 +1491,7 @@ describe("<LandingTerminalPanel />", () => {
     });
   });
 
-  it("does not clear a close tombstone from a stale empty list", async () => {
+  it("leaves close-tombstone delivery to the recovery bridge", async () => {
     mocks.activeHostId = "host-a";
     mocks.clientActiveHostId = "host-a";
     mocks.probeData = emptyList("/Users/dev");
@@ -1512,11 +1512,9 @@ describe("<LandingTerminalPanel />", () => {
     render(panelUi());
 
     await waitFor(() => {
-      expect(mocks.killAsync).toHaveBeenCalledWith({
-        hostId: "host-a",
-        sessionId: "still-running",
-      });
+      expect(mocks.queryClient.fetchQuery).toHaveBeenCalledTimes(1);
     });
+    expect(mocks.killAsync).not.toHaveBeenCalled();
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([
       {
         hostId: "host-a",
