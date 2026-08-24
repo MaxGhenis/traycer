@@ -57,8 +57,13 @@ export function SessionImportProgress(props: {
   );
 
   if (run.running) {
+    // `role="status"` (a polite live region by definition) because everything
+    // that moves in this view is text: the count, the session being worked on,
+    // and the notice that says whose run this is. Without it a screen reader is
+    // told an import started and then hears nothing more.
     return (
       <div
+        role="status"
         data-testid="session-import-progress"
         className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 py-10 text-center"
       >

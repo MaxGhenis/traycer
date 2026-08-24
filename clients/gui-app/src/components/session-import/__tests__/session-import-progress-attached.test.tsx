@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { SessionImportProgress } from "@/components/session-import/session-import-progress";
 import { sessionImportTone } from "@/components/session-import/session-import-tone";
 import { useSessionImportRunStore } from "@/stores/session-import/session-import-run-store";
@@ -26,12 +26,15 @@ describe("SessionImportProgress", () => {
 
     render(<SessionImportProgress tone={sessionImportTone("dialog")} />);
 
+    // Queried by role: the running view is a live region, so what a screen
+    // reader is told and what the dialog shows are the same assertion.
+    const progress = screen.getByRole("status");
     expect(
-      screen.getByTestId("session-import-progress-attached").textContent,
-    ).toBe(
-      "An import was already running - showing its progress. Your selection was not started.",
-    );
-    expect(screen.getByText("Importing 0 of 4…")).toBeTruthy();
+      within(progress).getByText(
+        "An import was already running - showing its progress. Your selection was not started.",
+      ),
+    ).toBeTruthy();
+    expect(within(progress).getByText("Importing 0 of 4…")).toBeTruthy();
   });
 
   it("shows no such notice for a run this window started", () => {
@@ -42,7 +45,9 @@ describe("SessionImportProgress", () => {
 
     render(<SessionImportProgress tone={sessionImportTone("dialog")} />);
 
-    expect(screen.queryByTestId("session-import-progress-attached")).toBeNull();
+    expect(screen.getByRole("status").textContent).not.toContain(
+      "An import was already running",
+    );
   });
 
   it("points the tour at the end of onboarding and the dialog at the task list", () => {

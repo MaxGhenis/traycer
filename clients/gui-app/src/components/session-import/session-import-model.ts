@@ -12,6 +12,7 @@ import type { SessionImportProviderFailure } from "@traycer-clients/shared/host-
 import {
   guiHarnessIdToProviderId,
   providerDisplayName,
+  sortGuiHarnessesByProviderOrder,
 } from "@/lib/provider-ordering";
 
 /**
@@ -381,6 +382,15 @@ const FAILURE_REASON_LABELS: Record<SessionImportFailureReason, string> = {
   internal_error: "Unexpected error",
 };
 
+/**
+ * Failure groups render in the order the labels above are declared, read off
+ * that record rather than restated so a new reason cannot be given a label in
+ * one place and left out of the order in another.
+ */
+const FAILURE_REASON_ORDER: ReadonlyArray<string> = Object.keys(
+  FAILURE_REASON_LABELS,
+);
+
 export function sessionImportFailureLabel(
   reason: SessionImportFailureReason,
 ): string {
@@ -452,7 +462,12 @@ function providerCountsFor(
   for (const candidate of sessions) {
     counts.set(candidate.harness, (counts.get(candidate.harness) ?? 0) + 1);
   }
-  return [...counts].map(([harness, count]) => ({ harness, count }));
+  // Map order is whatever order the host reported this folder's sessions in,
+  // which would chip two folders holding the same providers differently. The
+  // app's one harness order settles it; it keys on `id`, hence the hop.
+  return sortGuiHarnessesByProviderOrder(
+    [...counts].map(([harness, count]) => ({ id: harness, count })),
+  ).map((entry) => ({ harness: entry.id, count: entry.count }));
 }
 
 function selectionStateFor(
@@ -577,11 +592,19 @@ export function groupSessionImportFailures(
     });
     byReason.set(outcome.reason, bucket);
   }
-  return [...byReason].map(([reason, entries]) => ({
-    reason,
-    label: sessionImportFailureLabel(reason),
-    entries,
-  }));
+  // Sorted, because Map order here is the order the run happened to fail in:
+  // two identical runs would otherwise stack the same groups differently.
+  return [...byReason]
+    .toSorted(
+      ([left], [right]) =>
+        FAILURE_REASON_ORDER.indexOf(left) -
+        FAILURE_REASON_ORDER.indexOf(right),
+    )
+    .map(([reason, entries]) => ({
+      reason,
+      label: sessionImportFailureLabel(reason),
+      entries,
+    }));
 }
 
 /**

@@ -17,6 +17,7 @@ import {
   adjacentDedupedProgressItems,
   cleanSubagentNotificationText,
 } from "@/components/chat/segments/subagent-display";
+import { importedChatMarkerLabel } from "@/components/chat/segments/imported-chat-marker-display";
 import { singleSpecialSegment } from "@/components/chat/chat-special-segment";
 import { parseTraycerNextStepsMarkdown } from "@/markdown/traycer-next-steps";
 import { composerDisplayPlainText } from "@/lib/composer/composer-clipboard";
@@ -425,9 +426,16 @@ function segmentSearchText(segment: MessageSegment): ReadonlyArray<string> {
         normalizeSearchableText(`Forked from ${segment.sourceChatTitle}`),
       ];
     case "imported-chat-marker":
+      // The marker's own label, and nothing else it does not paint. The raw
+      // `sourceProvider` id is never on screen (the row shows "Claude Code"),
+      // and `sourceCwd` lives in a tooltip portal outside the find anchor -
+      // indexing either counts matches the highlighter has no text to paint.
       return [
         normalizeSearchableText(
-          `Imported from ${segment.sourceProvider} ${segment.sourceCwd}`,
+          importedChatMarkerLabel({
+            sourceProvider: segment.sourceProvider,
+            importedAt: segment.importedAt,
+          }),
         ),
       ];
     case "setup-card":

@@ -1,5 +1,6 @@
 import type {
   SessionImportCandidate,
+  SessionImportFailureReason,
   SessionImportGroup,
   SessionImportGroupLocation,
 } from "@traycer/protocol/host/session-import/candidate";
@@ -304,6 +305,36 @@ describe("buildSessionImportView - group header counts and tri-state", () => {
     expect(state.selected.has(sessionImportSelectionKey("claude", "b1"))).toBe(
       true,
     );
+  });
+
+  // Both folders below hold the same two providers and differ only in the
+  // order the host reported them, so a header that chipped them in arrival
+  // order would render the same fact two different ways on one screen.
+  it("chips provider counts in the app's harness order, not the order the host reported", () => {
+    const claudeFirst = group(folderLocation("/repo/a"), [
+      candidate({ harness: "claude", nativeSessionId: "a1" }),
+      candidate({ harness: "codex", nativeSessionId: "a2" }),
+      candidate({ harness: "claude", nativeSessionId: "a3" }),
+    ]);
+    const codexFirst = group(folderLocation("/repo/b"), [
+      candidate({ harness: "codex", nativeSessionId: "b1" }),
+      candidate({ harness: "claude", nativeSessionId: "b2" }),
+    ]);
+
+    const view = buildSessionImportView(
+      applyActions([
+        { kind: "scanGroupArrived", group: claudeFirst },
+        { kind: "scanGroupArrived", group: codexFirst },
+      ]),
+    );
+
+    expect(view.groups[0]?.providerCounts).toEqual([
+      { harness: "codex", count: 1 },
+      { harness: "claude", count: 2 },
+    ]);
+    expect(
+      view.groups[1]?.providerCounts.map((entry) => entry.harness),
+    ).toEqual(["codex", "claude"]);
   });
 });
 
@@ -739,4 +770,37 @@ describe("groupSessionImportFailures", () => {
       },
     ]);
   });
+
+  // The order failures arrive in is the order sessions happened to be worked
+  // on, which is not a fact about the failures. Two identical runs must leave
+  // the same summary.
+  it("stacks the groups in the failure reasons' canonical order, not in arrival order", () => {
+    const outcomes: ReadonlyArray<SessionImportOutcomeEntry> = [
+      failureEntry("s1", "internal_error", "boom"),
+      failureEntry("s2", "workspace_bind_failed", "no folder"),
+      failureEntry("s3", "source_unreadable", "disk error"),
+      failureEntry("s4", "source_empty", "no messages"),
+    ];
+
+    const groups = groupSessionImportFailures(outcomes, new Map());
+
+    expect(groups.map((entry) => entry.reason)).toEqual([
+      "source_unreadable",
+      "source_empty",
+      "workspace_bind_failed",
+      "internal_error",
+    ]);
+  });
 });
+
+function failureEntry(
+  nativeSessionId: string,
+  reason: SessionImportFailureReason,
+  detail: string,
+): SessionImportOutcomeEntry {
+  return {
+    selectionKey: sessionImportSelectionKey("claude", nativeSessionId),
+    nativeSessionId,
+    outcome: { kind: "failed", reason, detail },
+  };
+}

@@ -357,7 +357,15 @@ function SessionImportSettingsRow() {
   let description =
     "Bring sessions you have already run in Claude Code or Codex into Traycer as tasks.";
   if (active !== null) {
-    description = `Importing ${active.done} of ${active.total}…`;
+    // A run is active from the moment it is submitted, but its size is the
+    // host's answer to that submission - so between the two there is a real
+    // run with nothing yet to count, and "Importing 0 of 0…" would be the row
+    // reporting a number it does not have. The spinner keeps turning either
+    // way: `active` is what drives it, and this only changes what is said.
+    description =
+      active.total === 0
+        ? "Starting import…"
+        : `Importing ${active.done} of ${active.total}…`;
   } else if (lastCompleted !== null) {
     description = `Last import: ${lastCompleted.counts.imported} imported.`;
   }
