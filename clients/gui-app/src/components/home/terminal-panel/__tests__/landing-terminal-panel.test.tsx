@@ -1429,6 +1429,37 @@ describe("<LandingTerminalPanel />", () => {
     });
   });
 
+  it("does not clear a close tombstone from a stale empty list", async () => {
+    mocks.activeHostId = "host-a";
+    mocks.clientActiveHostId = "host-a";
+    mocks.probeData = emptyList("/Users/dev");
+    mocks.freshProbeData = listWith(
+      [runningSession("still-running")],
+      "/Users/dev",
+    );
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "tab-1",
+      sessionId: "still-running",
+      hostId: "host-a",
+      cwd: "/workspace/project",
+      name: "project",
+      titleSource: "default",
+    });
+    useLandingTerminalStore.getState().closeTab(TEST_LANDING_PAGE_ID, "tab-1");
+    useLandingTerminalStore.getState().setPanelOpen(TEST_LANDING_PAGE_ID, true);
+    render(panelUi());
+
+    await waitFor(() => {
+      expect(mocks.killAsync).toHaveBeenCalledWith({
+        hostId: "host-a",
+        sessionId: "still-running",
+      });
+    });
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+      { hostId: "host-a", sessionId: "still-running" },
+    ]);
+  });
+
   it("leaves a live home terminal alone when a workspace becomes available", async () => {
     mocks.activeHostId = "host-a";
     mocks.clientActiveHostId = "host-a";

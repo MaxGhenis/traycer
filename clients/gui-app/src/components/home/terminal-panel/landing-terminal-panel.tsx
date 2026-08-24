@@ -326,7 +326,7 @@ export function LandingTerminalPanel(): ReactNode {
   const addTab = useLandingTerminalStore((state) => state.addTab);
   const activateTab = useLandingTerminalStore((state) => state.activateTab);
   const renameTab = useLandingTerminalStore((state) => state.renameTab);
-  const closeTab = useLandingTerminalStore((state) => state.closeTab);
+  const dismissTab = useLandingTerminalStore((state) => state.dismissTab);
   const kill = useLandingTerminalKill();
   const killTerminal = kill.mutate;
   const killTerminalAsync = kill.mutateAsync;
@@ -775,7 +775,7 @@ export function LandingTerminalPanel(): ReactNode {
     (tab: LandingTerminalTabRef) => {
       replaceDirectoryRequest(null);
       clearPending();
-      const closed = closeTab(landingPageId, tab.instanceId);
+      const closed = dismissTab(landingPageId, tab.instanceId);
       if (closed === null) return;
       const authorityEntry = authorityEntries[tab.hostId];
       if (
@@ -812,7 +812,7 @@ export function LandingTerminalPanel(): ReactNode {
     },
     [
       clearPending,
-      closeTab,
+      dismissTab,
       authorityEntries,
       killTerminal,
       landingPageId,

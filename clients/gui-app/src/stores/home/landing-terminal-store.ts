@@ -74,12 +74,22 @@ export interface LandingTerminalStoreState {
   readonly renameTab: (instanceId: string, name: string) => void;
   /** Refreshes a derived title without overwriting a user rename. */
   readonly syncDefaultTitle: (instanceId: string, name: string) => void;
-  /** Removes a user-closed tab from local UI state. */
+  /** Atomically tombstones then removes a user-closed tab. */
   readonly closeTab: (
     landingPageId: string,
     instanceId: string,
   ) => LandingTerminalTabRef | null;
-  /** Removes every tab from local UI state. */
+  /** Removes a tab locally without scheduling host cleanup. */
+  readonly dismissTab: (
+    landingPageId: string,
+    instanceId: string,
+  ) => LandingTerminalTabRef | null;
+  /**
+   * Atomically tombstones then removes every tab, returning the removed refs so
+   * the caller can dispatch one kill each. Same durability contract as
+   * {@link closeTab}: the tombstones are written before any kill leaves the
+   * renderer, so a reload mid-kill can never re-adopt a closed shell.
+   */
   readonly closeAllTabs: (
     landingPageId: string,
   ) => ReadonlyArray<LandingTerminalTabRef>;
@@ -284,6 +294,39 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
           const tabs = state.tabs.filter(
             (entry) => entry.instanceId !== instanceId,
           );
+          const pendingKills = hasPendingKill(
+            state.pendingKills,
+            closed.hostId,
+            closed.sessionId,
+          )
+            ? state.pendingKills
+            : [
+                ...state.pendingKills,
+                { hostId: closed.hostId, sessionId: closed.sessionId },
+              ];
+          return {
+            tabs,
+            activeInstanceId: nextActiveInstanceId(
+              tabs,
+              state.activeInstanceId,
+            ),
+            pendingKills,
+            ...(tabs.length === 0
+              ? collapseLayoutsForEmptyTerminalSet(state)
+              : {}),
+          };
+        });
+        return closed;
+      },
+      dismissTab: (_landingPageId, instanceId) => {
+        const closed = get().tabs.find(
+          (entry) => entry.instanceId === instanceId,
+        );
+        if (closed === undefined) return null;
+        set((state) => {
+          const tabs = state.tabs.filter(
+            (entry) => entry.instanceId !== instanceId,
+          );
           return {
             tabs,
             activeInstanceId: nextActiveInstanceId(
@@ -303,6 +346,16 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
         set((state) => ({
           tabs: [],
           activeInstanceId: null,
+          pendingKills: closed.reduce(
+            (pending: ReadonlyArray<LandingTerminalPendingKill>, tab) =>
+              hasPendingKill(pending, tab.hostId, tab.sessionId)
+                ? pending
+                : [
+                    ...pending,
+                    { hostId: tab.hostId, sessionId: tab.sessionId },
+                  ],
+            state.pendingKills,
+          ),
           ...collapseLayoutsForEmptyTerminalSet(state),
         }));
         return closed;
@@ -551,6 +604,16 @@ function nextActiveInstanceId(
     return current;
   }
   return tabs[0]?.instanceId ?? null;
+}
+
+function hasPendingKill(
+  pendingKills: ReadonlyArray<LandingTerminalPendingKill>,
+  hostId: string,
+  sessionId: string,
+): boolean {
+  return pendingKills.some(
+    (pending) => pending.hostId === hostId && pending.sessionId === sessionId,
+  );
 }
 
 export function terminalSessionKey(hostId: string, sessionId: string): string {
