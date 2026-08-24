@@ -367,7 +367,9 @@ function LandingTerminalDurableBootstrap(
   const lifecycle = useLandingTerminalDurableLifecycle({
     projectionStatus:
       projection === undefined ? "missing" : projection.runtime.status,
-    pendingCreate: props.tab.pendingCreate === true,
+    pendingCreate:
+      props.tab.pendingCreate === true &&
+      props.tab.createFailure !== "ambiguous",
     active: props.active,
     canMutate: entry.authority.canMutate,
     gridReady,
@@ -375,6 +377,15 @@ function LandingTerminalDurableBootstrap(
     adopt,
     onCreateRejected,
   });
+  const restoredAmbiguousCreate = props.tab.createFailure === "ambiguous";
+  const retry = useCallback((): void => {
+    if (restoredAmbiguousCreate) {
+      useLandingTerminalStore
+        .getState()
+        .markCreateAttempt(props.tab.instanceId);
+    }
+    lifecycle.retry();
+  }, [lifecycle, props.tab.instanceId, restoredAmbiguousCreate]);
 
   useEffect(() => {
     adoptWarmSessionInstance(
@@ -399,9 +410,14 @@ function LandingTerminalDurableBootstrap(
     <LandingTerminalDurableState
       reachability={reachability}
       canMutate={entry.authority.canMutate}
-      requestError={lifecycle.requestError}
+      requestError={
+        lifecycle.requestError ??
+        (restoredAmbiguousCreate
+          ? new Error("Terminal creation could not be confirmed.")
+          : null)
+      }
       requestPending={lifecycle.requestPending}
-      retry={lifecycle.retry}
+      retry={retry}
       handle={handle}
       tab={props.tab}
       reportMeasuredGrid={reportMeasuredGrid}

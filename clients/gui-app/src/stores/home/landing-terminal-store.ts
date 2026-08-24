@@ -606,7 +606,9 @@ function parsePendingKills(
       {
         hostId: entry.hostId,
         sessionId: entry.sessionId,
-        ...(entry.pendingCreate === true ? { pendingCreate: true } : {}),
+        ...(entry.pendingCreate === true
+          ? { createRejectedAmbiguously: true }
+          : {}),
         ...(entry.createRejectedAmbiguously === true
           ? { createRejectedAmbiguously: true }
           : {}),

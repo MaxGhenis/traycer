@@ -456,7 +456,8 @@ export async function reconcileCapableLandingTerminals(args: {
       if (projection === undefined) {
         if (
           pending.pendingCreate === true ||
-          pending.createRejectedAmbiguously === true
+          pending.createRejectedAmbiguously === true ||
+          pending.legacyEvidence === true
         ) {
           return;
         }

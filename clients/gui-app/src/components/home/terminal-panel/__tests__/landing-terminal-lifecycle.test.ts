@@ -409,6 +409,25 @@ describe("landing terminal lifecycle", () => {
     });
   });
 
+  it("restores an orphaned pending create as ambiguous absence evidence", () => {
+    const restored = parsePersistedLandingTerminalState({
+      tabs: [],
+      activeInstanceId: null,
+      layoutsByLandingPageId: {},
+      pendingKills: [
+        { hostId: HOST_A, sessionId: "pending-create", pendingCreate: true },
+      ],
+    });
+
+    expect(restored.pendingKills).toEqual([
+      {
+        hostId: HOST_A,
+        sessionId: "pending-create",
+        createRejectedAmbiguously: true,
+      },
+    ]);
+  });
+
   it("collapses every open layout when the shared terminal set becomes empty", () => {
     const store = useLandingTerminalStore.getState();
     store.setPanelOpen("draft-a", true);
