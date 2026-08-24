@@ -6,8 +6,10 @@ import {
   type SessionImportRunProgressPayload,
   type SessionImportRunStartedPayload,
 } from "@traycer-clients/shared/host-transport/session-import-run-client";
-import { useHostClient } from "@/lib/host";
-import { useWsStreamClient } from "@/lib/host/stream-runtime-context";
+import {
+  useStreamHostId,
+  useWsStreamClient,
+} from "@/lib/host/stream-runtime-context";
 import { hostQueryKeys, sessionImportQueryKeys } from "@/lib/query-keys";
 import {
   progressEntryFrom,
@@ -31,8 +33,12 @@ import {
  */
 export function SessionImportRunController(): null {
   const queryClient = useQueryClient();
-  const hostClient = useHostClient();
   const wsStreamClient = useWsStreamClient();
+  // The host the run will actually execute on is the one this stream dials, so
+  // its name has to come off the same binding as the client - a host swap
+  // between the two reads would invalidate one machine's queries for a run that
+  // happened on another. See `StreamRuntimeBinding.hostId`.
+  const streamHostId = useStreamHostId();
   const clientRef = useRef<SessionImportRunClient | null>(null);
 
   const closeClient = useCallback(() => {
@@ -51,7 +57,9 @@ export function SessionImportRunController(): null {
       if (clientRef.current !== null) return;
       if (request.selections.length === 0) return;
 
-      const hostIdAtStart = hostClient.getActiveHostId();
+      // Captured at start: the run outlives this binding, and by the time it
+      // completes the app may be pointed at a different host.
+      const hostIdAtStart = streamHostId;
       useSessionImportRunStore.getState().markStarting(request.titles);
 
       clientRef.current = new SessionImportRunClient({
@@ -97,7 +105,7 @@ export function SessionImportRunController(): null {
         },
       });
     },
-    [closeClient, hostClient, queryClient, wsStreamClient],
+    [closeClient, queryClient, streamHostId, wsStreamClient],
   );
 
   useEffect(() => {

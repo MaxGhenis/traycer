@@ -21,6 +21,14 @@ export type SessionImportRunStatus =
   "idle" | "starting" | "running" | "complete" | "error";
 
 export interface SessionImportProgressEntry {
+  /**
+   * The run that reported this outcome. Carried on the entry, not just on the
+   * frame, so every fold can ask whose progress it is holding - a socket that
+   * has been re-pointed at a newer run can still drain the previous one's
+   * frames, and those sessions belong to a tally this store is no longer
+   * showing.
+   */
+  readonly runId: string;
   readonly selectionKey: string;
   readonly harness: GuiHarnessId;
   readonly nativeSessionId: string;
@@ -123,18 +131,39 @@ export const useSessionImportRunStore = create<
     }),
   applyStarted: ({ runId, total, attached }) =>
     set((prev) => {
-      // Attaching means the host was already importing someone else's
-      // selections; ours were never started, so the titles captured at submit
-      // would caption a run they have nothing to do with.
-      const titles = attached ? INITIAL_STATE.titles : prev.titles;
-      // A different run id means this is not the run we were tracking; drop
-      // the stale outcomes rather than mixing two runs' progress.
-      return prev.runId !== null && prev.runId !== runId
-        ? { ...INITIAL_STATE, status: "running", runId, total, attached }
-        : { ...prev, status: "running", runId, total, attached, titles };
+      // Whose run this is was settled by the FIRST frame that named the id; a
+      // redeclare only refreshes the totals. The distinction matters because
+      // `attached: true` does not mean "someone else's run" - a physical
+      // reconnect makes the transport resubscribe to `sessionImport.run`, and
+      // the host answers `attached: true` for the run this very window
+      // submitted a moment ago. Re-reading ownership off that frame would tell
+      // the user their selections were never started, and would throw away the
+      // titles that caption the progress line.
+      if (prev.runId === runId) {
+        return { ...prev, status: "running", total };
+      }
+      // A run id we were not tracking supersedes the one we were: its outcomes
+      // are about other sessions. Only here does `attached` decide ownership -
+      // the host put us on a run already in flight, so our selections were
+      // never started and the titles we captured caption nothing in it.
+      return {
+        ...INITIAL_STATE,
+        status: "running",
+        runId,
+        total,
+        attached,
+        titles: attached ? INITIAL_STATE.titles : prev.titles,
+      };
     }),
   applyProgress: (entry) =>
     set((prev) => {
+      // Nothing is being tracked: either no run has started, or the user has
+      // retired a finished one. A late frame must not resurrect a run every
+      // surface has stopped showing.
+      if (prev.status === "idle") return prev;
+      // A frame from a superseded or foreign run would count its sessions into
+      // this run's progress - "14 of 8 imported" from the other direction.
+      if (prev.runId !== null && prev.runId !== entry.runId) return prev;
       const outcomes = new Map(prev.outcomes);
       outcomes.set(entry.selectionKey, entry);
       return {
@@ -145,12 +174,19 @@ export const useSessionImportRunStore = create<
       };
     }),
   applyComplete: ({ runId, counts }) =>
-    set((prev) => ({
-      ...prev,
-      status: "complete",
-      runId,
-      finalCounts: counts,
-    })),
+    set((prev) =>
+      // Another run's summary is not this run's summary: its counts would
+      // replace the tally the surfaces are showing with numbers about sessions
+      // the user never selected.
+      prev.runId !== null && prev.runId !== runId
+        ? prev
+        : {
+            ...prev,
+            status: "complete",
+            runId,
+            finalCounts: counts,
+          },
+    ),
   // A drop after the run has completed is not an error - the summary the user
   // is reading is final.
   applyError: () =>
@@ -163,11 +199,13 @@ export const useSessionImportRunStore = create<
 }));
 
 export function progressEntryFrom(input: {
+  readonly runId: string;
   readonly harness: GuiHarnessId;
   readonly nativeSessionId: string;
   readonly outcome: SessionImportOutcome;
 }): SessionImportProgressEntry {
   return {
+    runId: input.runId,
     selectionKey: sessionImportSelectionKey(
       input.harness,
       input.nativeSessionId,
