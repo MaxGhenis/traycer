@@ -424,6 +424,7 @@ describe("landing terminal lifecycle", () => {
         hostId: HOST_A,
         sessionId: "pending-create",
         createRejectedAmbiguously: true,
+        retireOnFreshSnapshot: true,
       },
     ]);
   });

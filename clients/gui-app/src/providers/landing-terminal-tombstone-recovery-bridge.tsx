@@ -285,6 +285,13 @@ function dispatchCapableClose(args: {
     ) === undefined
   ) {
     if (args.pending.createRejectedAmbiguously === true) {
+      if (args.pending.retireOnFreshSnapshot === true) {
+        useLandingTerminalStore
+          .getState()
+          .clearPendingKill(args.pending.hostId, args.pending.sessionId);
+        clearCapableCloseRetry(args.refs.retries.current, args.key);
+        return;
+      }
       const observedEpoch = args.refs.ambiguousEpochs.current.get(args.key);
       if (observedEpoch === undefined) {
         args.refs.ambiguousEpochs.current.set(

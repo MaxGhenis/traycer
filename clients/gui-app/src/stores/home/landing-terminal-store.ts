@@ -29,6 +29,8 @@ export interface LandingTerminalTabRef {
   readonly pendingCreate?: boolean;
   /** Classification of the most recent failed create while the tab remains retryable. */
   readonly createFailure?: "definitive" | "ambiguous";
+  /** In-memory consent to retry a create whose prior result is ambiguous. */
+  readonly createRetryRequested?: boolean;
   /** Schema version attached to legacy import evidence. */
   readonly sourceStoreVersion?: number;
 }
@@ -42,6 +44,8 @@ export interface LandingTerminalPendingKill {
   readonly createRejectedAmbiguously?: boolean;
   /** The closed tab was backed only by the legacy session API. */
   readonly legacyEvidence?: boolean;
+  /** Hydration proves there is no surviving callback for this create. */
+  readonly retireOnFreshSnapshot?: boolean;
 }
 
 export interface LandingTerminalLayout {
@@ -382,15 +386,21 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
         })),
       settleFailedCreate: (instanceId, hostId, sessionId, mayHaveApplied) =>
         set((state) => {
-          if (state.tabs.some((tab) => tab.instanceId === instanceId)) {
+          const visible = state.tabs.find(
+            (tab) => tab.instanceId === instanceId,
+          );
+          if (visible?.hostAuthorityAcknowledged === true) return state;
+          if (visible !== undefined) {
             return {
               tabs: state.tabs.map((tab) =>
                 tab.instanceId === instanceId
                   ? {
                       ...tab,
-                      createFailure: mayHaveApplied
-                        ? "ambiguous"
-                        : "definitive",
+                      createFailure:
+                        tab.createFailure === "ambiguous" || mayHaveApplied
+                          ? "ambiguous"
+                          : "definitive",
+                      createRetryRequested: undefined,
                     }
                   : tab,
               ),
@@ -420,7 +430,7 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
         set((state) => ({
           tabs: state.tabs.map((tab) =>
             tab.instanceId === instanceId
-              ? { ...tab, createFailure: undefined }
+              ? { ...tab, createRetryRequested: true }
               : tab,
           ),
         })),
@@ -607,12 +617,18 @@ function parsePendingKills(
         hostId: entry.hostId,
         sessionId: entry.sessionId,
         ...(entry.pendingCreate === true
-          ? { createRejectedAmbiguously: true }
+          ? {
+              createRejectedAmbiguously: true,
+              retireOnFreshSnapshot: true,
+            }
           : {}),
         ...(entry.createRejectedAmbiguously === true
           ? { createRejectedAmbiguously: true }
           : {}),
         ...(entry.legacyEvidence === true ? { legacyEvidence: true } : {}),
+        ...(entry.retireOnFreshSnapshot === true
+          ? { retireOnFreshSnapshot: true }
+          : {}),
       },
     ];
   });
@@ -699,6 +715,7 @@ export function hostAcknowledgedTab(
     hostAuthorityAcknowledged: true,
     pendingCreate: false,
     createFailure: undefined,
+    createRetryRequested: undefined,
     sourceStoreVersion:
       tab.sourceStoreVersion ?? LANDING_TERMINAL_SOURCE_STORE_VERSION,
   };

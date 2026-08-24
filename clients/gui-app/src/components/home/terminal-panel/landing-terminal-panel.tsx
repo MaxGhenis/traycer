@@ -785,6 +785,8 @@ export function LandingTerminalPanel(): ReactNode {
       const authorityEntry = authorityEntries[closed.hostId];
       if (closed.pendingCreate === true) {
         // The durable bridge owns this tombstone until create settles.
+      } else if (closed.hostAuthorityAcknowledged !== true) {
+        killTerminal({ hostId: closed.hostId, sessionId: closed.sessionId });
       } else if (
         landingTerminalAuthorityReady(authorityEntry) &&
         authorityEntry.authority.capability.status === "capable"
@@ -838,7 +840,9 @@ export function LandingTerminalPanel(): ReactNode {
       const authorityEntry = authorityEntries[tab.hostId];
       if (tab.pendingCreate === true) continue;
       if (!landingTerminalAuthorityReady(authorityEntry)) continue;
-      if (authorityEntry.authority.capability.status === "capable") {
+      if (tab.hostAuthorityAcknowledged !== true) {
+        killTerminal({ hostId: tab.hostId, sessionId: tab.sessionId });
+      } else if (authorityEntry.authority.capability.status === "capable") {
         void authorityEntry.mutations.close
           .mutateAsync({ hostId: tab.hostId, terminalId: tab.sessionId })
           .then(() => {

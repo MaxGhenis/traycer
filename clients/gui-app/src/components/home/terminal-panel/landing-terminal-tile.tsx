@@ -369,7 +369,8 @@ function LandingTerminalDurableBootstrap(
       projection === undefined ? "missing" : projection.runtime.status,
     pendingCreate:
       props.tab.pendingCreate === true &&
-      props.tab.createFailure !== "ambiguous",
+      (props.tab.createFailure !== "ambiguous" ||
+        props.tab.createRetryRequested === true),
     active: props.active,
     canMutate: entry.authority.canMutate,
     gridReady,
@@ -377,7 +378,9 @@ function LandingTerminalDurableBootstrap(
     adopt,
     onCreateRejected,
   });
-  const restoredAmbiguousCreate = props.tab.createFailure === "ambiguous";
+  const restoredAmbiguousCreate =
+    props.tab.createFailure === "ambiguous" &&
+    props.tab.createRetryRequested !== true;
   const retry = useCallback((): void => {
     if (restoredAmbiguousCreate) {
       useLandingTerminalStore
