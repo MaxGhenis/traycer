@@ -605,8 +605,22 @@ export const listTasksRequestSchemaPre13 = listTasksRequestSchemaV11.extend({
 });
 export type ListTasksRequestPre13 = z.infer<typeof listTasksRequestSchemaPre13>;
 
-export const listTasksRequestSchema = listTasksRequestSchemaPre13.extend({
+export const listTasksRequestSchemaPre16 = listTasksRequestSchemaPre13.extend({
   filters: taskFiltersSchema.nullable(),
+});
+export type ListTasksRequestPre16 = z.infer<typeof listTasksRequestSchemaPre16>;
+
+/**
+ * A two-response local-first read. `initial` asks a capable host to return
+ * its locally provable rows without waiting for cloud; `revalidate` is the
+ * single bounded follow-up that obtains and merges the cloud page.
+ *
+ * This is deliberately an explicit phase rather than a boolean. A cloud page
+ * that arrives after a local deletion must be merged against a fresh local
+ * projection, which is work only the revalidation phase needs to request.
+ */
+export const listTasksRequestSchema = listTasksRequestSchemaPre16.extend({
+  localFirstPhase: z.enum(["initial", "revalidate"]).optional(),
 });
 export type ListTasksRequest = z.infer<typeof listTasksRequestSchema>;
 
@@ -740,7 +754,7 @@ export type ListTasksResponsePre15 = z.infer<
  *   the requested sort; `loaded-union` when host rows were merged in, so the
  *   order holds over the rows present and is not a global ranking.
  */
-export const listTasksCompletenessSchema = z.object({
+export const listTasksCompletenessSchemaPre16 = z.object({
   cloudPage: z.enum(["settled", "unavailable"]),
   facets: z.enum(["server", "partial"]),
   localRows: z.enum([
@@ -751,13 +765,33 @@ export const listTasksCompletenessSchema = z.object({
   ]),
   sort: z.enum(["server", "loaded-union"]),
 });
+export type ListTasksCompletenessPre16 = z.infer<
+  typeof listTasksCompletenessSchemaPre16
+>;
+
+// `epic.listTasks@1.6` adds the in-flight state. A `pending` page is a
+// renderable local snapshot, never a cloud failure or a claim of completeness.
+export const listTasksCompletenessSchema =
+  listTasksCompletenessSchemaPre16.extend({
+    cloudPage: z.enum(["settled", "unavailable", "pending"]),
+  });
 export type ListTasksCompleteness = z.infer<typeof listTasksCompletenessSchema>;
 
-// Latest listTasks response: `@1.5` preservation-marked rows plus the
-// completeness statement. Both keys stay optional so an older HOST on this
-// line simply omits them; a `@1.5` client reads absence as "this host cannot
-// say", never as "complete".
-export const listTasksResponseSchema = listTasksResponseSchemaPre15.extend({
+// Latest listTasks response: `@1.6` adds the negotiated local-first
+// `pending` completeness value. Both keys stay optional so an older HOST on
+// this line simply omits them; absence remains "this host cannot say", never
+// "complete".
+export const listTasksResponseSchemaPre16 = listTasksResponseSchemaPre15.extend(
+  {
+    tasks: z.array(listTaskLightSchema),
+    completeness: listTasksCompletenessSchemaPre16.optional(),
+  },
+);
+export type ListTasksResponsePre16 = z.infer<
+  typeof listTasksResponseSchemaPre16
+>;
+
+export const listTasksResponseSchema = listTasksResponseSchemaPre16.extend({
   tasks: z.array(listTaskLightSchema),
   completeness: listTasksCompletenessSchema.optional(),
 });

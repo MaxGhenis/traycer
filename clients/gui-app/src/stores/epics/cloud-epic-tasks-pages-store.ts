@@ -1,9 +1,13 @@
 import { create } from "zustand";
+import { hashKey } from "@tanstack/react-query";
 import type { ListTasksResponse } from "@traycer/protocol/host/epic/unary-schemas";
+import type { ListCloudTasksRequest } from "@/lib/cloud-epic-tasks-query/query";
+import { queryKeys } from "@/lib/query-keys";
 import {
+  removeDeletedEpicsFromCloudTasksResponse,
   setEpicLocalHomeInCloudTasksResponse,
   setEpicPinnedInCloudTasksResponse,
-} from "@/lib/cloud-epic-tasks-query/cache";
+} from "@/lib/cloud-epic-tasks-query/response-patches";
 
 /**
  * Accumulated "Show more" pages for the cloud epic-tasks list, keyed by the
@@ -22,12 +26,14 @@ import {
  * are not worth persisting across reloads); search/filter/sort persistence is
  * owned separately by `useHistorySearchStore`.
  *
- * Each identity also carries a monotonic generation. `resetIdentity` (called on
- * refresh/refetch) bumps it; `appendPage` ignores any page tagged with an older
+ * Each identity also carries a monotonic generation. `resetIdentity` advances
+ * it whenever retained cursor pages are invalidated: a first-page dispatch,
+ * successful delete, pin/reorder, last-viewed update, host-store rebind, or
+ * explicit refresh. `appendPage` ignores any page tagged with an older
  * generation. That guards the cursor race where a "Show more" fetch resolves
- * *after* a refresh reset the list - without it, the in-flight response would
- * re-create `pagesByIdentity[identity]` with stale rows on top of the refreshed
- * first page. The next-page fetch (a TanStack `useHostMutation`) captures the
+ * after any reset - without it, the in-flight response would re-create
+ * `pagesByIdentity[identity]` with stale rows on top of the current first page.
+ * The next-page fetch (a principal-bound TanStack mutation) captures the
  * generation when it starts and hands it back here on success.
  *
  * `registerIdentity` must run before that first fetch is dispatched, even
@@ -38,12 +44,25 @@ import {
  * "Show more" request for an identity is still in flight would find no entry
  * to bump, so the stale response's captured generation `0` would still equal
  * the (never-advanced) current generation `0` and get accepted.
+ *
+ * This cursor generation deliberately differs from the QueryClient-owned
+ * local-first revalidation episode. The episode controls exactly one
+ * asynchronous replacement of the first page; this generation controls every
+ * retained cursor snapshot, including deletes and tail-only invalidations that
+ * need not cancel a valid first-page revalidation. Both are advanced by a
+ * first-page dispatch, their one shared reset boundary.
  */
 interface CloudEpicTasksPagesStoreState {
   readonly pagesByIdentity: Readonly<
     Record<string, readonly ListTasksResponse[]>
   >;
   readonly generationByIdentity: Readonly<Record<string, number>>;
+  /**
+   * Session-scoped delete facts keyed by host/user scope. They are retained
+   * after a list reset because a cursor started after the delete may still be
+   * served from a cloud page that predates it.
+   */
+  readonly deletedEpicIdsByScope: Readonly<Record<string, readonly string[]>>;
   readonly registerIdentity: (identity: string) => void;
   readonly appendPage: (
     identity: string,
@@ -51,6 +70,11 @@ interface CloudEpicTasksPagesStoreState {
     page: ListTasksResponse,
   ) => void;
   readonly resetIdentity: (identity: string) => void;
+  readonly recordDeletedEpicIdsForScope: (
+    hostId: string | null,
+    userId: string,
+    epicIds: ReadonlyArray<string>,
+  ) => void;
   readonly setTaskPinned: (
     identityPrefix: string,
     epicId: string,
@@ -67,6 +91,7 @@ export const useCloudEpicTasksPagesStore =
   create<CloudEpicTasksPagesStoreState>()((set) => ({
     pagesByIdentity: {},
     generationByIdentity: {},
+    deletedEpicIdsByScope: {},
     registerIdentity: (identity) => {
       set((state) => {
         if (identity in state.generationByIdentity) return state;
@@ -84,11 +109,17 @@ export const useCloudEpicTasksPagesStore =
         // that was reset (e.g. by a refresh) after the fetch started - drop it
         // so late results can't revive a cleared identity.
         if (generation !== currentGeneration(state, identity)) return state;
+        const pageWithoutDeletedEpics =
+          removeDeletedEpicsFromCloudTasksResponse(
+            page,
+            deletedEpicIdsForIdentity(state, identity),
+            userIdFromIdentity(identity),
+          );
         const current = state.pagesByIdentity[identity] ?? [];
         return {
           pagesByIdentity: {
             ...state.pagesByIdentity,
-            [identity]: [...current, page],
+            [identity]: [...current, pageWithoutDeletedEpics],
           },
         };
       });
@@ -105,6 +136,21 @@ export const useCloudEpicTasksPagesStore =
         const pagesByIdentity = { ...state.pagesByIdentity };
         delete pagesByIdentity[identity];
         return { pagesByIdentity, generationByIdentity };
+      });
+    },
+    recordDeletedEpicIdsForScope: (hostId, userId, epicIds) => {
+      set((state) => {
+        const scope = deletedEpicIdsScopeIdentity(hostId, userId);
+        const current = state.deletedEpicIdsByScope[scope] ?? [];
+        const next = new Set(current);
+        for (const epicId of epicIds) next.add(epicId);
+        if (next.size === current.length) return state;
+        return {
+          deletedEpicIdsByScope: {
+            ...state.deletedEpicIdsByScope,
+            [scope]: [...next],
+          },
+        };
       });
     },
     setTaskPinned: (identityPrefix, epicId, pinned) => {
@@ -186,6 +232,30 @@ export function cloudEpicTasksPageGeneration(identity: string): number {
   return currentGeneration(useCloudEpicTasksPagesStore.getState(), identity);
 }
 
+/** Canonical identity shared by first-page dispatch and cursor-page storage. */
+export function cloudEpicTasksPageIdentity(
+  hostId: string,
+  userId: string,
+  request: ListCloudTasksRequest,
+): string {
+  // TanStack identifies the first-page query by canonicalizing object-key
+  // order with `hashKey`. Cursor tails must name that same semantic request:
+  // a raw JSON serialization makes two equivalent filters one first page but
+  // two retained-tail buckets, so a first-page reset can miss an old tail.
+  return `${hostId}|${userId}|${hashKey(
+    queryKeys.cloudEpicTasks(hostId, userId, request),
+  )}`;
+}
+
+/**
+ * A first-page dispatch supersedes every retained cursor for its exact query.
+ * Keeping this next to the generation store makes raw TanStack `refetch` as
+ * safe as the History callback that used to remember this reset itself.
+ */
+export function resetCloudEpicTasksPageIdentity(identity: string): void {
+  useCloudEpicTasksPagesStore.getState().resetIdentity(identity);
+}
+
 /**
  * Registers an identity's generation entry imperatively, before the fetch
  * that will read it via `cloudEpicTasksPageGeneration` is dispatched. Must be
@@ -205,18 +275,54 @@ export function registerCloudEpicTasksPageIdentity(identity: string): void {
  * against one could silently skip rows.
  */
 export function resetCloudEpicTasksPagesForScope(
-  hostId: string,
+  hostId: string | null,
   userId: string,
 ): void {
   const state = useCloudEpicTasksPagesStore.getState();
-  const prefix = `${hostId}|${userId}|`;
   const identities = new Set([
     ...Object.keys(state.pagesByIdentity),
     ...Object.keys(state.generationByIdentity),
   ]);
   identities.forEach((identity) => {
-    if (identity.startsWith(prefix)) state.resetIdentity(identity);
+    if (cloudEpicTasksPageIdentityMatchesScope(identity, hostId, userId)) {
+      state.resetIdentity(identity);
+    }
   });
+}
+
+/**
+ * The only retained-tail delete boundary. It first retains the delete fact for
+ * future cursor admissions, then clears matching pages and advances each
+ * generation for cursor requests already in flight.
+ */
+export function invalidateCloudEpicTasksPagesForDeletedEpics(
+  hostId: string | null,
+  userId: string,
+  epicIds: ReadonlyArray<string>,
+): void {
+  useCloudEpicTasksPagesStore
+    .getState()
+    .recordDeletedEpicIdsForScope(hostId, userId, epicIds);
+  resetCloudEpicTasksPagesForScope(hostId, userId);
+}
+
+/**
+ * Returns every delete fact which reaches this host/user page: a broadcast
+ * delete applies to every host for the user, while a host-local delete only
+ * applies to that host. The list-specific admission layer uses it for each
+ * incoming History first page and last-known fallback write; `appendPage`
+ * uses the same facts for cursor tails. Generic host RPC remains outside this
+ * module's list-specific delivery contract.
+ */
+export function deletedCloudEpicTasksPageEpicIdsForScope(
+  hostId: string | null,
+  userId: string,
+): ReadonlySet<string> {
+  return deletedEpicIdsForScope(
+    useCloudEpicTasksPagesStore.getState(),
+    hostId,
+    userId,
+  );
 }
 
 /**
@@ -260,6 +366,65 @@ export function resetLastViewedCloudEpicTasksPagesForScope(
       state.resetIdentity(identity);
     }
   });
+}
+
+function cloudEpicTasksPageIdentityMatchesScope(
+  identity: string,
+  hostId: string | null,
+  userId: string,
+): boolean {
+  const firstSeparator = identity.indexOf("|");
+  if (firstSeparator < 0) return false;
+  const secondSeparator = identity.indexOf("|", firstSeparator + 1);
+  if (secondSeparator < 0) return false;
+  return (
+    identity.slice(firstSeparator + 1, secondSeparator) === userId &&
+    (hostId === null || identity.slice(0, firstSeparator) === hostId)
+  );
+}
+
+function deletedEpicIdsForIdentity(
+  state: Pick<CloudEpicTasksPagesStoreState, "deletedEpicIdsByScope">,
+  identity: string,
+): ReadonlySet<string> {
+  const firstSeparator = identity.indexOf("|");
+  const secondSeparator = identity.indexOf("|", firstSeparator + 1);
+  if (firstSeparator < 0 || secondSeparator < 0) return new Set<string>();
+  const hostId = identity.slice(0, firstSeparator);
+  const userId = identity.slice(firstSeparator + 1, secondSeparator);
+  return deletedEpicIdsForScope(state, hostId, userId);
+}
+
+function deletedEpicIdsForScope(
+  state: Pick<CloudEpicTasksPagesStoreState, "deletedEpicIdsByScope">,
+  hostId: string | null,
+  userId: string,
+): ReadonlySet<string> {
+  return new Set([
+    ...(state.deletedEpicIdsByScope[
+      deletedEpicIdsScopeIdentity(null, userId)
+    ] ?? []),
+    ...(hostId === null
+      ? []
+      : (state.deletedEpicIdsByScope[
+          deletedEpicIdsScopeIdentity(hostId, userId)
+        ] ?? [])),
+  ]);
+}
+
+function deletedEpicIdsScopeIdentity(
+  hostId: string | null,
+  userId: string,
+): string {
+  return JSON.stringify([hostId, userId]);
+}
+
+function userIdFromIdentity(identity: string): string {
+  const firstSeparator = identity.indexOf("|");
+  const secondSeparator = identity.indexOf("|", firstSeparator + 1);
+  return secondSeparator < 0
+    ? ""
+    : identity.slice(firstSeparator + 1, secondSeparator);
 }
 
 /**

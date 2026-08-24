@@ -328,11 +328,13 @@ import {
   epicListTasksV13,
   epicListTasksV14,
   epicListTasksV15,
+  epicListTasksV16,
   epicListTasksUpgradeV10ToV11,
   epicListTasksUpgradeV11ToV12,
   epicListTasksUpgradeV12ToV13,
   epicListTasksUpgradeV13ToV14,
   epicListTasksUpgradeV14ToV15,
+  epicListTasksUpgradeV15ToV16,
   epicMentionEpicsV10,
   epicMentionReviewsV10,
   epicMentionSpecsV10,
@@ -3547,8 +3549,7 @@ export const workspacePrepareFoldersUpgradeV11ToV12 = defineUpgradePath<
   to: workspacePrepareFoldersV12.schemaVersion,
   upgradeRequest: (request) => ({
     ...request,
-    bumpRecency:
-      request.operation === "recordRecentWorkspace" ? true : null,
+    bumpRecency: request.operation === "recordRecentWorkspace" ? true : null,
   }),
   upgradeResponse: (response) => response,
 });
@@ -4978,7 +4979,7 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
   },
   "epic.listTasks": {
     1: {
-      latestMinor: 5,
+      latestMinor: 6,
       versions: {
         0: {
           contract: epicListTasksV10,
@@ -5003,6 +5004,14 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
         5: {
           contract: epicListTasksV15,
           upgradeFromPreviousVersion: epicListTasksUpgradeV14ToV15,
+        },
+        6: {
+          contract: epicListTasksV16,
+          upgradeFromPreviousVersion: epicListTasksUpgradeV15ToV16,
+          // `pending` is emitted only when this negotiated 1.6 request carries
+          // `localFirstPhase: "initial"`; lower-minor contracts strip that
+          // directive and therefore retain their released response values.
+          responseGrowthProjectionGated: true,
         },
       },
       downgradePathsFromLatest: {},
@@ -6382,8 +6391,7 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
       versions: {
         1: {
           contract: terminalPlainEnsureRunningV21,
-          upgradeFromPreviousVersion:
-            terminalPlainEnsureRunningUpgradeV10ToV21,
+          upgradeFromPreviousVersion: terminalPlainEnsureRunningUpgradeV10ToV21,
           semanticMajorBreakFromPreviousMajor: true,
         },
       },
@@ -6433,8 +6441,7 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
       versions: {
         1: {
           contract: terminalPlainImportLegacyV21,
-          upgradeFromPreviousVersion:
-            terminalPlainImportLegacyUpgradeV10ToV21,
+          upgradeFromPreviousVersion: terminalPlainImportLegacyUpgradeV10ToV21,
           semanticMajorBreakFromPreviousMajor: true,
         },
       },

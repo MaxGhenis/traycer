@@ -3,11 +3,13 @@ import { hostRpcRegistry } from "@traycer/protocol/host/registry";
 import { epicListTasksUpgradeV10ToV11 } from "@traycer/protocol/host/epic/contracts";
 import {
   listTasksRequestSchema,
+  listTasksRequestSchemaPre16,
   listTasksRequestSchemaV11,
   listTasksResponseSchema,
   listTasksResponseSchemaPre13,
   listTasksResponseSchemaPre14,
   listTasksResponseSchemaPre15,
+  listTasksResponseSchemaPre16,
 } from "@traycer/protocol/host/epic/unary-schemas";
 
 /**
@@ -28,13 +30,13 @@ import {
  * protocol package.
  */
 describe("epic.listTasks instance identity", () => {
-  // The LATEST installed minor, which `@1.5` now is - bump alongside
+  // The LATEST installed minor, which `@1.6` now is - bump alongside
   // `latestMinor` in the registry. The index is spelled rather than derived
   // because the invariant is about the canonical contract specifically; a
   // derived lookup would keep passing while silently pointing at whatever
   // happened to be last.
   const hostContract =
-    hostRpcRegistry["epic.listTasks"][1].versions[5].contract;
+    hostRpcRegistry["epic.listTasks"][1].versions[6].contract;
 
   it("host request schema is the canonical listTasksRequestSchema instance", () => {
     expect(hostContract.requestSchema).toBe(listTasksRequestSchema);
@@ -42,6 +44,44 @@ describe("epic.listTasks instance identity", () => {
 
   it("host response schema is the canonical listTasksResponseSchema instance", () => {
     expect(hostContract.responseSchema).toBe(listTasksResponseSchema);
+  });
+
+  it("keeps v1.5 one-shot list requests and responses frozen against local-first", () => {
+    const v15 = hostRpcRegistry["epic.listTasks"][1].versions[5].contract;
+    expect(v15.requestSchema).toBe(listTasksRequestSchemaPre16);
+    expect(v15.responseSchema).toBe(listTasksResponseSchemaPre16);
+
+    const request = {
+      limit: 20,
+      filters: null,
+      extensionPhaseVersion: "1.0.0",
+      extensionEpicVersion: "2.0.0",
+      localFirstPhase: "initial",
+    } as const;
+    expect(listTasksRequestSchemaPre16.parse(request)).not.toHaveProperty(
+      "localFirstPhase",
+    );
+    expect(listTasksRequestSchema.parse(request).localFirstPhase).toBe(
+      "initial",
+    );
+
+    const page = {
+      tasks: [],
+      hasMore: false,
+      completeness: {
+        cloudPage: "pending",
+        facets: "partial",
+        localRows: "present",
+        sort: "loaded-union",
+      },
+    } as const;
+    // Response enum growth is not silently stripped: an old host must never
+    // send it. The v1.6 registry entry is projection-gated precisely because
+    // the request directive below is what proves the peer can represent it.
+    expect(listTasksResponseSchemaPre16.safeParse(page).success).toBe(false);
+    expect(listTasksResponseSchema.parse(page).completeness?.cloudPage).toBe(
+      "pending",
+    );
   });
 
   it("keeps the `@1.4` response frozen against the `@1.5` growth", () => {

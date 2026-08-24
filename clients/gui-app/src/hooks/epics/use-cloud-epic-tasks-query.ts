@@ -1,20 +1,24 @@
 import { useCallback, useEffect, useMemo } from "react";
 import {
+  queryOptions,
+  useMutation,
   useQuery,
   useQueryClient,
   type UseQueryResult,
 } from "@tanstack/react-query";
+import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type {
   ListTasksResponse,
   ListTaskLightPre15,
 } from "@traycer/protocol/host/epic/unary-schemas";
+import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
 import { useHostClient, type HostRpcRegistry } from "@/lib/host";
 import { useAuthStore, type AuthStatus } from "@/stores/auth/auth-store";
 import { useReactiveHostReadiness } from "@/hooks/host/use-reactive-host-readiness";
-import { useHostMutation } from "@/hooks/host/use-host-query";
 import { toastFromHostError } from "@/lib/host-error-toast";
 import {
   useCloudEpicTasksPagesStore,
+  cloudEpicTasksPageIdentity,
   cloudEpicTasksPageGeneration,
   registerCloudEpicTasksPageIdentity,
 } from "@/stores/epics/cloud-epic-tasks-pages-store";
@@ -23,9 +27,17 @@ import {
   cloudEpicTasksFirstPageQueryOptions,
   cloudEpicTasksLastKnownQueryKey,
   cloudEpicTasksQueryKey,
+  fetchCloudEpicTasksCursorPageByHostId,
+  fetchCloudEpicTasksFirstPageByHostId,
   registerCloudEpicTasksClient,
   type ListCloudTasksRequest,
 } from "@/lib/cloud-epic-tasks-query";
+import { writeCloudEpicTasksLastKnown } from "@/lib/cloud-epic-tasks-query/cache";
+import {
+  claimLocalFirstRevalidation,
+  isCurrentLocalFirstRevalidation,
+  type LocalFirstRevalidationLease,
+} from "@/lib/cloud-epic-tasks-query/local-first-revalidation-coordinator";
 import { uiQueryKeys } from "@/lib/query-keys";
 
 /**
@@ -38,7 +50,27 @@ interface NextPageVariables {
   readonly generation: number;
   readonly request: ListCloudTasksRequest;
   readonly cursor: string;
+  readonly scope: CloudEpicTasksRequestScope;
 }
+
+/** Captured History authority for a page request and its cache destination. */
+interface CloudEpicTasksRequestScope {
+  readonly hostId: string;
+  readonly userId: string;
+}
+
+interface LocalFirstRevalidationVariables {
+  readonly queryKey: readonly unknown[];
+  readonly lease: LocalFirstRevalidationLease;
+  readonly request: ListCloudTasksRequest;
+  readonly scope: CloudEpicTasksRequestScope;
+}
+
+type PendingLocalFirstResponse = ListTasksResponse & {
+  readonly completeness: NonNullable<ListTasksResponse["completeness"]> & {
+    readonly cloudPage: "pending";
+  };
+};
 
 const EMPTY_TASKS: readonly ListTaskLightPre15[] = [];
 const EMPTY_PAGES: readonly ListTasksResponse[] = [];
@@ -57,6 +89,42 @@ export interface CloudEpicTasksQueryResult {
 
 export type CloudEpicTasksFirstPageQuery = UseQueryResult<ListTasksResponse>;
 
+function localFirstRevalidationQueryOptions(
+  variables: LocalFirstRevalidationVariables,
+) {
+  return queryOptions<ListTasksResponse>({
+    queryKey: [
+      "cloud-epic-tasks-local-first-revalidation",
+      variables.scope.hostId,
+      variables.scope.userId,
+      variables.request,
+      variables.lease.generation,
+    ],
+    queryFn: () =>
+      fetchCloudEpicTasksFirstPageByHostId(
+        variables.scope.hostId,
+        variables.scope.userId,
+        {
+          request: variables.request,
+          abortSignal: undefined,
+          localFirstPhase: "revalidate",
+          requestContextPolicy: "require-current",
+        },
+      ),
+    retry: false,
+    staleTime: Infinity,
+    gcTime: 0,
+  });
+}
+
+function registerCloudEpicTasksClientIfAvailable(
+  hostId: string | null,
+  client: HostClient<HostRpcRegistry>,
+): void {
+  if (hostId === null) return;
+  registerCloudEpicTasksClient(hostId, client);
+}
+
 export function useCloudEpicTasksQuery(
   request: ListCloudTasksRequest | undefined,
   options: { readonly enabled: boolean },
@@ -71,9 +139,7 @@ export function useCloudEpicTasksQuery(
     authIdentity,
     readiness.requestContextUserId,
   );
-  if (hostId !== null) {
-    registerCloudEpicTasksClient(hostId, client);
-  }
+  registerCloudEpicTasksClientIfAvailable(hostId, client);
 
   const query = useQuery<ListTasksResponse>(
     !options.enabled || hostId === null || userId === null
@@ -115,18 +181,20 @@ export function useCloudEpicTasksQuery(
   const queryRefetch = query.refetch;
   const isPlaceholderData = query.isPlaceholderData;
 
-  // Record settled (non-placeholder) first pages as the shared last-known
-  // fallback read above. Written from every observer that settles real data
-  // for this host/user, regardless of which request produced it - the same
-  // scope `hasSameCloudTasksPlaceholderIdentity` already treats as
-  // placeholder-eligible.
+  // Record settled (non-placeholder, non-pending) first pages as the shared
+  // last-known fallback read above. A local-first page is renderable but has
+  // an active owner-bound revalidation; persisting it as last-known could
+  // strand a remounted observer on `pending` after that owner unmounts.
   useEffect(() => {
     if (hostId === null || userId === null) return;
-    if (queryData === undefined || isPlaceholderData) return;
-    queryClient.setQueryData<ListTasksResponse>(
-      cloudEpicTasksLastKnownQueryKey(hostId, userId),
-      queryData,
-    );
+    if (
+      queryData === undefined ||
+      isPlaceholderData ||
+      isPendingLocalFirstResponse(queryData)
+    ) {
+      return;
+    }
+    writeCloudEpicTasksLastKnown(queryClient, { hostId, userId }, queryData);
   }, [hostId, userId, queryClient, queryData, isPlaceholderData]);
 
   // Identity (host | user | request scope) keys the accumulated "Show more"
@@ -134,39 +202,43 @@ export function useCloudEpicTasksQuery(
   // state) lets loaded pages survive the host surface unmounting/remounting -
   // e.g. closing and reopening the History overlay - and a scope change simply
   // selects that scope's own pages rather than discarding them.
-  const identity = `${hostId ?? ""}|${userId ?? ""}|${JSON.stringify(effectiveRequest)}`;
+  const identity =
+    hostId === null || userId === null
+      ? `${hostId ?? ""}|${userId ?? ""}|${JSON.stringify(effectiveRequest)}`
+      : cloudEpicTasksPageIdentity(hostId, userId, effectiveRequest);
   const extraPages = useCloudEpicTasksPagesStore(
     (state) => state.pagesByIdentity[identity] ?? EMPTY_PAGES,
   );
   const appendPage = useCloudEpicTasksPagesStore((state) => state.appendPage);
-  const resetIdentity = useCloudEpicTasksPagesStore(
-    (state) => state.resetIdentity,
-  );
-
   // Next-page fetching flows through TanStack Query (host RPC must, per
   // gui-app/AGENTS.md) so retries/errors are handled by Query rather than a
   // hand-rolled promise + Zustand loading flag. `onSuccess` tags the page with
   // the generation captured at mutate time; the store rejects it if a refresh
   // bumped the generation in between.
-  const nextPageMutation = useHostMutation<
-    HostRpcRegistry,
-    "epic.listTasks",
+  const nextPageMutation = useMutation<
+    ListTasksResponse,
     unknown,
     NextPageVariables
   >({
-    client,
-    method: "epic.listTasks",
-    mapVariables: (variables) => ({
-      ...variables.request,
-      cursor: variables.cursor,
-    }),
-    options: {
-      onSuccess: (page, variables) => {
-        appendPage(variables.identity, variables.generation, page);
-      },
-      onError: (error) => {
+    mutationFn: (variables) =>
+      fetchCloudEpicTasksCursorPageByHostId(
+        variables.scope.hostId,
+        variables.scope.userId,
+        {
+          request: variables.request,
+          cursor: variables.cursor,
+        },
+      ),
+    onSuccess: (page, variables) => {
+      appendPage(variables.identity, variables.generation, page);
+    },
+    onError: (error) => {
+      // A stale RequestContext is expected during an identity transition. It
+      // failed before any host dispatch, so it must not surface as a user
+      // gesture failure; actual host errors retain the established toast.
+      if (error instanceof HostRpcError) {
         toastFromHostError(error, "Couldn't load more tasks.");
-      },
+      }
     },
   });
   // Scope the in-flight flag to THIS identity: the mutation is hook-wide, so a
@@ -177,6 +249,76 @@ export function useCloudEpicTasksQuery(
     nextPageMutation.isPending &&
     nextPageMutation.variables.identity === identity;
   const mutateNextPage = nextPageMutation.mutate;
+
+  const startLocalFirstRevalidation = useCallback(
+    (variables: LocalFirstRevalidationVariables): void => {
+      // The follow-up is still a TanStack Query operation, but deliberately
+      // gets its own ephemeral key: it must not replace the renderable initial
+      // page until its scoped request has settled and its episode is current.
+      // `gcTime: 0` retains no second page after this bounded attempt finishes.
+      void queryClient
+        .fetchQuery(localFirstRevalidationQueryOptions(variables))
+        .then(
+          (page) => {
+            if (
+              !isCurrentLocalFirstRevalidation(queryClient, variables.lease)
+            ) {
+              return;
+            }
+            queryClient.setQueryData<ListTasksResponse>(
+              variables.queryKey,
+              (current) => {
+                if (!isPendingLocalFirstResponse(current)) return current;
+                return page;
+              },
+            );
+          },
+          () => {
+            if (
+              !isCurrentLocalFirstRevalidation(queryClient, variables.lease)
+            ) {
+              return;
+            }
+            queryClient.setQueryData<ListTasksResponse>(
+              variables.queryKey,
+              (current) => markLocalFirstCloudUnavailable(current),
+            );
+          },
+        );
+    },
+    [queryClient],
+  );
+
+  useEffect(() => {
+    if (
+      hostId === null ||
+      userId === null ||
+      isPlaceholderData ||
+      query.isFetching ||
+      !isPendingLocalFirstResponse(queryData)
+    ) {
+      return;
+    }
+    const queryKey = cloudEpicTasksQueryKey(hostId, userId, effectiveRequest);
+    const lease = claimLocalFirstRevalidation(queryClient, queryKey);
+    if (lease === null) return;
+    const scope = { hostId, userId };
+    startLocalFirstRevalidation({
+      queryKey,
+      lease,
+      request: effectiveRequest,
+      scope,
+    });
+  }, [
+    effectiveRequest,
+    hostId,
+    queryClient,
+    queryData,
+    query.isFetching,
+    isPlaceholderData,
+    startLocalFirstRevalidation,
+    userId,
+  ]);
 
   const tasks = useMemo<readonly ListTaskLightPre15[]>(() => {
     if (queryData === undefined) return EMPTY_TASKS;
@@ -209,7 +351,14 @@ export function useCloudEpicTasksQuery(
   const hasNextPage = lastNextCursor !== null && !isPlaceholderData;
 
   const fetchNextPage = useCallback(() => {
-    if (lastNextCursor === null || isFetchingNextPage) return;
+    if (
+      lastNextCursor === null ||
+      isFetchingNextPage ||
+      hostId === null ||
+      userId === null
+    ) {
+      return;
+    }
     // Register the identity before capturing its generation: a scope reset
     // landing while this very first tail request for the identity is still
     // in flight must have an entry to advance, or the stale response's
@@ -220,19 +369,21 @@ export function useCloudEpicTasksQuery(
       generation: cloudEpicTasksPageGeneration(identity),
       request: effectiveRequest,
       cursor: lastNextCursor,
+      scope: { hostId, userId },
     });
   }, [
     effectiveRequest,
+    hostId,
     identity,
     lastNextCursor,
     isFetchingNextPage,
     mutateNextPage,
+    userId,
   ]);
 
   const refetch = useCallback(() => {
-    resetIdentity(identity);
     void queryRefetch();
-  }, [identity, resetIdentity, queryRefetch]);
+  }, [queryRefetch]);
 
   return {
     hostId,
@@ -243,6 +394,26 @@ export function useCloudEpicTasksQuery(
     hasNextPage,
     isFetchingNextPage,
     refetch,
+  };
+}
+
+function isPendingLocalFirstResponse(
+  response: ListTasksResponse | undefined,
+): response is PendingLocalFirstResponse {
+  return response?.completeness?.cloudPage === "pending";
+}
+
+function markLocalFirstCloudUnavailable(
+  response: ListTasksResponse | undefined,
+): ListTasksResponse | undefined {
+  if (!isPendingLocalFirstResponse(response)) return response;
+  return {
+    ...response,
+    completeness: {
+      ...response.completeness,
+      cloudPage: "unavailable",
+      facets: "partial",
+    },
   };
 }
 

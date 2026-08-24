@@ -5,7 +5,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import type { UseQueryResult } from "@tanstack/react-query";
+import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import {
   CURRENT_EPIC_VERSION,
   CURRENT_PHASE_VERSION,
@@ -23,10 +23,11 @@ import {
   useHostCompatibility,
   type HostRpcRegistry,
 } from "@/lib/host";
-import { useHostQuery } from "@/hooks/host/use-host-query";
 import { useHostQueries } from "@/hooks/host/use-host-queries";
 import { useHostMethodSupport } from "@/hooks/host/use-host-supports-method";
 import { useReactiveHostReadiness } from "@/hooks/host/use-reactive-host-readiness";
+import { registerCloudEpicTasksClient } from "@/lib/cloud-epic-tasks-query";
+import { epicTabLocalHomeListQueryOptions } from "@/lib/cloud-epic-tasks-query/reconciler-local-home-query";
 import { wasEpicCreatedThisSession } from "@/lib/epics/session-created-epics";
 import { getOpenEpicRegistry } from "@/lib/registries/epic-session-registry";
 import { useWindowsBridgeHydrated } from "@/providers/windows-bridge-context";
@@ -69,7 +70,6 @@ import {
  * exemptions.
  */
 const RECONCILE_METHOD = "epic.getTaskContexts" as const;
-const LOCAL_HOME_LIST_METHOD = "epic.listTasks" as const;
 const LOCAL_HOME_LIST_LIMIT = 100;
 
 /**
@@ -90,6 +90,8 @@ export function EpicTabExistenceReconciler() {
 
 interface ReconcileSeed {
   readonly identity: string;
+  readonly hostId: string;
+  readonly userId: string;
   readonly openEpicIds: ReadonlyArray<string>;
 }
 
@@ -136,10 +138,17 @@ function usePersistedEpicTabReconcileSeed(): ReconcileSeed | null {
   ]);
 
   return useMemo(() => {
-    if (identity === null) return null;
+    if (identity === null || readiness.hostId === null || authUserId === null) {
+      return null;
+    }
     if (openEpicIds.length === 0) return null;
-    return { identity, openEpicIds };
-  }, [identity, openEpicIds]);
+    return {
+      identity,
+      hostId: readiness.hostId,
+      userId: authUserId,
+      openEpicIds,
+    };
+  }, [authUserId, identity, openEpicIds, readiness.hostId]);
 }
 
 /**
@@ -157,6 +166,7 @@ function EpicTabReconciliationRun(props: { readonly seed: ReconcileSeed }) {
 
 function EpicTabExistenceProbe(props: { readonly run: ReconcileSeed }) {
   const client = useHostClient();
+  registerCloudEpicTasksClient(props.run.hostId, client);
   const completionAppliedRef = useRef(false);
   const openEpicIds = props.run.openEpicIds;
   const requests = useMemo(
@@ -195,19 +205,17 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileSeed }) {
     }),
     [],
   );
-  const localHomeListQuery = useHostQuery<
-    HostRpcRegistry,
-    typeof LOCAL_HOME_LIST_METHOD
-  >({
-    client,
-    method: LOCAL_HOME_LIST_METHOD,
-    params: localHomeListParams,
-    // Same identity the existence probe above keys on, plus a discriminator so
-    // the two queries never share a cache entry. `identity` alone carries the
-    // per-run freshness now - the separate attempt counter this used to add is
-    // gone from `ReconcileSeed`.
-    cacheKeyIdentity: [props.run.identity, "local-home"],
-    options: { enabled: true },
+  const localHomeListQuery = useQuery<ListTasksResponse>({
+    ...epicTabLocalHomeListQueryOptions({
+      hostId: props.run.hostId,
+      userId: props.run.userId,
+      params: localHomeListParams,
+      // Same identity the existence probe above keys on, plus a discriminator
+      // so the two queries never share a cache entry. `identity` alone carries
+      // per-run freshness now - the old separate attempt counter is gone.
+      cacheKeyIdentity: props.run.identity,
+    }),
+    enabled: true,
   });
 
   const localHomedEpicIds = useMemo((): ReadonlySet<string> | null => {

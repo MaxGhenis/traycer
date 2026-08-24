@@ -53,6 +53,7 @@ import {
   getTaskContextsResponseSchemaPre13,
   isFoundTaskContext,
   listTasksRequestSchema,
+  listTasksRequestSchemaPre16,
   listTasksRequestSchemaV11,
   listTasksRequestSchemaPre13,
   listTasksResponseSchema,
@@ -60,6 +61,7 @@ import {
   listTasksResponseSchemaPre13,
   listTasksResponseSchemaPre14,
   listTasksResponseSchemaPre15,
+  listTasksResponseSchemaPre16,
   prepareArtifactImageRequestSchema,
   prepareArtifactImageResponseSchema,
   removeEpicRepoRequestSchema,
@@ -215,7 +217,7 @@ export const epicListTasksUpgradeV11ToV12 = defineUpgradePath<
 export const epicListTasksV13 = defineRpcContract({
   method: "epic.listTasks",
   schemaVersion: { major: 1, minor: 3 } as const,
-  requestSchema: listTasksRequestSchema,
+  requestSchema: listTasksRequestSchemaPre16,
   responseSchema: listTasksResponseSchemaPre14,
 });
 
@@ -238,7 +240,7 @@ export const epicListTasksUpgradeV12ToV13 = defineUpgradePath<
 export const epicListTasksV14 = defineRpcContract({
   method: "epic.listTasks",
   schemaVersion: { major: 1, minor: 4 } as const,
-  requestSchema: listTasksRequestSchema,
+  requestSchema: listTasksRequestSchemaPre16,
   responseSchema: listTasksResponseSchemaPre15,
 });
 
@@ -273,8 +275,8 @@ export const epicListTasksUpgradeV13ToV14 = defineUpgradePath<
 export const epicListTasksV15 = defineRpcContract({
   method: "epic.listTasks",
   schemaVersion: { major: 1, minor: 5 } as const,
-  requestSchema: listTasksRequestSchema,
-  responseSchema: listTasksResponseSchema,
+  requestSchema: listTasksRequestSchemaPre16,
+  responseSchema: listTasksResponseSchemaPre16,
 });
 
 export const epicListTasksUpgradeV14ToV15 = defineUpgradePath<
@@ -292,6 +294,31 @@ export const epicListTasksUpgradeV14ToV15 = defineUpgradePath<
     ...response,
     tasks: response.tasks.map((task) => ({ ...task })),
   }),
+});
+
+// `epic.listTasks@1.6` permits a capable client to receive locally provable
+// rows immediately, then perform one explicit cloud revalidation. The new
+// request directive and `pending` completeness state are deliberately absent
+// from 1.5: a new renderer negotiating an old host must keep today's single,
+// settled-or-unavailable response behaviour.
+export const epicListTasksV16 = defineRpcContract({
+  method: "epic.listTasks",
+  schemaVersion: { major: 1, minor: 6 } as const,
+  requestSchema: listTasksRequestSchema,
+  responseSchema: listTasksResponseSchema,
+});
+
+export const epicListTasksUpgradeV15ToV16 = defineUpgradePath<
+  typeof epicListTasksV15,
+  typeof epicListTasksV16
+>({
+  from: epicListTasksV15.schemaVersion,
+  to: epicListTasksV16.schemaVersion,
+  upgradeRequest: (request) => request,
+  // An older host cannot have returned a local-first page. Do not manufacture
+  // `pending`: its absence continues to mean the released single-response
+  // behaviour, exactly as a 1.5 renderer already reads it.
+  upgradeResponse: (response) => response,
 });
 
 // Personal cloud preference. Optional/non-floor so clients retain the released

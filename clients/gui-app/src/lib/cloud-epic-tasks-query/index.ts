@@ -4,7 +4,8 @@ export {
   cloudEpicTasksFirstPageQueryOptions,
   cloudEpicTasksLastKnownQueryKey,
   cloudEpicTasksQueryKey,
-  fetchCloudEpicTasksPage,
+  fetchCloudEpicTasksCursorPageByHostId,
+  fetchCloudEpicTasksFirstPageByHostId,
   listCloudTasksRequestForHistorySearch,
   type ListCloudTasksRequest,
 } from "@/lib/cloud-epic-tasks-query/query";

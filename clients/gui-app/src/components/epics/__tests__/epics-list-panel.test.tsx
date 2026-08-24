@@ -485,6 +485,37 @@ describe("<EpicsListPanel />", () => {
     expect(screen.queryByTestId("old-epic-route")).toBeNull();
   });
 
+  it("keeps the production History row link interactive while its cloud page is revalidating", async () => {
+    // The local-first query has already supplied this row, while the cloud
+    // follow-up remains unresolved. Exercise the real panel's task-bound Link
+    // rather than a test-only state button: refreshing must not turn a locally
+    // usable row into a dead skeleton or disabled navigation affordance.
+    testState.isFetching = true;
+    testState.completeness = {
+      cloudPage: "pending",
+      facets: "partial",
+      localRows: "present",
+      sort: "loaded-union",
+    };
+    const router = renderPanel("embedded", "/");
+
+    const rowLink = await screen.findByRole("link", {
+      name: "Open task Open from landing",
+    });
+    expect(rowLink.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(rowLink);
+
+    await waitFor(() => {
+      const tabId = useEpicCanvasStore
+        .getState()
+        .resolveTabIdForEpic("epic-from-history");
+      expect(tabId).not.toBeNull();
+      expect(router.state.location.pathname).toBe(
+        `/epics/epic-from-history/${tabId}`,
+      );
+    });
+  });
+
   it("labels a task that is already open in the tab strip", async () => {
     useEpicCanvasStore
       .getState()

@@ -10,6 +10,7 @@ import {
   describeLogErrorSummary,
   type AppLogValue,
 } from "@/lib/logger";
+import { CloudEpicTasksRequestContextTimeoutError } from "@/lib/cloud-epic-tasks-query/request-context-timeout-error";
 import { installConditionPollEpisodeCoordinator } from "@/lib/query/condition-poll-episode-coordinator";
 
 const SAFE_QUERY_KEY_MARKERS = new Set([
@@ -60,7 +61,9 @@ export function createAppQueryClient(): QueryClient {
         // multiplies the dial-timeout cost (transport attempts × query attempts).
         // Let it surface immediately; everything else keeps the single retry.
         retry: (failureCount, error) =>
-          !(error instanceof RetryableTransportError) && failureCount < 1,
+          !(error instanceof RetryableTransportError) &&
+          !(error instanceof CloudEpicTasksRequestContextTimeoutError) &&
+          failureCount < 1,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
         // Never let `onlineManager` pause work. Its inputs (`navigator.onLine`

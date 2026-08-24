@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { hashKey } from "@tanstack/react-query";
 import type {
   ListTaskLight,
   ListTasksResponse,
@@ -6,12 +7,15 @@ import type {
 import {
   useCloudEpicTasksPagesStore,
   cloudEpicTasksPageGeneration,
+  cloudEpicTasksPageIdentity,
   registerCloudEpicTasksPageIdentity,
+  resetCloudEpicTasksPageIdentity,
   resetCloudEpicTasksPagesForScope,
   resetLastViewedCloudEpicTasksPagesForScope,
   setCloudEpicTasksPagePinned,
   setCloudEpicTasksPageLocalHome,
 } from "@/stores/epics/cloud-epic-tasks-pages-store";
+import { cloudEpicTasksQueryKey } from "@/lib/cloud-epic-tasks-query";
 
 const IDENTITY = "host-a|user-a|{}";
 
@@ -55,6 +59,7 @@ describe("useCloudEpicTasksPagesStore", () => {
     useCloudEpicTasksPagesStore.setState({
       pagesByIdentity: {},
       generationByIdentity: {},
+      deletedEpicIdsByScope: {},
     });
   });
 
@@ -106,6 +111,57 @@ describe("useCloudEpicTasksPagesStore", () => {
     expect(cloudEpicTasksPageGeneration("other-identity")).toBe(
       otherGeneration,
     );
+  });
+
+  it("resets the same retained-tail bucket TanStack uses for reordered request keys", () => {
+    const forwardRequest = {
+      limit: 20,
+      filters: { query: "local" },
+      sort: "recent" as const,
+      extensionPhaseVersion: "1",
+      extensionEpicVersion: "1",
+    };
+    const reorderedRequest = {
+      sort: "recent" as const,
+      filters: { query: "local" },
+      limit: 20,
+      extensionEpicVersion: "1",
+      extensionPhaseVersion: "1",
+    };
+    const forwardIdentity = cloudEpicTasksPageIdentity(
+      "host-a",
+      "user-a",
+      forwardRequest,
+    );
+    const reorderedIdentity = cloudEpicTasksPageIdentity(
+      "host-a",
+      "user-a",
+      reorderedRequest,
+    );
+
+    // This is not just equal objects: TanStack gives these insertion-order
+    // variants one actual query cache slot. Their retained tails must use the
+    // exact same canonical request identity, or first-page refresh resets a
+    // different bucket and leaves the old tail renderable.
+    expect(
+      hashKey(cloudEpicTasksQueryKey("host-a", "user-a", forwardRequest)),
+    ).toBe(
+      hashKey(cloudEpicTasksQueryKey("host-a", "user-a", reorderedRequest)),
+    );
+    expect(forwardIdentity).toBe(
+      `host-a|user-a|${hashKey(
+        cloudEpicTasksQueryKey("host-a", "user-a", forwardRequest),
+      )}`,
+    );
+    expect(reorderedIdentity).toBe(forwardIdentity);
+
+    useCloudEpicTasksPagesStore
+      .getState()
+      .appendPage(forwardIdentity, 0, page("old-tail"));
+    resetCloudEpicTasksPageIdentity(reorderedIdentity);
+
+    expect(pagesFor(forwardIdentity)).toBeUndefined();
+    expect(cloudEpicTasksPageGeneration(forwardIdentity)).toBe(1);
   });
 
   it("rejects a stale first-tail response when a scope reset lands while it is still in flight", () => {
