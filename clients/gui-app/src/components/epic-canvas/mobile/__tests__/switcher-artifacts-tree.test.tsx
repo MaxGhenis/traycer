@@ -2,6 +2,10 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SwitcherArtifactsList } from "@/components/epic-canvas/mobile/switcher-artifacts-list";
 import { STATUS_DOT_CLASSES } from "@/components/epic-canvas/sidebar/epic-sidebar-tree-shared";
+import {
+  SWITCHER_ROW_BASE_PAD_LEFT,
+  SWITCHER_ROW_INDENT_PX,
+} from "@/components/epic-canvas/mobile/switcher-row-nesting";
 import { useLeftPanelStore } from "@/stores/epics/left-panel-store";
 import { useEpicSidebarExpansionStore } from "@/stores/epics/epic-sidebar-expansion-store";
 
@@ -254,10 +258,14 @@ describe("<SwitcherArtifactsList /> tree", () => {
     const childIndent = screen
       .getByTestId("switcher-artifact-row-tk-1")
       .closest<HTMLElement>("[style]");
-    // A root row is flush with the list edge - a phone viewport has no width to
-    // spend on a base pad - and one level in is one SWITCHER_ROW_INDENT_PX step.
-    expect(parentIndent?.style.paddingLeft).toBe("0px");
-    expect(childIndent?.style.paddingLeft).toBe("12px");
+    // The DESKTOP sidebar's constants, re-exported rather than restated, so a
+    // change to the tree's indent moves both surfaces or neither.
+    expect(parentIndent?.style.paddingLeft).toBe(
+      `${SWITCHER_ROW_BASE_PAD_LEFT}px`,
+    );
+    expect(childIndent?.style.paddingLeft).toBe(
+      `${SWITCHER_ROW_INDENT_PX + SWITCHER_ROW_BASE_PAD_LEFT}px`,
+    );
   });
 
   it("collapses and re-expands a subtree from the row's own chevron", () => {

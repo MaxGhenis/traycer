@@ -1,6 +1,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SwitcherAgentsList } from "@/components/epic-canvas/mobile/switcher-agents-list";
+import {
+  SWITCHER_ROW_BASE_PAD_LEFT,
+  SWITCHER_ROW_INDENT_PX,
+} from "@/components/epic-canvas/mobile/switcher-row-nesting";
 import { useEpicSidebarExpansionStore } from "@/stores/epics/epic-sidebar-expansion-store";
 
 interface FixtureRecord {
@@ -134,8 +138,9 @@ vi.mock("@/lib/epic-selectors", () => ({
     holder.records
       .filter((record) => record.type === "chat")
       .map((record) => record.id),
-  // The chat projection's OWN host. Deliberately distinct from the `hostId` on
-  // the records above, which is the app-wide ACTIVE host for chat rows.
+  // The chat projection's OWN host, null for a chat predating the field. The
+  // records' `hostId` is deliberately a different value in these fixtures, to
+  // prove a tap never opens against it.
   useEpicNodeHostId: (nodeId: string) =>
     holder.ownerHostIdByNodeId[nodeId] ?? null,
   useEpicNodeArchived: (nodeId: string) => holder.archivedIds.has(nodeId),
@@ -455,10 +460,12 @@ describe("<SwitcherAgentsList />", () => {
     expect(holder.activateCalls[0].ref.hostId).toBe("host-A");
   });
 
-  it("falls back to the record's host for a legacy chat with no projected owner", () => {
+  it("falls back to the EPIC SESSION host for a legacy chat with no projected owner", () => {
     // `useEpicNodeHostId` answers null for a chat predating the field. The
-    // record's host is the active one by construction, matching the desktop
-    // row's `?? activeHostId` - a tap always opens something.
+    // fallback is the session host - the machine that projected the row - which
+    // is the desktop chat tree's rule verbatim, and also what the flat
+    // projection stamps on such a record. `host-B` on the record is deliberate:
+    // it is the app-wide value a tap must NOT open against.
     holder.records = [
       {
         id: "chat-1",
@@ -472,7 +479,7 @@ describe("<SwitcherAgentsList />", () => {
     holder.ownerHostIdByNodeId = {};
     render(<SwitcherAgentsList {...PROPS} />);
     fireEvent.click(screen.getByTestId("switcher-agent-row-chat-1"));
-    expect(holder.activateCalls[0].ref.hostId).toBe("host-B");
+    expect(holder.activateCalls[0].ref.hostId).toBe("host-A");
   });
 
   it("opens a TUI agent against its projected owner host", () => {
@@ -522,11 +529,14 @@ describe("<SwitcherAgentsList />", () => {
     expect(
       parent.compareDocumentPosition(child) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    // …and reads as one level deeper: the indent is on the row's wrapper.
+    // …and reads as one level deeper, on the DESKTOP sidebar's own indent
+    // constants: BASE_PAD_LEFT at the root, one INDENT_PX step per level.
     const padding = (element: Element): string =>
       (element.parentElement as HTMLElement).style.paddingLeft;
-    expect(padding(parent)).toBe("0px");
-    expect(padding(child)).toBe("12px");
+    expect(padding(parent)).toBe(`${SWITCHER_ROW_BASE_PAD_LEFT}px`);
+    expect(padding(child)).toBe(
+      `${SWITCHER_ROW_INDENT_PX + SWITCHER_ROW_BASE_PAD_LEFT}px`,
+    );
 
     // Roots are expanded implicitly, so the parent starts open and its chevron
     // closes it.

@@ -17,18 +17,20 @@ import {
  * chevron and the actions slot are SIBLING buttons, so neither their taps nor
  * their touch targets ever trigger a row open.
  *
- * The row owns its coarse-pointer height (`pointer-coarse:min-h-11`), the way
- * every tappable row in `ui/dropdown-menu.tsx` and `ui/select.tsx` does, rather
- * than leaning on the sheet's touch scope: that scope's slop is vertical-only
- * and centred, so on flush-stacked rows it is the row's own height that has to
- * be right.
+ * The paint is the DESKTOP sidebar row's, not a phone design: the same indent
+ * constants (re-exported, never restated), the same small inline chevron glyph
+ * in the same slot, the same `gap-1.5` rhythm, the same `text-ui-sm` label in
+ * the same truncating column. A phone shows the tree this product already has.
+ * Everything invented for touch here is GEOMETRY, never paint.
  *
- * The chevron is the desktop tree's small glyph, not a 44px box. A boxed
- * control would spend a tenth of a phone viewport on the one row element
- * carrying no information, and it would spend it on EVERY row, since the column
- * is reserved. It widens to 32px on a coarse pointer instead - real width, not
- * overhanging slop, because its horizontal neighbour is the row body and slop
- * there would steal the taps that open the row.
+ * Two adaptations, and only two. The row takes a 44px height on a coarse
+ * pointer (`pointer-coarse:min-h-11`) the way every tappable row in
+ * `ui/dropdown-menu.tsx` and `ui/select.tsx` does. And the chevron, which
+ * desktop renders as a `<span>` inside its row button, is a SIBLING button
+ * here: it needs a real accessible name and `aria-expanded`, since a phone has
+ * no double-click, no drag and no context menu to reach expansion by, and a
+ * button cannot nest inside a button. It carries desktop's glyph at desktop's
+ * size and grows only its invisible hit box.
  *
  * `secondaryLabel` and `badge` exist so a category whose desktop row carries
  * per-row metadata (a terminal's runtime status, its resource usage) can show
@@ -71,31 +73,34 @@ export function SwitcherListRow(props: {
     // only engages while every flex level above it may shrink below its
     // content. One level with an auto min-width re-inflates the row to the
     // full label width, and the list scrolls sideways instead of ellipsizing.
+    //
+    // The indent lives here rather than on the row button, because the chevron
+    // is a sibling of that button; desktop, whose chevron sits inside it, pads
+    // the button itself. Same resulting geometry, same constants.
     <div
-      className="flex min-w-0 items-center gap-1 pointer-coarse:min-h-11"
+      className="flex min-w-0 items-center gap-1.5 pointer-coarse:min-h-11"
       style={{
         paddingLeft: `${Math.min(nesting.depth, SWITCHER_ROW_MAX_INDENT_DEPTH) * SWITCHER_ROW_INDENT_PX + SWITCHER_ROW_BASE_PAD_LEFT}px`,
       }}
     >
       {nesting.hasChildren ? (
-        <Button
+        <button
           type="button"
-          variant="ghost"
-          size="icon"
           onClick={nesting.onToggle}
           aria-label={`${nesting.expanded ? "Collapse" : "Expand"} ${label}`}
           aria-expanded={nesting.expanded}
           data-testid={`${selectTestId}-toggle`}
-          className="h-11 w-4 shrink-0 p-0 text-muted-foreground pointer-coarse:w-8"
+          // Desktop's glyph, untouched. Only the hit box grows on a coarse
+          // pointer, and it grows invisibly - no background, no border, no box
+          // in any state; a press dims the glyph instead.
+          className="flex shrink-0 items-center justify-center bg-transparent text-muted-foreground transition-opacity active:opacity-50 pointer-coarse:h-11 pointer-coarse:w-6"
         >
           <TreeChevron expanded={nesting.expanded} onToggle={undefined} />
-        </Button>
+        </button>
       ) : (
-        // Keeps every leaf's icon on its siblings' column, and matches the
-        // chevron BUTTON's width at both pointer densities. Without it a leaf
-        // CHILD would render left of its own parent, since one indent step is
-        // narrower than the chevron - the nesting would read inverted.
-        <span className="flex h-4 w-4 shrink-0 items-center justify-center pointer-coarse:w-8">
+        // Desktop's spacer, in a slot the same width as the chevron's at both
+        // pointer densities: a leaf's icon sits on its siblings' column.
+        <span className="flex shrink-0 items-center justify-center pointer-coarse:h-11 pointer-coarse:w-6">
           <TreeChevronSpacer />
         </span>
       )}
@@ -105,7 +110,7 @@ export function SwitcherListRow(props: {
         onClick={onSelect}
         data-testid={selectTestId}
         aria-current={active ? "true" : undefined}
-        className="flex min-h-11 min-w-0 flex-1 items-center justify-start gap-2 rounded-md px-2 text-left font-normal"
+        className="flex min-w-0 flex-1 items-center justify-start gap-1.5 rounded-md py-1 pr-2 text-left text-ui-sm font-normal pointer-coarse:min-h-11"
       >
         <span className="flex size-4 shrink-0 items-center justify-center">
           {icon}
@@ -149,19 +154,24 @@ export function SwitcherNewItemRow(props: {
 }) {
   const { label, onSelect, testId } = props;
   return (
-    // The same leading chevron column the item rows carry, so the "+" and this
-    // row's label sit on their columns rather than half a step to their left.
-    <div className="flex min-w-0 items-center gap-1 pointer-coarse:min-h-11">
+    // Carries a root row's indent and its chevron slot, so the "+" and this
+    // row's label sit on the columns the rows below them use.
+    <div
+      className="flex min-w-0 items-center gap-1.5 pointer-coarse:min-h-11"
+      style={{ paddingLeft: `${SWITCHER_ROW_BASE_PAD_LEFT}px` }}
+    >
       <span
-        className="h-4 w-4 shrink-0 pointer-coarse:w-8"
+        className="flex shrink-0 items-center justify-center pointer-coarse:h-11 pointer-coarse:w-6"
         aria-hidden="true"
-      />
+      >
+        <TreeChevronSpacer />
+      </span>
       <Button
         type="button"
         variant="ghost"
         onClick={onSelect}
         data-testid={testId}
-        className="flex min-h-11 min-w-0 flex-1 items-center justify-start gap-2 rounded-md px-2 text-left font-normal text-muted-foreground"
+        className="flex min-w-0 flex-1 items-center justify-start gap-1.5 rounded-md py-1 pr-2 text-left text-ui-sm font-normal text-muted-foreground pointer-coarse:min-h-11"
       >
         <span className="flex size-4 shrink-0 items-center justify-center">
           <Plus className="size-4" />
