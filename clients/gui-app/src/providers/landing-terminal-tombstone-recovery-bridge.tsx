@@ -9,6 +9,7 @@ import {
 import { isRelayFuseRecoveryCandidate } from "@traycer-clients/shared/host-client/remote-fetcher";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import { useHostDirectoryList } from "@/hooks/host/use-host-directory-list-query";
+import { useRegisteredHosts } from "@/hooks/auth/use-registered-hosts-query";
 import { useRemoteSessionsPollReadiness } from "@/hooks/host/use-remote-sessions-poll-readiness";
 import { dialableHostEndpointFor } from "@/lib/host/transport-key";
 import {
@@ -86,18 +87,12 @@ function cancelUndrainableCapableCloseRetries(args: {
   }
 }
 
-function retireRemovedHostTombstones(args: {
+function retireDeregisteredHostTombstones(args: {
   readonly pendingKills: readonly LandingTerminalPendingKill[];
-  readonly previouslyObservedHostIds: ReadonlySet<string>;
   readonly registeredHostIds: ReadonlySet<string>;
 }): void {
   for (const pending of args.pendingKills) {
-    if (
-      !args.previouslyObservedHostIds.has(pending.hostId) ||
-      args.registeredHostIds.has(pending.hostId)
-    ) {
-      continue;
-    }
+    if (args.registeredHostIds.has(pending.hostId)) continue;
     useLandingTerminalStore
       .getState()
       .clearPendingKill(pending.hostId, pending.sessionId);
@@ -207,12 +202,12 @@ function dispatchCapableClose(args: {
  */
 export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
   const directory = useHostDirectoryList();
+  const registry = useRegisteredHosts();
   const pendingKills = useLandingTerminalStore((state) => state.pendingKills);
   const kill = useLandingTerminalKill();
   const killRef = useRef(kill);
   const inFlightRef = useRef<ReadonlySet<string>>(new Set());
   const retriesRef = useRef<Map<string, CapableCloseRetry>>(new Map());
-  const observedDirectoryHostIdsRef = useRef<ReadonlySet<string>>(new Set());
   const mountedRef = useRef(true);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const [authorityEntries, setAuthorityEntries] =
@@ -295,14 +290,13 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
 
   useEffect(() => {
     const entries = directory.data ?? [];
-    const registeredHostIds = new Set(entries.map((entry) => entry.hostId));
-    if (directory.data !== undefined) {
-      retireRemovedHostTombstones({
+    if (registry.data !== undefined && registry.data !== null) {
+      retireDeregisteredHostTombstones({
         pendingKills,
-        previouslyObservedHostIds: observedDirectoryHostIdsRef.current,
-        registeredHostIds,
+        registeredHostIds: new Set(
+          registry.data.hosts.map((entry) => entry.hostId),
+        ),
       });
-      observedDirectoryHostIdsRef.current = registeredHostIds;
     }
     const currentDrainable = new Map(
       entries.map((entry) => [
@@ -365,6 +359,7 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
     directory.data,
     pendingKills,
     hasReadySessionFor,
+    registry.data,
     retryGeneration,
   ]);
 

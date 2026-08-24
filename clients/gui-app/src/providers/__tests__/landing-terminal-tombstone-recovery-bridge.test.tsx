@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
   const terminalsById: Readonly<Record<string, unknown>> = {};
   return {
     entries: [] as readonly HostDirectoryEntry[],
+    registeredHostIds: new Set<string>(),
     kill: vi.fn(),
     readySessionHosts: new Set<string>(),
     authorityStatus: initialAuthorityStatus(),
@@ -25,6 +26,13 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
   useHostDirectoryList: () => ({ data: mocks.entries }),
+}));
+vi.mock("@/hooks/auth/use-registered-hosts-query", () => ({
+  useRegisteredHosts: () => ({
+    data: {
+      hosts: [...mocks.registeredHostIds].map((hostId) => ({ hostId })),
+    },
+  }),
 }));
 vi.mock(
   "@/components/home/terminal-panel/use-landing-terminal-kill-mutation",
@@ -117,6 +125,7 @@ const offlineHost: HostDirectoryEntry = {
 describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
   beforeEach(() => {
     mocks.entries = [offlineHost];
+    mocks.registeredHostIds = new Set(["host-b"]);
     mocks.kill.mockReset();
     mocks.readySessionHosts = new Set();
     mocks.authorityStatus = "legacy";
@@ -179,8 +188,32 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     const view = render(<LandingTerminalTombstoneRecoveryBridge />);
     expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(1);
 
+    mocks.registeredHostIds = new Set();
     mocks.entries = [];
     view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
+
+    await waitFor(() => {
+      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+    });
+    expect(mocks.kill).not.toHaveBeenCalled();
+  });
+
+  it("retires a restored tombstone for a host removed while closed", async () => {
+    mocks.entries = [];
+    mocks.registeredHostIds = new Set();
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "removed-while-closed-tab",
+      sessionId: "removed-while-closed-session",
+      hostId: "host-b",
+      cwd: "/workspace/project",
+      name: "project",
+      titleSource: "default",
+    });
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "removed-while-closed-tab");
+
+    render(<LandingTerminalTombstoneRecoveryBridge />);
 
     await waitFor(() => {
       expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
