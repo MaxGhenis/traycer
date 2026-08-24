@@ -1,7 +1,6 @@
 import { createContext, useCallback, useContext, useMemo } from "react";
 import { Users } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
-import { SwitcherAgentIcon } from "@/components/epic-canvas/mobile/switcher-agent-icon";
 import {
   SwitcherListEmpty,
   SwitcherListRow,
@@ -17,6 +16,10 @@ import {
   ChatRowIdleTime,
   ChatRowMenuFactsProvider,
 } from "@/components/epic-canvas/sidebar/chat-row-chrome";
+import {
+  ChatRowLeadingIcon,
+  ChatRowLeadingIconSlot,
+} from "@/components/epic-canvas/sidebar/chat-row-leading-icon";
 import { useChatRowSharing } from "@/components/epic-canvas/sidebar/chat-row-menu";
 import {
   CHATS_TREE_FILTER,
@@ -325,9 +328,26 @@ function SwitcherAgentRow(props: {
   return (
     <SwitcherListRow
       icon={
-        // No host prop: the icon resolves the row's owner host itself, from the
-        // same selector `ownerHostId` above uses.
-        <SwitcherAgentIcon epicId={epicId} nodeId={nodeId} type={type} />
+        // The DESKTOP row's icon, not a phone one: same glyph, same status
+        // vocabulary, and rollup-aware, so a collapsed parent here stands for a
+        // hidden descendant's failure exactly as it does in the sidebar. The
+        // switcher previously rendered its own component into this slot, which
+        // is what made the two surfaces look like different products.
+        //
+        // Desktop's own slot rides along inside the row's icon column. The two
+        // are the same 1.125rem box, but this one is `justify-center` for every
+        // category, and the sidebar's glyphs are drawn against a LEFT-aligned
+        // slot - the harness mark's overhanging terminal subscript among them.
+        <ChatRowLeadingIconSlot>
+          <ChatRowLeadingIcon
+            epicId={epicId}
+            nodeId={nodeId}
+            ownerHostId={ownerHostId}
+            artifactType={type}
+            hasChildren={hasChildren}
+            expanded={expanded}
+          />
+        </ChatRowLeadingIconSlot>
       }
       label={name}
       labelPrefix={isArchived ? <ArchivedTitlePrefix /> : null}

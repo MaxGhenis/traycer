@@ -143,6 +143,10 @@ vi.mock("@/lib/epic-selectors", () => ({
   // prove a tap never opens against it.
   useEpicNodeHostId: (nodeId: string) =>
     holder.ownerHostIdByNodeId[nodeId] ?? null,
+  // The batched form, read by the collapsed-parent rollup so each hidden
+  // descendant's status is scoped to the host that minted its id.
+  useEpicNodeHostIds: (nodeIds: readonly string[]) =>
+    nodeIds.map((nodeId) => holder.ownerHostIdByNodeId[nodeId] ?? null),
   useEpicNodeArchived: (nodeId: string) => holder.archivedIds.has(nodeId),
   useEpicNodeUpdatedAt: (nodeId: string) =>
     holder.updatedAtByNodeId[nodeId] ?? 0,
@@ -349,26 +353,36 @@ describe("<SwitcherAgentsList />", () => {
       ["chat-1", "turn"],
     ]);
     render(<SwitcherAgentsList {...PROPS} />);
-    expect(screen.getByTestId("switcher-agent-activity-chat-1")).toBeTruthy();
-    expect(screen.queryByTestId("switcher-agent-activity-tui-1")).toBeNull();
+    expect(
+      screen.getByTestId("chat-sidebar-spinner-activity-chat-1"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByTestId("terminal-agent-sidebar-activity-tui-1"),
+    ).toBeNull();
   });
 
   it("updates a row's status live while the sheet stays open", () => {
     const view = render(<SwitcherAgentsList {...PROPS} />);
-    expect(screen.queryByTestId("switcher-agent-activity-tui-1")).toBeNull();
+    expect(
+      screen.queryByTestId("terminal-agent-sidebar-activity-tui-1"),
+    ).toBeNull();
 
     holder.workingAgentIds = new Set<string>(["tui-1"]);
     holder.activityTiers = new Map<string, "turn" | "background">([
       ["tui-1", "turn"],
     ]);
     view.rerender(<SwitcherAgentsList {...PROPS} />);
-    expect(screen.getByTestId("switcher-agent-activity-tui-1")).toBeTruthy();
+    expect(
+      screen.getByTestId("terminal-agent-sidebar-activity-tui-1"),
+    ).toBeTruthy();
 
     // …and back down when the turn ends.
     holder.workingAgentIds = new Set<string>();
     holder.activityTiers = new Map<string, "turn" | "background">();
     view.rerender(<SwitcherAgentsList {...PROPS} />);
-    expect(screen.queryByTestId("switcher-agent-activity-tui-1")).toBeNull();
+    expect(
+      screen.queryByTestId("terminal-agent-sidebar-activity-tui-1"),
+    ).toBeNull();
   });
 
   it("renders the desktop mapping's background glyph, not the busy spinner, for background-only work", () => {
@@ -378,9 +392,11 @@ describe("<SwitcherAgentsList />", () => {
     ]);
     render(<SwitcherAgentsList {...PROPS} />);
     expect(
-      screen.getByTestId("switcher-agent-background-activity-tui-1"),
+      screen.getByTestId("terminal-agent-sidebar-background-activity-tui-1"),
     ).toBeTruthy();
-    expect(screen.queryByTestId("switcher-agent-activity-tui-1")).toBeNull();
+    expect(
+      screen.queryByTestId("terminal-agent-sidebar-activity-tui-1"),
+    ).toBeNull();
   });
 
   it("surfaces notification status on a row, outranking a running turn", () => {
@@ -401,8 +417,12 @@ describe("<SwitcherAgentsList />", () => {
       },
     };
     render(<SwitcherAgentsList {...PROPS} />);
-    expect(screen.getByTestId("switcher-agent-approval-chat-1")).toBeTruthy();
-    expect(screen.queryByTestId("switcher-agent-activity-chat-1")).toBeNull();
+    expect(
+      screen.getByTestId("chat-sidebar-spinner-approval-chat-1"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByTestId("chat-sidebar-spinner-activity-chat-1"),
+    ).toBeNull();
   });
 
   it("keeps a retained epic's rows reading status from their own host after the active host changes", () => {
@@ -450,7 +470,9 @@ describe("<SwitcherAgentsList />", () => {
     render(<SwitcherAgentsList {...PROPS} />);
     // Passing the record's `hostId` would read `byOriginHostId["host-B"]` -
     // empty - and the row would render an inert idle glyph.
-    expect(screen.getByTestId("switcher-agent-failure-chat-1")).toBeTruthy();
+    expect(
+      screen.getByTestId("chat-sidebar-spinner-failure-chat-1"),
+    ).toBeTruthy();
 
     // …and the same rule governs the ref the tap builds. A tab binds its host
     // FOR LIFE, so a B-bound tile for an A-owned chat asks the wrong machine
