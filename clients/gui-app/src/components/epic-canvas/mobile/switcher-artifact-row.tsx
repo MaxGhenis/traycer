@@ -148,6 +148,8 @@ export function SwitcherArtifactNode(props: SwitcherArtifactNodeProps) {
         labelPrefix={
           <ArtifactUnreadMarker nodeId={nodeId} variant={unreadMarkerVariant} />
         }
+        secondaryLabel={null}
+        badge={null}
         trailing={null}
         nesting={nesting}
         icon={<SwitcherArtifactIcon type={artifactType} status={statusValue} />}

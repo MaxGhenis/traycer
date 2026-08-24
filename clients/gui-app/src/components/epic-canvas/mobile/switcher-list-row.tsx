@@ -11,22 +11,33 @@ import {
 
 /**
  * One row in a switcher category list: an indent-and-chevron nesting cluster,
- * leading icon, truncating label, a trailing metadata slot, a check on the
- * active tile, and an optional "…" actions slot. Tapping the row body activates
- * the tile; the chevron and the actions slot are SIBLING buttons, so neither
- * their taps nor their touch targets ever trigger a row open.
+ * leading icon, truncating label, an optional second line of row metadata, a
+ * badge slot, a trailing metadata slot, a check on the active tile, and an
+ * optional "…" actions slot. Tapping the row body activates the tile; the
+ * chevron and the actions slot are SIBLING buttons, so neither their taps nor
+ * their touch targets ever trigger a row open.
  *
  * The 44px min height plus the sheet's coarse-pointer touch scope satisfy the
  * touch-target guideline, and they are why the chevron is a real 44px control
  * rather than the desktop tree's 14px hover glyph: expand/collapse is the only
  * way to reach a deep child on a phone, so it cannot be the hardest thing on
  * the row to hit.
+ *
+ * `secondaryLabel` and `badge` exist so a category whose desktop row carries
+ * per-row metadata (a terminal's runtime status, its resource usage) can show
+ * the same thing here instead of dropping it: the row is one component, so a
+ * surface cannot quietly say less than its desktop counterpart. Categories
+ * with nothing to add pass null.
  */
 export function SwitcherListRow(props: {
   readonly icon: ReactNode;
   readonly label: string;
   /** Rendered immediately before the label, inside the truncating cluster. */
   readonly labelPrefix: ReactNode;
+  /** Second line under the label (a terminal's runtime status); null for none. */
+  readonly secondaryLabel: string | null;
+  /** Right-aligned chip (a row's resource usage); null for none. */
+  readonly badge: ReactNode;
   /** Right-aligned metadata (relative time, shared glyph); null for none. */
   readonly trailing: ReactNode;
   readonly nesting: SwitcherRowNesting;
@@ -39,6 +50,8 @@ export function SwitcherListRow(props: {
     icon,
     label,
     labelPrefix,
+    secondaryLabel,
+    badge,
     trailing,
     nesting,
     active,
@@ -89,12 +102,20 @@ export function SwitcherListRow(props: {
         <span className="flex size-4 shrink-0 items-center justify-center">
           {icon}
         </span>
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          {labelPrefix}
-          <span className="min-w-0 flex-1 truncate text-ui-sm text-foreground">
-            {label}
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="flex min-w-0 items-center gap-1.5">
+            {labelPrefix}
+            <span className="min-w-0 flex-1 truncate text-ui-sm text-foreground">
+              {label}
+            </span>
           </span>
+          {secondaryLabel === null ? null : (
+            <span className="min-w-0 truncate text-ui-xs text-muted-foreground">
+              {secondaryLabel}
+            </span>
+          )}
         </span>
+        {badge}
         {trailing}
         {active ? (
           <Check

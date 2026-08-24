@@ -1,7 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SwitcherAgentsList } from "@/components/epic-canvas/mobile/switcher-agents-list";
-import { SwitcherTerminalsList } from "@/components/epic-canvas/mobile/switcher-terminals-list";
 import { useEpicSidebarExpansionStore } from "@/stores/epics/epic-sidebar-expansion-store";
 
 interface FixtureRecord {
@@ -11,12 +10,6 @@ interface FixtureRecord {
   readonly type: string;
   readonly status: number | null;
   readonly hostId: string;
-}
-interface FixtureSession {
-  readonly sessionId: string;
-  readonly title: string | null;
-  readonly activeProcessName: string | null;
-  readonly cwd: string;
 }
 /**
  * The whole ref, not just its `type`. The ref's `hostId` is what the opened
@@ -33,7 +26,6 @@ interface ActivateCall {
 }
 interface Holder {
   records: ReadonlyArray<FixtureRecord>;
-  sessions: ReadonlyArray<FixtureSession>;
   activeId: string | null;
   role: "owner" | "viewer";
   activateCalls: ActivateCall[];
@@ -69,7 +61,6 @@ interface IndicatorFixture extends IndicatorResponseFixture {
 
 const holder = vi.hoisted((): Holder => ({
   records: [],
-  sessions: [],
   activeId: null,
   role: "owner",
   activateCalls: [],
@@ -200,15 +191,9 @@ vi.mock("@/components/epic-canvas/mobile/use-switcher-activate", () => ({
       holder.activateCalls.push({ id, ref: buildRef() });
     },
 }));
-vi.mock("@/hooks/terminal/use-terminal-list-query", () => ({
-  useTerminalList: () => ({ data: { sessions: holder.sessions } }),
-}));
 vi.mock("@/lib/host", () => ({ useHostClient: () => null }));
 vi.mock("@/hooks/host/use-addressable-host-id", () => ({
   useAddressableHostId: () => "host-A",
-}));
-vi.mock("@/lib/terminals/terminal-session-filters", () => ({
-  isVisibleEpicTerminalSession: () => true,
 }));
 // Keep the row menu's mutation + focus hooks inert so it mounts without a
 // QueryClient / host client (the menu's editor gating is what we assert).
@@ -272,7 +257,6 @@ const PROPS = { epicId: "epic-1", tabId: "tab-1", onClose: () => {} };
 
 beforeEach(() => {
   holder.records = [];
-  holder.sessions = [];
   holder.activeId = null;
   holder.role = "owner";
   holder.activateCalls = [];
@@ -618,30 +602,6 @@ describe("<SwitcherAgentsList />", () => {
   });
 });
 
-describe("<SwitcherTerminalsList />", () => {
-  it("renders a row per visible PTY session and taps open a terminal ref", () => {
-    holder.sessions = [
-      {
-        sessionId: "term-1",
-        title: "Build",
-        activeProcessName: null,
-        cwd: "/repo",
-      },
-    ];
-    render(<SwitcherTerminalsList {...PROPS} />);
-    const row = screen.getByTestId("switcher-terminal-row-term-1");
-    expect(row.textContent).toContain("Build");
-    fireEvent.click(row);
-    expect(holder.activateCalls).toHaveLength(1);
-    expect(holder.activateCalls[0].id).toBe("term-1");
-    expect(holder.activateCalls[0].ref.type).toBe("terminal");
-  });
-
-  it("shows an empty state when there are no terminals", () => {
-    render(<SwitcherTerminalsList {...PROPS} />);
-    expect(screen.getByText("No terminals yet.")).toBeTruthy();
-  });
-});
 
 describe("switcher create affordances (editor-gated)", () => {
   it("shows the New chat row as the first row for an editor and hides it for a viewer", () => {
@@ -677,32 +637,4 @@ describe("switcher create affordances (editor-gated)", () => {
     expect(screen.getByText("No agents yet.")).toBeTruthy();
   });
 
-  it("shows the New terminal row as the first row for an editor and hides it for a viewer", () => {
-    holder.sessions = [
-      {
-        sessionId: "term-1",
-        title: "Build",
-        activeProcessName: null,
-        cwd: "/repo",
-      },
-    ];
-    const editor = render(<SwitcherTerminalsList {...PROPS} />);
-    const newTerminalRow = screen.getByTestId("switcher-new-terminal");
-    const firstItemRow = screen.getByTestId("switcher-terminal-row-term-1");
-    expect(
-      newTerminalRow.compareDocumentPosition(firstItemRow) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    editor.unmount();
-
-    holder.role = "viewer";
-    render(<SwitcherTerminalsList {...PROPS} />);
-    expect(screen.queryByTestId("switcher-new-terminal")).toBeNull();
-  });
-
-  it("keeps the New terminal row above the empty-state message when there are no terminals", () => {
-    render(<SwitcherTerminalsList {...PROPS} />);
-    expect(screen.getByTestId("switcher-new-terminal")).toBeTruthy();
-    expect(screen.getByText("No terminals yet.")).toBeTruthy();
-  });
 });

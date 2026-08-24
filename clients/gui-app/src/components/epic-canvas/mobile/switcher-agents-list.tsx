@@ -316,6 +316,8 @@ function SwitcherAgentRow(props: {
       }
       label={name}
       labelPrefix={isArchived ? <ArchivedTitlePrefix /> : null}
+      secondaryLabel={null}
+      badge={null}
       trailing={
         <span className="flex flex-none items-center gap-1.5">
           {sharing.showIndicator ? (
