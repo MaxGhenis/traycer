@@ -17,13 +17,18 @@ import {
  * chevron and the actions slot are SIBLING buttons, so neither their taps nor
  * their touch targets ever trigger a row open.
  *
- * The 44px min height plus the sheet's coarse-pointer touch scope satisfy the
- * touch-target guideline. The chevron reaches it WITHOUT a 44px box: it is the
- * desktop tree's small glyph, costing one icon's width in the flow, and grows
- * its hit area with an overlay that bleeds into the row's padding. A boxed
- * control here would spend a tenth of the viewport on the one row element that
- * carries no information - and expand/collapse still cannot be the hardest
- * thing on the row to hit, which the overlay is what guarantees.
+ * The row owns its coarse-pointer height (`pointer-coarse:min-h-11`), the way
+ * every tappable row in `ui/dropdown-menu.tsx` and `ui/select.tsx` does, rather
+ * than leaning on the sheet's touch scope: that scope's slop is vertical-only
+ * and centred, so on flush-stacked rows it is the row's own height that has to
+ * be right.
+ *
+ * The chevron is the desktop tree's small glyph, not a 44px box. A boxed
+ * control would spend a tenth of a phone viewport on the one row element
+ * carrying no information, and it would spend it on EVERY row, since the column
+ * is reserved. It widens to 32px on a coarse pointer instead - real width, not
+ * overhanging slop, because its horizontal neighbour is the row body and slop
+ * there would steal the taps that open the row.
  *
  * `secondaryLabel` and `badge` exist so a category whose desktop row carries
  * per-row metadata (a terminal's runtime status, its resource usage) can show
@@ -67,7 +72,7 @@ export function SwitcherListRow(props: {
     // content. One level with an auto min-width re-inflates the row to the
     // full label width, and the list scrolls sideways instead of ellipsizing.
     <div
-      className="flex min-w-0 items-center gap-1"
+      className="flex min-w-0 items-center gap-1 pointer-coarse:min-h-11"
       style={{
         paddingLeft: `${Math.min(nesting.depth, SWITCHER_ROW_MAX_INDENT_DEPTH) * SWITCHER_ROW_INDENT_PX + SWITCHER_ROW_BASE_PAD_LEFT}px`,
       }}
@@ -81,19 +86,16 @@ export function SwitcherListRow(props: {
           aria-label={`${nesting.expanded ? "Collapse" : "Expand"} ${label}`}
           aria-expanded={nesting.expanded}
           data-testid={`${selectTestId}-toggle`}
-          // The `before` overlay is the touch target: 32x44 of tappable area
-          // over a control that only occupies an icon's width in the flow. It
-          // bleeds outward into the row's own padding, which is dead space, so
-          // it costs the label nothing and never overlaps the row body.
-          className="relative size-4 shrink-0 p-0 text-muted-foreground before:absolute before:-inset-x-2 before:-inset-y-3.5 before:content-['']"
+          className="h-11 w-4 shrink-0 p-0 text-muted-foreground pointer-coarse:w-8"
         >
           <TreeChevron expanded={nesting.expanded} onToggle={undefined} />
         </Button>
       ) : (
-        // Keeps every leaf's icon on its siblings' column. Without it a leaf
+        // Keeps every leaf's icon on its siblings' column, and matches the
+        // chevron BUTTON's width at both pointer densities. Without it a leaf
         // CHILD would render left of its own parent, since one indent step is
         // narrower than the chevron - the nesting would read inverted.
-        <span className="flex size-4 shrink-0 items-center justify-center">
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center pointer-coarse:w-8">
           <TreeChevronSpacer />
         </span>
       )}
@@ -149,8 +151,11 @@ export function SwitcherNewItemRow(props: {
   return (
     // The same leading chevron column the item rows carry, so the "+" and this
     // row's label sit on their columns rather than half a step to their left.
-    <div className="flex min-w-0 items-center gap-1">
-      <span className="size-4 shrink-0" aria-hidden="true" />
+    <div className="flex min-w-0 items-center gap-1 pointer-coarse:min-h-11">
+      <span
+        className="h-4 w-4 shrink-0 pointer-coarse:w-8"
+        aria-hidden="true"
+      />
       <Button
         type="button"
         variant="ghost"

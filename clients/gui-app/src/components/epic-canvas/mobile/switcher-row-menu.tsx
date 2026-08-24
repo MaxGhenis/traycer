@@ -56,7 +56,7 @@ export function SwitcherRowMenu(props: {
             size="icon-sm"
             aria-label={`Actions for ${name}`}
             data-testid={`switcher-more-${nodeId}`}
-            className="shrink-0 text-muted-foreground hover:text-foreground"
+            className="shrink-0 text-muted-foreground hover:text-foreground pointer-coarse:size-11"
           >
             <MoreHorizontal className="size-4" />
           </Button>
