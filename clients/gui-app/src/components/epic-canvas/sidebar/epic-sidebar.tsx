@@ -62,6 +62,7 @@ import {
   ArtifactReadLifecycleBridge,
   ArtifactTreePanelBody,
 } from "@/components/epic-canvas/sidebar/epic-sidebar-artifact-tree";
+import { useUnreadArtifactReadTargets } from "@/components/epic-canvas/sidebar/epic-sidebar-artifact-shared";
 import { SharingPanel } from "@/components/epic-canvas/panels/epic-sharing/panel";
 import { SnapshotGate } from "@/components/epic-canvas/snapshots/snapshot-loading-context";
 import { AddNodeDropdown } from "@/components/epic-canvas/add-node-dropdown";
@@ -157,10 +158,7 @@ import {
   isEpicArtifactKind,
   type EpicNodeKind,
 } from "@/lib/artifacts/node-display";
-import {
-  isArtifactUnread,
-  useArtifactReadStateStore,
-} from "@/stores/epics/artifact-read-state-store";
+import { useArtifactReadStateStore } from "@/stores/epics/artifact-read-state-store";
 import { revealCommentThreadAnchor } from "@/lib/comments/comment-editor-registry";
 import { useArtifactSearchAvailable } from "@/components/epic-canvas/sidebar/artifact-search-availability";
 import { usePanelHeaderSearchStore } from "@/stores/epics/panel-header-search-store";
@@ -222,14 +220,7 @@ import {
   classifyBindingsFailure,
   type BindingsFailure,
 } from "@/lib/worktree/bindings-failure";
-import { useShallow } from "zustand/react/shallow";
-
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
-interface ArtifactReadTarget {
-  readonly id: string;
-  readonly updatedAt: number;
-}
-
 const CHATS_PANEL_SKELETON = <ChatsPanelSkeleton />;
 const ARTIFACTS_PANEL_SKELETON = <ArtifactsPanelSkeleton />;
 const COMMENTS_PANEL_SKELETON = <CommentsPanelSkeleton />;
@@ -2053,37 +2044,6 @@ function ChatsPanelActions(props: LeftPanelHeaderSlotProps) {
         canArchive={canArchive}
       />
     </div>
-  );
-}
-
-function useUnreadArtifactReadTargets(
-  epicId: string,
-): ReadonlyArray<ArtifactReadTarget> {
-  const records = useEpicArtifactRecords();
-  const tree = useEpicTreeIndex();
-  const readState = useArtifactReadStateStore(
-    useShallow((s) => ({
-      seedAtByEpic: s.seedAtByEpic,
-      lastSeenByArtifact: s.lastSeenByArtifact,
-    })),
-  );
-  return useMemo(
-    () =>
-      records.flatMap((record) => {
-        if (!isEpicArtifactKind(record.type)) return [];
-        if (!Object.hasOwn(tree.nodeById, record.id)) return [];
-        const node = tree.nodeById[record.id];
-        return isArtifactUnread({
-          epicId,
-          artifactId: record.id,
-          updatedAt: node.updatedAt,
-          seedAtByEpic: readState.seedAtByEpic,
-          lastSeenByArtifact: readState.lastSeenByArtifact,
-        })
-          ? [{ id: record.id, updatedAt: node.updatedAt }]
-          : [];
-      }),
-    [epicId, readState, records, tree],
   );
 }
 

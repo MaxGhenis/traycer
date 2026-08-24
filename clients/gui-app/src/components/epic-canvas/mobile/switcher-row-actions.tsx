@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
-import { MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { FileDown, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -21,6 +22,7 @@ import { isEditableRole } from "@/lib/epic-permissions";
 import { useEpicDeleteChat } from "@/hooks/epic/use-epic-chat-mutations";
 import { useEpicDeleteTuiAgent } from "@/hooks/epic/use-epic-tui-agent-mutations";
 import { useEpicDeleteArtifact } from "@/hooks/epic/use-epic-node-mutations";
+import { useEpicExportArtifacts } from "@/hooks/epic/use-epic-export-artifacts-mutation";
 import { useTerminalKillFor } from "@/hooks/terminal/use-terminal-kill-for-mutation";
 import { useEpicSessionHostClient } from "@/hooks/epic/use-epic-session-host-client";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
@@ -45,17 +47,97 @@ const RENAME_TITLE: Record<SwitcherRowKind, string> = {
   terminal: "Rename terminal",
 };
 
+const NO_LEADING_ENTRIES: ReadonlyArray<SidebarRowMenuEntry> = [];
+
 /**
- * The per-row "…" actions for the switcher's flat lists: Rename + Delete for
- * agents/artifacts (delete confirmed), Rename + Close for PTY terminals (Close
- * is immediate, matching desktop parity). Reuses the exact desktop mutation
- * hooks and the shared row-menu item renderer; the whole affordance is
- * editor-gated (a viewer gets no menu at all, so no dead-end mutations). Delete
- * also closes the item's open canvas tile so the mobile view never lands on a
- * dead tile.
+ * The per-row "…" actions for the switcher's lists: Export + Rename + Delete
+ * for artifacts, Rename + Delete for agents (delete confirmed), Rename + Close
+ * for PTY terminals (Close is immediate, matching desktop parity). Reuses the
+ * exact desktop mutation hooks and the shared row-menu item renderer.
+ *
+ * Mutations are editor-gated, so a viewer sees no dead-end rename/delete. The
+ * artifact exports are NOT - they read, exactly as the desktop artifact row's
+ * menu offers them to a viewer - so an artifact row keeps its menu for a viewer
+ * with the two export entries alone, and every other row kind still drops the
+ * whole affordance.
+ *
+ * Delete also closes the item's open canvas tile so the mobile view never lands
+ * on a dead tile.
+ *
+ * Artifact rows go through their own component rather than a branch inside the
+ * body: the export mutation is an artifact concern, and a hook called in the
+ * shared body would make every agent and terminal row instantiate it too.
  */
 export function SwitcherRowActions(props: SwitcherRowActionsProps) {
-  const { epicId, tabId, kind, nodeId, name, cascadeSummary } = props;
+  if (props.kind === "artifact")
+    return <SwitcherArtifactRowActions {...props} />;
+  return (
+    <SwitcherRowActionsMenu {...props} leadingEntries={NO_LEADING_ENTRIES} />
+  );
+}
+
+/** Artifact rows, whose menu opens with the two desktop export entries. */
+function SwitcherArtifactRowActions(props: SwitcherRowActionsProps) {
+  const { nodeId, name } = props;
+  const exportArtifacts = useEpicExportArtifacts();
+  const exportOne = (format: "markdown" | "pdf"): void => {
+    exportArtifacts.mutate({
+      artifacts: [{ id: nodeId, title: name }],
+      format,
+      archive: false,
+      archiveTitle: null,
+    });
+  };
+  const exportIcon = exportArtifacts.isPending ? (
+    <AgentSpinningDots
+      className={undefined}
+      testId={undefined}
+      variant={undefined}
+    />
+  ) : (
+    <FileDown className="size-3.5" />
+  );
+  const entries: ReadonlyArray<SidebarRowMenuEntry> = [
+    {
+      kind: "item",
+      id: "export-markdown",
+      label: "Export as Markdown",
+      icon: exportIcon,
+      disabled: exportArtifacts.isPending,
+      disabledTooltip: null,
+      variant: "default",
+      testIds: {
+        dropdown: `switcher-export-markdown-${nodeId}`,
+        context: `switcher-export-markdown-ctx-${nodeId}`,
+      },
+      onSelect: () => exportOne("markdown"),
+    },
+    {
+      kind: "item",
+      id: "export-pdf",
+      label: "Export as PDF",
+      icon: exportIcon,
+      disabled: exportArtifacts.isPending,
+      disabledTooltip: null,
+      variant: "default",
+      testIds: {
+        dropdown: `switcher-export-pdf-${nodeId}`,
+        context: `switcher-export-pdf-ctx-${nodeId}`,
+      },
+      onSelect: () => exportOne("pdf"),
+    },
+  ];
+  return <SwitcherRowActionsMenu {...props} leadingEntries={entries} />;
+}
+
+function SwitcherRowActionsMenu(
+  props: SwitcherRowActionsProps & {
+    /** Read-only entries shown above the editor-gated ones. */
+    readonly leadingEntries: ReadonlyArray<SidebarRowMenuEntry>;
+  },
+) {
+  const { epicId, tabId, kind, nodeId, name, cascadeSummary, leadingEntries } =
+    props;
   const canMutate = isEditableRole(useEpicPermissionRole());
   const [renameOpen, setRenameOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -130,8 +212,6 @@ export function SwitcherRowActions(props: SwitcherRowActionsProps) {
     killTerminal.mutate({ sessionId: nodeId });
   }, [closeOpenTile, killTerminal, nodeId]);
 
-  if (!canMutate) return null;
-
   const isTerminal = kind === "terminal";
   const deleteLabel = isTerminal ? "Close" : "Delete";
   const deletePending =
@@ -139,37 +219,52 @@ export function SwitcherRowActions(props: SwitcherRowActionsProps) {
     deleteTuiAgent.isPending ||
     deleteArtifact.isPending;
 
-  const entries: ReadonlyArray<SidebarRowMenuEntry> = [
-    {
-      kind: "item",
-      id: "rename",
-      label: "Rename",
-      icon: <Pencil className="size-3.5" />,
-      disabled: false,
-      disabledTooltip: null,
-      variant: "default",
-      testIds: {
-        dropdown: `switcher-rename-${nodeId}`,
-        context: `switcher-rename-ctx-${nodeId}`,
-      },
-      onSelect: () => setRenameOpen(true),
-    },
-    { kind: "separator", id: "before-delete" },
-    {
-      kind: "item",
-      id: "delete",
-      label: deleteLabel,
-      icon: <Trash2 className="size-3.5" />,
-      disabled: isTerminal ? killTerminal.isPending : false,
-      disabledTooltip: null,
-      variant: "destructive",
-      testIds: {
-        dropdown: `switcher-delete-${nodeId}`,
-        context: `switcher-delete-ctx-${nodeId}`,
-      },
-      onSelect: isTerminal ? closeTerminal : () => setConfirmOpen(true),
-    },
-  ];
+  const mutateEntries: ReadonlyArray<SidebarRowMenuEntry> = canMutate
+    ? [
+        {
+          kind: "item",
+          id: "rename",
+          label: "Rename",
+          icon: <Pencil className="size-3.5" />,
+          disabled: false,
+          disabledTooltip: null,
+          variant: "default",
+          testIds: {
+            dropdown: `switcher-rename-${nodeId}`,
+            context: `switcher-rename-ctx-${nodeId}`,
+          },
+          onSelect: () => setRenameOpen(true),
+        },
+        { kind: "separator", id: "before-delete" },
+        {
+          kind: "item",
+          id: "delete",
+          label: deleteLabel,
+          icon: <Trash2 className="size-3.5" />,
+          disabled: isTerminal ? killTerminal.isPending : false,
+          disabledTooltip: null,
+          variant: "destructive",
+          testIds: {
+            dropdown: `switcher-delete-${nodeId}`,
+            context: `switcher-delete-ctx-${nodeId}`,
+          },
+          onSelect: isTerminal ? closeTerminal : () => setConfirmOpen(true),
+        },
+      ]
+    : [];
+
+  // The joining separator belongs to neither group: it exists only when both
+  // are present, so a viewer's export-only menu has no dangling rule.
+  const entries: ReadonlyArray<SidebarRowMenuEntry> =
+    leadingEntries.length > 0 && mutateEntries.length > 0
+      ? [
+          ...leadingEntries,
+          { kind: "separator", id: "after-export" },
+          ...mutateEntries,
+        ]
+      : [...leadingEntries, ...mutateEntries];
+
+  if (entries.length === 0) return null;
 
   return (
     <>

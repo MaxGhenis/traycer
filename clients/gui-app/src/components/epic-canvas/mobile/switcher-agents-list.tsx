@@ -5,6 +5,7 @@ import {
   SwitcherListEmpty,
   SwitcherListRow,
 } from "@/components/epic-canvas/mobile/switcher-list-row";
+import { SWITCHER_ROW_FLAT } from "@/components/epic-canvas/mobile/switcher-row-nesting";
 import { SwitcherRowActions } from "@/components/epic-canvas/mobile/switcher-row-actions";
 import { SwitcherNewChatRow } from "@/components/epic-canvas/mobile/switcher-create-actions";
 import { useSwitcherActivate } from "@/components/epic-canvas/mobile/use-switcher-activate";
@@ -154,6 +155,9 @@ function SwitcherAgentRow(props: {
 
   return (
     <SwitcherListRow
+      labelPrefix={null}
+      trailing={null}
+      nesting={SWITCHER_ROW_FLAT}
       icon={
         // No host prop: the icon resolves the row's owner host itself, from the
         // same selector `openHostId` above uses. `record.hostId` is the ACTIVE
