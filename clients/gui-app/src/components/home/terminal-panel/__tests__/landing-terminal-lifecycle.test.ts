@@ -453,6 +453,29 @@ describe("landing terminal lifecycle", () => {
     ]);
   });
 
+  it("preserves rejection epoch evidence on a restored ambiguous tab", () => {
+    const restored = parsePersistedLandingTerminalState({
+      tabs: [
+        {
+          instanceId: "ambiguous-tab",
+          sessionId: "ambiguous-create",
+          hostId: HOST_A,
+          cwd: "/workspace",
+          name: "Ambiguous create",
+          titleSource: "default",
+          pendingCreate: true,
+          createFailure: "ambiguous",
+          createRejectedAtSnapshotEpoch: 7,
+        },
+      ],
+      activeInstanceId: "ambiguous-tab",
+      layoutsByLandingPageId: {},
+      pendingKills: [],
+    });
+
+    expect(restored.tabs[0]?.createRejectedAtSnapshotEpoch).toBe(7);
+  });
+
   it("collapses every open layout when the shared terminal set becomes empty", () => {
     const store = useLandingTerminalStore.getState();
     store.setPanelOpen("draft-a", true);

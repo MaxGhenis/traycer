@@ -205,6 +205,11 @@ export function parseLandingTerminalTabRef(
     value.createFailure === "ambiguous"
       ? { createFailure: value.createFailure }
       : {}),
+    ...(isNonNegativeInteger(value.createRejectedAtSnapshotEpoch)
+      ? {
+          createRejectedAtSnapshotEpoch: value.createRejectedAtSnapshotEpoch,
+        }
+      : {}),
     ...(isNonNegativeInteger(value.sourceStoreVersion)
       ? { sourceStoreVersion: value.sourceStoreVersion }
       : {}),

@@ -2,6 +2,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -269,6 +270,10 @@ function LandingTerminalDurableBootstrap(
   },
 ): ReactNode {
   const entry = props.authorityEntry;
+  const collectionSnapshotEpochRef = useRef(collectionSnapshotEpoch(entry));
+  useEffect(() => {
+    collectionSnapshotEpochRef.current = collectionSnapshotEpoch(entry);
+  }, [entry]);
   const reachability = useHostReachability(props.tab.hostId);
   const projection = getPlainTerminal(
     entry.authority.collection,
@@ -365,11 +370,11 @@ function LandingTerminalDurableBootstrap(
           props.tab.sessionId,
           {
             mayHaveApplied,
-            rejectedAtSnapshotEpoch: collectionSnapshotEpoch(entry),
+            rejectedAtSnapshotEpoch: collectionSnapshotEpochRef.current,
           },
         );
     },
-    [entry, props.tab.hostId, props.tab.instanceId, props.tab.sessionId],
+    [props.tab.hostId, props.tab.instanceId, props.tab.sessionId],
   );
   const lifecycle = useLandingTerminalDurableLifecycle({
     projectionStatus:
