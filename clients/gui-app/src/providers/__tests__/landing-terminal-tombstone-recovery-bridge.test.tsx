@@ -2,11 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import { hostListItemToDirectoryEntry } from "@traycer-clients/shared/host-client/remote-fetcher";
+import { HostTransportFailureError } from "@traycer-clients/shared/host-transport/host-messenger";
 import type {
   HostConnectivity,
   HostListItem,
 } from "@traycer/protocol/host/host-status";
 import { useLandingTerminalStore } from "@/stores/home/landing-terminal-store";
+
+function transientFailure(): HostTransportFailureError {
+  return new HostTransportFailureError({
+    code: "RPC_ERROR",
+    message: "transient",
+    requestId: "request-1",
+    method: "terminal.close",
+    fatalDetails: null,
+  });
+}
 
 const mocks = vi.hoisted(() => {
   const initialAuthorityStatus = (): "legacy" | "capable" | "unknown" =>
@@ -336,7 +347,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
       },
     ];
     mocks.kill
-      .mockRejectedValueOnce(new Error("transient"))
+      .mockRejectedValueOnce(transientFailure())
       .mockResolvedValueOnce(undefined);
     useLandingTerminalStore.getState().addTab({
       instanceId: "legacy-retry-tab",
@@ -406,7 +417,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     mocks.canMutate = true;
     mocks.terminalsById = { "session-retry": {} };
     mocks.closeAsync
-      .mockRejectedValueOnce(new Error("transient"))
+      .mockRejectedValueOnce(transientFailure())
       .mockResolvedValueOnce(undefined);
     useLandingTerminalStore.getState().addTab({
       instanceId: "retry-tab",
@@ -444,7 +455,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     mocks.authorityStatus = "capable";
     mocks.canMutate = true;
     mocks.terminalsById = { "session-backoff": {} };
-    mocks.closeAsync.mockRejectedValue(new Error("still unavailable"));
+    mocks.closeAsync.mockRejectedValue(transientFailure());
     useLandingTerminalStore.getState().addTab({
       instanceId: "backoff-tab",
       sessionId: "session-backoff",

@@ -7,6 +7,10 @@ import {
   type ReactNode,
 } from "react";
 import { isRelayFuseRecoveryCandidate } from "@traycer-clients/shared/host-client/remote-fetcher";
+import {
+  HostRpcError,
+  isTransientHostRpcFailure,
+} from "@traycer-clients/shared/host-transport/host-messenger";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import { useHostDirectoryList } from "@/hooks/host/use-host-directory-list-query";
 import { useRemoteSessionsPollReadiness } from "@/hooks/host/use-remote-sessions-poll-readiness";
@@ -88,14 +92,14 @@ function tombstoneDispatchIsDue(args: {
   readonly pendingAdded: boolean;
   readonly authorityChanged: boolean;
   readonly retryDue: boolean;
-  readonly pendingCreate: boolean;
+  readonly projectionAppeared: boolean;
 }): boolean {
   return (
     args.routeRecovered ||
     args.pendingAdded ||
     args.authorityChanged ||
     args.retryDue ||
-    args.pendingCreate
+    args.projectionAppeared
   );
 }
 
@@ -181,7 +185,13 @@ function dispatchCapableClose(args: {
           .clearPendingKill(args.pending.hostId, args.pending.sessionId);
         clearCloseRetry(args.refs.retries.current, args.key);
       },
-      () =>
+      (error: unknown) => {
+        if (
+          !(error instanceof HostRpcError) ||
+          !isTransientHostRpcFailure(error)
+        ) {
+          return;
+        }
         scheduleCloseRetry({
           ...args,
           canRetry: () => {
@@ -197,12 +207,28 @@ function dispatchCapableClose(args: {
               ) !== undefined
             );
           },
-        }),
+        });
+      },
     )
     .finally(() => {
       const next = new Set(args.refs.inFlight.current);
       next.delete(args.key);
       args.refs.inFlight.current = next;
+      const currentEntry =
+        args.refs.authorityEntries.current[args.pending.hostId];
+      if (
+        currentEntry?.authority.capability.status === "capable" &&
+        getPlainTerminal(
+          currentEntry.authority.collection,
+          args.pending.hostId,
+          args.pending.sessionId,
+        ) === undefined
+      ) {
+        useLandingTerminalStore
+          .getState()
+          .clearPendingKill(args.pending.hostId, args.pending.sessionId);
+        clearCloseRetry(args.refs.retries.current, args.key);
+      }
       args.signalRetry();
     });
 }
@@ -219,6 +245,7 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
   const killRef = useRef(kill);
   const inFlightRef = useRef<ReadonlySet<string>>(new Set());
   const pendingKeysRef = useRef<ReadonlySet<string>>(new Set());
+  const projectionKeysRef = useRef<ReadonlySet<string>>(new Set());
   const authorityStatusRef = useRef<ReadonlyMap<string, string>>(new Map());
   const retriesRef = useRef<Map<string, CloseRetry>>(new Map());
   const mountedRef = useRef(true);
@@ -331,6 +358,21 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
     );
     const previousPendingKeys = pendingKeysRef.current;
     pendingKeysRef.current = pendingKeys;
+    const projectionKeys = new Set(
+      pendingKills.flatMap((pending) => {
+        const entry = authorityEntries[pending.hostId];
+        return entry !== undefined &&
+          getPlainTerminal(
+            entry.authority.collection,
+            pending.hostId,
+            pending.sessionId,
+          ) !== undefined
+          ? [terminalSessionKey(pending.hostId, pending.sessionId)]
+          : [];
+      }),
+    );
+    const previousProjectionKeys = projectionKeysRef.current;
+    projectionKeysRef.current = projectionKeys;
     const currentAuthorityStatus = new Map(
       Object.entries(authorityEntries).map(([hostId, entry]) => [
         hostId,
@@ -356,13 +398,15 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
       const authorityChanged =
         previousAuthorityStatus.get(pending.hostId) !==
         currentAuthorityStatus.get(pending.hostId);
+      const projectionAppeared =
+        projectionKeys.has(key) && !previousProjectionKeys.has(key);
       if (
         !tombstoneDispatchIsDue({
           routeRecovered,
           pendingAdded,
           authorityChanged,
           retryDue: retry?.due === true,
-          pendingCreate: pending.pendingCreate === true,
+          projectionAppeared,
         })
       )
         continue;
@@ -378,14 +422,21 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
           })
           .then(
             () => clearCloseRetry(retriesRef.current, key),
-            () =>
+            (error: unknown) => {
+              if (
+                !(error instanceof HostRpcError) ||
+                !isTransientHostRpcFailure(error)
+              ) {
+                return;
+              }
               scheduleCloseRetry({
                 key,
                 pending,
                 refs: retryRefs,
                 canRetry: () => true,
                 signalRetry: () => setRetryGeneration((current) => current + 1),
-              }),
+              });
+            },
           )
           .finally(() => {
             const next = new Set(inFlightRef.current);

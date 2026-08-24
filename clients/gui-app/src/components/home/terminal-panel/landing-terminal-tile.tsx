@@ -26,6 +26,10 @@ import type {
 } from "@/stores/terminals/terminal-session-store";
 import type { TerminalScope } from "@traycer/protocol/host/terminal/unary-schemas";
 import type { PlainTerminalProjection } from "@traycer/protocol/host/terminal/plain-schemas";
+import {
+  HostTransportFailureError,
+  RetryableTransportError,
+} from "@traycer-clients/shared/host-transport/host-messenger";
 import { Button } from "@/components/ui/button";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import type { HostUnavailability } from "@traycer-clients/shared/host-client/remote-fetcher";
@@ -333,10 +337,16 @@ function LandingTerminalDurableBootstrap(
                 rows: openingGrid.rows,
               });
       } catch (error: unknown) {
-        if (action === "create") {
+        const createDefinitelyDidNotCommit =
+          !(error instanceof HostTransportFailureError) ||
+          error instanceof RetryableTransportError;
+        if (action === "create" && createDefinitelyDidNotCommit) {
           useLandingTerminalStore
             .getState()
             .clearCreateDispatched(props.tab.instanceId);
+          useLandingTerminalStore
+            .getState()
+            .clearPendingKill(props.tab.hostId, props.tab.sessionId);
         }
         throw error;
       }
@@ -372,6 +382,12 @@ function LandingTerminalDurableBootstrap(
     dispatch,
     adopt,
   });
+  const retryLifecycle = (): void => {
+    useLandingTerminalStore
+      .getState()
+      .clearCreateDispatched(props.tab.instanceId);
+    lifecycle.retry();
+  };
 
   useEffect(() => {
     adoptWarmSessionInstance(
@@ -398,7 +414,7 @@ function LandingTerminalDurableBootstrap(
       canMutate={entry.authority.canMutate}
       requestError={lifecycle.requestError}
       requestPending={lifecycle.requestPending}
-      retry={lifecycle.retry}
+      retry={retryLifecycle}
       handle={handle}
       tab={props.tab}
       reportMeasuredGrid={reportMeasuredGrid}

@@ -162,6 +162,25 @@ describe("durable landing-terminal bootstrap", () => {
     expect(dispatch).toHaveBeenNthCalledWith(3, "ensure-running");
   });
 
+  it("surfaces restored ambiguous creates without replaying them", () => {
+    const dispatch = vi.fn(() => Promise.resolve(projection("running")));
+    const rendered = renderHook(() =>
+      useLandingTerminalDurableLifecycle({
+        projectionStatus: "missing",
+        pendingCreate: true,
+        createDispatched: true,
+        active: true,
+        canMutate: true,
+        gridReady: true,
+        dispatch,
+        adopt: vi.fn(),
+      }),
+    );
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(rendered.result.current.requestError?.message).toContain("unknown");
+  });
+
   it("re-arms an initially-discovered tab across two restart cycles", async () => {
     const dispatch = vi.fn(() => Promise.resolve(projection("running")));
     const rendered = renderHook(

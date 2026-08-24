@@ -64,7 +64,11 @@ export function useLandingTerminalDurableLifecycle(args: {
   const requestGenerationRef = useRef(0);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const [requestSettled, setRequestSettled] = useState(false);
-  const [requestError, setRequestError] = useState<Error | null>(null);
+  const [requestError, setRequestError] = useState<Error | null>(() =>
+    projectionStatus === "missing" && pendingCreate && createDispatched
+      ? new Error("Terminal creation outcome is unknown. Retry to try again.")
+      : null,
+  );
   const [pendingRequestGenerations, setPendingRequestGenerations] = useState<
     readonly number[]
   >([]);
