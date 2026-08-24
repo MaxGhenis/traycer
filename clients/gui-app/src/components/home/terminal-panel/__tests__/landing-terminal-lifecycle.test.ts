@@ -498,7 +498,13 @@ describe("landing terminal lifecycle", () => {
           maximized: false,
         },
       },
-      pendingKills: [{ hostId: HOST_A, sessionId: "session-close" }],
+      pendingKills: [
+        {
+          hostId: HOST_A,
+          sessionId: "session-close",
+          pendingCreate: true,
+        },
+      ],
     });
     const result = reconcileLandingTerminalTabs({
       tabs: restored.tabs,
@@ -512,7 +518,11 @@ describe("landing terminal lifecycle", () => {
     });
 
     expect(restored.pendingKills).toEqual([
-      { hostId: HOST_A, sessionId: "session-close" },
+      {
+        hostId: HOST_A,
+        sessionId: "session-close",
+        pendingCreate: true,
+      },
     ]);
     expect(result.tabs).toEqual([]);
     expect(result.adoptedTabs).toEqual([]);
@@ -785,7 +795,11 @@ describe("closeAllTabs", () => {
     store.closeTab(LANDING_PAGE_ID, "pending-create");
 
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: HOST_A, sessionId: "pending-session" },
+      {
+        hostId: HOST_A,
+        sessionId: "pending-session",
+        pendingCreate: true,
+      },
     ]);
 
     store.resetForTests();
@@ -793,7 +807,11 @@ describe("closeAllTabs", () => {
     useLandingTerminalStore.getState().closeAllTabs(LANDING_PAGE_ID);
 
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: HOST_A, sessionId: "pending-session" },
+      {
+        hostId: HOST_A,
+        sessionId: "pending-session",
+        pendingCreate: true,
+      },
     ]);
   });
 

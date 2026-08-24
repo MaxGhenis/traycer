@@ -327,29 +327,6 @@ export function useLandingTerminalReconciliation(
           terminalSessionKey(pending.hostId, pending.sessionId),
         ),
       );
-      const listedSessionIds = new Set(
-        freshSessions.map((session) => session.sessionId),
-      );
-      for (const pending of hostTombstones) {
-        if (!listedSessionIds.has(pending.sessionId)) {
-          useLandingTerminalStore
-            .getState()
-            .clearPendingKill(pending.hostId, pending.sessionId);
-        }
-      }
-      await Promise.all(
-        hostTombstones
-          .filter((pending) => listedSessionIds.has(pending.sessionId))
-          .map((pending) =>
-            killTerminal({
-              hostId: pending.hostId,
-              sessionId: pending.sessionId,
-            }).then(
-              () => undefined,
-              () => undefined,
-            ),
-          ),
-      );
       if (
         reconciliationGenerationIsStale(controller.signal, client, activeHostId)
       ) {
@@ -439,37 +416,6 @@ export async function reconcileCapableLandingTerminals(args: {
   if (initialCollection?.streamSnapshotFresh !== true) {
     return "snapshot-not-fresh";
   }
-  const store = useLandingTerminalStore.getState();
-  const pendingKills = store.pendingKills.filter(
-    (pending) => pending.hostId === activeHostId,
-  );
-
-  await Promise.all(
-    pendingKills.map(async (pending) => {
-      if (pending.legacyEvidence === true) {
-        await args.killTerminal({
-          hostId: pending.hostId,
-          sessionId: pending.sessionId,
-        });
-        useLandingTerminalStore
-          .getState()
-          .clearPendingKill(activeHostId, pending.sessionId);
-        return;
-      }
-      const collection =
-        queryClient.getQueryData<PlainTerminalCollection>(queryKey);
-      if (
-        getPlainTerminal(collection, pending.hostId, pending.sessionId) !==
-        undefined
-      ) {
-        await args.closeTerminal({ terminalId: pending.sessionId });
-      }
-      useLandingTerminalStore
-        .getState()
-        .clearPendingKill(activeHostId, pending.sessionId);
-    }),
-  );
-
   const postKillCollection =
     queryClient.getQueryData<PlainTerminalCollection>(queryKey);
   if (postKillCollection?.streamSnapshotFresh !== true) {

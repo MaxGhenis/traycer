@@ -202,6 +202,54 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     expect(mocks.kill).not.toHaveBeenCalled();
   });
 
+  it("retains a pending-create tombstone until the terminal appears", async () => {
+    mocks.entries = [
+      {
+        ...offlineHost,
+        websocketUrl: "ws://host-b/rpc",
+        transportDialability: "dialable",
+      },
+    ];
+    mocks.authorityStatus = "capable";
+    mocks.canMutate = true;
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "pending-create-tab",
+      sessionId: "session-pending-create",
+      hostId: "host-b",
+      cwd: "/workspace",
+      name: "Pending create",
+      titleSource: "default",
+      pendingCreate: true,
+    });
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "pending-create-tab");
+
+    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => Promise.resolve());
+
+    expect(mocks.closeAsync).not.toHaveBeenCalled();
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+      {
+        hostId: "host-b",
+        sessionId: "session-pending-create",
+        pendingCreate: true,
+      },
+    ]);
+
+    view.unmount();
+    mocks.terminalsById = { "session-pending-create": {} };
+    render(<LandingTerminalTombstoneRecoveryBridge />);
+
+    await waitFor(() => {
+      expect(mocks.closeAsync).toHaveBeenCalledWith({
+        hostId: "host-b",
+        terminalId: "session-pending-create",
+      });
+      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+    });
+  });
+
   it("preserves legacy cleanup routing after the host reports capable authority", async () => {
     mocks.entries = [
       {

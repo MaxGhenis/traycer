@@ -141,6 +141,7 @@ function dispatchCapableClose(args: {
       args.pending.sessionId,
     ) === undefined
   ) {
+    if (args.pending.pendingCreate === true) return;
     useLandingTerminalStore
       .getState()
       .clearPendingKill(args.pending.hostId, args.pending.sessionId);
@@ -322,7 +323,13 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
       const key = terminalSessionKey(pending.hostId, pending.sessionId);
       const retry = retriesRef.current.get(key);
       const routeRecovered = previousDialable.get(pending.hostId) !== true;
-      if (!routeRecovered && retry?.due !== true) continue;
+      if (
+        !routeRecovered &&
+        retry?.due !== true &&
+        pending.pendingCreate !== true
+      ) {
+        continue;
+      }
       if (inFlightRef.current.has(key)) continue;
       const entry = authorityEntries[pending.hostId];
       if (

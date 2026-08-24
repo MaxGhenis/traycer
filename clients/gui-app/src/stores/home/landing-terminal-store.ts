@@ -35,6 +35,7 @@ export interface LandingTerminalPendingKill {
   readonly hostId: string;
   readonly sessionId: string;
   readonly legacyEvidence?: boolean;
+  readonly pendingCreate?: boolean;
 }
 
 export interface LandingTerminalLayout {
@@ -305,6 +306,9 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
                   closed.pendingCreate === true
                     ? {}
                     : { legacyEvidence: true }),
+                  ...(closed.pendingCreate === true
+                    ? { pendingCreate: true }
+                    : {}),
                 },
               ];
           return {
@@ -340,6 +344,9 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
                       tab.pendingCreate === true
                         ? {}
                         : { legacyEvidence: true }),
+                      ...(tab.pendingCreate === true
+                        ? { pendingCreate: true }
+                        : {}),
                     },
                   ],
             state.pendingKills,
@@ -568,6 +575,7 @@ function parsePendingKills(
         hostId: entry.hostId,
         sessionId: entry.sessionId,
         ...(entry.legacyEvidence === true ? { legacyEvidence: true } : {}),
+        ...(entry.pendingCreate === true ? { pendingCreate: true } : {}),
       },
     ];
   });
