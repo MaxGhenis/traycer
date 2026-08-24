@@ -29,11 +29,11 @@ import { useOpenEpicHandle } from "@/providers/use-open-epic-handle";
 import { requestArtifactEditorFocus } from "@/lib/artifacts/pending-editor-focus";
 import { openProjectedSidebarNodeInTabWhenAvailable } from "@/components/epic-canvas/sidebar/open-projected-sidebar-node";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
-import { useEpicExportArtifacts } from "@/hooks/epic/use-epic-export-artifacts-mutation";
 import { cn } from "@/lib/utils";
 import { useEpicSessionHostId } from "@/hooks/epic/use-epic-session-host-id";
 import { ArtifactPanelSearchShell } from "@/components/epic-canvas/sidebar/epic-sidebar-artifact-search";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
+import { useArtifactExportMenuEntries } from "@/components/epic-canvas/sidebar/artifact-export-menu-entries";
 import { Button } from "@/components/ui/button";
 import { ConfirmDestructiveDialog } from "@/components/ui/confirm-destructive-dialog";
 import {
@@ -88,7 +88,6 @@ import { isEditableRole } from "@/lib/epic-permissions";
 import { useSettingsStore } from "@/stores/settings/settings-store";
 import {
   Check,
-  FileDown,
   FileText,
   MoreHorizontal,
   Pencil,
@@ -1674,53 +1673,13 @@ interface ArtifactRowMenuEntriesProps {
 function useArtifactRowMenuEntries(
   props: ArtifactRowMenuEntriesProps,
 ): ReadonlyArray<SidebarRowMenuEntry> {
-  const exportArtifacts = useEpicExportArtifacts();
-  const exportOne = (format: "markdown" | "pdf"): void => {
-    exportArtifacts.mutate({
-      artifacts: [{ id: props.nodeId, title: props.nodeName }],
-      format,
-      archive: false,
-      archiveTitle: null,
-    });
-  };
-  const exportIcon = exportArtifacts.isPending ? (
-    <AgentSpinningDots
-      className={undefined}
-      testId={undefined}
-      variant={undefined}
-    />
-  ) : (
-    <FileDown className="size-3.5" />
-  );
+  const exportEntries = useArtifactExportMenuEntries({
+    nodeId: props.nodeId,
+    nodeName: props.nodeName,
+    testIdPrefix: "epic-sidebar",
+  });
   return [
-    {
-      kind: "item",
-      id: "export-markdown",
-      label: "Export as Markdown",
-      icon: exportIcon,
-      disabled: exportArtifacts.isPending,
-      disabledTooltip: null,
-      variant: "default",
-      testIds: {
-        dropdown: `epic-sidebar-export-markdown-${props.nodeId}`,
-        context: `epic-sidebar-context-export-markdown-${props.nodeId}`,
-      },
-      onSelect: () => exportOne("markdown"),
-    },
-    {
-      kind: "item",
-      id: "export-pdf",
-      label: "Export as PDF",
-      icon: exportIcon,
-      disabled: exportArtifacts.isPending,
-      disabledTooltip: null,
-      variant: "default",
-      testIds: {
-        dropdown: `epic-sidebar-export-pdf-${props.nodeId}`,
-        context: `epic-sidebar-context-export-pdf-${props.nodeId}`,
-      },
-      onSelect: () => exportOne("pdf"),
-    },
+    ...exportEntries,
     { kind: "separator", id: "after-export" },
     {
       kind: "item",

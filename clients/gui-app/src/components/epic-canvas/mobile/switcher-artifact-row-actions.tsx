@@ -1,11 +1,10 @@
-import { FileDown, Pencil, Trash2 } from "lucide-react";
-import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
+import { Pencil, Trash2 } from "lucide-react";
 import type { SidebarRowMenuEntry } from "@/components/epic-canvas/sidebar/sidebar-row-menu-items";
+import { useArtifactExportMenuEntries } from "@/components/epic-canvas/sidebar/artifact-export-menu-entries";
 import { SwitcherRowMenu } from "@/components/epic-canvas/mobile/switcher-row-menu";
 import { useSwitcherRowActions } from "@/components/epic-canvas/mobile/use-switcher-row-actions";
 import { useEpicPermissionRole } from "@/lib/epic-selectors";
 import { isEditableRole } from "@/lib/epic-permissions";
-import { useEpicExportArtifacts } from "@/hooks/epic/use-epic-export-artifacts-mutation";
 
 /**
  * The per-row "…" actions for the switcher's artifact tree: the two desktop
@@ -42,55 +41,11 @@ export function SwitcherArtifactRowActions(props: {
     kind: "artifact",
     nodeId,
   });
-  const exportArtifacts = useEpicExportArtifacts();
-
-  const exportOne = (format: "markdown" | "pdf"): void => {
-    exportArtifacts.mutate({
-      artifacts: [{ id: nodeId, title: name }],
-      format,
-      archive: false,
-      archiveTitle: null,
-    });
-  };
-  const exportIcon = exportArtifacts.isPending ? (
-    <AgentSpinningDots
-      className={undefined}
-      testId={undefined}
-      variant={undefined}
-    />
-  ) : (
-    <FileDown className="size-3.5" />
-  );
-  const exportEntries: ReadonlyArray<SidebarRowMenuEntry> = [
-    {
-      kind: "item",
-      id: "export-markdown",
-      label: "Export as Markdown",
-      icon: exportIcon,
-      disabled: exportArtifacts.isPending,
-      disabledTooltip: null,
-      variant: "default",
-      testIds: {
-        dropdown: `switcher-export-markdown-${nodeId}`,
-        context: `switcher-export-markdown-ctx-${nodeId}`,
-      },
-      onSelect: () => exportOne("markdown"),
-    },
-    {
-      kind: "item",
-      id: "export-pdf",
-      label: "Export as PDF",
-      icon: exportIcon,
-      disabled: exportArtifacts.isPending,
-      disabledTooltip: null,
-      variant: "default",
-      testIds: {
-        dropdown: `switcher-export-pdf-${nodeId}`,
-        context: `switcher-export-pdf-ctx-${nodeId}`,
-      },
-      onSelect: () => exportOne("pdf"),
-    },
-  ];
+  const exportEntries = useArtifactExportMenuEntries({
+    nodeId,
+    nodeName: name,
+    testIdPrefix: "switcher",
+  });
 
   const mutateEntries: ReadonlyArray<SidebarRowMenuEntry> = canMutate
     ? [

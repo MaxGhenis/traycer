@@ -32,12 +32,12 @@ import {
   useEpicPermissionRole,
   useEpicTreeIndex,
   useEpicTreeNode,
-  type EpicTreeRecord,
+  type EpicTreeIndex,
 } from "@/lib/epic-selectors";
 import { isEditableRole } from "@/lib/epic-permissions";
 import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import {
-  computeDescendantCounts,
+  computeDescendantCountsFromTree,
   formatCascadeSummary,
 } from "@/lib/epic-tree-cascade";
 import {
@@ -71,8 +71,14 @@ interface SwitcherAgentTreeValue {
   readonly epicId: string;
   readonly tabId: string;
   readonly onClose: () => void;
-  /** The whole flat projection, for a row's delete-cascade copy. */
-  readonly records: ReadonlyArray<EpicTreeRecord>;
+  /**
+   * The tree index, for a row's delete-cascade copy. NOT the flat record array:
+   * `useEpicArtifactRecords()` returns fresh records on every store tick, so
+   * during chat streaming it churns identity each token and would re-render
+   * every row in this tree through this very context. The index carries the
+   * same structure and does not change on chat tokens.
+   */
+  readonly tree: EpicTreeIndex;
   /** Each record's projected host, the fallback for a row with no owner. */
   readonly recordHostIdById: ReadonlyMap<string, string>;
   readonly expandedIds: ReadonlySet<string>;
@@ -164,6 +170,11 @@ export function SwitcherAgentsList(props: SwitcherListProps) {
     enabled: indicatorChatIds.length > 0,
   });
 
+  // Derived from the flat projection, which returns fresh records on every
+  // store tick - so this map's identity churns during chat streaming and takes
+  // the context value with it. Kept anyway: it is the row's host fallback, and
+  // a tile's host binding is for life, so its resolution is not something to
+  // change for a render-count win.
   const recordHostIdById = useMemo(
     () => new Map(records.map((record) => [record.id, record.hostId])),
     [records],
@@ -173,12 +184,12 @@ export function SwitcherAgentsList(props: SwitcherListProps) {
       epicId,
       tabId,
       onClose,
-      records,
+      tree,
       recordHostIdById,
       expandedIds,
       canMutate,
     }),
-    [epicId, tabId, onClose, records, recordHostIdById, expandedIds, canMutate],
+    [epicId, tabId, onClose, tree, recordHostIdById, expandedIds, canMutate],
   );
 
   return (
@@ -266,7 +277,7 @@ function SwitcherAgentRow(props: {
   readonly onToggle: () => void;
 }) {
   const { nodeId, name, type, depth, hasChildren, expanded, onToggle } = props;
-  const { epicId, tabId, onClose, records, recordHostIdById, canMutate } =
+  const { epicId, tabId, onClose, tree, recordHostIdById, canMutate } =
     useSwitcherAgentTree();
   const activate = useSwitcherActivate(epicId, tabId, onClose);
   const isActive = useIsActiveEpicArtifact(tabId, nodeId);
@@ -279,20 +290,29 @@ function SwitcherAgentRow(props: {
 
   // The host the opened tile BINDS TO, and a tab's host binding is for life -
   // so this has to be the row's owner, exactly as the desktop row resolves it.
-  // The records' `hostId` is not that host: `recordForChat` stamps chat rows
-  // with the app-wide ACTIVE host, so a retained epic tab bound to host A would
-  // permanently open an A-owned chat against host B once the user switched
-  // hosts, and ask the wrong machine for the transcript forever after.
+  // The chat projection carries one once it has been re-pointed; only TUI rows
+  // carry one from the start.
   //
-  // The record fallback covers a legacy chat carrying no projected host, and is
-  // the active host by construction - precisely what `recordForChat` stamped -
-  // so a tap always opens something. TUI rows are unaffected either way: both
-  // sides read the same projection field for them. The placeholder is the last
-  // resort for a node the flat projection has already dropped; it is not
-  // dialable, and neither is anything else that could stand in for it.
+  // The record fallback covers a legacy chat with no projected host of its own.
+  // It is the Epic SESSION host by construction - `useEpicArtifactRecords`
+  // stamps chat records with `getEpicSessionHandleHostId(handle)`, which is the
+  // host serving THIS projection and never the app-wide addressable one - so a
+  // tap always opens something, and opens it against the machine the rows were
+  // read from. TUI rows are unaffected either way: both sides read the same
+  // projection field for them. The placeholder is the last resort for a node
+  // the flat projection has already dropped; it is not dialable, and neither is
+  // anything else that could stand in for it.
   const ownerHostId = useEpicNodeHostId(nodeId);
   const openHostId =
     ownerHostId ?? recordHostIdById.get(nodeId) ?? UNKNOWN_HOST_PLACEHOLDER;
+
+  // Walked from the tree index, memoized on it: the counts are only read when
+  // the row's delete confirm opens, and an un-memoized walk here would be
+  // O(rows x nodes) on every render of the list.
+  const cascadeSummary = useMemo(
+    () => formatCascadeSummary(computeDescendantCountsFromTree(tree, nodeId)),
+    [tree, nodeId],
+  );
 
   const onSelect = useCallback(() => {
     if (!isOpenableEpicNodeKind(type)) return;
@@ -349,9 +369,7 @@ function SwitcherAgentRow(props: {
           name={name}
           artifactType={type}
           ownerHostId={ownerHostId}
-          cascadeSummary={formatCascadeSummary(
-            computeDescendantCounts(records, nodeId),
-          )}
+          cascadeSummary={cascadeSummary}
           onClose={onClose}
         />
       }

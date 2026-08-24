@@ -391,7 +391,7 @@ describe("<SwitcherTerminalsList /> rows", () => {
     ).toBeNull();
   });
 
-  it("disables close for a durable row the client may not mutate", () => {
+  it("disables both mutations for a durable row the client may not mutate", () => {
     authority.canMutate = false;
     durableCollection.value = completeFleet([
       durableTerminal({
@@ -406,6 +406,12 @@ describe("<SwitcherTerminalsList /> rows", () => {
       name: "Close",
     });
     expect(close.disabled).toBe(true);
+    // Rename goes through the same authority gate, so a regression that leaves
+    // it enabled for a non-mutating client would otherwise pass here.
+    const rename = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Rename",
+    });
+    expect(rename.disabled).toBe(true);
   });
 });
 
