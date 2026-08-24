@@ -137,6 +137,18 @@ vi.mock("@/hooks/host/use-host-client-for-host-id", () => ({
   useHostClientForHostId: () => null,
 }));
 
+// The session-import prompt row sits above the list and reads the same host
+// runtime this file renders without. An unadvertised capability is what a host
+// that predates session import reports, and it draws no row at all - which is
+// the shape every assertion below already expects the panel to have.
+vi.mock("@/hooks/session-import/use-session-import-available", () => ({
+  useSessionImportAvailable: () => false,
+}));
+
+vi.mock("@/hooks/session-import/use-session-import-status-query", () => ({
+  useSessionImportStatus: () => ({ data: undefined }),
+}));
+
 vi.mock("@/hooks/epic/use-epic-sweep-worktree-candidates-query", () => ({
   useEpicSweepWorktreeCandidatesForClient: () => ({
     hostId: "host-test",
