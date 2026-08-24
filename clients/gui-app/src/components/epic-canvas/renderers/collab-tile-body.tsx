@@ -33,7 +33,7 @@ import {
   useEpicArtifactBodyAvailability,
   useEpicArtifactBodyAwareness,
   useEpicArtifactFragment,
-  useEpicCommentsHaveNoCloudRoom,
+  useEpicCommentsHaveNoUsableRoom,
   useEpicPermissionRole,
   useEpicSnapshotLoaded,
   useOpenEpicId,
@@ -298,19 +298,18 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
     [profile],
   );
 
-  // Local artifact rooms deliberately have no comment-thread provider. Do not
-  // let a person invest a draft in an action that the host can only reject as
-  // `no_active_session`; the comments panel explains this boundary directly.
-  //
-  // `commentsHaveNoCloudRoom`, not `!== "local"`: the reserved-but-pre-cutover
-  // `promoting` window has the same null provider and used to slip through.
+  // Local artifact rooms carry a durable, disconnected comment-thread provider
+  // beside their body Y.Doc. The reserved-but-pre-cutover `promoting` window
+  // has neither that provider nor its cloud replacement, so it remains gated.
   //
   // The STICKY hook rather than the bare predicate: a stream reconnect clears
   // the store's durability slots, and for the few frames before the
   // replacement arrives the raw answer flips to "comments are fine" on an epic
-  // that has no room - long enough to start a draft the restored gate wipes.
-  const noCloudRoom = useEpicCommentsHaveNoCloudRoom();
-  const commentsSupported = commentArtifactKind !== null && !noCloudRoom;
+  // whose replacement is not ready - long enough to start a draft the restored
+  // gate wipes.
+  const commentsUnavailable = useEpicCommentsHaveNoUsableRoom();
+  const commentsSupported =
+    commentArtifactKind !== null && !commentsUnavailable;
   const setDraft = useCommentThreadsStore((s) => s.setDraft);
   const setActiveThread = useCommentThreadsStore((s) => s.setActiveThread);
   const activeThreadId = useActiveThreadId(epicId);
@@ -336,8 +335,8 @@ function CollabTileBodyEditor(props: CollabTileBodyEditorProps) {
   const setFlashThread = useCommentThreadsStore((s) => s.setFlashThread);
   const clearFlashThread = useCommentThreadsStore((s) => s.clearFlashThread);
   useEffect(() => {
-    if (noCloudRoom) setDraft(epicId, null);
-  }, [noCloudRoom, epicId, setDraft]);
+    if (commentsUnavailable) setDraft(epicId, null);
+  }, [commentsUnavailable, epicId, setDraft]);
   const resolvedThreadIds = useMemo(
     () =>
       (threadsQuery.data?.threads ?? []).reduce(

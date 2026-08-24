@@ -350,7 +350,7 @@ describe("<CommentSidebar /> local durability honesty", () => {
     epicHandle = null;
   });
 
-  it("shows the explicit local comments-unavailable panel without a generic RPC failure", async () => {
+  it("loads local-home comments through the enabled query path", async () => {
     if (epicHandle === null) {
       throw new Error("expected open epic handle");
     }
@@ -359,21 +359,17 @@ describe("<CommentSidebar /> local durability honesty", () => {
 
     renderSidebar(epicHandle);
 
+    expect(await screen.findByText(QUOTED_TEXT)).not.toBeNull();
+    expect(listThreadsCalls).toBeGreaterThan(0);
+    // A local home has a usable provider, so the former cloud-room gate must
+    // stay absent and the sidebar must not show an unavailable panel.
     expect(
-      await screen.findByText(
-        "Comments need a cloud room, and this epic has none.",
-      ),
-    ).not.toBeNull();
+      screen.queryByText("Comments need a cloud room, and this epic has none."),
+    ).toBeNull();
     expect(
-      screen.getByText("This epic is stored on this device."),
-    ).not.toBeNull();
-    // Must not fall into the generic RPC-failure copy.
-    expect(screen.queryByText("Comments couldn't be loaded.")).toBeNull();
-    expect(screen.queryByText(/This doesn't mean there are none/)).toBeNull();
-    expect(screen.queryByText(/No open comments/)).toBeNull();
-    expect(unavailablePanel()).not.toBeNull();
-    // Local mode disables the list query — honesty without a failed RPC.
-    expect(listThreadsCalls).toBe(0);
+      screen.queryByText("Comments are temporarily unavailable."),
+    ).toBeNull();
+    expect(unavailablePanel()).toBeNull();
     expect(queryStatuses()).not.toContain("error");
   });
 
@@ -392,14 +388,12 @@ describe("<CommentSidebar /> local durability honesty", () => {
     ).toBeNull();
   });
 
-  it("keeps comments gated through the promoting window, against the same null provider", async () => {
+  it("keeps comments gated while promotion is in flight", async () => {
     if (epicHandle === null) {
       throw new Error("expected open epic handle");
     }
-    // The reserved-but-pre-cutover state. The promotion is recorded and the
-    // upload is in flight, but the artifact room's collab provider is still
-    // null - so the host answers `no_active_session` and the old gate, keyed
-    // on exactly "local", let the request through to collect it.
+    // The reserved-but-pre-cutover state: promotion is recorded and the upload
+    // is in flight, so the selector marks the room as temporarily unusable.
     epicHandle.store.setState({
       durabilityStatus: "promoting",
       durabilityPromotionState: "active",
@@ -408,9 +402,7 @@ describe("<CommentSidebar /> local durability honesty", () => {
     renderSidebar(epicHandle);
 
     expect(
-      await screen.findByText(
-        "Comments need a cloud room, and this epic has none.",
-      ),
+      await screen.findByText("Comments are temporarily unavailable."),
     ).not.toBeNull();
     // The copy states the condition rather than predicting cloud sync.
     expect(
@@ -418,10 +410,93 @@ describe("<CommentSidebar /> local durability honesty", () => {
     ).not.toBeNull();
     // The defect was a generic failure standing in for a known boundary.
     expect(screen.queryByText("Comments couldn't be loaded.")).toBeNull();
-    // Arrangement fidelity: the RPC was never issued, so the panel is not
-    // merely the error state wearing better copy.
+    // Arrangement fidelity: the RPC was never issued, so this is the known
+    // promotion boundary rather than a generic read failure.
     expect(listThreadsCalls).toBe(0);
     expect(queryStatuses()).not.toContain("error");
+  });
+
+  it("keeps the uploading copy through a reconnect reset of promoting status", async () => {
+    if (epicHandle === null) {
+      throw new Error("expected open epic handle");
+    }
+    epicHandle.store.setState({
+      durabilityStatus: "promoting",
+      durabilityPauseReason: null,
+      durabilityPromotionState: "active",
+    });
+
+    renderSidebar(epicHandle);
+    expect(
+      await screen.findByText("This epic is still uploading to the cloud."),
+    ).not.toBeNull();
+
+    act(() => {
+      epicHandle?.store.setState({
+        durabilityStatus: null,
+        durabilityPauseReason: null,
+        durabilityPromotionState: null,
+        durabilityLegsNegotiated: false,
+        retainedDurabilityStatus: "promoting",
+        retainedDurabilityPauseReason: null,
+      });
+    });
+
+    expect(
+      await screen.findByText("This epic is still uploading to the cloud."),
+    ).not.toBeNull();
+    expect(
+      screen.queryByText("This epic's cloud room is no longer available."),
+    ).toBeNull();
+    expect(listThreadsCalls).toBe(0);
+  });
+
+  it("uses closed recovery copy for a cloud-deleted orphaned room", async () => {
+    if (epicHandle === null) {
+      throw new Error("expected open epic handle");
+    }
+    epicHandle.store.setState({
+      durabilityStatus: "paused",
+      durabilityPauseReason: "orphaned-local-edits-after-cloud-delete",
+      durabilityLegsNegotiated: true,
+    });
+
+    renderSidebar(epicHandle);
+
+    expect(await screen.findByText("Comments are unavailable.")).not.toBeNull();
+    expect(
+      screen.getByText(
+        "This epic's cloud room was deleted. Export or recover the preserved local edits manually.",
+      ),
+    ).not.toBeNull();
+    expect(
+      screen.queryByText("Comments are temporarily unavailable."),
+    ).toBeNull();
+    expect(listThreadsCalls).toBe(0);
+  });
+
+  it("shows checking copy when durability legs negotiated without a status", async () => {
+    if (epicHandle === null) {
+      throw new Error("expected open epic handle");
+    }
+    epicHandle.store.setState({
+      durabilityStatus: null,
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: null,
+      retainedDurabilityPauseReason: null,
+      durabilityLegsNegotiated: true,
+    });
+
+    renderSidebar(epicHandle);
+
+    expect(await screen.findByText("Comments are unavailable.")).not.toBeNull();
+    expect(
+      screen.getByText("This epic's comment room is still being checked."),
+    ).not.toBeNull();
+    expect(
+      screen.queryByText("This epic is still uploading to the cloud."),
+    ).toBeNull();
+    expect(listThreadsCalls).toBe(0);
   });
 });
 

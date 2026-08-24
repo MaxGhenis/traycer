@@ -1166,7 +1166,7 @@ export function createOpenEpicStore(
    * epic is DURABLE is a property of the epic, not of the connection - a
    * local-homed epic does not acquire a cloud room by reconnecting - and gates
    * that fail dangerous on an absent answer need the retained fact rather than
-   * the cycle's silence. See `useEpicCommentsHaveNoCloudRoom`.
+   * the cycle's silence. See `useEpicCommentsHaveNoUsableRoom`.
    *
    * Only a positive statement writes it, so it never manufactures an answer
    * the host has not given. Cleared by `requestFreshSnapshot`, which
