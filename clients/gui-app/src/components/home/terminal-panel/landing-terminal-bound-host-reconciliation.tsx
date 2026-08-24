@@ -7,7 +7,7 @@ import type {
 import { useLandingTerminalStore } from "@/stores/home/landing-terminal-store";
 import type { LandingTerminalAuthorityEntry } from "./landing-terminal-authority-fleet";
 import { reconcileCapableLandingTerminals } from "./use-landing-terminal-reconciliation";
-import { useLandingTerminalKill } from "./use-landing-terminal-kill-mutation";
+import type { LandingTerminalKillVariables } from "./use-landing-terminal-kill-mutation";
 
 /**
  * Keeps every non-selected host represented in the landing presentation on
@@ -20,6 +20,9 @@ export function LandingTerminalBoundHostReconciliationFleet(props: {
   readonly landingPageId: string;
   readonly selectedHostId: string | null;
   readonly entries: LandingTerminalBoundHostAuthorityEntries;
+  readonly killTerminal: (
+    request: LandingTerminalKillVariables,
+  ) => Promise<unknown>;
 }): ReactNode {
   return Object.entries(props.entries).flatMap(([hostId, entry]) =>
     entry === undefined || hostId === props.selectedHostId
@@ -30,6 +33,7 @@ export function LandingTerminalBoundHostReconciliationFleet(props: {
             hostId={hostId}
             landingPageId={props.landingPageId}
             entry={entry}
+            killTerminal={props.killTerminal}
           />,
         ],
   );
@@ -39,12 +43,14 @@ function LandingTerminalBoundHostReconciliation(props: {
   readonly hostId: string;
   readonly landingPageId: string;
   readonly entry: LandingTerminalBoundHostAuthorityEntry;
+  readonly killTerminal: (
+    request: LandingTerminalKillVariables,
+  ) => Promise<unknown>;
 }): ReactNode {
   const { entry, hostId, landingPageId } = props;
   const queryClient = useQueryClient();
   const tabs = useLandingTerminalStore((state) => state.tabs);
   const pendingKills = useLandingTerminalStore((state) => state.pendingKills);
-  const killTerminal = useLandingTerminalKill().mutateAsync;
   const reconciliationRef = useRef<string | null>(null);
 
   const hostTabsFingerprint = tabs
@@ -102,7 +108,7 @@ function LandingTerminalBoundHostReconciliation(props: {
       canMutate: authority.canMutate,
       closeTerminal: (request) =>
         entry.mutations.close.mutateAsync({ ...request, hostId }),
-      killTerminal,
+      killTerminal: props.killTerminal,
       importLegacyTerminal: (request) =>
         entry.mutations.importLegacy.mutateAsync(request),
       queryClient,
@@ -124,9 +130,9 @@ function LandingTerminalBoundHostReconciliation(props: {
     entry,
     hostId,
     hostTabsFingerprint,
-    killTerminal,
     landingPageId,
     pendingKillsFingerprint,
+    props.killTerminal,
     queryClient,
   ]);
 

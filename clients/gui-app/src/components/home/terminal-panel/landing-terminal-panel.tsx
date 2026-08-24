@@ -978,6 +978,7 @@ export function LandingTerminalPanel(): ReactNode {
         landingPageId={landingPageId}
         selectedHostId={target.hostId}
         entries={authorityEntries}
+        killTerminal={killTerminalAsync}
       />
       {panelUnavailable ? null : (
         <LandingTerminalPanelContents
