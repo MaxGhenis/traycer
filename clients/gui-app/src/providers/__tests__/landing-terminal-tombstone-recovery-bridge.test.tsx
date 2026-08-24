@@ -164,6 +164,30 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     });
   });
 
+  it("retires a tombstone when its host is deregistered", async () => {
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "deregistered-tab",
+      sessionId: "deregistered-session",
+      hostId: "host-b",
+      cwd: "/workspace/project",
+      name: "project",
+      titleSource: "default",
+    });
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "deregistered-tab");
+    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
+    expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(1);
+
+    mocks.entries = [];
+    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
+
+    await waitFor(() => {
+      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+    });
+    expect(mocks.kill).not.toHaveBeenCalled();
+  });
+
   it("retries an acknowledged capable-host close only through shared authority", async () => {
     mocks.entries = [
       {

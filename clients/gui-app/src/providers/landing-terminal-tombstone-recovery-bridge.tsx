@@ -248,10 +248,23 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
     () => (directory.data ?? []).map((entry) => entry.hostId),
     [directory.data],
   );
-  const authorityHostIds = useMemo(
-    () => [...new Set(pendingKills.map((pending) => pending.hostId))],
-    [pendingKills],
-  );
+  const authorityHostIds = useMemo(() => {
+    const registeredHostIds =
+      directory.data === undefined
+        ? null
+        : new Set(directory.data.map((entry) => entry.hostId));
+    return [
+      ...new Set(
+        pendingKills
+          .filter(
+            (pending) =>
+              registeredHostIds === null ||
+              registeredHostIds.has(pending.hostId),
+          )
+          .map((pending) => pending.hostId),
+      ),
+    ];
+  }, [directory.data, pendingKills]);
   const hasReadySessionFor = useRemoteSessionsPollReadiness(directoryHostIds);
   const authorityEntriesRef = useRef(authorityEntries);
 
@@ -277,6 +290,15 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
 
   useEffect(() => {
     const entries = directory.data ?? [];
+    const registeredHostIds = new Set(entries.map((entry) => entry.hostId));
+    if (directory.data !== undefined) {
+      for (const pending of pendingKills) {
+        if (registeredHostIds.has(pending.hostId)) continue;
+        useLandingTerminalStore
+          .getState()
+          .clearPendingKill(pending.hostId, pending.sessionId);
+      }
+    }
     const currentDrainable = new Map(
       entries.map((entry) => [
         entry.hostId,
