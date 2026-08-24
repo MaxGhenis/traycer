@@ -766,8 +766,9 @@ export function LandingTerminalPanel(): ReactNode {
       const closed = closeTab(landingPageId, tab.instanceId);
       if (closed === null) return;
       const authorityEntry = authorityEntries[closed.hostId];
-      if (
-        closed.pendingCreate !== true &&
+      if (closed.pendingCreate === true) {
+        // The durable bridge owns this tombstone until create settles.
+      } else if (
         landingTerminalAuthorityReady(authorityEntry) &&
         authorityEntry.authority.capability.status === "capable"
       ) {

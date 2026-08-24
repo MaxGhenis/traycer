@@ -45,6 +45,7 @@ export function useLandingTerminalDurableLifecycle(args: {
     action: Exclude<LandingTerminalDurableBootstrapAction, "none">,
   ) => Promise<PlainTerminalProjection>;
   readonly adopt: (terminal: PlainTerminalProjection) => void;
+  readonly onCreateRejected: (() => void) | null;
 }): LandingTerminalDurableLifecycleResult {
   const {
     active,
@@ -52,6 +53,7 @@ export function useLandingTerminalDurableLifecycle(args: {
     canMutate,
     dispatch,
     gridReady,
+    onCreateRejected,
     pendingCreate,
     projectionStatus,
   } = args;
@@ -118,6 +120,7 @@ export function useLandingTerminalDurableLifecycle(args: {
         setPendingRequestGenerations((current) =>
           current.filter((generation) => generation !== requestGeneration),
         );
+        if (action === "create") onCreateRejected?.();
         if (requestGenerationRef.current !== requestGeneration) return;
         setRequestError(
           error instanceof Error
@@ -132,6 +135,7 @@ export function useLandingTerminalDurableLifecycle(args: {
     canMutate,
     dispatch,
     gridReady,
+    onCreateRejected,
     pendingCreate,
     projectionStatus,
     retryGeneration,

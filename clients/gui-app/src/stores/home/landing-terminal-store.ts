@@ -99,6 +99,11 @@ export interface LandingTerminalStoreState {
     collapseWhenEmpty: boolean,
   ) => void;
   readonly clearPendingKill: (hostId: string, sessionId: string) => void;
+  readonly settleFailedCreate: (
+    instanceId: string,
+    hostId: string,
+    sessionId: string,
+  ) => void;
   readonly rekeyTab: (instanceId: string, sessionId: string) => void;
   readonly adoptHostTerminal: (
     instanceId: string,
@@ -379,6 +384,18 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
         })),
       clearPendingKill: (hostId, sessionId) =>
         set((state) => ({
+          pendingKills: state.pendingKills.filter(
+            (pending) =>
+              pending.hostId !== hostId || pending.sessionId !== sessionId,
+          ),
+        })),
+      settleFailedCreate: (instanceId, hostId, sessionId) =>
+        set((state) => ({
+          tabs: state.tabs.map((tab) =>
+            tab.instanceId === instanceId
+              ? { ...tab, pendingCreate: false }
+              : tab,
+          ),
           pendingKills: state.pendingKills.filter(
             (pending) =>
               pending.hostId !== hostId || pending.sessionId !== sessionId,
