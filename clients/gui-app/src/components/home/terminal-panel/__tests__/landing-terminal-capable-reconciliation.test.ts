@@ -630,6 +630,47 @@ describe("capable landing-terminal reconciliation", () => {
     ]);
   });
 
+  it("retires a dismissed import suppression when the host reports deletion", async () => {
+    const legacy = tab({
+      instanceId: "dismissed-deleted-import",
+      terminalId: "deleted-legacy-id",
+      name: "Deleted legacy terminal",
+    });
+    useLandingTerminalStore.getState().addTab(legacy);
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+      freshCollection([]),
+    );
+    const pendingImport = deferred<{
+      readonly status: "deleted";
+      readonly terminalId: string;
+      readonly revision: number;
+    }>();
+    const importLegacy = vi.fn(() => pendingImport.promise);
+    const reconciliation = reconcileCapableLandingTerminals({
+      activeHostId: HOST_ID,
+      landingPageId: LANDING_PAGE_ID,
+      capability: CAPABILITY,
+      canMutate: true,
+      closeTerminal: () => Promise.resolve(),
+      importLegacyTerminal: importLegacy,
+      queryClient,
+    });
+    await waitFor(() => expect(importLegacy).toHaveBeenCalledTimes(1));
+    useLandingTerminalStore
+      .getState()
+      .dismissTab(LANDING_PAGE_ID, legacy.instanceId);
+    pendingImport.resolve({
+      status: "deleted",
+      terminalId: legacy.sessionId,
+      revision: 2,
+    });
+
+    await expect(reconciliation).resolves.toBe("reconciled");
+    expect(useLandingTerminalStore.getState().tabs).toEqual([]);
+    expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([]);
+  });
+
   it("does not adopt another host from a complete-fleet snapshot", async () => {
     const otherHost = "host-b";
     const dismissed = {

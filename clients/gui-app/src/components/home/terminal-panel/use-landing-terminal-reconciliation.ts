@@ -498,7 +498,7 @@ export async function reconcileCapableLandingTerminals(args: {
         });
         return;
       }
-      await migrationCoordinator.migrate(
+      const migration = await migrationCoordinator.migrate(
         {
           hostId: activeHostId,
           scope: INDEPENDENT_SCOPE,
@@ -537,6 +537,14 @@ export async function reconcileCapableLandingTerminals(args: {
           },
         },
       );
+      if (
+        migration.status === "adopted" &&
+        migration.response.status === "deleted"
+      ) {
+        useLandingTerminalStore
+          .getState()
+          .clearVolatileDismissal(legacyTab.hostId, legacyTab.sessionId);
+      }
     }),
   );
 

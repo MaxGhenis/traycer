@@ -1256,6 +1256,7 @@ describe("<LandingTerminalPanel />", () => {
         terminalId: "terminal-shared",
       });
       expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+      expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([]);
     });
     expect(mocks.kill).not.toHaveBeenCalled();
   });

@@ -787,9 +787,9 @@ export function LandingTerminalPanel(): ReactNode {
             terminalId: closed.sessionId,
           })
           .then(() => {
-            useLandingTerminalStore
-              .getState()
-              .clearPendingKill(closed.hostId, closed.sessionId);
+            const store = useLandingTerminalStore.getState();
+            store.clearPendingKill(closed.hostId, closed.sessionId);
+            store.clearVolatileDismissal(closed.hostId, closed.sessionId);
           })
           .catch(() => undefined);
       } else if (landingTerminalAuthorityReady(authorityEntry)) {
