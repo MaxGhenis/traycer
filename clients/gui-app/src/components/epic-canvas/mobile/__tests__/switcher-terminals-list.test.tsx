@@ -437,6 +437,28 @@ describe("<SwitcherTerminalsList /> states", () => {
     expect(screen.getByTestId("switcher-new-terminal")).toBeTruthy();
   });
 
+  it("gives a viewer no New terminal row, empty list or not", () => {
+    // A viewer's create is server-rejected, so the row would only lead to a
+    // dead end. The gate lives on the list, not inside the create row.
+    role.value = "viewer";
+    durableCollection.value = completeFleet([]);
+    const empty = renderList(openEpicTab());
+    expect(screen.getByTestId("switcher-terminal-empty")).toBeTruthy();
+    expect(screen.queryByTestId("switcher-new-terminal")).toBeNull();
+    empty.unmount();
+
+    durableCollection.value = completeFleet([
+      durableTerminal({
+        hostId: HOST_A,
+        terminalId: "term-1",
+        title: "Build",
+        runtime: runningRuntime("term-1"),
+      }),
+    ]);
+    renderList(openEpicTab());
+    expect(screen.queryByTestId("switcher-new-terminal")).toBeNull();
+  });
+
   it("offers retry and discard for a durable create that failed", async () => {
     authority.capability = "unknown";
     acceptEpicTerminalDurableCreate({
