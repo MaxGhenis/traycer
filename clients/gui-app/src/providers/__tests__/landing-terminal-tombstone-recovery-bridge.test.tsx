@@ -495,6 +495,81 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
   });
 
+  it("does not consume old ambiguity while a create retry is active", async () => {
+    mocks.entries = [
+      {
+        ...offlineHost,
+        websocketUrl: "ws://host-b/rpc",
+        transportDialability: "dialable",
+      },
+    ];
+    mocks.authorityStatus = "capable";
+    mocks.canMutate = true;
+    mocks.snapshotEpoch = 5;
+    const store = useLandingTerminalStore.getState();
+    store.addTab({
+      instanceId: "active-retry-tab",
+      sessionId: "active-retry-session",
+      hostId: "host-b",
+      cwd: "/workspace/project",
+      name: "Active retry",
+      titleSource: "default",
+      pendingCreate: true,
+      createFailure: "ambiguous",
+      createRejectedAtSnapshotEpoch: 3,
+    });
+    store.markCreateAttempt("active-retry-tab");
+    store.closeTab("landing-page", "active-retry-tab");
+
+    render(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => Promise.resolve());
+
+    expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(1);
+    expect(mocks.closeAsync).not.toHaveBeenCalled();
+  });
+
+  it("rechecks authoritative absence after an in-flight close rejects", async () => {
+    mocks.entries = [
+      {
+        ...offlineHost,
+        websocketUrl: "ws://host-b/rpc",
+        transportDialability: "dialable",
+      },
+    ];
+    mocks.authorityStatus = "capable";
+    mocks.canMutate = true;
+    mocks.terminalsById = { "lost-response-session": {} };
+    let rejectClose: ((reason: Error) => void) | undefined;
+    mocks.closeAsync.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectClose = reject;
+        }),
+    );
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "lost-response-tab",
+      sessionId: "lost-response-session",
+      hostId: "host-b",
+      cwd: "/workspace/project",
+      name: "Lost response",
+      titleSource: "default",
+      hostAuthorityAcknowledged: true,
+    });
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "lost-response-tab");
+    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
+    await waitFor(() => expect(mocks.closeAsync).toHaveBeenCalledTimes(1));
+
+    mocks.terminalsById = {};
+    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
+    rejectClose?.(new Error("response lost"));
+
+    await waitFor(() => {
+      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+    });
+  });
+
   it("retires an ambiguous create dismissed after a fresh absent snapshot", async () => {
     mocks.entries = [
       {

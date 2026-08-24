@@ -178,6 +178,33 @@ export function clampLandingTerminalPanelWidthFraction(value: number): number {
   );
 }
 
+function parseCreateRecovery(
+  value: Record<string, unknown>,
+): Partial<LandingTerminalTabRef> {
+  const hydratedInFlight =
+    value.pendingCreate === true &&
+    value.createFailure === undefined &&
+    value.hostAuthorityAcknowledged !== true;
+  if (hydratedInFlight) {
+    return { createFailure: "ambiguous", retireOnFreshSnapshot: true };
+  }
+  const createFailure =
+    value.createFailure === "definitive" || value.createFailure === "ambiguous"
+      ? value.createFailure
+      : undefined;
+  return {
+    ...(createFailure === undefined ? {} : { createFailure }),
+    ...(isNonNegativeInteger(value.createRejectedAtSnapshotEpoch)
+      ? {
+          createRejectedAtSnapshotEpoch: value.createRejectedAtSnapshotEpoch,
+        }
+      : {}),
+    ...(createFailure === "ambiguous" && value.retireOnFreshSnapshot === true
+      ? { retireOnFreshSnapshot: true }
+      : {}),
+  };
+}
+
 export function parseLandingTerminalTabRef(
   value: unknown,
 ): LandingTerminalTabRef | null {
@@ -203,20 +230,7 @@ export function parseLandingTerminalTabRef(
       ? { hostAuthorityAcknowledged: true }
       : {}),
     ...(value.pendingCreate === true ? { pendingCreate: true } : {}),
-    ...(value.createFailure === "definitive" ||
-    value.createFailure === "ambiguous"
-      ? { createFailure: value.createFailure }
-      : {}),
-    ...(isNonNegativeInteger(value.createRejectedAtSnapshotEpoch)
-      ? {
-          createRejectedAtSnapshotEpoch: value.createRejectedAtSnapshotEpoch,
-        }
-      : {}),
-    ...(value.pendingCreate === true &&
-    value.createFailure === undefined &&
-    value.hostAuthorityAcknowledged !== true
-      ? { createFailure: "ambiguous", retireOnFreshSnapshot: true }
-      : {}),
+    ...parseCreateRecovery(value),
     ...(isNonNegativeInteger(value.sourceStoreVersion)
       ? { sourceStoreVersion: value.sourceStoreVersion }
       : {}),
@@ -488,14 +502,33 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
       // dropped the acknowledgement, left the tab unacknowledged beside a
       // freshly adopted canonical duplicate, and re-imported on the next pass.
       adoptHostTerminal: (instanceId, terminal) =>
-        set((state) => ({
-          tabs: state.tabs.map((tab) =>
-            tab.instanceId === instanceId &&
-            tab.hostId === terminal.record.hostId
-              ? hostAcknowledgedTab(tab, terminal)
-              : tab,
-          ),
-        })),
+        set((state) => {
+          const matchingTab = state.tabs.find(
+            (tab) =>
+              tab.instanceId === instanceId &&
+              tab.hostId === terminal.record.hostId,
+          );
+          if (matchingTab === undefined) {
+            const pending = {
+              hostId: terminal.record.hostId,
+              sessionId: terminal.record.terminalId,
+            };
+            return hasPendingKill(
+              state.pendingKills,
+              pending.hostId,
+              pending.sessionId,
+            )
+              ? state
+              : { pendingKills: [...state.pendingKills, pending] };
+          }
+          return {
+            tabs: state.tabs.map((tab) =>
+              tab.instanceId === instanceId
+                ? hostAcknowledgedTab(tab, terminal)
+                : tab,
+            ),
+          };
+        }),
       removeHostTerminal: (hostId, terminalId) =>
         set((state) => {
           const tabs = state.tabs.filter(

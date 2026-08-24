@@ -223,6 +223,8 @@ describe("landing terminal lifecycle", () => {
       createFailure: "ambiguous",
       retireOnFreshSnapshot: true,
     });
+    const restoredAgain = parsePersistedLandingTerminalState(restored);
+    expect(restoredAgain.tabs[0]?.retireOnFreshSnapshot).toBe(true);
   });
 
   it("keeps probe capability states distinct", () => {
@@ -997,7 +999,7 @@ describe("adoptHostTerminal", () => {
     ]);
   });
 
-  it("leaves a tab bound to a different host untouched", () => {
+  it("closes a late canonical result without touching a different-host tab", () => {
     const otherHostTab = tab({
       instanceId: "local",
       sessionId: "legacy-evidence",
@@ -1015,6 +1017,9 @@ describe("adoptHostTerminal", () => {
     useLandingTerminalStore.getState().adoptHostTerminal("local", canonical);
 
     expect(useLandingTerminalStore.getState().tabs).toEqual([otherHostTab]);
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+      { hostId: HOST_A, sessionId: "canonical-terminal" },
+    ]);
   });
 });
 

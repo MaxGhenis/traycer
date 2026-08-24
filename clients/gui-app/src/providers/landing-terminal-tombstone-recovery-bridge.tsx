@@ -300,6 +300,10 @@ function dispatchCapableClose(args: {
       args.pending.sessionId,
     ) === undefined
   ) {
+    if (args.pending.pendingCreate === true) {
+      scheduleCapableCloseRetry(args);
+      return;
+    }
     if (args.pending.createRejectedAmbiguously === true) {
       if (args.pending.retireOnFreshSnapshot === true) {
         useLandingTerminalStore
@@ -314,10 +318,6 @@ function dispatchCapableClose(args: {
         .getState()
         .clearPendingKill(args.pending.hostId, args.pending.sessionId);
       clearCapableCloseRetry(args.refs.retries.current, args.key);
-      return;
-    }
-    if (args.pending.pendingCreate === true) {
-      scheduleCapableCloseRetry(args);
       return;
     }
     useLandingTerminalStore
@@ -349,6 +349,7 @@ function dispatchCapableClose(args: {
       const next = new Set(args.refs.inFlight.current);
       next.delete(args.key);
       args.refs.inFlight.current = next;
+      if (args.refs.mounted.current) args.signalRetry();
     });
 }
 
