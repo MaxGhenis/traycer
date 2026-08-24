@@ -109,7 +109,7 @@ const TAB_ID = "tab-switcher-test";
 const EPIC_ID = "epic-1";
 const HOST_ID = "host-A";
 const CATEGORY_NAMES = [
-  "Chats",
+  "Agents",
   "Artifacts",
   "File Tree",
   "Git Diff",
@@ -163,9 +163,11 @@ describe("<TabSwitcherSheet />", () => {
     expect(screen.getAllByRole("tab")).toHaveLength(5);
   });
 
-  it("labels the chats category 'Chats' and renders the active tab as an underline, not a box", () => {
+  it("labels the chats category 'Agents' and renders the active tab as an underline, not a box", () => {
     renderSheet(true, () => {});
-    const active = screen.getByRole("tab", { name: "Chats" });
+    // The panel registry's own title, with no mobile override on top of it: a
+    // category is the same product noun on every form factor.
+    const active = screen.getByRole("tab", { name: "Agents" });
     expect(active.getAttribute("data-state")).toBe("active");
     // The base `data-active:bg-*` fill is neutralised, so the active line tab
     // never paints a solid fill behind the label.
@@ -261,7 +263,7 @@ describe("<TabSwitcherSheet />", () => {
     ).toBe("active");
   });
 
-  it("clamps a persisted pull-requests selection to Chats when the epic has no PRs", () => {
+  it("clamps a persisted pull-requests selection to Agents when the epic has no PRs", () => {
     useLeftPanelStore.setState({
       activePanelIdByTabId: { [TAB_ID]: "pull-requests" },
     });
@@ -269,7 +271,7 @@ describe("<TabSwitcherSheet />", () => {
     // The tab is gone, so the sheet must fall back rather than strand itself
     // on a category with no trigger and no body.
     expect(
-      screen.getByRole("tab", { name: "Chats" }).getAttribute("data-state"),
+      screen.getByRole("tab", { name: "Agents" }).getAttribute("data-state"),
     ).toBe("active");
     expect(screen.getByTestId("mock-agents-list")).toBeTruthy();
   });
@@ -293,7 +295,7 @@ describe("<TabSwitcherSheet />", () => {
     });
     renderSheet(true, () => {});
     expect(
-      screen.getByRole("tab", { name: "Chats" }).getAttribute("data-state"),
+      screen.getByRole("tab", { name: "Agents" }).getAttribute("data-state"),
     ).toBe("active");
     expect(screen.getByTestId("mock-agents-list")).toBeTruthy();
   });
