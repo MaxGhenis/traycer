@@ -6,6 +6,7 @@ import {
   SwitcherListEmpty,
   SwitcherListRow,
 } from "@/components/epic-canvas/mobile/switcher-list-row";
+import { SWITCHER_ROW_FLAT } from "@/components/epic-canvas/mobile/switcher-row-nesting";
 import { SwitcherRowActions } from "@/components/epic-canvas/mobile/switcher-row-actions";
 import { SwitcherNewTerminalRow } from "@/components/epic-canvas/mobile/switcher-create-actions";
 import { useSwitcherActivate } from "@/components/epic-canvas/mobile/use-switcher-activate";
@@ -113,6 +114,9 @@ function SwitcherTerminalRow(props: {
     <SwitcherListRow
       icon={<Terminal className="size-4 shrink-0 text-muted-foreground" />}
       label={label}
+      labelPrefix={null}
+      trailing={null}
+      nesting={SWITCHER_ROW_FLAT}
       active={isActive}
       onSelect={onSelect}
       selectTestId={`switcher-terminal-row-${session.sessionId}`}

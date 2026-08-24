@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  switcherCategoryTitle,
-  visibleSwitcherCategoryDefs,
-} from "@/components/epic-canvas/mobile/switcher-categories";
+import { visibleSwitcherCategoryDefs } from "@/components/epic-canvas/mobile/switcher-categories";
 import { cn } from "@/lib/utils";
 
 interface ScrollEdges {
@@ -120,7 +117,7 @@ export function SwitcherCategoryTabs(props: SwitcherCategoryTabsProps) {
             data-testid={`mobile-switcher-tab-${definition.id}`}
           >
             <Icon className="size-4" />
-            {switcherCategoryTitle(definition)}
+            {definition.title}
           </TabsTrigger>
         );
       })}
