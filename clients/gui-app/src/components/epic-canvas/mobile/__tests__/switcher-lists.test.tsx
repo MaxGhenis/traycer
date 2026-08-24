@@ -44,6 +44,12 @@ interface Holder {
   indicatorChatIdCalls: ReadonlyArray<string>[];
   /** What `useEpicNodeHostId` answers - the row's OWN owner host. */
   ownerHostIdByNodeId: Record<string, string>;
+  /** Rows the projection reports as archived. */
+  archivedIds: ReadonlySet<string>;
+  /** Per-row last activity, for the trailing compact timestamp. */
+  updatedAtByNodeId: Record<string, number>;
+  /** Whether the epic's host advertises `epic.setChatArchived`. */
+  archiveSupported: boolean;
   indicators: IndicatorFixture;
 }
 
@@ -72,8 +78,60 @@ const holder = vi.hoisted((): Holder => ({
   activityTiers: new Map<string, "turn" | "background">(),
   indicatorChatIdCalls: [],
   ownerHostIdByNodeId: {},
+  archivedIds: new Set<string>(),
+  updatedAtByNodeId: {},
+  archiveSupported: false,
   indicators: { epics: {}, chats: {} },
 }));
+
+/**
+ * The projector's tree index, rebuilt from the fixture records' `parentId` -
+ * roots and each sibling bucket in last-updated-desc order, exactly as
+ * `projectTreeSlice` emits them. The agents list WALKS this index now, so a
+ * fixture that returned an empty `rootIds` would render an empty tree however
+ * many records it declared.
+ */
+function fixtureTree(): {
+  readonly rootIds: readonly string[];
+  readonly childrenByParent: Readonly<Record<string, readonly string[]>>;
+  readonly nodeById: Readonly<Record<string, TreeNodeFixture>>;
+} {
+  const nodeById: Record<string, TreeNodeFixture> = {};
+  holder.records.forEach((record, index) => {
+    nodeById[record.id] = {
+      id: record.id,
+      type: record.type,
+      parentId: record.parentId,
+      title: record.name,
+      createdAt: index,
+      updatedAt: index,
+    };
+  });
+  const byRecency = (a: string, b: string): number =>
+    nodeById[b].updatedAt - nodeById[a].updatedAt;
+  const childrenByParent: Record<string, string[]> = {};
+  const rootIds: string[] = [];
+  for (const record of holder.records) {
+    const parentId = record.parentId;
+    if (parentId === null || !Object.hasOwn(nodeById, parentId)) {
+      rootIds.push(record.id);
+      continue;
+    }
+    (childrenByParent[parentId] ??= []).push(record.id);
+  }
+  rootIds.sort(byRecency);
+  for (const ids of Object.values(childrenByParent)) ids.sort(byRecency);
+  return { rootIds, childrenByParent, nodeById };
+}
+
+interface TreeNodeFixture {
+  readonly id: string;
+  readonly type: string;
+  readonly parentId: string | null;
+  readonly title: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
 
 vi.mock("@/lib/epic-selectors", () => ({
   useEpicArtifactRecords: () => holder.records,
@@ -82,31 +140,55 @@ vi.mock("@/lib/epic-selectors", () => ({
   useEpicChatHarnessId: () => null,
   useMaybeEpicTuiAgentHarnessId: () => null,
   useEpicPermissionRole: () => holder.role,
+  useEpicChatIds: () =>
+    holder.records
+      .filter((record) => record.type === "chat")
+      .map((record) => record.id),
   // The chat projection's OWN host. Deliberately distinct from the `hostId` on
   // the records above, which is the app-wide ACTIVE host for chat rows.
   useEpicNodeHostId: (nodeId: string) =>
     holder.ownerHostIdByNodeId[nodeId] ?? null,
-  // The lists sort by tree-node recency; expose nodes for the fixtures so the
-  // real epic-sort comparator resolves every id.
-  useEpicTreeIndex: () => ({
-    rootIds: [],
-    childrenByParent: {},
-    nodeById: Object.fromEntries(
-      holder.records.map((record, index) => [
-        record.id,
-        {
-          id: record.id,
-          title: record.name,
-          createdAt: index,
-          updatedAt: index,
-        },
-      ]),
-    ),
-  }),
+  useEpicNodeArchived: (nodeId: string) => holder.archivedIds.has(nodeId),
+  useEpicNodeUpdatedAt: (nodeId: string) =>
+    holder.updatedAtByNodeId[nodeId] ?? 0,
+  useAncestorIds: () => new Set<string>(),
+  useEpicTreeIndex: () => fixtureTree(),
+  useEpicTreeNode: (nodeId: string) => fixtureTree().nodeById[nodeId] ?? null,
+  useChildIds: (parentId: string) =>
+    fixtureTree().childrenByParent[parentId] ?? [],
+}));
+// The row menus' per-list facts. Both capabilities default OFF, which is the
+// fail-closed production default too: Archive and Make private only appear once
+// a handshake proves the host advertises them.
+vi.mock("@/hooks/epic/use-chat-archive-support", () => ({
+  useChatArchiveSupported: () => holder.archiveSupported,
+}));
+vi.mock("@/hooks/epic/use-chat-sharing-support", () => ({
+  useCloudChatVisibilitySupported: () => false,
+}));
+vi.mock("@/hooks/epics/use-epic-collaborators-query", () => ({
+  useEpicCollaboratorsQuery: () => ({ data: undefined }),
+}));
+vi.mock("@/hooks/chats/use-cloud-chat-queries", () => ({
+  useCloudChatList: () => ({ data: undefined }),
+}));
+vi.mock("@/hooks/chats/use-chat-publication-targets", () => ({
+  useChatPublicationTargets: () => ({ data: undefined }),
+  publicationTargetMap: () => new Map<string, string>(),
+}));
+vi.mock("@/hooks/epic/use-epic-chat-visibility-mutations", () => ({
+  useEpicSetCloudChatVisibility: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+vi.mock("@/lib/chats/chat-sharing-inflight", () => ({
+  useChatSharingInFlight: () => false,
 }));
 vi.mock("@/stores/epics/canvas/canvas-selectors", () => ({
   useIsActiveEpicArtifact: (_tabId: string, id: string) =>
     holder.activeId === id,
+  // The focused tile, whose ancestors the agents tree expands implicitly. The
+  // canvas store re-exports these, so a partial mock here leaves the store's
+  // re-export undefined rather than falling back to the real hook.
+  useActiveEpicArtifactId: () => holder.activeId,
   findOpenArtifactInTab: () => null,
 }));
 vi.mock("@/components/epic-canvas/mobile/use-switcher-activate", () => ({
@@ -134,6 +216,7 @@ vi.mock("@/lib/terminals/terminal-session-filters", () => ({
 vi.mock("@/hooks/epic/use-epic-chat-mutations", () => ({
   useEpicRenameChat: () => ({ mutate: vi.fn(), isPending: false }),
   useEpicDeleteChat: () => ({ mutate: vi.fn(), isPending: false }),
+  useEpicArchiveChat: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock("@/hooks/epic/use-epic-tui-agent-mutations", () => ({
   useEpicRenameTuiAgent: () => ({ mutate: vi.fn(), isPending: false }),
@@ -198,6 +281,9 @@ beforeEach(() => {
   holder.activityTiers = new Map<string, "turn" | "background">();
   holder.indicatorChatIdCalls = [];
   holder.ownerHostIdByNodeId = {};
+  holder.archivedIds = new Set<string>();
+  holder.updatedAtByNodeId = {};
+  holder.archiveSupported = false;
   holder.indicators = { epics: {}, chats: {} };
 });
 afterEach(cleanup);
@@ -418,6 +504,97 @@ describe("<SwitcherAgentsList />", () => {
     // Agents only - the spec artifact in the fixture is not a chat entity, and
     // the ids are sorted so the query key does not churn on every re-sort.
     expect(chatIds).toEqual(["chat-1", "tui-1"]);
+  });
+
+  it("nests a child agent under its parent, and collapsing the parent hides it", () => {
+    holder.records = [
+      {
+        id: "chat-1",
+        parentId: null,
+        name: "Alpha",
+        type: "chat",
+        status: null,
+        hostId: "host-A",
+      },
+      {
+        id: "chat-2",
+        parentId: "chat-1",
+        name: "Child",
+        type: "chat",
+        status: null,
+        hostId: "host-A",
+      },
+    ];
+    render(<SwitcherAgentsList {...PROPS} />);
+    const parent = screen.getByTestId("switcher-agent-row-chat-1");
+    const child = screen.getByTestId("switcher-agent-row-chat-2");
+    // The child follows its parent in document order rather than landing
+    // wherever a global recency sort would have put it.
+    expect(
+      parent.compareDocumentPosition(child) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // …and reads as one level deeper: the indent is on the row's wrapper.
+    const padding = (element: Element): string =>
+      (element.parentElement as HTMLElement).style.paddingLeft;
+    expect(padding(parent)).toBe("8px");
+    expect(padding(child)).toBe("28px");
+
+    // Roots are expanded implicitly, so the parent starts open and its chevron
+    // closes it.
+    fireEvent.click(screen.getByTestId("switcher-agent-row-chat-1-toggle"));
+    expect(screen.queryByTestId("switcher-agent-row-chat-2")).toBeNull();
+  });
+
+  it("gives a leaf no chevron and a parent an expand control", () => {
+    holder.records = [
+      {
+        id: "chat-1",
+        parentId: null,
+        name: "Alpha",
+        type: "chat",
+        status: null,
+        hostId: "host-A",
+      },
+      {
+        id: "chat-2",
+        parentId: "chat-1",
+        name: "Child",
+        type: "chat",
+        status: null,
+        hostId: "host-A",
+      },
+    ];
+    render(<SwitcherAgentsList {...PROPS} />);
+    expect(screen.getByTestId("switcher-agent-row-chat-1-toggle")).toBeTruthy();
+    expect(screen.queryByTestId("switcher-agent-row-chat-2-toggle")).toBeNull();
+  });
+
+  it("renders each row's last activity on the shared compact ladder", () => {
+    // Offset past the hour boundary: the shared clock samples `now` at module
+    // load, so an exactly-3h delta has already floored to "2h" by the time this
+    // renders.
+    const now = Date.now();
+    holder.updatedAtByNodeId = {
+      "chat-1": now - (3 * 60 + 5) * 60 * 1000,
+      "tui-1": now,
+    };
+    render(<SwitcherAgentsList {...PROPS} />);
+    expect(
+      screen.getByTestId("switcher-agent-row-chat-1").textContent,
+    ).toContain("3h");
+    expect(
+      screen.getByTestId("switcher-agent-row-tui-1").textContent,
+    ).toContain("now");
+  });
+
+  it("lists an archived agent rather than hiding it, and marks it", () => {
+    holder.archivedIds = new Set<string>(["chat-1"]);
+    render(<SwitcherAgentsList {...PROPS} />);
+    const row = screen.getByTestId("switcher-agent-row-chat-1");
+    expect(row.textContent).toContain("Archived");
+    expect(
+      screen.getByTestId("switcher-agent-row-tui-1").textContent,
+    ).not.toContain("Archived");
   });
 
   it("shows the '…' menu for an editor and hides it entirely for a viewer", () => {

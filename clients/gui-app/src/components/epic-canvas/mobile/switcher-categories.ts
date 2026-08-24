@@ -74,22 +74,6 @@ export function visibleSwitcherCategoryDefs(
 }
 
 /**
- * Mobile-only display-label overrides for the category tabs. The desktop
- * `LEFT_PANEL_DEFINITIONS` title stays "Agents" (id `chats`); on mobile the user
- * wants the tab labelled "Chats" to correlate directly with what it lists. The
- * id (persisted selection, store key) is untouched - only the label changes.
- */
-const MOBILE_SWITCHER_TITLE_OVERRIDES: Partial<Record<LeftPanelId, string>> = {
-  chats: "Chats",
-};
-
-export function switcherCategoryTitle(
-  definition: LeftPanelMetadataDefinition,
-): string {
-  return MOBILE_SWITCHER_TITLE_OVERRIDES[definition.id] ?? definition.title;
-}
-
-/**
  * Clamp a persisted active left-panel id to the categories currently on the
  * bar, so a selection with no tab behind it falls back to Agents rather than
  * leaving the sheet with no matching tab. Two ways that happens: a category
