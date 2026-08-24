@@ -66,6 +66,11 @@ const mocks = vi.hoisted(() => {
     killAsync: vi.fn(() => Promise.resolve({ killed: true })),
     plainAuthorityStatus: initialPlainAuthorityStatus(),
     plainCanMutate: false,
+    plainAuthorityStatusByHost: new Map<
+      string,
+      "legacy" | "capable" | "unknown" | null
+    >(),
+    plainCanMutateByHost: new Map<string, boolean>(),
     plainCollection,
     plainCreateAsync: vi.fn(),
     plainEnsureAsync: vi.fn(),
@@ -247,20 +252,30 @@ vi.mock(
         useEffect(() => {
           const hostIds = hostKey.length === 0 ? [] : hostKey.split("\u0000");
           hostIds.forEach((hostId) => {
+            const hostStatus = mocks.plainAuthorityStatusByHost.has(hostId)
+              ? (mocks.plainAuthorityStatusByHost.get(hostId) ?? null)
+              : mocks.plainAuthorityStatus;
+            if (hostStatus === null) {
+              onEntry(hostId, null);
+              return;
+            }
+            const hostCanMutate = mocks.plainCanMutateByHost.has(hostId)
+              ? mocks.plainCanMutateByHost.get(hostId) === true
+              : mocks.plainCanMutate;
             onEntry(hostId, {
               authority: {
                 hostId,
                 scope: { kind: "independent" },
                 capability:
-                  mocks.plainAuthorityStatus === "capable"
+                  hostStatus === "capable"
                     ? {
                         status: "capable",
                         schemaVersion: { major: 1, minor: 0 },
                       }
-                    : { status: mocks.plainAuthorityStatus },
+                    : { status: hostStatus },
                 collection: mocks.plainCollection,
                 terminals: [],
-                canMutate: mocks.plainCanMutate,
+                canMutate: hostCanMutate,
                 query: {},
               },
               mutations: {
@@ -565,6 +580,8 @@ describe("<LandingTerminalPanel />", () => {
     mocks.killAsync.mockClear();
     mocks.plainAuthorityStatus = "legacy";
     mocks.plainCanMutate = false;
+    mocks.plainAuthorityStatusByHost.clear();
+    mocks.plainCanMutateByHost.clear();
     mocks.plainCollection = undefined;
     mocks.plainCreateAsync.mockReset();
     mocks.plainEnsureAsync.mockReset();
@@ -1351,43 +1368,115 @@ describe("<LandingTerminalPanel />", () => {
     expect(useLandingTerminalStore.getState().tabs).toHaveLength(0);
   });
 
-  it("closes every terminal from the context menu, tombstoning before killing", async () => {
-    mocks.activeHostId = "host-a";
-    mocks.clientActiveHostId = "host-a";
+  it("dismisses a mixed-capability set locally and only cleans up ready hosts", async () => {
+    mocks.activeHostId = "host-ready";
+    mocks.clientActiveHostId = "host-ready";
     mocks.primaryWorkspacePath = "/workspace/project";
     mocks.probeData = emptyList("/Users/dev");
     mocks.freshProbeData = emptyList("/Users/dev");
+    mocks.plainAuthorityStatus = "unknown";
+    mocks.plainAuthorityStatusByHost.set("host-ready", "capable");
+    mocks.plainCanMutateByHost.set("host-ready", true);
+    mocks.plainAuthorityStatusByHost.set("host-stale", "capable");
+    mocks.plainCanMutateByHost.set("host-stale", false);
+    mocks.plainAuthorityStatusByHost.set("host-offline", null);
+    mocks.plainAuthorityStatusByHost.set("host-legacy", "legacy");
+
+    const tabs = [
+      {
+        instanceId: "ready-instance",
+        sessionId: "ready-session",
+        hostId: "host-ready",
+        cwd: "/workspace/ready",
+        name: "Ready terminal",
+        titleSource: "default" as const,
+        hostAuthorityAcknowledged: true,
+      },
+      {
+        instanceId: "stale-instance",
+        sessionId: "stale-session",
+        hostId: "host-stale",
+        cwd: "/workspace/stale",
+        name: "Stale terminal",
+        titleSource: "default" as const,
+        hostAuthorityAcknowledged: true,
+      },
+      {
+        instanceId: "offline-instance",
+        sessionId: "offline-session",
+        hostId: "host-offline",
+        cwd: "/workspace/offline",
+        name: "Offline terminal",
+        titleSource: "default" as const,
+        hostAuthorityAcknowledged: true,
+      },
+      {
+        instanceId: "legacy-instance",
+        sessionId: "legacy-session",
+        hostId: "host-legacy",
+        cwd: "/workspace/legacy",
+        name: "Legacy terminal",
+        titleSource: "default" as const,
+      },
+    ];
+    tabs.forEach((tab) => useLandingTerminalStore.getState().addTab(tab));
+    const preExistingPendingKills = [
+      { hostId: "host-existing", sessionId: "pre-existing-session" },
+    ];
+    useLandingTerminalStore.setState({
+      pendingKills: preExistingPendingKills,
+    });
     useLandingTerminalStore.getState().setPanelOpen(TEST_LANDING_PAGE_ID, true);
+    useLandingTerminalStore.getState().setPanelOpen("landing-page-b", true);
     render(panelUi());
 
-    await waitFor(() => {
-      expect(useLandingTerminalStore.getState().tabs).toHaveLength(1);
+    const readyCloseButton = await screen.findByRole("button", {
+      name: "Close Ready terminal",
     });
-    fireEvent.click(screen.getByTestId("landing-terminal-new-tab"));
     await waitFor(() => {
-      expect(useLandingTerminalStore.getState().tabs).toHaveLength(2);
+      expect(
+        readyCloseButton instanceof HTMLButtonElement &&
+          !readyCloseButton.disabled,
+      ).toBe(true);
     });
-    const before = useLandingTerminalStore.getState().tabs;
+    const composerFocus = vi.fn();
+    focusCleanups.push(
+      registerComposerFocus(
+        "test-composer-close-all-mixed",
+        {
+          focus: composerFocus,
+          containsActiveElement: () => true,
+          isEligible: () => true,
+        },
+        true,
+      ),
+    );
 
     fireEvent.contextMenu(
-      screen.getByTestId(`landing-terminal-tab-${before[0].instanceId}`),
+      screen.getByTestId("landing-terminal-tab-ready-instance"),
     );
     fireEvent.click(await screen.findByText("Close All"));
 
     await waitFor(() => {
-      expect(useLandingTerminalStore.getState().tabs).toHaveLength(0);
+      expect(useLandingTerminalStore.getState().tabs).toEqual([]);
+      expect(composerFocus).toHaveBeenCalled();
     });
     expect(testLayout().panelOpen).toBe(false);
-    // Every closed shell gets its own kill. (The tombstones they were written
-    // with are drained by the reconciliation that follows, once the host list
-    // confirms the sessions are gone - the durable write itself is pinned in
-    // the store test.)
-    before.forEach((tab) => {
-      expect(mocks.kill).toHaveBeenCalledWith({
-        hostId: tab.hostId,
-        sessionId: tab.sessionId,
-      });
+    expect(layoutFor("landing-page-b").panelOpen).toBe(false);
+    expect(mocks.plainCloseAsync).toHaveBeenCalledTimes(1);
+    expect(mocks.plainCloseAsync).toHaveBeenCalledWith({
+      hostId: "host-ready",
+      terminalId: "ready-session",
     });
+    expect(mocks.kill).toHaveBeenCalledTimes(1);
+    expect(mocks.kill).toHaveBeenCalledWith({
+      hostId: "host-legacy",
+      sessionId: "legacy-session",
+    });
+    expect(mocks.killAsync).not.toHaveBeenCalled();
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual(
+      preExistingPendingKills,
+    );
   });
 
   it("adopts the probe result before considering an auto-spawn", async () => {
