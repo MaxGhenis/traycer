@@ -27,14 +27,6 @@ export interface LandingTerminalTabRef {
   readonly hostAuthorityAcknowledged?: boolean;
   /** A genuinely-new terminal awaiting `terminal.plain.create`. */
   readonly pendingCreate?: boolean;
-  /** Classification of the most recent failed create while the tab remains retryable. */
-  readonly createFailure?: "definitive" | "ambiguous";
-  /** Collection epoch observed when an ambiguous create attempt was rejected. */
-  readonly createRejectedAtSnapshotEpoch?: number;
-  /** Hydration lost the create callback; wait for the first fresh snapshot. */
-  readonly retireOnFreshSnapshot?: boolean;
-  /** In-memory consent to retry a create whose prior result is ambiguous. */
-  readonly createRetryRequested?: boolean;
   /** Schema version attached to legacy import evidence. */
   readonly sourceStoreVersion?: number;
 }
@@ -42,16 +34,6 @@ export interface LandingTerminalTabRef {
 export interface LandingTerminalPendingKill {
   readonly hostId: string;
   readonly sessionId: string;
-  /** Keep probing until an in-flight capable-host create either appears. */
-  readonly pendingCreate?: boolean;
-  /** A post-send create failed ambiguously and needs one fresh absence proof. */
-  readonly createRejectedAmbiguously?: boolean;
-  /** Collection epoch observed when the ambiguous create was rejected. */
-  readonly createRejectedAtSnapshotEpoch?: number;
-  /** The closed tab was backed only by the legacy session API. */
-  readonly legacyEvidence?: boolean;
-  /** Hydration proves there is no surviving callback for this create. */
-  readonly retireOnFreshSnapshot?: boolean;
 }
 
 export interface LandingTerminalLayout {
@@ -115,16 +97,6 @@ export interface LandingTerminalStoreState {
     collapseWhenEmpty: boolean,
   ) => void;
   readonly clearPendingKill: (hostId: string, sessionId: string) => void;
-  readonly settleFailedCreate: (
-    instanceId: string,
-    hostId: string,
-    sessionId: string,
-    outcome: {
-      readonly mayHaveApplied: boolean;
-      readonly rejectedAtSnapshotEpoch: number;
-    },
-  ) => void;
-  readonly markCreateAttempt: (instanceId: string) => void;
   readonly rekeyTab: (instanceId: string, sessionId: string) => void;
   readonly adoptHostTerminal: (
     instanceId: string,
@@ -178,26 +150,6 @@ export function clampLandingTerminalPanelWidthFraction(value: number): number {
   );
 }
 
-function parseCreateRecovery(
-  value: Record<string, unknown>,
-): Partial<LandingTerminalTabRef> {
-  const hydratedInFlight =
-    value.pendingCreate === true &&
-    value.createRetryRequested === true &&
-    value.hostAuthorityAcknowledged !== true;
-  if (hydratedInFlight) {
-    return { createFailure: "ambiguous", retireOnFreshSnapshot: true };
-  }
-  const createFailure =
-    value.createFailure === "definitive" || value.createFailure === "ambiguous"
-      ? value.createFailure
-      : undefined;
-  return {
-    ...(createFailure === undefined ? {} : { createFailure }),
-    ...(createFailure === "ambiguous" ? { retireOnFreshSnapshot: true } : {}),
-  };
-}
-
 export function parseLandingTerminalTabRef(
   value: unknown,
 ): LandingTerminalTabRef | null {
@@ -223,7 +175,6 @@ export function parseLandingTerminalTabRef(
       ? { hostAuthorityAcknowledged: true }
       : {}),
     ...(value.pendingCreate === true ? { pendingCreate: true } : {}),
-    ...parseCreateRecovery(value),
     ...(isNonNegativeInteger(value.sourceStoreVersion)
       ? { sourceStoreVersion: value.sourceStoreVersion }
       : {}),
@@ -338,12 +289,16 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
           const tabs = state.tabs.filter(
             (entry) => entry.instanceId !== instanceId,
           );
-          const pendingKill = pendingKillForTab(closed);
-          const pendingKills =
-            pendingKill === null ||
-            hasPendingKill(state.pendingKills, closed.hostId, closed.sessionId)
-              ? state.pendingKills
-              : [...state.pendingKills, pendingKill];
+          const pendingKills = hasPendingKill(
+            state.pendingKills,
+            closed.hostId,
+            closed.sessionId,
+          )
+            ? state.pendingKills
+            : [
+                ...state.pendingKills,
+                { hostId: closed.hostId, sessionId: closed.sessionId },
+              ];
           return {
             tabs,
             activeInstanceId: nextActiveInstanceId(
@@ -366,7 +321,12 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
           activeInstanceId: null,
           pendingKills: closed.reduce(
             (pending: ReadonlyArray<LandingTerminalPendingKill>, tab) =>
-              appendPendingKill(pending, tab),
+              hasPendingKill(pending, tab.hostId, tab.sessionId)
+                ? pending
+                : [
+                    ...pending,
+                    { hostId: tab.hostId, sessionId: tab.sessionId },
+                  ],
             state.pendingKills,
           ),
           ...collapseLayoutsForEmptyTerminalSet(state),
@@ -410,77 +370,6 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
               pending.hostId !== hostId || pending.sessionId !== sessionId,
           ),
         })),
-      settleFailedCreate: (instanceId, hostId, sessionId, outcome) =>
-        set((state) => {
-          const visible = state.tabs.find(
-            (tab) => tab.instanceId === instanceId,
-          );
-          if (visible?.hostAuthorityAcknowledged === true) return state;
-          if (visible !== undefined) {
-            return {
-              tabs: state.tabs.map((tab) =>
-                tab.instanceId === instanceId
-                  ? {
-                      ...tab,
-                      createFailure:
-                        tab.createFailure === "ambiguous" ||
-                        outcome.mayHaveApplied
-                          ? "ambiguous"
-                          : "definitive",
-                      createRejectedAtSnapshotEpoch: outcome.mayHaveApplied
-                        ? outcome.rejectedAtSnapshotEpoch
-                        : tab.createRejectedAtSnapshotEpoch,
-                      createRetryRequested: undefined,
-                    }
-                  : tab,
-              ),
-            };
-          }
-          return {
-            pendingKills: state.pendingKills.flatMap((pending) => {
-              if (
-                pending.hostId !== hostId ||
-                pending.sessionId !== sessionId
-              ) {
-                return [pending];
-              }
-              if (outcome.mayHaveApplied) {
-                return [
-                  {
-                    hostId,
-                    sessionId,
-                    createRejectedAmbiguously: true,
-                    createRejectedAtSnapshotEpoch:
-                      outcome.rejectedAtSnapshotEpoch,
-                  },
-                ];
-              }
-              return pending.createRejectedAmbiguously === true
-                ? [
-                    {
-                      hostId,
-                      sessionId,
-                      createRejectedAmbiguously: true,
-                      ...(pending.createRejectedAtSnapshotEpoch === undefined
-                        ? {}
-                        : {
-                            createRejectedAtSnapshotEpoch:
-                              pending.createRejectedAtSnapshotEpoch,
-                          }),
-                    },
-                  ]
-                : [];
-            }),
-          };
-        }),
-      markCreateAttempt: (instanceId) =>
-        set((state) => ({
-          tabs: state.tabs.map((tab) =>
-            tab.instanceId === instanceId
-              ? { ...tab, createRetryRequested: true }
-              : tab,
-          ),
-        })),
       rekeyTab: (instanceId, sessionId) =>
         set((state) => ({
           tabs: state.tabs.map((tab) =>
@@ -495,33 +384,14 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
       // dropped the acknowledgement, left the tab unacknowledged beside a
       // freshly adopted canonical duplicate, and re-imported on the next pass.
       adoptHostTerminal: (instanceId, terminal) =>
-        set((state) => {
-          const matchingTab = state.tabs.find(
-            (tab) =>
-              tab.instanceId === instanceId &&
-              tab.hostId === terminal.record.hostId,
-          );
-          if (matchingTab === undefined) {
-            const pending = {
-              hostId: terminal.record.hostId,
-              sessionId: terminal.record.terminalId,
-            };
-            return hasPendingKill(
-              state.pendingKills,
-              pending.hostId,
-              pending.sessionId,
-            )
-              ? state
-              : { pendingKills: [...state.pendingKills, pending] };
-          }
-          return {
-            tabs: state.tabs.map((tab) =>
-              tab.instanceId === instanceId
-                ? hostAcknowledgedTab(tab, terminal)
-                : tab,
-            ),
-          };
-        }),
+        set((state) => ({
+          tabs: state.tabs.map((tab) =>
+            tab.instanceId === instanceId &&
+            tab.hostId === terminal.record.hostId
+              ? hostAcknowledgedTab(tab, terminal)
+              : tab,
+          ),
+        })),
       removeHostTerminal: (hostId, terminalId) =>
         set((state) => {
           const tabs = state.tabs.filter(
@@ -678,28 +548,7 @@ function parsePendingKills(
     const key = terminalSessionKey(entry.hostId, entry.sessionId);
     if (seen.has(key)) return [];
     seen.add(key);
-    return [
-      {
-        hostId: entry.hostId,
-        sessionId: entry.sessionId,
-        ...(entry.pendingCreate === true
-          ? {
-              createRejectedAmbiguously: true,
-              retireOnFreshSnapshot: true,
-            }
-          : {}),
-        ...(entry.createRejectedAmbiguously === true
-          ? {
-              createRejectedAmbiguously: true,
-              retireOnFreshSnapshot: true,
-            }
-          : {}),
-        ...(entry.legacyEvidence === true ? { legacyEvidence: true } : {}),
-        ...(entry.retireOnFreshSnapshot === true
-          ? { retireOnFreshSnapshot: true }
-          : {}),
-      },
-    ];
+    return [{ hostId: entry.hostId, sessionId: entry.sessionId }];
   });
 }
 
@@ -740,66 +589,6 @@ function hasPendingKill(
   );
 }
 
-function pendingKillForTab(
-  tab: LandingTerminalTabRef,
-): LandingTerminalPendingKill | null {
-  const base = { hostId: tab.hostId, sessionId: tab.sessionId };
-  if (
-    tab.pendingCreate === true &&
-    tab.createRetryRequested !== true &&
-    tab.createFailure === undefined
-  ) {
-    return null;
-  }
-  if (tab.createRetryRequested === true) {
-    return {
-      ...base,
-      pendingCreate: true,
-      ...(tab.createFailure === "ambiguous"
-        ? {
-            createRejectedAmbiguously: true,
-            ...(tab.createRejectedAtSnapshotEpoch === undefined
-              ? {}
-              : {
-                  createRejectedAtSnapshotEpoch:
-                    tab.createRejectedAtSnapshotEpoch,
-                }),
-          }
-        : {}),
-    };
-  }
-  if (tab.createFailure === "definitive") return null;
-  if (tab.createFailure === "ambiguous") {
-    return {
-      ...base,
-      createRejectedAmbiguously: true,
-      ...(tab.createRejectedAtSnapshotEpoch === undefined
-        ? {}
-        : {
-            createRejectedAtSnapshotEpoch: tab.createRejectedAtSnapshotEpoch,
-          }),
-      ...(tab.retireOnFreshSnapshot === true
-        ? { retireOnFreshSnapshot: true }
-        : {}),
-    };
-  }
-  if (tab.pendingCreate === true) return { ...base, pendingCreate: true };
-  return tab.hostAuthorityAcknowledged === true
-    ? base
-    : { ...base, legacyEvidence: true };
-}
-
-function appendPendingKill(
-  pending: ReadonlyArray<LandingTerminalPendingKill>,
-  tab: LandingTerminalTabRef,
-): ReadonlyArray<LandingTerminalPendingKill> {
-  const next = pendingKillForTab(tab);
-  if (next === null || hasPendingKill(pending, tab.hostId, tab.sessionId)) {
-    return pending;
-  }
-  return [...pending, next];
-}
-
 export function terminalSessionKey(hostId: string, sessionId: string): string {
   return `${hostId}\u0000${sessionId}`;
 }
@@ -818,8 +607,6 @@ export function hostAcknowledgedTab(
     titleSource: terminal.record.manualTitle === null ? "default" : "manual",
     hostAuthorityAcknowledged: true,
     pendingCreate: false,
-    createFailure: undefined,
-    createRetryRequested: undefined,
     sourceStoreVersion:
       tab.sourceStoreVersion ?? LANDING_TERMINAL_SOURCE_STORE_VERSION,
   };

@@ -330,11 +330,7 @@ export function useLandingTerminalReconciliation(
         freshSessions.map((session) => session.sessionId),
       );
       for (const pending of hostTombstones) {
-        if (
-          !listedSessionIds.has(pending.sessionId) &&
-          pending.pendingCreate !== true &&
-          pending.createRejectedAmbiguously !== true
-        ) {
+        if (!listedSessionIds.has(pending.sessionId)) {
           useLandingTerminalStore
             .getState()
             .clearPendingKill(pending.hostId, pending.sessionId);
@@ -344,10 +340,7 @@ export function useLandingTerminalReconciliation(
         hostTombstones
           .filter((pending) => listedSessionIds.has(pending.sessionId))
           .map((pending) =>
-            killTerminal({
-              hostId: pending.hostId,
-              sessionId: pending.sessionId,
-            }).then(
+            killTerminal(pending).then(
               () => undefined,
               () => undefined,
             ),
@@ -439,13 +432,27 @@ export async function reconcileCapableLandingTerminals(args: {
   if (initialCollection?.streamSnapshotFresh !== true) {
     return "snapshot-not-fresh";
   }
-  if (
-    useLandingTerminalStore
-      .getState()
-      .pendingKills.some((pending) => pending.hostId === activeHostId)
-  ) {
-    return "reconciled";
-  }
+  const store = useLandingTerminalStore.getState();
+  const pendingKills = store.pendingKills.filter(
+    (pending) => pending.hostId === activeHostId,
+  );
+
+  await Promise.all(
+    pendingKills.map(async (pending) => {
+      const collection =
+        queryClient.getQueryData<PlainTerminalCollection>(queryKey);
+      if (
+        getPlainTerminal(collection, pending.hostId, pending.sessionId) !==
+        undefined
+      ) {
+        await args.closeTerminal({ terminalId: pending.sessionId });
+      }
+      useLandingTerminalStore
+        .getState()
+        .clearPendingKill(activeHostId, pending.sessionId);
+    }),
+  );
+
   const postKillCollection =
     queryClient.getQueryData<PlainTerminalCollection>(queryKey);
   if (postKillCollection?.streamSnapshotFresh !== true) {

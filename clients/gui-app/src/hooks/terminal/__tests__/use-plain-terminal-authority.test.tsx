@@ -1014,7 +1014,6 @@ describe("usePlainTerminalAuthority integration", () => {
           useLandingTerminalStore
             .getState()
             .adoptHostTerminal("landing-pending", winner),
-        onCreateRejected: null,
       });
     });
     await waitFor(() => expect(createPending).toHaveBeenCalledTimes(1));

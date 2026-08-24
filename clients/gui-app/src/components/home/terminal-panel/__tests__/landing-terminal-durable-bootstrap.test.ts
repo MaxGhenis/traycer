@@ -1,7 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { PlainTerminalProjection } from "@traycer/protocol/host/terminal/plain-schemas";
-import { HostTransportFailureError } from "@traycer-clients/shared/host-transport/host-messenger";
 import {
   resolveLandingTerminalDurableBootstrapAction,
   useLandingTerminalDurableLifecycle,
@@ -39,18 +38,14 @@ function projection(status: "running" | "dormant"): PlainTerminalProjection {
 function deferred<Value>(): {
   readonly promise: Promise<Value>;
   readonly resolve: (value: Value) => void;
-  readonly reject: (error: Error) => void;
 } {
   let resolvePromise: ((value: Value) => void) | null = null;
-  let rejectPromise: ((error: Error) => void) | null = null;
-  const promise = new Promise<Value>((resolve, reject) => {
+  const promise = new Promise<Value>((resolve) => {
     resolvePromise = resolve;
-    rejectPromise = reject;
   });
   return {
     promise,
     resolve: (value) => resolvePromise?.(value),
-    reject: (error) => rejectPromise?.(error),
   };
 }
 
@@ -132,7 +127,6 @@ describe("durable landing-terminal bootstrap", () => {
           gridReady: true,
           dispatch,
           adopt,
-          onCreateRejected: null,
         }),
       { initialProps: { status: "missing", pendingCreate: true } },
     );
@@ -164,7 +158,6 @@ describe("durable landing-terminal bootstrap", () => {
           gridReady: true,
           dispatch,
           adopt: vi.fn(),
-          onCreateRejected: null,
         }),
       { initialProps: "running" as RuntimeStatus },
     );
@@ -190,7 +183,6 @@ describe("durable landing-terminal bootstrap", () => {
         gridReady: true,
         dispatch,
         adopt,
-        onCreateRejected: null,
       }),
     );
     await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
@@ -208,70 +200,6 @@ describe("durable landing-terminal bootstrap", () => {
     expect(adopt).toHaveBeenCalledTimes(1);
   });
 
-  it("reports a rejected create after the owning tile unmounts", async () => {
-    const pending = deferred<PlainTerminalProjection>();
-    const onCreateRejected = vi.fn();
-    const rendered = renderHook(() =>
-      useLandingTerminalDurableLifecycle({
-        projectionStatus: "missing",
-        pendingCreate: true,
-        active: true,
-        canMutate: true,
-        gridReady: true,
-        dispatch: () => pending.promise,
-        adopt: vi.fn(),
-        onCreateRejected,
-      }),
-    );
-    await waitFor(() =>
-      expect(rendered.result.current.requestPending).toBe(true),
-    );
-
-    rendered.unmount();
-    await act(() => {
-      pending.reject(new Error("create failed"));
-      return Promise.resolve();
-    });
-
-    expect(onCreateRejected).toHaveBeenCalledWith(false);
-  });
-
-  it("classifies an ambiguous transport failure after unmount", async () => {
-    const pending = deferred<PlainTerminalProjection>();
-    const onCreateRejected = vi.fn();
-    const rendered = renderHook(() =>
-      useLandingTerminalDurableLifecycle({
-        projectionStatus: "missing",
-        pendingCreate: true,
-        active: true,
-        canMutate: true,
-        gridReady: true,
-        dispatch: () => pending.promise,
-        adopt: vi.fn(),
-        onCreateRejected,
-      }),
-    );
-    await waitFor(() =>
-      expect(rendered.result.current.requestPending).toBe(true),
-    );
-
-    rendered.unmount();
-    await act(() => {
-      pending.reject(
-        new HostTransportFailureError({
-          code: "RPC_ERROR",
-          message: "response lost",
-          requestId: "create-request",
-          method: "terminal.plain.create",
-          fatalDetails: null,
-        }),
-      );
-      return Promise.resolve();
-    });
-
-    expect(onCreateRejected).toHaveBeenCalledWith(true);
-  });
-
   it("retains the error presentation while an explicit retry is pending", async () => {
     const retryRequest = deferred<PlainTerminalProjection>();
     const dispatch = vi
@@ -287,7 +215,6 @@ describe("durable landing-terminal bootstrap", () => {
         gridReady: true,
         dispatch,
         adopt: vi.fn(),
-        onCreateRejected: null,
       }),
     );
     await waitFor(() =>
@@ -333,7 +260,6 @@ describe("durable landing-terminal bootstrap", () => {
           gridReady: true,
           dispatch,
           adopt,
-          onCreateRejected: null,
         }),
       { initialProps: "dormant" as RuntimeStatus },
     );

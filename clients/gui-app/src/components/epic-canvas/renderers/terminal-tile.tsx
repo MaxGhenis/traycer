@@ -604,7 +604,6 @@ function HostTerminalTileLive(
     gridReady,
     dispatch,
     adopt,
-    onCreateRejected: null,
   });
 
   useEffect(() => {

@@ -125,124 +125,6 @@ describe("landing terminal lifecycle", () => {
     useLandingTerminalStore.getState().resetForTests();
   });
 
-  it("keeps the ambiguity epoch when a retry fails definitively", () => {
-    const store = useLandingTerminalStore.getState();
-    store.addTab({
-      ...tab({
-        instanceId: "sticky-ambiguity",
-        sessionId: "sticky-session",
-        hostId: HOST_A,
-      }),
-      pendingCreate: true,
-    });
-    store.settleFailedCreate("sticky-ambiguity", HOST_A, "sticky-session", {
-      mayHaveApplied: true,
-      rejectedAtSnapshotEpoch: 4,
-    });
-    store.markCreateAttempt("sticky-ambiguity");
-    store.settleFailedCreate("sticky-ambiguity", HOST_A, "sticky-session", {
-      mayHaveApplied: false,
-      rejectedAtSnapshotEpoch: 6,
-    });
-
-    expect(useLandingTerminalStore.getState().tabs[0]).toMatchObject({
-      createFailure: "ambiguous",
-      createRejectedAtSnapshotEpoch: 4,
-    });
-  });
-
-  it("tombstones a create retry that is still in flight", () => {
-    const store = useLandingTerminalStore.getState();
-    store.addTab({
-      ...tab({
-        instanceId: "retry-in-flight",
-        sessionId: "retry-session",
-        hostId: HOST_A,
-      }),
-      pendingCreate: true,
-      createFailure: "definitive",
-    });
-    store.markCreateAttempt("retry-in-flight");
-    store.closeTab(LANDING_PAGE_ID, "retry-in-flight");
-
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: HOST_A, sessionId: "retry-session", pendingCreate: true },
-    ]);
-  });
-
-  it("retires an unstarted create intent without a tombstone", () => {
-    const store = useLandingTerminalStore.getState();
-    store.addTab({
-      ...tab({
-        instanceId: "unstarted-create",
-        sessionId: "unstarted-session",
-        hostId: HOST_A,
-      }),
-      pendingCreate: true,
-    });
-    store.closeTab(LANDING_PAGE_ID, "unstarted-create");
-
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
-  });
-
-  it("retains prior ambiguity when closing an in-flight retry", () => {
-    const store = useLandingTerminalStore.getState();
-    store.addTab({
-      ...tab({
-        instanceId: "ambiguous-retry",
-        sessionId: "ambiguous-retry-session",
-        hostId: HOST_A,
-      }),
-      pendingCreate: true,
-      createFailure: "ambiguous",
-      createRejectedAtSnapshotEpoch: 3,
-    });
-    store.markCreateAttempt("ambiguous-retry");
-    store.closeTab(LANDING_PAGE_ID, "ambiguous-retry");
-    store.settleFailedCreate(
-      "ambiguous-retry",
-      HOST_A,
-      "ambiguous-retry-session",
-      { mayHaveApplied: false, rejectedAtSnapshotEpoch: 5 },
-    );
-
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      {
-        hostId: HOST_A,
-        sessionId: "ambiguous-retry-session",
-        createRejectedAmbiguously: true,
-        createRejectedAtSnapshotEpoch: 3,
-      },
-    ]);
-  });
-
-  it("hydrates a raw in-flight create into explicit confirmation", () => {
-    const restored = parsePersistedLandingTerminalState({
-      tabs: [
-        {
-          ...tab({
-            instanceId: "hydrated-create",
-            sessionId: "hydrated-session",
-            hostId: HOST_A,
-          }),
-          pendingCreate: true,
-          createRetryRequested: true,
-        },
-      ],
-      activeInstanceId: "hydrated-create",
-      layoutsByLandingPageId: {},
-      pendingKills: [],
-    });
-
-    expect(restored.tabs[0]).toMatchObject({
-      pendingCreate: true,
-      createFailure: "ambiguous",
-      retireOnFreshSnapshot: true,
-    });
-    const restoredAgain = parsePersistedLandingTerminalState(restored);
-    expect(restoredAgain.tabs[0]?.retireOnFreshSnapshot).toBe(true);
-  });
-
   it("keeps probe capability states distinct", () => {
     expect(resolveLandingTerminalAvailability(null, undefined, null)).toBe(
       "no-active-host",
@@ -525,74 +407,6 @@ describe("landing terminal lifecycle", () => {
       panelWidthFraction: 0.48,
       maximized: true,
     });
-  });
-
-  it("restores an orphaned pending create as ambiguous absence evidence", () => {
-    const restored = parsePersistedLandingTerminalState({
-      tabs: [],
-      activeInstanceId: null,
-      layoutsByLandingPageId: {},
-      pendingKills: [
-        { hostId: HOST_A, sessionId: "pending-create", pendingCreate: true },
-      ],
-    });
-
-    expect(restored.pendingKills).toEqual([
-      {
-        hostId: HOST_A,
-        sessionId: "pending-create",
-        createRejectedAmbiguously: true,
-        retireOnFreshSnapshot: true,
-      },
-    ]);
-  });
-
-  it("retires restored create ambiguity against the first fresh snapshot", () => {
-    const restored = parsePersistedLandingTerminalState({
-      tabs: [],
-      activeInstanceId: null,
-      layoutsByLandingPageId: {},
-      pendingKills: [
-        {
-          hostId: HOST_A,
-          sessionId: "ambiguous-create",
-          createRejectedAmbiguously: true,
-        },
-      ],
-    });
-
-    expect(restored.pendingKills).toEqual([
-      {
-        hostId: HOST_A,
-        sessionId: "ambiguous-create",
-        createRejectedAmbiguously: true,
-        retireOnFreshSnapshot: true,
-      },
-    ]);
-  });
-
-  it("resets rejection epoch evidence on a restored ambiguous tab", () => {
-    const restored = parsePersistedLandingTerminalState({
-      tabs: [
-        {
-          instanceId: "ambiguous-tab",
-          sessionId: "ambiguous-create",
-          hostId: HOST_A,
-          cwd: "/workspace",
-          name: "Ambiguous create",
-          titleSource: "default",
-          pendingCreate: true,
-          createFailure: "ambiguous",
-          createRejectedAtSnapshotEpoch: 7,
-        },
-      ],
-      activeInstanceId: "ambiguous-tab",
-      layoutsByLandingPageId: {},
-      pendingKills: [],
-    });
-
-    expect(restored.tabs[0]?.createRejectedAtSnapshotEpoch).toBeUndefined();
-    expect(restored.tabs[0]?.retireOnFreshSnapshot).toBe(true);
   });
 
   it("collapses every open layout when the shared terminal set becomes empty", () => {
@@ -950,8 +764,8 @@ describe("closeAllTabs", () => {
       false,
     );
     expect(state.pendingKills).toEqual([
-      { hostId: HOST_A, sessionId: "s-a", legacyEvidence: true },
-      { hostId: HOST_B, sessionId: "s-b", legacyEvidence: true },
+      { hostId: HOST_A, sessionId: "s-a" },
+      { hostId: HOST_B, sessionId: "s-b" },
     ]);
   });
 
@@ -1016,7 +830,7 @@ describe("adoptHostTerminal", () => {
     ]);
   });
 
-  it("closes a late canonical result without touching a different-host tab", () => {
+  it("leaves a tab bound to a different host untouched", () => {
     const otherHostTab = tab({
       instanceId: "local",
       sessionId: "legacy-evidence",
@@ -1034,9 +848,6 @@ describe("adoptHostTerminal", () => {
     useLandingTerminalStore.getState().adoptHostTerminal("local", canonical);
 
     expect(useLandingTerminalStore.getState().tabs).toEqual([otherHostTab]);
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: HOST_A, sessionId: "canonical-terminal" },
-    ]);
   });
 });
 

@@ -1,4 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
+import { waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ImportLegacyPlainTerminalRequest,
@@ -96,6 +97,20 @@ function staleCollection(
     replacePlainTerminalSnapshot(undefined, terminals),
     "open",
   );
+}
+
+function deferred<Value>(): {
+  readonly promise: Promise<Value>;
+  readonly resolve: (value: Value) => void;
+} {
+  let resolvePromise: ((value: Value) => void) | null = null;
+  const promise = new Promise<Value>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve: (value) => resolvePromise?.(value),
+  };
 }
 
 describe("capable landing-terminal reconciliation", () => {
@@ -198,7 +213,7 @@ describe("capable landing-terminal reconciliation", () => {
     expect(useLandingTerminalStore.getState().tabs).toEqual([legacy]);
   });
 
-  it("leaves capable-host pending kills for the durable bridge", async () => {
+  it("retires a capable-host pending kill only after close acknowledgement", async () => {
     const canonical = {
       ...tab({
         instanceId: "local-instance",
@@ -240,61 +255,12 @@ describe("capable landing-terminal reconciliation", () => {
       queryClient,
     });
 
-    expect(closeTerminal).not.toHaveBeenCalled();
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: HOST_ID, sessionId: "terminal-close" },
-    ]);
+    expect(closeTerminal).toHaveBeenCalledWith({
+      terminalId: "terminal-close",
+    });
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
     expect(useLandingTerminalStore.getState().tabs).toEqual([]);
   });
-
-  it.each([false, true])(
-    "preserves an absent capable create tombstone (ambiguous: %s)",
-    async (ambiguous) => {
-      const pending = {
-        ...tab({
-          instanceId: "pending-create",
-          terminalId: "terminal-pending-create",
-          name: "Pending create",
-        }),
-        pendingCreate: true,
-      };
-      useLandingTerminalStore.getState().addTab(pending);
-      useLandingTerminalStore
-        .getState()
-        .closeTab(LANDING_PAGE_ID, pending.instanceId);
-      if (ambiguous) {
-        useLandingTerminalStore
-          .getState()
-          .settleFailedCreate(
-            pending.instanceId,
-            pending.hostId,
-            pending.sessionId,
-            { mayHaveApplied: true, rejectedAtSnapshotEpoch: 1 },
-          );
-      }
-      queryClient.setQueryData(
-        hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
-        freshCollection([]),
-      );
-      const pendingKillsBefore =
-        useLandingTerminalStore.getState().pendingKills;
-
-      await reconcileCapableLandingTerminals({
-        activeHostId: HOST_ID,
-        landingPageId: LANDING_PAGE_ID,
-        capability: CAPABILITY,
-        canMutate: true,
-        closeTerminal: () => Promise.reject(new Error("unexpected close")),
-        importLegacyTerminal: () =>
-          Promise.reject(new Error("unexpected import")),
-        queryClient,
-      });
-
-      expect(useLandingTerminalStore.getState().pendingKills).toEqual(
-        pendingKillsBefore,
-      );
-    },
-  );
 
   it("removes late-hydrated legacy evidence against a retained tombstone without importing", async () => {
     const legacy = tab({
@@ -439,7 +405,7 @@ describe("capable landing-terminal reconciliation", () => {
     );
   });
 
-  it("leaves imports parked while the durable bridge owns a pending close", async () => {
+  it("does not import legacy evidence when freshness is lost during a pending close", async () => {
     const canonical = {
       ...tab({
         instanceId: "canonical-instance",
@@ -467,7 +433,8 @@ describe("capable landing-terminal reconciliation", () => {
       hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
       freshCollection([projection]),
     );
-    const closeTerminal = vi.fn(() => Promise.resolve());
+    const pendingClose = deferred<unknown>();
+    const closeTerminal = vi.fn(() => pendingClose.promise);
     const importLegacy = vi.fn(() =>
       Promise.reject(new Error("unexpected import")),
     );
@@ -481,8 +448,15 @@ describe("capable landing-terminal reconciliation", () => {
       importLegacyTerminal: importLegacy,
       queryClient,
     });
-    await expect(reconciliation).resolves.toBe("reconciled");
-    expect(closeTerminal).not.toHaveBeenCalled();
+    await waitFor(() => expect(closeTerminal).toHaveBeenCalledTimes(1));
+
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+      staleCollection([projection]),
+    );
+    pendingClose.resolve(undefined);
+
+    await expect(reconciliation).resolves.toBe("snapshot-not-fresh");
     expect(importLegacy).not.toHaveBeenCalled();
     expect(
       useLandingTerminalStore

@@ -1,9 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import type { PlainTerminalProjection } from "@traycer/protocol/host/terminal/plain-schemas";
-import {
-  HostTransportFailureError,
-  RetryableTransportError,
-} from "@traycer-clients/shared/host-transport/host-messenger";
 
 export type LandingTerminalDurableBootstrapAction =
   "create" | "ensure-running" | "none";
@@ -49,7 +45,6 @@ export function useLandingTerminalDurableLifecycle(args: {
     action: Exclude<LandingTerminalDurableBootstrapAction, "none">,
   ) => Promise<PlainTerminalProjection>;
   readonly adopt: (terminal: PlainTerminalProjection) => void;
-  readonly onCreateRejected: ((mayHaveApplied: boolean) => void) | null;
 }): LandingTerminalDurableLifecycleResult {
   const {
     active,
@@ -57,7 +52,6 @@ export function useLandingTerminalDurableLifecycle(args: {
     canMutate,
     dispatch,
     gridReady,
-    onCreateRejected,
     pendingCreate,
     projectionStatus,
   } = args;
@@ -124,12 +118,6 @@ export function useLandingTerminalDurableLifecycle(args: {
         setPendingRequestGenerations((current) =>
           current.filter((generation) => generation !== requestGeneration),
         );
-        if (action === "create") {
-          onCreateRejected?.(
-            error instanceof HostTransportFailureError &&
-              !(error instanceof RetryableTransportError),
-          );
-        }
         if (requestGenerationRef.current !== requestGeneration) return;
         setRequestError(
           error instanceof Error
@@ -144,7 +132,6 @@ export function useLandingTerminalDurableLifecycle(args: {
     canMutate,
     dispatch,
     gridReady,
-    onCreateRejected,
     pendingCreate,
     projectionStatus,
     retryGeneration,

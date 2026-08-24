@@ -2,7 +2,6 @@ import {
   Suspense,
   useCallback,
   useEffect,
-  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -66,10 +65,6 @@ import { useTerminalSessionHandle } from "@/lib/registries/terminal-session-regi
 const INDEPENDENT_SCOPE: TerminalScope = { kind: "independent" };
 const TERMINAL_DEFAULT_COLS = 80;
 const TERMINAL_DEFAULT_ROWS = 24;
-
-function collectionSnapshotEpoch(entry: LandingTerminalAuthorityEntry): number {
-  return entry.authority.collection?.snapshotEpoch ?? 0;
-}
 
 export interface LandingTerminalTileProps {
   readonly landingPageId: string;
@@ -270,20 +265,12 @@ function LandingTerminalDurableBootstrap(
   },
 ): ReactNode {
   const entry = props.authorityEntry;
-  const collectionSnapshotEpochRef = useRef(collectionSnapshotEpoch(entry));
-  useEffect(() => {
-    collectionSnapshotEpochRef.current = collectionSnapshotEpoch(entry);
-  }, [entry]);
   const reachability = useHostReachability(props.tab.hostId);
   const projection = getPlainTerminal(
     entry.authority.collection,
     props.tab.hostId,
     props.tab.sessionId,
   );
-  const projectionExistsRef = useRef(projection !== undefined);
-  useEffect(() => {
-    projectionExistsRef.current = projection !== undefined;
-  }, [projection]);
   const [measuredGrid, setMeasuredGrid] = useState<{
     readonly cols: number;
     readonly rows: number;
@@ -323,11 +310,6 @@ function LandingTerminalDurableBootstrap(
   const ensureTerminalRunning = entry.mutations.ensureRunning.mutateAsync;
   const dispatch = useCallback(
     async (action: "create" | "ensure-running") => {
-      if (action === "create") {
-        useLandingTerminalStore
-          .getState()
-          .markCreateAttempt(props.tab.instanceId);
-      }
       const response =
         action === "create"
           ? await createTerminal({
@@ -352,7 +334,6 @@ function LandingTerminalDurableBootstrap(
       openingGrid.rows,
       props.tab.cwd,
       props.tab.hostId,
-      props.tab.instanceId,
       props.tab.sessionId,
     ],
   );
@@ -364,48 +345,16 @@ function LandingTerminalDurableBootstrap(
     },
     [props.tab.instanceId],
   );
-  const onCreateRejected = useCallback(
-    (mayHaveApplied: boolean): void => {
-      if (projectionExistsRef.current) return;
-      useLandingTerminalStore
-        .getState()
-        .settleFailedCreate(
-          props.tab.instanceId,
-          props.tab.hostId,
-          props.tab.sessionId,
-          {
-            mayHaveApplied,
-            rejectedAtSnapshotEpoch: collectionSnapshotEpochRef.current,
-          },
-        );
-    },
-    [props.tab.hostId, props.tab.instanceId, props.tab.sessionId],
-  );
   const lifecycle = useLandingTerminalDurableLifecycle({
     projectionStatus:
       projection === undefined ? "missing" : projection.runtime.status,
-    pendingCreate:
-      props.tab.pendingCreate === true &&
-      (props.tab.createFailure !== "ambiguous" ||
-        props.tab.createRetryRequested === true),
+    pendingCreate: props.tab.pendingCreate === true,
     active: props.active,
     canMutate: entry.authority.canMutate,
     gridReady,
     dispatch,
     adopt,
-    onCreateRejected,
   });
-  const restoredAmbiguousCreate =
-    props.tab.createFailure === "ambiguous" &&
-    props.tab.createRetryRequested !== true;
-  const retry = useCallback((): void => {
-    if (restoredAmbiguousCreate) {
-      useLandingTerminalStore
-        .getState()
-        .markCreateAttempt(props.tab.instanceId);
-    }
-    lifecycle.retry();
-  }, [lifecycle, props.tab.instanceId, restoredAmbiguousCreate]);
 
   useEffect(() => {
     adoptWarmSessionInstance(
@@ -430,14 +379,9 @@ function LandingTerminalDurableBootstrap(
     <LandingTerminalDurableState
       reachability={reachability}
       canMutate={entry.authority.canMutate}
-      requestError={
-        lifecycle.requestError ??
-        (restoredAmbiguousCreate
-          ? new Error("Terminal creation could not be confirmed.")
-          : null)
-      }
+      requestError={lifecycle.requestError}
       requestPending={lifecycle.requestPending}
-      retry={retry}
+      retry={lifecycle.retry}
       handle={handle}
       tab={props.tab}
       reportMeasuredGrid={reportMeasuredGrid}

@@ -7,7 +7,6 @@ import type {
   HostListItem,
 } from "@traycer/protocol/host/host-status";
 import { useLandingTerminalStore } from "@/stores/home/landing-terminal-store";
-import { plainTerminalCollectionIdentityKey } from "@/lib/terminals/plain-terminal-authority";
 
 const mocks = vi.hoisted(() => {
   const initialAuthorityStatus = (): "legacy" | "capable" | "unknown" =>
@@ -15,19 +14,10 @@ const mocks = vi.hoisted(() => {
   const terminalsById: Readonly<Record<string, unknown>> = {};
   return {
     entries: [] as readonly HostDirectoryEntry[],
-    registeredHostIds: new Set<string>(),
-    registryFetching: false,
-    registrySuccess: true,
-    killMutate: vi.fn(),
     kill: vi.fn(),
-    killAsync: vi.fn(
-      (_variables: { readonly hostId: string; readonly sessionId: string }) =>
-        Promise.resolve(),
-    ),
     readySessionHosts: new Set<string>(),
     authorityStatus: initialAuthorityStatus(),
     canMutate: false,
-    snapshotEpoch: 1,
     terminalsById,
     closeAsync: vi.fn(() => Promise.resolve()),
   };
@@ -36,33 +26,10 @@ const mocks = vi.hoisted(() => {
 vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
   useHostDirectoryList: () => ({ data: mocks.entries }),
 }));
-vi.mock("@/hooks/auth/use-registered-hosts-query", () => ({
-  useRegisteredHosts: () => ({
-    data: {
-      hosts: [...mocks.registeredHostIds].map((hostId) => ({ hostId })),
-    },
-    isFetching: mocks.registryFetching,
-    isSuccess: mocks.registrySuccess,
-  }),
-}));
 vi.mock(
   "@/components/home/terminal-panel/use-landing-terminal-kill-mutation",
   () => ({
-    useLandingTerminalKill: () => ({
-      mutate: mocks.killMutate,
-      mutateAsync: (variables: {
-        readonly hostId: string;
-        readonly sessionId: string;
-      }) => {
-        mocks.kill(variables);
-        return mocks.killAsync(variables).then((response) => {
-          useLandingTerminalStore
-            .getState()
-            .clearPendingKill(variables.hostId, variables.sessionId);
-          return response;
-        });
-      },
-    }),
+    useLandingTerminalKill: () => ({ mutate: mocks.kill }),
   }),
 );
 vi.mock(
@@ -76,7 +43,6 @@ vi.mock(
       }) => {
         const { onEntry } = props;
         const hostKey = props.hostIds.join("\u0000");
-        const terminalsById = mocks.terminalsById;
         useEffect(() => {
           const hostIds = hostKey.length === 0 ? [] : hostKey.split("\u0000");
           hostIds.forEach((hostId) => {
@@ -91,12 +57,13 @@ vi.mock(
                     : { status: mocks.authorityStatus },
                 canMutate: mocks.canMutate,
                 collection: {
-                  snapshotEpoch: mocks.snapshotEpoch,
                   terminalsByIdentity: Object.fromEntries(
-                    Object.entries(terminalsById).map(([terminalId, value]) => [
-                      plainTerminalCollectionIdentityKey(hostId, terminalId),
-                      value,
-                    ]),
+                    Object.entries(mocks.terminalsById).map(
+                      ([terminalId, value]) => [
+                        JSON.stringify([hostId, terminalId]),
+                        value,
+                      ],
+                    ),
                   ),
                 },
               },
@@ -106,7 +73,7 @@ vi.mock(
           return () => {
             hostIds.forEach((hostId) => onEntry(hostId, null));
           };
-        }, [hostKey, onEntry, terminalsById]);
+        }, [hostKey, onEntry]);
         return null;
       },
     };
@@ -150,17 +117,10 @@ const offlineHost: HostDirectoryEntry = {
 describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
   beforeEach(() => {
     mocks.entries = [offlineHost];
-    mocks.registeredHostIds = new Set(["host-b"]);
-    mocks.registryFetching = false;
-    mocks.registrySuccess = true;
-    mocks.killMutate.mockReset();
     mocks.kill.mockReset();
-    mocks.killAsync.mockReset();
-    mocks.killAsync.mockImplementation(() => Promise.resolve());
     mocks.readySessionHosts = new Set();
     mocks.authorityStatus = "legacy";
     mocks.canMutate = false;
-    mocks.snapshotEpoch = 1;
     mocks.terminalsById = {};
     mocks.closeAsync.mockReset();
     mocks.closeAsync.mockImplementation(() => Promise.resolve());
@@ -200,144 +160,6 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
       expect(mocks.kill).toHaveBeenCalledWith({
         hostId: "host-b",
         sessionId: "session-b",
-      });
-      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
-    });
-  });
-
-  it("preserves tombstones while the registered-host registry is fetching", async () => {
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "registry-fetch-tab",
-      sessionId: "registry-fetch-session",
-      hostId: "host-b",
-      cwd: "/workspace/project",
-      name: "project",
-      titleSource: "default",
-    });
-    useLandingTerminalStore
-      .getState()
-      .closeTab("landing-page", "registry-fetch-tab");
-    mocks.registryFetching = true;
-    mocks.registeredHostIds = new Set();
-    mocks.entries = [];
-
-    render(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => Promise.resolve());
-
-    expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(1);
-    expect(mocks.kill).not.toHaveBeenCalled();
-  });
-
-  it("retires a tombstone when its host is deregistered", async () => {
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "deregistered-tab",
-      sessionId: "deregistered-session",
-      hostId: "host-b",
-      cwd: "/workspace/project",
-      name: "project",
-      titleSource: "default",
-    });
-    useLandingTerminalStore
-      .getState()
-      .closeTab("landing-page", "deregistered-tab");
-    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
-    expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(1);
-
-    mocks.registeredHostIds = new Set();
-    mocks.entries = [];
-    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
-
-    await waitFor(() => {
-      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
-    });
-    expect(mocks.kill).not.toHaveBeenCalled();
-  });
-
-  it("retires a restored tombstone for a host removed while closed", async () => {
-    mocks.entries = [];
-    mocks.registeredHostIds = new Set();
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "removed-while-closed-tab",
-      sessionId: "removed-while-closed-session",
-      hostId: "host-b",
-      cwd: "/workspace/project",
-      name: "project",
-      titleSource: "default",
-    });
-    useLandingTerminalStore
-      .getState()
-      .closeTab("landing-page", "removed-while-closed-tab");
-
-    render(<LandingTerminalTombstoneRecoveryBridge />);
-
-    await waitFor(() => {
-      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
-    });
-    expect(mocks.kill).not.toHaveBeenCalled();
-  });
-
-  it("preserves a tombstone when the directory still knows a host omitted by the registry", async () => {
-    mocks.registeredHostIds = new Set();
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "registry-lag-tab",
-      sessionId: "registry-lag-session",
-      hostId: "host-b",
-      cwd: "/workspace/project",
-      name: "project",
-      titleSource: "default",
-    });
-    useLandingTerminalStore
-      .getState()
-      .closeTab("landing-page", "registry-lag-tab");
-
-    render(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => Promise.resolve());
-
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      {
-        hostId: "host-b",
-        sessionId: "registry-lag-session",
-        legacyEvidence: true,
-      },
-    ]);
-    expect(mocks.kill).not.toHaveBeenCalled();
-  });
-
-  it("preserves a tombstone through a boot-time empty directory", async () => {
-    mocks.entries = [];
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "boot-tab",
-      sessionId: "boot-session",
-      hostId: "host-b",
-      cwd: "/workspace/project",
-      name: "project",
-      titleSource: "default",
-    });
-    useLandingTerminalStore.getState().closeTab("landing-page", "boot-tab");
-    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => Promise.resolve());
-
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      {
-        hostId: "host-b",
-        sessionId: "boot-session",
-        legacyEvidence: true,
-      },
-    ]);
-
-    mocks.entries = [
-      {
-        ...offlineHost,
-        websocketUrl: "ws://host-b/rpc",
-        transportDialability: "dialable",
-      },
-    ];
-    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
-
-    await waitFor(() => {
-      expect(mocks.kill).toHaveBeenCalledWith({
-        hostId: "host-b",
-        sessionId: "boot-session",
       });
     });
   });
@@ -445,246 +267,6 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     });
     expect(mocks.closeAsync).toHaveBeenCalledTimes(2);
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
-  });
-
-  it("dispatches a tombstone added after a capable host is already drainable", async () => {
-    mocks.entries = [
-      {
-        ...offlineHost,
-        websocketUrl: "ws://host-b/rpc",
-        transportDialability: "dialable",
-      },
-    ];
-    mocks.authorityStatus = "capable";
-    mocks.canMutate = true;
-    mocks.terminalsById = { "late-session": {} };
-    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => Promise.resolve());
-
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "late-tab",
-      sessionId: "late-session",
-      hostId: "host-b",
-      cwd: "/workspace/project",
-      name: "Late close",
-      titleSource: "default",
-      hostAuthorityAcknowledged: true,
-    });
-    useLandingTerminalStore.getState().closeTab("landing-page", "late-tab");
-    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
-
-    await waitFor(() => {
-      expect(mocks.closeAsync).toHaveBeenCalledWith({
-        hostId: "host-b",
-        terminalId: "late-session",
-      });
-      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
-    });
-  });
-
-  it("keeps a tombstone until an in-flight capable create appears", async () => {
-    vi.useFakeTimers();
-    mocks.entries = [
-      {
-        ...offlineHost,
-        websocketUrl: "ws://host-b/rpc",
-        transportDialability: "dialable",
-      },
-    ];
-    mocks.authorityStatus = "capable";
-    mocks.canMutate = true;
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "pending-create-tab",
-      sessionId: "pending-create-session",
-      hostId: "host-b",
-      cwd: "/workspace/project",
-      name: "Pending create",
-      titleSource: "default",
-      pendingCreate: true,
-    });
-    useLandingTerminalStore.getState().markCreateAttempt("pending-create-tab");
-    useLandingTerminalStore
-      .getState()
-      .closeTab("landing-page", "pending-create-tab");
-
-    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => Promise.resolve());
-    expect(mocks.closeAsync).not.toHaveBeenCalled();
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      {
-        hostId: "host-b",
-        sessionId: "pending-create-session",
-        pendingCreate: true,
-      },
-    ]);
-
-    mocks.terminalsById = { "pending-create-session": {} };
-    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => {
-      vi.advanceTimersByTime(500);
-      await Promise.resolve();
-    });
-
-    expect(mocks.closeAsync).toHaveBeenCalledWith({
-      hostId: "host-b",
-      terminalId: "pending-create-session",
-    });
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
-  });
-
-  it("does not consume old ambiguity while a create retry is active", async () => {
-    mocks.entries = [
-      {
-        ...offlineHost,
-        websocketUrl: "ws://host-b/rpc",
-        transportDialability: "dialable",
-      },
-    ];
-    mocks.authorityStatus = "capable";
-    mocks.canMutate = true;
-    mocks.snapshotEpoch = 5;
-    const store = useLandingTerminalStore.getState();
-    store.addTab({
-      instanceId: "active-retry-tab",
-      sessionId: "active-retry-session",
-      hostId: "host-b",
-      cwd: "/workspace/project",
-      name: "Active retry",
-      titleSource: "default",
-      pendingCreate: true,
-      createFailure: "ambiguous",
-      createRejectedAtSnapshotEpoch: 3,
-    });
-    store.markCreateAttempt("active-retry-tab");
-    store.closeTab("landing-page", "active-retry-tab");
-
-    render(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => Promise.resolve());
-
-    expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(1);
-    expect(mocks.closeAsync).not.toHaveBeenCalled();
-  });
-
-  it("rechecks authoritative absence after an in-flight close rejects", async () => {
-    mocks.entries = [
-      {
-        ...offlineHost,
-        websocketUrl: "ws://host-b/rpc",
-        transportDialability: "dialable",
-      },
-    ];
-    mocks.authorityStatus = "capable";
-    mocks.canMutate = true;
-    mocks.terminalsById = { "lost-response-session": {} };
-    let rejectClose: ((reason: Error) => void) | undefined;
-    mocks.closeAsync.mockImplementation(
-      () =>
-        new Promise((_resolve, reject) => {
-          rejectClose = reject;
-        }),
-    );
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "lost-response-tab",
-      sessionId: "lost-response-session",
-      hostId: "host-b",
-      cwd: "/workspace/project",
-      name: "Lost response",
-      titleSource: "default",
-      hostAuthorityAcknowledged: true,
-    });
-    useLandingTerminalStore
-      .getState()
-      .closeTab("landing-page", "lost-response-tab");
-    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
-    await waitFor(() => expect(mocks.closeAsync).toHaveBeenCalledTimes(1));
-
-    mocks.terminalsById = {};
-    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
-    rejectClose?.(new Error("response lost"));
-
-    await waitFor(() => {
-      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
-    });
-  });
-
-  it("retires an ambiguous create dismissed after a fresh absent snapshot", async () => {
-    mocks.entries = [
-      {
-        ...offlineHost,
-        websocketUrl: "ws://host-b/rpc",
-        transportDialability: "dialable",
-      },
-    ];
-    mocks.authorityStatus = "capable";
-    mocks.canMutate = true;
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "ambiguous-create-tab",
-      sessionId: "ambiguous-create-session",
-      hostId: "host-b",
-      cwd: "/workspace/project",
-      name: "Ambiguous create",
-      titleSource: "default",
-      pendingCreate: true,
-    });
-    useLandingTerminalStore
-      .getState()
-      .settleFailedCreate(
-        "ambiguous-create-tab",
-        "host-b",
-        "ambiguous-create-session",
-        {
-          mayHaveApplied: true,
-          rejectedAtSnapshotEpoch: mocks.snapshotEpoch,
-        },
-      );
-
-    mocks.terminalsById = {};
-    mocks.snapshotEpoch += 1;
-    useLandingTerminalStore
-      .getState()
-      .closeTab("landing-page", "ambiguous-create-tab");
-    render(<LandingTerminalTombstoneRecoveryBridge />);
-
-    await waitFor(() => {
-      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
-    });
-    expect(mocks.closeAsync).not.toHaveBeenCalled();
-  });
-
-  it("retries a legacy kill after a transient rejection", async () => {
-    vi.useFakeTimers();
-    mocks.killAsync
-      .mockRejectedValueOnce(new Error("transient"))
-      .mockResolvedValueOnce(undefined);
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "legacy-retry-tab",
-      sessionId: "legacy-retry-session",
-      hostId: "host-b",
-      cwd: "/legacy",
-      name: "Legacy retry",
-      titleSource: "default",
-    });
-    useLandingTerminalStore
-      .getState()
-      .closeTab("landing-page", "legacy-retry-tab");
-
-    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
-    mocks.entries = [
-      {
-        ...offlineHost,
-        websocketUrl: "ws://host-b/rpc",
-        transportDialability: "dialable",
-      },
-    ];
-    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => Promise.resolve());
-    expect(mocks.kill).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      vi.advanceTimersByTime(500);
-      await Promise.resolve();
-    });
-    expect(mocks.kill).toHaveBeenCalledTimes(2);
   });
 
   it("backs off repeated capable close failures without concurrent retries", async () => {

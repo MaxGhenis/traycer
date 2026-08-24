@@ -8,20 +8,14 @@ import {
 } from "react";
 import { isRelayFuseRecoveryCandidate } from "@traycer-clients/shared/host-client/remote-fetcher";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
-import type { HostListResponse } from "@traycer/protocol/host/host-status";
-import type { UseQueryResult } from "@tanstack/react-query";
 import { useHostDirectoryList } from "@/hooks/host/use-host-directory-list-query";
-import { useRegisteredHosts } from "@/hooks/auth/use-registered-hosts-query";
 import { useRemoteSessionsPollReadiness } from "@/hooks/host/use-remote-sessions-poll-readiness";
 import { dialableHostEndpointFor } from "@/lib/host/transport-key";
 import {
   useLandingTerminalStore,
   type LandingTerminalPendingKill,
 } from "@/stores/home/landing-terminal-store";
-import {
-  useLandingTerminalKill,
-  type LandingTerminalKillVariables,
-} from "@/components/home/terminal-panel/use-landing-terminal-kill-mutation";
+import { useLandingTerminalKill } from "@/components/home/terminal-panel/use-landing-terminal-kill-mutation";
 import {
   LandingTerminalAuthorityFleet,
   type LandingTerminalAuthorityEntries,
@@ -40,9 +34,6 @@ interface CapableCloseRetry {
 }
 
 interface TombstoneRetryRefs {
-  readonly ambiguousEpochs: {
-    current: Map<string, number>;
-  };
   readonly authorityEntries: {
     current: LandingTerminalAuthorityEntries;
   };
@@ -50,31 +41,6 @@ interface TombstoneRetryRefs {
   readonly inFlight: { current: ReadonlySet<string> };
   readonly mounted: { current: boolean };
   readonly retries: { current: Map<string, CapableCloseRetry> };
-}
-
-interface LegacyKillMutation {
-  readonly mutateAsync: (
-    variables: LandingTerminalKillVariables,
-  ) => Promise<unknown>;
-}
-
-type RegisteredHostsSnapshot = Pick<
-  UseQueryResult<HostListResponse | null>,
-  "data" | "isFetching" | "isSuccess"
->;
-
-function authoritativeRegisteredHostIds(
-  snapshot: RegisteredHostsSnapshot,
-): ReadonlySet<string> | null {
-  if (
-    snapshot.data === null ||
-    snapshot.data === undefined ||
-    !snapshot.isSuccess ||
-    snapshot.isFetching
-  ) {
-    return null;
-  }
-  return new Set(snapshot.data.hosts.map((entry) => entry.hostId));
 }
 
 function hostCanDrainLandingTerminalTombstones(
@@ -120,103 +86,6 @@ function cancelUndrainableCapableCloseRetries(args: {
   }
 }
 
-function retireDeregisteredHostTombstones(args: {
-  readonly pendingKills: readonly LandingTerminalPendingKill[];
-  readonly directoryHostIds: ReadonlySet<string>;
-  readonly registeredHostIds: ReadonlySet<string>;
-}): void {
-  for (const pending of args.pendingKills) {
-    if (
-      args.directoryHostIds.has(pending.hostId) ||
-      args.registeredHostIds.has(pending.hostId)
-    ) {
-      continue;
-    }
-    useLandingTerminalStore
-      .getState()
-      .clearPendingKill(pending.hostId, pending.sessionId);
-  }
-}
-
-function scheduleLegacyKillRetry(args: {
-  readonly key: string;
-  readonly pending: LandingTerminalPendingKill;
-  readonly refs: TombstoneRetryRefs;
-  readonly signalRetry: () => void;
-}): void {
-  if (!args.refs.mounted.current) return;
-  const stillPending = useLandingTerminalStore
-    .getState()
-    .pendingKills.some(
-      (candidate) =>
-        candidate.hostId === args.pending.hostId &&
-        candidate.sessionId === args.pending.sessionId,
-    );
-  const currentEntry = args.refs.authorityEntries.current[args.pending.hostId];
-  if (
-    !stillPending ||
-    args.refs.dialable.current.get(args.pending.hostId) !== true ||
-    (args.pending.legacyEvidence !== true &&
-      currentEntry?.authority.capability.status !== "legacy")
-  ) {
-    return;
-  }
-  const prior = args.refs.retries.current.get(args.key);
-  if (prior !== undefined && prior.timer !== null) return;
-  const attempt = (prior?.attempt ?? 0) + 1;
-  const retryDelay = Math.min(
-    CAPABLE_CLOSE_RETRY_BASE_MS * 2 ** (attempt - 1),
-    CAPABLE_CLOSE_RETRY_MAX_MS,
-  );
-  const nextRetry: CapableCloseRetry = {
-    attempt,
-    timer: null,
-    due: false,
-  };
-  nextRetry.timer = window.setTimeout(() => {
-    if (!args.refs.mounted.current) return;
-    nextRetry.timer = null;
-    nextRetry.due = true;
-    args.signalRetry();
-  }, retryDelay);
-  args.refs.retries.current.set(args.key, nextRetry);
-}
-
-function dispatchLegacyKill(args: {
-  readonly key: string;
-  readonly kill: LegacyKillMutation;
-  readonly pending: LandingTerminalPendingKill;
-  readonly retry: CapableCloseRetry | undefined;
-  readonly refs: TombstoneRetryRefs;
-  readonly signalRetry: () => void;
-}): void {
-  if (args.retry !== undefined) args.retry.due = false;
-  args.refs.inFlight.current = new Set([
-    ...args.refs.inFlight.current,
-    args.key,
-  ]);
-  void args.kill
-    .mutateAsync({
-      hostId: args.pending.hostId,
-      sessionId: args.pending.sessionId,
-    })
-    .then(
-      () => clearCapableCloseRetry(args.refs.retries.current, args.key),
-      () =>
-        scheduleLegacyKillRetry({
-          key: args.key,
-          pending: args.pending,
-          refs: args.refs,
-          signalRetry: args.signalRetry,
-        }),
-    )
-    .finally(() => {
-      const next = new Set(args.refs.inFlight.current);
-      next.delete(args.key);
-      args.refs.inFlight.current = next;
-    });
-}
-
 function scheduleCapableCloseRetry(args: {
   readonly key: string;
   readonly pending: LandingTerminalPendingKill;
@@ -237,12 +106,11 @@ function scheduleCapableCloseRetry(args: {
     args.refs.dialable.current.get(args.pending.hostId) !== true ||
     currentEntry?.authority.capability.status !== "capable" ||
     !currentEntry.authority.canMutate ||
-    (args.pending.pendingCreate !== true &&
-      getPlainTerminal(
-        currentEntry.authority.collection,
-        args.pending.hostId,
-        args.pending.sessionId,
-      ) === undefined)
+    getPlainTerminal(
+      currentEntry.authority.collection,
+      args.pending.hostId,
+      args.pending.sessionId,
+    ) === undefined
   ) {
     return;
   }
@@ -267,22 +135,6 @@ function scheduleCapableCloseRetry(args: {
   args.refs.retries.current.set(args.key, nextRetry);
 }
 
-function awaitsFreshAbsenceProof(args: {
-  readonly entry: LandingTerminalAuthorityEntry;
-  readonly key: string;
-  readonly pending: LandingTerminalPendingKill;
-  readonly refs: TombstoneRetryRefs;
-}): boolean {
-  const currentEpoch = args.entry.authority.collection?.snapshotEpoch ?? 0;
-  const observedEpoch = args.refs.ambiguousEpochs.current.get(args.key);
-  const rejectionEpoch =
-    args.pending.createRejectedAtSnapshotEpoch ?? currentEpoch;
-  if (observedEpoch === undefined) {
-    args.refs.ambiguousEpochs.current.set(args.key, rejectionEpoch);
-  }
-  return (observedEpoch ?? rejectionEpoch) >= currentEpoch;
-}
-
 function dispatchCapableClose(args: {
   readonly entry: LandingTerminalAuthorityEntry;
   readonly key: string;
@@ -298,31 +150,9 @@ function dispatchCapableClose(args: {
       args.pending.sessionId,
     ) === undefined
   ) {
-    if (args.pending.pendingCreate === true) {
-      scheduleCapableCloseRetry(args);
-      return;
-    }
-    if (args.pending.createRejectedAmbiguously === true) {
-      if (args.pending.retireOnFreshSnapshot === true) {
-        args.refs.ambiguousEpochs.current.delete(args.key);
-        useLandingTerminalStore
-          .getState()
-          .clearPendingKill(args.pending.hostId, args.pending.sessionId);
-        clearCapableCloseRetry(args.refs.retries.current, args.key);
-        return;
-      }
-      if (awaitsFreshAbsenceProof(args)) return;
-      args.refs.ambiguousEpochs.current.delete(args.key);
-      useLandingTerminalStore
-        .getState()
-        .clearPendingKill(args.pending.hostId, args.pending.sessionId);
-      clearCapableCloseRetry(args.refs.retries.current, args.key);
-      return;
-    }
     useLandingTerminalStore
       .getState()
       .clearPendingKill(args.pending.hostId, args.pending.sessionId);
-    args.refs.ambiguousEpochs.current.delete(args.key);
     clearCapableCloseRetry(args.refs.retries.current, args.key);
     return;
   }
@@ -349,18 +179,7 @@ function dispatchCapableClose(args: {
       const next = new Set(args.refs.inFlight.current);
       next.delete(args.key);
       args.refs.inFlight.current = next;
-      if (args.refs.mounted.current) args.signalRetry();
     });
-}
-
-function pendingKillReadyForDispatch(args: {
-  readonly pending: LandingTerminalPendingKill;
-  readonly retry: CapableCloseRetry | undefined;
-  readonly routeRecovered: boolean;
-}): boolean {
-  return (
-    args.routeRecovered || args.retry?.due === true || args.retry === undefined
-  );
 }
 
 /**
@@ -370,12 +189,10 @@ function pendingKillReadyForDispatch(args: {
  */
 export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
   const directory = useHostDirectoryList();
-  const registry = useRegisteredHosts();
   const pendingKills = useLandingTerminalStore((state) => state.pendingKills);
   const kill = useLandingTerminalKill();
-  const killRef = useRef<LegacyKillMutation>(kill);
+  const killRef = useRef(kill);
   const inFlightRef = useRef<ReadonlySet<string>>(new Set());
-  const ambiguousEpochsRef = useRef<Map<string, number>>(new Map());
   const retriesRef = useRef<Map<string, CapableCloseRetry>>(new Map());
   const mountedRef = useRef(true);
   const [retryGeneration, setRetryGeneration] = useState(0);
@@ -431,9 +248,10 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
     () => (directory.data ?? []).map((entry) => entry.hostId),
     [directory.data],
   );
-  const authorityHostIds = useMemo(() => {
-    return [...new Set(pendingKills.map((pending) => pending.hostId))];
-  }, [pendingKills]);
+  const authorityHostIds = useMemo(
+    () => [...new Set(pendingKills.map((pending) => pending.hostId))],
+    [pendingKills],
+  );
   const hasReadySessionFor = useRemoteSessionsPollReadiness(directoryHostIds);
   const authorityEntriesRef = useRef(authorityEntries);
 
@@ -448,31 +266,17 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
   useEffect(() => {
     mountedRef.current = true;
     const retries = retriesRef.current;
-    const ambiguousEpochs = ambiguousEpochsRef.current;
     return () => {
       mountedRef.current = false;
       for (const retry of retries.values()) {
         if (retry.timer !== null) clearTimeout(retry.timer);
       }
       retries.clear();
-      ambiguousEpochs.clear();
     };
   }, []);
 
   useEffect(() => {
     const entries = directory.data ?? [];
-    const registeredHostIds = authoritativeRegisteredHostIds({
-      data: registry.data,
-      isFetching: registry.isFetching,
-      isSuccess: registry.isSuccess,
-    });
-    if (registeredHostIds !== null) {
-      retireDeregisteredHostTombstones({
-        pendingKills,
-        directoryHostIds: new Set(entries.map((entry) => entry.hostId)),
-        registeredHostIds,
-      });
-    }
     const currentDrainable = new Map(
       entries.map((entry) => [
         entry.hostId,
@@ -486,7 +290,6 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
     const previousDialable = dialableRef.current;
     dialableRef.current = currentDrainable;
     const retryRefs: TombstoneRetryRefs = {
-      ambiguousEpochs: ambiguousEpochsRef,
       authorityEntries: authorityEntriesRef,
       dialable: dialableRef,
       inFlight: inFlightRef,
@@ -512,16 +315,10 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
       const key = terminalSessionKey(pending.hostId, pending.sessionId);
       const retry = retriesRef.current.get(key);
       const routeRecovered = previousDialable.get(pending.hostId) !== true;
-      if (!pendingKillReadyForDispatch({ pending, retry, routeRecovered })) {
-        continue;
-      }
+      if (!routeRecovered && retry?.due !== true) continue;
       if (inFlightRef.current.has(key)) continue;
       const entry = authorityEntries[pending.hostId];
-      if (
-        entry !== undefined &&
-        pending.legacyEvidence !== true &&
-        entry.authority.capability.status === "capable"
-      ) {
+      if (entry?.authority.capability.status === "capable") {
         dispatchCapableClose({
           entry,
           key,
@@ -532,19 +329,8 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
         });
         continue;
       }
-      if (
-        entry !== undefined &&
-        (pending.legacyEvidence === true ||
-          entry.authority.capability.status === "legacy")
-      ) {
-        dispatchLegacyKill({
-          key,
-          kill: killRef.current,
-          pending,
-          retry,
-          refs: retryRefs,
-          signalRetry: () => setRetryGeneration((current) => current + 1),
-        });
+      if (entry?.authority.capability.status === "legacy") {
+        killRef.current.mutate(pending);
       }
     }
   }, [
@@ -552,9 +338,6 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
     directory.data,
     pendingKills,
     hasReadySessionFor,
-    registry.data,
-    registry.isFetching,
-    registry.isSuccess,
     retryGeneration,
   ]);
 
