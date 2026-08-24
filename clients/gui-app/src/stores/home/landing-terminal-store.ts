@@ -34,6 +34,8 @@ export interface LandingTerminalTabRef {
 export interface LandingTerminalPendingKill {
   readonly hostId: string;
   readonly sessionId: string;
+  /** Keep probing until an in-flight capable-host create either appears. */
+  readonly pendingCreate?: boolean;
 }
 
 export interface LandingTerminalLayout {
@@ -297,7 +299,13 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
             ? state.pendingKills
             : [
                 ...state.pendingKills,
-                { hostId: closed.hostId, sessionId: closed.sessionId },
+                {
+                  hostId: closed.hostId,
+                  sessionId: closed.sessionId,
+                  ...(closed.pendingCreate === true
+                    ? { pendingCreate: true }
+                    : {}),
+                },
               ];
           return {
             tabs,
@@ -325,7 +333,13 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
                 ? pending
                 : [
                     ...pending,
-                    { hostId: tab.hostId, sessionId: tab.sessionId },
+                    {
+                      hostId: tab.hostId,
+                      sessionId: tab.sessionId,
+                      ...(tab.pendingCreate === true
+                        ? { pendingCreate: true }
+                        : {}),
+                    },
                   ],
             state.pendingKills,
           ),
@@ -548,7 +562,13 @@ function parsePendingKills(
     const key = terminalSessionKey(entry.hostId, entry.sessionId);
     if (seen.has(key)) return [];
     seen.add(key);
-    return [{ hostId: entry.hostId, sessionId: entry.sessionId }];
+    return [
+      {
+        hostId: entry.hostId,
+        sessionId: entry.sessionId,
+        ...(entry.pendingCreate === true ? { pendingCreate: true } : {}),
+      },
+    ];
   });
 }
 

@@ -767,6 +767,7 @@ export function LandingTerminalPanel(): ReactNode {
       if (closed === null) return;
       const authorityEntry = authorityEntries[closed.hostId];
       if (
+        closed.pendingCreate !== true &&
         landingTerminalAuthorityReady(authorityEntry) &&
         authorityEntry.authority.capability.status === "capable"
       ) {
@@ -817,6 +818,7 @@ export function LandingTerminalPanel(): ReactNode {
     const closed = closeAllTabs(landingPageId);
     for (const tab of closed) {
       const authorityEntry = authorityEntries[tab.hostId];
+      if (tab.pendingCreate === true) continue;
       if (!landingTerminalAuthorityReady(authorityEntry)) continue;
       if (authorityEntry.authority.capability.status === "capable") {
         void authorityEntry.mutations.close

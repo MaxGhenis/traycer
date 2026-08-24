@@ -232,11 +232,12 @@ function scheduleCapableCloseRetry(args: {
     args.refs.dialable.current.get(args.pending.hostId) !== true ||
     currentEntry?.authority.capability.status !== "capable" ||
     !currentEntry.authority.canMutate ||
-    getPlainTerminal(
-      currentEntry.authority.collection,
-      args.pending.hostId,
-      args.pending.sessionId,
-    ) === undefined
+    (args.pending.pendingCreate !== true &&
+      getPlainTerminal(
+        currentEntry.authority.collection,
+        args.pending.hostId,
+        args.pending.sessionId,
+      ) === undefined)
   ) {
     return;
   }
@@ -276,6 +277,10 @@ function dispatchCapableClose(args: {
       args.pending.sessionId,
     ) === undefined
   ) {
+    if (args.pending.pendingCreate === true) {
+      scheduleCapableCloseRetry(args);
+      return;
+    }
     useLandingTerminalStore
       .getState()
       .clearPendingKill(args.pending.hostId, args.pending.sessionId);
@@ -453,7 +458,11 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
       const key = terminalSessionKey(pending.hostId, pending.sessionId);
       const retry = retriesRef.current.get(key);
       const routeRecovered = previousDialable.get(pending.hostId) !== true;
-      if (!routeRecovered && retry?.due !== true) continue;
+      const newlyPendingCreate =
+        pending.pendingCreate === true && retry === undefined;
+      if (!routeRecovered && retry?.due !== true && !newlyPendingCreate) {
+        continue;
+      }
       if (inFlightRef.current.has(key)) continue;
       const entry = authorityEntries[pending.hostId];
       if (entry?.authority.capability.status === "capable") {

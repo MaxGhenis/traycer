@@ -66,6 +66,7 @@ vi.mock(
       }) => {
         const { onEntry } = props;
         const hostKey = props.hostIds.join("\u0000");
+        const terminalsById = mocks.terminalsById;
         useEffect(() => {
           const hostIds = hostKey.length === 0 ? [] : hostKey.split("\u0000");
           hostIds.forEach((hostId) => {
@@ -81,12 +82,10 @@ vi.mock(
                 canMutate: mocks.canMutate,
                 collection: {
                   terminalsByIdentity: Object.fromEntries(
-                    Object.entries(mocks.terminalsById).map(
-                      ([terminalId, value]) => [
-                        JSON.stringify([hostId, terminalId]),
-                        value,
-                      ],
-                    ),
+                    Object.entries(terminalsById).map(([terminalId, value]) => [
+                      JSON.stringify([hostId, terminalId]),
+                      value,
+                    ]),
                   ),
                 },
               },
@@ -96,7 +95,7 @@ vi.mock(
           return () => {
             hostIds.forEach((hostId) => onEntry(hostId, null));
           };
-        }, [hostKey, onEntry]);
+        }, [hostKey, onEntry, terminalsById]);
         return null;
       },
     };
@@ -398,6 +397,55 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
       await Promise.resolve();
     });
     expect(mocks.closeAsync).toHaveBeenCalledTimes(2);
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+  });
+
+  it("keeps a tombstone until an in-flight capable create appears", async () => {
+    vi.useFakeTimers();
+    mocks.entries = [
+      {
+        ...offlineHost,
+        websocketUrl: "ws://host-b/rpc",
+        transportDialability: "dialable",
+      },
+    ];
+    mocks.authorityStatus = "capable";
+    mocks.canMutate = true;
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "pending-create-tab",
+      sessionId: "pending-create-session",
+      hostId: "host-b",
+      cwd: "/workspace/project",
+      name: "Pending create",
+      titleSource: "default",
+      pendingCreate: true,
+    });
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "pending-create-tab");
+
+    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => Promise.resolve());
+    expect(mocks.closeAsync).not.toHaveBeenCalled();
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+      {
+        hostId: "host-b",
+        sessionId: "pending-create-session",
+        pendingCreate: true,
+      },
+    ]);
+
+    mocks.terminalsById = { "pending-create-session": {} };
+    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+
+    expect(mocks.closeAsync).toHaveBeenCalledWith({
+      hostId: "host-b",
+      terminalId: "pending-create-session",
+    });
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
   });
 
