@@ -66,6 +66,10 @@ const INDEPENDENT_SCOPE: TerminalScope = { kind: "independent" };
 const TERMINAL_DEFAULT_COLS = 80;
 const TERMINAL_DEFAULT_ROWS = 24;
 
+function collectionSnapshotEpoch(entry: LandingTerminalAuthorityEntry): number {
+  return entry.authority.collection?.snapshotEpoch ?? 0;
+}
+
 export interface LandingTerminalTileProps {
   readonly landingPageId: string;
   readonly tab: LandingTerminalTabRef;
@@ -359,10 +363,13 @@ function LandingTerminalDurableBootstrap(
           props.tab.instanceId,
           props.tab.hostId,
           props.tab.sessionId,
-          mayHaveApplied,
+          {
+            mayHaveApplied,
+            rejectedAtSnapshotEpoch: collectionSnapshotEpoch(entry),
+          },
         );
     },
-    [props.tab.hostId, props.tab.instanceId, props.tab.sessionId],
+    [entry, props.tab.hostId, props.tab.instanceId, props.tab.sessionId],
   );
   const lifecycle = useLandingTerminalDurableLifecycle({
     projectionStatus:

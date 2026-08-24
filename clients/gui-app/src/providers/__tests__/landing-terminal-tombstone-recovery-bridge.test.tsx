@@ -460,7 +460,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
   });
 
-  it("retires an ambiguous failed-create tombstone from a fresh absent snapshot", async () => {
+  it("retires an ambiguous create dismissed after a fresh absent snapshot", async () => {
     mocks.entries = [
       {
         ...offlineHost,
@@ -481,23 +481,22 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     });
     useLandingTerminalStore
       .getState()
-      .closeTab("landing-page", "ambiguous-create-tab");
-    useLandingTerminalStore
-      .getState()
       .settleFailedCreate(
         "ambiguous-create-tab",
         "host-b",
         "ambiguous-create-session",
-        true,
+        {
+          mayHaveApplied: true,
+          rejectedAtSnapshotEpoch: mocks.snapshotEpoch,
+        },
       );
-
-    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => Promise.resolve());
-    expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(1);
 
     mocks.terminalsById = {};
     mocks.snapshotEpoch += 1;
-    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "ambiguous-create-tab");
+    render(<LandingTerminalTombstoneRecoveryBridge />);
 
     await waitFor(() => {
       expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);

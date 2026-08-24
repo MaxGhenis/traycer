@@ -284,7 +284,7 @@ describe("capable landing-terminal reconciliation", () => {
             pending.instanceId,
             pending.hostId,
             pending.sessionId,
-            true,
+            { mayHaveApplied: true, rejectedAtSnapshotEpoch: 1 },
           );
       }
       queryClient.setQueryData(

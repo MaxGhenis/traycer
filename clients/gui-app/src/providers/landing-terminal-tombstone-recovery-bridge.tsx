@@ -269,6 +269,22 @@ function scheduleCapableCloseRetry(args: {
   args.refs.retries.current.set(args.key, nextRetry);
 }
 
+function awaitsFreshAbsenceProof(args: {
+  readonly entry: LandingTerminalAuthorityEntry;
+  readonly key: string;
+  readonly pending: LandingTerminalPendingKill;
+  readonly refs: TombstoneRetryRefs;
+}): boolean {
+  const currentEpoch = args.entry.authority.collection?.snapshotEpoch ?? 0;
+  const observedEpoch = args.refs.ambiguousEpochs.current.get(args.key);
+  const rejectionEpoch =
+    args.pending.createRejectedAtSnapshotEpoch ?? currentEpoch;
+  if (observedEpoch === undefined) {
+    args.refs.ambiguousEpochs.current.set(args.key, rejectionEpoch);
+  }
+  return (observedEpoch ?? rejectionEpoch) >= currentEpoch;
+}
+
 function dispatchCapableClose(args: {
   readonly entry: LandingTerminalAuthorityEntry;
   readonly key: string;
@@ -292,19 +308,7 @@ function dispatchCapableClose(args: {
         clearCapableCloseRetry(args.refs.retries.current, args.key);
         return;
       }
-      const observedEpoch = args.refs.ambiguousEpochs.current.get(args.key);
-      if (observedEpoch === undefined) {
-        args.refs.ambiguousEpochs.current.set(
-          args.key,
-          args.entry.authority.collection?.snapshotEpoch ?? 0,
-        );
-        return;
-      }
-      if (
-        observedEpoch >= (args.entry.authority.collection?.snapshotEpoch ?? 0)
-      ) {
-        return;
-      }
+      if (awaitsFreshAbsenceProof(args)) return;
       args.refs.ambiguousEpochs.current.delete(args.key);
       useLandingTerminalStore
         .getState()
