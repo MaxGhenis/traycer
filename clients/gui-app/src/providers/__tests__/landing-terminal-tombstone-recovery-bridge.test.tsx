@@ -198,6 +198,37 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     expect(mocks.kill).not.toHaveBeenCalled();
   });
 
+  it("preserves legacy cleanup routing after the host reports capable authority", async () => {
+    mocks.entries = [
+      {
+        ...offlineHost,
+        websocketUrl: "ws://host-b/rpc",
+        transportDialability: "dialable",
+      },
+    ];
+    mocks.authorityStatus = "capable";
+    mocks.canMutate = true;
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "legacy-tab",
+      sessionId: "session-legacy",
+      hostId: "host-b",
+      cwd: "/legacy",
+      name: "Legacy",
+      titleSource: "default",
+    });
+    useLandingTerminalStore.getState().closeTab("landing-page", "legacy-tab");
+
+    render(<LandingTerminalTombstoneRecoveryBridge />);
+
+    await waitFor(() => {
+      expect(mocks.kill).toHaveBeenCalledWith({
+        hostId: "host-b",
+        sessionId: "session-legacy",
+      });
+    });
+    expect(mocks.closeAsync).not.toHaveBeenCalled();
+  });
+
   it("does not drain capable-host tombstones while authority is stale", async () => {
     mocks.entries = [
       {

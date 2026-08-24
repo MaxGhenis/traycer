@@ -318,6 +318,17 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
       if (!routeRecovered && retry?.due !== true) continue;
       if (inFlightRef.current.has(key)) continue;
       const entry = authorityEntries[pending.hostId];
+      if (
+        entry !== undefined &&
+        (pending.legacyEvidence === true ||
+          entry.authority.capability.status === "legacy")
+      ) {
+        killRef.current.mutate({
+          hostId: pending.hostId,
+          sessionId: pending.sessionId,
+        });
+        continue;
+      }
       if (entry?.authority.capability.status === "capable") {
         dispatchCapableClose({
           entry,
@@ -326,13 +337,6 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
           retry,
           refs: retryRefs,
           signalRetry: () => setRetryGeneration((current) => current + 1),
-        });
-        continue;
-      }
-      if (entry?.authority.capability.status === "legacy") {
-        killRef.current.mutate({
-          hostId: pending.hostId,
-          sessionId: pending.sessionId,
         });
       }
     }
