@@ -602,7 +602,6 @@ describe("<SwitcherAgentsList />", () => {
   });
 });
 
-
 describe("switcher create affordances (editor-gated)", () => {
   it("shows the New chat row as the first row for an editor and hides it for a viewer", () => {
     holder.records = [
@@ -636,5 +635,4 @@ describe("switcher create affordances (editor-gated)", () => {
     expect(screen.getByTestId("switcher-new-chat")).toBeTruthy();
     expect(screen.getByText("No agents yet.")).toBeTruthy();
   });
-
 });
