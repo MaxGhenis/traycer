@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { PlainTerminalProjection } from "@traycer/protocol/host/terminal/plain-schemas";
+import { HostTransportFailureError } from "@traycer-clients/shared/host-transport/host-messenger";
 import {
   resolveLandingTerminalDurableBootstrapAction,
   useLandingTerminalDurableLifecycle,
@@ -233,6 +234,42 @@ describe("durable landing-terminal bootstrap", () => {
     });
 
     expect(onCreateRejected).toHaveBeenCalledWith(false);
+  });
+
+  it("classifies an ambiguous transport failure after unmount", async () => {
+    const pending = deferred<PlainTerminalProjection>();
+    const onCreateRejected = vi.fn();
+    const rendered = renderHook(() =>
+      useLandingTerminalDurableLifecycle({
+        projectionStatus: "missing",
+        pendingCreate: true,
+        active: true,
+        canMutate: true,
+        gridReady: true,
+        dispatch: () => pending.promise,
+        adopt: vi.fn(),
+        onCreateRejected,
+      }),
+    );
+    await waitFor(() =>
+      expect(rendered.result.current.requestPending).toBe(true),
+    );
+
+    rendered.unmount();
+    await act(() => {
+      pending.reject(
+        new HostTransportFailureError({
+          code: "RPC_ERROR",
+          message: "response lost",
+          requestId: "create-request",
+          method: "terminal.plain.create",
+          fatalDetails: null,
+        }),
+      );
+      return Promise.resolve();
+    });
+
+    expect(onCreateRejected).toHaveBeenCalledWith(true);
   });
 
   it("retains the error presentation while an explicit retry is pending", async () => {

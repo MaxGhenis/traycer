@@ -7,6 +7,7 @@ import type {
   HostListItem,
 } from "@traycer/protocol/host/host-status";
 import { useLandingTerminalStore } from "@/stores/home/landing-terminal-store";
+import { plainTerminalCollectionIdentityKey } from "@/lib/terminals/plain-terminal-authority";
 
 const mocks = vi.hoisted(() => {
   const initialAuthorityStatus = (): "legacy" | "capable" | "unknown" =>
@@ -15,6 +16,9 @@ const mocks = vi.hoisted(() => {
   return {
     entries: [] as readonly HostDirectoryEntry[],
     registeredHostIds: new Set<string>(),
+    registryFetching: false,
+    registrySuccess: true,
+    killMutate: vi.fn(),
     kill: vi.fn(),
     killAsync: vi.fn(
       (_variables: { readonly hostId: string; readonly sessionId: string }) =>
@@ -37,21 +41,26 @@ vi.mock("@/hooks/auth/use-registered-hosts-query", () => ({
     data: {
       hosts: [...mocks.registeredHostIds].map((hostId) => ({ hostId })),
     },
-    isFetching: false,
-    isSuccess: true,
+    isFetching: mocks.registryFetching,
+    isSuccess: mocks.registrySuccess,
   }),
 }));
 vi.mock(
   "@/components/home/terminal-panel/use-landing-terminal-kill-mutation",
   () => ({
     useLandingTerminalKill: () => ({
-      mutate: mocks.kill,
+      mutate: mocks.killMutate,
       mutateAsync: (variables: {
         readonly hostId: string;
         readonly sessionId: string;
       }) => {
         mocks.kill(variables);
-        return mocks.killAsync(variables);
+        return mocks.killAsync(variables).then((response) => {
+          useLandingTerminalStore
+            .getState()
+            .clearPendingKill(variables.hostId, variables.sessionId);
+          return response;
+        });
       },
     }),
   }),
@@ -85,7 +94,7 @@ vi.mock(
                   snapshotEpoch: mocks.snapshotEpoch,
                   terminalsByIdentity: Object.fromEntries(
                     Object.entries(terminalsById).map(([terminalId, value]) => [
-                      JSON.stringify([hostId, terminalId]),
+                      plainTerminalCollectionIdentityKey(hostId, terminalId),
                       value,
                     ]),
                   ),
@@ -142,6 +151,9 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
   beforeEach(() => {
     mocks.entries = [offlineHost];
     mocks.registeredHostIds = new Set(["host-b"]);
+    mocks.registryFetching = false;
+    mocks.registrySuccess = true;
+    mocks.killMutate.mockReset();
     mocks.kill.mockReset();
     mocks.killAsync.mockReset();
     mocks.killAsync.mockImplementation(() => Promise.resolve());
@@ -189,7 +201,31 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
         hostId: "host-b",
         sessionId: "session-b",
       });
+      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
     });
+  });
+
+  it("preserves tombstones while the registered-host registry is fetching", async () => {
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "registry-fetch-tab",
+      sessionId: "registry-fetch-session",
+      hostId: "host-b",
+      cwd: "/workspace/project",
+      name: "project",
+      titleSource: "default",
+    });
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "registry-fetch-tab");
+    mocks.registryFetching = true;
+    mocks.registeredHostIds = new Set();
+    mocks.entries = [];
+
+    render(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => Promise.resolve());
+
+    expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(1);
+    expect(mocks.kill).not.toHaveBeenCalled();
   });
 
   it("retires a tombstone when its host is deregistered", async () => {

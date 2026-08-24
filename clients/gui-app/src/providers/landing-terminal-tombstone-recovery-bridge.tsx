@@ -8,6 +8,8 @@ import {
 } from "react";
 import { isRelayFuseRecoveryCandidate } from "@traycer-clients/shared/host-client/remote-fetcher";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
+import type { HostListResponse } from "@traycer/protocol/host/host-status";
+import type { UseQueryResult } from "@tanstack/react-query";
 import { useHostDirectoryList } from "@/hooks/host/use-host-directory-list-query";
 import { useRegisteredHosts } from "@/hooks/auth/use-registered-hosts-query";
 import { useRemoteSessionsPollReadiness } from "@/hooks/host/use-remote-sessions-poll-readiness";
@@ -56,14 +58,10 @@ interface LegacyKillMutation {
   ) => Promise<unknown>;
 }
 
-interface RegisteredHostsSnapshot {
-  readonly data:
-    | { readonly hosts: readonly { readonly hostId: string }[] }
-    | null
-    | undefined;
-  readonly isFetching: boolean;
-  readonly isSuccess: boolean;
-}
+type RegisteredHostsSnapshot = Pick<
+  UseQueryResult<HostListResponse | null>,
+  "data" | "isFetching" | "isSuccess"
+>;
 
 function authoritativeRegisteredHostIds(
   snapshot: RegisteredHostsSnapshot,
@@ -306,6 +304,7 @@ function dispatchCapableClose(args: {
     }
     if (args.pending.createRejectedAmbiguously === true) {
       if (args.pending.retireOnFreshSnapshot === true) {
+        args.refs.ambiguousEpochs.current.delete(args.key);
         useLandingTerminalStore
           .getState()
           .clearPendingKill(args.pending.hostId, args.pending.sessionId);
@@ -323,6 +322,7 @@ function dispatchCapableClose(args: {
     useLandingTerminalStore
       .getState()
       .clearPendingKill(args.pending.hostId, args.pending.sessionId);
+    args.refs.ambiguousEpochs.current.delete(args.key);
     clearCapableCloseRetry(args.refs.retries.current, args.key);
     return;
   }
@@ -359,10 +359,7 @@ function pendingKillReadyForDispatch(args: {
   readonly routeRecovered: boolean;
 }): boolean {
   return (
-    args.routeRecovered ||
-    args.retry?.due === true ||
-    args.retry === undefined ||
-    args.pending.createRejectedAmbiguously === true
+    args.routeRecovered || args.retry?.due === true || args.retry === undefined
   );
 }
 
