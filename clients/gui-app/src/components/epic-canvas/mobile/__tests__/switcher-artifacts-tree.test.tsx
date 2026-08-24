@@ -307,12 +307,24 @@ describe("<SwitcherArtifactsList /> shared panel controls", () => {
   });
 
   it("hides a filtered-out root while keeping the ones that match", () => {
+    holder.nodes = [
+      ...NESTED_FIXTURE,
+      {
+        id: "rv-1",
+        parentId: null,
+        title: "Review One",
+        type: "review",
+        status: null,
+        updatedAt: 3,
+      },
+    ];
     useLeftPanelStore.getState().toggleArtifactKind("epic-1", "ticket");
     render(<SwitcherArtifactsList {...PROPS} />);
-    // The parent spec survives as the matched ticket's ancestor - a match must
-    // stay reachable - while the filter is what decides the set.
     expect(screen.getByTestId("switcher-artifact-row-tk-1")).toBeTruthy();
+    // The parent spec survives as the matched ticket's ancestor - a match must
+    // stay reachable - while a root with nothing matching under it does not.
     expect(screen.getByTestId("switcher-artifact-row-spec-1")).toBeTruthy();
+    expect(screen.queryByTestId("switcher-artifact-row-rv-1")).toBeNull();
   });
 
   it("offers the desktop filter menu, viewer included", () => {
@@ -333,8 +345,10 @@ describe("<SwitcherArtifactsList /> row actions", () => {
 
     openMenu("switcher-more-tk-1");
     fireEvent.click(screen.getByTestId("switcher-export-pdf-tk-1"));
-    expect(holder.exportCalls).toHaveLength(2);
-    expect(holder.exportCalls[1].format).toBe("pdf");
+    expect(holder.exportCalls).toEqual([
+      { format: "markdown", ids: ["tk-1"] },
+      { format: "pdf", ids: ["tk-1"] },
+    ]);
   });
 
   it("keeps export available to a viewer, without the mutations", () => {

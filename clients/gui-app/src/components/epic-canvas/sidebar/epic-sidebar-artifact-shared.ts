@@ -12,11 +12,7 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { isEpicArtifactKind } from "@/lib/artifacts/node-display";
 import { sortNodeIds, type NodeComparator } from "@/lib/epic-sort";
-import {
-  useEpicArtifactRecords,
-  useEpicTreeIndex,
-  useRootIds,
-} from "@/lib/epic-selectors";
+import { useEpicTreeIndex, useRootIds } from "@/lib/epic-selectors";
 import { useEpicStore } from "@/hooks/use-epic-store";
 import {
   isArtifactUnread,
@@ -238,11 +234,17 @@ export function useArtifactUnreadMarkerVariant(args: {
 /**
  * Every artifact in the epic that currently reads as unread, with the version
  * that would mark it read - the input to a panel's "Mark all as read".
+ *
+ * Derived from the tree index rather than `useEpicArtifactRecords()` for the
+ * reason {@link useArtifactPanelRootIds} documents: that array is rebuilt, with
+ * fresh record objects, on every store tick, so a streaming chat re-ran this
+ * whole scan per token. `nodeById` is built from the same artifact entries and
+ * carries the same `type` and `updatedAt`, and is identity-stable while
+ * streaming.
  */
 export function useUnreadArtifactReadTargets(
   epicId: string,
 ): ReadonlyArray<ArtifactReadTarget> {
-  const records = useEpicArtifactRecords();
   const tree = useEpicTreeIndex();
   const readState = useArtifactReadStateStore(
     useShallow((s) => ({
@@ -252,20 +254,18 @@ export function useUnreadArtifactReadTargets(
   );
   return useMemo(
     () =>
-      records.flatMap((record) => {
-        if (!isEpicArtifactKind(record.type)) return [];
-        if (!Object.hasOwn(tree.nodeById, record.id)) return [];
-        const node = tree.nodeById[record.id];
+      Object.values(tree.nodeById).flatMap((node) => {
+        if (!isEpicArtifactKind(node.type)) return [];
         return isArtifactUnread({
           epicId,
-          artifactId: record.id,
+          artifactId: node.id,
           updatedAt: node.updatedAt,
           seedAtByEpic: readState.seedAtByEpic,
           lastSeenByArtifact: readState.lastSeenByArtifact,
         })
-          ? [{ id: record.id, updatedAt: node.updatedAt }]
+          ? [{ id: node.id, updatedAt: node.updatedAt }]
           : [];
       }),
-    [epicId, readState, records, tree],
+    [epicId, readState, tree],
   );
 }

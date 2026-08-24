@@ -139,7 +139,11 @@ export function SwitcherArtifactNode(props: SwitcherArtifactNodeProps) {
   if (!ARTIFACTS_TREE_FILTER(node.type)) return null;
 
   return (
-    <li role="treeitem" aria-selected={isActive}>
+    <li
+      role="treeitem"
+      aria-selected={isActive}
+      aria-expanded={hasChildren ? expanded : undefined}
+    >
       <SwitcherListRow
         labelPrefix={
           <ArtifactUnreadMarker nodeId={nodeId} variant={unreadMarkerVariant} />
