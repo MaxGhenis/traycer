@@ -112,9 +112,10 @@ function useSwitcherAgentTree(): SwitcherAgentTreeValue {
  * bucket. A flat recency list put a child anywhere but next to its parent, and
  * nesting is how this product expresses which agent spawned which.
  *
- * What differs from the sidebar is the row, not the walk: 44px touch rows, a
- * real chevron button instead of a hover glyph, and none of the desktop tree's
- * dnd, bulk selection or rename-in-place machinery.
+ * What differs from the sidebar is not the row's look - that is the sidebar's,
+ * down to its height and spacing - but its wiring: a real chevron button rather
+ * than a hover glyph, a tap that lands the tile and closes the sheet, and none
+ * of the desktop tree's dnd, bulk selection or rename-in-place machinery.
  *
  * Archived agents are listed here, marked, rather than hidden: the sheet has no
  * archive filter to reveal them again, so hiding them would make an archived
@@ -188,7 +189,7 @@ export function SwitcherAgentsList(props: SwitcherListProps) {
     <NotificationIndicatorsProvider indicators={indicators}>
       <ChatRowMenuFactsProvider epicId={epicId}>
         <SwitcherAgentTreeContext.Provider value={value}>
-          <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto overscroll-contain p-1 pb-safe-bottom">
+          <div className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-contain p-1 pb-safe-bottom">
             {/* Editor-gated: a viewer's create is server-rejected, so an
                 ungated row would only lead to a dead end. Inside the scroll
                 region and above the items, so it is the first thing in the list
