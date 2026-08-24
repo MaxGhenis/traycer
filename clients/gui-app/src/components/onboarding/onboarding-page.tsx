@@ -6,6 +6,7 @@ import {
   useEffect,
   useEffectEvent,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -16,8 +17,9 @@ import geistPixelSquareUrl from "@/assets/fonts/GeistPixel-Square.woff2?url";
 import onboardingBackdropUrl from "@/assets/brand/gradient-bg.jpg?url";
 import { BrandMark } from "@/components/auth/cinematic-backdrop";
 import {
+  actEyebrow,
   actUsesSoloStage,
-  ONBOARDING_ACTS,
+  onboardingActsFor,
   type OnboardingAct,
 } from "@/components/onboarding/onboarding-acts";
 import { OnboardingDetectedAgents } from "@/components/onboarding/onboarding-detected-agents";
@@ -29,11 +31,12 @@ import {
 import { OnboardingThemePicker } from "@/components/onboarding/onboarding-theme-picker";
 import { useAgentSelectionGuideGlobalOnboardingDraftQuery } from "@/hooks/agent/use-agent-selection-guide-global-onboarding-draft-query";
 import { useAgentSelectionGuideSetGlobalMutation } from "@/hooks/agent/use-agent-selection-guide-set-global-mutation";
+import { useSessionImportAvailable } from "@/hooks/session-import/use-session-import-available";
 import { RunnerHostContext } from "@/providers/runner-host-context";
 import { getClientAppVersionLabel } from "@/lib/app-version";
 import {
-  selectIsLastStep,
-  selectStep,
+  clampOnboardingStep,
+  isLastOnboardingStep,
   useOnboardingStore,
 } from "@/stores/onboarding/onboarding-store";
 import { cn } from "@/lib/utils";
@@ -297,10 +300,11 @@ const ONBOARDING_STYLE = `
 
 function ActCopy(props: {
   readonly act: OnboardingAct;
+  readonly eyebrow: string;
   /** Advances the tour once the import is under way; it runs in background. */
   readonly onSessionImportStarted: () => void;
 }) {
-  const { act, onSessionImportStarted } = props;
+  const { act, eyebrow, onSessionImportStarted } = props;
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const isSoloAct = actUsesSoloStage(act);
 
@@ -322,7 +326,7 @@ function ActCopy(props: {
       )}
     >
       <p className="onboarding-copy-kicker hidden font-mono leading-normal font-medium tracking-[0.07em] text-white/55 uppercase lg:block">
-        {act.eyebrow}
+        {eyebrow}
       </p>
       <div className="onboarding-copy-inner flex w-full flex-col items-center lg:items-start">
         <h1
@@ -359,14 +363,17 @@ function ActCopy(props: {
   );
 }
 
-function ProgressRail(props: { activeIndex: number }) {
-  const { activeIndex } = props;
+function ProgressRail(props: {
+  readonly acts: ReadonlyArray<OnboardingAct>;
+  readonly activeIndex: number;
+}) {
+  const { acts, activeIndex } = props;
   return (
     <div
       aria-hidden="true"
       className="onboarding-progress flex items-center gap-0.5"
     >
-      {ONBOARDING_ACTS.map((act, index) => (
+      {acts.map((act, index) => (
         <span
           key={act.id}
           className={cn(
@@ -427,8 +434,21 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
   const navigate = useNavigate();
   const router = useRouter();
   const { replay } = props;
-  const step = useOnboardingStore(selectStep);
-  const isLastAct = useOnboardingStore(selectIsLastStep);
+  // The tour a host can run, not the full catalog: a host that cannot scan
+  // sessions never reaches the session-import act, whose stage is the live
+  // wizard. Everything below counts acts off this list, so the omitted act is
+  // unreachable rather than merely blank.
+  const sessionImportAvailable = useSessionImportAvailable();
+  const acts = useMemo(
+    () => onboardingActsFor(sessionImportAvailable),
+    [sessionImportAvailable],
+  );
+  // Read the raw step and clamp here: negotiation can retire an act while the
+  // user is already past its new end, and the clamp is what keeps the page on
+  // a real act until the next move re-seats the store.
+  const storedStep = useOnboardingStore((state) => state.step);
+  const step = clampOnboardingStep(storedStep, acts.length);
+  const isLastAct = isLastOnboardingStep(storedStep, acts.length);
   const advanceStep = useOnboardingStore((state) => state.advance);
   const retreat = useOnboardingStore((state) => state.retreat);
   const complete = useOnboardingStore((state) => state.complete);
@@ -442,7 +462,7 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
     reset: resetAgentGuideSetMutation,
   } = agentGuideSetMutation;
 
-  const act = ONBOARDING_ACTS[step];
+  const act = acts[step];
   const isAgentGuideAct = act.id === "agent-guide";
   const agentGuideQueryData = agentGuideQuery.data;
   const agentGuideWaitingForProviderSettlement =
@@ -598,13 +618,13 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
   );
 
   const retreatWithAnalytics = useCallback((): void => {
-    const destination = ONBOARDING_ACTS[Math.max(0, step - 1)] ?? act;
-    retreat();
+    const destination = acts[Math.max(0, step - 1)] ?? act;
+    retreat(acts.length);
     Analytics.getInstance().track(AnalyticsEvent.OnboardingNavigated, {
       direction: "back",
       step: destination.id,
     });
-  }, [act, retreat, step]);
+  }, [act, acts, retreat, step]);
 
   const advance = useCallback((): void => {
     if (advanceDisabled) return;
@@ -613,15 +633,15 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
         finish("completed");
         return;
       }
-      const destination = ONBOARDING_ACTS[step + 1] ?? act;
-      advanceStep();
+      const destination = acts[step + 1] ?? act;
+      advanceStep(acts.length);
       Analytics.getInstance().track(AnalyticsEvent.OnboardingNavigated, {
         direction: "continue",
         step: destination.id,
       });
     };
     advancePastCurrent();
-  }, [act, advanceDisabled, advanceStep, finish, isLastAct, step]);
+  }, [act, acts, advanceDisabled, advanceStep, finish, isLastAct, step]);
   const handleKeyboardAdvance = useEffectEvent((): void => advance());
   const handleKeyboardRetreat = useEffectEvent((): void =>
     retreatWithAnalytics(),
@@ -701,7 +721,7 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
             >
               <div className="onboarding-copy-rail flex min-h-0 min-w-0 flex-col items-center lg:items-start">
                 <div className="hidden w-full justify-center lg:flex lg:justify-start">
-                  <ProgressRail activeIndex={step} />
+                  <ProgressRail acts={acts} activeIndex={step} />
                 </div>
 
                 <div className="mt-7 w-full min-w-0">
@@ -709,6 +729,7 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
                     <ActCopy
                       key={act.id}
                       act={act}
+                      eyebrow={actEyebrow(act, step)}
                       onSessionImportStarted={advance}
                     />
                   </AnimatePresence>
@@ -735,14 +756,14 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
                 {/* Fade the mini-app in place on each act so it never slides up
                     from the bottom when reappearing (e.g. providers → handoff). */}
                 <m.div
-                  key={step}
+                  key={act.id}
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ duration: 0.25, ease: ACT_EASE }}
                   className="w-full min-w-0"
                 >
                   <OnboardingDiorama
-                    stage={step}
+                    actId={act.id}
                     agentGuide={agentGuideState}
                   />
                 </m.div>
@@ -757,9 +778,9 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
             <div className="onboarding-actions absolute z-10 flex items-center justify-end gap-3">
               <div className="mr-auto flex min-w-0 max-w-[14rem] flex-1 flex-col gap-1.5 lg:hidden">
                 <p className="truncate font-mono text-[0.6875rem] leading-none font-medium tracking-[0.07em] text-white/55 uppercase">
-                  {act.eyebrow}
+                  {actEyebrow(act, step)}
                 </p>
-                <ProgressRail activeIndex={step} />
+                <ProgressRail acts={acts} activeIndex={step} />
               </div>
               {step > 0 ? (
                 <button

@@ -32,10 +32,7 @@ import {
 } from "lucide-react";
 import { AgentSelectionGuideEditorSurface } from "@/components/agent-selection-guide-editor-surface";
 import { HarnessIcon } from "@/components/home/pickers/harness-icon";
-import {
-  ONBOARDING_ACTS,
-  type OnboardingActId,
-} from "@/components/onboarding/onboarding-acts";
+import type { OnboardingActId } from "@/components/onboarding/onboarding-acts";
 import { OnboardingClaudeTui } from "@/components/onboarding/onboarding-claude-tui";
 import { OnboardingOpencodeTui } from "@/components/onboarding/onboarding-opencode-tui";
 import { ProviderList } from "@/components/providers/provider-list";
@@ -45,7 +42,7 @@ import { ORDERED_PROVIDERS } from "@/lib/provider-ordering";
 import { cn } from "@/lib/utils";
 
 interface OnboardingDioramaProps {
-  readonly stage: number;
+  readonly actId: OnboardingActId;
   readonly agentGuide: OnboardingAgentGuideState;
 }
 
@@ -325,9 +322,10 @@ const THEME_DOCK_SWATCHES = [
 ] as const;
 
 /**
- * Keyed by act id, not by index: acts get inserted (session import landed
- * between providers and delegation), and an index ladder answers a shifted
- * question silently - every scene after the new act would drift one act early.
+ * Keyed by act id, not by the act's position in the tour. Acts get inserted
+ * (session import landed between providers and delegation) and dropped (a host
+ * that cannot scan sessions never shows that act at all), so a position names
+ * a different act on different hosts while an id names one act everywhere.
  * `null` is an act that shows no mini-app at all; the page does not render the
  * diorama for it, and this map is where that fact is stated.
  */
@@ -341,14 +339,8 @@ const SCENE_BY_ACT_ID: Record<OnboardingActId, SceneId | null> = {
   "command-theme": "command-theme",
 };
 
-function sceneForStage(stage: number): SceneId | null {
-  // `stage` is the onboarding store's clamped step, so the index is total -
-  // same assumption `OnboardingPage` makes when it reads the act itself.
-  return SCENE_BY_ACT_ID[ONBOARDING_ACTS[stage].id];
-}
-
 export function OnboardingDiorama(props: OnboardingDioramaProps) {
-  const scene = sceneForStage(props.stage);
+  const scene = SCENE_BY_ACT_ID[props.actId];
   // `null` is an act that shows no mini-app (session import). Defaulting to a
   // scene here would mount the command-theme mini-app - animations and all -
   // behind an act that deliberately hides the diorama.
