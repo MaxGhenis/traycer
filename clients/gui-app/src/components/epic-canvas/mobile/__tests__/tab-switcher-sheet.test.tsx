@@ -248,6 +248,24 @@ describe("<TabSwitcherSheet />", () => {
     expect(embed.dataset.category).toBe("sharing");
   });
 
+  it("opens straight onto a persisted sharing selection instead of clamping it away", async () => {
+    // `sharing` is shared with the desktop rail through this one store, so a
+    // selection made on a desktop lands here on the phone. While the category
+    // was uncurated `clampToSwitcherCategory` sent it back to Chats, which is
+    // the regression this guards: the tab must be the active one on first
+    // paint, with no click to get there.
+    useLeftPanelStore.setState({
+      activePanelIdByTabId: { [TAB_ID]: "sharing" },
+    });
+    renderSheet(true, () => {});
+    expect(
+      screen.getByRole("tab", { name: "Sharing" }).getAttribute("data-state"),
+    ).toBe("active");
+    expect(screen.queryByTestId("mock-agents-list")).toBeNull();
+    const embed = await screen.findByTestId("mock-panel-embed");
+    expect(embed.dataset.category).toBe("sharing");
+  });
+
   it("shows the embedded desktop PR panel body when the category is selected", async () => {
     setPullRequestPresence(true);
     const user = userEvent.setup();
