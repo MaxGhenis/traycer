@@ -6,6 +6,7 @@ import type {
 import type { PlainTerminalProjection } from "@traycer/protocol/host/terminal/plain-schemas";
 import {
   landingTerminalLayoutFor,
+  landingTerminalSuppressedSessionKeys,
   parsePersistedLandingTerminalState,
   terminalSessionKey,
   useLandingTerminalStore,
@@ -516,6 +517,120 @@ describe("landing terminal lifecycle", () => {
     ]);
     expect(result.tabs).toEqual([]);
     expect(result.adoptedTabs).toEqual([]);
+  });
+
+  it("keeps legacy fresh-list dismissal suppression volatile", () => {
+    const legacy = tab({
+      instanceId: "legacy-dismissed",
+      sessionId: "legacy-session",
+      hostId: HOST_A,
+    });
+    useLandingTerminalStore.getState().addTab(legacy);
+    useLandingTerminalStore
+      .getState()
+      .dismissTab(LANDING_PAGE_ID, legacy.instanceId);
+
+    const state = useLandingTerminalStore.getState();
+    let result = reconcileLandingTerminalTabs({
+      tabs: state.tabs,
+      activeInstanceId: state.activeInstanceId,
+      activeHostId: HOST_A,
+      sessions: [session({ sessionId: legacy.sessionId, status: "running" })],
+      excludedSessionKeys: landingTerminalSuppressedSessionKeys(state, HOST_A),
+      mintInstanceId: () => "would-be-adopted",
+    });
+    expect(result.tabs).toEqual([]);
+    expect(result.adoptedTabs).toEqual([]);
+
+    state.reconcileVolatileDismissals(HOST_A, new Set([legacy.sessionId]));
+    expect(
+      useLandingTerminalStore.getState().volatileDismissals[0]
+        ?.authoritativePresenceObserved,
+    ).toBe(true);
+    result = reconcileLandingTerminalTabs({
+      tabs: useLandingTerminalStore.getState().tabs,
+      activeInstanceId: useLandingTerminalStore.getState().activeInstanceId,
+      activeHostId: HOST_A,
+      sessions: [session({ sessionId: legacy.sessionId, status: "running" })],
+      excludedSessionKeys: landingTerminalSuppressedSessionKeys(
+        useLandingTerminalStore.getState(),
+        HOST_A,
+      ),
+      mintInstanceId: () => "would-be-adopted",
+    });
+    expect(result.tabs).toEqual([]);
+
+    state.reconcileVolatileDismissals(HOST_A, new Set());
+    expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([]);
+    result = reconcileLandingTerminalTabs({
+      tabs: useLandingTerminalStore.getState().tabs,
+      activeInstanceId: useLandingTerminalStore.getState().activeInstanceId,
+      activeHostId: HOST_A,
+      sessions: [],
+      excludedSessionKeys: landingTerminalSuppressedSessionKeys(
+        useLandingTerminalStore.getState(),
+        HOST_A,
+      ),
+      mintInstanceId: () => "would-be-adopted",
+    });
+    expect(result.tabs).toEqual([]);
+  });
+
+  it("does not persist volatile dismissals while pending kills survive rehydration", async () => {
+    const legacy = tab({
+      instanceId: "persisted-dismissed",
+      sessionId: "persisted-session",
+      hostId: HOST_A,
+    });
+    useLandingTerminalStore.getState().addTab(legacy);
+    useLandingTerminalStore
+      .getState()
+      .dismissTab(LANDING_PAGE_ID, legacy.instanceId);
+    const pendingKills = [{ hostId: HOST_A, sessionId: "existing-kill" }];
+    useLandingTerminalStore.setState({ pendingKills });
+
+    const storageKey = useLandingTerminalStore.persist.getOptions().name;
+    if (storageKey === undefined)
+      throw new Error("missing landing terminal key");
+    const persisted = JSON.parse(
+      window.localStorage.getItem(storageKey) ?? "{}",
+    ) as { readonly state?: Record<string, unknown> };
+    expect(persisted.state?.volatileDismissals).toBeUndefined();
+    expect(persisted.state?.pendingKills).toEqual(pendingKills);
+
+    window.localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        ...persisted,
+        state: {
+          ...persisted.state,
+          volatileDismissals: [
+            {
+              hostId: HOST_A,
+              sessionId: "injected",
+              authoritativePresenceObserved: true,
+            },
+          ],
+        },
+      }),
+    );
+    await useLandingTerminalStore.persist.rehydrate();
+    expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([]);
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual(
+      pendingKills,
+    );
+
+    useLandingTerminalStore.setState({
+      volatileDismissals: [
+        {
+          hostId: HOST_A,
+          sessionId: "reset-me",
+          authoritativePresenceObserved: true,
+        },
+      ],
+    });
+    useLandingTerminalStore.getState().resetForTests();
+    expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([]);
   });
 
   it("drops an exited session during restore instead of recreating it", () => {

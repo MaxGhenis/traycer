@@ -292,4 +292,112 @@ describe("<LandingTerminalBoundHostReconciliationFleet />", () => {
     expect(closeA).not.toHaveBeenCalled();
     expect(closeB).not.toHaveBeenCalled();
   });
+
+  it("keeps a dismissed non-selected capable row absent until fresh deletion", async () => {
+    const hostB = terminal({
+      hostId: "host-b",
+      terminalId: "terminal-b",
+      title: "B",
+      revision: 1,
+    });
+    const store = useLandingTerminalStore.getState();
+    store.addTab({
+      instanceId: "instance-a",
+      sessionId: "terminal-a",
+      hostId: "host-a",
+      cwd: "/host-a/launch",
+      name: "A",
+      titleSource: "manual",
+      hostAuthorityAcknowledged: true,
+    });
+    store.addTab({
+      instanceId: "instance-b",
+      sessionId: "terminal-b",
+      hostId: "host-b",
+      cwd: "/host-b/launch",
+      name: "B",
+      titleSource: "manual",
+      hostAuthorityAcknowledged: true,
+    });
+    store.activateTab("instance-a");
+    store.setPanelOpen("landing-a", true);
+    store.setPanelWidthFraction("landing-a", 0.43);
+
+    const hostBCollection = freshCollection([hostB], undefined);
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals("host-b", SCOPE),
+      hostBCollection,
+    );
+    const closeB = vi.fn(() => Promise.resolve());
+    const entries = {
+      "host-b": authorityEntry({
+        collection: hostBCollection,
+        importLegacy: () => Promise.reject(new Error("unexpected import")),
+        close: closeB,
+      }),
+    };
+    const ui = (): ReactNode => (
+      <QueryClientProvider client={queryClient}>
+        <LandingTerminalBoundHostReconciliationFleet
+          landingPageId="landing-a"
+          selectedHostId="host-a"
+          entries={entries}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui());
+
+    await waitFor(() => {
+      expect(useLandingTerminalStore.getState().tabs).toHaveLength(2);
+    });
+    act(() => {
+      useLandingTerminalStore.getState().dismissTab("landing-a", "instance-b");
+    });
+    await waitFor(() => {
+      expect(
+        useLandingTerminalStore.getState().tabs.map((tab) => tab.sessionId),
+      ).toEqual(["terminal-a"]);
+      expect(
+        useLandingTerminalStore.getState().volatileDismissals,
+      ).toMatchObject([
+        {
+          hostId: "host-b",
+          sessionId: "terminal-b",
+          authoritativePresenceObserved: true,
+        },
+      ]);
+    });
+    let state = useLandingTerminalStore.getState();
+    expect(state.activeInstanceId).toBe("instance-a");
+    expect(landingTerminalLayoutFor(state, "landing-a")).toMatchObject({
+      panelOpen: true,
+      panelWidthFraction: 0.43,
+    });
+
+    const deletionCollection = freshCollection([], hostBCollection);
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals("host-b", SCOPE),
+      deletionCollection,
+    );
+    entries["host-b"] = authorityEntry({
+      collection: deletionCollection,
+      importLegacy: () => Promise.reject(new Error("unexpected import")),
+      close: closeB,
+    });
+    view.rerender(ui());
+
+    await waitFor(() => {
+      expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([]);
+      expect(
+        useLandingTerminalStore.getState().tabs.map((tab) => tab.sessionId),
+      ).toEqual(["terminal-a"]);
+    });
+    state = useLandingTerminalStore.getState();
+    expect(state.activeInstanceId).toBe("instance-a");
+    expect(landingTerminalLayoutFor(state, "landing-a")).toMatchObject({
+      panelOpen: true,
+      panelWidthFraction: 0.43,
+    });
+    expect(closeB).not.toHaveBeenCalled();
+  });
 });

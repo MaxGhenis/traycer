@@ -1369,26 +1369,40 @@ describe("<LandingTerminalPanel />", () => {
   });
 
   it("dismisses a mixed-capability set locally and only cleans up ready hosts", async () => {
-    mocks.activeHostId = "host-ready";
-    mocks.clientActiveHostId = "host-ready";
+    mocks.activeHostId = "host-legacy";
+    mocks.clientActiveHostId = "host-legacy";
     mocks.primaryWorkspacePath = "/workspace/project";
     mocks.probeData = emptyList("/Users/dev");
     mocks.freshProbeData = emptyList("/Users/dev");
     mocks.plainAuthorityStatus = "unknown";
-    mocks.plainAuthorityStatusByHost.set("host-ready", "capable");
-    mocks.plainCanMutateByHost.set("host-ready", true);
+    mocks.plainAuthorityStatusByHost.set("host-a", "capable");
+    mocks.plainCanMutateByHost.set("host-a", true);
     mocks.plainAuthorityStatusByHost.set("host-stale", "capable");
     mocks.plainCanMutateByHost.set("host-stale", false);
     mocks.plainAuthorityStatusByHost.set("host-offline", null);
     mocks.plainAuthorityStatusByHost.set("host-legacy", "legacy");
+    mocks.plainCollection = freshPlainCollection([
+      plainTerminal({
+        terminalId: "fresh-session",
+        manualTitle: "Fresh terminal",
+        runtime: "running",
+      }),
+    ]);
+    let rejectFreshClose: ((reason: unknown) => void) | null = null;
+    mocks.plainCloseAsync.mockImplementation(
+      () =>
+        new Promise<unknown>((_resolve, reject) => {
+          rejectFreshClose = reject;
+        }),
+    );
 
     const tabs = [
       {
-        instanceId: "ready-instance",
-        sessionId: "ready-session",
-        hostId: "host-ready",
-        cwd: "/workspace/ready",
-        name: "Ready terminal",
+        instanceId: "fresh-instance",
+        sessionId: "fresh-session",
+        hostId: "host-a",
+        cwd: "/workspace/fresh",
+        name: "Fresh terminal",
         titleSource: "default" as const,
         hostAuthorityAcknowledged: true,
       },
@@ -1431,7 +1445,7 @@ describe("<LandingTerminalPanel />", () => {
     render(panelUi());
 
     const readyCloseButton = await screen.findByRole("button", {
-      name: "Close Ready terminal",
+      name: "Close Fresh terminal",
     });
     await waitFor(() => {
       expect(
@@ -1453,7 +1467,7 @@ describe("<LandingTerminalPanel />", () => {
     );
 
     fireEvent.contextMenu(
-      screen.getByTestId("landing-terminal-tab-ready-instance"),
+      screen.getByTestId("landing-terminal-tab-fresh-instance"),
     );
     fireEvent.click(await screen.findByText("Close All"));
 
@@ -1465,8 +1479,8 @@ describe("<LandingTerminalPanel />", () => {
     expect(layoutFor("landing-page-b").panelOpen).toBe(false);
     expect(mocks.plainCloseAsync).toHaveBeenCalledTimes(1);
     expect(mocks.plainCloseAsync).toHaveBeenCalledWith({
-      hostId: "host-ready",
-      terminalId: "ready-session",
+      hostId: "host-a",
+      terminalId: "fresh-session",
     });
     expect(mocks.kill).toHaveBeenCalledTimes(1);
     expect(mocks.kill).toHaveBeenCalledWith({
@@ -1477,6 +1491,24 @@ describe("<LandingTerminalPanel />", () => {
     expect(useLandingTerminalStore.getState().pendingKills).toEqual(
       preExistingPendingKills,
     );
+    expect(
+      useLandingTerminalStore.getState().volatileDismissals,
+    ).toContainEqual({
+      hostId: "host-a",
+      sessionId: "fresh-session",
+      authoritativePresenceObserved: true,
+    });
+
+    await act(async () => {
+      rejectFreshClose?.(new Error("rejected close"));
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(useLandingTerminalStore.getState().tabs).toEqual([]);
+      expect(testLayout().panelOpen).toBe(false);
+      expect(layoutFor("landing-page-b").panelOpen).toBe(false);
+      expect(composerFocus).toHaveBeenCalled();
+    });
   });
 
   it("adopts the probe result before considering an auto-spawn", async () => {

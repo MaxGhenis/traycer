@@ -213,6 +213,113 @@ describe("capable landing-terminal reconciliation", () => {
     expect(useLandingTerminalStore.getState().tabs).toEqual([legacy]);
   });
 
+  it("keeps an unobserved dismissal through empty and retained fresh snapshots", async () => {
+    const pending = {
+      ...tab({
+        instanceId: "pending-instance",
+        terminalId: "terminal-pending",
+        name: "Pending terminal",
+      }),
+      pendingCreate: true,
+    };
+    useLandingTerminalStore.getState().addTab(pending);
+    useLandingTerminalStore
+      .getState()
+      .dismissTab(LANDING_PAGE_ID, pending.instanceId);
+    expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([
+      {
+        hostId: HOST_ID,
+        sessionId: "terminal-pending",
+        authoritativePresenceObserved: false,
+      },
+    ]);
+
+    const importLegacy = vi.fn(() =>
+      Promise.reject(new Error("unexpected import")),
+    );
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+      freshCollection([]),
+    );
+    await reconcileCapableLandingTerminals({
+      activeHostId: HOST_ID,
+      landingPageId: LANDING_PAGE_ID,
+      capability: CAPABILITY,
+      canMutate: true,
+      closeTerminal: () => Promise.resolve(),
+      importLegacyTerminal: importLegacy,
+      queryClient,
+    });
+    expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([
+      {
+        hostId: HOST_ID,
+        sessionId: "terminal-pending",
+        authoritativePresenceObserved: false,
+      },
+    ]);
+
+    const projection = terminal({
+      terminalId: "terminal-pending",
+      manualTitle: "Pending terminal",
+      revision: 1,
+      runtime: "running",
+    });
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+      freshCollection([projection]),
+    );
+    await reconcileCapableLandingTerminals({
+      activeHostId: HOST_ID,
+      landingPageId: LANDING_PAGE_ID,
+      capability: CAPABILITY,
+      canMutate: true,
+      closeTerminal: () => Promise.resolve(),
+      importLegacyTerminal: importLegacy,
+      queryClient,
+    });
+    expect(useLandingTerminalStore.getState().tabs).toEqual([]);
+    expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([
+      {
+        hostId: HOST_ID,
+        sessionId: "terminal-pending",
+        authoritativePresenceObserved: true,
+      },
+    ]);
+
+    // A retained row is the observable state after a rejected cleanup: it
+    // remains observed and suppressed rather than being adopted again.
+    await reconcileCapableLandingTerminals({
+      activeHostId: HOST_ID,
+      landingPageId: LANDING_PAGE_ID,
+      capability: CAPABILITY,
+      canMutate: true,
+      closeTerminal: () => Promise.reject(new Error("rejected close")),
+      importLegacyTerminal: importLegacy,
+      queryClient,
+    });
+    expect(useLandingTerminalStore.getState().tabs).toEqual([]);
+    expect(useLandingTerminalStore.getState().volatileDismissals).toHaveLength(
+      1,
+    );
+
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+      freshCollection([]),
+    );
+    await reconcileCapableLandingTerminals({
+      activeHostId: HOST_ID,
+      landingPageId: LANDING_PAGE_ID,
+      capability: CAPABILITY,
+      canMutate: true,
+      closeTerminal: () => Promise.resolve(),
+      importLegacyTerminal: importLegacy,
+      queryClient,
+    });
+    expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([]);
+    expect(useLandingTerminalStore.getState().tabs).toEqual([]);
+    expect(importLegacy).not.toHaveBeenCalled();
+  });
+
   it("retires a capable-host pending kill only after close acknowledgement", async () => {
     const canonical = {
       ...tab({

@@ -36,6 +36,13 @@ export interface LandingTerminalPendingKill {
   readonly sessionId: string;
 }
 
+/** Renderer-local adoption suppression; never persisted or retried as cleanup. */
+export interface LandingTerminalVolatileDismissal {
+  readonly hostId: string;
+  readonly sessionId: string;
+  readonly authoritativePresenceObserved: boolean;
+}
+
 export interface LandingTerminalLayout {
   readonly panelOpen: boolean;
   readonly panelWidthFraction: number;
@@ -60,6 +67,7 @@ export interface LandingTerminalStoreState {
    */
   readonly fallbackLayout: LandingTerminalLayout | null;
   readonly pendingKills: ReadonlyArray<LandingTerminalPendingKill>;
+  readonly volatileDismissals: ReadonlyArray<LandingTerminalVolatileDismissal>;
   readonly setPanelOpen: (landingPageId: string, open: boolean) => void;
   readonly setPanelWidthFraction: (
     landingPageId: string,
@@ -102,6 +110,10 @@ export interface LandingTerminalStoreState {
     collapseWhenEmpty: boolean,
   ) => void;
   readonly clearPendingKill: (hostId: string, sessionId: string) => void;
+  readonly reconcileVolatileDismissals: (
+    hostId: string,
+    authoritativeSessionIds: ReadonlySet<string>,
+  ) => void;
   readonly rekeyTab: (instanceId: string, sessionId: string) => void;
   readonly adoptHostTerminal: (
     instanceId: string,
@@ -207,6 +219,7 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
   persist(
     (set, get) => ({
       ...initialLandingTerminalState(),
+      volatileDismissals: [],
       setPanelOpen: (landingPageId, panelOpen) =>
         set((state) =>
           updateLandingTerminalLayout(state, landingPageId, {
@@ -327,12 +340,17 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
           const tabs = state.tabs.filter(
             (entry) => entry.instanceId !== instanceId,
           );
+          const volatileDismissals = addVolatileDismissal(
+            state.volatileDismissals,
+            closed,
+          );
           return {
             tabs,
             activeInstanceId: nextActiveInstanceId(
               tabs,
               state.activeInstanceId,
             ),
+            volatileDismissals,
             ...(tabs.length === 0
               ? collapseLayoutsForEmptyTerminalSet(state)
               : {}),
@@ -397,6 +415,26 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
               pending.hostId !== hostId || pending.sessionId !== sessionId,
           ),
         })),
+      reconcileVolatileDismissals: (hostId, authoritativeSessionIds) =>
+        set((state) => {
+          const volatileDismissals = state.volatileDismissals.flatMap(
+            (dismissal) => {
+              if (dismissal.hostId !== hostId) return [dismissal];
+              if (authoritativeSessionIds.has(dismissal.sessionId)) {
+                return dismissal.authoritativePresenceObserved
+                  ? [dismissal]
+                  : [{ ...dismissal, authoritativePresenceObserved: true }];
+              }
+              return dismissal.authoritativePresenceObserved ? [] : [dismissal];
+            },
+          );
+          return volatileDismissalsEqual(
+            volatileDismissals,
+            state.volatileDismissals,
+          )
+            ? state
+            : { volatileDismissals };
+        }),
       rekeyTab: (instanceId, sessionId) =>
         set((state) => ({
           tabs: state.tabs.map((tab) =>
@@ -436,7 +474,8 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
               : {}),
           };
         }),
-      resetForTests: () => set(initialLandingTerminalState()),
+      resetForTests: () =>
+        set({ ...initialLandingTerminalState(), volatileDismissals: [] }),
     }),
     {
       ...basePersistOptions(landingTerminalsKey(null)),
@@ -451,6 +490,7 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
       merge: (persistedState, currentState) => ({
         ...currentState,
         ...parsePersistedLandingTerminalState(persistedState),
+        volatileDismissals: [],
       }),
     },
   ),
@@ -616,8 +656,51 @@ function hasPendingKill(
   );
 }
 
+function addVolatileDismissal(
+  dismissals: ReadonlyArray<LandingTerminalVolatileDismissal>,
+  tab: LandingTerminalTabRef,
+): ReadonlyArray<LandingTerminalVolatileDismissal> {
+  const existing = dismissals.find(
+    (dismissal) =>
+      dismissal.hostId === tab.hostId && dismissal.sessionId === tab.sessionId,
+  );
+  if (existing !== undefined) return dismissals;
+  return [
+    ...dismissals,
+    {
+      hostId: tab.hostId,
+      sessionId: tab.sessionId,
+      authoritativePresenceObserved: tab.hostAuthorityAcknowledged === true,
+    },
+  ];
+}
+
+function volatileDismissalsEqual(
+  left: ReadonlyArray<LandingTerminalVolatileDismissal>,
+  right: ReadonlyArray<LandingTerminalVolatileDismissal>,
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((entry, index) => entry === right[index])
+  );
+}
+
 export function terminalSessionKey(hostId: string, sessionId: string): string {
   return `${hostId}\u0000${sessionId}`;
+}
+
+export function landingTerminalSuppressedSessionKeys(
+  state: Pick<LandingTerminalStoreState, "pendingKills" | "volatileDismissals">,
+  hostId: string,
+): ReadonlySet<string> {
+  return new Set([
+    ...state.pendingKills
+      .filter((pending) => pending.hostId === hostId)
+      .map((pending) => terminalSessionKey(hostId, pending.sessionId)),
+    ...state.volatileDismissals
+      .filter((dismissal) => dismissal.hostId === hostId)
+      .map((dismissal) => terminalSessionKey(hostId, dismissal.sessionId)),
+  ]);
 }
 
 export function hostAcknowledgedTab(

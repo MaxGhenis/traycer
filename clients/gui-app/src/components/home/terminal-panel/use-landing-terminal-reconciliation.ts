@@ -25,7 +25,7 @@ import {
 import { consumeRetainedPlainTerminalTombstone } from "@/lib/terminals/plain-terminal-presentation-invalidation";
 import {
   LANDING_TERMINAL_SOURCE_STORE_VERSION,
-  terminalSessionKey,
+  landingTerminalSuppressedSessionKeys,
   useLandingTerminalStore,
 } from "@/stores/home/landing-terminal-store";
 import {
@@ -321,11 +321,6 @@ export function useLandingTerminalReconciliation(
       const hostTombstones = initial.pendingKills.filter(
         (pending) => pending.hostId === activeHostId,
       );
-      const excludedSessionKeys = new Set(
-        hostTombstones.map((pending) =>
-          terminalSessionKey(pending.hostId, pending.sessionId),
-        ),
-      );
       const listedSessionIds = new Set(
         freshSessions.map((session) => session.sessionId),
       );
@@ -354,6 +349,11 @@ export function useLandingTerminalReconciliation(
       }
 
       const current = useLandingTerminalStore.getState();
+      const excludedSessionKeys = landingTerminalSuppressedSessionKeys(
+        current,
+        activeHostId,
+      );
+      current.reconcileVolatileDismissals(activeHostId, listedSessionIds);
       const reconciliation = reconcileLandingTerminalTabs({
         tabs: current.tabs,
         activeInstanceId: current.activeInstanceId,
@@ -546,10 +546,17 @@ export async function reconcileCapableLandingTerminals(args: {
     return "snapshot-not-fresh";
   }
   const current = useLandingTerminalStore.getState();
-  const excludedTerminalKeys = new Set(
-    current.pendingKills
-      .filter((pending) => pending.hostId === activeHostId)
-      .map((pending) => terminalSessionKey(pending.hostId, pending.sessionId)),
+  const excludedTerminalKeys = landingTerminalSuppressedSessionKeys(
+    current,
+    activeHostId,
+  );
+  current.reconcileVolatileDismissals(
+    activeHostId,
+    new Set(
+      plainTerminalCollectionValues(collection).map(
+        (terminal) => terminal.record.terminalId,
+      ),
+    ),
   );
   const reconciliation = reconcileHostAuthoritativeLandingTerminalTabs({
     tabs: current.tabs,

@@ -43,6 +43,9 @@ function LandingTerminalBoundHostReconciliation(props: {
   const queryClient = useQueryClient();
   const tabs = useLandingTerminalStore((state) => state.tabs);
   const pendingKills = useLandingTerminalStore((state) => state.pendingKills);
+  const volatileDismissals = useLandingTerminalStore(
+    (state) => state.volatileDismissals,
+  );
   const reconciliationRef = useRef<string | null>(null);
 
   const hostTabsFingerprint = tabs
@@ -64,6 +67,15 @@ function LandingTerminalBoundHostReconciliation(props: {
     .filter((pending) => pending.hostId === hostId)
     .map((pending) => pending.sessionId)
     .join("\u0001");
+  const volatileDismissalsFingerprint = volatileDismissals
+    .filter((dismissal) => dismissal.hostId === hostId)
+    .map(
+      (dismissal) =>
+        `${dismissal.sessionId}\u0001${
+          dismissal.authoritativePresenceObserved ? "observed" : "unobserved"
+        }`,
+    )
+    .join("\u0002");
 
   useEffect(() => {
     const authority = entry.authority;
@@ -83,6 +95,7 @@ function LandingTerminalBoundHostReconciliation(props: {
       authority.collection.projectionSequence,
       hostTabsFingerprint,
       pendingKillsFingerprint,
+      volatileDismissalsFingerprint,
     ].join("\u0000");
     if (reconciliationRef.current === reconciliationKey) return;
     reconciliationRef.current = reconciliationKey;
@@ -124,6 +137,7 @@ function LandingTerminalBoundHostReconciliation(props: {
     landingPageId,
     pendingKillsFingerprint,
     queryClient,
+    volatileDismissalsFingerprint,
   ]);
 
   return null;
