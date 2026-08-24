@@ -26,6 +26,7 @@ import {
   hostListItemToDirectoryEntry,
   type RemoteHostDirectoryEntry,
 } from "@traycer-clients/shared/host-client/remote-fetcher";
+import { createHostReconnectEngine } from "@traycer-clients/shared/host-client/host-connection-reconnect-engine";
 import { NotificationsPopover } from "@/components/notifications/notifications-popover";
 import {
   __resetAppLocalNotificationsStoreForTests,
@@ -65,14 +66,33 @@ import { toastFromHostError } from "@/lib/host-error-toast";
 import { toast } from "sonner";
 import { useCloudNotificationsStore } from "@/stores/notifications/cloud-notifications-store";
 
+/**
+ * The account axis the wire no longer carries: `hostListItemToDirectoryEntry`
+ * stamps it onto every entry at projection time. These fixtures describe an
+ * entitled account unless a case says otherwise.
+ */
+const PLAN_ALLOWS_REMOTE = true;
+
+const reconnectEngine = createHostReconnectEngine();
+
 const hostRequestMock = vi.hoisted(() => vi.fn());
+
+/**
+ * `createRequesterForHostId` is not optional decoration: production resolves
+ * the app-wide host through the spine's id-pinned requester (redesign P4.2),
+ * so a stub without it takes the subject down at first render rather than
+ * failing an assertion. One host per fixture means the requester IS the
+ * client, which is what makes the self-return honest here.
+ */
+interface StubHostClient {
+  readonly request: typeof hostRequestMock;
+  readonly getActiveHostId: () => string | null;
+  readonly createRequesterForHostId: (hostId: string | null) => StubHostClient;
+}
 
 const hostBindingState = vi.hoisted(() => ({
   current: null as {
-    readonly hostClient: {
-      readonly request: typeof hostRequestMock;
-      readonly getActiveHostId: () => string | null;
-    };
+    readonly hostClient: StubHostClient;
     readonly directory?: {
       readonly findById: (hostId: string) => typeof mockLocalHostEntry | null;
       readonly selectById: (hostId: string) => void;
@@ -104,8 +124,8 @@ vi.mock("@/lib/host", async (importActual) => {
   };
 });
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => activeHostIdRef.value,
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => activeHostIdRef.value,
 }));
 
 vi.mock("@/hooks/host/use-host-directory-entry", async (importOriginal) => {
@@ -449,6 +469,7 @@ function offlineRemoteOrigin(
       updatePolicy: "manual",
     },
     "wss://relay.example.test/attach",
+    PLAN_ALLOWS_REMOTE,
   );
 }
 
@@ -555,11 +576,13 @@ function resetPopoverFilters(): void {
 }
 
 function bindHostClient(): void {
+  const hostClient: StubHostClient = {
+    request: hostRequestMock,
+    getActiveHostId: () => mockLocalHostEntry.hostId,
+    createRequesterForHostId: () => hostClient,
+  };
   hostBindingState.current = {
-    hostClient: {
-      request: hostRequestMock,
-      getActiveHostId: () => mockLocalHostEntry.hostId,
-    },
+    hostClient,
     directory: {
       findById: (hostId: string) =>
         hostId === mockLocalHostEntry.hostId ? mockLocalHostEntry : null,
@@ -578,12 +601,14 @@ function bindHostClient(): void {
  * `applyHostSnapshot` so `byId` rows stay rendered. */
 function simulateHostDisconnect(): void {
   activeHostIdRef.value = null;
-  hostBindingState.current = {
-    hostClient: {
-      request: hostRequestMock,
-      getActiveHostId: () => null,
-    },
+  // The requester answers `null` too - a disconnect is the client addressing
+  // no host, which is exactly what an unresolved id-pinned requester reports.
+  const hostClient: StubHostClient = {
+    request: hostRequestMock,
+    getActiveHostId: () => null,
+    createRequesterForHostId: () => hostClient,
   };
+  hostBindingState.current = { hostClient };
   useHostNotificationsStore.getState().markSummaryUnknown();
 }
 
@@ -641,16 +666,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function markAllReadCallParams(): { readonly beforeUpdatedAt: number } {
-  const call = hostRequestMock.mock.calls.find(
-    (entry) => entry[0] === "host.notifications.markAllRead",
-  );
+  return hostBeforeUpdatedAtCallParams("host.notifications.markAllRead");
+}
+
+function clearAllCallParams(): { readonly beforeUpdatedAt: number } {
+  return hostBeforeUpdatedAtCallParams("host.notifications.clearAll");
+}
+
+function hostBeforeUpdatedAtCallParams(
+  method: "host.notifications.markAllRead" | "host.notifications.clearAll",
+): { readonly beforeUpdatedAt: number } {
+  const call = hostRequestMock.mock.calls.find((entry) => entry[0] === method);
   const params: unknown = call === undefined ? undefined : call[1];
   if (!isRecord(params)) {
-    throw new Error("expected host.notifications.markAllRead params");
+    throw new Error(`expected ${method} params`);
   }
   const beforeUpdatedAt = params["beforeUpdatedAt"];
   if (typeof beforeUpdatedAt !== "number") {
-    throw new Error("expected host.notifications.markAllRead params");
+    throw new Error(`expected ${method} params`);
   }
   return { beforeUpdatedAt };
 }
@@ -713,6 +746,8 @@ describe("NotificationsPopover", () => {
     const status = await screen.findByTestId("notifications-feed-status");
     expect(status.textContent).toContain("Loading notifications");
     expect(status.textContent).toContain("Fetching your notification history.");
+    expect(status.getAttribute("data-tone")).toBe("neutral");
+    expect(status.className).not.toContain("bg-warning/10");
     expect(
       screen.getByTestId("notifications-feed-status-spinner"),
     ).toBeDefined();
@@ -733,8 +768,10 @@ describe("NotificationsPopover", () => {
     renderRouter(router);
 
     const status = await screen.findByTestId("notifications-feed-status");
-    expect(status.textContent).toContain("Notifications unavailable");
+    expect(status.textContent).toContain("Cloud notifications unavailable");
     expect(status.textContent).toContain("We’ll keep trying to reconnect.");
+    expect(status.getAttribute("data-tone")).toBe("degraded");
+    expect(status.className).toContain("bg-warning/10");
     expect(
       screen.queryByTestId("notifications-feed-status-spinner"),
     ).toBeNull();
@@ -760,10 +797,12 @@ describe("NotificationsPopover", () => {
     renderRouter(router);
 
     const status = await screen.findByTestId("notifications-feed-status");
-    expect(status.textContent).toContain("Reconnecting to notifications");
+    expect(status.textContent).toContain("Reconnecting to cloud notifications");
     expect(status.textContent).toContain(
-      "Refreshing your notification history.",
+      "Showing notifications already on this device until it’s back.",
     );
+    expect(status.getAttribute("data-tone")).toBe("degraded");
+    expect(status.className).toContain("bg-warning/10");
     expect(
       screen.getByTestId("notifications-feed-status-spinner"),
     ).toBeDefined();
@@ -790,7 +829,9 @@ describe("NotificationsPopover", () => {
 
     expect(await screen.findByTestId("notification-entry")).toBeDefined();
     const status = screen.getByTestId("notifications-feed-status");
-    expect(status.textContent).toContain("Reconnecting to notifications");
+    expect(status.textContent).toContain("Reconnecting to cloud notifications");
+    expect(status.getAttribute("data-tone")).toBe("degraded");
+    expect(status.className).toContain("bg-warning/10");
   });
 
   it("shows caught up only after an authoritative empty cloud snapshot", async () => {
@@ -1153,6 +1194,34 @@ describe("NotificationsPopover", () => {
     });
   });
 
+  it("uses the same clear-notifications action for the local host feed", async () => {
+    bindHostClient();
+    applyHostSnapshot([hostDone("entry-local", 100, null)], {
+      unreadCount: 1,
+      attentionCount: 0,
+    });
+    const captured: TargetCapture = {
+      epicId: null,
+      tabId: null,
+      focusArtifactId: null,
+      focusThreadId: null,
+    };
+    const { router } = buildRouterWithCapture(captured, () => undefined);
+    renderRouter(router);
+
+    const clearAll = await screen.findByRole("button", {
+      name: "Clear notifications",
+    });
+    expect((clearAll as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(clearAll);
+    expect(screen.getByText("Clear all notifications?")).toBeDefined();
+    fireEvent.click(screen.getByTestId("confirm-action"));
+
+    await waitFor(() => {
+      expect(clearAllCallParams().beforeUpdatedAt).toBeTypeOf("number");
+    });
+  });
+
   it("renders a relative timestamp on every notification row", async () => {
     const twoMinutesAgo = Date.now() - 150_000;
     const captured: TargetCapture = {
@@ -1163,23 +1232,27 @@ describe("NotificationsPopover", () => {
     };
     const { router } = buildRouterWithCapture(captured, () => undefined);
 
-    openNotificationsStream((callbacks) => {
-      act(() => {
-        seedEntries(callbacks, [
-          {
-            id: "ts-row",
-            createdAt: twoMinutesAgo,
-            readAt: null,
-            event: {
-              kind: NOTIFICATION_EVENT_TYPES.INVITED,
-              epicId: "epic-alpha",
-              actorName: "Alice",
+    openNotificationsStream(
+      reconnectEngine,
+      (callbacks) => {
+        act(() => {
+          seedEntries(callbacks, [
+            {
+              id: "ts-row",
+              createdAt: twoMinutesAgo,
+              readAt: null,
+              event: {
+                kind: NOTIFICATION_EVENT_TYPES.INVITED,
+                epicId: "epic-alpha",
+                actorName: "Alice",
+              },
             },
-          },
-        ]);
-      });
-      return { applyUpdate: () => {}, close: () => {} };
-    }, null);
+          ]);
+        });
+        return { applyUpdate: () => {}, close: () => {} };
+      },
+      null,
+    );
 
     renderRouter(router);
 
@@ -1364,14 +1437,18 @@ describe("NotificationsPopover", () => {
   });
 
   it("renders navigable unread rows with one primary button and sibling mark-read, never nested buttons", async () => {
-    openNotificationsStream((callbacks) => {
-      act(() => {
-        seedEntries(callbacks, [
-          threadEntry("route-1", "epic-xyz", "art-7", "thread-9"),
-        ]);
-      });
-      return { applyUpdate: () => {}, close: () => {} };
-    }, null);
+    openNotificationsStream(
+      reconnectEngine,
+      (callbacks) => {
+        act(() => {
+          seedEntries(callbacks, [
+            threadEntry("route-1", "epic-xyz", "art-7", "thread-9"),
+          ]);
+        });
+        return { applyUpdate: () => {}, close: () => {} };
+      },
+      null,
+    );
 
     const captured: TargetCapture = {
       epicId: null,
@@ -1411,21 +1488,25 @@ describe("NotificationsPopover", () => {
       ],
       { unreadCount: 2, attentionCount: 1 },
     );
-    openNotificationsStream((callbacks) => {
-      act(() => {
-        seedEntries(callbacks, [
-          threadEntryWithState({
-            id: "collab",
-            epicId: "epic-1",
-            artifactId: "art-1",
-            threadId: "thread-1",
-            createdAt: 60,
-            readAt: null,
-          }),
-        ]);
-      });
-      return { applyUpdate: () => {}, close: () => {} };
-    }, null);
+    openNotificationsStream(
+      reconnectEngine,
+      (callbacks) => {
+        act(() => {
+          seedEntries(callbacks, [
+            threadEntryWithState({
+              id: "collab",
+              epicId: "epic-1",
+              artifactId: "art-1",
+              threadId: "thread-1",
+              createdAt: 60,
+              readAt: null,
+            }),
+          ]);
+        });
+        return { applyUpdate: () => {}, close: () => {} };
+      },
+      null,
+    );
 
     const captured: TargetCapture = {
       epicId: null,
@@ -1605,6 +1686,8 @@ describe("NotificationsPopover", () => {
 
     expect(failed?.dataset.notificationSeverity).toBe("failure");
     expect(failed?.textContent).toContain(TASK_TITLE);
+    expect(failed?.querySelector(".lucide-message-square-x")).not.toBeNull();
+    expect(failed?.querySelector(".lucide-square-terminal")).toBeNull();
     expect(completed?.dataset.notificationSeverity).toBe("done");
     expect(completed?.textContent).toContain(TASK_TITLE);
     expect(stalled?.dataset.notificationSeverity).toBe("failure");
@@ -1643,14 +1726,18 @@ describe("NotificationsPopover", () => {
     const onNavigate = vi.fn();
     const { router } = buildRouterWithCapture(captured, onNavigate);
 
-    openNotificationsStream((callbacks) => {
-      act(() => {
-        seedEntries(callbacks, [
-          threadEntry("route-1", "epic-xyz", "art-7", "thread-9"),
-        ]);
-      });
-      return { applyUpdate: () => {}, close: () => {} };
-    }, null);
+    openNotificationsStream(
+      reconnectEngine,
+      (callbacks) => {
+        act(() => {
+          seedEntries(callbacks, [
+            threadEntry("route-1", "epic-xyz", "art-7", "thread-9"),
+          ]);
+        });
+        return { applyUpdate: () => {}, close: () => {} };
+      },
+      null,
+    );
 
     renderRouter(router);
 
@@ -1674,6 +1761,49 @@ describe("NotificationsPopover", () => {
         .getState()
         .entries.find((item) => item.id === "route-1")?.readAt,
     ).toBeTypeOf("number");
+  });
+
+  it("activates the same target from Enter on a keyboard-focused row", async () => {
+    const captured: TargetCapture = {
+      epicId: null,
+      tabId: null,
+      focusArtifactId: null,
+      focusThreadId: null,
+    };
+    const onNavigate = vi.fn();
+    const { router } = buildRouterWithCapture(captured, onNavigate);
+
+    openNotificationsStream(
+      reconnectEngine,
+      (callbacks) => {
+        act(() => {
+          seedEntries(callbacks, [
+            threadEntry("route-key", "epic-key", "art-8", "thread-3"),
+          ]);
+        });
+        return { applyUpdate: () => {}, close: () => {} };
+      },
+      null,
+    );
+
+    renderRouter(router);
+
+    // The row itself is the arrow-key focus target, so Enter on it must do
+    // what clicking its body button does - not nothing.
+    const entry = await screen.findByTestId("notification-entry");
+    entry.focus();
+    expect(document.activeElement).toBe(entry);
+
+    await act(async () => {
+      fireEvent.keyDown(entry, { key: "Enter" });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(captured.epicId).toBe("epic-key");
+    expect(captured.focusArtifactId).toBe("art-8");
+    expect(captured.focusThreadId).toBe("thread-3");
+    expect(onNavigate).toHaveBeenCalledTimes(1);
   });
 
   it("navigates a TUI completion row to its terminal agent", async () => {
@@ -1727,6 +1857,45 @@ describe("NotificationsPopover", () => {
     expect(onNavigate).toHaveBeenCalledTimes(1);
   });
 
+  it("renders a TUI agent failure with the terminal glyph", async () => {
+    applyHostSnapshot(
+      [
+        {
+          id: "agent.failed:tui-1",
+          updatedAt: 10,
+          readAt: null,
+          kind: "agent.stopped",
+          sourceRef: "tui-1",
+          severity: "failure",
+          outcome: "errored",
+          epicId: "epic-tui",
+          chatId: "tui-1",
+          payload: {
+            kind: "epic",
+            epicId: "epic-tui",
+            tuiAgentId: "tui-1",
+            agentName: "Terminal agent",
+            taskTitle: "TUI task",
+            outcome: "errored",
+          },
+        },
+      ],
+      { unreadCount: 1, attentionCount: 1 },
+    );
+    const captured: TargetCapture = {
+      epicId: null,
+      tabId: null,
+      focusArtifactId: null,
+      focusThreadId: null,
+    };
+    const { router } = buildRouterWithCapture(captured, () => undefined);
+    renderRouter(router);
+
+    const entry = await screen.findByTestId("notification-entry");
+    expect(entry.querySelector(".lucide-square-terminal")).not.toBeNull();
+    expect(entry.querySelector(".lucide-message-square-x")).toBeNull();
+  });
+
   it("marks every notification as read when Mark all read is clicked", async () => {
     const captured: TargetCapture = {
       epicId: null,
@@ -1736,15 +1905,19 @@ describe("NotificationsPopover", () => {
     };
     const { router } = buildRouterWithCapture(captured, () => undefined);
 
-    openNotificationsStream((callbacks) => {
-      act(() => {
-        seedEntries(callbacks, [
-          threadEntry("all-1", "epic-1", "art-1", "thread-1"),
-          threadEntry("all-2", "epic-2", "art-2", "thread-2"),
-        ]);
-      });
-      return { applyUpdate: () => {}, close: () => {} };
-    }, null);
+    openNotificationsStream(
+      reconnectEngine,
+      (callbacks) => {
+        act(() => {
+          seedEntries(callbacks, [
+            threadEntry("all-1", "epic-1", "art-1", "thread-1"),
+            threadEntry("all-2", "epic-2", "art-2", "thread-2"),
+          ]);
+        });
+        return { applyUpdate: () => {}, close: () => {} };
+      },
+      null,
+    );
 
     renderRouter(router);
 
@@ -1845,14 +2018,18 @@ describe("NotificationsPopover", () => {
 
   it("on activation success closes the center, marks read, and analytics stay category-only", async () => {
     const trackSpy = vi.spyOn(Analytics.getInstance(), "track");
-    openNotificationsStream((callbacks) => {
-      act(() => {
-        seedEntries(callbacks, [
-          threadEntry("route-success", "epic-xyz", "art-7", "thread-9"),
-        ]);
-      });
-      return { applyUpdate: () => {}, close: () => {} };
-    }, null);
+    openNotificationsStream(
+      reconnectEngine,
+      (callbacks) => {
+        act(() => {
+          seedEntries(callbacks, [
+            threadEntry("route-success", "epic-xyz", "art-7", "thread-9"),
+          ]);
+        });
+        return { applyUpdate: () => {}, close: () => {} };
+      },
+      null,
+    );
 
     const onNavigate = vi.fn();
     const captured: TargetCapture = {

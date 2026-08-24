@@ -39,6 +39,8 @@ import {
   __resetSubscriptionsForTesting,
   type GitListChangedFilesSubscriptionResult,
 } from "../use-git-list-changed-files-subscription";
+import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
+import { TEST_CLIENT_IDENTITY } from "@traycer-clients/shared/test-fixtures/client-identity";
 
 // Mock stream session for testing.
 class MockStreamSession implements IStreamSession {
@@ -113,11 +115,14 @@ class MockWsStreamClient extends WsStreamClient<HostStreamRpcRegistry> {
 
   constructor() {
     super({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => null,
       bearer: () => null,
       auth: null,
       hostCredentialMint: null,
+      onHostCredentialState: null,
+      evidence: NO_TRANSPORT_EVIDENCE,
       webSocketFactory: {
         create: () => {
           throw new Error("MockWsStreamClient should not open a websocket");
@@ -752,11 +757,14 @@ describe("useGitListChangedFilesSubscription", () => {
 
   it("waits for a replacement client and recovers without surfacing CLIENT_CLOSED", async () => {
     const closedClient = new WsStreamClient<HostStreamRpcRegistry>({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => null,
       bearer: () => null,
       auth: null,
       hostCredentialMint: null,
+      onHostCredentialState: null,
+      evidence: NO_TRANSPORT_EVIDENCE,
       webSocketFactory: {
         create: () => {
           throw new Error("a closed client must not dial");

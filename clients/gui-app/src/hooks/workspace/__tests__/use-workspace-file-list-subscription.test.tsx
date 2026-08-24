@@ -32,6 +32,8 @@ import {
   __resetWorkspaceFileListSubscriptionsForTesting,
   type WorkspaceFileListSubscriptionResult,
 } from "../use-workspace-file-list-subscription";
+import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
+import { TEST_CLIENT_IDENTITY } from "@traycer-clients/shared/test-fixtures/client-identity";
 
 const EPIC_ID = "epic-1";
 const HOST_ID = "host-1";
@@ -90,11 +92,14 @@ class MockWsStreamClient extends WsStreamClient<HostStreamRpcRegistry> {
 
   constructor() {
     super({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => null,
       bearer: () => null,
       auth: null,
       hostCredentialMint: null,
+      onHostCredentialState: null,
+      evidence: NO_TRANSPORT_EVIDENCE,
       webSocketFactory: {
         create: () => {
           throw new Error("MockWsStreamClient should not open a websocket");

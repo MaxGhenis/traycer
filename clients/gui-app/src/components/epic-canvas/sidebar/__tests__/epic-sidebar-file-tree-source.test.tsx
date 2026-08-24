@@ -1,5 +1,13 @@
 import type { SchemaVersion } from "@traycer/protocol/framework/versioned-stream-rpc";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from "vitest";
 import {
   act,
   cleanup,
@@ -36,7 +44,10 @@ import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messen
 import { createRequestContext } from "@traycer/protocol/auth/request-context";
 import { hostRpcRegistry } from "@traycer/protocol/host/index";
 import type { HostRpcRegistry } from "@/lib/host";
-import { StreamRuntimeContext } from "@/lib/host/stream-runtime-context";
+import {
+  StreamRuntimeContext,
+  type StreamRuntimeBinding,
+} from "@/lib/host/stream-runtime-context";
 import {
   fileTreeExpansionScopeKey,
   useFileTreeStore,
@@ -44,6 +55,13 @@ import {
 import { useSettingsStore } from "@/stores/settings/settings-store";
 import { DEFAULT_DIFF_VIEWER_PREFERENCES } from "@/lib/diff/diff-viewer-preferences";
 import { __resetWorkspaceFileListSubscriptionsForTesting } from "@/hooks/workspace/use-workspace-file-list-subscription";
+import {
+  requestFileTreeReveal,
+  useFileTreeRevealStore,
+} from "@/stores/file-tree/file-tree-reveal-store";
+import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import type { EpicCanvasTileRef } from "@/stores/epics/canvas/types";
+import type { NestedFocusTarget } from "@/lib/epic-nested-focus-route";
 
 const HOST_ID = "host-1";
 const EPIC_ID = "epic-1";
@@ -52,8 +70,13 @@ const WORKSPACE_PATH = "/work/repo";
 const hostClientRef: { current: HostClient<HostRpcRegistry> | null } = {
   current: null,
 };
+/** The APP-WIDE client - deliberately not the panel's, and never recorded. */
+const ambientHostClientRef: { current: HostClient<HostRpcRegistry> | null } = {
+  current: null,
+};
 
 const listFileTreeCalls: Array<{
+  readonly hostId: string | null;
   readonly workspacePath: string | null;
   readonly enabled: boolean;
 }> = [];
@@ -64,17 +87,53 @@ interface RecordedReset {
 const resetPathsCalls: RecordedReset[] = [];
 const setSearchCalls: Array<string | null> = [];
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => HOST_ID,
+// The panel re-provides its own `StreamRuntimeContext` with whatever the pin
+// hook hands it: the ambient binding this suite supplies while FOLLOWING (the
+// client every assertion here is about), the pin's own binding when an arm
+// sets `pinnedStreamBindingRef`, and null only while PENDING. Which transport
+// the pin resolves to is a different question, and it has its own suite:
+// `hooks/host/__tests__/use-surface-host-stream-binding.test.tsx`.
+const pinnedStreamBindingRef = vi.hoisted(() => ({
+  value: null as StreamRuntimeBinding | null,
 }));
 
-// Only `useHostClient` is replaced: the real `useWorkspaceSearchPaths`,
-// its query wiring, and the echo guard all run against a mock TRANSPORT, so
-// the tests exercise the actual request shape and stale-reply handling.
+// The hook returns the value to PROVIDE: the pin's own binding when this suite
+// supplies one, else the ambient binding (following). `null` would now mean
+// PENDING - no client at all - which is not what these arms drive.
+vi.mock("@/hooks/host/use-surface-host-stream-binding", async () => {
+  const { use } = await import("react");
+  const { StreamRuntimeContext } =
+    await import("@/lib/host/stream-runtime-context");
+  return {
+    useSurfaceHostStreamBinding: () =>
+      pinnedStreamBindingRef.value ?? use(StreamRuntimeContext),
+  };
+});
+
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => HOST_ID,
+}));
+
+// The real `useWorkspaceSearchPaths`, its query wiring and the echo guard all
+// run against a mock TRANSPORT, so the tests exercise the actual request shape
+// and stale-reply handling.
+//
+// THE TWO CLIENTS ARE DIFFERENT ON PURPOSE. This panel is host-pinned: it
+// resolves its client from the `hostId` it was handed, and every `searchCalls`
+// assertion below only records a request that reached THAT client's transport.
+// The app-wide client is a distinct object with no recorder, so a build that
+// reverts to reading the ambient host does not fail on a wrong value here - it
+// fails as SILENCE, and the suite's existing "asked the host for ranked
+// matches" cases are what catch it.
 vi.mock("@/lib/host", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/host")>();
-  return { ...actual, useHostClient: () => hostClientRef.current };
+  return { ...actual, useHostClient: () => ambientHostClientRef.current };
 });
+
+vi.mock("@/hooks/host/use-host-client-for-host-id", () => ({
+  useHostClientForHostId: (hostId: string | null) =>
+    hostId === HOST_ID ? hostClientRef.current : ambientHostClientRef.current,
+}));
 
 vi.mock("@/hooks/git/use-git-list-changed-files-subscription", () => ({
   useGitListChangedFilesSubscription: () => ({
@@ -99,11 +158,13 @@ const UNARY_TREE_DATA = {
 };
 
 vi.mock("@/hooks/workspace/use-list-file-tree-query", () => ({
-  useWorkspaceListFileTree: (
-    workspacePath: string | null,
-    enabled: boolean,
-  ) => {
-    listFileTreeCalls.push({ workspacePath, enabled });
+  useWorkspaceListFileTree: (args: {
+    readonly hostId: string | null;
+    readonly workspacePath: string | null;
+    readonly enabled: boolean;
+  }) => {
+    const { hostId, workspacePath, enabled } = args;
+    listFileTreeCalls.push({ hostId, workspacePath, enabled });
     return {
       data: enabled ? UNARY_TREE_DATA : undefined,
       error: null,
@@ -126,6 +187,32 @@ vi.mock("@/components/epic-canvas/dnd/epic-canvas-dnd-context-value", () => ({
 // is exactly the loop the panel's expansion sync rides.
 const expandedInModel = new Set<string>();
 const expandedAtLastReset = new Set<string>();
+
+// Reveal-in-sidebar mechanism state, additive to the expansion/search state
+// above. `selectedInModel` mirrors Pierre's own selection set; `getItem`'s
+// file handles read/write it and report every change through the SAME
+// `onSelectionChange` callback a real click lands in (captured below), which
+// is what lets the reveal effect's programmatic-selection guard be exercised
+// here rather than assumed.
+const selectedInModel = new Set<string>();
+const scrollToPathCalls: Array<{
+  readonly path: string;
+  readonly options: { readonly offset: string };
+}> = [];
+const modelListeners = new Set<() => void>();
+// Captured from the real `useFileTree(options)` call the panel makes - the
+// mocked hook below stashes `options.onSelectionChange` here so a test can
+// invoke it directly, the same way Pierre invokes it on a real row click.
+let capturedOnSelectionChange: ((paths: ReadonlyArray<string>) => void) | null =
+  null;
+
+function notifyModel(): void {
+  for (const listener of modelListeners) listener();
+}
+
+function reportSelectionChange(): void {
+  capturedOnSelectionChange?.([...selectedInModel]);
+}
 
 // Reactive search snapshot for the mocked `useFileTreeSearch`, recomputed on
 // every setSearch/resetPaths so the panel's zero-match empty state is
@@ -207,24 +294,71 @@ const mockModel = {
     mockListedPaths = paths;
     refreshSearchSnapshot();
   },
-  subscribe: () => () => undefined,
-  getItem: (path: string) =>
-    path.endsWith("/")
-      ? {
-          isDirectory: () => true,
-          isExpanded: () => expandedInModel.has(path),
-        }
-      : null,
+  subscribe: (listener: () => void) => {
+    modelListeners.add(listener);
+    return () => {
+      modelListeners.delete(listener);
+    };
+  },
+  // A directory handle is only returned once the host has actually LISTED
+  // that path (membership in `mockListedPaths`), not merely because the
+  // token ends with "/" - the real model has no notion of a directory it has
+  // never been told about. This is what makes the reveal walk incremental in
+  // these tests: `expand()` on an as-yet-unlisted ancestor is simply
+  // unreachable, exactly as `model.getItem` returning `null` gates it in the
+  // real component.
+  getItem: (path: string) => {
+    if (!mockListedPaths.includes(path)) return null;
+    if (path.endsWith("/")) {
+      return {
+        isDirectory: () => true,
+        isExpanded: () => expandedInModel.has(path),
+        expand: () => {
+          expandedInModel.add(path);
+          notifyModel();
+        },
+        isSelected: () => false,
+        select: () => undefined,
+        deselect: () => undefined,
+        getPath: () => path,
+      };
+    }
+    return {
+      isDirectory: () => false,
+      isExpanded: () => false,
+      isSelected: () => selectedInModel.has(path),
+      select: () => {
+        selectedInModel.add(path);
+        reportSelectionChange();
+      },
+      deselect: () => {
+        selectedInModel.delete(path);
+        reportSelectionChange();
+      },
+      getPath: () => path,
+    };
+  },
+  getSelectedPaths: () => [...selectedInModel],
+  scrollToPath: (path: string, options: { readonly offset: string }) => {
+    scrollToPathCalls.push({ path, options });
+  },
 };
 
 vi.mock("@pierre/trees/react", () => ({
   FileTree: () => <div data-testid="pierre-file-tree-stub" />,
   useFileTreeSearch: () =>
     useSyncExternalStore(subscribeToSearchSnapshot, getSearchSnapshot),
-  useFileTree: () => ({ model: mockModel }),
+  useFileTree: (options: {
+    readonly onSelectionChange: (paths: ReadonlyArray<string>) => void;
+  }) => {
+    capturedOnSelectionChange = options.onSelectionChange;
+    return { model: mockModel };
+  },
 }));
 
 import { FileTreePanelBodyForWorkspace } from "@/components/epic-canvas/sidebar/epic-sidebar-file-tree";
+import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
+import { TEST_CLIENT_IDENTITY } from "@traycer-clients/shared/test-fixtures/client-identity";
 
 class MockStreamSession implements IStreamSession {
   private serverFrameHandler: ServerFrameHandler | null = null;
@@ -260,11 +394,14 @@ class MockWsStreamClient extends WsStreamClient<HostStreamRpcRegistry> {
 
   constructor(private readonly support: StreamMethodSupport) {
     super({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => null,
       bearer: () => null,
       auth: null,
       hostCredentialMint: null,
+      onHostCredentialState: null,
+      evidence: NO_TRANSPORT_EVIDENCE,
       webSocketFactory: {
         create: () => {
           throw new Error("MockWsStreamClient should not open a websocket");
@@ -336,20 +473,21 @@ function installSearchHost(script: Partial<SearchScript>): void {
     },
     requestId: () => "request-test",
   });
-  const client = new HostClient<HostRpcRegistry>({
+  const entry = {
+    hostId: HOST_ID,
+    label: "Test Host",
+    kind: "mock" as const,
+    websocketUrl: "ws://host.test",
+    version: "test",
+    transportDialability: "dialable" as const,
+  };
+  const spine = new HostClient<HostRpcRegistry>({
     registry: hostRpcRegistry,
     messenger,
     invalidator: { invalidateHostScope: () => {} },
+    findHostById: (hostId) => (hostId === entry.hostId ? entry : null),
   });
-  client.bind({
-    hostId: HOST_ID,
-    label: "Test Host",
-    kind: "mock",
-    websocketUrl: "ws://host.test",
-    version: "test",
-    transportDialability: "dialable",
-  });
-  client.setRequestContext(
+  spine.setRequestContext(
     createRequestContext({
       identity: { userId: "user-test", username: "test", providerHandle: null },
       bearerToken: "token-test",
@@ -359,7 +497,12 @@ function installSearchHost(script: Partial<SearchScript>): void {
       externalAbortSignal: undefined,
     }),
   );
-  hostClientRef.current = client;
+  hostClientRef.current = spine.createRequester(entry);
+  // A SEPARATE app-wide client on the same spine, addressing a host this
+  // fixture's messenger has no handlers for. Nothing routed here is recorded,
+  // which is what turns "the panel read the ambient host" into a visible
+  // absence rather than an indistinguishable pass.
+  ambientHostClientRef.current = spine.createRequesterForHostId("host-ambient");
 }
 
 function fileResult(relPath: string): WorkspaceSearchPathResult {
@@ -405,6 +548,8 @@ function renderPanel(client: MockWsStreamClient): void {
         epicId={EPIC_ID}
         tabId="tab-1"
         workspacePath={WORKSPACE_PATH}
+        hostId={HOST_ID}
+        onLatchHost={() => undefined}
       />,
     ),
   );
@@ -431,6 +576,10 @@ describe("sidebar file tree source selection", () => {
     searchCalls.length = 0;
     expandedInModel.clear();
     expandedAtLastReset.clear();
+    selectedInModel.clear();
+    scrollToPathCalls.length = 0;
+    modelListeners.clear();
+    capturedOnSelectionChange = null;
     installSearchHost({});
     __resetWorkspaceFileListSubscriptionsForTesting();
     useFileTreeStore.setState({ expandedPathsByScope: {} });
@@ -440,6 +589,33 @@ describe("sidebar file tree source selection", () => {
     cleanup();
     __resetWorkspaceFileListSubscriptionsForTesting();
     useFileTreeStore.setState({ expandedPathsByScope: {} });
+    pinnedStreamBindingRef.value = null;
+  });
+
+  it("opens the stream on the PINNED host's transport, not the app-wide one", () => {
+    // The panel re-provides `StreamRuntimeContext` for the host its pin
+    // resolved to, and this is the arm that proves the provider actually sits
+    // ABOVE the hooks that read it - an adjacency neither the hook's own suite
+    // nor the subscription registry's can see, because each is correct in
+    // isolation either way.
+    //
+    // Before the re-point this panel passed the pinned host's id as a
+    // subscribe PARAM while riding the app-wide socket, which watches the
+    // wrong machine's working tree and reports nothing wrong: the param is a
+    // key, not a route. So the assertion is WHICH TRANSPORT carried the
+    // subscribe, and the ambient client is here as the control - without it a
+    // build that subscribed on both would pass.
+    const ambient = new MockWsStreamClient("unknown");
+    const pinned = new MockWsStreamClient("unknown");
+    pinnedStreamBindingRef.value = {
+      wsStreamClient: pinned,
+      hostId: HOST_ID,
+    };
+
+    renderPanel(ambient);
+
+    expect(pinned.subscribedMethods).toEqual(["workspace.subscribeFileList"]);
+    expect(ambient.subscribedMethods).toEqual([]);
   });
 
   it("builds the tree from the live stream and leaves the unary path disabled", async () => {
@@ -519,6 +695,10 @@ describe("sidebar file tree filter source", () => {
     searchCalls.length = 0;
     expandedInModel.clear();
     expandedAtLastReset.clear();
+    selectedInModel.clear();
+    scrollToPathCalls.length = 0;
+    modelListeners.clear();
+    capturedOnSelectionChange = null;
     __resetWorkspaceFileListSubscriptionsForTesting();
     useFileTreeStore.setState({ expandedPathsByScope: {} });
   });
@@ -778,5 +958,398 @@ describe("sidebar file tree filter source", () => {
       expect(resetPathsCalls.at(-1)?.paths).toEqual(["src/", "live.md"]);
     });
     expect(setSearchCalls.at(-1)).toBeNull();
+  });
+});
+
+describe("reveal in sidebar", () => {
+  const REVEAL_TAB_ID = "tab-1";
+
+  /**
+   * Emits the three listing frames the ancestor walk for `src/lib/a.ts`
+   * needs (root, `src/`, `src/lib/`) and waits for the final one to land,
+   * without asserting the intermediate steps - reused by the tests that only
+   * care that the reveal SETTLED, not how it got there (the detailed,
+   * step-by-step walk is covered on its own below).
+   */
+  async function revealSrcLibAToCompletion(
+    client: MockWsStreamClient,
+  ): Promise<void> {
+    requestFileTreeReveal(REVEAL_TAB_ID, {
+      hostId: HOST_ID,
+      workspacePath: WORKSPACE_PATH,
+      filePath: "src/lib/a.ts",
+    });
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "",
+        entries: [
+          { path: "src/", name: "src", kind: "directory", ignored: false },
+          {
+            path: "readme.md",
+            name: "readme.md",
+            kind: "file",
+            ignored: false,
+          },
+        ],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+    await waitFor(() => {
+      expect(expandedInModel.has("src/")).toBe(true);
+    });
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "src/",
+        entries: [
+          { path: "src/lib/", name: "lib", kind: "directory", ignored: false },
+        ],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+    await waitFor(() => {
+      expect(expandedInModel.has("src/lib/")).toBe(true);
+    });
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "src/lib/",
+        entries: [
+          { path: "src/lib/a.ts", name: "a.ts", kind: "file", ignored: false },
+        ],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+    await waitFor(() => {
+      expect(scrollToPathCalls.length).toBeGreaterThan(0);
+    });
+  }
+
+  let openPreviewSpy: Mock<
+    (tabId: string, node: EpicCanvasTileRef) => NestedFocusTarget | null
+  >;
+
+  beforeEach(() => {
+    useSettingsStore.setState({
+      diffViewerPreferences: {
+        ...DEFAULT_DIFF_VIEWER_PREFERENCES,
+        ignoreWhitespace: false,
+      },
+    });
+    mockListedPaths = [];
+    mockSearchValue = "";
+    mockSearchSnapshot = { isOpen: false, value: "", matchingPaths: [] };
+    searchSnapshotListeners.clear();
+    listFileTreeCalls.length = 0;
+    resetPathsCalls.length = 0;
+    setSearchCalls.length = 0;
+    searchCalls.length = 0;
+    expandedInModel.clear();
+    expandedAtLastReset.clear();
+    selectedInModel.clear();
+    scrollToPathCalls.length = 0;
+    modelListeners.clear();
+    capturedOnSelectionChange = null;
+    installSearchHost({});
+    __resetWorkspaceFileListSubscriptionsForTesting();
+    useFileTreeStore.setState({ expandedPathsByScope: {} });
+    useFileTreeRevealStore.setState({ requestsByViewTabId: {} }, true);
+    // The panel reads this action to open a row's preview on a genuine
+    // selection; mocked so the "still opens on a real click" case is
+    // observable without a real canvas/tab-strip mounted, and so the reveal
+    // tests can assert it was NOT called for a programmatic selection.
+    openPreviewSpy = vi.fn(() => null);
+    useEpicCanvasStore.setState({
+      prepareOpenTilePreviewInTabFocusTarget: openPreviewSpy,
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    __resetWorkspaceFileListSubscriptionsForTesting();
+    useFileTreeStore.setState({ expandedPathsByScope: {} });
+    useFileTreeRevealStore.setState({ requestsByViewTabId: {} }, true);
+    useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
+  });
+
+  it("walks the ancestors one listing at a time and selects the row once listed, without opening a tile", async () => {
+    requestFileTreeReveal(REVEAL_TAB_ID, {
+      hostId: HOST_ID,
+      workspacePath: WORKSPACE_PATH,
+      filePath: "src/lib/a.ts",
+    });
+    const client = new MockWsStreamClient("unknown");
+    renderPanel(client);
+
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "",
+        entries: [
+          { path: "src/", name: "src", kind: "directory", ignored: false },
+          {
+            path: "readme.md",
+            name: "readme.md",
+            kind: "file",
+            ignored: false,
+          },
+        ],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+
+    await waitFor(() => {
+      expect(expandedInModel.has("src/")).toBe(true);
+    });
+    expect(
+      useFileTreeStore.getState().expandedPathsByScope[
+        fileTreeExpansionScopeKey(EPIC_ID, HOST_ID, WORKSPACE_PATH)
+      ],
+    ).toContain("src/");
+    await waitFor(() => {
+      expect(client.sessions[0].clientFrameKinds).toContain("watch");
+    });
+    // The next ancestor is not listed yet, so the walk cannot have reached it.
+    expect(expandedInModel.has("src/lib/")).toBe(false);
+
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "src/",
+        entries: [
+          { path: "src/lib/", name: "lib", kind: "directory", ignored: false },
+        ],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+
+    await waitFor(() => {
+      expect(expandedInModel.has("src/lib/")).toBe(true);
+    });
+    expect(
+      useFileTreeStore.getState().expandedPathsByScope[
+        fileTreeExpansionScopeKey(EPIC_ID, HOST_ID, WORKSPACE_PATH)
+      ],
+    ).toContain("src/lib/");
+    expect(selectedInModel.has("src/lib/a.ts")).toBe(false);
+
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "src/lib/",
+        entries: [
+          { path: "src/lib/a.ts", name: "a.ts", kind: "file", ignored: false },
+        ],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+
+    await waitFor(() => {
+      expect(selectedInModel.has("src/lib/a.ts")).toBe(true);
+    });
+    expect(scrollToPathCalls).toEqual([
+      { path: "src/lib/a.ts", options: { offset: "nearest" } },
+    ]);
+    expect(
+      useFileTreeRevealStore.getState().requestsByViewTabId[REVEAL_TAB_ID],
+    ).toBeUndefined();
+    expect(openPreviewSpy).not.toHaveBeenCalled();
+  });
+
+  it("replaces a multi-row selection with the revealed row without opening a preview for the survivor", async () => {
+    // With TWO rows selected, deselecting the first already reports a
+    // NON-empty selection (the survivor), before the target is ever selected.
+    // A one-shot path marker set just around `select()` lets that
+    // notification through, opening the survivor's preview and then being
+    // consumed so the target's own `select()` opens another. The suppression
+    // has to span the whole rewrite.
+    requestFileTreeReveal(REVEAL_TAB_ID, {
+      hostId: HOST_ID,
+      workspacePath: WORKSPACE_PATH,
+      filePath: "src/lib/a.ts",
+    });
+    const client = new MockWsStreamClient("unknown");
+    renderPanel(client);
+
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "",
+        entries: [
+          { path: "src/", name: "src", kind: "directory", ignored: false },
+          {
+            path: "readme.md",
+            name: "readme.md",
+            kind: "file",
+            ignored: false,
+          },
+          { path: "notes.md", name: "notes.md", kind: "file", ignored: false },
+        ],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+    await waitFor(() => {
+      expect(expandedInModel.has("src/")).toBe(true);
+    });
+    // The user's prior multi-selection, seeded directly in the model (a
+    // click-driven selection would open previews of its own).
+    selectedInModel.add("readme.md");
+    selectedInModel.add("notes.md");
+
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "src/",
+        entries: [
+          { path: "src/lib/", name: "lib", kind: "directory", ignored: false },
+        ],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+    await waitFor(() => {
+      expect(expandedInModel.has("src/lib/")).toBe(true);
+    });
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "src/lib/",
+        entries: [
+          { path: "src/lib/a.ts", name: "a.ts", kind: "file", ignored: false },
+        ],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+
+    await waitFor(() => {
+      expect(scrollToPathCalls).toHaveLength(1);
+    });
+    expect([...selectedInModel]).toEqual(["src/lib/a.ts"]);
+    expect(openPreviewSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not re-fire a consumed request on a later listing", async () => {
+    const client = new MockWsStreamClient("unknown");
+    renderPanel(client);
+    await revealSrcLibAToCompletion(client);
+    expect(scrollToPathCalls).toHaveLength(1);
+
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "src/lib/",
+        entries: [
+          { path: "src/lib/a.ts", name: "a.ts", kind: "file", ignored: false },
+          { path: "src/lib/b.ts", name: "b.ts", kind: "file", ignored: false },
+        ],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+
+    await waitFor(() => {
+      expect(resetPathsCalls.at(-1)?.paths).toContain("src/lib/b.ts");
+    });
+    expect(scrollToPathCalls).toHaveLength(1);
+  });
+
+  it("still opens the preview for a genuine user selection after a reveal completes", async () => {
+    const client = new MockWsStreamClient("unknown");
+    renderPanel(client);
+    await revealSrcLibAToCompletion(client);
+    expect(openPreviewSpy).not.toHaveBeenCalled();
+
+    act(() => {
+      capturedOnSelectionChange?.(["readme.md"]);
+    });
+
+    expect(openPreviewSpy).toHaveBeenCalledTimes(1);
+    expect(openPreviewSpy).toHaveBeenCalledWith(
+      REVEAL_TAB_ID,
+      expect.objectContaining({ filePath: "readme.md" }),
+    );
+  });
+
+  it("ignores a reveal request for another workspace", async () => {
+    requestFileTreeReveal(REVEAL_TAB_ID, {
+      hostId: HOST_ID,
+      workspacePath: "/other",
+      filePath: "a.ts",
+    });
+    const client = new MockWsStreamClient("unknown");
+    renderPanel(client);
+
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "",
+        entries: [{ path: "a.ts", name: "a.ts", kind: "file", ignored: false }],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+
+    await waitFor(() => {
+      expect(resetPathsCalls.at(-1)?.paths).toEqual(["a.ts"]);
+    });
+
+    expect(selectedInModel.size).toBe(0);
+    expect(scrollToPathCalls).toEqual([]);
+    expect(
+      useFileTreeRevealStore.getState().requestsByViewTabId[REVEAL_TAB_ID],
+    ).toEqual({
+      hostId: HOST_ID,
+      workspacePath: "/other",
+      filePath: "a.ts",
+      nonce: 1,
+    });
+  });
+
+  it("clears an active filter before reveal, then completes once the file is listed", async () => {
+    installSearchHost({ outcome: "root_unavailable" });
+    const client = new MockWsStreamClient("unknown");
+    renderPanel(client);
+
+    typeFilter("zzz");
+    await waitFor(() => {
+      expect(setSearchCalls.at(-1)).toBe("zzz");
+    });
+
+    act(() => {
+      requestFileTreeReveal(REVEAL_TAB_ID, {
+        hostId: HOST_ID,
+        workspacePath: WORKSPACE_PATH,
+        filePath: "a.ts",
+      });
+    });
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "",
+        entries: [{ path: "a.ts", name: "a.ts", kind: "file", ignored: false }],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByLabelText<HTMLInputElement>("Filter files by name").value,
+      ).toBe("");
+    });
+    await waitFor(() => {
+      expect(scrollToPathCalls).toEqual([
+        { path: "a.ts", options: { offset: "nearest" } },
+      ]);
+    });
   });
 });

@@ -1,4 +1,3 @@
-import { HostPicker } from "@/components/layout/header/host-picker";
 import { ChatUsageDialog } from "@/components/chat/chat-usage-dialog";
 import { AppUpdateToastController } from "@/components/layout/bridges/app-update-toast-controller";
 import { DesktopZoomController } from "@/components/layout/bridges/desktop-zoom-controller";
@@ -6,7 +5,7 @@ import { HostControllerStatusListener } from "@/components/layout/bridges/host-c
 import { RunnerHostBridges } from "@/components/layout/bridges/runner-host-bridges";
 import { WorktreeDeleteProgressToastBridge } from "@/components/layout/bridges/worktree-delete-progress-toast-bridge";
 import { ReportIssueDialogHost } from "@/components/layout/dialogs/report-issue-dialog-host";
-import { CenteredCard } from "@/components/centered-card";
+import { HostRuntimeBootFallback } from "@/components/host/host-runtime-boot-fallback";
 import { RootErrorBoundary } from "@/components/errors/root-error-boundary";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -28,6 +27,7 @@ import { AuthSessionExpiredToastBridge } from "@/providers/auth-session-expired-
 import { CommandPaletteProvider } from "@/providers/command-palette-provider";
 import { HostCredentialProvisionProvider } from "@/providers/host-credential-provision-provider";
 import { ComposerRunSettingsPersistLifecycleBridge } from "@/providers/composer-run-settings-persist-lifecycle-bridge";
+import { SurfaceHostSelectionPersistLifecycleBridge } from "@/providers/surface-host-selection-persist-lifecycle-bridge";
 import { GithubMentionFiltersPersistLifecycleBridge } from "@/providers/github-mention-filters-persist-lifecycle-bridge";
 import { ComposerHarnessMemoryPersistLifecycleBridge } from "@/providers/composer-harness-memory-persist-lifecycle-bridge";
 import { WorktreeIntentMemoryPersistLifecycleBridge } from "@/providers/worktree-intent-memory-persist-lifecycle-bridge";
@@ -51,6 +51,7 @@ import { ThemeProvider } from "@/providers/theme-provider";
 import { WindowsBridgeAuthSessionBridge } from "@/providers/windows-bridge-auth-session";
 import { WindowsBridgeProvider } from "@/providers/windows-bridge-provider";
 import { ResourceTelemetryBridge } from "@/providers/resource-telemetry-bridge";
+import { STARTUP_NAVIGATION_INTENT_KEY } from "@/lib/host/startup-navigation-intent";
 import { createAppRouter, type AppRouter } from "@/router";
 // Side-effect import: installs the WCO → `.wco` class bridge at module
 // load (mirrors `theme-applier.ts`). The class drives the `wco:`
@@ -107,8 +108,8 @@ export interface TraycerAppProps {
  * Mounts the documented provider stack - outer to inner -
  *   RunnerHostProvider → QueryClientProvider → ThemeProvider →
  *   TooltipProvider → HostRuntimeProvider → HostCompatibilityProvider →
- *   auth-scoped lifecycle providers → RunnerHostBridges → LocalHostGate →
- *   RouterProvider → HostPicker → Toaster.
+ *   auth-scoped lifecycle providers → RunnerHostBridges →
+ *   HostReadinessControllerProvider → RouterProvider → Toaster.
  *
  * Concrete shells (Electron, Capacitor, gui-app-dev preview) construct a
  * `IRunnerHost` at bootstrap and pass it alongside the shared
@@ -121,26 +122,46 @@ export function TraycerApp(props: TraycerAppProps): ReactNode {
     () => createAppRouter(props.initialRoute ?? null, desktopWindowId),
     [desktopWindowId, props.initialRoute],
   );
-  const hostRuntimeFallback = useMemo(
-    () => (
-      <CenteredCard
-        testId={null}
-        message="Initializing Traycer Host…"
-        spinnerVariant="sparkle"
-      />
-    ),
-    [],
-  );
+  // Both escape hatches DECLARE themselves as user intent in history state.
+  // They can be taken on a boot surface, before the app or the route bridge
+  // exists, and the marker is what stops the desktop's restored-route replay
+  // from overwriting them - without it that replay cannot tell a user's
+  // navigation from the transient `/` a cold launch redirects to on its own.
+  // See `startup-navigation-intent.ts`.
   const configureShell = useCallback(() => {
-    void router.navigate({ to: "/settings/shell" });
+    void router.navigate({
+      to: "/settings/shell",
+      state: (previous) => ({
+        ...previous,
+        [STARTUP_NAVIGATION_INTENT_KEY]: true,
+      }),
+    });
   }, [router]);
   // The host-unavailable card's escape hatch. `/settings/host` rather than the
   // settings index: the card is shown when no host can be reached, and that is
   // the page that manages them. Settings bypasses the readiness gate, so this
   // stays reachable from inside a full-screen block.
   const openSettings = useCallback(() => {
-    void router.navigate({ to: "/settings/host" });
+    void router.navigate({
+      to: "/settings/host",
+      state: (previous) => ({
+        ...previous,
+        [STARTUP_NAVIGATION_INTENT_KEY]: true,
+      }),
+    });
   }, [router]);
+  // THE FIRST of a launch's three boot surfaces - see
+  // `HostRuntimeBootFallback` for why it is the same card as the other two and
+  // why it reserves the header's slot.
+  const hostRuntimeFallback = useMemo(
+    () => (
+      <HostRuntimeBootFallback
+        onConfigureShell={configureShell}
+        onOpenSettings={openSettings}
+      />
+    ),
+    [configureShell, openSettings],
+  );
 
   return (
     <RunnerHostProvider runnerHost={props.runnerHost}>
@@ -213,44 +234,45 @@ function TraycerAuthenticatedRuntime(props: TraycerAuthenticatedRuntimeProps) {
         <HostCredentialProvisionProvider>
           <EpicSessionLifecycleBridge>
             <ComposerRunSettingsPersistLifecycleBridge>
-              <GithubMentionFiltersPersistLifecycleBridge>
-                <ComposerHarnessMemoryPersistLifecycleBridge>
-                  <WorktreeIntentMemoryPersistLifecycleBridge>
-                    <WorktreeIntentStagingPersistLifecycleBridge>
-                      <EpicCanvasPersistLifecycleBridge>
-                        <LandingTerminalPersistLifecycleBridge>
-                          <LandingTerminalTombstoneRecoveryBridge />
-                          <EpicTabExistenceReconciler />
-                          <HostStreamProvider>
-                            <HostScopeReady scope="default-host">
-                              <WorktreeChangedStreamMount />
-                              <ChatRecordsStreamMount />
-                            </HostScopeReady>
-                            {/* Above the shell split on purpose: the onboarding
-                                tour renders through `StandaloneShell`, not
-                                `AppShell`, so a mount inside the app shell left
-                                the tour's Import button with no run handle to
-                                call. This is the lowest node both shells share
-                                that still has the host stream. */}
-                            <SessionImportRunController />
-                            <AppLocalNotificationsPersistLifecycleBridge>
-                              <ReadingPositionPersistLifecycleBridge>
-                                <NotificationsSessionProvider
-                                  navigate={props.router.navigate}
-                                >
-                                  <TraycerAppRuntimeSurface
-                                    router={props.router}
-                                  />
-                                </NotificationsSessionProvider>
-                              </ReadingPositionPersistLifecycleBridge>
-                            </AppLocalNotificationsPersistLifecycleBridge>
-                          </HostStreamProvider>
-                        </LandingTerminalPersistLifecycleBridge>
-                      </EpicCanvasPersistLifecycleBridge>
-                    </WorktreeIntentStagingPersistLifecycleBridge>
-                  </WorktreeIntentMemoryPersistLifecycleBridge>
-                </ComposerHarnessMemoryPersistLifecycleBridge>
-              </GithubMentionFiltersPersistLifecycleBridge>
+              <SurfaceHostSelectionPersistLifecycleBridge>
+                <GithubMentionFiltersPersistLifecycleBridge>
+                  <ComposerHarnessMemoryPersistLifecycleBridge>
+                    <WorktreeIntentMemoryPersistLifecycleBridge>
+                      <WorktreeIntentStagingPersistLifecycleBridge>
+                        <EpicCanvasPersistLifecycleBridge>
+                          <LandingTerminalPersistLifecycleBridge>
+                            <LandingTerminalTombstoneRecoveryBridge />
+                            <EpicTabExistenceReconciler />
+                            <HostStreamProvider>
+                              <HostScopeReady scope="default-host">
+                                <WorktreeChangedStreamMount />
+                                <ChatRecordsStreamMount />
+                              </HostScopeReady>
+                              {/* Above the shell split on purpose: the onboarding tour
+                                  renders through `StandaloneShell`, not `AppShell`, so a
+                                  mount inside the app shell left the tour's Import button
+                                  with no run handle to call. This is the lowest node both
+                                  shells share that still has the host stream. */}
+                              <SessionImportRunController />
+                              <AppLocalNotificationsPersistLifecycleBridge>
+                                <ReadingPositionPersistLifecycleBridge>
+                                  <NotificationsSessionProvider
+                                    navigate={props.router.navigate}
+                                  >
+                                    <TraycerAppRuntimeSurface
+                                      router={props.router}
+                                    />
+                                  </NotificationsSessionProvider>
+                                </ReadingPositionPersistLifecycleBridge>
+                              </AppLocalNotificationsPersistLifecycleBridge>
+                            </HostStreamProvider>
+                          </LandingTerminalPersistLifecycleBridge>
+                        </EpicCanvasPersistLifecycleBridge>
+                      </WorktreeIntentStagingPersistLifecycleBridge>
+                    </WorktreeIntentMemoryPersistLifecycleBridge>
+                  </ComposerHarnessMemoryPersistLifecycleBridge>
+                </GithubMentionFiltersPersistLifecycleBridge>
+              </SurfaceHostSelectionPersistLifecycleBridge>
             </ComposerRunSettingsPersistLifecycleBridge>
           </EpicSessionLifecycleBridge>
         </HostCredentialProvisionProvider>
@@ -278,7 +300,6 @@ function TraycerAppRuntimeSurface(props: TraycerAppRuntimeSurfaceProps) {
       <RateLimitQueueProvider />
       <HistoryPruneProvider router={props.router} />
       <RouterProvider router={props.router} />
-      <HostPicker />
       {/*
         Ticket 12's chat cost line: mounted ONCE app-wide (not per-tab) since
         the tab strip's "Usage" context-menu item can target any open chat's

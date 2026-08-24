@@ -12,6 +12,7 @@ import type {
   ProviderManagedVersions,
 } from "@traycer/protocol/host/provider-schemas";
 import { chatPublicationDefinitiveReason } from "@/lib/chats/chat-publication-definitive";
+import { RATE_LIMIT_USAGE_RESPONSE_TIMEOUT_MS } from "@/lib/rate-limits/rate-limit-timing";
 
 const SECOND_MS = 1_000;
 const MINUTE_MS = 60 * SECOND_MS;
@@ -349,8 +350,9 @@ const LATEST_SCHEDULING = {
 
 export const HOST_METHOD_POLL_TABLE = {
   // Opt-in polling (`poll: true`), for one caller: the Overview's drain
-  // affordance. Its `busySessionCount` is the number "Apply now — ends N
-  // sessions" promises and then destroys, so the question is not whether the
+  // affordance. Its `busySessionCount` / `busyBreakdown` is what "Apply now
+  // — ends 2 agents and 1 terminal" (or "ends N sessions" on a @1.1 host)
+  // promises and then destroys, so the question is not whether the
   // cached value may be reused but whether it is still TRUE. Going stale does
   // not refetch on its own, so without a cadence a focused Overview served the
   // count it read on mount indefinitely.
@@ -412,8 +414,15 @@ export const HOST_METHOD_POLL_TABLE = {
     poll: null,
   },
   "host.getRuntimeCapabilities": { ...LATEST_SCHEDULING, poll: null },
+  // The provider-pull branch spawns a CLI subprocess on the host whose probe
+  // can legitimately outlast the transport's 30s default frame timeout (a
+  // Claude refresh-safe probe alone is budgeted 90s). The ephemeral fetch
+  // queue requests with this extended response budget so a slow-but-successful
+  // probe is not discarded client-side while the host finishes it; the value
+  // is declared once in `rate-limit-timing.ts` and must match exactly.
   "host.getRateLimitUsage": {
     ...LATEST_SCHEDULING,
+    joinResponseTimeoutMs: RATE_LIMIT_USAGE_RESPONSE_TIMEOUT_MS,
     poll: { kind: "fixed", intervalMs: 15 * MINUTE_MS },
   },
   // Consuming a reset credit changes the provider's persisted quota state.
@@ -1032,6 +1041,17 @@ export const HOST_METHOD_POLL_TABLE = {
     ...LATEST_SCHEDULING,
     poll: null,
   },
+  // The terminal-agent RECORD read (TUI eviction), the sibling of
+  // `epic.listChatRecords` above and polled at its exact cadence for its
+  // exact reasons: the facts it serves are committed to the host's registry
+  // and written nowhere the renderer already listens per-epic, there is no
+  // response field a condition policy could classify "about to change" from,
+  // and the client's own mutations invalidate the key on success so nothing
+  // user-initiated waits on the interval.
+  "epic.listTuiAgents": {
+    ...LATEST_SCHEDULING,
+    poll: { kind: "fixed", intervalMs: 20 * SECOND_MS },
+  },
   // The publisher's own convergence sweep is 30s, so a 45s local read is
   // responsive without asking faster than the underlying state can change.
   "epic.chatBackupStatus": {
@@ -1106,6 +1126,36 @@ export const HOST_METHOD_POLL_TABLE = {
   "terminal.readOutput": { ...LATEST_SCHEDULING, poll: null },
   // Renaming a terminal persists its display name.
   "terminal.rename": { mode: "fifo", joinResponseTimeoutMs: null, poll: null },
+  // Durable plain-terminal authority. The list is snapshot seeding only; the
+  // stream owns subsequent convergence. Every write is FIFO so rapid user
+  // actions reach the host in order, while revision guards still protect the
+  // client cache from independently delayed stream frames.
+  "terminal.plain.create": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "terminal.plain.list": { ...LATEST_SCHEDULING, poll: null },
+  "terminal.plain.rename": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "terminal.plain.ensureRunning": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "terminal.plain.close": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
+  "terminal.plain.importLegacy": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
   "worktree.listByWorkspacePaths": { ...LATEST_SCHEDULING, poll: null },
   "worktree.listBranches": { ...LATEST_SCHEDULING, poll: null },
   // Creating a worktree starts a host-side setup operation.

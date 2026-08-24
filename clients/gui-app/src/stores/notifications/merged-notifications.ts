@@ -3,6 +3,8 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
 import { useHostBinding, type HostRpcRegistry } from "@/lib/host";
+import { resolveAppWideHostClient } from "@/lib/host/binding-host-client";
+import { useEffectiveHostId } from "@/hooks/host/use-effective-host-id";
 import {
   Analytics,
   AnalyticsEvent,
@@ -10,7 +12,7 @@ import {
 } from "@/lib/analytics";
 import { useHostMutation } from "@/hooks/host/use-host-query";
 import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { useAddressableHostId } from "@/hooks/host/use-addressable-host-id";
 import { notificationsMutationKeys } from "@/lib/query-keys";
 import { toastFromHostError } from "@/lib/host-error-toast";
 import {
@@ -78,6 +80,7 @@ import {
   type HostNotificationsCloudFeedEntryRequest,
   type HostNotificationsCloudFeedMarkAllReadRequest,
   type HostNotificationsCloudFeedClearAllRequest,
+  type HostNotificationsClearAllRequest,
   type HostNotificationsEntityRef,
 } from "@traycer/protocol/host/notifications/contracts";
 import type { NotificationEntry } from "@traycer/protocol/notifications/notification-entry";
@@ -103,6 +106,10 @@ export interface MergedNotificationRow {
   readonly title: string;
   readonly body: string;
   readonly payload: NotificationPayload | null;
+  /** Presentation identity of an agent lifecycle row. Kept separately from
+   * the normalized navigation payload, where GUI chats and TUI agents both
+   * intentionally route through a chat-shaped target. */
+  readonly agentSurface?: "gui" | "tui" | null;
   readonly hostKind: HostNotificationFeedEntry["kind"] | null;
   readonly appLocalKind: AppLocalNotificationEntry["kind"] | null;
   readonly globalEntry: NotificationEntry | null;
@@ -223,7 +230,7 @@ export function mergedUnreadCount(input: {
  * from without recomputing their own source subscriptions. */
 function useMergedNotificationRows(): ReadonlyArray<MergedNotificationRow> {
   const feedMode = useNotificationFeedMode();
-  const activeHostId = useReactiveActiveHostId();
+  const activeHostId = useAddressableHostId();
   const hostIds = useHostNotificationIds();
   const appLocalIds = useAppLocalNotificationIds();
   const globalIds = useNotificationEntryIds();
@@ -244,6 +251,7 @@ function useMergedNotificationRows(): ReadonlyArray<MergedNotificationRow> {
           .filter(
             (row): row is HostNotificationsCloudFeedRow => row !== undefined,
           )
+          .filter((row) => !isAutomaticAgentRecovery(row.entry))
           .map(rowFromCloudFeedRow),
         ...appLocalIds.map((id) => rowFromAppLocalEntry(appLocalById[id])),
         ...orderedGlobalEntries.map((entry) => rowFromGlobalEntry(entry)),
@@ -253,9 +261,9 @@ function useMergedNotificationRows(): ReadonlyArray<MergedNotificationRow> {
     }
     if (feedMode === "upgrade-required") return [];
     const rows: MergedNotificationRow[] = [
-      ...hostIds.map((id) =>
-        rowFromHostEntryForOrigin(hostById[id], activeHostId),
-      ),
+      ...hostIds
+        .filter((id) => !isAutomaticAgentRecovery(hostById[id]))
+        .map((id) => rowFromHostEntryForOrigin(hostById[id], activeHostId)),
       ...appLocalIds.map((id) => rowFromAppLocalEntry(appLocalById[id])),
       ...orderedGlobalEntries.map((entry) => rowFromGlobalEntry(entry)),
     ];
@@ -413,7 +421,9 @@ function rowFromLocalFeedId(input: {
 }): MergedNotificationRow | null {
   switch (input.parsed.source) {
     case "host":
-      return input.feedMode !== "local" || input.hostEntry === null
+      return input.feedMode !== "local" ||
+        input.hostEntry === null ||
+        isAutomaticAgentRecovery(input.hostEntry)
         ? null
         : rowFromHostEntryForOrigin(input.hostEntry, input.hostOriginId);
     case "app-local":
@@ -434,15 +444,38 @@ function rowFromCloudFeedId(input: {
   readonly feedMode: "local" | "cloud" | "upgrade-required";
   readonly cloudRow: HostNotificationsCloudFeedRow | undefined;
 }): MergedNotificationRow | null {
-  if (input.feedMode !== "cloud" || input.cloudRow === undefined) return null;
+  if (
+    input.feedMode !== "cloud" ||
+    input.cloudRow === undefined ||
+    isAutomaticAgentRecovery(input.cloudRow.entry)
+  )
+    return null;
   return rowFromCloudFeedRow(input.cloudRow);
+}
+
+/** A successful non-human turn advances terminal glyph chronology but is not
+ * itself notification history. The durable row must reach cloud indicator
+ * projection, so presentation filters it here instead of deleting it from the
+ * feed upstream. */
+function isAutomaticAgentRecovery(entry: {
+  readonly kind: string;
+  readonly payload: unknown;
+}): boolean {
+  if (entry.kind !== "agent.stopped") return false;
+  const payload = entry.payload;
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    "automaticRecovery" in payload &&
+    payload.automaticRecovery === true
+  );
 }
 
 export function useMergedNotificationRow(
   feedId: string,
 ): MergedNotificationRow | null {
   const feedMode = useNotificationFeedMode();
-  const activeHostId = useReactiveActiveHostId();
+  const activeHostId = useAddressableHostId();
   const parsed = parseFeedId(feedId);
   const hostEntry = useHostNotificationById(
     parsed?.source === "host" ? parsed.sourceId : "",
@@ -566,7 +599,7 @@ export interface NotificationCenterHostState {
 
 /** Active-host subtitle/partial-state selector for the center header. */
 export function useNotificationCenterHostState(): NotificationCenterHostState {
-  const activeHostId = useReactiveActiveHostId();
+  const activeHostId = useAddressableHostId();
   const hostEntry = useHostDirectoryEntry(activeHostId ?? "");
   const feedMode = useNotificationFeedMode();
   const localSummary = useHostNotificationsStore(selectHostNotificationSummary);
@@ -583,8 +616,18 @@ export function useNotificationCenterHostState(): NotificationCenterHostState {
 
 export function useMergedNotificationsActions(): MergedNotificationsActions {
   const feedMode = useNotificationFeedMode();
+  // APP-WIDE BY INTENT. These actions mark notifications read ON a host, and
+  // the host is the one whose feed the bell is showing - an app-wide fact. A
+  // scoped panel's host would mark the wrong feed read, so this must not follow
+  // a re-provided binding even if one is ever mounted above it. Resolved from
+  // the effective host rather than read off the spine, which stopped naming one
+  // when P4.2 deleted the active slot.
   const binding = useHostBinding();
-  const client = binding?.hostClient ?? null;
+  const effectiveHostId = useEffectiveHostId();
+  const client = useMemo(
+    () => resolveAppWideHostClient(binding, effectiveHostId),
+    [binding, effectiveHostId],
+  );
   const queryClient = useQueryClient();
   const globalMarkAsRead = useNotificationsStore((state) => state.markAsRead);
   const globalMarkAllAsRead = useNotificationsStore(
@@ -821,6 +864,34 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
       onError: (error, _variables, context) => {
         if (!isCurrentHostNotificationMutation(client, context)) return;
         toastFromHostError(error, "Couldn't mark notifications as read.");
+      },
+    },
+  });
+
+  const clearHostAll = useHostMutation<
+    HostRpcRegistry,
+    "host.notifications.clearAll",
+    HostNotificationMutationContext,
+    HostNotificationsClearAllRequest
+  >({
+    client,
+    method: "host.notifications.clearAll",
+    mapVariables: (variables) => variables,
+    options: {
+      mutationKey: notificationsMutationKeys.clearAll(),
+      onMutate: () => captureHostNotificationMutationContext(client),
+      onSuccess: (_data, variables, context) => {
+        if (!isCurrentHostNotificationMutation(client, context)) return;
+        useHostNotificationsStore
+          .getState()
+          .clearAllLocally(variables.beforeUpdatedAt, context.snapshotEpoch);
+        if (context.hostId !== null) {
+          invalidateNotificationIndicators(queryClient, context.hostId, client);
+        }
+      },
+      onError: (error, _variables, context) => {
+        if (!isCurrentHostNotificationMutation(client, context)) return;
+        toastFromHostError(error, "Couldn't clear notifications.");
       },
     },
   });
@@ -1066,7 +1137,7 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
         // firing the host mutation then only yields an unbound-rejection error toast
         // while the rendered rows cannot change. Gate BOTH on the same
         // authoritative active-host signal (read fresh at click time, the same
-        // value `useReactiveActiveHostId` projects), NOT `client !== null`. The
+        // value `useAddressableHostId` projects), NOT `client !== null`. The
         // local global/app-local mark-all above always run. Marking read never
         // resolves the underlying question or permission request.
         if (client !== null && client.getActiveHostId() !== null) {
@@ -1098,13 +1169,23 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
         cloudClear.mutate({ entryId: row.sourceId });
       },
       clearAll: () => {
-        if (feedMode !== "cloud" || cloudVersion === null) return;
-        // Send the version of the snapshot the user is LOOKING AT, not
-        // whatever the cloud head has reached by the time this lands. The
-        // fan-out then covers exactly the rows on screen, and an entry that
-        // arrives in between survives however many times a lost-response
-        // retry replays this call.
-        cloudClearAll.mutate({ observedVersion: cloudVersion });
+        if (feedMode === "cloud") {
+          if (cloudVersion === null) return;
+          // Send the version of the snapshot the user is LOOKING AT, not
+          // whatever the cloud head has reached by the time this lands. The
+          // fan-out then covers exactly the rows on screen, and an entry that
+          // arrives in between survives however many times a lost-response
+          // retry replays this call.
+          cloudClearAll.mutate({ observedVersion: cloudVersion });
+          return;
+        }
+        if (
+          feedMode === "local" &&
+          client !== null &&
+          client.getActiveHostId() !== null
+        ) {
+          clearHostAll.mutate({ beforeUpdatedAt: Date.now() });
+        }
       },
       loadMoreHost: () => {
         if (feedMode !== "local") return;
@@ -1149,6 +1230,7 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
       appLocalMarkAllAsRead,
       markHostRead,
       markHostAllRead,
+      clearHostAll,
       loadMoreHost,
       hostNextCursor,
       hasHostLoadError,
@@ -1250,6 +1332,7 @@ function rowFromHostEntryForOrigin(
     title: presentation.title,
     body: presentation.body,
     payload: payloadFromHostEntry(entry),
+    agentSurface: agentSurfaceFromHostEntry(entry),
     hostKind: entry.kind,
     appLocalKind: null,
     globalEntry: null,
@@ -1332,6 +1415,7 @@ export function rowFromCloudFeedRow(
     title,
     body: fallback.body,
     payload: payloadFromHostEntry(row.entry),
+    agentSurface: agentSurfaceFromHostEntry(row.entry),
     hostKind: row.entry.kind,
     appLocalKind: null,
     globalEntry: null,
@@ -1458,16 +1542,47 @@ function payloadFromHostEntry(
   return known === null ? null : navigationPayloadFromKnown(known);
 }
 
+function agentSurfaceFromHostEntry(
+  entry: HostNotificationFeedEntry,
+): "gui" | "tui" | null {
+  const known = parseKnownHostNotificationPayloadForKind(
+    entry.kind,
+    entry.payload,
+  );
+  if (known === null) return null;
+  if (known.kind === "epic") return "tui";
+  if (
+    known.kind === "chat" ||
+    known.kind === "agent_stalled" ||
+    known.kind === "workspace_operation_failed"
+  ) {
+    return "gui";
+  }
+  return null;
+}
+
 function navigationPayloadFromKnown(
   known: HostNotificationKnownPayload,
 ): NotificationPayload | null {
   switch (known.kind) {
-    case "chat":
+    case "chat": {
+      // A final, unqualified Done describes the current end-state, so it
+      // always opens at the end of the transcript. Failures and qualified
+      // Done rows retain their occurrence anchor.
+      const includeTranscriptAnchor =
+        known.outcome === "errored" || known.backgroundWorkRunning === true;
+      const scrollToEnd =
+        known.outcome === "completed" && known.backgroundWorkRunning !== true;
       return {
         kind: "chat",
         epicId: known.epicId,
         chatId: known.chatId ?? undefined,
+        ...(known.hostId === undefined ? {} : { hostId: known.hostId }),
+        messageId: includeTranscriptAnchor ? known.messageId : undefined,
+        eventId: includeTranscriptAnchor ? known.eventId : undefined,
+        ...(scrollToEnd ? { scrollToEnd: true as const } : {}),
       };
+    }
     case "agent_stalled":
       return { kind: "chat", epicId: known.epicId, chatId: known.chatId };
     case "workspace_operation_failed":

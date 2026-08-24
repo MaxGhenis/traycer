@@ -13,6 +13,7 @@ import {
   type StateStorage,
 } from "zustand/middleware";
 import { v4 as uuidv4 } from "uuid";
+import type { PlainTerminalProjection } from "@traycer/protocol/host/terminal/plain-schemas";
 import { basePersistOptions, epicCanvasKey } from "@/lib/persist";
 import { appLogger } from "@/lib/logger";
 import {
@@ -55,7 +56,6 @@ import {
   useSubagentOpenStore,
 } from "@/stores/chats/subagent-open-store";
 import { evictTileFindUi } from "@/stores/tile-find/tile-find-store";
-import { evictChatTurnMinimapActiveEntries } from "@/stores/chats/chat-turn-minimap-active-entry-store";
 import { promoteChatTabPersistenceToDurable } from "@/stores/chats/chat-tab-persistence-eviction";
 import type { ChatTabPersistenceIdentity } from "@/stores/chats/chat-tab-persistence-key";
 import {
@@ -76,6 +76,8 @@ import {
   promotePreview,
   renameArtifact,
   renameTerminalTiles,
+  adoptHostTerminalProjection,
+  removeTerminalTiles,
   restoreTilePreview as restoreTilePreviewCanvas,
   resizeSplit,
   setActivePane,
@@ -96,11 +98,13 @@ import {
   createEmptyCanvas,
 } from "@/stores/epics/canvas/canvas-state";
 import {
+  collectPanes,
   findPaneById,
   paneRemovalDissolveHandoffTargets,
   resolveActivePaneTab,
 } from "@/stores/epics/canvas/tile-tree";
 import {
+  isUnsupportedEpicTerminalRef,
   isOpenableEpicNodeKind,
   makeOpenableNodeRef,
   type EdgeDropPosition,
@@ -139,6 +143,16 @@ import {
   collectTileIdentityRegistry,
   enforceTileIdentityInvariant,
 } from "@/stores/epics/canvas/tile-identity-invariant";
+import { requestEpicTerminalClose } from "@/lib/terminals/epic-terminal-close-coordinator";
+import {
+  purgeEpicTerminalDurableCreatesForEpic,
+  shouldPreserveEpicTerminalPendingCreate,
+} from "@/lib/terminals/epic-terminal-durable-create-coordinator";
+import {
+  hasTerminalPendingCreate,
+  withTerminalPendingCreate,
+  withoutTerminalPendingCreate,
+} from "@/lib/terminals/pending-create-identity";
 export { parseEpicNodeRef as parseArtifactRef } from "@/stores/epics/canvas/tile-schema/artifact-tile";
 
 function trackOpenedCanvasTile(
@@ -202,6 +216,32 @@ function trackClosedCanvasTiles(
     if (target === null) return;
     Analytics.getInstance().track(AnalyticsEvent.TabClosed, { target });
   });
+}
+
+function requestedLocalCloseIds(
+  canvas: EpicCanvasState,
+  instanceIds: readonly string[],
+): readonly string[] {
+  const refs = instanceIds.flatMap((instanceId) => {
+    const ref = canvas.tilesByInstanceId[instanceId];
+    return ref === undefined ? [] : [ref];
+  });
+  return requestEpicTerminalClose(refs).localInstanceIds;
+}
+
+function closeRequestedTabs(
+  canvas: EpicCanvasState,
+  paneId: string,
+  requestedIds: readonly string[],
+  closeAllRequested: (state: EpicCanvasState) => EpicCanvasState,
+): EpicCanvasState {
+  const localIds = requestedLocalCloseIds(canvas, requestedIds);
+  if (localIds.length === requestedIds.length) return closeAllRequested(canvas);
+  if (localIds.length === 0) return canvas;
+  return localIds.reduce(
+    (current, instanceId) => closeTileTab(current, paneId, instanceId),
+    canvas,
+  );
 }
 
 export interface TabMoveArgs {
@@ -274,6 +314,13 @@ export interface EpicCanvasStore {
   >;
   readonly selfDeletedArtifactIds: ReadonlySet<string>;
   readonly pendingCreateArtifactIds: ReadonlySet<string>;
+  /**
+   * Terminal pending-create identities, keyed by canonical
+   * `plainTerminalFleetIdentityKey` (`JSON.stringify([hostId, terminalId])`).
+   * Separate from `pendingCreateArtifactIds` so a chat/artifact id cannot be
+   * claimed as a terminal marker. Not persisted.
+   */
+  readonly pendingCreateTerminalIdentities: ReadonlySet<string>;
   readonly preAckRootCreatesByEpic: Readonly<
     Record<string, ReadonlyArray<{ tempId: string; name: string }> | undefined>
   >;
@@ -580,6 +627,11 @@ export interface EpicCanvasStore {
     targetPaneId: string,
   ) => string | null;
   closeCanvasTab: (tabId: string, paneId: string, tileTabId: string) => void;
+  closeConfirmedDeletedChatTiles: (
+    epicId: string,
+    chatId: string,
+    hostId: string,
+  ) => void;
   prepareCloseCanvasTabFocusTarget: (
     tabId: string,
     paneId: string,
@@ -642,6 +694,13 @@ export interface EpicCanvasStore {
     sessionId: string,
     name: string,
   ) => void;
+  /** Rewrite matching legacy refs only after capable-host acknowledgement. */
+  adoptHostTerminalProjection: (
+    hostId: string,
+    terminal: PlainTerminalProjection,
+  ) => void;
+  /** Apply an authoritative host deletion to every matching local ref. */
+  removeHostTerminalRefs: (hostId: string, terminalId: string) => void;
 
   seedEpic: (
     epicId: string,
@@ -668,6 +727,8 @@ export interface EpicCanvasStore {
   unmarkArtifactSelfDeleted: (artifactId: string) => void;
   markArtifactPendingCreate: (artifactId: string) => void;
   unmarkArtifactPendingCreate: (artifactId: string) => void;
+  markTerminalPendingCreate: (hostId: string, terminalId: string) => void;
+  unmarkTerminalPendingCreate: (hostId: string, terminalId: string) => void;
   beginPreAckRootCreate: (epicId: string, tempId: string, name: string) => void;
   endPreAckRootCreate: (epicId: string, tempId: string) => void;
   registerPendingRootCreate: (
@@ -905,6 +966,36 @@ function withoutClosedTilePayload(
   );
 }
 
+/** Prunes reopenable supported refs after a conclusive host deletion. */
+function withoutDeletedTerminalPayloads(
+  record: EpicCanvasStore["closedTilePayloadsByTabId"],
+  hostId: string,
+  terminalId: string,
+): EpicCanvasStore["closedTilePayloadsByTabId"] {
+  const entries = Object.entries(record).map(([tabId, forTab]) => {
+    if (forTab === undefined) {
+      return { entry: [tabId, forTab] as const, changed: false };
+    }
+    const retained = Object.entries(forTab).filter(([, payload]) => {
+      const node = payload?.node;
+      return !(
+        node?.type === "terminal" &&
+        !isUnsupportedEpicTerminalRef(node) &&
+        node.hostId === hostId &&
+        node.id === terminalId
+      );
+    });
+    const changed = retained.length !== Object.keys(forTab).length;
+    return {
+      entry: [tabId, changed ? Object.fromEntries(retained) : forTab] as const,
+      changed,
+    };
+  });
+  return entries.some((entry) => entry.changed)
+    ? Object.fromEntries(entries.map((entry) => entry.entry))
+    : record;
+}
+
 /**
  * Diffs a tab's `tilesByInstanceId` before/after a canvas update and folds
  * every removed tile's payload into `closedTilePayloadsByTabId`, so a later
@@ -913,6 +1004,20 @@ function withoutClosedTilePayload(
  * removed, matching the no-op-skips-the-write convention `updateTabCanvas`
  * relies on.
  */
+function pendingCreateForClosedRef(
+  state: EpicCanvasStore,
+  ref: EpicCanvasTileRef,
+): boolean {
+  if (ref.type === "terminal") {
+    return hasTerminalPendingCreate(
+      state.pendingCreateTerminalIdentities,
+      ref.hostId,
+      ref.id,
+    );
+  }
+  return state.pendingCreateArtifactIds.has(ref.id);
+}
+
 function captureClosedTilePayloads(
   state: EpicCanvasStore,
   tabId: string,
@@ -925,11 +1030,7 @@ function captureClosedTilePayloads(
   if (removed.length === 0) return state.closedTilePayloadsByTabId;
   const nextForTab = removed.reduce(
     (forTab, ref) =>
-      withClosedTilePayload(
-        forTab,
-        ref,
-        state.pendingCreateArtifactIds.has(ref.id),
-      ),
+      withClosedTilePayload(forTab, ref, pendingCreateForClosedRef(state, ref)),
     state.closedTilePayloadsByTabId[tabId] ?? {},
   );
   return { ...state.closedTilePayloadsByTabId, [tabId]: nextForTab };
@@ -938,6 +1039,7 @@ function captureClosedTilePayloads(
 function clearClosedTilePendingCreate(
   closedTilePayloadsByTabId: EpicCanvasStore["closedTilePayloadsByTabId"],
   artifactId: string,
+  hostId: string | null,
 ): EpicCanvasStore["closedTilePayloadsByTabId"] {
   const entries = Object.entries(closedTilePayloadsByTabId).map(
     ([tabId, forTab]) => {
@@ -948,7 +1050,10 @@ function clearClosedTilePendingCreate(
         if (
           payload === undefined ||
           !payload.pendingCreate ||
-          payload.node.id !== artifactId
+          payload.node.id !== artifactId ||
+          (hostId !== null &&
+            (payload.node.type !== "terminal" ||
+              payload.node.hostId !== hostId))
         ) {
           return {
             entry: [instanceId, payload] as const,
@@ -1085,6 +1190,43 @@ function updateTabCanvas(
       next.tilesByInstanceId,
     ),
   };
+}
+
+function removeClosedTilePendingCreate(
+  args: Readonly<{
+    state: EpicCanvasStore;
+    updated: Partial<EpicCanvasStore>;
+    tabId: string;
+    tileTabId: string;
+    tile: EpicCanvasTileRef | null;
+  }>,
+): Partial<EpicCanvasStore> {
+  const { state, updated, tabId, tileTabId, tile } = args;
+  if (tile === null) return updated;
+  const tileRemoved =
+    updated.canvasByTabId?.[tabId]?.tilesByInstanceId[tileTabId] === undefined;
+  if (!tileRemoved) return updated;
+  if (tile.type === "terminal") {
+    if (shouldPreserveEpicTerminalPendingCreate(tile.hostId, tile.id)) {
+      return updated;
+    }
+    const pendingCreateTerminalIdentities = withoutTerminalPendingCreate(
+      state.pendingCreateTerminalIdentities,
+      tile.hostId,
+      tile.id,
+    );
+    return pendingCreateTerminalIdentities ===
+      state.pendingCreateTerminalIdentities
+      ? updated
+      : { ...updated, pendingCreateTerminalIdentities };
+  }
+  const pendingCreateArtifactIds = withoutId(
+    state.pendingCreateArtifactIds,
+    tile.id,
+  );
+  return pendingCreateArtifactIds === state.pendingCreateArtifactIds
+    ? updated
+    : { ...updated, pendingCreateArtifactIds };
 }
 
 function canvasForExistingTab(
@@ -1240,6 +1382,7 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
         artifactTreeByEpicId: EMPTY_TREES,
         selfDeletedArtifactIds: new Set<string>(),
         pendingCreateArtifactIds: new Set<string>(),
+        pendingCreateTerminalIdentities: new Set<string>(),
         preAckRootCreatesByEpic: {},
         pendingRootCreatesByEpic: {},
         pendingEpicTitles: {},
@@ -1352,6 +1495,9 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
           for (const epicId of targetEpicIds) {
             clearScheduledTitlePending(epicTitleTimers, epicId);
           }
+          const purgedCreates = epicIds.flatMap((epicId) => [
+            ...purgeEpicTerminalDurableCreatesForEpic(epicId),
+          ]);
           set((state) => {
             const removedTabIds = new Set(
               Object.keys(state.tabsById).filter((tabId) => {
@@ -1359,7 +1505,24 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
                 return tab !== undefined && targetEpicIds.has(tab.epicId);
               }),
             );
-            if (removedTabIds.size === 0) return state;
+            if (removedTabIds.size === 0 && purgedCreates.length === 0) {
+              return state;
+            }
+            let pendingCreateTerminalIdentities =
+              state.pendingCreateTerminalIdentities;
+            for (const job of purgedCreates) {
+              pendingCreateTerminalIdentities = withoutTerminalPendingCreate(
+                pendingCreateTerminalIdentities,
+                job.hostId,
+                job.terminalId,
+              );
+            }
+            if (removedTabIds.size === 0) {
+              return pendingCreateTerminalIdentities ===
+                state.pendingCreateTerminalIdentities
+                ? state
+                : { pendingCreateTerminalIdentities };
+            }
             const openTabOrder = state.openTabOrder.filter(
               (tabId) => !removedTabIds.has(tabId),
             );
@@ -1403,6 +1566,7 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
                   ([epicId]) => !targetEpicIds.has(epicId),
                 ),
               ),
+              pendingCreateTerminalIdentities,
             };
           });
         },
@@ -1752,9 +1916,18 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
                     ...state.closedTilePayloadsByTabId,
                     [tabId]: withoutClosedTilePayload(forTab, node.instanceId),
                   };
-            const pendingCreateArtifactIds = restoredPayload?.pendingCreate
-              ? withId(state.pendingCreateArtifactIds, node.id)
-              : state.pendingCreateArtifactIds;
+            const pendingCreateArtifactIds =
+              restoredPayload?.pendingCreate && node.type !== "terminal"
+                ? withId(state.pendingCreateArtifactIds, node.id)
+                : state.pendingCreateArtifactIds;
+            const pendingCreateTerminalIdentities =
+              restoredPayload?.pendingCreate && node.type === "terminal"
+                ? withTerminalPendingCreate(
+                    state.pendingCreateTerminalIdentities,
+                    node.hostId,
+                    node.id,
+                  )
+                : state.pendingCreateTerminalIdentities;
             // Strip the entry being restored BEFORE the canvas update runs its
             // own eviction-capture: capturing against a map that still counts
             // the restored entry can push a same-transaction preview eviction
@@ -1764,6 +1937,7 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
               ...state,
               closedTilePayloadsByTabId: withoutRestored,
               pendingCreateArtifactIds,
+              pendingCreateTerminalIdentities,
             };
             const canvasUpdate = updateTabCanvas(baseState, tabId, (canvas) =>
               restoreTilePreviewCanvas(canvas, node, preferredPaneId),
@@ -1773,9 +1947,17 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
                 ? state
                 : { closedTilePayloadsByTabId: withoutRestored };
             }
-            return pendingCreateArtifactIds === state.pendingCreateArtifactIds
+            const pendingUnchanged =
+              pendingCreateArtifactIds === state.pendingCreateArtifactIds &&
+              pendingCreateTerminalIdentities ===
+                state.pendingCreateTerminalIdentities;
+            return pendingUnchanged
               ? canvasUpdate
-              : { ...canvasUpdate, pendingCreateArtifactIds };
+              : {
+                  ...canvasUpdate,
+                  pendingCreateArtifactIds,
+                  pendingCreateTerminalIdentities,
+                };
           });
         },
 
@@ -2335,22 +2517,58 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
           set((state) => {
             const canvas = state.canvasByTabId[tabId] ?? EMPTY_CANVAS;
             const pane = findPaneById(canvas.root, paneId);
-            const contentId =
+            const tile =
               pane !== null && pane.tabInstanceIds.includes(tileTabId)
-                ? (canvas.tilesByInstanceId[tileTabId]?.id ?? null)
+                ? (canvas.tilesByInstanceId[tileTabId] ?? null)
                 : null;
-            const pendingNext =
-              contentId === null
-                ? state.pendingCreateArtifactIds
-                : withoutId(state.pendingCreateArtifactIds, contentId);
             const updated = updateTabCanvas(state, tabId, (canvas) =>
-              closeTileTab(canvas, paneId, tileTabId),
+              closeRequestedTabs(canvas, paneId, [tileTabId], (current) =>
+                closeTileTab(current, paneId, tileTabId),
+              ),
             );
-            return pendingNext === state.pendingCreateArtifactIds
-              ? updated
-              : { ...updated, pendingCreateArtifactIds: pendingNext };
+            return removeClosedTilePendingCreate({
+              state,
+              updated,
+              tabId,
+              tileTabId,
+              tile,
+            });
           });
           trackClosedCanvasTiles(beforeCanvas, get().canvasByTabId[tabId]);
+        },
+
+        closeConfirmedDeletedChatTiles: (epicId, chatId, hostId) => {
+          // Snapshot every matching instance before closing any of them: a
+          // close can dissolve its pane and rewrite the surrounding tree.
+          // The host is part of chat identity, so a same-id peer on another
+          // machine must remain open.
+          const targets: Array<{
+            readonly tabId: string;
+            readonly paneId: string;
+            readonly instanceId: string;
+          }> = [];
+          const state = get();
+          Object.entries(state.tabsById).forEach(([tabId, tab]) => {
+            if (tab?.epicId !== epicId) return;
+            const canvas = state.canvasByTabId[tabId];
+            if (canvas === undefined) return;
+            collectPanes(canvas.root).forEach((pane) => {
+              pane.tabInstanceIds.forEach((instanceId) => {
+                const tile = canvas.tilesByInstanceId[instanceId];
+                if (
+                  tile?.type === "chat" &&
+                  tile.id === chatId &&
+                  tile.hostId === hostId
+                ) {
+                  targets.push({ tabId, paneId: pane.id, instanceId });
+                }
+              });
+            });
+          });
+
+          targets.forEach(({ tabId, paneId, instanceId }) => {
+            get().closeCanvasTab(tabId, paneId, instanceId);
+          });
         },
 
         prepareCloseCanvasTabFocusTarget: (tabId, paneId, tileTabId) => {
@@ -2372,9 +2590,19 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
         closeOtherCanvasTabs: (tabId, paneId, tileTabId) => {
           const beforeCanvas = get().canvasByTabId[tabId];
           set((state) =>
-            updateTabCanvas(state, tabId, (canvas) =>
-              closeOtherTileTabs(canvas, paneId, tileTabId),
-            ),
+            updateTabCanvas(state, tabId, (canvas) => {
+              const pane = findPaneById(canvas.root, paneId);
+              if (pane === null) return canvas;
+              const requestedIds = pane.tabInstanceIds.filter(
+                (instanceId) => instanceId !== tileTabId,
+              );
+              return closeRequestedTabs(
+                canvas,
+                paneId,
+                requestedIds,
+                (current) => closeOtherTileTabs(current, paneId, tileTabId),
+              );
+            }),
           );
           trackClosedCanvasTiles(beforeCanvas, get().canvasByTabId[tabId]);
         },
@@ -2382,9 +2610,19 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
         closeRightCanvasTabs: (tabId, paneId, tileTabId) => {
           const beforeCanvas = get().canvasByTabId[tabId];
           set((state) =>
-            updateTabCanvas(state, tabId, (canvas) =>
-              closeRightTabs(canvas, paneId, tileTabId),
-            ),
+            updateTabCanvas(state, tabId, (canvas) => {
+              const pane = findPaneById(canvas.root, paneId);
+              if (pane === null) return canvas;
+              const index = pane.tabInstanceIds.indexOf(tileTabId);
+              if (index === -1) return canvas;
+              const requestedIds = pane.tabInstanceIds.slice(index + 1);
+              return closeRequestedTabs(
+                canvas,
+                paneId,
+                requestedIds,
+                (current) => closeRightTabs(current, paneId, tileTabId),
+              );
+            }),
           );
           trackClosedCanvasTiles(beforeCanvas, get().canvasByTabId[tabId]);
         },
@@ -2410,9 +2648,16 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
             }
           }
           set((state) =>
-            updateTabCanvas(state, tabId, (canvas) =>
-              closeAllTabs(canvas, paneId),
-            ),
+            updateTabCanvas(state, tabId, (canvas) => {
+              const pane = findPaneById(canvas.root, paneId);
+              if (pane === null) return canvas;
+              return closeRequestedTabs(
+                canvas,
+                paneId,
+                pane.tabInstanceIds,
+                (current) => closeAllTabs(current, paneId),
+              );
+            }),
           );
           trackClosedCanvasTiles(beforeCanvas, get().canvasByTabId[tabId]);
         },
@@ -2435,9 +2680,16 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
             );
           }
           set((state) =>
-            updateTabCanvas(state, tabId, (canvas) =>
-              closePane(canvas, paneId),
-            ),
+            updateTabCanvas(state, tabId, (canvas) => {
+              const pane = findPaneById(canvas.root, paneId);
+              if (pane === null) return canvas;
+              return closeRequestedTabs(
+                canvas,
+                paneId,
+                pane.tabInstanceIds,
+                (current) => closePane(current, paneId),
+              );
+            }),
           );
           trackClosedCanvasTiles(beforeCanvas, get().canvasByTabId[tabId]);
         },
@@ -2510,6 +2762,72 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
               return state;
             }
             return { canvasByTabId: Object.fromEntries(entries) };
+          });
+        },
+
+        adoptHostTerminalProjection: (hostId, terminal) => {
+          set((state) => {
+            const entries = Object.entries(state.canvasByTabId).map(
+              ([tabId, canvas]) =>
+                [
+                  tabId,
+                  canvas === undefined
+                    ? canvas
+                    : adoptHostTerminalProjection(canvas, hostId, terminal),
+                ] as const,
+            );
+            if (
+              entries.every(
+                ([tabId, canvas]) => canvas === state.canvasByTabId[tabId],
+              )
+            ) {
+              return state;
+            }
+            return { canvasByTabId: Object.fromEntries(entries) };
+          });
+        },
+
+        removeHostTerminalRefs: (hostId, terminalId) => {
+          set((state) => {
+            const entries = Object.entries(state.canvasByTabId).map(
+              ([tabId, canvas]) =>
+                [
+                  tabId,
+                  canvas === undefined
+                    ? canvas
+                    : removeTerminalTiles(canvas, hostId, terminalId),
+                ] as const,
+            );
+            const closedTilePayloadsByTabId = withoutDeletedTerminalPayloads(
+              state.closedTilePayloadsByTabId,
+              hostId,
+              terminalId,
+            );
+            const pendingCreateTerminalIdentities =
+              withoutTerminalPendingCreate(
+                state.pendingCreateTerminalIdentities,
+                hostId,
+                terminalId,
+              );
+            const canvasesUnchanged = entries.every(
+              ([tabId, canvas]) => canvas === state.canvasByTabId[tabId],
+            );
+            const canvasByTabId = canvasesUnchanged
+              ? state.canvasByTabId
+              : Object.fromEntries(entries);
+            if (
+              canvasesUnchanged &&
+              closedTilePayloadsByTabId === state.closedTilePayloadsByTabId &&
+              pendingCreateTerminalIdentities ===
+                state.pendingCreateTerminalIdentities
+            ) {
+              return state;
+            }
+            return {
+              canvasByTabId,
+              closedTilePayloadsByTabId,
+              pendingCreateTerminalIdentities,
+            };
           });
         },
 
@@ -2680,12 +2998,48 @@ export const useEpicCanvasStore = create<EpicCanvasStore>()(
             const nextClosedTilePayloads = clearClosedTilePendingCreate(
               s.closedTilePayloadsByTabId,
               artifactId,
+              null,
             );
             return next === s.pendingCreateArtifactIds &&
               nextClosedTilePayloads === s.closedTilePayloadsByTabId
               ? s
               : {
                   pendingCreateArtifactIds: next,
+                  closedTilePayloadsByTabId: nextClosedTilePayloads,
+                };
+          });
+        },
+
+        markTerminalPendingCreate: (hostId, terminalId) => {
+          set((s) => {
+            const next = withTerminalPendingCreate(
+              s.pendingCreateTerminalIdentities,
+              hostId,
+              terminalId,
+            );
+            return next === s.pendingCreateTerminalIdentities
+              ? s
+              : { pendingCreateTerminalIdentities: next };
+          });
+        },
+
+        unmarkTerminalPendingCreate: (hostId, terminalId) => {
+          set((s) => {
+            const next = withoutTerminalPendingCreate(
+              s.pendingCreateTerminalIdentities,
+              hostId,
+              terminalId,
+            );
+            const nextClosedTilePayloads = clearClosedTilePendingCreate(
+              s.closedTilePayloadsByTabId,
+              terminalId,
+              hostId,
+            );
+            return next === s.pendingCreateTerminalIdentities &&
+              nextClosedTilePayloads === s.closedTilePayloadsByTabId
+              ? s
+              : {
+                  pendingCreateTerminalIdentities: next,
                   closedTilePayloadsByTabId: nextClosedTilePayloads,
                 };
           });
@@ -3073,10 +3427,6 @@ useEpicCanvasStore.subscribe((state) => {
     // revisited if it is later closed without remounting. This sweep is that
     // revisit.
     evictTileFindUi(removed);
-    // Ticket 15: the minimap active entry is the 7th per-tab registry -
-    // same tab-key sweep, same "durable chat-key entry survives" contract as
-    // the others above.
-    evictChatTurnMinimapActiveEntries(removed);
     removed.forEach((instanceId) => {
       useToolOpenStore.getState().reset(instanceId);
       useSubagentOpenStore.getState().reset(instanceId);

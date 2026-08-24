@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostRuntime } from "@traycer-clients/shared/host-client/host-runtime";
 import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock-host-messenger";
 import { MockRunnerHost } from "@traycer-clients/shared/host-client/mock/mock-runner-host";
+import { hostUnavailability } from "@traycer-clients/shared/host-client/remote-fetcher";
 import { hostRpcRegistry, type HostRpcRegistry } from "@traycer/protocol/host";
 import { QueryClient } from "@tanstack/react-query";
 import { AuthService } from "@/lib/auth/auth-service";
@@ -42,6 +43,20 @@ const ACCOUNT_BY_BEARER = new Map<string, string>([
   [TOKEN_A, "user-a"],
   [TOKEN_A_ROTATED, "user-a"],
   [TOKEN_B, "user-b"],
+]);
+
+/**
+ * The plan each account is on, as `/api/v3/user` reports it.
+ *
+ * The second axis of the host projection: `connectivity` on the wire is pure
+ * liveness, and whether a route may be used is that AND the account's
+ * entitlement, read at fetch time from the same `AuthService` that owns the
+ * bearer. A is on the free plan, B is paid - so the SAME `connectable` registry
+ * row projects differently for each.
+ */
+const SUBSCRIPTION_BY_ACCOUNT = new Map<string, string>([
+  ["user-a", "FREE"],
+  ["user-b", "PRO_V3"],
 ]);
 
 /** Which host row each account owns, so a leak is visible as a host id. */
@@ -83,6 +98,7 @@ function bearerOf(init: FetchInit | undefined): string {
 }
 
 function userResponse(userId: string): Response {
+  const subscriptionStatus = SUBSCRIPTION_BY_ACCOUNT.get(userId) ?? "FREE";
   return new Response(
     JSON.stringify({
       user: {
@@ -110,7 +126,7 @@ function userResponse(userId: string): Response {
         updatedAt: "2026-01-01T00:00:00.000Z",
         subscriptionExpiry: null,
         trialEndsAt: null,
-        subscriptionStatus: "FREE",
+        subscriptionStatus,
         hasPaymentMethod: false,
         isInTrial: false,
         rechargeRateSeconds: 0,
@@ -257,6 +273,7 @@ function buildComposition(): Composition {
     runnerHost,
     remoteFetcher: null,
     localHostIdSeeder: () => Promise.resolve(null),
+    onRegistryPollTick: null,
   });
   let requestSeq = 0;
   const runtime = new HostRuntime<HostRpcRegistry>({
@@ -277,6 +294,7 @@ function buildComposition(): Composition {
     schedulingPolicy: hostRpcSchedulingPolicy,
     authorityRegistry: null,
     requestCoordinator: null,
+    connectionRegistry: null,
   });
   const composition = { auth, directory, runtime, runnerHost };
   built.push(composition);
@@ -495,7 +513,14 @@ describe("auth-era composition — the credential a refresh actually uses", () =
     ]);
   });
 
-  it("retains the directory and the bound remote selection when the registry 401s a STILL-CURRENT bearer", async () => {
+  it("retains the directory when the registry 401s a STILL-CURRENT bearer", async () => {
+    // This used to also assert the bound remote SELECTION survived the 401
+    // (`directory.selectById` / `.getSelected()`). P4.2 deleted selection
+    // from `HostDirectoryService` entirely - it now lives in the selection
+    // authority store, a subsystem this composition test doesn't construct -
+    // so that half of the claim has no post-slot equivalent to migrate to
+    // and is dropped. What survives is the directory's own retention
+    // contract, already covered below by the `directoryHostIds` assertions.
     const endpoint = hostsEndpoint();
     restoreFetch = installFetch(endpoint.handler);
     const composition = buildComposition();
@@ -505,8 +530,6 @@ describe("auth-era composition — the credential a refresh actually uses", () =
         "account-a-host",
       ]);
     });
-    composition.directory.selectById("account-a-host");
-    expect(composition.directory.getSelected()?.hostId).toBe("account-a-host");
 
     // Drain startup before marking: a refresh still in flight would be
     // JOINED rather than re-issued (that coalescing is deliberate), and this
@@ -520,20 +543,110 @@ describe("auth-era composition — the credential a refresh actually uses", () =
     // 401. `AuthService.fetchRegisteredHosts` deliberately does not sign out
     // on it (a background list poll must never force a sign-out), and the
     // directory must be no more destructive than the auth layer: retain the
-    // last-known entries and the bound selection, recover on the next poll.
-    // Mapping it to `signed-out` cleared every remote entry and unbound the
-    // active remote host mid-session on a transient credential blip.
+    // last-known entries, recover on the next poll. Mapping it to
+    // `signed-out` cleared every remote entry mid-session on a transient
+    // credential blip.
     endpoint.deny(TOKEN_A);
     await composition.directory.refresh();
 
     // The refusal really went out (and went out under the current bearer) -
     // without this, a refresh that silently joined an older in-flight read
-    // would make the retention assertions below pass vacuously.
+    // would make the retention assertion below pass vacuously.
     expect(bearersSince(endpoint, mark)).toEqual([TOKEN_A]);
     expect(await directoryHostIds(composition.directory)).toEqual([
       "account-a-host",
     ]);
-    expect(composition.directory.getSelected()?.hostId).toBe("account-a-host");
+  });
+});
+
+/**
+ * The PLAN half of the same composition.
+ *
+ * `connectivity` on the wire is pure liveness; whether a client may use the
+ * route is that fact AND the account's entitlement. The projection reads the
+ * entitlement from `AuthService` - the same object that owns the bearer and the
+ * era the fetch was issued for - rather than from the UI store, so the two can
+ * never describe different accounts. Asserted through the real
+ * `buildDefaultRemoteFetcher`, on entries the production wiring actually
+ * produced, for exactly that reason.
+ */
+describe("auth-era composition — the plan is read from the object that owns the bearer", () => {
+  let restoreFetch: () => void = () => undefined;
+
+  beforeEach(() => {
+    useAuthStore.getState().setSignedOut();
+  });
+
+  afterEach(() => {
+    while (built.length > 0) {
+      const composition = built.pop();
+      composition?.runtime.dispose();
+      composition?.directory.dispose();
+      composition?.auth.dispose();
+    }
+    useAuthStore.getState().setSignedOut();
+    restoreFetch();
+    restoreFetch = () => undefined;
+  });
+
+  it("reads an unknown plan as ALLOWED — no false upgrade prompt at a paying user mid-sign-in", () => {
+    const composition = buildComposition();
+    expect(composition.auth.currentSubscriptionStatus()).toBeNull();
+    expect(composition.auth.planAllowsRemoteHosts()).toBe(true);
+  });
+
+  it("projects a FREE account's LIVE host as plan-restricted, and the same row as dialable once the account is paid", async () => {
+    const endpoint = hostsEndpoint();
+    restoreFetch = installFetch(endpoint.handler);
+    const composition = buildComposition();
+    await startSignedInAs(composition, TOKEN_A, "user-a");
+
+    await vi.waitFor(async () => {
+      expect(await directoryHostIds(composition.directory)).toEqual([
+        "account-a-host",
+      ]);
+    });
+
+    // The registry row says `connectable` — the machine is up. The account is
+    // on the free plan, so the attach grant would 403 and the row must not be
+    // offered as dialable. Under the old wire this arrived as `local-only` and
+    // the client could not have told this apart from a dead host.
+    expect(composition.auth.planAllowsRemoteHosts()).toBe(false);
+    const [freeEntry] = await composition.directory.list();
+    expect(freeEntry.transportDialability).toBe("not-dialable");
+    expect(hostUnavailability(freeEntry)).toBe("plan-restricted");
+
+    // The same registry shape, a paid account: the plan is the only thing that
+    // differs, and it is what makes the route usable.
+    await composition.runnerHost.tokenStore.signIn(
+      { token: TOKEN_B, refreshToken: `${TOKEN_B}-refresh` },
+      { id: "user-b", email: "user-b@example.com", name: "User user-b" },
+    );
+    await vi.waitFor(async () => {
+      expect(await directoryHostIds(composition.directory)).toEqual([
+        "account-b-host",
+      ]);
+    });
+
+    expect(composition.auth.planAllowsRemoteHosts()).toBe(true);
+    const [paidEntry] = await composition.directory.list();
+    expect(paidEntry.transportDialability).toBe("dialable");
+    expect(hostUnavailability(paidEntry)).toBeNull();
+  });
+
+  it("clears the plan on sign-out, so no host list can be projected against the departed account's entitlement", async () => {
+    const endpoint = hostsEndpoint();
+    restoreFetch = installFetch(endpoint.handler);
+    const composition = buildComposition();
+    await startSignedInAs(composition, TOKEN_A, "user-a");
+    await vi.waitFor(() => {
+      expect(composition.auth.currentSubscriptionStatus()).toBe("FREE");
+    });
+
+    await composition.auth.signOut();
+
+    expect(composition.auth.currentSubscriptionStatus()).toBeNull();
+    expect(composition.auth.planAllowsRemoteHosts()).toBe(true);
   });
 });
 
@@ -569,12 +682,16 @@ describe("auth-era composition — auth state is committed before the transition
     const endpoint = hostsEndpoint();
     restoreFetch = installFetch(endpoint.handler);
     const composition = buildComposition();
-    await startSignedInAs(composition, TOKEN_A, "user-a");
+    // Start paid, transition to FREE: if subscription status is committed
+    // after the synchronous provider emission, the listener observes the
+    // outgoing paid entitlement alongside the incoming identity and bearer.
+    await startSignedInAs(composition, TOKEN_B, "user-b");
 
     const observed: Array<{
       readonly emitted: string | null;
       readonly ambientIdentity: string | null;
       readonly ambientToken: string | null;
+      readonly ambientPlanAllowsRemote: boolean;
     }> = [];
     const unsubscribe = composition.auth
       .getRequestContextProvider()
@@ -587,12 +704,13 @@ describe("auth-era composition — auth state is committed before the transition
           emitted: ctx?.identity.userId ?? null,
           ambientIdentity: snapshot.profile?.userId ?? null,
           ambientToken: snapshot.token,
+          ambientPlanAllowsRemote: composition.auth.planAllowsRemoteHosts(),
         });
       });
 
     await composition.runnerHost.tokenStore.signIn(
-      { token: TOKEN_B, refreshToken: `${TOKEN_B}-refresh` },
-      { id: "user-b", email: "user-b@example.com", name: "User user-b" },
+      { token: TOKEN_A, refreshToken: `${TOKEN_A}-refresh` },
+      { id: "user-a", email: "user-a@example.com", name: "User user-a" },
     );
     await vi.waitFor(() => {
       expect(observed).toHaveLength(1);
@@ -605,11 +723,17 @@ describe("auth-era composition — auth state is committed before the transition
 
     expect(observed).toEqual([
       {
-        emitted: "user-b",
-        ambientIdentity: "user-b",
-        ambientToken: TOKEN_B,
+        emitted: "user-a",
+        ambientIdentity: "user-a",
+        ambientToken: TOKEN_A,
+        ambientPlanAllowsRemote: false,
       },
-      { emitted: null, ambientIdentity: null, ambientToken: null },
+      {
+        emitted: null,
+        ambientIdentity: null,
+        ambientToken: null,
+        ambientPlanAllowsRemote: true,
+      },
     ]);
   });
 });

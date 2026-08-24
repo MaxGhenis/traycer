@@ -18,10 +18,11 @@ import {
 
 const spies = vi.hoisted(() => ({
   openTileIntoTargetGroup: vi.fn<(args: OpenTileIntoTargetGroupArgs) => void>(),
-  createChatMutate: vi.fn(),
   createTuiAgent: vi.fn(),
   refreshHostDirectory: vi.fn(() => Promise.resolve([])),
+  toast: vi.fn(),
 }));
+vi.mock("sonner", () => ({ toast: spies.toast }));
 const activeHostIdMock = vi.hoisted<{ current: string | null }>(() => ({
   current: "default-host",
 }));
@@ -201,9 +202,13 @@ vi.mock("@/lib/commands/actions", () => ({
 }));
 vi.mock("@/lib/commands/sources/open/use-active-epic-projection", () => ({
   useActiveEpicProjection: () => FAKE_PROJECTION,
+  // The host serving the active epic's projection - what the opener stamps
+  // into tiles and reads the epic's own records from (PR #1243 round 6). The
+  // suite's "active host" knob drives it, so every arm below reads as before.
+  useActiveEpicHostId: () => activeHostIdMock.current,
 }));
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => activeHostIdMock.current,
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => activeHostIdMock.current,
 }));
 vi.mock("@/hooks/host/use-host-client-for-host-id", () => ({
   useHostClientForHostId: (hostId: string) => ({ mockHostId: hostId }),
@@ -256,9 +261,6 @@ vi.mock("@/lib/host", () => ({
     getRequestContextUserId: () => "user-test",
     onChange: () => () => undefined,
   }),
-}));
-vi.mock("@/hooks/epic/use-epic-chat-mutations", () => ({
-  useEpicCreateChat: () => ({ mutate: spies.createChatMutate }),
 }));
 vi.mock("@/hooks/worktree/use-latest-conversation-workspace-seed", () => ({
   useLatestConversationWorkspaceSeed: () =>
@@ -316,6 +318,25 @@ vi.mock("@/hooks/terminal/use-terminal-list-query", () => ({
           status: "running",
           title: "Copilot sign-in",
           cwd: "~",
+          lifecycleOwner: "manager",
+        },
+        {
+          sessionId: "term-setup",
+          scope: { kind: "epic", epicId: "epic-1" },
+          sessionKind: "terminal",
+          status: "running",
+          title: "Setup: traycer feature",
+          cwd: "/work/repo",
+          lifecycleOwner: "manager",
+        },
+        {
+          sessionId: "term-registry",
+          scope: { kind: "epic", epicId: "epic-1" },
+          sessionKind: "terminal",
+          status: "running",
+          title: "durable shadow",
+          cwd: "/work/repo",
+          lifecycleOwner: "registry",
         },
       ],
     },
@@ -348,6 +369,11 @@ import {
   recordProviderLoginTerminal,
   useProviderLoginTerminalsStore,
 } from "@/stores/providers/provider-login-terminals";
+import {
+  recordSetupTerminal,
+  useSetupTerminalsStore,
+} from "@/stores/worktree/setup-terminals";
+import { isHostEpicTerminalRef } from "@/stores/epics/canvas/types";
 
 const navigateNestedFocusSpy = vi.fn<NavigateNestedFocus>();
 
@@ -398,6 +424,15 @@ function lastTileOpen(): OpenTileIntoTargetGroupArgs {
   return call[0];
 }
 
+function launchedTerminalCwd(
+  ref: OpenTileIntoTargetGroupArgs["ref"],
+): string | undefined {
+  if (ref.type !== "terminal" || !isHostEpicTerminalRef(ref)) {
+    return undefined;
+  }
+  return ref.legacyFallback.cwd;
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -413,6 +448,10 @@ afterEach(() => {
   useNewConversationModalStore.getState().resetForTests();
   useProviderLoginTerminalsStore.setState(
     useProviderLoginTerminalsStore.getInitialState(),
+    true,
+  );
+  useSetupTerminalsStore.setState(
+    useSetupTerminalsStore.getInitialState(),
     true,
   );
 });
@@ -555,7 +594,8 @@ describe("Terminals opener sub-page", () => {
     if (opened.ref.type !== "terminal") {
       throw new Error("expected terminal ref");
     }
-    expect(opened.ref.cwd).toBe("/work/active-repo");
+    expect(isHostEpicTerminalRef(opened.ref)).toBe(true);
+    expect(launchedTerminalCwd(opened.ref)).toBe("/work/active-repo");
   });
 
   it("offers other hosts as fuzzy subpages and launches through their transient client", () => {
@@ -587,7 +627,8 @@ describe("Terminals opener sub-page", () => {
     if (opened.ref.type !== "terminal") {
       throw new Error("expected terminal ref");
     }
-    expect(opened.ref.cwd).toBe("/remote/feature-worktree");
+    expect(isHostEpicTerminalRef(opened.ref)).toBe(true);
+    expect(launchedTerminalCwd(opened.ref)).toBe("/remote/feature-worktree");
   });
 
   it("rechecks remote host reachability when a workspace leaf is invoked", () => {
@@ -614,6 +655,9 @@ describe("Terminals opener sub-page", () => {
     runById(remoteWorkspaces, remoteWorkspace?.id ?? "missing");
 
     expect(spies.openTileIntoTargetGroup).not.toHaveBeenCalled();
+    // F20: the refusal used to be silent - the row just did nothing.
+    expect(spies.toast).toHaveBeenCalledTimes(1);
+    expect(spies.toast.mock.calls[0]?.[0]).toContain("Remote Terminal Mac");
   });
 
   it("keeps reachable remote hosts selectable while no active host is resolved", () => {
@@ -795,6 +839,65 @@ describe("Terminals opener sub-page", () => {
       throw new Error("expected terminal");
     }
     expect(plainOpened.ref.origin).toBeUndefined();
+  });
+
+  it("carries setup origin for a recorded setup session, and leaves an unrecorded one plain", () => {
+    recordSetupTerminal({
+      hostId: "default-host",
+      sessionId: "term-setup",
+    });
+    const items = renderItems(useTerminalsOpenerItems);
+
+    runById(items, "open:terminals:term-setup");
+    const setupOpened = lastTileOpen();
+    if (setupOpened.ref.type !== "terminal") {
+      throw new Error("expected terminal");
+    }
+    expect(setupOpened.ref.origin).toBe("setup");
+
+    runById(items, "open:terminals:term-1");
+    const plainOpened = lastTileOpen();
+    if (plainOpened.ref.type !== "terminal") {
+      throw new Error("expected terminal");
+    }
+    expect(plainOpened.ref.origin).toBeUndefined();
+  });
+
+  it("carries manager lifecycleOwner from the list without origin-store evidence", () => {
+    const items = renderItems(useTerminalsOpenerItems);
+    runById(items, "open:terminals:term-setup");
+    const setupOpened = lastTileOpen();
+    if (setupOpened.ref.type !== "terminal") {
+      throw new Error("expected terminal");
+    }
+    expect(setupOpened.ref.lifecycleOwner).toBe("manager");
+    expect(setupOpened.ref.origin).toBeUndefined();
+    expect(setupOpened.ref.hostId).toBe("default-host");
+    expect(isHostEpicTerminalRef(setupOpened.ref)).toBe(false);
+
+    runById(items, "open:terminals:term-signin");
+    const loginOpened = lastTileOpen();
+    if (loginOpened.ref.type !== "terminal") {
+      throw new Error("expected terminal");
+    }
+    expect(loginOpened.ref.lifecycleOwner).toBe("manager");
+    expect(loginOpened.ref.origin).toBeUndefined();
+  });
+
+  it("keeps a registry listed row as an import candidate even with a stale origin cache", () => {
+    recordSetupTerminal({
+      hostId: "default-host",
+      sessionId: "term-registry",
+    });
+    const items = renderItems(useTerminalsOpenerItems);
+    runById(items, "open:terminals:term-registry");
+    const opened = lastTileOpen();
+    if (opened.ref.type !== "terminal") {
+      throw new Error("expected terminal");
+    }
+    expect(opened.ref.lifecycleOwner).toBe("registry");
+    expect(opened.ref.origin).toBe("setup");
+    expect(isHostEpicTerminalRef(opened.ref)).toBe(false);
   });
 });
 

@@ -45,11 +45,29 @@ const boundHostSupport = vi.hoisted<{ value: StreamMethodSupport }>(() => ({
   value: "supported",
 }));
 
+const virtualizerConfig = vi.hoisted<{ useFlushSync: boolean | null }>(() => ({
+  useFlushSync: null,
+}));
+
+vi.mock("@tanstack/react-virtual", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@tanstack/react-virtual")>();
+  return {
+    ...actual,
+    useVirtualizer: (options: Parameters<typeof actual.useVirtualizer>[0]) => {
+      virtualizerConfig.useFlushSync = options.useFlushSync ?? null;
+      return actual.useVirtualizer(options);
+    },
+  };
+});
+
 vi.mock("@/hooks/agent/use-host-reachability", () => ({
   useHostReachability: () => ({
     status: reachability.value,
     hostLabel: "Work laptop",
   }),
+  resolvedHostLabel: (r: { status: string; hostLabel: string | null }) =>
+    r.status === "checking" ? null : r.hostLabel,
 }));
 
 vi.mock(
@@ -79,10 +97,14 @@ vi.mock("@/lib/host/stream-runtime-context", () => ({
 
 // The socket is the boundary: the stub stream factory below stands in for the
 // whole transport, so this opener is never reached.
+//
+// Hoisted to ONE instance so it is referentially stable across renders, as the
+// real hook is — see `lib/registries/__tests__/chat-session-registry.test.ts`.
+const refuseDurableTransport = vi.hoisted(() => () => {
+  throw new Error("no durable transport in tests");
+});
 vi.mock("@/lib/host/use-durable-stream-transport", () => ({
-  useDurableStreamTransportFactory: () => () => {
-    throw new Error("no durable transport in tests");
-  },
+  useDurableStreamTransportFactory: () => refuseDurableTransport,
 }));
 
 import { EpicSessionContext } from "@/lib/registries/epic-session-registry";
@@ -135,6 +157,7 @@ const noopStreamClientFactory: EpicStreamClientFactory = () => ({
 
 let epicHandle: OpenEpicStoreHandle;
 let sentFrames: ManagedCommandSubscribeOutputClientFrame[];
+let restoreLayoutGeometry: () => void;
 
 /**
  * `factoryCalls` lets a Retry test prove a fresh stream was actually opened
@@ -161,6 +184,9 @@ function installOutputStub(): {
       return {
         loadOlder: (frame) => {
           sentFrames.push(frame);
+        },
+        resnapshot: () => {
+          sentFrames.push({ kind: "resnapshot", hasBinaryPayload: false });
         },
         close: () => undefined,
         streamMethodSupport: boundStreamMethodSupport,
@@ -285,7 +311,7 @@ function setScrollGeometry(
 }
 
 function timeline(): HTMLElement {
-  return screen.getByRole("log");
+  return screen.getByTestId("managed-command-output-timeline");
 }
 
 function rowChannels(): string[] {
@@ -295,9 +321,25 @@ function rowChannels(): string[] {
 }
 
 beforeEach(() => {
+  // TanStack Virtual reads offset geometry synchronously when the scroll
+  // element attaches. jsdom's permanent 0x0 default would otherwise describe
+  // a genuinely invisible viewport and correctly produce no virtual rows.
+  const heightSpy = vi
+    .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+    .mockImplementation(function (this: HTMLElement) {
+      return this.dataset.index === undefined ? 600 : 24;
+    });
+  const widthSpy = vi
+    .spyOn(HTMLElement.prototype, "offsetWidth", "get")
+    .mockReturnValue(800);
+  restoreLayoutGeometry = () => {
+    heightSpy.mockRestore();
+    widthSpy.mockRestore();
+  };
   reachability.value = "reachable";
   defaultHostSupport.value = "supported";
   boundHostSupport.value = "supported";
+  virtualizerConfig.useFlushSync = null;
   sentFrames = [];
   useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
   useEpicCanvasStore.setState({
@@ -315,6 +357,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  restoreLayoutGeometry();
   __setManagedCommandOutputStreamClientFactoryForTests(null);
   epicHandle.dispose();
   useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
@@ -369,6 +412,25 @@ describe("managed-command output window", () => {
     expect(
       screen.getAllByTestId(/^managed-command-output-time-/)[0].textContent,
     ).toMatch(/\d{1,2}:\d{2}:\d{2}/);
+  });
+
+  it("mounts only a viewport-sized window for a large output timeline", () => {
+    const stub = installOutputStub();
+    renderTile();
+
+    openAtTail(
+      stub.emit,
+      Array.from({ length: 10_000 }, (_, index) =>
+        line("stdout", `line-${index}`),
+      ),
+    );
+
+    const mountedRows = screen.queryAllByTestId(
+      /^managed-command-output-line-/,
+    );
+    expect(mountedRows.length).toBeGreaterThan(0);
+    expect(mountedRows.length).toBeLessThan(100);
+    expect(virtualizerConfig.useFlushSync).toBe(false);
   });
 
   it("floats live status over the log instead of titling itself", () => {
@@ -514,6 +576,41 @@ describe("managed-command output window", () => {
     expect(screen.queryByTestId("managed-command-output-jump-live")).toBeNull();
   });
 
+  it("owns Home and End as retained-start and live-tail navigation", () => {
+    const stub = installOutputStub();
+    renderTile();
+    openAtTail(stub.emit, [line("stdout", "held history")]);
+
+    const view = timeline();
+    setScrollGeometry(view, {
+      scrollTop: 1_000,
+      scrollHeight: 4_000,
+      clientHeight: 400,
+    });
+    view.focus();
+
+    expect(view.tabIndex).toBe(0);
+    expect(document.activeElement).toBe(view);
+    expect(fireEvent.keyDown(view, { key: "Home" })).toBe(false);
+    expect(view.scrollTop).toBe(0);
+    expect(sentFrames).toHaveLength(1);
+    expect(sentFrames[0].kind).toBe("loadOlder");
+
+    act(() => {
+      stub.emit().onOutput({
+        lines: [line("stdout", "arrived while paused")],
+        start: { segmentId: "seg-live", byteOffset: 80 },
+      });
+    });
+
+    expect(fireEvent.keyDown(view, { key: "End" })).toBe(false);
+    expect(view.scrollTop).toBe(4_000);
+    expect(sentFrames).toContainEqual({
+      kind: "resnapshot",
+      hasBinaryPayload: false,
+    });
+  });
+
   it("asks for older lines when the viewer reaches the top", () => {
     const stub = installOutputStub();
     renderTile();
@@ -566,6 +663,100 @@ describe("managed-command output window", () => {
     // Chromium's native scroll anchoring cannot save this: the spec disables it
     // at the very top, which is exactly where a load-older fires.
     expect(view.scrollTop).toBe(5_010);
+  });
+
+  it("includes a changed history-marker prefix when a terminal page also evicts the tail", () => {
+    const stub = installOutputStub();
+    renderTile();
+    openAtTail(stub.emit, [line("stdout", "tail-1"), line("stdout", "tail-2")]);
+
+    const view = timeline();
+    setScrollGeometry(view, {
+      scrollTop: 10,
+      scrollHeight: 4_000,
+      clientHeight: 400,
+    });
+    const list = screen.getByTestId("managed-command-output-virtual-list");
+    let listOffsetTop = 16;
+    Object.defineProperty(list, "offsetTop", {
+      configurable: true,
+      get: () => listOffsetTop,
+    });
+
+    // Thirty-nine valid pages leave the quiet command just below the cap.
+    // The fortieth both crosses it (evicting the stale tail) and declares the
+    // retained start, replacing the loading prefix with the terminal marker.
+    for (let page = 0; page < 40; page += 1) {
+      view.scrollTop = 10;
+      fireEvent.scroll(view);
+      const request = sentFrames.at(-1);
+      if (request?.kind !== "loadOlder") {
+        throw new Error("expected loadOlder");
+      }
+      const finalPage = page === 39;
+      // Exaggerated deliberately: TanStack adapts its unmeasured-row estimate
+      // from measured rows, so a distinctive prefix delta isolates the term
+      // this regression owns without coupling to virtualizer internals.
+      if (finalPage) listOffsetTop = 100_016;
+      act(() => {
+        stub.emit().onOlder({
+          requestId: request.requestId,
+          lines: Array.from({ length: 500 }, (_, index) =>
+            line("stdout", `older-${page}-${index}`),
+          ),
+          start: { segmentId: `seg-history-${page}`, byteOffset: 0 },
+          reachedStart: finalPage,
+        });
+      });
+    }
+
+    expect(view.scrollTop).toBeGreaterThan(100_000);
+    expect(screen.getByText("Start of the retained log")).not.toBeNull();
+    expect(screen.queryByText("tail-1")).toBeNull();
+  });
+
+  it("pauses live output while reading history and resnapshots on return to live", () => {
+    const stub = installOutputStub();
+    renderTile();
+    openAtTail(stub.emit, [line("stdout", "held history")]);
+
+    const view = timeline();
+    setScrollGeometry(view, {
+      scrollTop: 1_000,
+      scrollHeight: 4_000,
+      clientHeight: 400,
+    });
+    fireEvent.scroll(view);
+
+    act(() => {
+      stub.emit().onOutput({
+        lines: [line("stdout", "arrived while paused")],
+        start: { segmentId: "seg-live", byteOffset: 80 },
+      });
+    });
+
+    expect(screen.getByText("held history")).not.toBeNull();
+    expect(screen.queryByText("arrived while paused")).toBeNull();
+    expect(
+      screen.getByTestId("managed-command-output-jump-live").textContent,
+    ).toContain("New output available");
+
+    fireEvent.click(screen.getByTestId("managed-command-output-jump-live"));
+
+    expect(sentFrames).toContainEqual({
+      kind: "resnapshot",
+      hasBinaryPayload: false,
+    });
+    expect(
+      screen.getByTestId("managed-command-output-jump-live").textContent,
+    ).toContain("Loading live output");
+
+    openAtTail(stub.emit, [line("stdout", "arrived while paused")]);
+
+    expect(screen.getByText("arrived while paused")).not.toBeNull();
+    expect(screen.queryByText("held history")).toBeNull();
+    expect(screen.queryByTestId("managed-command-output-jump-live")).toBeNull();
+    expect(view.scrollTop).toBe(4_000);
   });
 
   it("drops the cached scrollback with the shell", () => {
@@ -863,4 +1054,12 @@ describe("managed-command output window", () => {
     fireEvent.scroll(view);
     expect(sentFrames).toHaveLength(1);
   });
+
+  // S5's property - `checking` and `host-starting` render a WORDED,
+  // phase-named, bounded wait rather than a bare endless spinner - is owned
+  // by the availability notice since the #1149 merge, and is pinned above by
+  // "names the host-directory wait by phase" / "names the host-process wait
+  // the same way the chat's own banner does". `TileHostLoadState` covers the
+  // reachable host's LOAD window (the cases earlier in this file), below the
+  // availability gate.
 });

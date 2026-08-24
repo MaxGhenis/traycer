@@ -1,6 +1,7 @@
 import path from "path";
 import os from "node:os";
 import babel from "@rolldown/plugin-babel";
+import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
@@ -12,8 +13,14 @@ const MAX_TEST_WORKERS = Math.min(
   2,
   Math.max(1, Math.floor(availableParallelism / 2)),
 );
+// `use-workspace-file-list-subscription` is here for the same reason: its
+// pending flag used to be a render-time read of a module-level registry, which
+// the compiler cached at "no entry yet" forever (the file tree's permanent
+// spinner). Only the compiled hook can regress that way, so only the compiled
+// hook can prove the fix. The `pr.*` shared-subscription trio had the same
+// shape (`registry.get(key)` and `entry.lastEvent` read at render).
 const REACT_COMPILER_REGRESSION_FILES =
-  /[/\\](?:composer-prompt-editor|use-(?:chat|landing|new-conversation)-prompt-stash-adapters)\.(?:ts|tsx)$/;
+  /[/\\](?:composer-prompt-editor|use-(?:chat|landing|new-conversation)-prompt-stash-adapters|use-workspace-file-list-subscription|shared-stream-subscription|use-pr-(?:list|detail)-subscription)\.(?:ts|tsx)$/;
 
 export default defineConfig({
   // Run the affected composer boundary through the packaged desktop
@@ -23,6 +30,24 @@ export default defineConfig({
   // keeps unrelated GUI tests on their existing fast transform path.
   plugins: [
     react(),
+    // This config is ALSO what the browser regressions serve their fixtures
+    // from - every driver in `scripts/*-browser.mjs` spawns vite with
+    // `--config vitest.config.ts`. Without this plugin, `@import "tailwindcss"`
+    // at `src/index.css:1` compiles to NOTHING (there is no `postcss.config.*`
+    // here, so there is no second compile path), and the fixtures render with
+    // the utility classes present on every element and no rules behind them:
+    // `h-8` measured 24px, `DialogFooter`'s `flex` computed `display: block`,
+    // `bg-primary` computed `rgba(0, 0, 0, 0)`.
+    //
+    // That is a harness that lies in the SAFE direction. A fixture asserting
+    // two nodes share a left edge passes trivially when both are unstyled
+    // blocks at the same content edge, and one asserting a control is "filled"
+    // passes-as-transparent - on the fixed tree and the broken one alike. Any
+    // geometric or colour claim measured without this was vacuous.
+    //
+    // jsdom runs are unaffected: vitest does not process CSS by default, so
+    // this changes what the dev server serves, not what the suite transforms.
+    tailwindcss(),
     babel({
       include: REACT_COMPILER_REGRESSION_FILES,
       presets: [reactCompilerPreset()],
@@ -63,6 +88,11 @@ export default defineConfig({
     ],
   },
   test: {
+    // Anchored to the package directory so siblings whose names merely
+    // CONTAIN "zod" (`zod-to-json-schema`, `@hookform/resolvers/zod`) are
+    // not dragged in. Full rationale for the workaround itself lives in
+    // `clients/desktop/vitest.shared.ts`.
+    server: { deps: { inline: [/[\\/]node_modules[\\/]zod[\\/]/] } },
     environment: "jsdom",
     setupFiles: ["./__tests__/test-browser-apis.ts"],
     include: [

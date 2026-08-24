@@ -21,6 +21,8 @@ export type {
   AnyRpcContract,
   AnyUpgradePath,
   AnyVersionEntry,
+  ContextlessUpgradePath,
+  ContextualUpgradePath,
   ContractForInstalledVersion,
   DowngradePath,
   DowngradeResult,
@@ -38,6 +40,7 @@ export type {
   RpcErrorFor,
   RpcRequestFor,
   RpcResultFor,
+  RpcResponseUpgradeContext,
   RpcSuccessFor,
   SchemaVersion,
   UncheckedMethodVersionRegistry,
@@ -61,6 +64,7 @@ export type {
 } from "./versioned-rpc";
 
 export {
+  defineContextualUpgradePath,
   defineDowngradePath,
   defineFallbackMethodDegrade,
   defineFloorAwareVersionedRpcRegistry,
@@ -73,6 +77,7 @@ export {
   toJsonSchemas,
   upgradeRequestToVersion,
   upgradeResponseToVersion,
+  upgradeResponseToVersionWithContext,
   validateVersionedRpcRegistryDegrades,
   validateVersionedRpcRegistry,
 } from "./versioned-rpc";
@@ -145,9 +150,11 @@ export type {
   IncompatibleMethodBlocking,
   IncompatibleMethodDetails,
   FatalErrorDetails,
+  HostRestartIntent,
 } from "./ws-protocol";
 
 export {
+  HOST_RESTARTING_FATAL_CODE,
   RPC_REQUEST_TIMEOUT_FATAL_CODE,
   clientFrameSchema,
   clientOpenFrameSchema,
@@ -163,7 +170,33 @@ export {
   incompatibleMethodDetailsSchema,
   schemaVersionSchema,
   fatalErrorDetailsSchema,
+  hostRestartIntentSchema,
 } from "./ws-protocol";
+
+// ---- Client handshake identity + compatibility epoch --------------------- //
+
+export type {
+  ClientCompatibilityFailure,
+  ClientCompatibilityRequirement,
+  ClientHandshakeIdentity,
+  FirstPartyClientIdentity,
+  FirstPartyClientKind,
+  KnownHostReleaseChannel,
+} from "./client-identity";
+
+export {
+  CURRENT_CLIENT_COMPATIBILITY_EPOCH,
+  KNOWN_HOST_RELEASE_CHANNELS,
+  LEGACY_CLIENT_COMPATIBILITY_EPOCH,
+  MAX_DIAGNOSTIC_APP_VERSION_LENGTH,
+  STRICT_SEMVER_PATTERN,
+  clientCompatibilityRequirementSchema,
+  clientHandshakeIdentitySchema,
+  hostReleaseChannelAllowsRcRecovery,
+  isStrictSemVer,
+  isValidCompatibilityEpoch,
+  toClientHandshakeIdentity,
+} from "./client-identity";
 
 export type {
   ManifestRegistry,
@@ -173,6 +206,7 @@ export type {
 export {
   buildConnectionManifest,
   mergeConnectionManifests,
+  selectConnectionManifestForPeer,
   splitConnectionManifest,
 } from "./capability-manifest";
 

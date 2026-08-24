@@ -32,6 +32,8 @@ const mockHostClient = {
 
 vi.mock("@/lib/host", () => ({
   useHostClient: () => mockHostClient,
+  // The SPINE, a separate export since redesign P2.1.
+  useHostRuntimeClient: () => mockHostClient,
 }));
 
 vi.mock("@/hooks/host/use-reactive-host-readiness", () => ({
@@ -167,7 +169,10 @@ describe("useWorktreeTaskTitles", () => {
           expect(taskIds).toEqual(["epic-unresolved"]);
           const response: GetTaskContextsResponse = {
             tasks: {
-              "epic-unresolved": listTaskLight("epic-unresolved", "From batch"),
+              "epic-unresolved": {
+                status: "found",
+                task: listTaskLight("epic-unresolved", "From batch"),
+              },
             },
           };
           return Promise.resolve(response);
@@ -198,7 +203,7 @@ describe("useWorktreeTaskTitles", () => {
     );
   });
 
-  it("keeps null batch entries unresolved (no title in the map)", async () => {
+  it("keeps unknown batch entries unresolved (no title in the map)", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -209,7 +214,9 @@ describe("useWorktreeTaskTitles", () => {
       }
       if (method === "epic.getTaskContexts") {
         const response: GetTaskContextsResponse = {
-          tasks: { "epic-gone": null },
+          tasks: {
+            "epic-gone": { status: "unknown", reason: "transport" },
+          },
         };
         return Promise.resolve(response);
       }
@@ -302,7 +309,10 @@ describe("useWorktreeTaskTitles", () => {
           batchCalls.push(taskIds);
           const tasks: GetTaskContextsResponse["tasks"] = {};
           for (const id of taskIds) {
-            tasks[id] = listTaskLight(id, `Title ${id}`);
+            tasks[id] = {
+              status: "found",
+              task: listTaskLight(id, `Title ${id}`),
+            };
           }
           return Promise.resolve({ tasks });
         }
@@ -327,6 +337,51 @@ describe("useWorktreeTaskTitles", () => {
     expect(batchCalls[0]?.[0]).toBe("epic-000");
   });
 
+  it("reuses the tier-2 batch when the panel is reopened inside the stale window", async () => {
+    // The Settings panel unmounts on close and remounts on open. With the
+    // default zero stale time every reopen re-fanned the batch into one
+    // `POST /tasks/context` per unresolved owner.
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    let batchCalls = 0;
+    mockHostClient.request.mockImplementation((method: string) => {
+      if (method === "epic.listTasks") {
+        return Promise.resolve({ tasks: [], hasMore: false });
+      }
+      if (method === "epic.getTaskContexts") {
+        batchCalls += 1;
+        return Promise.resolve({
+          tasks: {
+            "epic-x": { status: "found", task: listTaskLight("epic-x", "X") },
+          },
+        } satisfies GetTaskContextsResponse);
+      }
+      return Promise.reject(new Error(`unexpected method: ${method}`));
+    });
+
+    const worktrees = [worktreeWithOwners("/wt/a", ["epic-x"])];
+    const first = renderHook(
+      () => useWorktreeTaskTitles(mockHostClient as never, worktrees),
+      { wrapper: makeWrapper(queryClient) },
+    );
+    await waitFor(() => {
+      expect(first.result.current.get("epic-x")).toBe("X");
+    });
+    expect(batchCalls).toBe(1);
+
+    first.unmount();
+    const second = renderHook(
+      () => useWorktreeTaskTitles(mockHostClient as never, worktrees),
+      { wrapper: makeWrapper(queryClient) },
+    );
+    await waitFor(() => {
+      expect(second.result.current.get("epic-x")).toBe("X");
+    });
+
+    expect(batchCalls).toBe(1);
+  });
+
   it("uses the hostEpicTaskContexts key shape for the batch query", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -339,7 +394,10 @@ describe("useWorktreeTaskTitles", () => {
       if (method === "epic.getTaskContexts") {
         return Promise.resolve({
           tasks: {
-            "epic-x": listTaskLight("epic-x", "X"),
+            "epic-x": {
+              status: "found",
+              task: listTaskLight("epic-x", "X"),
+            },
           },
         } satisfies GetTaskContextsResponse);
       }
@@ -362,7 +420,12 @@ describe("useWorktreeTaskTitles", () => {
     expect(
       queryClient.getQueryData<GetTaskContextsResponse>(expectedKey),
     ).toEqual({
-      tasks: { "epic-x": listTaskLight("epic-x", "X") },
+      tasks: {
+        "epic-x": {
+          status: "found",
+          task: listTaskLight("epic-x", "X"),
+        },
+      },
     });
   });
 });

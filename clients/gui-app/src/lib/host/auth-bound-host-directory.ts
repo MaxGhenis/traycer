@@ -48,6 +48,16 @@ import { HostDirectoryService } from "@/lib/host/host-directory-service";
  * `HostDirectoryService.refresh()` retains the last-known remote entries
  * instead of wiping the merged directory and unbinding an active remote
  * selection.
+ *
+ * The PLAN is read from the same `AuthService`, per fetch, and stamped onto
+ * every projected entry (`planAllowsRemote`). The wire carries pure liveness,
+ * so whether a route is usable is the AND of that liveness and the account's
+ * entitlement - and reading the entitlement off the object that owns the bearer
+ * and the era this fetch was issued for is what keeps the two from skewing:
+ * `AuthService` commits the credential BEFORE announcing a transition and
+ * projects to the auth store after, so a directory refresh riding that
+ * announcement would read the incoming account's hosts against the outgoing
+ * account's plan if it took the plan from the store instead.
  */
 export function buildDefaultRemoteFetcher(
   auth: AuthService,
@@ -65,10 +75,17 @@ export function buildDefaultRemoteFetcher(
           ? { kind: "signed-out" }
           : { kind: "failed" };
       }
+      // Read once, after the list is in hand, so every row in one emission
+      // carries the same answer about the account.
+      const planAllowsRemote = auth.planAllowsRemoteHosts();
       return {
         kind: "hosts",
         entries: response.hosts.map((item) =>
-          hostListItemToDirectoryEntry(item, runnerHost.relayBaseUrl),
+          hostListItemToDirectoryEntry(
+            item,
+            runnerHost.relayBaseUrl,
+            planAllowsRemote,
+          ),
         ),
       };
     } catch {
@@ -83,6 +100,8 @@ export interface AuthBoundHostDirectoryOptions {
   /** Shell/test override; `null` uses {@link buildDefaultRemoteFetcher}. */
   readonly remoteFetcher: RemoteHostFetcher | null;
   readonly localHostIdSeeder: () => Promise<string | null>;
+  /** Forwarded to {@link HostDirectoryService}; see its own doc (F22). */
+  readonly onRegistryPollTick: (() => void) | null;
 }
 
 /**
@@ -106,6 +125,7 @@ export function createAuthBoundHostDirectory(
     remoteFetcher:
       options.remoteFetcher ?? buildDefaultRemoteFetcher(auth, runnerHost),
     localHostIdSeeder: options.localHostIdSeeder,
+    onRegistryPollTick: options.onRegistryPollTick,
     // Both accessors are halves of the SAME era, read from the same method the
     // fetch layer checks a request against. That is deliberate: the directory
     // builds an ambient era from these two, `AuthService.fetchRegisteredHosts`

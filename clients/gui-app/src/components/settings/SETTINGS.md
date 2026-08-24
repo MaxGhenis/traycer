@@ -205,8 +205,8 @@ picker is NOT permanently on screen. The rail is a single `overflow-y-auto`
 anything else in it. The argument for removing the readout is
 non-duplication, not permanent visibility. `settings-host-select.tsx` and `use-settings-host-scope.ts`
 are deleted; `useHostScope` is the only host scope in Settings.
-`settings-host-labels.ts` survives solely for the composer's
-`host-workspace-selector`.
+The composer uses the shared `HostSwitcher`; it does not keep a parallel
+Settings label formatter.
 
 **Two host relationships, kept apart by grammar.** Merging them is the defect
 the whole surface guards against:
@@ -215,7 +215,7 @@ the whole surface guards against:
   Settings is administering. Free, reversible, no effect outside Settings.
   Renders as neutral chrome; never accent-coloured.
 - **Active for this window** (`HostDirectoryService.selectById`, read through
-  `useReactiveActiveHostId`) - which host this window talks to for ambient
+  `useAddressableHostId`) - which host this window talks to for ambient
   work: notification indicators, the bell, rate limits, the resource monitor,
   and where newly started work lands. Changed ONLY by a labelled verb that
   states its consequence ("Use in this window", in the Overview card's action
@@ -751,7 +751,7 @@ codeFontSize` in muted styling while `null`; any tick/type pins an
       selection; a cancelled pick changes nothing.
     - **The selection is keyed by the BOUND host, not the active one.**
       `useMcpScope` reads `client.getActiveHostId()` and only subscribes to
-      `useReactiveActiveHostId()` for the re-render. Settings can target a
+      `useAddressableHostId()` for the re-render. Settings can target a
       non-active host through the transient `HostRuntimeContext` override, and
       keying by the active host filed a B-picked path under A - where it could
       never validate against the list it was picked from.
@@ -1536,9 +1536,9 @@ dialog.tsx` / `notification-hook-draft.ts`, unchanged by this pass).
     default - reverting the SELECTED shell via `config.shell.revertArgs`). **On Windows hosts with WSL
     selected** (classified by binary via `windowsShellCaptionFamily`, shared
     with the host resolver) a single quiet line sits directly under the picker
-    in its column - "Agents won't see tools installed in WSL", amber dot +
-    `Info` glyph - with the explanation and the "run the Traycer host inside
-    WSL" remedy link (docs.traycer.ai/settings/shell#using-wsl) in a
+    in its column - "WSL applies to terminal tabs only", amber dot + `Info`
+    glyph - with the shell/host boundary and an "Install Traycer in WSL" WSLg
+    remedy link (docs.traycer.ai/install#windows-via-wsl) in a
     `HoverCard`; the glyph is itself a focusable anchor to that docs page so
     keyboard users reach the remedy without the pointer-only hover card. Only
     WSL earns a caption: PowerShell / Git Bash profile loading and cmd's plain
@@ -1864,10 +1864,13 @@ aria-live="polite"` carrying the equivalent text for
       half is actionable from Settings - the pid names a process this page can
       only reach through the Restart button beside it, and the relay origin is
       infrastructure the account picked. What it carried that anyone acts on is
-      the session count, which is now a chip on the identity line straight off
-      `host.status.busySessionCount`: emerald and pulsing above zero, muted at
-      zero, and ABSENT while the host has not answered, because "No active
-      sessions" is a claim and silence is not. `host-overview-parity.test.tsx`
+      whether the host is busy, which is now a chip on the identity line from
+      `host.status.busyBreakdown` (via `describeHostBusy`): "2 agents · 1
+      terminal working" / "1 terminal agent working" / "Idle". Emerald and
+      pulsing only when `busy`; muted when idle; ABSENT while the host has not
+      answered, because "Idle" is a claim and silence is not. A @1.1 host
+      (`busyBreakdown: null`) falls back to "N sessions"; a host that is busy
+      with no count at all says "Busy". `host-overview-parity.test.tsx`
       is correspondingly stricter - `endpointText` is no longer a named
       exception, so the two variants now differ on the "This computer" tag and
       the danger zone's removal plane and nothing else.
@@ -1997,8 +2000,9 @@ aria-live="polite"` carrying the equivalent text for
   the `emptyAccountLocalRecovery` carve-out, so Settings no longer has a
   bridge-backed surface at all and every pane on this page describes its host by
   asking that host. Getting a machine that has no host process back into a
-  usable state is `local-host-gate.tsx`'s job, upstream of Settings — the gate a
-  person passes before they can reach this page.
+  usable state is the host-readiness gate's job, upstream of Settings — the gate
+  a person passes before they can reach this page, with the window narrator
+  explaining the wait.
   - The legacy `/settings/service` redirect (so any bookmark, remembered tab
     path, or tray command lands on this same pane) is unchanged. Shells without
     the Traycer CLI (web, mobile) never got a reduced page and still do not:

@@ -1,10 +1,14 @@
-import type { VersionedRpcRegistry } from "@traycer/protocol/framework/index";
+import type {
+  FirstPartyClientIdentity,
+  VersionedRpcRegistry,
+} from "@traycer/protocol/framework/index";
 import type { VersionedStreamRpcRegistry } from "@traycer/protocol/framework/versioned-stream-rpc";
 import type {
   BearerSourceProvider,
   OpenFrameBearerSource,
 } from "@traycer-clients/shared/auth/bearer-source";
 import type { StreamAuthRevalidator } from "@traycer-clients/shared/auth/bearer-revalidator";
+import type { TransportEvidenceReporter } from "@traycer-clients/shared/host-selection/transport-evidence";
 import type { IStreamWebSocketFactory } from "../ws-stream-factory";
 import { RemoteSession, type IRemoteSession } from "./remote-session";
 import { RemoteHostMessenger } from "./remote-host-messenger";
@@ -55,6 +59,28 @@ export interface CreateRemoteTransportOptions<
   readonly streamRegistry: StreamRegistry;
   readonly webSocketFactory: IStreamWebSocketFactory;
   readonly requestId: () => string;
+  /**
+   * Where the session's dial outcomes and liveness go (redesign P1.3).
+   *
+   * Part of the CONSUMER wiring, not of the cache identity: on a cache hit the
+   * factory below never runs, so a session keeps whatever reporter its first
+   * acquirer passed. That is safe only because production passes a RELAY whose
+   * scope matches the pool's - see `TransportEvidenceRelay`. Passing a kernel
+   * (or a per-mount reporter) here instead would pin warm sessions to a
+   * reporter that outlives its consumer.
+   */
+  readonly evidence: TransportEvidenceReporter;
+  /**
+   * WHO THIS CLIENT IS - see `RemoteSessionOptions.clientIdentity`.
+   *
+   * Deliberately NOT part of the cache identity above, unlike `authRecovery` /
+   * `authEpoch`. Those two vary per consumer, so inheriting the first
+   * acquirer's value is a real hazard; this one cannot vary at all - kind,
+   * epoch and build version are process constants and updating the
+   * application restarts the process - so a cache hit inheriting it is
+   * inheriting the only value any consumer could have passed.
+   */
+  readonly clientIdentity: FirstPartyClientIdentity;
 }
 
 export interface RemoteHostTransport<
@@ -141,6 +167,8 @@ export function createRemoteHostTransport<
         streamRegistry: options.streamRegistry,
         webSocketFactory: options.webSocketFactory,
         requestId: options.requestId,
+        evidence: options.evidence,
+        clientIdentity: options.clientIdentity,
       });
     },
   );

@@ -45,6 +45,9 @@ export const RPC_ERROR_CODES = [
   // FORBIDDEN whose "check Task access" guidance would mislead here.
   "E_ROLE_FORBIDDEN",
   "TERMINAL_ID_TAKEN",
+  // A durable terminal is mid-delete. 409, not 500: the caller can retry
+  // after the marker settles. Additive and degrade-safe like E_INVALID_ARGUMENT.
+  "TERMINAL_DELETING",
   // `agent.sendMessage`'s prompt exceeded the shared A2A_MESSAGE_MAX_UTF8_BYTES
   // ceiling. Same additive degrade story as E_INVALID_ARGUMENT.
   "MESSAGE_TOO_LARGE",
@@ -133,6 +136,11 @@ export type RpcErrorFor<Contract> = Contract extends AnyRpcContract
 export type RpcResultFor<Contract> =
   RpcSuccessFor<Contract> | RpcErrorFor<Contract>;
 
+export type RpcResponseUpgradeContext<Request> = {
+  readonly request: Request;
+  readonly hostId: string;
+};
+
 type SameMethodPair<
   From extends AnyRpcContract,
   To extends AnyRpcContract,
@@ -142,18 +150,42 @@ type SameMethodPair<
     : false
   : false;
 
+type UpgradePathBase<
+  From extends AnyRpcContract,
+  To extends AnyRpcContract,
+> = {
+  from: From["schemaVersion"];
+  to: To["schemaVersion"];
+  upgradeRequest: (request: RequestOf<From>) => RequestOf<To>;
+};
+
+export type ContextlessUpgradePath<
+  From extends AnyRpcContract,
+  To extends AnyRpcContract,
+> = SameMethodPair<From, To> extends true
+  ? UpgradePathBase<From, To> & {
+      upgradeResponse: (response: ResponseOf<From>) => ResponseOf<To>;
+    }
+  : never;
+
+export type ContextualUpgradePath<
+  From extends AnyRpcContract,
+  To extends AnyRpcContract,
+> = SameMethodPair<From, To> extends true
+  ? UpgradePathBase<From, To> & {
+      upgradeResponse: (
+        response: ResponseOf<From>,
+        context: RpcResponseUpgradeContext<RequestOf<From>> | undefined,
+      ) => ResponseOf<To>;
+    }
+  : never;
+
 export type UpgradePath<
   From extends AnyRpcContract,
   To extends AnyRpcContract,
 > =
-  SameMethodPair<From, To> extends true
-    ? {
-        from: From["schemaVersion"];
-        to: To["schemaVersion"];
-        upgradeRequest: (request: RequestOf<From>) => RequestOf<To>;
-        upgradeResponse: (response: ResponseOf<From>) => ResponseOf<To>;
-      }
-    : never;
+  | ContextlessUpgradePath<From, To>
+  | ContextualUpgradePath<From, To>;
 
 export type DowngradeResult<Value> =
   { ok: true; value: Value } | { ok: false; error: RpcErrorDetails };
@@ -236,7 +268,10 @@ export type AnyUpgradePath = {
   from: SchemaVersion;
   to: SchemaVersion;
   upgradeRequest: (request: never) => object;
-  upgradeResponse: (response: never) => object;
+  upgradeResponse: (
+    response: never,
+    context: RpcResponseUpgradeContext<never> | undefined,
+  ) => object;
 };
 
 /**
@@ -267,11 +302,19 @@ export type VersionEntry<
    * pattern). Without this, the registry validator rejects response-side
    * value growth on a minor - an old peer's schema REFUSES such values,
    * and for state-controlled response data that refusal poisons every
-   * old peer with no opt-out. Declaring it is a reviewed claim about the
-   * EMITTER, which the validator cannot check; structural additivity is
-   * still enforced regardless.
+   * old peer with no opt-out. It also permits replacing a dropped union arm
+   * when that same projection supplies the older arm to older callers.
+   * Declaring it is a reviewed claim about the EMITTER, which the validator
+   * cannot check; other structural reductions remain forbidden.
    */
   readonly responseGrowthProjectionGated?: true;
+  /**
+   * Declares that the first contract in a new major changes semantics even
+   * when its isolated request/response schemas remain structurally
+   * compatible. Use only when the method belongs to a coherently negotiated
+   * family whose authority or topology changed across the major boundary.
+   */
+  readonly semanticMajorBreakFromPreviousMajor?: true;
 };
 
 export type AnyVersionEntry = VersionEntry<
@@ -703,6 +746,9 @@ export type RuntimeUpgradePath<Registry extends MethodVersionRegistry> = {
   ) => RegistryRequestValue<Registry>;
   upgradeResponse: (
     response: RegistryResponseValue<Registry>,
+    context:
+      | RpcResponseUpgradeContext<RegistryRequestValue<Registry>>
+      | undefined,
   ) => RegistryResponseValue<Registry>;
 };
 

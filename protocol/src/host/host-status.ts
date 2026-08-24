@@ -31,7 +31,7 @@ import { z } from "zod";
  * `busy` / `busySessionCount` went with them, for a different reason: they
  * describe a *right now* that a lease refreshed on the order of minutes cannot
  * carry. Both already exist on the live host↔GUI connection
- * (`host.status@1.1`), and the notification room's
+ * (`host.status@1.2`), and the notification room's
  * {@link HOST_RUNTIME_STATUS_AWARENESS_FIELD} carries them for surfaces that
  * hold a room rather than a session. A client with neither has no live source
  * and must render no drain state at all — not a stale one, and not a zero.
@@ -63,13 +63,28 @@ export type HostRegistryKind = "personal" | "sandbox";
  *    relay egress is blocked (the ws-proxy population): the client cannot get
  *    to it, so saying anything warmer than Offline would be a promise we can't
  *    keep. Support reading: "Offline + host process up ⇒ relay egress blocked".
- *  - `local-only`  — the owner's plan has no remote hosts, so this host never
- *    attaches to a relay by design. Its absence is a fact about the plan, NOT
- *    evidence about the process, and rendering it as Offline reads as a fault
- *    with a retry as the remedy when the remedy is an upgrade.
  *  - `unknown`     — the liveness store could not be read. Never render this as
  *    Offline: blind is not the same as absent, and the durable `lastSeenAt` is
  *    the only honest thing left to show.
+ *
+ * The server's current values are PURE LIVENESS — one fact about one host —
+ * and deliberately say nothing about the account's plan. `local-only` remains
+ * accepted temporarily as a rollout-compatibility input from older servers;
+ * it meant "the owner's plan has no remote hosts". That legacy value
+ * collapsed two independent facts (is this host alive? does this account's plan
+ * include remote hosts?) into one word, with the plan word outranking liveness:
+ * on a free plan every remote host read `local-only` whether it was alive,
+ * asleep, or gone for good, so the client could not tell those apart and the
+ * host-death gates could never fire. The plan is an ACCOUNT fact the client
+ * already owns from sign-in, and it combines the two axes at projection time
+ * (`hostListItemToDirectoryEntry` stamps `planAllowsRemote`;
+ * `hostUnavailability` returns `plan-restricted` for a plan-gated host that is
+ * alive or unreadable, and a plain `offline` for a plan-gated host that is
+ * genuinely dead).
+ *
+ * ⚠️ ROLLOUT: ship this tolerant client before authn-v3 stops emitting
+ * `local-only`. Remove the compatibility value only after that server change
+ * is verified live and the supported client floor has advanced.
  *
  * Detach latency is asymmetric and the UI copy should not over-promise: a clean
  * teardown is pushed in seconds, while a dirty death (lid close, cable pull)
@@ -78,10 +93,23 @@ export type HostRegistryKind = "personal" | "sandbox";
 export type HostConnectivity =
   | "connectable"
   | "offline"
-  | "local-only"
-  | "unknown";
+  | "unknown"
+  | "local-only";
 
-/** This client's own probe result at tab-open / on-demand (S2). */
+/**
+ * TOMBSTONED (redesign P3.4). Was "this client's own probe result at
+ * tab-open / on-demand (S2)". The probe was never built: the server has
+ * always sent `"unknown"` and, as of P3.4, no client reads the field at all.
+ *
+ * It stays on the wire because it CANNOT be removed unilaterally in either
+ * direction - `hostStatusDtoSchema` is `.strict()` and this key is required,
+ * so a server that stopped sending it would fail every released client's
+ * parse of `GET /api/v3/hosts`, and a client that dropped it from the schema
+ * would reject the payloads the server still sends. Dropping it is a
+ * two-release sequence: (1) this release stops reading it, (2) once the
+ * support floor is past a client that tolerates its absence, the server stops
+ * emitting and the key leaves the schema. Do not skip step 1's soak.
+ */
 export type HostViewerReachability = "ok" | "failing" | "unknown";
 
 /** Whether this client is online at all. */
@@ -89,12 +117,7 @@ export type HostClientCloudState = "ok" | "down";
 
 /** Update lifecycle surfaced per host (Architecture §7 & §13). */
 export type HostUpdateState =
-  | "current"
-  | "available"
-  | "pending"
-  | "updating"
-  | "failed"
-  | "required";
+  "current" | "available" | "pending" | "updating" | "failed" | "required";
 
 /**
  * Per-host update policy (Architecture §13, T16). `manual` (default) means
@@ -111,7 +134,7 @@ export type HostUpdatePolicy = "manual" | "auto";
 export type HostStatusDTO = {
   /** The single liveness word, from the relay lease. */
   connectivity: HostConnectivity;
-  /** This client's probe of its own path to the host (S2). */
+  /** Tombstoned; parsed and ignored. See {@link HostViewerReachability}. */
   viewerReachability: HostViewerReachability;
   /** Is this client online at all. */
   clientCloud: HostClientCloudState;
@@ -169,8 +192,8 @@ export type HostListResponse = {
 export const hostConnectivitySchema = z.enum([
   "connectable",
   "offline",
-  "local-only",
   "unknown",
+  "local-only",
 ]);
 
 export const hostViewerReachabilitySchema = z.enum([

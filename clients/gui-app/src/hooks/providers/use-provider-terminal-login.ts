@@ -98,10 +98,12 @@ export function useProviderTerminalLogin(args: {
           result.replacedSessionId,
         );
         if (replaced !== null) {
-          // Its own `navigateNested` rather than one composed with the open
-          // below: `prepare` runs synchronously inside the call, so the close
-          // still lands before the open, and the open's target - committed
-          // second - is the one the route ends on.
+          // Provider-login terminals are host-spawned and import-exempt, so
+          // their presentation close is always local. Its own `navigateNested`
+          // rather than one composed with the open below: `prepare` runs
+          // synchronously inside the call, so the close still lands before the
+          // open, and the open's target - committed second - is the one the
+          // route ends on.
           navigateNested(epicId, viewTabId, () =>
             prepareCloseCanvasTabFocusTarget(
               viewTabId,

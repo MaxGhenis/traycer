@@ -7,6 +7,7 @@ import {
   buildStreamManifest,
   checkStreamMethodCompatibility,
 } from "@traycer/protocol/framework/stream-compat";
+import { selectConnectionManifestForPeer } from "@traycer/protocol/framework/capability-manifest";
 import {
   extractBearerForOpenFrame,
   MissingBearerTokenForOpenFrameError,
@@ -22,6 +23,11 @@ import type {
   ConnectionManifest,
   FatalErrorDetails,
 } from "@traycer/protocol/framework/ws-protocol";
+import {
+  toClientHandshakeIdentity,
+  type ClientHandshakeIdentity,
+  type FirstPartyClientIdentity,
+} from "@traycer/protocol/framework/client-identity";
 import {
   hostStreamOpenAckFrameSchema,
   hostStreamFatalErrorFrameSchema,
@@ -48,6 +54,7 @@ import type {
   StreamConnectionStatus,
   StreamFrameEnvelope,
 } from "./i-stream-session";
+import type { TransportEvidenceReporter } from "@traycer-clients/shared/host-selection/transport-evidence";
 import type { IStreamClient } from "./i-stream-client";
 import type {
   IStreamWebSocketFactory,
@@ -56,6 +63,7 @@ import type {
 } from "./ws-stream-factory";
 import type { WebSocketCloseEvent, WebSocketErrorEvent } from "./ws-factory";
 import type { IntervalHandle, TimerHandle } from "./timer-handle";
+import type { ReconnectAllOptions } from "./host-stream-client";
 import { backoffFor } from "./backoff";
 
 /**
@@ -95,6 +103,34 @@ export interface WsStreamClientOptions<
    * another and leave the host with nothing.
    */
   readonly hostCredentialMint: HostCredentialMintFlow | null;
+  /**
+   * Observation tap for the `openAck.hostCredentialState` a connected host
+   * reports. Fired on every ack that carries a state (the host must advertise
+   * the provision capability), BEFORE the client acts on it - so an observer
+   * sees `"active"` acks the mint machinery ignores. This is the only
+   * client-visible signal for "did the host adopt the credential": the
+   * provision frame has no receipt by design, and adoption is reported by the
+   * NEXT connection's ack (see `stream-ws-protocol.ts`). `null` for callers
+   * that don't verify provisioning - which is every long-lived surface; a
+   * short-lived provisioning probe (CLI `host install`) is who needs it.
+   */
+  readonly onHostCredentialState:
+    ((hostId: string, state: HostCredentialState) => void) | null;
+  /**
+   * Where this transport's observations reach the selection authority.
+   *
+   * `/stream` is the LOCAL host's long-lived connection - a remote host's
+   * streams ride the relay mux instead - so this is the leg that hears a
+   * restart tombstone from a local host somebody else restarted: a
+   * `traycer host restart` on the box, an update install, a second app
+   * window. The desktop's own mutation lane covers restarts IT issued and is
+   * structurally blind to those.
+   *
+   * Required, not defaulted, for the same reason the unary transport's is:
+   * a new construction site has to say whether it feeds an authority or
+   * `NO_TRANSPORT_EVIDENCE`.
+   */
+  readonly evidence: TransportEvidenceReporter;
   readonly webSocketFactory: IStreamWebSocketFactory;
   readonly dialTimeoutMs: number;
   readonly openAckTimeoutMs: number;
@@ -102,6 +138,19 @@ export interface WsStreamClientOptions<
   readonly pongTimeoutMs: number;
   readonly initialBackoffMs: number;
   readonly maxBackoffMs: number;
+  /**
+   * WHO THIS CLIENT IS, sent on every `open` frame this transport writes -
+   * including every reconnect, since each redial re-authenticates and is
+   * therefore re-gated by the host.
+   *
+   * Required, not defaulted, for the same reason `evidence` is: a new
+   * construction site has to answer the question rather than inherit a silent
+   * answer. An absent identity reads to the host as legacy epoch 1, which a
+   * floored host terminally refuses - so a defaulted value here would let a
+   * composition root ship a build that cannot connect, with nothing at
+   * compile time to say so.
+   */
+  readonly clientIdentity: FirstPartyClientIdentity;
 }
 
 /**
@@ -175,6 +224,14 @@ function createInertStreamSession(closedReason: string): IStreamSession {
 /** Monotonic source for `WsStreamClient.instanceId` (log correlation only). */
 let nextStreamClientId = 1;
 
+/**
+ * Monotonic source for announced stream SESSION ids. Module-scoped rather than
+ * per-connection so the id names one connectivity episode uniquely across
+ * every stream in the process - the authority keys live sessions by id, and
+ * two connections reusing `s1` would let one's retraction clear the other's.
+ */
+let streamSessionSeq = 0;
+
 export class WsStreamClient<
   Registry extends VersionedStreamRpcRegistry,
 > implements IStreamClient<Registry> {
@@ -187,6 +244,12 @@ export class WsStreamClient<
   readonly instanceId: string;
 
   private readonly options: WsStreamClientOptions<Registry>;
+  /**
+   * Serialized once here rather than per session: every member is a process
+   * constant, and this client hands the same value to every session it owns
+   * and to every one of their redials.
+   */
+  private readonly clientIdentity: ClientHandshakeIdentity;
   private readonly ownedSessions = new Set<StreamSession<Registry>>();
   private readonly methodSupport = new Map<string, StreamMethodSupport>();
   private readonly methodSchemaVersions = new Map<string, SchemaVersion>();
@@ -203,8 +266,56 @@ export class WsStreamClient<
    * superseding the last. Giving up instead costs only the delegated credential,
    * and the host keeps running on the connection's client lease until the app is
    * restarted.
+   *
+   * RE-ARMED on a fresh edge, though - see {@link lastHostCredentialState}.
+   * "One attempt per host per client" was written when a host that reported
+   * `missing` kept reporting `missing`: repeating the attempt could only
+   * repeat the same failure. A host that has since gone `active` and come back
+   * `needs-reauth` is not that host. It held a credential, the cloud refused
+   * it, and the host burned it precisely so that a client would mint another -
+   * so refusing on the strength of an attempt that already succeeded leaves it
+   * on the client lease until the app restarts.
    */
   private readonly provisionAttemptedHostIds = new Set<string>();
+  /**
+   * The last `hostCredentialState` each host reported, so a repeat can be told
+   * from a TRANSITION.
+   *
+   * The distinction is the entire re-arm rule, and it is what keeps the
+   * unbounded-mint failure above closed: a host stuck reporting `missing`
+   * reports the same value every reconnect, matches its last observation, and
+   * re-arms nothing however long the reconnect loop runs. Only a host that
+   * reported something else in between - `active`, most of all - can arm a
+   * second mint, and it can arm at most one per round trip through a working
+   * credential.
+   */
+  private readonly lastHostCredentialState = new Map<
+    string,
+    HostCredentialState
+  >();
+  /**
+   * Per host: the timer that re-asks after a `pending-elsewhere` wait. Cleared
+   * on close so a retry can never outlive the transport that would carry the
+   * credential it asks for.
+   */
+  private readonly provisionRetryTimers = new Map<string, TimerHandle>();
+  /**
+   * Hosts THIS client handed a credential to.
+   *
+   * The only provenance-bearing evidence of recovery available here, and the
+   * reason it must exist separately from {@link lastHostCredentialState}: a
+   * handoff writes `active` into that map itself, so by the time a retry
+   * fires, "we delivered" and "some other transport's pre-burn ack arrived
+   * late" are the same value. A reported `active` carries nothing to tell
+   * them apart - which is precisely why `noteHostCredentialState` refuses to
+   * act on one - so a retry that trusted the map could be consumed by an
+   * acknowledgment formed BEFORE the burn it is meant to repair, leaving the
+   * host unprovisioned with no edge left to wake anybody.
+   *
+   * Cleared on the same edge that re-arms an attempt: a host reporting
+   * `missing`/`needs-reauth` again no longer holds what we gave it.
+   */
+  private readonly handedOffHostIds = new Set<string>();
   /**
    * Minted credentials waiting for a live connection to carry them, keyed by
    * host. The socket that triggered the mint can be gone by the time it
@@ -226,6 +337,7 @@ export class WsStreamClient<
 
   constructor(options: WsStreamClientOptions<Registry>) {
     this.options = options;
+    this.clientIdentity = toClientHandshakeIdentity(options.clientIdentity);
     this.instanceId = `stream-client-${nextStreamClientId}`;
     nextStreamClientId += 1;
   }
@@ -281,6 +393,7 @@ export class WsStreamClient<
       endpoint: this.options.endpoint,
       bearer: this.options.bearer,
       auth: this.options.auth,
+      evidence: this.options.evidence,
       webSocketFactory: this.options.webSocketFactory,
       dialTimeoutMs: this.options.dialTimeoutMs,
       openAckTimeoutMs: this.options.openAckTimeoutMs,
@@ -288,6 +401,7 @@ export class WsStreamClient<
       pongTimeoutMs: this.options.pongTimeoutMs,
       initialBackoffMs: this.options.initialBackoffMs,
       maxBackoffMs: this.options.maxBackoffMs,
+      clientIdentity: this.clientIdentity,
       onDispose: () => removeSession(),
       onManifest: (manifest, subscribedMethod, support) =>
         this.applyHostManifest(manifest, subscribedMethod, support),
@@ -296,6 +410,10 @@ export class WsStreamClient<
       onHostCredentialAck: (hostId, state) => {
         this.handleHostCredentialAck(hostId, state);
       },
+      // The passive tap is delivered by the session itself, ahead of the
+      // compatibility abort, so it fires on EVERY state-carrying ack rather
+      // than only the ones whose method version also happened to negotiate.
+      onHostCredentialState: this.options.onHostCredentialState,
       onAvailabilityRecovered: () => {
         this.emitAvailabilityRecovered();
       },
@@ -325,6 +443,7 @@ export class WsStreamClient<
     // Never outlive the transport with a live credential in memory: there is no
     // socket left to deliver it on, and the next client mints its own.
     this.discardAllPendingProvisions();
+    this.clearAllProvisionRetries();
     console.info(
       `[stream] WsStreamClient closed (client=${this.instanceId}, reason=${reason}, sessions=${this.ownedSessions.size})`,
     );
@@ -409,9 +528,9 @@ export class WsStreamClient<
    * host-event-loop-stall case, where an established stream survives the
    * 60s pong cutoff while fresh unary dials time out and strand their
    * queries in a permanent error state. Consumers use this to drive
-   * `HostClient.notifyAvailabilityRecovered()` so those stranded queries
-   * refetch; multiple sessions recovering at once each fire, so consumers
-   * should coalesce.
+   * `HostClient.notifyHostAvailabilityRecovered(hostId)` so those stranded
+   * queries refetch; multiple sessions recovering at once each fire, so
+   * consumers should coalesce.
    */
   subscribeAvailabilityRecovered(listener: () => void): () => void {
     this.availabilityRecoveredListeners.add(listener);
@@ -446,17 +565,21 @@ export class WsStreamClient<
     }
   }
 
-  reconnectAll(reason: string): void {
+  reconnectAll(reason: string, options: ReconnectAllOptions): void {
     if (this.closed) {
       return;
     }
     // Wake-recovery trace (piped to the desktop log via the renderer-console
     // bridge): proves the wake signal arrived and how many sessions re-dialed.
     console.debug(
-      `[stream] reconnectAll reason=${reason} sessions=${this.ownedSessions.size}`,
+      `[stream] reconnectAll reason=${reason} sessions=${this.ownedSessions.size} probeFirst=${options.probeFirst}`,
     );
     for (const session of Array.from(this.ownedSessions)) {
-      session.forceReconnect(reason);
+      if (options.probeFirst) {
+        session.reconnectIfUnresponsive(reason);
+      } else {
+        session.forceReconnect(reason);
+      }
     }
   }
 
@@ -477,6 +600,29 @@ export class WsStreamClient<
   ): void {
     if (this.closed) {
       return;
+    }
+    // Recorded before anything else can return early, so no path through this
+    // method can lose a transition. A state that never reaches the map is
+    // indistinguishable from one that never happened, and the very next ack
+    // would then read as "unchanged" against a stale predecessor.
+    const previousState = this.lastHostCredentialState.get(hostId) ?? null;
+    this.lastHostCredentialState.set(hostId, state);
+    if (
+      previousState !== state &&
+      (state === "missing" || state === "needs-reauth")
+    ) {
+      // A host that HAD a credential and no longer has a usable one. The two
+      // states it can arrive in are the two the host uses to ask for another:
+      // `missing` after a discard (revoked, owner switch), `needs-reauth`
+      // after a burn - including the burn this change adds for a freshly
+      // refreshed credential the cloud refused anyway, which is the whole
+      // reason the re-arm has to exist at all. Without it that burn is a
+      // one-way door for the rest of the app session: the host stops serving
+      // its credential, asks for a replacement on every `openAck`, and the
+      // client - having minted once, hours ago, successfully - never answers.
+      this.provisionAttemptedHostIds.delete(hostId);
+      // Whatever we handed this host, it is not holding it any more.
+      this.handedOffHostIds.delete(hostId);
     }
     if (this.flushPendingProvision(hostId)) {
       return;
@@ -518,6 +664,17 @@ export class WsStreamClient<
         `[stream] host-credential mint flow threw (client=${this.instanceId}, host=${hostId})`,
         cause,
       );
+      return;
+    }
+    if (outcome.kind === "pending-elsewhere") {
+      // This client has not actually spent an attempt - the app is waiting on
+      // a claim or a backoff window, not refusing. Give the marker back, and
+      // arm the retry ourselves: the host's state does NOT change while that
+      // window runs (it keeps reporting `needs-reauth`), so there is no edge
+      // left to wake anybody, and "the next ack will ask again" is only true
+      // if something else happens to reconnect.
+      this.provisionAttemptedHostIds.delete(hostId);
+      this.armProvisionRetry(hostId, outcome.retryAfterMs, state);
       return;
     }
     if (outcome.kind !== "provisioned") {
@@ -568,6 +725,104 @@ export class WsStreamClient<
   }
 
   /** Drops one held credential and disarms its timer. Safe to call twice. */
+  /**
+   * Re-asks for a credential once the wait a `pending-elsewhere` answer named
+   * has passed.
+   *
+   * Jittered so several transports told to wait on the SAME claim do not all
+   * come back on the same millisecond and re-race the thing the claim exists
+   * to serialize.
+   *
+   * Every precondition is re-checked at fire time rather than captured: this
+   * runs up to an hour later (the ladder's top rung), by which point the
+   * client may be closed, the credential may have been delivered by somebody
+   * else, or this client may already be mid-attempt.
+   *
+   * `reason` is the state that BOUGHT the retry, carried rather than re-read.
+   * Re-reading it made the mint's reason a function of the last arrival, and
+   * the last arrival is exactly what cannot be trusted here.
+   *
+   * ## What is allowed to cancel this, and what is not
+   *
+   * A reported `active` is NOT. It has no provenance: an acknowledgment
+   * formed before the burn can be processed after this timer was armed - the
+   * arm sits behind a mint round trip, so an ack in flight across it is
+   * ordinary rather than exotic - and consuming the retry on one strands the
+   * host with nothing left to wake it while its socket stays up. That is the
+   * same reason `noteHostCredentialState` is inert, applied to the same
+   * report.
+   *
+   * Only {@link handedOffHostIds} - a delivery this client performed - and a
+   * live attempt marker stop it.
+   *
+   * The accepted cost of that: if ANOTHER transport delivered and the
+   * app-wide adoption claim has since lapsed, this re-asks and the fresh mint
+   * supersedes a credential that was working. That is bounded on both ends -
+   * inside the claim window the flow answers `pending-elsewhere` and re-arms
+   * instead of minting, and the escalation ladder caps how often it can
+   * repeat - and it resolves to a provisioned host, whereas the failure it
+   * replaces resolves to an unprovisioned one.
+   */
+  private armProvisionRetry(
+    hostId: string,
+    retryAfterMs: number,
+    reason: Exclude<HostCredentialState, "active">,
+  ): void {
+    if (this.closed) {
+      return;
+    }
+    this.clearProvisionRetry(hostId);
+    // FLOORED, and that floor is load-bearing rather than tidy. A wait can
+    // legitimately arrive at or near zero - a claim that expired between the
+    // flow's gate and its own clock read - and without a floor the retry fires
+    // immediately, is answered `pending-elsewhere` again, and spins. Nothing
+    // downstream bounds that: the flow's gates are cheap and would happily
+    // answer thousands of times a second.
+    const delayMs =
+      Math.max(retryAfterMs, PROVISION_RETRY_MIN_DELAY_MS) +
+      Math.floor(Math.random() * PROVISION_RETRY_JITTER_MS);
+    const timer = setTimeout(() => {
+      this.provisionRetryTimers.delete(hostId);
+      if (this.closed) {
+        return;
+      }
+      const mint = this.options.hostCredentialMint;
+      if (mint === null) {
+        return;
+      }
+      if (this.handedOffHostIds.has(hostId)) {
+        // We carried a credential to this host ourselves and it has not asked
+        // again since. Nothing to re-ask for, and this is the one form of
+        // "recovered" that does not depend on believing a report.
+        return;
+      }
+      if (this.provisionAttemptedHostIds.has(hostId)) {
+        // An `openAck` beat the timer to it and an attempt is already running
+        // or spent. Re-asking here would double-mint the very host the claim
+        // is protecting.
+        return;
+      }
+      this.provisionAttemptedHostIds.add(hostId);
+      void this.runMintFlow(mint, hostId, reason);
+    }, delayMs);
+    this.provisionRetryTimers.set(hostId, timer);
+  }
+
+  private clearProvisionRetry(hostId: string): void {
+    const timer = this.provisionRetryTimers.get(hostId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.provisionRetryTimers.delete(hostId);
+    }
+  }
+
+  private clearAllProvisionRetries(): void {
+    for (const timer of this.provisionRetryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.provisionRetryTimers.clear();
+  }
+
   private discardPendingProvision(hostId: string): void {
     const pending = this.pendingProvisions.get(hostId);
     if (pending === undefined) {
@@ -596,6 +851,21 @@ export class WsStreamClient<
     for (const session of Array.from(this.ownedSessions)) {
       if (session.pushHostCredentialProvision(hostId, pending)) {
         this.discardPendingProvision(hostId);
+        // ASSUMED-ADOPTED, and recorded so the re-arm edge can see it. Nothing
+        // acks an adoption: the host confirms only on its NEXT `openAck`, and
+        // the socket that just carried the credential last reported
+        // `needs-reauth`. Leaving that as the remembered state made a later
+        // burn look like no transition at all - same state, marker still set -
+        // so the replacement mint was suppressed for the life of the client.
+        //
+        // Optimistic on purpose. If the host in fact did not adopt, its next
+        // ack says `missing`/`needs-reauth` and corrects this, which is a
+        // transition and therefore re-arms; the app-wide claim and the
+        // escalation ladder still bound how often that can turn into a mint.
+        this.lastHostCredentialState.set(hostId, "active");
+        // Recorded separately from the line above because only THIS fact has
+        // provenance. See {@link handedOffHostIds}.
+        this.handedOffHostIds.add(hostId);
         return true;
       }
     }
@@ -639,7 +909,11 @@ export class WsStreamClient<
     subscribedMethod: string,
     subscribedMethodSupport: "supported" | "unsupported",
   ): void {
-    const myManifest = buildStreamManifest(this.options.registry);
+    const myManifest = selectConnectionManifestForPeer(
+      this.options.registry,
+      buildStreamManifest(this.options.registry),
+      theirManifest,
+    );
     let changed = false;
     for (const method of Object.keys(myManifest)) {
       if (method === subscribedMethod) {
@@ -751,6 +1025,18 @@ interface PendingHostCredentialProvision {
  * Mirrored client-side purely to avoid entering the INTERACTIVE mint for a host
  * that can never hold a credential.
  */
+/**
+ * Floor under any `pending-elsewhere` retry. See {@link WsStreamClient.armProvisionRetry}
+ * - a near-zero wait must not become a spin.
+ */
+const PROVISION_RETRY_MIN_DELAY_MS = 1_000;
+/**
+ * Spread over the retry, so several transports told to wait on the SAME claim
+ * do not all come back on one millisecond and re-race what the claim exists to
+ * serialize.
+ */
+const PROVISION_RETRY_JITTER_MS = 250;
+
 const HOST_ID_UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -786,6 +1072,7 @@ interface StreamSessionOptions<Registry extends VersionedStreamRpcRegistry> {
   readonly endpoint: HostEndpointProvider;
   readonly bearer: BearerSourceProvider;
   readonly auth: StreamAuthRevalidator | null;
+  readonly evidence: TransportEvidenceReporter;
   readonly webSocketFactory: IStreamWebSocketFactory;
   readonly dialTimeoutMs: number;
   readonly openAckTimeoutMs: number;
@@ -793,6 +1080,12 @@ interface StreamSessionOptions<Registry extends VersionedStreamRpcRegistry> {
   readonly pongTimeoutMs: number;
   readonly initialBackoffMs: number;
   readonly maxBackoffMs: number;
+  /**
+   * Already projected to the wire shape by the owning client: every session
+   * this client opens sends the same process constant, so it is serialized
+   * once rather than per session and per redial.
+   */
+  readonly clientIdentity: ClientHandshakeIdentity;
   readonly onDispose: () => void;
   readonly onManifest: (
     manifest: ConnectionManifest,
@@ -812,6 +1105,15 @@ interface StreamSessionOptions<Registry extends VersionedStreamRpcRegistry> {
     hostId: string,
     state: HostCredentialState,
   ) => void;
+  /**
+   * Passive observation of the same state, delivered EARLIER than
+   * `onHostCredentialAck` - before this session's application method can abort
+   * the handshake on a version mismatch. The credential state is a handshake
+   * fact, not a per-method one, so an observer must see it even from a host
+   * this build cannot subscribe to. `null` when nobody is watching.
+   */
+  readonly onHostCredentialState:
+    ((hostId: string, state: HostCredentialState) => void) | null;
   /**
    * Reports positive host-recovery evidence to the owning client - see
    * `WsStreamClient.subscribeAvailabilityRecovered` for the two emission
@@ -836,6 +1138,20 @@ interface StreamSessionOptions<Registry extends VersionedStreamRpcRegistry> {
  * accepted rather than special-cased with visibility heuristics.
  */
 const PONG_GAP_RECOVERY_SLACK_MS = 5_000;
+
+/**
+ * How long a wake liveness probe waits for a pong before declaring the socket
+ * dead and re-dialing (see `WsStreamSession.reconnectIfUnresponsive`).
+ *
+ * This value IS the wake mechanism: a half-open socket fails only by timeout,
+ * so nothing else distinguishes "survived the sleep" from "gone". Too short and
+ * a slow-but-alive session is dropped, re-creating the wake-vs-Wi-Fi race the
+ * probe exists to end; too long and a genuinely dead remote session recovers
+ * later than the old unconditional re-dial. 5s clears any plausible
+ * localhost/LAN round trip with room to spare while staying far under the
+ * heartbeat's own pong timeout.
+ */
+const WAKE_PROBE_TIMEOUT_MS = 5_000;
 
 /**
  * One open stream. Owns the per-connect socket plus every timer wired to
@@ -891,6 +1207,25 @@ class StreamSession<
    * the one mistake this path must not make.
    */
   private openFrameHostId: string | null = null;
+  /**
+   * The live session this connection has announced to the selection authority,
+   * or `null` while it has none.
+   *
+   * `/stream` is a LIVE SESSION and the authority's strongest evidence class
+   * (invariant 5): it suppresses death accumulation entirely. Until this was
+   * announced, a healthy long-lived stream counted for nothing, so three fresh
+   * unary dials refused during an accept-loop or descriptor-pressure stall
+   * reached the confirmed-death streak and failed the local host over while
+   * its stream was still carrying frames.
+   *
+   * The hostId is stored ALONGSIDE the id rather than re-read at retraction
+   * time: `openFrameHostId` is cleared on the same paths that retract, and a
+   * session announced for host A must never be retracted against host B. An
+   * announcement that is never retracted means the host can never be declared
+   * dead again, so every path that drops the dialed identity retracts here
+   * first - which is exactly the two places that clear `openFrameHostId`.
+   */
+  private announcedSession: { hostId: string; sessionId: string } | null = null;
   // Whether the host advertised `credentialUpdate` support in the current
   // connection's openAck. Gates `pushCredentialUpdate`; reset on every
   // reconnect and re-read from the next openAck.
@@ -902,6 +1237,22 @@ class StreamSession<
   private dialTimer: TimerHandle | null = null;
   private openAckTimer: TimerHandle | null = null;
   private pingIntervalTimer: IntervalHandle | null = null;
+  /** In-flight wake liveness probe; see {@link reconnectIfUnresponsive}. */
+  private wakeProbeTimer: TimerHandle | null = null;
+  /**
+   * `lastPongAt` as it stood BEFORE a wake probe rebased it, consumed by the
+   * first pong that follows. The rebase keeps the heartbeat's stale pre-sleep
+   * deadline from condemning an intact socket, but it also erases the very gap
+   * the pong handler's availability-recovery edge measures - and on the
+   * probe-succeeds path the socket is deliberately KEPT, so the reconnect
+   * handshake's recovery emission never runs either. Without this baseline a
+   * wake that bridges a sleep-length gap fired NEITHER recovery signal, and
+   * queries stranded in error state before the sleep stayed stranded.
+   * `Math.min` across overlapping probes keeps the earliest truth.
+   */
+  private preProbePongBaselineAt: number | null = null;
+  /** Monotonic count of pongs received; the wake probe's liveness signal. */
+  private pongSeq = 0;
   private backoffTimer: TimerHandle | null = null;
   /**
    * Armed when the subscribe completes; fires after
@@ -1007,6 +1358,89 @@ class StreamSession<
     this.reconnectAttempt = 0;
     this.slowClientReconnectStreak = 0;
     this.onTransportDrop();
+  }
+
+  /**
+   * Wake recovery that keeps a socket which is still ALIVE.
+   *
+   * `forceReconnect` on every session was the wake path's original shape, and
+   * it is wrong for the case that dominates: a lid-open on the same network,
+   * where the localhost/LAN socket to a local host survived the sleep intact.
+   * Dropping it re-runs `initialize()` for every stream on a machine whose
+   * Wi-Fi has not finished re-associating - so the cloud calls in those opens
+   * fail, and (before this layer) each failure became a fatal close. That is
+   * the overnight "all epics red by morning" report: the RECOVERY signal was
+   * causing the damage, once per dark wake, all night.
+   *
+   * A half-open socket has no positive "dead" signal - the only way to learn
+   * is to ask and wait - so the probe timeout IS the detector. It is set well
+   * above any plausible localhost/LAN round trip and far below the heartbeat's
+   * own pong timeout, so a live session is never dropped and a genuinely dead
+   * one recovers only marginally slower than the unconditional re-dial did.
+   * Timeout falls through to exactly the old behaviour.
+   */
+  reconnectIfUnresponsive(reason: string): void {
+    if (this.disposed) {
+      return;
+    }
+    const socket = this.activeSocket;
+    // Nothing live to keep: an idle or mid-reconnect session has no socket
+    // whose survival could be in question, so re-dial as before.
+    if (socket === null || this.phase !== "subscribed") {
+      this.forceReconnect(reason);
+      return;
+    }
+    const pongSeqAtProbe = this.pongSeq;
+    const sent = this.writeEnvelope(
+      socket,
+      { kind: "ping", hasBinaryPayload: false },
+      null,
+    );
+    if (!sent) {
+      // The socket refused the write - it is already gone in all but name.
+      this.forceReconnect(reason);
+      return;
+    }
+    // Rebase the heartbeat deadline onto the probe we just sent. After a sleep
+    // longer than `pongTimeoutMs`, `lastPongAt` still holds a PRE-sleep
+    // timestamp, so the already-armed interval's very next tick takes the
+    // `missed-pongs` branch and tears down an intact socket before this probe
+    // can be answered - the stale deadline pre-empting the detector that was
+    // meant to decide. Nothing is weakened by moving it: an unanswered probe
+    // still fails, just through the timeout below, which is deliberately set
+    // far under `pongTimeoutMs`. The pre-rebase timestamp is preserved so the
+    // probe's pong still answers the TRUE gap - see
+    // {@link preProbePongBaselineAt}.
+    this.preProbePongBaselineAt =
+      this.preProbePongBaselineAt === null
+        ? this.lastPongAt
+        : Math.min(this.preProbePongBaselineAt, this.lastPongAt);
+    this.lastPongAt = Date.now();
+    this.clearWakeProbe();
+    this.wakeProbeTimer = setTimeout(() => {
+      this.wakeProbeTimer = null;
+      if (this.disposed) {
+        return;
+      }
+      // A pong landed after the probe went out: the socket survived the sleep
+      // and re-subscribing would only cost the user their warm streams.
+      if (this.pongSeq !== pongSeqAtProbe) {
+        return;
+      }
+      // Something else already replaced the socket while we waited; that path
+      // owns the recovery.
+      if (this.activeSocket !== socket) {
+        return;
+      }
+      this.forceReconnect(`${reason}-probe-timeout`);
+    }, WAKE_PROBE_TIMEOUT_MS);
+  }
+
+  private clearWakeProbe(): void {
+    if (this.wakeProbeTimer !== null) {
+      clearTimeout(this.wakeProbeTimer);
+      this.wakeProbeTimer = null;
+    }
   }
 
   /**
@@ -1229,6 +1663,7 @@ class StreamSession<
       kind: "open",
       token,
       manifest,
+      clientIdentity: this.config.clientIdentity,
     };
     if (!this.sendControlText(socket, openFrame)) {
       this.onSendFailure(socket);
@@ -1307,15 +1742,31 @@ class StreamSession<
 
     if (envelope.kind === "pong") {
       const now = Date.now();
-      const pongGapMs = now - this.lastPongAt;
+      // Measure the gap from the pre-probe baseline when a wake probe rebased
+      // `lastPongAt`: against the rebased value the probe's own pong reads as
+      // a round trip, and a sleep-length outage would emit no recovery at all.
+      const answersWakeProbe = this.preProbePongBaselineAt !== null;
+      const pongGapMs = now - (this.preProbePongBaselineAt ?? this.lastPongAt);
+      this.preProbePongBaselineAt = null;
       this.lastPongAt = now;
+      // Counted, not timestamped: a wake probe has to know whether a pong
+      // ARRIVED, and two pongs inside the same millisecond are
+      // indistinguishable by `lastPongAt` alone.
+      this.pongSeq += 1;
       if (
-        pongGapMs >=
-        this.config.pingIntervalMs + PONG_GAP_RECOVERY_SLACK_MS
+        answersWakeProbe ||
+        pongGapMs >= this.config.pingIntervalMs + PONG_GAP_RECOVERY_SLACK_MS
       ) {
-        // The host just answered after leaving at least one ping hanging: it
-        // was unresponsive (event-loop stall) and has recovered - without the
-        // socket ever dropping, so the reconnect path below never fires.
+        // Two distinct recovery edges share this emission. A probe-answering
+        // pong is one unconditionally: probes are sent only on a device-wake /
+        // network-online signal, an epoch in which host-scoped queries may
+        // have failed while the socket itself survived - and a cycle shorter
+        // than the heartbeat threshold left the gap check false, so the
+        // stranded queries (whose other automatic refetch routes are
+        // disabled) never recovered. A big gap WITHOUT a probe is the other:
+        // the host answered after leaving at least one ping hanging (an
+        // event-loop stall), again with no socket drop, so the reconnect
+        // path's recovery emission never fires for either.
         this.config.onAvailabilityRecovered();
       }
       return;
@@ -1384,8 +1835,12 @@ class StreamSession<
     );
     const hostCredentialState = ackParse.data.hostCredentialState;
 
-    const myManifest = buildStreamManifest(this.config.registry);
     const theirManifest = ackParse.data.manifest;
+    const myManifest = selectConnectionManifestForPeer(
+      this.config.registry,
+      buildStreamManifest(this.config.registry),
+      theirManifest,
+    );
     const compat = checkStreamMethodCompatibility(
       this.config.registry,
       myManifest,
@@ -1398,6 +1853,18 @@ class StreamSession<
     if (socket === null) {
       return;
     }
+
+    // Reported HERE, ahead of the compatibility abort below, because the
+    // credential state is a property of the HANDSHAKE and not of this
+    // session's application method: a host whose `hostCredentialState` says
+    // `missing` said so whether or not our build agrees with it about one
+    // method's version. Firing this only on the success path made the
+    // observer's contract ("every state-carrying ack") false, and left an
+    // observer unable to tell a version-skewed host apart from an
+    // unreachable one. The MINT hook stays at the end of this method, where a
+    // live session can actually carry the provision frame - only the passive
+    // observation moves.
+    this.reportHostCredentialState(hostCredentialState);
 
     if (!compat.ok) {
       this.config.onManifest(theirManifest, this.config.method, "unsupported");
@@ -1443,6 +1910,10 @@ class StreamSession<
     // "open") is NOT recovery - nothing was stuck - so it stays silent.
     const recoveredFromUnavailable = this.status === "reconnecting";
     this.phase = "subscribed";
+    // The subscription is established: this is a live session, and the
+    // authority is told so before any outbound callback below can re-enter.
+    this.announceSession();
+
     // Deliberately NOT resetting `reconnectAttempt` /
     // `noProgressUnauthorizedReconnects` here. The subscribe-ack only proves
     // the transport handshake; resolver-side initialization failures land
@@ -1455,6 +1926,10 @@ class StreamSession<
     // a sustained-subscription dwell for streams with nothing to say (see
     // `armHealthyDwell`).
     this.lastPongAt = Date.now();
+    // A fresh handshake supersedes any wake-probe baseline: this path emits
+    // its own recovery edge below, and a stale baseline would double-count
+    // the outage on the first post-handshake pong.
+    this.preProbePongBaselineAt = null;
     this.startHeartbeat();
     this.armHealthyDwell();
     this.transitionTo("open", null);
@@ -1486,6 +1961,91 @@ class StreamSession<
     }
   }
 
+  /**
+   * Passive observation of the ack's credential state, split out from the mint
+   * hook so it can fire before a compatibility abort. Guarded the same way the
+   * mint is (capability + state + host id) and never allowed to throw into the
+   * handshake.
+   */
+  private reportHostCredentialState(state: HostCredentialState | null): void {
+    const observe = this.config.onHostCredentialState;
+    const hostId = this.openFrameHostId;
+    if (
+      observe === null ||
+      !this.supportsHostCredentialProvision ||
+      state === null ||
+      hostId === null
+    ) {
+      return;
+    }
+    try {
+      observe(hostId, state);
+    } catch (cause) {
+      console.warn(
+        `[stream] host-credential state observer threw (method=${this.config.method}, host=${hostId})`,
+        cause,
+      );
+    }
+  }
+
+  /**
+   * Forwards a host-published restart tombstone to the selection authority.
+   *
+   * Silent when the host published none - every host predating the tombstone,
+   * and every ordinary fatal on a host that does publish them. Duplicates are
+   * forwarded rather than filtered here: the authority keys episodes by
+   * (hostId, tombstoneId) and treats a repeat as inert, and that rule belongs
+   * in the one place that can apply it across every window in the app.
+   */
+  /**
+   * Announces this connection's live session once its subscription is
+   * established. Idempotent: a repeat while one is already announced is inert,
+   * so a re-entrant handshake callback cannot double-count.
+   */
+  private announceSession(): void {
+    if (this.announcedSession !== null) return;
+    const hostId = this.openFrameHostId;
+    if (hostId === null) return;
+    streamSessionSeq += 1;
+    const sessionId = `local-stream:s${streamSessionSeq}`;
+    this.announcedSession = { hostId, sessionId };
+    this.config.evidence.sessionEstablished(hostId, sessionId, "local-ws");
+  }
+
+  /**
+   * Retracts the announced session, against the host it was announced FOR.
+   * Idempotent, and called on every path that drops the dialed identity.
+   */
+  private retractSession(): void {
+    const announced = this.announcedSession;
+    if (announced === null) return;
+    this.announcedSession = null;
+    this.config.evidence.sessionLost(
+      announced.hostId,
+      announced.sessionId,
+      "local-ws",
+    );
+  }
+
+  private reportRestartIntentIfPresent(details: FatalErrorDetails): void {
+    const restartIntent = details.restartIntent;
+    if (restartIntent === undefined) {
+      return;
+    }
+    const hostId = this.openFrameHostId;
+    if (hostId === null) {
+      // No dialed identity captured yet, so there is no host to file the
+      // tombstone against. Dropping is right: a guess would hold the wrong
+      // lease, and a fatal this early means nothing was serving anyway.
+      return;
+    }
+    this.config.evidence.reportRestartIntent(
+      hostId,
+      restartIntent.tombstoneId,
+      restartIntent.expiresAt,
+    );
+  }
+
   private handleFatalErrorFrame(parsed: object): void {
     const termParse = hostStreamFatalErrorFrameSchema.safeParse(parsed);
     if (!termParse.success) {
@@ -1494,6 +2054,16 @@ class StreamSession<
       return;
     }
     const details = termParse.data.details;
+    // The restart tombstone (P1.4 / D5 / M1), read BEFORE the frame is routed
+    // by `retryable`/`UNAUTHORIZED` so every arm reports it. The host is
+    // stating that the outage it is about to cause is deliberate - the one
+    // thing this window cannot infer for a restart it did not issue.
+    //
+    // `openFrameHostId`, not `endpoint()`: the identity THIS connection
+    // dialed, for the same reason the credential path reads it - the endpoint
+    // provider may already point somewhere else, and a tombstone filed
+    // against the wrong host would hold the wrong lease.
+    this.reportRestartIntentIfPresent(details);
     // `retryable` marks a transient host-side rejection. The stable subscribe-
     // timeout code is checked too because hosts through 1.1.9 emitted it without
     // the additive flag; a new client must still recover when paired with one of
@@ -1827,6 +2397,9 @@ class StreamSession<
       this.dialTimer = null;
     }
     this.clearHealthyDwell();
+    // Before the dialed identity is dropped - the retraction needs the host it
+    // was announced for.
+    this.retractSession();
     this.activeSocket = null;
     this.openFrameToken = null;
     this.openFrameHostId = null;
@@ -1864,6 +2437,9 @@ class StreamSession<
 
   private teardownTimers(): void {
     this.clearHeartbeat();
+    // A pending wake probe must never outlive the session it was measuring:
+    // its callback would otherwise force a reconnect on a disposed session.
+    this.clearWakeProbe();
     if (this.dialTimer !== null) {
       clearTimeout(this.dialTimer);
       this.dialTimer = null;
@@ -1881,6 +2457,10 @@ class StreamSession<
 
   private teardownSocket(code: number, reason: string): void {
     const socket = this.activeSocket;
+    // Same ordering rule as the drop path: retract while the announced host is
+    // still known. `teardownSocket` is the caller-`close()` and fatal-error
+    // leg, so between the two of them no announced session outlives its socket.
+    this.retractSession();
     this.activeSocket = null;
     this.openFrameToken = null;
     this.openFrameHostId = null;
@@ -1946,15 +2526,18 @@ class StreamSession<
     envelope: StreamFrameEnvelope,
     binaryPayload: Uint8Array | null,
   ): void {
-    // A delivered APPLICATION frame - not the subscribe-ack, and not a pong
-    // (both intercepted upstream) - is the proof this connection's resolver
-    // initialized and the stream is usable. Here (and in the
-    // sustained-subscription dwell, for event-only streams that deliver
-    // nothing unprompted) the reconnect backoff and the no-progress
-    // UNAUTHORIZED give-up bound reset; a host that acks the subscribe and
-    // then fails initialization keeps escalating instead of looping at the
-    // floor delay (int #4781).
-    this.resetLoopCounters();
+    // Every server frame proves the socket can deliver work, so it resets the
+    // transport backoff. Only a snapshot proves an epic stream completed its
+    // establishing path: `earlyMeta`, permission changes, and incremental
+    // frames can arrive before the host has initialized the cloud-backed
+    // replica. Treating any of those as auth-loop progress lets an `earlyMeta`
+    // → `UNAUTHORIZED` loop evade the give-up bound forever (int #4781 /
+    // traycer#892). The dwell remains the separate health proof for quiet
+    // non-epic streams.
+    this.reconnectAttempt = 0;
+    if (envelope.kind === "snapshot") {
+      this.noProgressUnauthorizedReconnects = 0;
+    }
     const handler = this.serverFrameHandler;
     if (handler === null) {
       return;

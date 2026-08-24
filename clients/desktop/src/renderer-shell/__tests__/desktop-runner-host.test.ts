@@ -4,10 +4,12 @@ import type {
   HostRegistryUpdateState,
   ITokenStore,
   LocalHostSnapshot,
+  RegisteredHostsChange,
   StoredCredentials,
   TrayEpic,
   TrayIndicatorState,
 } from "@traycer-clients/shared/platform/runner-host";
+import { createInertSelectionAuthorityClient } from "@traycer-clients/shared/test-fixtures/selection-authority";
 import {
   DesktopRunnerHost,
   type DesktopPreloadBridge,
@@ -59,6 +61,9 @@ function buildFakeBridge(
   let lastEmitted: LocalHostSnapshot | null = initialSnapshot;
   let firstSubscriberServed = false;
   const handlers = new Set<(snapshot: LocalHostSnapshot | null) => void>();
+  const registeredHostsHandlers = new Set<
+    (push: RegisteredHostsChange) => void
+  >();
   const systemResumedHandlers = new Set<() => void>();
 
   const tokenSlot = { value: null as string | null };
@@ -145,6 +150,20 @@ function buildFakeBridge(
         },
       };
     },
+    // Matches `onLocalHostChange` above structurally (a `Set` of handlers
+    // plus a dispose closure), but WITHOUT the replay: production has no
+    // cache to replay from either (`host-bridge.ts` - "nothing for a cache
+    // or a first-subscribe pull to repair").
+    onRegisteredHostsChange: (
+      handler: (push: RegisteredHostsChange) => void,
+    ) => {
+      registeredHostsHandlers.add(handler);
+      return {
+        dispose: () => {
+          registeredHostsHandlers.delete(handler);
+        },
+      };
+    },
     onSystemResumed: (handler: () => void) => {
       systemResumedHandlers.add(handler);
       return {
@@ -162,13 +181,6 @@ function buildFakeBridge(
       setEpics: async (_epics: readonly TrayEpic[]) => undefined,
       setIndicator: async (_state: TrayIndicatorState) => undefined,
       onEpicSelected: (_handler: (epicId: string) => void) => ({
-        dispose: () => undefined,
-      }),
-    },
-    hostPicker: {
-      requestOpen: async () => undefined,
-      requestClose: async () => undefined,
-      onChange: (_handler: (isOpen: boolean) => void) => ({
         dispose: () => undefined,
       }),
     },
@@ -207,6 +219,7 @@ function buildFakeBridge(
         currentVersion: "0.0.0-test",
         allowPrerelease: false,
         latestVersion: null,
+        latestCompatibilityEpoch: null,
         downloadProgress: null,
         installBlockedReason: null,
         installGuidance: null,
@@ -221,6 +234,7 @@ function buildFakeBridge(
         currentVersion: "0.0.0-test",
         allowPrerelease: false,
         latestVersion: null,
+        latestCompatibilityEpoch: null,
         downloadProgress: null,
         installBlockedReason: null,
         installGuidance: null,
@@ -230,18 +244,27 @@ function buildFakeBridge(
         lastCheckIntent: "manual",
       }),
       setAllowPrerelease: async (allowPrerelease) => ({
-        sequence: 2,
-        status: "idle",
-        currentVersion: "0.0.0-test",
-        allowPrerelease,
-        latestVersion: null,
-        downloadProgress: null,
-        installBlockedReason: null,
-        installGuidance: null,
-        installInFlight: false,
-        errorMessage: null,
-        lastCheckedAt: null,
-        lastCheckIntent: null,
+        outcome: "changed",
+        snapshot: {
+          sequence: 2,
+          status: "idle",
+          currentVersion: "0.0.0-test",
+          allowPrerelease,
+          latestVersion: null,
+          latestCompatibilityEpoch: null,
+          downloadProgress: null,
+          installBlockedReason: null,
+          installGuidance: null,
+          installInFlight: false,
+          errorMessage: null,
+          lastCheckedAt: null,
+          lastCheckIntent: null,
+        },
+      }),
+      resolveCompatRecovery: async () => ({
+        route: "manual",
+        rcCandidateVersion: null,
+        stagedVersion: null,
       }),
       downloadUpdate: async () => ({
         sequence: 2,
@@ -249,6 +272,7 @@ function buildFakeBridge(
         currentVersion: "0.0.0-test",
         allowPrerelease: false,
         latestVersion: "1.2.3",
+        latestCompatibilityEpoch: null,
         downloadProgress: 0,
         installBlockedReason: null,
         installGuidance: null,
@@ -263,6 +287,7 @@ function buildFakeBridge(
         currentVersion: "0.0.0-test",
         allowPrerelease: false,
         latestVersion: null,
+        latestCompatibilityEpoch: null,
         downloadProgress: null,
         installBlockedReason: null,
         installGuidance: null,
@@ -532,6 +557,7 @@ function buildFakeBridge(
       registryCheck: async () => ({
         checkedAt: null,
         latestVersion: null,
+        latestCompatibilityEpoch: null,
         installedVersion: null,
         updateAvailable: false,
         reachable: false,
@@ -539,7 +565,30 @@ function buildFakeBridge(
         includePreReleases: false,
       }),
       freePortAndRestart: async (input) => input,
+      runDoctorRepairQueued: async () => ({ kind: "applied" as const }),
+      freePortAndRestartIfIdle: async () => ({
+        kind: "dispatched",
+        outcome: { kind: "ok", value: null },
+      }),
       cliManifest: async () => null,
+      maintenanceUpdateCheck: async () => {
+        throw new Error("maintenanceUpdateCheck not used in test");
+      },
+      maintenanceDoctor: async () => {
+        throw new Error("maintenanceDoctor not used in test");
+      },
+      maintenanceInstallationInfo: async () => {
+        throw new Error("maintenanceInstallationInfo not used in test");
+      },
+      maintenanceInstallVersion: async () => {
+        throw new Error("maintenanceInstallVersion not used in test");
+      },
+      restartHostIfIdle: async () => {
+        throw new Error("restartHostIfIdle not used in test");
+      },
+      runDoctorRepairIfIdle: async () => {
+        throw new Error("runDoctorRepairIfIdle not used in test");
+      },
       getHostName: async () => ({
         systemName: "desktop-1",
         customName: null,
@@ -557,6 +606,8 @@ function buildFakeBridge(
     hostControllerStatus: {
       onChange: () => ({ dispose: () => undefined }),
     },
+    selectionAuthority: createInertSelectionAuthorityClient(),
+    refreshSelectionFleet: () => Promise.resolve(),
   };
 
   return {

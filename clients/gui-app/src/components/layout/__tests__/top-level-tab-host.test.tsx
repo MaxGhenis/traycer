@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   act,
@@ -17,12 +17,17 @@ import {
   TopLevelTabHost,
 } from "@/components/layout/top-level-tab-host";
 import {
+  HostReadinessControllerContext,
+  type HostReadinessController,
+} from "@/components/layout/host-readiness-controller-context";
+import {
   TopLevelSurfaceActivationContext,
   type TopLevelSurfaceActivator,
 } from "@/components/layout/top-level-surface-activation-context";
 import { activateHostedTopLevelSurface } from "@/components/epic-canvas/surface-host/hosted-top-level-activation";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
+import { useAuthStore } from "@/stores/auth/auth-store";
 import { useTabsStore } from "@/stores/tabs/store";
 import { tabCommandCoordinator } from "@/stores/tabs/tab-command-coordinator";
 import type { HeaderTab, TabRef } from "@/stores/tabs/types";
@@ -42,8 +47,33 @@ import {
 } from "@/components/epic-canvas/surface-host/tile-surface-environment-registry";
 import { resetTileSurfaceMembershipForTesting } from "@/components/epic-canvas/surface-host/tile-surface-membership";
 import { buildSyntheticTileSurfaceEnvironment } from "@/components/epic-canvas/surface-host/__tests__/synthetic-tile-surface-fixture";
+import { useSurfaceActivity } from "@/components/home/composer/surface-activity-hooks";
+import { registerComposerFocus } from "@/lib/composer/composer-focus-registry";
+import {
+  registerTerminalFocus,
+  resetTerminalFocusRegistryForTests,
+} from "@/lib/terminals/terminal-focus-registry";
+import { resetPrimaryFocusCoordinatorForTests } from "@/lib/focus/primary-focus-coordinator";
+import { PrimaryFocusCoordinatorProvider } from "@/lib/focus/primary-focus-coordinator-provider";
+import { useLandingTerminalStore } from "@/stores/home/landing-terminal-store";
 
 const stableTileSurfaceHostTestState = vi.hoisted(() => ({ enabled: false }));
+
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@tanstack/react-router")>();
+  return {
+    ...actual,
+    useRouterState: (options: {
+      readonly select?: (state: {
+        readonly location: {
+          readonly pathname: string;
+          readonly search: Record<string, unknown>;
+        };
+      }) => unknown;
+    }) => options.select?.({ location: { pathname: "/", search: {} } }) ?? "/",
+  };
+});
 
 vi.mock(
   "@/components/epic-canvas/surface-host/stable-tile-surface-host-switch",
@@ -109,8 +139,44 @@ vi.mock("@/components/epic-tabs/epic-surface", async () => {
   return { EpicSurface: MockEpicSurface };
 });
 
-vi.mock("@/components/home/landing-draft-surface", () => ({
-  LandingDraftSurface: () => <div data-testid="draft-surface-body" />,
+vi.mock("@/components/home/home-hero", () => ({
+  HomeHero: () => <div />,
+}));
+vi.mock("@/components/home/host-update-banner", () => ({
+  HostUpdateBanner: () => null,
+}));
+vi.mock("@/components/epics/epics-list-panel", () => ({
+  EpicsListPanel: () => null,
+}));
+vi.mock(
+  "@/components/home/host-workspace-selector/host-workspace-selector",
+  () => ({ HostWorkspaceSelector: () => null }),
+);
+vi.mock("@/components/home/composer/landing-composer", () => ({
+  LandingComposer: (props: { readonly draftId: string | null }) => {
+    const active = useSurfaceActivity();
+    const ref = useRef<HTMLButtonElement | null>(null);
+    useLayoutEffect(() => {
+      const element = ref.current;
+      if (element === null) return;
+      return registerComposerFocus(
+        `integrated-${props.draftId ?? "unbound"}`,
+        {
+          focus: () => element.focus(),
+          containsActiveElement: (activeElement) => activeElement === element,
+          isEligible: () => element.isConnected,
+        },
+        active,
+      );
+    }, [active, props.draftId]);
+    return (
+      <button
+        ref={ref}
+        type="button"
+        aria-label={`Composer ${props.draftId}`}
+      />
+    );
+  },
 }));
 
 vi.mock("@/components/epics/history-surface", () => ({
@@ -138,7 +204,26 @@ vi.mock(
   }),
 );
 vi.mock("@/components/home/terminal-panel/landing-terminal-panel", () => ({
-  LandingTerminalPanel: () => <div data-testid="landing-terminal-panel-body" />,
+  LandingTerminalPanel: () => {
+    const ref = useRef<HTMLButtonElement | null>(null);
+    useLayoutEffect(() => {
+      const element = ref.current;
+      if (element === null) return;
+      return registerTerminalFocus(
+        "integrated-terminal",
+        () => element.focus(),
+        (activeElement) => activeElement === element,
+        () => element.isConnected,
+      );
+    }, []);
+    return (
+      <button
+        ref={ref}
+        type="button"
+        data-testid="landing-terminal-panel-body"
+      />
+    );
+  },
 }));
 
 const EPIC_A: TabRef = { kind: "epic", id: "epic-a" };
@@ -147,6 +232,36 @@ const DRAFT_A: TabRef = { kind: "draft", id: "draft-a" };
 const DRAFT_B: TabRef = { kind: "draft", id: "draft-b" };
 const HISTORY: TabRef = { kind: "history", id: "history" };
 const SETTINGS: TabRef = { kind: "settings", id: "settings" };
+
+const UNAVAILABLE_DEFAULT_HOST_CONTROLLER: HostReadinessController = {
+  readinessFor: () => ({ kind: "restoring-request-context" }),
+  hasBeenDefaultHostReady: false,
+  defaultHostPresentation: {
+    targetKind: "local",
+    localBootIntent: true,
+    localHostState: "unknown",
+    stage: "loading",
+    progress: null,
+    lastProgress: null,
+    provisioningError: null,
+    provisioning: false,
+    removed: false,
+    hostBusy: false,
+    canManageHost: false,
+    retryProvisioning: () => undefined,
+    forceProvisioning: () => undefined,
+    reinstall: () => undefined,
+    configureShell: () => undefined,
+    refreshDirectory: () => undefined,
+    openSettings: () => undefined,
+    compatibility: {
+      status: "compatible",
+      degraded: false,
+      unreachable: false,
+      hostStatus: null,
+    },
+  },
+};
 
 function surfaceRef(key: TabRef): HTMLElement {
   return screen.getByTestId(`top-level-surface-${key.kind}-${key.id}`);
@@ -265,6 +380,8 @@ describe("<TopLevelTabHost />", () => {
     useTabsStore.setState(useTabsStore.getInitialState(), true);
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     useLandingDraftStore.setState(useLandingDraftStore.getInitialState(), true);
+    useAuthStore.setState(useAuthStore.getInitialState(), true);
+    useLandingTerminalStore.getState().resetForTests();
   });
 
   afterEach(() => {
@@ -272,6 +389,10 @@ describe("<TopLevelTabHost />", () => {
     useTabsStore.setState(useTabsStore.getInitialState(), true);
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     useLandingDraftStore.setState(useLandingDraftStore.getInitialState(), true);
+    useAuthStore.setState(useAuthStore.getInitialState(), true);
+    useLandingTerminalStore.getState().resetForTests();
+    resetTerminalFocusRegistryForTests();
+    resetPrimaryFocusCoordinatorForTests();
   });
 
   it.each([
@@ -296,6 +417,22 @@ describe("<TopLevelTabHost />", () => {
     expect(surfaceRef(left).className).toContain("flex-col");
     expect(surfaceRef(right).dataset.visible).toBe("true");
     expect(surfaceRef(right).dataset.focused).toBe("false");
+  });
+
+  it("keeps tab content mounted while window default-host readiness is unavailable", () => {
+    seedSources([EPIC_A]);
+    setSingle(EPIC_A, [EPIC_A]);
+    useAuthStore.setState({ status: "signed-in" });
+
+    render(
+      <HostReadinessControllerContext.Provider
+        value={UNAVAILABLE_DEFAULT_HOST_CONTROLLER}
+      >
+        <TopLevelTabHost />
+      </HostReadinessControllerContext.Provider>,
+    );
+
+    expect(screen.getByTestId("epic-surface-content-epic-a")).toBeTruthy();
   });
 
   it("keeps split partner keys mounted while swapping their slots", () => {
@@ -334,6 +471,29 @@ describe("<TopLevelTabHost />", () => {
 
     expect(surfaceRef(EPIC_B).dataset.focused).toBe("true");
     expect(document.activeElement).toBe(action);
+  });
+
+  it("keeps the activating composer focused in a real draft/draft split", async () => {
+    seedSources([DRAFT_A, DRAFT_B]);
+    setSplit(DRAFT_A, DRAFT_B, "left");
+    render(
+      <PrimaryFocusCoordinatorProvider>
+        {activatingHost(DRAFT_A, DRAFT_B)}
+      </PrimaryFocusCoordinatorProvider>,
+    );
+
+    const rightComposer = await screen.findByRole("button", {
+      name: `Composer ${DRAFT_B.id}`,
+    });
+    act(() => {
+      rightComposer.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, composed: true }),
+      );
+      rightComposer.focus();
+    });
+
+    expect(surfaceRef(DRAFT_B).dataset.focused).toBe("true");
+    expect(document.activeElement).toBe(rightComposer);
   });
 
   it("retains primary autofocus for blank top-level surface activation", () => {
@@ -455,6 +615,54 @@ describe("<TopLevelTabHost />", () => {
     expect(screen.getAllByTestId(/^top-level-surface-/)).toHaveLength(5);
   });
 
+  it("focuses a maximized terminal when its draft is reconstructed after MRU eviction", async () => {
+    const refs = Array.from({ length: 6 }, (_value, index) => ({
+      kind: "draft" as const,
+      id: `draft-${index}`,
+    }));
+    seedSources(refs);
+    setSingle(refs[0], refs);
+    const terminalStore = useLandingTerminalStore.getState();
+    terminalStore.addTab({
+      instanceId: "integrated-terminal",
+      sessionId: "integrated-terminal-session",
+      hostId: TEST_HOST_ID,
+      cwd: "/tmp",
+      name: "Terminal",
+      titleSource: "default",
+    });
+    terminalStore.setPanelOpen(refs[0].id, true);
+    terminalStore.setPanelMaximized(refs[0].id, true);
+
+    render(
+      <PrimaryFocusCoordinatorProvider>
+        <TopLevelTabHost />
+        <LandingTerminalHost />
+      </PrimaryFocusCoordinatorProvider>,
+    );
+    const firstSurface = surfaceRef(refs[0]);
+    const terminal = await screen.findByTestId("landing-terminal-panel-body");
+    expect(document.activeElement).toBe(terminal);
+
+    for (const ref of refs.slice(1)) {
+      act(() => setSingle(ref, refs));
+    }
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId(`top-level-surface-draft-${refs[0].id}`),
+      ).toBeNull();
+    });
+
+    act(() => setSingle(refs[0], refs));
+
+    await waitFor(() => {
+      expect(surfaceRef(refs[0])).not.toBe(firstSurface);
+      expect(document.activeElement).toBe(
+        screen.getByTestId("landing-terminal-panel-body"),
+      );
+    });
+  });
+
   it("mounts exactly one landing terminal panel for a draft/draft split", () => {
     seedSources([DRAFT_A, DRAFT_B]);
     setSplit(DRAFT_A, DRAFT_B, "right");
@@ -559,6 +767,7 @@ describe("activateHostedTopLevelSurface (design-review F3: hosted pointer/focus 
       kind: "epic",
       id: "epic-a",
       epicId: "epic-a",
+      hostId: null,
       route: "/epic/epic-a",
       name: "Epic A",
       icon: null,
@@ -596,6 +805,7 @@ describe("activateHostedTopLevelSurface (design-review F3: hosted pointer/focus 
       kind: "epic",
       id: "epic-a",
       epicId: "epic-a",
+      hostId: null,
       route: "/epic/epic-a",
       name: "Epic A",
       icon: null,
@@ -628,6 +838,7 @@ describe("activateHostedTopLevelSurface (design-review F3: hosted pointer/focus 
       kind: "epic",
       id: "epic-a",
       epicId: "epic-a",
+      hostId: null,
       route: "/epic/epic-a",
       name: "Epic A",
       icon: null,

@@ -141,6 +141,7 @@ function controllableSession(): ControllableSession {
       availability.add(listener);
       return () => availability.delete(listener);
     },
+    subscribeReadinessLost: () => () => undefined,
     terminalFatal: () => session.fatal,
     close: () => {
       closeCalls += 1;
@@ -169,6 +170,8 @@ const remoteEntry: RemoteHostDirectoryEntry = {
   },
   publicKey: "pubkey-b",
   relayFuseGrace: false,
+  recentHostCheckIn: false,
+  planAllowsRemote: true,
 };
 
 const localEntry: HostDirectoryEntry = {

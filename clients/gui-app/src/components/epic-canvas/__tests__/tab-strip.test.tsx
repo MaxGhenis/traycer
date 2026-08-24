@@ -7,6 +7,10 @@ vi.mock("@/hooks/notifications/use-host-notification-indicators-query", () => ({
     refetch: () => Promise.resolve(),
   }),
 }));
+
+vi.mock("@/components/chat/chat-progress-icon", () => ({
+  ChatProgressIcon: () => <span data-testid="chat-progress-icon" />,
+}));
 import {
   cleanup,
   fireEvent,
@@ -15,7 +19,7 @@ import {
   within,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { TabStrip } from "@/components/epic-canvas/canvas/tab-strip";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
@@ -31,6 +35,7 @@ import {
   installManagedCommandChatSession,
 } from "@/stores/managed-commands/test-support/managed-command-chat-session";
 import { managedCommandSchema } from "@traycer/protocol/host/managed-command/unary-schemas";
+import { NotificationConsumptionContext } from "@/components/notifications/notification-consumption-context";
 
 interface CapturedDraggableInput {
   readonly id: string;
@@ -51,6 +56,40 @@ const testState = vi.hoisted((): TabStripTestState => ({
   draggableInputs: [],
   droppableInputs: [],
 }));
+
+interface TerminalAuthorityTestState {
+  capability: "unknown" | "legacy" | "capable";
+  canMutate: boolean;
+  viewModel: {
+    readonly displayTitle: string;
+    readonly manualTitle: string | null;
+    readonly activeProcessName: string | null;
+    readonly liveCwd: string | null;
+  } | null;
+  rename: Mock<
+    (request: {
+      readonly terminalId: string;
+      readonly manualTitle: string;
+    }) => void
+  >;
+  close: Mock<(request: { readonly terminalId: string }) => void>;
+}
+
+const terminalAuthorityState = vi.hoisted((): TerminalAuthorityTestState => ({
+  capability: "legacy",
+  canMutate: false,
+  viewModel: null,
+  rename:
+    vi.fn<
+      (request: {
+        readonly terminalId: string;
+        readonly manualTitle: string;
+      }) => void
+    >(),
+  close: vi.fn<(request: { readonly terminalId: string }) => void>(),
+}));
+
+const consumeNotificationEntity = vi.hoisted(() => vi.fn());
 
 vi.mock("@dnd-kit/core", () => ({
   useDraggable: (input: CapturedDraggableInput) => {
@@ -85,6 +124,28 @@ vi.mock("@/hooks/terminal/use-terminal-rename-for-mutation", () => ({
   useTerminalRenameFor: () => ({ mutate: () => undefined }),
 }));
 
+vi.mock("@/hooks/terminal/use-epic-terminal-authority", () => ({
+  useEpicTerminalAuthority: () => ({
+    capability: terminalAuthorityState.capability,
+    projection:
+      terminalAuthorityState.capability === "capable" ? {} : undefined,
+    viewModel: terminalAuthorityState.viewModel,
+    canMutate: terminalAuthorityState.canMutate,
+    migrationPending: false,
+    migrationError: null,
+    retryMigration: () => undefined,
+    ensureRunning: {},
+    rename: { mutate: terminalAuthorityState.rename },
+    close: {
+      isPending: false,
+      mutateAsync: (request: { readonly terminalId: string }) => {
+        terminalAuthorityState.close(request);
+        return Promise.resolve();
+      },
+    },
+  }),
+}));
+
 const VIEW_TAB_ID = "view-tab-1";
 
 const TAB: EpicNodeRef = {
@@ -103,6 +164,24 @@ const ARTIFACT_TAB: EpicNodeRef = {
   type: "spec",
   name: "Architecture",
   hostId: "host-A",
+};
+
+const TERMINAL_TAB: EpicNodeRef = {
+  id: "terminal-1",
+  instanceId: "inst-terminal-1",
+  type: "terminal",
+  name: "Local presentation",
+  titleSource: "manual",
+  hostId: "host-A",
+  cwd: "/repo",
+};
+
+const CHAT_TAB: EpicNodeRef = {
+  id: "chat-1",
+  instanceId: "inst-chat-1",
+  type: "chat",
+  name: "Agent chat",
+  hostId: "host-B",
 };
 
 function createQueryClient(): QueryClient {
@@ -143,6 +222,7 @@ function seedActivePreviewTab(tab: EpicCanvasTileRef): void {
 
 function renderTabStrip(input: {
   readonly onClose: (groupId: string, tabId: string) => void;
+  readonly onMenuClose?: (groupId: string, tabId: string) => void;
   readonly onPromotePreview: (groupId: string) => void;
   readonly onOpenBlankTab: (groupId: string) => void;
   readonly onSplit:
@@ -155,6 +235,7 @@ function renderTabStripForTab(
   tab: EpicCanvasTileRef,
   input: {
     readonly onClose: (groupId: string, tabId: string) => void;
+    readonly onMenuClose?: (groupId: string, tabId: string) => void;
     readonly onPromotePreview: (groupId: string) => void;
     readonly onOpenBlankTab: (groupId: string) => void;
     readonly onSplit:
@@ -166,31 +247,35 @@ function renderTabStripForTab(
   const onSplit = input.onSplit === undefined ? () => undefined : input.onSplit;
   render(
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider delayDuration={0}>
-        <TabStrip
-          epicId="epic-1"
-          tabId={VIEW_TAB_ID}
-          groupId="group-1"
-          tabs={[tab]}
-          activeTabId={tab.instanceId}
-          onSelectTab={() => undefined}
-          onCloseTab={input.onClose}
-          onPromotePreview={input.onPromotePreview}
-          onSplit={onSplit}
-          onCloseGroup={() => undefined}
-          onOpenBlankTab={input.onOpenBlankTab}
-          canRenameTabs
-          menuHandlers={{
-            onClose: () => undefined,
-            onCloseOthers: () => undefined,
-            onCloseRight: () => undefined,
-            onCloseAll: () => undefined,
-            onSplit: () => undefined,
-            onRevealInSidebar: () => undefined,
-            onRename: () => undefined,
-          }}
-        />
-      </TooltipProvider>
+      <NotificationConsumptionContext.Provider
+        value={consumeNotificationEntity}
+      >
+        <TooltipProvider delayDuration={0}>
+          <TabStrip
+            epicId="epic-1"
+            tabId={VIEW_TAB_ID}
+            groupId="group-1"
+            tabs={[tab]}
+            activeTabId={tab.instanceId}
+            onSelectTab={() => undefined}
+            onCloseTab={input.onClose}
+            onPromotePreview={input.onPromotePreview}
+            onSplit={onSplit}
+            onCloseGroup={() => undefined}
+            onOpenBlankTab={input.onOpenBlankTab}
+            canRenameTabs
+            menuHandlers={{
+              onClose: input.onMenuClose ?? (() => undefined),
+              onCloseOthers: () => undefined,
+              onCloseRight: () => undefined,
+              onCloseAll: () => undefined,
+              onSplit: () => undefined,
+              onRevealInSidebar: () => undefined,
+              onRename: () => undefined,
+            }}
+          />
+        </TooltipProvider>
+      </NotificationConsumptionContext.Provider>
     </QueryClientProvider>,
   );
 }
@@ -201,6 +286,12 @@ describe("<TabStrip />", () => {
     vi.unstubAllGlobals();
     testState.draggableInputs = [];
     testState.droppableInputs = [];
+    terminalAuthorityState.capability = "legacy";
+    terminalAuthorityState.canMutate = false;
+    terminalAuthorityState.viewModel = null;
+    terminalAuthorityState.rename.mockReset();
+    terminalAuthorityState.close.mockReset();
+    consumeNotificationEntity.mockReset();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
   });
 
@@ -240,6 +331,22 @@ describe("<TabStrip />", () => {
     expect(onPromotePreview).toHaveBeenCalledWith("group-1");
   });
 
+  it("marks the clicked active chat tab's host-qualified notifications read", () => {
+    renderTabStripForTab(CHAT_TAB, {
+      onClose: () => undefined,
+      onPromotePreview: () => undefined,
+      onOpenBlankTab: () => undefined,
+      onSplit: undefined,
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: /Agent chat/ }));
+
+    expect(consumeNotificationEntity).toHaveBeenCalledWith({
+      originHostId: "host-B",
+      entity: { epicId: "epic-1", chatId: "chat-1" },
+    });
+  });
+
   it("copies the absolute file path from a workspace-file tab context menu", () => {
     const writeText = vi.fn(() => Promise.resolve());
     vi.stubGlobal("navigator", {
@@ -274,6 +381,208 @@ describe("<TabStrip />", () => {
     expect(
       screen.queryByRole("menuitem", { name: "Copy File Path" }),
     ).toBeNull();
+  });
+
+  it.each([
+    {
+      name: "before readiness",
+      capability: "unknown" as const,
+      canMutate: false,
+      viewModel: null,
+      title: "Local presentation",
+    },
+    {
+      name: "after PTY startup",
+      capability: "capable" as const,
+      canMutate: true,
+      viewModel: {
+        displayTitle: "Manual title",
+        manualTitle: "Manual title",
+        activeProcessName: "bun",
+        liveCwd: "/repo/live",
+      },
+      title: "Manual title",
+    },
+  ])(
+    "closes a terminal tab $name as a local presentation only",
+    ({ capability, canMutate, viewModel, title }) => {
+      terminalAuthorityState.capability = capability;
+      terminalAuthorityState.canMutate = canMutate;
+      terminalAuthorityState.viewModel = viewModel;
+      const onClose = vi.fn((groupId: string, instanceId: string): void => {
+        useEpicCanvasStore
+          .getState()
+          .closeCanvasTab(VIEW_TAB_ID, groupId, instanceId);
+      });
+      renderTabStripForTab(TERMINAL_TAB, {
+        onClose,
+        onPromotePreview: () => undefined,
+        onOpenBlankTab: () => undefined,
+        onSplit: undefined,
+      });
+
+      expect(
+        screen.getByTestId(`tab-title-${TERMINAL_TAB.instanceId}`).textContent,
+      ).toBe(title);
+
+      fireEvent.click(screen.getByRole("button", { name: `Close ${title}` }));
+
+      expect(terminalAuthorityState.close).not.toHaveBeenCalled();
+      expect(onClose).toHaveBeenCalledWith("group-1", TERMINAL_TAB.instanceId);
+      expect(
+        useEpicCanvasStore.getState().canvasByTabId[VIEW_TAB_ID]
+          ?.tilesByInstanceId[TERMINAL_TAB.instanceId],
+      ).toBeUndefined();
+    },
+  );
+
+  it("offers Edit Title for a capable terminal tab", () => {
+    terminalAuthorityState.capability = "capable";
+    terminalAuthorityState.canMutate = true;
+    terminalAuthorityState.viewModel = {
+      displayTitle: "Manual title",
+      manualTitle: "Manual title",
+      activeProcessName: "bun",
+      liveCwd: "/repo/live",
+    };
+    renderTabStripForTab(TERMINAL_TAB, {
+      onClose: () => undefined,
+      onPromotePreview: () => undefined,
+      onOpenBlankTab: () => undefined,
+      onSplit: undefined,
+    });
+
+    fireEvent.contextMenu(
+      screen.getByTestId(`tab-item-${TERMINAL_TAB.instanceId}`),
+    );
+    expect(screen.getByRole("menuitem", { name: "Edit Title" })).not.toBeNull();
+  });
+
+  it("closes a capable terminal tab from middle-click without a lifetime mutation", () => {
+    terminalAuthorityState.capability = "capable";
+    terminalAuthorityState.canMutate = true;
+    terminalAuthorityState.viewModel = {
+      displayTitle: "Manual title",
+      manualTitle: "Manual title",
+      activeProcessName: "bun",
+      liveCwd: "/repo/live",
+    };
+    const onClose = vi.fn((groupId: string, instanceId: string): void => {
+      useEpicCanvasStore
+        .getState()
+        .closeCanvasTab(VIEW_TAB_ID, groupId, instanceId);
+    });
+    renderTabStripForTab(TERMINAL_TAB, {
+      onClose,
+      onPromotePreview: () => undefined,
+      onOpenBlankTab: () => undefined,
+      onSplit: undefined,
+    });
+
+    fireEvent(
+      screen.getByTestId(`tab-item-${TERMINAL_TAB.instanceId}`),
+      new MouseEvent("auxclick", { bubbles: true, button: 1 }),
+    );
+
+    expect(terminalAuthorityState.close).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledWith("group-1", TERMINAL_TAB.instanceId);
+    expect(
+      useEpicCanvasStore.getState().canvasByTabId[VIEW_TAB_ID]
+        ?.tilesByInstanceId[TERMINAL_TAB.instanceId],
+    ).toBeUndefined();
+  });
+
+  it.each([
+    {
+      name: "provider-login",
+      tab: {
+        id: "term-signin",
+        instanceId: "inst-signin",
+        type: "terminal" as const,
+        name: "Copilot sign-in",
+        titleSource: "manual" as const,
+        hostId: "host-A",
+        cwd: "~",
+        origin: "provider-login" as const,
+        originProviderId: "copilot" as const,
+      },
+    },
+    {
+      name: "setup",
+      tab: {
+        id: "term-setup",
+        instanceId: "inst-setup",
+        type: "terminal" as const,
+        name: "Setup: traycer",
+        titleSource: "manual" as const,
+        hostId: "host-A",
+        cwd: "/repo",
+        origin: "setup" as const,
+      },
+    },
+  ])(
+    "closes a capable-host $name ref through the legacy coordinator branch",
+    ({ tab }) => {
+      // Import-exempt refs report capability: "legacy" from
+      // useEpicTerminalAuthority even against a capable host, so the
+      // coordinator can close them locally. Projection stays undefined.
+      terminalAuthorityState.capability = "legacy";
+      terminalAuthorityState.canMutate = true;
+      const onClose = vi.fn((groupId: string, instanceId: string): void => {
+        useEpicCanvasStore
+          .getState()
+          .closeCanvasTab(VIEW_TAB_ID, groupId, instanceId);
+      });
+      renderTabStripForTab(tab, {
+        onClose,
+        onPromotePreview: () => undefined,
+        onOpenBlankTab: () => undefined,
+        onSplit: undefined,
+      });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: `Close ${tab.name}` }),
+      );
+      expect(onClose).toHaveBeenCalledWith("group-1", tab.instanceId);
+      expect(
+        useEpicCanvasStore.getState().canvasByTabId[VIEW_TAB_ID]
+          ?.tilesByInstanceId[tab.instanceId],
+      ).toBeUndefined();
+      expect(terminalAuthorityState.close).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fails closed for unknown-capability terminal rename and still closes the presentation", () => {
+    terminalAuthorityState.capability = "unknown";
+    terminalAuthorityState.canMutate = false;
+    const onMenuClose = vi.fn((groupId: string, instanceId: string): void => {
+      useEpicCanvasStore
+        .getState()
+        .closeCanvasTab(VIEW_TAB_ID, groupId, instanceId);
+    });
+    renderTabStripForTab(TERMINAL_TAB, {
+      onClose: () => undefined,
+      onMenuClose,
+      onPromotePreview: () => undefined,
+      onOpenBlankTab: () => undefined,
+      onSplit: undefined,
+    });
+
+    fireEvent.contextMenu(
+      screen.getByTestId(`tab-item-${TERMINAL_TAB.instanceId}`),
+    );
+
+    expect(screen.queryByRole("menuitem", { name: "Edit Title" })).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Close" }));
+    expect(onMenuClose).toHaveBeenCalledWith(
+      "group-1",
+      TERMINAL_TAB.instanceId,
+    );
+    expect(terminalAuthorityState.close).not.toHaveBeenCalled();
+    expect(
+      useEpicCanvasStore.getState().canvasByTabId[VIEW_TAB_ID]
+        ?.tilesByInstanceId[TERMINAL_TAB.instanceId],
+    ).toBeUndefined();
   });
 
   it("opens a blank tab when the empty strip area is double-clicked", () => {

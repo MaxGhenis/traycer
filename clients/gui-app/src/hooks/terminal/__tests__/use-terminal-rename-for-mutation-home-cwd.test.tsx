@@ -11,8 +11,8 @@ import { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock-host-messenger";
 import { hostRpcRegistry } from "@traycer/protocol/host/index";
 import type {
-  CanonicalTerminalSessionInfoWithCurrentCwd,
-  ListTerminalsResponseV22,
+  CanonicalTerminalSessionInfoWithLifecycleOwner,
+  ListTerminalsResponseV23,
 } from "@traycer/protocol/host/terminal/unary-schemas";
 import type { HostRpcRegistry } from "@/lib/host";
 import type { RenameTerminalMutationContext } from "@/hooks/terminal/use-terminal-rename-for-mutation";
@@ -59,20 +59,21 @@ function createBoundHostClient(): HostClient<HostRpcRegistry> {
     handlers: {},
     requestId: () => "request-test",
   });
-  const client = new HostClient<HostRpcRegistry>({
+  const entry = {
+    hostId: HOST_ID,
+    label: "Test Host",
+    kind: "mock" as const,
+    websocketUrl: "ws://host.test",
+    version: "test",
+    transportDialability: "dialable" as const,
+  };
+  const spine = new HostClient<HostRpcRegistry>({
     registry: hostRpcRegistry,
     messenger,
     invalidator: { invalidateHostScope: () => {} },
+    findHostById: (hostId) => (hostId === entry.hostId ? entry : null),
   });
-  client.bind({
-    hostId: HOST_ID,
-    label: "Test Host",
-    kind: "mock",
-    websocketUrl: "ws://host.test",
-    version: "test",
-    transportDialability: "dialable",
-  });
-  return client;
+  return spine.createRequester(entry);
 }
 
 type RenameVariables = { sessionId: string; title: string };
@@ -100,14 +101,15 @@ vi.mock("@/hooks/host/use-host-query", () => ({
 import { useTerminalRenameFor } from "@/hooks/terminal/use-terminal-rename-for-mutation";
 
 function sessionInfo(
-  overrides: Partial<CanonicalTerminalSessionInfoWithCurrentCwd>,
-): CanonicalTerminalSessionInfoWithCurrentCwd {
+  overrides: Partial<CanonicalTerminalSessionInfoWithLifecycleOwner>,
+): CanonicalTerminalSessionInfoWithLifecycleOwner {
   return {
     sessionId: SESSION_ID,
     scope: { kind: "epic", epicId: EPIC_ID },
     sessionKind: "terminal",
     cwd: "/work/repo",
     currentCwd: "/work/repo",
+    lifecycleOwner: "manager",
     shellCommand: "/bin/zsh",
     shellArgs: [],
     cols: 80,
@@ -143,7 +145,7 @@ describe("useTerminalRenameFor homeCwd cache preservation", () => {
       sessionId: "term-other",
       title: "other",
     });
-    queryClient.setQueryData<ListTerminalsResponseV22>(listKey, {
+    queryClient.setQueryData<ListTerminalsResponseV23>(listKey, {
       sessions: [sessionInfo({}), sibling],
       homeCwd: HOME_CWD,
     });
@@ -157,7 +159,7 @@ describe("useTerminalRenameFor homeCwd cache preservation", () => {
       title: NEW_TITLE,
     });
 
-    const data = queryClient.getQueryData<ListTerminalsResponseV22>(listKey);
+    const data = queryClient.getQueryData<ListTerminalsResponseV23>(listKey);
     expect(data?.homeCwd).toBe(HOME_CWD);
     expect(
       data?.sessions.find((session) => session.sessionId === SESSION_ID)?.title,
@@ -181,7 +183,7 @@ describe("useTerminalRenameFor homeCwd cache preservation", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    queryClient.setQueryData<ListTerminalsResponseV22>(listKey, {
+    queryClient.setQueryData<ListTerminalsResponseV23>(listKey, {
       sessions: [sessionInfo({})],
       homeCwd: HOME_CWD,
     });
@@ -195,11 +197,11 @@ describe("useTerminalRenameFor homeCwd cache preservation", () => {
       title: NEW_TITLE,
     });
     expect(
-      queryClient.getQueryData<ListTerminalsResponseV22>(listKey)?.homeCwd,
+      queryClient.getQueryData<ListTerminalsResponseV23>(listKey)?.homeCwd,
     ).toBe(HOME_CWD);
     expect(
       queryClient
-        .getQueryData<ListTerminalsResponseV22>(listKey)
+        .getQueryData<ListTerminalsResponseV23>(listKey)
         ?.sessions.find((session) => session.sessionId === SESSION_ID)?.title,
     ).toBe(NEW_TITLE);
 
@@ -210,7 +212,7 @@ describe("useTerminalRenameFor homeCwd cache preservation", () => {
     );
 
     const rolledBack =
-      queryClient.getQueryData<ListTerminalsResponseV22>(listKey);
+      queryClient.getQueryData<ListTerminalsResponseV23>(listKey);
     expect(rolledBack?.homeCwd).toBe(HOME_CWD);
     expect(
       rolledBack?.sessions.find((session) => session.sessionId === SESSION_ID)

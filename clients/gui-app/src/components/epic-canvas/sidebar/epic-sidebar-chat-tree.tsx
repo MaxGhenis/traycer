@@ -7,7 +7,6 @@ import { AnimatePresence, m, useReducedMotion } from "motion/react";
 import type { RoleClaim } from "@traycer/protocol/persistence/epic/role-claims";
 import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import { v4 as uuidv4 } from "uuid";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import { useHostReachability } from "@/hooks/agent/use-host-reachability";
 import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { makePublishedChatTileRef } from "@/stores/epics/canvas/tile-schema/published-chat-tile";
@@ -42,7 +41,8 @@ import { useCompactRelativeTime } from "@/lib/relative-time";
 import { OwnerResourceChip } from "@/components/resources/resource-usage-chip";
 import type { ResourceOwnerKindWire } from "@traycer/protocol/host/resources/subscribe";
 import { ChatProgressIcon } from "@/components/chat/chat-progress-icon";
-import { NotificationIndicatorsProvider } from "@/components/notifications/notification-indicators-provider";
+import { ChatIndicatorHostScopes } from "@/components/notifications/chat-indicator-host-scopes";
+import { chatIndicatorHostScopes } from "@/lib/notifications/chat-indicator-scopes";
 import {
   NotificationIndicatorsContext,
   useSurfaceNotificationIndicatorState,
@@ -55,13 +55,14 @@ import {
   FORK_TONE,
   INTERVIEW_TONE,
   terminalFailureTone,
-  TERMINAL_FAILURE_TONE,
   type IndicatorTone,
 } from "@/components/notifications/notification-indicator-tones";
 import { BackgroundActivityGlyph } from "@/components/notifications/background-activity-glyph";
 import {
   selectNotificationIndicatorState,
+  EMPTY_INDICATOR_STATE_RESPONSE,
   type NotificationIndicatorState,
+  type SurfaceNotificationIndicators,
 } from "@/stores/notifications/notification-indicator-state";
 import { useAppLocalNotificationsStore } from "@/stores/notifications/app-local-notifications-store";
 import type { TreeSlice } from "@/stores/epics/open-epic/types";
@@ -130,6 +131,7 @@ import {
   useEpicNodeArchived,
   useEpicNodeUpdatedAt,
   useEpicNodeHostId,
+  useEpicNodeHostIds,
   useEpicNodeOwnerUserId,
   useEpicNodeOwnerKind,
   useEpicPermissionRole,
@@ -181,6 +183,8 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useEffectEvent,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -241,7 +245,6 @@ import {
 } from "@/stores/epics/panel-header-search-store";
 import { resolveProfileAccentDot } from "@/components/worktree/worktree-owner-settings-model";
 import { harnessProfiles } from "@/components/worktree/worktree-owner-settings-profiles";
-import { useNotificationIndicators } from "@/hooks/notifications/use-notification-indicators-query";
 import { useEpicSessionHostId } from "@/hooks/epic/use-epic-session-host-id";
 import {
   SidebarContextMenuItems,
@@ -258,7 +261,6 @@ import {
 } from "@/components/notifications/notification-indicator-icon";
 import { useEpicStore } from "@/hooks/use-epic-store";
 import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
-import { useHostClient } from "@/lib/host/runtime";
 import { useProvidersListForClient } from "@/hooks/providers/use-providers-list-query";
 
 interface ChatTreePanelBodyProps {
@@ -406,9 +408,13 @@ function chatDescendantKind(
   if (tone === FORK_TONE) return "fork";
   if (tone === INTERVIEW_TONE) return "interview";
   if (tone === APPROVAL_TONE) return "approval";
+  // Terminal failure is demoted only for the exact chat's own glyph, where a
+  // newer live turn/Done is a stronger statement of current state. Once this
+  // chat is rolled into a collapsed parent it is a distinct failed child and
+  // must remain attention-priority over a sibling's activity or completion.
+  if (terminalFailureTone(indicatorState, "gui") !== null) return "failure";
   if (tier !== undefined) return activityTierKind(tier);
   if (indicatorState.unreadDone) return "done";
-  if (terminalFailureTone(indicatorState) !== null) return "terminal-failure";
   return null;
 }
 
@@ -497,6 +503,7 @@ function useChatDescendantStatus(args: {
     () => collectDescendantChatIds(nodeId, tree, visibleIds),
     [nodeId, tree, visibleIds],
   );
+  const descendantHostIds = useEpicNodeHostIds(descendants);
   const activityTiers = useEpicAgentActivityTiers();
   const indicators = useContext(NotificationIndicatorsContext);
   return useAppLocalNotificationsStore(
@@ -512,11 +519,11 @@ function useChatDescendantStatus(args: {
         done: 0,
         "terminal-failure": 0,
       };
-      for (const chatId of descendants) {
+      for (const [index, chatId] of descendants.entries()) {
         const indicatorState = selectNotificationIndicatorState(
           state,
           { epicId, chatId },
-          null,
+          descendantHostIds[index] ?? null,
           indicators,
         );
         const kind = chatDescendantKind(
@@ -777,39 +784,52 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
     [tree, filterVisibleIds],
   );
   const epicSessionHostId = useEpicSessionHostId();
-  const notificationIndicators = useNotificationIndicators({
-    // The chats in this tree are THIS Epic session's, and the session's host is
-    // not necessarily the app-wide active one - a retained Epic tab keeps its
-    // binding while another host is selected. `indicatorState` is computed over
-    // one host's own rows, so the active host would answer about chats it does
-    // not own (see `EpicBackupStatusIndicator`, which scopes the same way for
-    // the same reason).
-    hostId: epicSessionHostId,
-    epicIds: [],
-    chatIds: indicatorChatIds,
-    enabled: indicatorChatIds.length > 0,
-  });
+  const indicatorChatHostIds = useEpicNodeHostIds(indicatorChatIds);
+  const indicatorScopes = useMemo(
+    () =>
+      chatIndicatorHostScopes(
+        indicatorChatIds.map((chatId, index) => ({
+          chatId,
+          hostId:
+            indicatorChatHostIds[index] ??
+            epicSessionHostId ??
+            UNKNOWN_HOST_PLACEHOLDER,
+        })),
+      ),
+    [epicSessionHostId, indicatorChatHostIds, indicatorChatIds],
+  );
+  const [notificationIndicators, setNotificationIndicators] =
+    useState<SurfaceNotificationIndicators>(EMPTY_INDICATOR_STATE_RESPONSE);
   const openTileContentIds = useOpenTileContentIds(tabId);
   const activityTiers = useEpicAgentActivityTiers();
-  const alwaysVisibleIds = useAppLocalNotificationsStore(
-    useShallow((state): ReadonlyArray<string> => {
-      if (archiveVisibility !== CHAT_ARCHIVE_VISIBILITY.Unarchived) {
-        return EMPTY_ALWAYS_VISIBLE_IDS;
-      }
-      return indicatorChatIds.filter((chatId) => {
-        if (openTileContentIds.has(chatId)) return true;
-        const indicatorState = selectNotificationIndicatorState(
-          state,
-          { epicId, chatId },
-          null,
-          notificationIndicators,
-        );
-        return (
-          chatDescendantKind(indicatorState, activityTiers.get(chatId)) !== null
-        );
-      });
-    }),
+  const appLocalNotificationRows = useAppLocalNotificationsStore(
+    (state) => state.byId,
   );
+  const alwaysVisibleIds = useMemo((): ReadonlyArray<string> => {
+    if (archiveVisibility !== CHAT_ARCHIVE_VISIBILITY.Unarchived) {
+      return EMPTY_ALWAYS_VISIBLE_IDS;
+    }
+    return indicatorChatIds.filter((chatId) => {
+      if (openTileContentIds.has(chatId)) return true;
+      const indicatorState = selectNotificationIndicatorState(
+        { byId: appLocalNotificationRows },
+        { epicId, chatId },
+        null,
+        notificationIndicators,
+      );
+      return (
+        chatDescendantKind(indicatorState, activityTiers.get(chatId)) !== null
+      );
+    });
+  }, [
+    activityTiers,
+    appLocalNotificationRows,
+    archiveVisibility,
+    epicId,
+    indicatorChatIds,
+    notificationIndicators,
+    openTileContentIds,
+  ]);
   const archiveHiddenIds = useMemo(
     () => revealArchiveHiddenIds(baseArchiveHiddenIds, alwaysVisibleIds, tree),
     [baseArchiveHiddenIds, alwaysVisibleIds, tree],
@@ -838,16 +858,20 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
   // The task's chats on hosts this device cannot reach, folded against the
   // local tree by PUBLICATION identity and interleaved into one recency-sorted
   // list. There is no "other devices" section: a chat's host is a property of
-  // the chat, and a lock on the row says what its state is. App-wide client,
-  // not the tab's - the cloud read is served by whatever host this device runs.
-  const appHostClient = useHostClient();
+  // the chat, and a lock on the row says what its state is. The cloud read is
+  // a byte pipe any reachable host can serve, so it rides the Epic SESSION's
+  // client - the one host known to be serving this tree - rather than the
+  // app-wide one, which for the whole of a re-point in flight names a machine
+  // that may not be answering. (Every reader of this list in the canvas -
+  // `tab-group-view`, the route sync, the chat tile's dead-tile banner -
+  // resolves the same client, so the TanStack cache is shared, not split.)
   const cloudChats = useCloudChatList({
-    client: appHostClient,
+    client: sessionHostClient,
     taskId: epicId,
     enabled: epicId.length > 0,
   });
   const publicationTargets = useChatPublicationTargets({
-    client: appHostClient,
+    client: sessionHostClient,
     epicId,
     chatIds: localChatIds,
     enabled: epicId.length > 0,
@@ -1245,7 +1269,8 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
   }
 
   return (
-    <NotificationIndicatorsProvider indicators={notificationIndicators}>
+    <ChatIndicatorHostScopes scopes={indicatorScopes}>
+      <NotificationIndicatorSnapshot onChange={setNotificationIndicators} />
       <SidebarArchiveSupportedContext.Provider value={canArchive}>
         <SidebarChatSharingContext.Provider value={chatSharingValue}>
           <SidebarViewerContext.Provider value={isViewer}>
@@ -1273,8 +1298,23 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
           </SidebarViewerContext.Provider>
         </SidebarChatSharingContext.Provider>
       </SidebarArchiveSupportedContext.Provider>
-    </NotificationIndicatorsProvider>
+    </ChatIndicatorHostScopes>
   );
+}
+
+function NotificationIndicatorSnapshot(props: {
+  readonly onChange: (indicators: SurfaceNotificationIndicators) => void;
+}): null {
+  const indicators = useContext(NotificationIndicatorsContext);
+  const { onChange } = props;
+  const publishLatestIndicators = useEffectEvent((): void => {
+    onChange(indicators);
+  });
+  const snapshotKey = JSON.stringify(indicators);
+  useLayoutEffect(() => {
+    publishLatestIndicators();
+  }, [snapshotKey]);
+  return null;
 }
 
 function PendingCreateRow({ depth, name }: { depth: number; name: string }) {
@@ -1411,15 +1451,21 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
     [archiveSupported, isArchived, archivePending, toggleArchive],
   );
 
-  const activeHostId = useReactiveActiveHostId() ?? "unknown-host";
   // The tab must bind to the chat's OWNER host, not whichever host happens to
   // be active: a connected peer host's chat reaches this tree through the
   // shared projection, and binding it to the active host would open a tab
   // that asks the wrong machine for the transcript. Downstream already
   // honors the ref's hostId (`renderTile` wraps each ref in its own
-  // `TabHostProvider`), so the owner id is all that was missing.
+  // `TabHostProvider`), so the owner id is all that was missing. The FALLBACK
+  // for a row that carries no owner is the Epic SESSION's host - the host
+  // that projected the row - never the app-wide one, which during a re-point
+  // is a different machine from the one this tree is showing.
   const ownerHostId = useEpicNodeHostId(nodeId);
-  const openHostId = ownerHostId ?? activeHostId;
+  const sessionHostId = useEpicSessionHostId();
+  const openHostId = ownerHostId ?? sessionHostId ?? UNKNOWN_HOST_PLACEHOLDER;
+  // The host that SERVES a published copy's read (the owner is unreachable by
+  // construction there) - the session's, for the reason above.
+  const readingHostId = sessionHostId ?? UNKNOWN_HOST_PLACEHOLDER;
   // Same rule the cloud rows follow (user ruling: offline hosts show as
   // readonly with a locked composer): a CHAT row whose owner host is
   // unreachable opens the published copy, not a live tab that dials a dead
@@ -1449,7 +1495,7 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
             ownerUserId,
             ownerHostId,
             name: nodeName,
-            hostId: activeHostId,
+            hostId: readingHostId,
           })
         : {
             id: nodeId,
@@ -1464,7 +1510,7 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
       epicId,
       nodeId,
       nodeName,
-      activeHostId,
+      readingHostId,
       openableType,
       openHostId,
     ],
@@ -1868,8 +1914,11 @@ function ChatNodeShellBody(
       tabId,
       placement: ACTIVE_TILE_PLACEMENT,
       parentId: nodeId,
-      // Sidebar row: app-wide surface, so the child lands on the active host
-      // exactly like the panel's own `+`.
+      // Names no host, exactly like the panel's own `+`: the modal resolves
+      // this Epic's placement memory (last created chat's host, else the
+      // session's host) with the picker live. The PARENT row's owner host is
+      // deliberately not passed - naming it would freeze the picker (§55) and
+      // a child is not required to live on its parent's machine.
       hostId: null,
     });
   }, [canMutate, epicId, nodeId, openNewConversationModal, tabId]);
@@ -2174,7 +2223,7 @@ const ChatRowLeadingIconWithNestedRollup = memo(
     const activityTiers = useEpicAgentActivityTiers();
     const selfIndicator = useSurfaceNotificationIndicatorState(
       { epicId: props.epicId, chatId: props.nodeId },
-      null,
+      props.ownerHostId,
     );
     if (rollup !== null) {
       const selfTier = activityTiers.get(props.nodeId);
@@ -2236,7 +2285,11 @@ function ChatRowOwnLeadingIcon(props: {
   }
   if (props.artifactType === "terminal-agent") {
     return (
-      <TerminalAgentProgressIcon epicId={props.epicId} nodeId={props.nodeId} />
+      <TerminalAgentProgressIcon
+        epicId={props.epicId}
+        nodeId={props.nodeId}
+        ownerHostId={props.ownerHostId}
+      />
     );
   }
   return <StaticSidebarNodeIcon artifactType={props.artifactType} />;
@@ -2261,6 +2314,7 @@ function ChatRowOwnLeadingIcon(props: {
 function TerminalAgentProgressIcon(props: {
   readonly epicId: string;
   readonly nodeId: string;
+  readonly ownerHostId: string | null;
 }) {
   const isActive = useEpicActiveAgentIds().has(props.nodeId);
   const tier = useEpicAgentActivityTiers().get(props.nodeId);
@@ -2268,7 +2322,7 @@ function TerminalAgentProgressIcon(props: {
   const icon = useNodeIconDisplay("terminal-agent");
   const indicatorState = useSurfaceNotificationIndicatorState(
     { epicId: props.epicId, chatId: props.nodeId },
-    null,
+    props.ownerHostId,
   );
   // The underlying harness's brand mark (Claude, Codex, …) so the row reads
   // as the tool driving the agent. Brand marks keep their own colors and
@@ -2291,6 +2345,7 @@ function TerminalAgentProgressIcon(props: {
       runningTitle="Agent in progress"
       defaultIcon={idleIcon}
       statusPresentation="message"
+      agentSurface="tui"
     />
   );
 }
@@ -2631,8 +2686,10 @@ function ChatRowButton(props: ChatRowButtonProps) {
   const resourceOwnerKind = resourceOwnerKindForNode(artifactType);
   const roleClaims = useEpicAgentRoleClaims(nodeId);
   const ownerHostId = useEpicNodeHostId(nodeId);
-  const activeHostId = useReactiveActiveHostId();
-  const sourceHostId = ownerHostId ?? activeHostId;
+  // Session host as the fallback, for the same reason `ChatNode` opens with
+  // it: the drag payload names the host the dropped tile binds to.
+  const sessionHostId = useEpicSessionHostId();
+  const sourceHostId = ownerHostId ?? sessionHostId;
   // Same lock the cloud rows carry, driven by the same signal: a CHAT row
   // whose owner host is unreachable is readonly here (its click opens the
   // published copy), and the row must say so before the click. State, not
@@ -2844,6 +2901,7 @@ function ChatRowButton(props: ChatRowButtonProps) {
               epicId={epicId}
               kind={resourceOwnerKind}
               ownerId={nodeId}
+              hostId={null}
               className={undefined}
             />
           )}
@@ -2926,7 +2984,9 @@ const CHAT_DESCENDANT_STATUS_TONES: Record<
   interview: INTERVIEW_TONE,
   approval: APPROVAL_TONE,
   done: DONE_TONE,
-  "terminal-failure": TERMINAL_FAILURE_TONE,
+  // A collapsed aggregate can contain GUI and TUI descendants, so it uses the
+  // surface-neutral chat failure glyph. Leaf TUI rows keep TerminalSquare.
+  "terminal-failure": FAILURE_TONE,
 };
 
 /**
@@ -2948,7 +3008,7 @@ function chatSelfStatusRank(
   if (selfTier === "turn") return CHAT_STATUS_RANKS.running;
   if (selfTier === "background") return CHAT_STATUS_RANKS.background;
   if (state.unreadDone) return CHAT_STATUS_RANKS.done;
-  if (terminalFailureTone(state) !== null) {
+  if (terminalFailureTone(state, "gui") !== null) {
     return CHAT_STATUS_RANKS["terminal-failure"];
   }
   return 0;
@@ -3077,7 +3137,7 @@ function chatOwnStatusKind(
   if (running === "turn") return "working";
   if (running === "background") return "background";
   if (state.unreadDone) return "done";
-  if (terminalFailureTone(state) !== null) return "terminal-failure";
+  if (terminalFailureTone(state, "gui") !== null) return "terminal-failure";
   if (isReadOnly) return "read-only";
   return "idle";
 }

@@ -1,3 +1,4 @@
+import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -45,6 +46,7 @@ import type {
   ClientFrame,
   HostFrame,
 } from "@traycer/protocol/framework/ws-protocol";
+import { TEST_CLIENT_IDENTITY } from "@traycer-clients/shared/test-fixtures/client-identity";
 
 /**
  * Released-peer handshake smoke: drives the REAL shipped transports
@@ -258,12 +260,14 @@ function createReleasedPeerClient(
     sockets,
     authority: authorityForContext(ctx),
     client: new WsRpcClient<typeof hostRpcRegistry>({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostRpcRegistry,
       requestId: () => requestId,
       webSocketFactory: factory,
       dialTimeoutMs: 1000,
       frameTimeoutMs: 1000,
       hostAttestationWindowMs: 0,
+      evidence: NO_TRANSPORT_EVIDENCE,
     }),
   };
 }
@@ -381,12 +385,14 @@ describe.skipIf(baselines.length === 0)(
         };
         const ctx = makeRequestContext("token-smoke");
         const client = new WsRpcClient<typeof hostRpcRegistry>({
+          clientIdentity: TEST_CLIENT_IDENTITY,
           registry: hostRpcRegistry,
           requestId: () => "req-smoke",
           webSocketFactory: factory,
           dialTimeoutMs: 1000,
           frameTimeoutMs: 1000,
           hostAttestationWindowMs: 0,
+          evidence: NO_TRANSPORT_EVIDENCE,
         });
 
         const pending = client.request(
@@ -441,12 +447,14 @@ describe.skipIf(baselines.length === 0)(
         };
         const ctx = makeRequestContext("token-smoke");
         const client = new WsRpcClient<typeof baselineFallbackRegistry>({
+          clientIdentity: TEST_CLIENT_IDENTITY,
           registry: baselineFallbackRegistry,
           requestId: () => "req-fallback-smoke",
           webSocketFactory: factory,
           dialTimeoutMs: 1000,
           frameTimeoutMs: 1000,
           hostAttestationWindowMs: 0,
+          evidence: NO_TRANSPORT_EVIDENCE,
         });
 
         const pending = client.request(
@@ -511,12 +519,14 @@ describe.skipIf(baselines.length === 0)(
         };
         const ctx = makeRequestContext("token-smoke");
         const client = new WsRpcClient<typeof baselineUnsupportedRegistry>({
+          clientIdentity: TEST_CLIENT_IDENTITY,
           registry: baselineUnsupportedRegistry,
           requestId: () => "req-unsupported-smoke",
           webSocketFactory: factory,
           dialTimeoutMs: 1000,
           frameTimeoutMs: 1000,
           hostAttestationWindowMs: 0,
+          evidence: NO_TRANSPORT_EVIDENCE,
         });
 
         const pending = client.request(
@@ -577,11 +587,14 @@ describe.skipIf(baselines.length === 0)(
         };
         const ctx = makeRequestContext("token-smoke");
         const client = new WsStreamClient({
+          clientIdentity: TEST_CLIENT_IDENTITY,
           registry: hostStreamRpcRegistry,
           endpoint: () => mockLocalHostEntry,
           bearer: () => ctx.credentials,
           auth: null,
           hostCredentialMint: null,
+          onHostCredentialState: null,
+          evidence: NO_TRANSPORT_EVIDENCE,
           webSocketFactory: factory,
           dialTimeoutMs: 1000,
           openAckTimeoutMs: 1000,

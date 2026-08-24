@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { hostBusyBreakdownSchema } from "@traycer/protocol/host/status/contracts";
 
 /**
  * Caller-generated identity for one logical restart action. Retries must keep
@@ -10,12 +11,75 @@ export const hostRestartRequestSchema = z.object({
 });
 
 /**
- * The shutdown claim does not expose a source-level breakdown. Keep the busy
- * explanation to the one live count the host can state truthfully.
+ * The v1.0 busy explanation: the one live count the drain projection could
+ * state. The count deliberately excludes the working-agent and running-PTY
+ * deny signals, so a host refusing for those reasons answered `0` — which the
+ * dialog then rendered as "0 sessions are still working", a contradiction in
+ * front of the user. v1.1 exists to close that gap.
+ */
+export const hostRestartBusyVerdictV10Schema = z.object({
+  busySessionCount: z.number().int().nonnegative(),
+});
+
+/**
+ * Which deny signals beyond the countable sessions refused the claim.
+ *
+ * These are the two `isShutdownBusy` terms the session count cannot see:
+ * `workingAgents` is the activity tracker's "an agent turn or its background
+ * work is in flight", and `runningTerminals` is "a PTY a shutdown would
+ * destroy is alive" (which includes a plain terminal sitting at a prompt —
+ * the host deliberately has no idle signal for those).
+ */
+export const hostRestartBusyBlockersSchema = z.object({
+  workingAgents: z.boolean(),
+  runningTerminals: z.boolean(),
+});
+
+/**
+ * v1.1 verdict: the count plus the blocker breakdown.
+ *
+ * `blockers: null` means the host did not say WHY it refused — NOT that
+ * nothing blocks. Two producers emit it: the v1.0→v1.1 upgrade path (an old
+ * host never states blockers), and a host whose work oracles are not composed
+ * (it refuses claims fail-safe without being able to name a source). A
+ * fabricated `{ workingAgents: false, runningTerminals: false }` in either
+ * case would put an affirmative "nothing is blocking" in the host's mouth
+ * under a verdict that says the opposite.
+ */
+export const hostRestartBusyVerdictV11Schema = z.object({
+  busySessionCount: z.number().int().nonnegative(),
+  blockers: hostRestartBusyBlockersSchema.nullable(),
+});
+
+/**
+ * v1.2 verdict: the v1.1 count + blockers, plus a typed `busyBreakdown`.
+ *
+ * `busyBreakdown: null` means the host did not say how the total splits —
+ * NOT that every component is zero. `blockers` is unchanged: a v1.2 host
+ * still names the boolean deny signals, and a v1.1 host still upgrades them
+ * to `null`.
  */
 export const hostRestartBusyVerdictSchema = z.object({
   busySessionCount: z.number().int().nonnegative(),
+  blockers: hostRestartBusyBlockersSchema.nullable(),
+  busyBreakdown: hostBusyBreakdownSchema.nullable(),
 });
+
+export const hostRestartResponseV10Schema = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("accepted") }),
+  z.object({
+    outcome: z.literal("busy"),
+    verdict: hostRestartBusyVerdictV10Schema,
+  }),
+]);
+
+export const hostRestartResponseV11Schema = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("accepted") }),
+  z.object({
+    outcome: z.literal("busy"),
+    verdict: hostRestartBusyVerdictV11Schema,
+  }),
+]);
 
 export const hostRestartResponseSchema = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("accepted") }),
@@ -26,6 +90,9 @@ export const hostRestartResponseSchema = z.discriminatedUnion("outcome", [
 ]);
 
 export type HostRestartRequest = z.infer<typeof hostRestartRequestSchema>;
+export type HostRestartBusyBlockers = z.infer<
+  typeof hostRestartBusyBlockersSchema
+>;
 export type HostRestartBusyVerdict = z.infer<
   typeof hostRestartBusyVerdictSchema
 >;

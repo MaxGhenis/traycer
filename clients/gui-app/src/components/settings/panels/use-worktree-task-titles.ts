@@ -3,6 +3,7 @@ import { useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import type { WorktreeHostEntryV14 } from "@traycer/protocol/host/index";
 import {
   GET_TASK_CONTEXTS_MAX_IDS,
+  isFoundTaskContext,
   type GetTaskContextsResponse,
   type ListTaskLight,
 } from "@traycer/protocol/host/epic/unary-schemas";
@@ -10,6 +11,7 @@ import type { HostClient } from "@traycer-clients/shared/host-client/host-client
 import type { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
 import { type HostRpcRegistry } from "@/lib/host";
 import { useHostQueries } from "@/hooks/host/use-host-queries";
+import { TASK_CONTEXT_TITLE_STALE_TIME_MS } from "@/hooks/epic/use-epic-get-task-contexts-query";
 import { useCloudEpicTasksQuery } from "@/hooks/epics/use-cloud-epic-tasks-query";
 import { readEpicTitlesFromCloudTaskCaches } from "@/lib/cloud-epic-tasks-query/cache";
 
@@ -90,6 +92,10 @@ export function useWorktreeTaskTitles(
     cacheKeyIdentity: userId === null ? undefined : userId,
     options: {
       enabled: userId !== null && unresolvedIds.length > 0,
+      // Same presentation-only window as the History reader: the Settings
+      // panel remounts on every open, and a title next to a worktree row does
+      // not need a round trip each time.
+      staleTime: TASK_CONTEXT_TITLE_STALE_TIME_MS,
     },
     combine: combineTaskContextTitleResults,
   });
@@ -128,15 +134,16 @@ function titlesFromTaskContextsResponse(
   response: GetTaskContextsResponse,
 ): ReadonlyArray<{ readonly id: string; readonly title: string }> {
   return Object.values(response.tasks).flatMap((task) => {
-    const extracted = titleFromListTaskLight(task);
+    const extracted = isFoundTaskContext(task)
+      ? titleFromListTaskLight(task.task)
+      : null;
     return extracted === null ? [] : [extracted];
   });
 }
 
 function titleFromListTaskLight(
-  task: ListTaskLight | null,
+  task: ListTaskLight,
 ): { readonly id: string; readonly title: string } | null {
-  if (task === null) return null;
   const light = task.epic?.light;
   if (light === null || light === undefined) return null;
   const title = light.title.trim();

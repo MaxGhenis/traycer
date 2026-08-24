@@ -9,7 +9,7 @@ import { createRequestContextFixture } from "@traycer-clients/shared/test-fixtur
 import {
   LEGACY_HOST_RESOLVED_AT,
   type WorktreeBinding,
-  type WorktreeHostEntryV15,
+  type WorktreeHostEntryV16,
   type WorktreeWorkspaceSummaryV15,
 } from "@traycer/protocol/host/worktree-schemas";
 import { hostRpcRegistry, type HostRpcRegistry } from "@/lib/host";
@@ -270,7 +270,7 @@ function useOwnerMetadata(client: HostClient<HostRpcRegistry>) {
 function worktreeEntry(args: {
   readonly branch: string;
   readonly resolvedAt: number | null;
-}): WorktreeHostEntryV15 {
+}): WorktreeHostEntryV16 {
   return {
     worktreePath: WORKTREE_PATH,
     repoLabel: "acme/app",
@@ -292,6 +292,7 @@ function worktreeEntry(args: {
     atBaseCommit: false,
     resolvedAt: args.resolvedAt,
     presence: "present",
+    gitUnreadable: false,
   };
 }
 
@@ -388,15 +389,17 @@ function createFixture(
       },
     },
   });
-  const client = new HostClient<HostRpcRegistry>({
+  const spine = new HostClient<HostRpcRegistry>({
     registry: hostRpcRegistry,
     invalidator: createHostQueryInvalidator(queryClient),
+    findHostById: (hostId) =>
+      hostId === mockLocalHostEntry.hostId ? mockLocalHostEntry : null,
     messenger,
   });
-  client.bind(mockLocalHostEntry);
-  client.setRequestContext(
+  spine.setRequestContext(
     createRequestContextFixture({ origin: "renderer", bearerToken: "tok-1" }),
   );
+  const client = spine.createRequester(mockLocalHostEntry);
   const Wrapper = (props: { readonly children: ReactNode }): ReactNode => (
     <QueryClientProvider client={queryClient}>
       {props.children}

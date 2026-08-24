@@ -36,6 +36,16 @@ vi.mock("@/lib/host", () => ({
 
 const readySessionHosts = vi.hoisted(() => ({ value: new Set<string>() }));
 
+// The readiness cache is PUSH now (redesign P4.1): the hook under test
+// subscribes via `subscribeRemoteSessionReadiness` instead of polling, so a
+// test that only flips `readySessionHosts` and waits produces no event and
+// the hook never re-renders. A test-local listener set stands in for the
+// cache's own, and every place the old fake-timer tick used to drive a
+// re-read now fires this instead.
+const readinessListeners = vi.hoisted(() => ({
+  value: new Set<() => void>(),
+}));
+
 vi.mock(
   "@traycer-clients/shared/host-transport/remote/index",
   async (importOriginal) => {
@@ -47,11 +57,31 @@ vi.mock(
       ...actual,
       hasReadyRemoteSession: (hostId: string) =>
         readySessionHosts.value.has(hostId),
+      subscribeRemoteSessionReadiness: (listener: () => void) => {
+        readinessListeners.value.add(listener);
+        return () => {
+          readinessListeners.value.delete(listener);
+        };
+      },
     };
   },
 );
 
+function fireReadinessChanged(): void {
+  for (const listener of [...readinessListeners.value]) {
+    listener();
+  }
+}
+
 import { useHostReachability } from "@/hooks/agent/use-host-reachability";
+
+/**
+ * The account axis the wire no longer carries: `hostListItemToDirectoryEntry`
+ * stamps it onto every entry at projection time. These fixtures describe an
+ * entitled account unless a case says otherwise.
+ */
+const PLAN_ALLOWS_REMOTE = true;
+const PLAN_GATED = false;
 
 const RELAY_BASE_URL = "wss://relay.example.test/attach";
 
@@ -95,6 +125,20 @@ function directoryEntry(
   return hostListItemToDirectoryEntry(
     listItem(hostId, connectivity, lastSeenAt),
     RELAY_BASE_URL,
+    PLAN_ALLOWS_REMOTE,
+  );
+}
+
+/** The same projection for an account whose plan has no remote hosts. */
+function planGatedEntry(
+  hostId: string,
+  connectivity: HostConnectivity,
+  lastSeenAt: string,
+): HostDirectoryEntry {
+  return hostListItemToDirectoryEntry(
+    listItem(hostId, connectivity, lastSeenAt),
+    RELAY_BASE_URL,
+    PLAN_GATED,
   );
 }
 
@@ -129,6 +173,7 @@ afterEach(() => {
   cleanup();
   directoryRef.value = null;
   readySessionHosts.value = new Set();
+  readinessListeners.value.clear();
 });
 
 describe("useHostReachability — composed against real hostListItemToDirectoryEntry output", () => {
@@ -166,17 +211,17 @@ describe("useHostReachability — composed against real hostListItemToDirectoryE
     expect(result.current.unavailability).toBe("offline");
   });
 
-  it("reports unreachable with unavailability: 'plan-restricted' for a local-only (free-tier) host", async () => {
-    const entry = directoryEntry(
-      "host-local-only",
-      "local-only",
+  it("reports unreachable with unavailability: 'plan-restricted' for a LIVE host on a free-tier plan", async () => {
+    const entry = planGatedEntry(
+      "host-plan-gated",
+      "connectable",
       STALE_LAST_SEEN,
     );
     directoryRef.value = makeDirectory([entry]).directory;
     const queryClient = makeQueryClient();
 
     const { result } = renderHook(
-      () => useHostReachability("host-local-only"),
+      () => useHostReachability("host-plan-gated"),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -187,6 +232,30 @@ describe("useHostReachability — composed against real hostListItemToDirectoryE
     // consumer that collapsed this into "offline" would send a free-tier user
     // to restart a machine that is working fine.
     expect(result.current.unavailability).toBe("plan-restricted");
+  });
+
+  it("reports unreachable with unavailability: 'offline' for a free-tier host the cloud says is OFFLINE", async () => {
+    // The fix this split exists for. The wire used to say `local-only` for
+    // every host on an unpaid plan, so this tile rendered upgrade copy written
+    // for a machine that was alive - and the dead-tile banner, failover and
+    // the clone CTA could never fire for a free-tier user at all.
+    const entry = planGatedEntry(
+      "host-plan-gated-dead",
+      "offline",
+      STALE_LAST_SEEN,
+    );
+    directoryRef.value = makeDirectory([entry]).directory;
+    const queryClient = makeQueryClient();
+
+    const { result } = renderHook(
+      () => useHostReachability("host-plan-gated-dead"),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    await waitFor(() => {
+      expect(result.current.status).toBe("unreachable");
+    });
+    expect(result.current.unavailability).toBe("offline");
   });
 
   it("a live E2E session outranks an 'offline' cloud verdict — reachable, not unreachable", async () => {
@@ -312,15 +381,15 @@ describe("useHostReachability — composed against real hostListItemToDirectoryE
       expect(result.current.status).toBe("unreachable");
     });
 
-    // The dial completes: readiness flips, the directory does not.
+    // The dial completes: readiness flips, the directory does not. Driving
+    // the push notification directly (not a fake-timer tick) is the point of
+    // this test post-P4.1 - the hook must react to the cache's own signal.
     readySessionHosts.value.add("host-late-ready");
+    fireReadinessChanged();
 
-    await waitFor(
-      () => {
-        expect(result.current.status).toBe("reachable");
-      },
-      { timeout: 5_000 },
-    );
+    await waitFor(() => {
+      expect(result.current.status).toBe("reachable");
+    });
     expect(result.current.unavailability).toBeNull();
   });
 
@@ -347,13 +416,11 @@ describe("useHostReachability — composed against real hostListItemToDirectoryE
     });
 
     readySessionHosts.value.delete("host-session-lost");
+    fireReadinessChanged();
 
-    await waitFor(
-      () => {
-        expect(result.current.status).toBe("unreachable");
-      },
-      { timeout: 5_000 },
-    );
+    await waitFor(() => {
+      expect(result.current.status).toBe("unreachable");
+    });
     expect(result.current.unavailability).toBe("offline");
   });
 

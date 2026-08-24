@@ -31,6 +31,7 @@ import {
   useState,
   type ChangeEvent,
   type MouseEvent,
+  type RefObject,
 } from "react";
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react";
 import { cn } from "@/lib/utils";
@@ -69,7 +70,6 @@ import {
 import { ReportIssueAction } from "@/components/report-issue/report-issue-action";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { useGitListChangedFilesSubscription } from "@/hooks/git/use-git-list-changed-files-subscription";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
 import { useDebouncedValue } from "@/hooks/ui/use-debounced-value";
 import { useWorkspaceListFileTree } from "@/hooks/workspace/use-list-file-tree-query";
 import {
@@ -80,17 +80,27 @@ import {
   readSearchPathsResponseForSource,
   useWorkspaceSearchPaths,
 } from "@/hooks/workspace/use-workspace-search-paths-query";
-import { useHostClient } from "@/lib/host";
+import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
 import { gitChangedFileToPierreStatusEntry } from "@/lib/git/panel-file-rendering";
 import {
+  StreamRuntimeContext,
   useStreamMethodSupport,
   useWsStreamClient,
 } from "@/lib/host/stream-runtime-context";
+import { useSurfaceHostStreamBinding } from "@/hooks/host/use-surface-host-stream-binding";
 import type { NestedFocusTarget } from "@/lib/epic-nested-focus-route";
 import { createReportIssueContext } from "@/lib/report-issue-context";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import type { WorkspaceFileRef } from "@/stores/epics/canvas/types";
-import { mergeExpandedDirectoryPaths } from "@/lib/workspace/workspace-file-list-tree";
+import {
+  ancestorDirectoryPathsOf,
+  mergeExpandedDirectoryPaths,
+} from "@/lib/workspace/workspace-file-list-tree";
+import {
+  clearFileTreeRevealRequest,
+  useFileTreeRevealRequest,
+  type FileTreeRevealRequest,
+} from "@/stores/file-tree/file-tree-reveal-store";
 import {
   projectWorkspaceSearchPaths,
   type WorkspaceSearchPathsProjection,
@@ -176,6 +186,17 @@ function useFileTreeSource(args: {
   );
   // Same params the Git panel subscribes with, so both surfaces share one
   // refcounted `git.subscribeStatus` session for this workspace.
+  //
+  // Params are only HALF the precondition, and the other half is invisible
+  // here: the registry keys its shared entry on `client.instanceId` too, so
+  // sharing also requires both surfaces to hold the same stream CLIENT. They
+  // do today only because both read the app-wide `useWsStreamClient()`. Give
+  // either surface its own per-host stream client - a re-provided
+  // `StreamRuntimeContext`, as the resource monitor already does - and this
+  // sentence becomes false with no param changing and nothing failing: the
+  // host simply runs two watchers. `host-stream-client-cache.ts` is what
+  // makes two such surfaces share an object on the same host; it is a
+  // precondition for re-pointing them, not a substitute for checking.
   const gitStatusSubscription = useGitListChangedFilesSubscription({
     hostId: args.hostId,
     runningDir: args.workspacePath,
@@ -208,10 +229,11 @@ function useFileTreeSource(args: {
     localFilterQuery !== null &&
     search.hostSearchUnavailable;
   // eslint-disable-next-line @typescript-eslint/no-deprecated -- the sanctioned legacy call site: the old-host fallback plus the filter's whole-workspace degrade while host search is unavailable
-  const unary = useWorkspaceListFileTree(
-    args.workspacePath,
-    useUnaryFallback || filterViaSnapshot,
-  );
+  const unary = useWorkspaceListFileTree({
+    hostId: args.hostId,
+    workspacePath: args.workspacePath,
+    enabled: useUnaryFallback || filterViaSnapshot,
+  });
 
   const unaryFiles = unary.data?.files;
   const unaryPaths = useMemo(
@@ -377,7 +399,12 @@ function useHostPathSearch(args: {
   readonly query: string;
   readonly enabled: boolean;
 }): HostPathSearch {
-  const hostClient = useHostClient();
+  // The surface's host, not the app's. `args.hostId` already keys
+  // `unsupportedScopeKey` below and already stamps every ref this panel opens,
+  // so taking the CLIENT from anywhere else made the panel search one machine
+  // and label the results with another - and cache the "host cannot search"
+  // verdict under a host that was never asked.
+  const hostClient = useHostClientForHostId(args.hostId);
   const scopeKey = `${args.hostId ?? ""}|${args.workspacePath}`;
   const [unsupportedScopeKey, setUnsupportedScopeKey] = useState<string | null>(
     null,
@@ -429,16 +456,59 @@ function useHostPathSearch(args: {
   return { result, hostSearchUnavailable: unsupported };
 }
 
-export function FileTreePanelBodyForWorkspace(props: {
+interface FileTreePanelBodyForWorkspaceProps {
   readonly epicId: string;
   readonly tabId: string;
   readonly workspacePath: string;
-}) {
-  // The file-tree panel resolves against the default host; opened tabs
-  // stamp this host id onto their `WorkspaceFileRef` so they keep
-  // resolving against the same host after a default-host swap or
-  // reload (CLAUDE.md: tabs are bound to a host for life).
-  const activeHostId = useReactiveActiveHostId();
+  readonly hostId: string | null;
+  readonly onLatchHost: () => void;
+}
+
+/**
+ * Re-provides this panel's STREAM transport for the host the pin resolved to,
+ * then renders the body.
+ *
+ * The body's unary reads were already pinned - every one of them takes
+ * `hostId` and resolves its own client. Its STREAMS were not: they read
+ * `useWsStreamClient()` out of context, so `git.subscribeStatus` and
+ * `workspace.subscribeFileList` carried the pinned host's name as a subscribe
+ * PARAM while riding the app-wide host's socket. That watches the wrong
+ * machine's working tree, and it does it without erroring, because the param
+ * is a key rather than a route.
+ *
+ * A separate component ONLY because the provider has to sit above the hooks:
+ * `useFileTreeSource` runs in the body, so a provider added inside it would be
+ * below its own consumers.
+ *
+ * Rendered UNCONDITIONALLY (`?? ambient`), mirroring `ResourceMonitorPopover`:
+ * swapping between a provider and no provider changes the element type at this
+ * position, so React would unmount the body - discarding the tree's expansion
+ * and filter - at the moment a host is picked. `null` means "following", and
+ * there the ambient binding IS this host's transport, so falling back to it
+ * also keeps this panel sharing one subscription with everything else on that
+ * host rather than opening a second.
+ */
+export function FileTreePanelBodyForWorkspace(
+  props: FileTreePanelBodyForWorkspaceProps,
+) {
+  // The value to PROVIDE: ambient while following, the pin's own binding once
+  // built, null while pending - never the ambient socket for a pinned host.
+  const pinnedStreamBinding = useSurfaceHostStreamBinding(props.hostId);
+  return (
+    <StreamRuntimeContext.Provider value={pinnedStreamBinding}>
+      <FileTreeBodyForResolvedHost {...props} />
+    </StreamRuntimeContext.Provider>
+  );
+}
+
+function FileTreeBodyForResolvedHost(
+  props: FileTreePanelBodyForWorkspaceProps,
+) {
+  // The file-tree panel resolves against its surface pin (`selection ??
+  // effective`). Opened tabs stamp this host id onto their `WorkspaceFileRef`
+  // so they keep resolving against the same host after a later swap
+  // (CLAUDE.md: tabs are bound to a host for life).
+  const { hostId, onLatchHost } = props;
   // The box is a filter, not a search field: the query is applied on a pause,
   // and the same debounced value gates both the host RPC and the local row
   // filter so the two can never disagree about what is being filtered for.
@@ -446,7 +516,7 @@ export function FileTreePanelBodyForWorkspace(props: {
   const debouncedQuery = useDebouncedValue(searchQuery, SEARCH_DEBOUNCE_MS);
   const source = useFileTreeSource({
     epicId: props.epicId,
-    hostId: activeHostId,
+    hostId,
     workspacePath: props.workspacePath,
     searchQuery: debouncedQuery,
   });
@@ -471,17 +541,17 @@ export function FileTreePanelBodyForWorkspace(props: {
   // (no active host, or a directory row) is non-openable everywhere.
   const workspaceFileRefForTreePath = useCallback(
     (treePath: string): WorkspaceFileRef | null => {
-      if (activeHostId === null) return null;
+      if (hostId === null) return null;
       const name = nameByTreePath.get(treePath);
       if (name === undefined) return null;
       return workspaceFileRefFromTreePath(
-        activeHostId,
+        hostId,
         props.workspacePath,
         treePath,
         name,
       );
     },
-    [activeHostId, nameByTreePath, props.workspacePath],
+    [hostId, nameByTreePath, props.workspacePath],
   );
 
   // Pierre's useFileTree captures the onSelectionChange closure at mount,
@@ -498,6 +568,7 @@ export function FileTreePanelBodyForWorkspace(props: {
     ) => {
       const ref = workspaceFileRefForTreePath(treePath);
       if (ref === null) return;
+      onLatchHost();
       navigateNested(props.epicId, props.tabId, () => open(props.tabId, ref));
     };
     handlersRef.current.onSelect = (treePath) => {
@@ -513,8 +584,19 @@ export function FileTreePanelBodyForWorkspace(props: {
     props.tabId,
     prepareOpenTilePreviewInTabFocusTarget,
     prepareOpenTileInTabFocusTarget,
+    onLatchHost,
   ]);
 
+  // True while the REVEAL path is rewriting the selection programmatically.
+  // Pierre reports every selection change through the same `onSelectionChange`
+  // a click lands in, and that handler opens the row's preview - which for a
+  // reveal would re-navigate to the very tile the gesture came from. A flag
+  // rather than a one-path marker: the rewrite is a deselect of every other
+  // row followed by one select, and with two rows selected the first deselect
+  // already reports a non-empty selection. Pierre notifies synchronously from
+  // inside each `select()` / `deselect()`, so the flag brackets the whole
+  // block and a later user click is never suppressed.
+  const suppressSelectionOpenRef = useRef(false);
   const { model } = useFileTree({
     paths: treePaths,
     initialExpansion: "closed",
@@ -528,6 +610,7 @@ export function FileTreePanelBodyForWorkspace(props: {
     onSelectionChange: (selectedPaths) => {
       const selectedPath = selectedPaths.at(-1);
       if (selectedPath === undefined) return;
+      if (suppressSelectionOpenRef.current) return;
       handlersRef.current.onSelect(selectedPath);
     },
   });
@@ -549,13 +632,41 @@ export function FileTreePanelBodyForWorkspace(props: {
   useWorkspaceFileTreeExpansion({
     model,
     epicId: props.epicId,
-    hostId: activeHostId,
+    hostId,
     workspacePath: props.workspacePath,
     treePaths,
     enabled: source.isLive,
     mode: source.mode,
     searchExpandedPaths: source.searchExpandedPaths,
     localFilterQuery: source.localFilterQuery,
+  });
+
+  // "Reveal in Sidebar" for a workspace-file tab. Only a request for THIS
+  // host + workspace is this body's to serve; one naming another workspace is
+  // routed by the panel above (it switches the selection, which remounts this
+  // body for the right workspace). Declared AFTER the expansion hook on
+  // purpose: its per-tick effect must run after the reset that re-seeds the
+  // model from a new path list, so it sees the rows that list just added.
+  const revealRequest = useFileTreeRevealRequest(props.tabId);
+  const activeRevealRequest =
+    revealRequest !== null &&
+    hostId !== null &&
+    revealRequest.hostId === hostId &&
+    revealRequest.workspacePath === props.workspacePath
+      ? revealRequest
+      : null;
+  const clearSearchQuery = useCallback(() => {
+    setSearchQuery("");
+  }, []);
+  useWorkspaceFileTreeReveal({
+    model,
+    request: activeRevealRequest,
+    viewTabId: props.tabId,
+    treePaths,
+    fileNameByPath: nameByTreePath,
+    browsing: source.mode === "browse",
+    clearSearchQuery,
+    suppressSelectionOpenRef,
   });
 
   // Git status arrives from its own subscription; push it into Pierre's
@@ -596,21 +707,21 @@ export function FileTreePanelBodyForWorkspace(props: {
         return { kind: WORKSPACE_FILE_DND_TYPE, epicId, viewTabId, ref };
       }
       if (!treePath.endsWith("/")) return null;
-      if (activeHostId === null) return null;
+      if (hostId === null) return null;
       const name = getBasename(treePath);
       if (name.length === 0) return null;
       return {
         kind: WORKSPACE_FOLDER_DND_TYPE,
         epicId,
         viewTabId,
-        hostId: activeHostId,
+        hostId,
         workspacePath: props.workspacePath,
         folderPath: treePath,
         name,
       };
     },
     [
-      activeHostId,
+      hostId,
       epicId,
       props.workspacePath,
       viewTabId,
@@ -818,6 +929,102 @@ function useWorkspaceFileTreeExpansion(args: {
     model,
     setExpandedPaths,
     workspacePath,
+  ]);
+}
+
+/**
+ * Serves a "Reveal in Sidebar" request for a file in THIS body's workspace:
+ * clears the filter (a filtered tree hides non-matching rows and owns
+ * expansion while active), opens the file's ancestor folders, and once the
+ * file's row is listed, selects it, scrolls it into view, and consumes the
+ * request.
+ *
+ * Ancestors are opened on the MODEL, one listed level per tick, never by
+ * writing them into the expansion store directly. The store is derived from
+ * the model for every directory the model knows (`mergeExpandedDirectoryPaths`
+ * treats a known row as authoritative), so a store write for a known-but-
+ * collapsed folder would be folded straight back out on the next sync. An
+ * `expand()` instead flows the same way a click does: sync writes it to the
+ * store, the store's coverage asks the host for that listing, the listing
+ * re-seeds the model with the next level's rows, and this effect - keyed on
+ * the listed files - opens the next folder. The file row appearing ends the
+ * walk. With the unary snapshot every row is already listed, so it is one
+ * pass.
+ *
+ * A request for a file the workspace never lists (deleted, or a root that
+ * stopped serving) stays pending until a newer request for the same view tab
+ * replaces it; it is in-memory and per view tab, so that is bounded.
+ */
+function useWorkspaceFileTreeReveal(args: {
+  readonly model: PierreFileTreeModel;
+  /** The request for this host + workspace, or `null` when none is pending. */
+  readonly request: FileTreeRevealRequest | null;
+  readonly viewTabId: string;
+  /**
+   * Every listed row. A dependency of the walk because a listing can add the
+   * NEXT folder without adding a file (`fileNameByPath` unchanged), and the
+   * walk has to wake up for it.
+   */
+  readonly treePaths: ReadonlyArray<string>;
+  /** Listed file rows; a path absent here is not (yet) a selectable row. */
+  readonly fileNameByPath: ReadonlyMap<string, string>;
+  /** False while a filter drives the tree (either mode) - reveal waits. */
+  readonly browsing: boolean;
+  readonly clearSearchQuery: () => void;
+  /** Set for the whole selection rewrite so no notification opens a preview. */
+  readonly suppressSelectionOpenRef: RefObject<boolean>;
+}): void {
+  const {
+    model,
+    request,
+    viewTabId,
+    treePaths,
+    fileNameByPath,
+    browsing,
+    clearSearchQuery,
+    suppressSelectionOpenRef,
+  } = args;
+
+  // Once per request: drop an active filter so the tree returns to browsing
+  // (debounced, so the walk below starts on a later tick).
+  useEffect(() => {
+    if (request === null) return;
+    clearSearchQuery();
+  }, [clearSearchQuery, request]);
+
+  useEffect(() => {
+    if (request === null || !browsing) return;
+    // Nothing listed yet - the first listing re-runs this.
+    if (treePaths.length === 0) return;
+    const { filePath } = request;
+    for (const directoryPath of ancestorDirectoryPathsOf(filePath)) {
+      const directory = model.getItem(directoryPath);
+      if (directory === null || !isDirectoryHandle(directory)) continue;
+      if (!directory.isExpanded()) directory.expand();
+    }
+    if (!fileNameByPath.has(filePath)) return;
+    const item = model.getItem(filePath);
+    if (item === null) return;
+    suppressSelectionOpenRef.current = true;
+    try {
+      for (const selectedPath of model.getSelectedPaths()) {
+        if (selectedPath === filePath) continue;
+        model.getItem(selectedPath)?.deselect();
+      }
+      if (!item.isSelected()) item.select();
+    } finally {
+      suppressSelectionOpenRef.current = false;
+    }
+    model.scrollToPath(filePath, { offset: "nearest" });
+    clearFileTreeRevealRequest(viewTabId, request.nonce);
+  }, [
+    browsing,
+    fileNameByPath,
+    model,
+    request,
+    suppressSelectionOpenRef,
+    treePaths,
+    viewTabId,
   ]);
 }
 

@@ -23,7 +23,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { NotificationFilterMenu } from "@/components/notifications/notification-filter-menu";
 import { NotificationRow } from "@/components/notifications/notification-row";
-import { useReactiveActiveHostId } from "@/hooks/host/use-reactive-active-host-id";
+import { useAddressableHostId } from "@/hooks/host/use-addressable-host-id";
 import { useNotificationActivation } from "@/hooks/notifications/use-notification-activation";
 import { useNotificationCenterArrivals } from "@/hooks/notifications/use-notification-center-arrivals";
 import { useNotificationCenterScrollAnchor } from "@/hooks/notifications/use-notification-center-scroll-anchor";
@@ -42,6 +42,7 @@ import {
   type NotificationCategory,
 } from "@/lib/notifications/notification-category";
 import { classifyNotificationLifecycle } from "@/lib/notifications/notification-lifecycle";
+import { useNotificationFeedKeyboardNavigation } from "@/hooks/notifications/use-notification-feed-keyboard-navigation";
 import { activationResultHandler } from "@/lib/notifications/notification-activation-result";
 import { cn } from "@/lib/utils";
 import {
@@ -82,6 +83,14 @@ interface NotificationFeedStatusPresentation {
   readonly title: string;
   readonly detail: string;
   readonly isPending: boolean;
+  /**
+   * `degraded` is the amber reading: the cloud feed is not delivering, but
+   * the popover is still usable - rows already on this device (the retained
+   * cloud snapshot, app-local and collaboration rows) keep rendering. It is
+   * never red: nothing is lost, and the relay retries on its own.
+   * `neutral` is bootstrap, which claims nothing about health.
+   */
+  readonly tone: "neutral" | "degraded";
 }
 
 const TEMPORAL_GROUP_LABEL: Readonly<
@@ -120,6 +129,24 @@ function isMarkAllReadDisabled(input: {
     ? input.loadedHostAttentionCount
     : 0;
   return input.unreadCount === 0 && actionableHostAttention === 0;
+}
+
+function isClearAllDisabled(input: {
+  readonly feedMode: NotificationFeedMode;
+  readonly cloudHasSnapshot: boolean;
+  readonly cloudConnectionState: CloudNotificationsConnectionState;
+  readonly cloudTotalCount: number;
+  readonly hasActiveHost: boolean;
+  readonly hasLoadedHostNotifications: boolean;
+}): boolean {
+  if (input.feedMode === "cloud") {
+    return (
+      !input.cloudHasSnapshot ||
+      input.cloudConnectionState !== "connected" ||
+      input.cloudTotalCount === 0
+    );
+  }
+  return !input.hasActiveHost || !input.hasLoadedHostNotifications;
 }
 
 /** Local-fallback header subtitle text. A partial host state is either
@@ -204,7 +231,7 @@ export function NotificationsPopover(
   );
   // Authoritative active-host signal for the "Mark all read" enablement gate -
   // `null` during a disconnect even though the runtime binding is retained.
-  const activeHostId = useReactiveActiveHostId();
+  const activeHostId = useAddressableHostId();
   // Loaded HOST Attention rows (feed ids are `host:<id>`); app-local/global
   // attention is locally actionable and already reflected in `unreadCount`.
   const loadedHostAttentionCount = attentionIds.filter((feedId) =>
@@ -252,11 +279,18 @@ export function NotificationsPopover(
     isAtTop,
     scrollToTop,
   } = useNotificationCenterScrollAnchor({ orderedFeedIds });
+  // Feed traversal is bound to the shell, not the scrollport, so Up/Down also
+  // enter the list from the header - including the heading a keyboard or chord
+  // open focuses.
+  useNotificationFeedKeyboardNavigation(shellRef);
 
   // Full, unfiltered occurrence order is the identity source for live-arrival
   // detection, so a Recent filter can never blind the arrival set to a row it
   // currently hides (see "N-new" in the technical plan).
   const fullOccurrenceOrder = useMergedNotificationOccurrenceEntries();
+  const hasLoadedHostNotifications = fullOccurrenceOrder.some((entry) =>
+    entry.feedId.startsWith("host:"),
+  );
   const occurrenceKeyByFeedId = useMemo(
     () =>
       new Map(
@@ -400,10 +434,15 @@ export function NotificationsPopover(
 
   return (
     <TooltipProvider delayDuration={300}>
+      {/* `data-notification-center` marks this surface for code that must ask
+          "is focus inside the center right now?" without reaching for the
+          shell ref (the keybinding chord's toggle-close, in
+          `notifications-bell.tsx`). */}
       <div
         ref={shellRef}
         style={shellStyle}
         className="flex w-[min(90vw,34rem)] min-w-0 flex-col gap-0 overflow-hidden"
+        data-notification-center=""
         data-testid="notifications-popover"
       >
         <NotificationsPopoverHeader
@@ -422,12 +461,15 @@ export function NotificationsPopover(
             hasActiveHost: activeHostId !== null,
             cloudConnectionState: cloudPresentationState,
           })}
-          showClearAll={feedMode === "cloud"}
-          isClearAllDisabled={
-            !cloudHasSnapshot ||
-            cloudConnectionState !== "connected" ||
-            cloudTotalCount === 0
-          }
+          showClearAll={feedMode === "cloud" || feedMode === "local"}
+          isClearAllDisabled={isClearAllDisabled({
+            feedMode,
+            cloudHasSnapshot,
+            cloudConnectionState,
+            cloudTotalCount,
+            hasActiveHost: activeHostId !== null,
+            hasLoadedHostNotifications,
+          })}
           onClearAll={handleClearAll}
           onOpenSettings={handleOpenSettings}
           subtitle={notificationsSubtitle(feedMode, {
@@ -490,8 +532,8 @@ export function NotificationsPopover(
       <ConfirmDestructiveDialog
         open={clearAllConfirmOpen}
         onOpenChange={setClearAllConfirmOpen}
-        title="Clear all cloud notifications?"
-        description="This permanently clears every notification currently visible in your cloud feed across your devices."
+        title="Clear all notifications?"
+        description="This permanently clears every notification currently visible in this feed."
         cascadeSummary={null}
         actionLabel="Clear all"
         isPending={false}
@@ -662,7 +704,7 @@ function NotificationsPopoverHeader({
           </TooltipWrapper>
           {showClearAll ? (
             <TooltipWrapper
-              label="Clear cloud notifications"
+              label="Clear notifications"
               side="bottom"
               sideOffset={6}
               align="end"
@@ -674,7 +716,7 @@ function NotificationsPopoverHeader({
                 onClick={onClearAll}
                 disabled={isClearAllDisabled}
                 data-testid="notifications-clear-all"
-                aria-label="Clear cloud notifications"
+                aria-label="Clear notifications"
                 className="text-muted-foreground hover:text-foreground"
               >
                 <Trash2 className="size-3.5" aria-hidden />
@@ -727,11 +769,19 @@ function notificationFeedStatus(input: {
   readonly hasSnapshot: boolean;
 }): NotificationFeedStatusPresentation | null {
   if (input.feedMode === "local") return null;
+  // Every non-bootstrap branch below is worded about the CLOUD feed, not
+  // "notifications": in cloud mode the merged list keeps rendering the
+  // retained cloud snapshot plus app-local and collaboration rows while the
+  // relay is down, so a whole-capability "unavailable" would overclaim. The
+  // host-origin (v1) stream is deliberately not opened in cloud mode, which is
+  // why the copy says "already on this device" rather than promising new
+  // local events.
   if (input.feedMode === "upgrade-required") {
     return {
-      title: "Notifications unavailable",
+      title: "Cloud notifications unavailable",
       detail: "Update Traycer to reconnect to your notification feed.",
       isPending: false,
+      tone: "degraded",
     };
   }
   if (input.connectionState === "connected" && input.hasSnapshot) return null;
@@ -740,19 +790,23 @@ function notificationFeedStatus(input: {
       title: "Loading notifications",
       detail: "Fetching your notification history.",
       isPending: true,
+      tone: "neutral",
     };
   }
   if (input.hasSnapshot && input.connectionState !== "unavailable") {
     return {
-      title: "Reconnecting to notifications",
-      detail: "Refreshing your notification history.",
+      title: "Reconnecting to cloud notifications",
+      detail: "Showing notifications already on this device until it’s back.",
       isPending: true,
+      tone: "degraded",
     };
   }
   return {
-    title: "Notifications unavailable",
-    detail: "We’ll keep trying to reconnect.",
+    title: "Cloud notifications unavailable",
+    detail:
+      "Showing notifications already on this device. We’ll keep trying to reconnect.",
     isPending: false,
+    tone: "degraded",
   };
 }
 
@@ -760,29 +814,44 @@ function NotificationFeedStatus(props: {
   readonly presentation: NotificationFeedStatusPresentation;
   readonly compact: boolean;
 }): ReactNode {
+  const degraded = props.presentation.tone === "degraded";
+  // Amber = degraded-but-usable, the same `--warning` band the chat dead-tile
+  // banner and shell-output notice use for "still readable, one plane down".
+  // Never destructive: the relay retains its rows and retries by itself.
+  const neutralIconClass = props.compact
+    ? "text-muted-foreground/60"
+    : "text-muted-foreground/45";
+  const neutralTitleClass = props.compact
+    ? "text-muted-foreground"
+    : "text-muted-foreground/60";
   return (
     <div
       role="status"
       aria-live="polite"
       className={cn(
         props.compact
-          ? "flex shrink-0 items-center gap-2 border-b border-border/60 bg-foreground/3 px-4 py-2 text-muted-foreground"
-          : "flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 py-8 text-center text-muted-foreground",
+          ? "flex shrink-0 items-center gap-2 border-b px-4 py-2"
+          : "flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 py-8 text-center",
+        degraded
+          ? "border-warning/40 bg-warning/10 text-warning-foreground"
+          : "border-border/60 bg-foreground/3 text-muted-foreground",
       )}
       data-testid="notifications-feed-status"
+      data-tone={props.presentation.tone}
     >
       {props.presentation.isPending ? (
         <AgentSpinningDots
-          className="text-muted-foreground/60"
+          className={
+            degraded ? "text-warning-foreground/70" : "text-muted-foreground/60"
+          }
           testId="notifications-feed-status-spinner"
           variant={undefined}
         />
       ) : (
         <BellOff
           className={cn(
-            props.compact
-              ? "size-3.5 shrink-0 text-muted-foreground/60"
-              : "size-8 text-muted-foreground/45",
+            props.compact ? "size-3.5 shrink-0" : "size-8",
+            degraded ? "text-warning/70" : neutralIconClass,
           )}
           aria-hidden
         />
@@ -790,9 +859,8 @@ function NotificationFeedStatus(props: {
       <div className={cn(props.compact ? "min-w-0" : "space-y-1")}>
         <p
           className={cn(
-            props.compact
-              ? "text-ui-xs text-muted-foreground"
-              : "text-ui-sm text-muted-foreground/60",
+            props.compact ? "text-ui-xs" : "text-ui-sm",
+            degraded ? "text-warning-foreground" : neutralTitleClass,
           )}
         >
           {props.presentation.title}

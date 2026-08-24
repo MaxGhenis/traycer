@@ -44,6 +44,7 @@ interface DeadTileBannerContainerProps {
   readonly sourceHostId: string;
   readonly hostLabel: string;
   readonly reason: ChatDeadTileBannerReason;
+  readonly showsPublishedCopy: boolean;
   readonly testId: string;
   readonly sourceOwnerUserId?: string;
 }
@@ -59,8 +60,16 @@ const mockUseHostReachability =
 vi.mock("@/hooks/host/use-tab-host-client", () => ({
   useTabHostClient: () => ({ getActiveHostId: () => "host-1" }),
 }));
+// The serving host the tile binds via `useTabHostId()` - the tab is bound to
+// the ref's `hostId` ("host-1" in every fixture below), same as the real
+// `<TabHostProvider>` would resolve for this tab.
+vi.mock("@/components/epic-canvas/hooks/use-tab-host-id", () => ({
+  useTabHostId: () => "host-1",
+}));
 vi.mock("@/hooks/agent/use-host-reachability", () => ({
   useHostReachability: (hostId: string) => mockUseHostReachability(hostId),
+  resolvedHostLabel: (r: { status: string; hostLabel: string | null }) =>
+    r.status === "checking" ? null : r.hostLabel,
 }));
 vi.mock("@/hooks/chats/use-cloud-chat-transcript", () => ({
   useCloudChatTranscript: () => mockUseCloudChatTranscript(),
@@ -95,6 +104,15 @@ vi.mock("@/components/epic-canvas/renderers/chat-tile", async () => {
         <ChatDeadTileBanner
           hostLabel={props.hostLabel}
           reason={props.reason}
+          // The real container resolves these from the signed-in identity
+          // and the epic role; this suite mounts neither, and what it owns
+          // is the tile→container prop threading, so the banner renders the
+          // pre-collaborator defaults. `showsPublishedCopy` IS threading, so
+          // it forwards. The ownership wiring itself is pinned by
+          // `dead-tile-banner-container.test.tsx` against the real container.
+          ownedByViewer
+          cloneAllowed
+          showsPublishedCopy={props.showsPublishedCopy}
           onClone={() => undefined}
           cloning={false}
           className={undefined}
@@ -422,8 +440,18 @@ describe("PublishedChatTile - doc-replica fallback", () => {
     );
 
     // Neither the notice NOR the transcript yet - a stale "not published"
-    // flash is exactly the bug this branch exists to prevent.
-    expect(screen.queryByTestId("chat-tile-loading")).not.toBeNull();
+    // flash is exactly the bug this branch exists to prevent. The bounded
+    // load state (not a bare spinner testid) is what covers the window now -
+    // see `published-chat-tile.tsx`'s `boundedLoad` arm. This suite never
+    // seeds `useSelectionAuthorityStore`, so the lease read is null and the
+    // load answers "connecting" (pending, host itself not yet up) rather than
+    // "loading" (host up, content still pending) - either is a non-ready,
+    // non-terminal pending arm, which is all this test asserts.
+    const loadState = screen.queryByTestId(
+      `published-chat-tile-load-${NODE.id}`,
+    );
+    expect(loadState).not.toBeNull();
+    expect(loadState?.getAttribute("data-load-kind")).toBe("connecting");
     expect(screen.queryByTestId("published-chat-notice")).toBeNull();
     expect(screen.queryByTestId("chat-tile-session-view")).toBeNull();
   });
@@ -546,6 +574,9 @@ describe("PublishedChatTile - dead-tile clone banner", () => {
       sourceHostId: "owner-host-1",
       hostLabel: "Ada's Mac",
       reason: "host-offline",
+      // This tile really does render a copy under the banner, so the
+      // foreign-owner sentence may claim one.
+      showsPublishedCopy: true,
       testId: "published-chat-dead-tile-chat-1",
       // Off the ref - a post-restart host with swept registry facts cannot
       // answer the lookup, and the ref knew the owner the whole time.

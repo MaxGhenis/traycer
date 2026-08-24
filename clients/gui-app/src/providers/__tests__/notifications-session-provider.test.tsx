@@ -1,13 +1,21 @@
 import type { SchemaVersion } from "@traycer/protocol/framework/versioned-stream-rpc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { useContext, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as Y from "yjs";
 import { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import { mockLocalHostEntry } from "@traycer-clients/shared/host-client/mock/mock-host-directory";
 import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock-host-messenger";
+import { acquireHostConnection } from "@traycer-clients/shared/host-client/host-connection-registry";
 import type {
   IStreamSession,
   ServerFrameHandler,
@@ -45,9 +53,10 @@ import type { NotificationNavigate } from "@/lib/notifications";
 import {
   HOST_STREAM_REOPEN_INITIAL_BACKOFF_MS,
   HOST_STREAM_REOPEN_MAX_BACKOFF_MS,
-} from "@/lib/host/stream-reopen";
+} from "@traycer-clients/shared/host-client/host-connection-reconnect-engine";
 import type { NotificationShow } from "@/hooks/notifications/use-notifications";
 import type { NotificationShowOutcome } from "@traycer-clients/shared/platform/runner-host";
+import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
 
 interface HostState {
   id: string | null;
@@ -77,6 +86,8 @@ const mockAuth = {
 vi.mock("@/lib/host", () => ({
   useHostBinding: () => null,
   useHostClient: () => hostState.client,
+  // The SPINE, a separate export since redesign P2.1.
+  useHostRuntimeClient: () => hostState.client,
   useAuthService: () => mockAuth,
 }));
 
@@ -91,7 +102,7 @@ vi.mock("@/lib/host/stream-runtime-context", () => ({
 }));
 
 // Per the G8 decision the provider binds to the LOCAL host, not the app-wide
-// active one, so these two hooks replace `useReactiveActiveHostId` +
+// active one, so these two hooks replace `useAddressableHostId` +
 // `useWsStreamClient` as the harness's steering wheel. The `hostState.id` /
 // `streamState.client` pair keeps its old meaning: `id === null` means "no
 // local host", and assigning a NEW `streamState.client` object is what the
@@ -106,6 +117,13 @@ vi.mock("@/hooks/host/use-reactive-local-host-entry", () => ({
 vi.mock("@/hooks/host/use-host-stream-client-for", () => ({
   useHostStreamClientFor: (target: HostDirectoryEntry | null) =>
     target === null ? null : streamState.client,
+}));
+
+vi.mock("@/hooks/host/use-host-client-for", () => ({
+  useHostClientFor: (target: HostDirectoryEntry | null) =>
+    target === null || hostState.client === null
+      ? null
+      : hostState.client.createRequester(target),
 }));
 
 vi.mock("@/hooks/host/use-host-directory-entry", () => ({
@@ -248,6 +266,8 @@ import {
   __setAgentActivityStateForTests,
   useAgentActivityStore,
 } from "@/stores/agent-activity-store";
+import { NotificationConsumptionContext } from "@/components/notifications/notification-consumption-context";
+import { TEST_CLIENT_IDENTITY } from "@traycer-clients/shared/test-fixtures/client-identity";
 
 function NotificationsSessionProvider(props: {
   readonly children: ReactNode;
@@ -328,11 +348,14 @@ class MockWsStreamClient extends WsStreamClient<HostStreamRpcRegistry> {
 
   constructor() {
     super({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => null,
       bearer: () => null,
       auth: null,
       hostCredentialMint: null,
+      onHostCredentialState: null,
+      evidence: NO_TRANSPORT_EVIDENCE,
       webSocketFactory: {
         create: () => {
           throw new Error("MockWsStreamClient should not open a websocket");
@@ -525,12 +548,19 @@ function createHostClient(
         },
       },
     }),
+    findHostById: (hostId) =>
+      hostId === mockLocalHostEntry.hostId ? mockLocalHostEntry : null,
   });
-  client.bind(mockLocalHostEntry);
   client.setRequestContext(
     createRequestContextFixture({ origin: "renderer", bearerToken: "token" }),
   );
-  return client;
+  // Post-slot the window holds a requester PINNED to a host id rather than a
+  // client carrying an active slot (redesign P4.1 Leg D; P4.2 deletes
+  // `bind()`). It resolves the same row this factory always bound, so every
+  // request below still addresses `mockLocalHostEntry` - including while
+  // `hostState.id` names some other host, which is exactly what the bound slot
+  // did before.
+  return client.createRequesterForHostId(mockLocalHostEntry.hostId);
 }
 
 function setFocusedChat(epicId: string, chatId: string): void {
@@ -569,6 +599,16 @@ async function renderHostNotificationsProvider(): Promise<{
   readonly queryClient: QueryClient;
   readonly streamClient: MockWsStreamClient;
 }> {
+  return renderHostNotificationsProviderWithChild(<div />);
+}
+
+async function renderHostNotificationsProviderWithChild(
+  child: ReactNode,
+): Promise<{
+  readonly markReadCalls: Array<HostNotificationsMarkReadRequest>;
+  readonly queryClient: QueryClient;
+  readonly streamClient: MockWsStreamClient;
+}> {
   const markReadCalls: Array<HostNotificationsMarkReadRequest> = [];
   const streamClient = new MockWsStreamClient();
   const queryClient = new QueryClient();
@@ -581,9 +621,7 @@ async function renderHostNotificationsProvider(): Promise<{
 
   render(
     <QueryClientProvider client={queryClient}>
-      <NotificationsSessionProvider>
-        <div />
-      </NotificationsSessionProvider>
+      <NotificationsSessionProvider>{child}</NotificationsSessionProvider>
     </QueryClientProvider>,
   );
 
@@ -606,6 +644,23 @@ async function renderHostNotificationsProvider(): Promise<{
   });
 
   return { markReadCalls, queryClient, streamClient };
+}
+
+function ExplicitNotificationConsumptionProbe(): ReactNode {
+  const consume = useContext(NotificationConsumptionContext);
+  return (
+    <button
+      type="button"
+      onClick={() =>
+        consume?.({
+          originHostId: mockLocalHostEntry.hostId,
+          entity: { epicId: "epic-a", chatId: "chat-a" },
+        })
+      }
+    >
+      Consume chat notifications
+    </button>
+  );
 }
 
 function indicatorKey(
@@ -667,6 +722,56 @@ describe("<NotificationsSessionProvider />", () => {
     __setNotificationsStreamFactoryForTests(null);
     resetAuth("signed-out", null, null);
     vi.restoreAllMocks();
+  });
+
+  it("marks a restored focused entity read through the local host before effective-host selection", async () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    setFocusedChat("epic-startup", "chat-startup");
+
+    const markReadCalls: Array<HostNotificationsMarkReadRequest> = [];
+    const streamClient = new MockWsStreamClient();
+    const queryClient = new QueryClient();
+    hostState.id = mockLocalHostEntry.hostId;
+    hostState.client =
+      createHostClient(markReadCalls).createRequesterForHostId(null);
+    streamState.client = streamClient;
+    useAppLocalNotificationsStore
+      .getState()
+      .activateIdentity("alice@example.com");
+    const toastSpy = vi.spyOn((await import("sonner")).toast, "error");
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <NotificationsSessionProvider>
+          <div />
+        </NotificationsSessionProvider>
+      </QueryClientProvider>,
+    );
+    act(() => {
+      resetAuth("signed-in", "alice@example.com", "alice@example.com");
+    });
+
+    await waitFor(() => {
+      expect(streamClient.subscribedMethods).toContain(
+        "host.notifications.feed.subscribe",
+      );
+    });
+    act(() => {
+      streamClient.session.emitOpen();
+    });
+
+    await waitFor(() => {
+      expect(markReadCalls).toEqual([
+        {
+          kind: "entity",
+          entity: {
+            epicId: "epic-startup",
+            chatId: "chat-startup",
+          },
+        },
+      ]);
+    });
+    expect(toastSpy).not.toHaveBeenCalled();
   });
 
   it("keeps local failures and ingests collaboration rows alongside the cloud relay", async () => {
@@ -1306,11 +1411,14 @@ describe("<NotificationsSessionProvider />", () => {
   it("keeps retained v1 rows while a rebuilt client's capability is pending offline", async () => {
     const queryClient = new QueryClient();
     const streamClient = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => null,
       bearer: () => null,
       auth: null,
       hostCredentialMint: null,
+      onHostCredentialState: null,
+      evidence: NO_TRANSPORT_EVIDENCE,
       webSocketFactory: {
         create: () => {
           throw new Error("offline client must not dial");
@@ -1433,6 +1541,7 @@ describe("<NotificationsSessionProvider />", () => {
         },
       },
       "local",
+      "connected",
     );
     emitTerminalCrashedNotification({
       instanceId: "terminal-before-user-switch",
@@ -1774,6 +1883,43 @@ describe("<NotificationsSessionProvider />", () => {
     expect(collabEntriesAfter[0]).toBe(collabEntryBefore);
     expect(collabEntriesAfter).toHaveLength(1);
     expect(collabEntryBefore.id).toBe("collab-host-switch");
+  });
+
+  // THE SINGLE-OWNERSHIP PIN (redesign P4.1 / connection-registry §6).
+  //
+  // The acceptance is "exactly one reconnection policy per transport kind",
+  // and this provider is the single wiring point that makes it true: it
+  // acquires ONE lease for the local host and hands that lease's engine to
+  // every stream it opens. Nothing else in this file - or in the four store
+  // suites - can fail if that ownership is re-scattered, because four stores
+  // each constructing their OWN engine still reconnects perfectly well. That
+  // is exactly what makes the regression silent, and why the acceptance needs
+  // an instrument rather than an assertion in a comment.
+  //
+  // Measured, not argued: the probe that replaces the handed-down engine with
+  // a per-store `createHostReconnectEngine()` leaves all 119 cases across the
+  // provider + store suites green and fails only here.
+  //
+  // Scope, stated so it cannot be over-read: this pins the four PER-LEASE
+  // stream owners. R12's chat-session wake retry is deliberately outside it -
+  // its subject is a handle, not a host, so it uses the process-scoped engine
+  // by ruling D1. "One engine per host" is the claim; "one engine in the
+  // process" is not.
+  it("opens every stream's reopen lane off the ONE per-lease reconnect engine", async () => {
+    const lease = acquireHostConnection(mockLocalHostEntry.hostId);
+    const openReopenLane = vi.spyOn(lease.reconnect, "openReopenLane");
+    try {
+      await renderHostNotificationsProvider();
+      // Host mode opens three streams - host notifications, collaboration
+      // notifications, agent activity - and each takes its OWN lane off the
+      // SHARED engine. Both halves matter: a single call would mean the
+      // streams had been folded onto one timer (the behavior change ruling D1
+      // forbids), and zero would mean each store built its own engine.
+      expect(openReopenLane).toHaveBeenCalledTimes(3);
+    } finally {
+      openReopenLane.mockRestore();
+      lease.release();
+    }
   });
 
   it("drives reconnect/unknown through the full stream → store → bell path", async () => {
@@ -2372,6 +2518,23 @@ describe("<NotificationsSessionProvider />", () => {
       pendingApproval: false,
       pendingInterview: false,
       unreadDone: false,
+    });
+  });
+
+  it("consumes an explicitly clicked active tab even without a focus transition", async () => {
+    const { markReadCalls } = await renderHostNotificationsProviderWithChild(
+      <ExplicitNotificationConsumptionProbe />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Consume chat notifications" }),
+    );
+
+    await waitFor(() => {
+      expect(markReadCalls).toContainEqual({
+        kind: "entity",
+        entity: { epicId: "epic-a", chatId: "chat-a" },
+      });
     });
   });
 

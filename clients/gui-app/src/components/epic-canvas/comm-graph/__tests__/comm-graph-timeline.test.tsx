@@ -52,8 +52,15 @@ vi.mock("@/providers/use-resolved-theme", () => ({
   }),
 }));
 
-vi.mock("@/hooks/host/use-reactive-active-host-id", () => ({
-  useReactiveActiveHostId: () => "host-a",
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => "host-a",
+}));
+
+// The Epic session resolves its host through the selection authority's derived
+// pointer (selection model §1), not the active-host projection above - seed the
+// decider at its own name (the P1.2 convention in epic-shell-usage-entry-point).
+vi.mock("@/hooks/host/use-effective-host-id", () => ({
+  useEffectiveHostId: () => "host-a",
 }));
 
 vi.mock("@/hooks/host/use-host-client-for-host-id", () => ({
@@ -95,7 +102,10 @@ import type {
   CommGraphSubscriptionHandlers,
   CommGraphSubscriptionRequest,
 } from "@/lib/comm-graph/comm-graph-subscription";
-import { useChatTranscriptJumpStore } from "@/stores/chats/chat-transcript-jump-store";
+import {
+  chatTranscriptJumpKey,
+  useChatTranscriptJumpStore,
+} from "@/stores/chats/chat-transcript-jump-store";
 import { makeCommGraphTileRef } from "@/stores/epics/canvas/tile-schema/comm-graph-tile";
 import { TestEpicSessionWrapper } from "@/components/epic-canvas/__tests__/test-epic-session";
 import { createEpicSessionTestHarness } from "@/components/epic-canvas/__tests__/test-epic-session-harness";
@@ -433,6 +443,21 @@ describe("CommGraphTile projection", () => {
     });
   });
 
+  it("keeps a held playback cursor static while paused", async () => {
+    await renderTile();
+    deliverSnapshot([
+      halfEdge({ id: 1, timestamp: 100 }),
+      message({ id: 2, timestamp: 200 }),
+    ]);
+
+    await seekToIndex(0);
+
+    await waitFor(() => {
+      expect(pulsingOf(CHAT_ID)).toBe("false");
+    });
+    expect(screen.getByRole("button", { name: "Play timeline" })).toBeDefined();
+  });
+
   it("pulses a row that ARRIVES while live, without flashing the initial snapshot", async () => {
     await renderTile();
     // The snapshot draws this host's initialization line; it is history this
@@ -612,7 +637,9 @@ describe("CommGraphTile projection", () => {
       expect.objectContaining({ id: CHAT_ID, type: "chat", hostId: HOST_A }),
     );
     expect(
-      useChatTranscriptJumpStore.getState().requestsByChatId[CHAT_ID]?.target,
+      useChatTranscriptJumpStore.getState().requestsByChatId[
+        chatTranscriptJumpKey(HOST_A, CHAT_ID)
+      ]?.target,
     ).toEqual({ kind: "block", blockId: "block-9" });
   });
 
@@ -635,7 +662,9 @@ describe("CommGraphTile projection", () => {
     await openAgentDetailJump(1);
 
     expect(
-      useChatTranscriptJumpStore.getState().requestsByChatId[CHAT_ID]?.target,
+      useChatTranscriptJumpStore.getState().requestsByChatId[
+        chatTranscriptJumpKey(HOST_A, CHAT_ID)
+      ]?.target,
     ).toEqual({ kind: "message", messageId: "message-3" });
   });
 
@@ -661,7 +690,9 @@ describe("CommGraphTile projection", () => {
       expect.objectContaining({ id: CHAT_ID, type: "chat", hostId: HOST_A }),
     );
     expect(
-      useChatTranscriptJumpStore.getState().requestsByChatId[CHAT_ID]?.target,
+      useChatTranscriptJumpStore.getState().requestsByChatId[
+        chatTranscriptJumpKey(HOST_A, CHAT_ID)
+      ]?.target,
     ).toEqual({
       kind: "sent-message",
       receiverAgentId: TUI_ID,
@@ -698,7 +729,9 @@ describe("CommGraphTile projection", () => {
       expect.objectContaining({ id: CHAT_ID, type: "chat", hostId: HOST_A }),
     );
     expect(
-      useChatTranscriptJumpStore.getState().requestsByChatId[CHAT_ID]?.target,
+      useChatTranscriptJumpStore.getState().requestsByChatId[
+        chatTranscriptJumpKey(HOST_A, CHAT_ID)
+      ]?.target,
     ).toEqual({ kind: "first-message" });
   });
 
@@ -733,7 +766,9 @@ describe("CommGraphTile projection", () => {
       expect.objectContaining({ id: CHAT_ID, type: "chat", hostId: HOST_A }),
     );
     expect(
-      useChatTranscriptJumpStore.getState().requestsByChatId[CHAT_ID],
+      useChatTranscriptJumpStore.getState().requestsByChatId[
+        chatTranscriptJumpKey(HOST_A, CHAT_ID)
+      ],
     ).toBeUndefined();
   });
 
@@ -762,7 +797,9 @@ describe("CommGraphTile projection", () => {
       expect.objectContaining({ id: CHAT_ID, type: "chat", hostId: HOST_A }),
     );
     expect(
-      useChatTranscriptJumpStore.getState().requestsByChatId[CHAT_ID]?.target,
+      useChatTranscriptJumpStore.getState().requestsByChatId[
+        chatTranscriptJumpKey(HOST_A, CHAT_ID)
+      ]?.target,
     ).toEqual({ kind: "message", messageId: "agent-msg-notice-7" });
   });
 
