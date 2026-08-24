@@ -156,6 +156,13 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    concurrency:
+      # The guard immediately before npm publish reads the current `latest`
+      # selector. Serializing every writer makes that read + mutation one
+      # ordered decision: a delayed older workflow cannot pass against an old
+      # value and then overwrite a newer publication.
+      group: traycer-cli-npm-latest-publish
+      cancel-in-progress: false
     env:
       VERSION: ${{ needs.resolve.outputs.version }}
       DIST_TAG: ${{ needs.resolve.outputs.dist_tag }}
@@ -212,6 +219,15 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Refuse an npm latest regression
+        if: steps.gate.outputs.mode == 'publish' && steps.existing.outputs.exists != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(npm view "@traycerai/cli" dist-tags.latest --registry "https://registry.npmjs.org")"
+          node scripts/native-packaging/assert-rolling-package-version.cjs \
+            --candidate="$VERSION" \
+            --existing="npm latest=$current"
       - name: Publish npm package (with provenance)
         if: steps.gate.outputs.mode == 'publish' && steps.existing.outputs.exists != 'true'
         run: npm publish clients/traycer-cli/dist-npm --provenance --access public --tag "$DIST_TAG" --registry "https://registry.npmjs.org"
@@ -247,6 +263,7 @@ jobs:
           fi
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ needs.resolve.outputs.oss_ref }}
           persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -322,6 +339,36 @@ jobs:
           if git diff --cached --quiet; then
             echo "::notice::Formula already up to date for ${VERSION}; nothing to PR."
             exit 0
+          fi
+          if [ "$HOMEBREW_VERSIONED_ONLY" != "true" ]; then
+            current="$(git show origin/main:Formula/traycer.rb | sed -nE 's/^[[:space:]]*version "([^"]+)".*/\1/p')"
+            if [ -z "$current" ]; then
+              echo "::error::Formula/traycer.rb on ${TAP_REPO}@main has no readable version; refusing to replace a rolling selector whose current value is unknown."
+              exit 1
+            fi
+            EXISTING_ARGS=(--existing="Homebrew main=$current")
+            while IFS= read -r open_branch; do
+              [ -n "$open_branch" ] || continue
+              [ "$open_branch" = "$branch" ] && continue
+              open_version="${open_branch#traycer-formula-}"
+              EXISTING_ARGS+=(--existing="open Homebrew PR ${open_branch}=$open_version")
+            done < <(gh pr list --repo "$TAP_REPO" --state open --limit 100 \
+              --json headRefName,body \
+              --jq '.[] | select(.body | contains("Updates the rolling Formula/traycer.rb")) | .headRefName | select(startswith("traycer-formula-"))')
+            node ../scripts/native-packaging/assert-rolling-package-version.cjs \
+              --candidate="$VERSION" \
+              "${EXISTING_ARGS[@]}"
+            # The serialized job has proved this candidate outranks every
+            # other rolling formula PR. Retire those older mutation intents so
+            # a human cannot merge one after this version becomes the proven
+            # remedy.
+            while IFS= read -r stale_pr; do
+              [ -n "$stale_pr" ] || continue
+              gh pr close "$stale_pr" --repo "$TAP_REPO" \
+                --comment "Superseded by the monotonic rolling formula update for Traycer ${VERSION}. The older PR is closed so it cannot regress Formula/traycer.rb after a compatibility floor is activated."
+            done < <(gh pr list --repo "$TAP_REPO" --state open --limit 100 \
+              --json number,headRefName,body \
+              --jq ".[] | select(.body | contains(\"Updates the rolling Formula/traycer.rb\")) | select(.headRefName | startswith(\"traycer-formula-\")) | select(.headRefName != \"$branch\") | .number")
           fi
           git commit -m "traycer ${VERSION}"
           git push --force origin "$branch"
