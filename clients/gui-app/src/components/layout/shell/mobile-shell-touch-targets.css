@@ -41,6 +41,28 @@
     transform: translateY(-50%);
   }
 
+  /*
+   * OPT-OUT for flush-stacked lists whose rows are shorter than the slop.
+   *
+   * The slop is a fixed 44px, and it is centred - so on a list whose row PITCH
+   * is smaller than that, every row's pseudo reaches into its neighbours by
+   * half the difference, and the taps in that band go to whichever element
+   * paints last rather than to the row the user aimed at. Measured on the
+   * switcher's tree at a 27.5px pitch: the overhang is 16.5px, and a 26.25px
+   * menu trigger lost exactly 8.25px of its top to the row above it - half the
+   * overhang, to the neighbour's slop.
+   *
+   * Enlarging a target is only a favour while it stays inside its own row. Past
+   * that it is taking taps from another control, so a list that opts out here
+   * has every control own its true box instead: shorter targets, but each one
+   * belongs to the row the user is looking at. Such a list is responsible for
+   * making its own controls fill the row height.
+   */
+  [data-touch-slop-opt-out]
+    :is([data-slot="button"], [data-slot="tabs-trigger"])::after {
+    content: none;
+  }
+
   /* Command-palette opener rows (e.g. the empty-pane opener) stack vertically,
      so enlarge the row itself to the 44px target instead of adding vertical
      hit-slop that would overlap the neighbouring row. */

@@ -189,7 +189,10 @@ export function SwitcherAgentsList(props: SwitcherListProps) {
     <NotificationIndicatorsProvider indicators={indicators}>
       <ChatRowMenuFactsProvider epicId={epicId}>
         <SwitcherAgentTreeContext.Provider value={value}>
-          <div className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-contain p-1 pb-safe-bottom">
+          <div
+            data-touch-slop-opt-out=""
+            className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-contain p-1 pb-safe-bottom"
+          >
             {/* Editor-gated: a viewer's create is server-rejected, so an
                 ungated row would only lead to a dead end. Inside the scroll
                 region and above the items, so it is the first thing in the list

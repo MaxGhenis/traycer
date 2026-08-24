@@ -51,9 +51,17 @@ import {
  * HEIGHT. The wrapper is `items-center`, so its height is the tallest child, and
  * a 44px control silently pins the whole row open however short the row button
  * gets - which is exactly how an earlier `size-11` on the "…" trigger held the
- * row at 41px while the row itself measured 27.5. Reach the 44px target the way
- * the chevron does: own the WIDTH, and let the scope's `::after` px literal own
- * the height.
+ * row at 41px while the row itself measured 27.5.
+ *
+ * Nor does anything here reach 44px through the sheet's touch slop: this list
+ * opts OUT of it (`data-touch-slop-opt-out`). A 44px pseudo cannot tile a 27.5px
+ * pitch - it overhangs its neighbours by 16.5px and takes their taps, which is
+ * measurable as a menu trigger losing exactly half that overhang off its top.
+ * The honest ceiling on a flush list is its own pitch, so every control here
+ * `self-stretch`es to the row height and owns its true box. Secondary controls
+ * are therefore BELOW the 44px guideline by explicit choice: desktop-compact
+ * rows and 44px targets cannot both hold, and density was the ruling. The row
+ * body remains the full-width primary target.
  *
  * The chevron keeps desktop's GLYPH but not desktop's target: it widens to a
  * `w-6` slot on a coarse pointer. Desktop can afford an 8px control because it
@@ -135,14 +143,14 @@ export function SwitcherListRow(props: {
           // pointer, and it grows invisibly - the scope forces the pseudo
           // transparent, and the control itself paints no background, border or
           // box in any state; a press dims the glyph instead.
-          className="flex shrink-0 items-center justify-center bg-transparent text-muted-foreground transition-opacity active:opacity-50 pointer-coarse:w-6"
+          className="flex shrink-0 items-center justify-center self-stretch bg-transparent text-muted-foreground transition-opacity active:opacity-50 pointer-coarse:w-6"
         >
           <TreeChevron expanded={nesting.expanded} onToggle={undefined} />
         </button>
       ) : (
         // Desktop's spacer, in a slot the same width as the chevron's at both
         // pointer densities: a leaf's icon sits on its siblings' column.
-        <span className="flex shrink-0 items-center justify-center pointer-coarse:w-6">
+        <span className="flex shrink-0 items-center justify-center self-stretch pointer-coarse:w-6">
           <TreeChevronSpacer />
         </span>
       )}
@@ -201,7 +209,7 @@ export function SwitcherNewItemRow(props: {
       style={{ paddingLeft: `${SWITCHER_ROW_BASE_PAD_LEFT}px` }}
     >
       <span
-        className="flex shrink-0 items-center justify-center pointer-coarse:w-6"
+        className="flex shrink-0 items-center justify-center self-stretch pointer-coarse:w-6"
         aria-hidden="true"
       >
         <TreeChevronSpacer />
