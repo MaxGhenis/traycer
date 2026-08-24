@@ -623,7 +623,10 @@ function parsePendingKills(
             }
           : {}),
         ...(entry.createRejectedAmbiguously === true
-          ? { createRejectedAmbiguously: true }
+          ? {
+              createRejectedAmbiguously: true,
+              retireOnFreshSnapshot: true,
+            }
           : {}),
         ...(entry.legacyEvidence === true ? { legacyEvidence: true } : {}),
         ...(entry.retireOnFreshSnapshot === true

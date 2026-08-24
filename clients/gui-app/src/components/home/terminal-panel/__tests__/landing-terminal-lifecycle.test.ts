@@ -429,6 +429,30 @@ describe("landing terminal lifecycle", () => {
     ]);
   });
 
+  it("retires restored create ambiguity against the first fresh snapshot", () => {
+    const restored = parsePersistedLandingTerminalState({
+      tabs: [],
+      activeInstanceId: null,
+      layoutsByLandingPageId: {},
+      pendingKills: [
+        {
+          hostId: HOST_A,
+          sessionId: "ambiguous-create",
+          createRejectedAmbiguously: true,
+        },
+      ],
+    });
+
+    expect(restored.pendingKills).toEqual([
+      {
+        hostId: HOST_A,
+        sessionId: "ambiguous-create",
+        createRejectedAmbiguously: true,
+        retireOnFreshSnapshot: true,
+      },
+    ]);
+  });
+
   it("collapses every open layout when the shared terminal set becomes empty", () => {
     const store = useLandingTerminalStore.getState();
     store.setPanelOpen("draft-a", true);
