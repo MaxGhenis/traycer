@@ -114,6 +114,7 @@ const CATEGORY_NAMES = [
   "File Tree",
   "Git Diff",
   "Terminals",
+  "Sharing",
 ];
 
 /**
@@ -155,12 +156,12 @@ describe("<TabSwitcherSheet />", () => {
   });
   afterEach(cleanup);
 
-  it("renders exactly the five always-on category tabs when open on mobile", () => {
+  it("renders exactly the six always-on category tabs when open on mobile", () => {
     renderSheet(true, () => {});
     for (const name of CATEGORY_NAMES) {
       expect(screen.getByRole("tab", { name })).toBeTruthy();
     }
-    expect(screen.getAllByRole("tab")).toHaveLength(5);
+    expect(screen.getAllByRole("tab")).toHaveLength(6);
   });
 
   it("labels the chats category 'Chats' and renders the active tab as an underline, not a box", () => {
@@ -224,7 +225,7 @@ describe("<TabSwitcherSheet />", () => {
     setPullRequestPresence(true);
     renderSheet(true, () => {});
     const tabs = screen.getAllByRole("tab");
-    expect(tabs).toHaveLength(6);
+    expect(tabs).toHaveLength(7);
     expect(tabs.map((tab) => tab.getAttribute("data-testid"))).toEqual([
       "mobile-switcher-tab-chats",
       "mobile-switcher-tab-artifacts",
@@ -232,7 +233,19 @@ describe("<TabSwitcherSheet />", () => {
       "mobile-switcher-tab-git-diff",
       "mobile-switcher-tab-pull-requests",
       "mobile-switcher-tab-terminals",
+      "mobile-switcher-tab-sharing",
     ]);
+  });
+
+  it("shows the embedded desktop sharing panel body when the category is selected", async () => {
+    const user = userEvent.setup();
+    renderSheet(true, () => {});
+    await user.click(screen.getByRole("tab", { name: "Sharing" }));
+    expect(useLeftPanelStore.getState().getActivePanelId(TAB_ID)).toBe(
+      "sharing",
+    );
+    const embed = await screen.findByTestId("mock-panel-embed");
+    expect(embed.dataset.category).toBe("sharing");
   });
 
   it("shows the embedded desktop PR panel body when the category is selected", async () => {
@@ -282,7 +295,7 @@ describe("<TabSwitcherSheet />", () => {
     streamState.prSupport = "unsupported";
     renderSheet(true, () => {});
     expect(screen.queryByRole("tab", { name: "Pull Requests" })).toBeNull();
-    expect(screen.getAllByRole("tab")).toHaveLength(5);
+    expect(screen.getAllByRole("tab")).toHaveLength(6);
   });
 
   it("clamps a persisted pull-requests selection when the host lost stream support", () => {
