@@ -254,8 +254,10 @@ describe("<SwitcherArtifactsList /> tree", () => {
     const childIndent = screen
       .getByTestId("switcher-artifact-row-tk-1")
       .closest<HTMLElement>("[style]");
-    expect(parentIndent?.style.paddingLeft).toBe("8px");
-    expect(childIndent?.style.paddingLeft).toBe("28px");
+    // A root row is flush with the list edge - a phone viewport has no width to
+    // spend on a base pad - and one level in is one SWITCHER_ROW_INDENT_PX step.
+    expect(parentIndent?.style.paddingLeft).toBe("0px");
+    expect(childIndent?.style.paddingLeft).toBe("12px");
   });
 
   it("collapses and re-expands a subtree from the row's own chevron", () => {

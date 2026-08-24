@@ -18,10 +18,12 @@ import {
  * their touch targets ever trigger a row open.
  *
  * The 44px min height plus the sheet's coarse-pointer touch scope satisfy the
- * touch-target guideline, and they are why the chevron is a real 44px control
- * rather than the desktop tree's 14px hover glyph: expand/collapse is the only
- * way to reach a deep child on a phone, so it cannot be the hardest thing on
- * the row to hit.
+ * touch-target guideline. The chevron reaches it WITHOUT a 44px box: it is the
+ * desktop tree's small glyph, costing one icon's width in the flow, and grows
+ * its hit area with an overlay that bleeds into the row's padding. A boxed
+ * control here would spend a tenth of the viewport on the one row element that
+ * carries no information - and expand/collapse still cannot be the hardest
+ * thing on the row to hit, which the overlay is what guarantees.
  *
  * `secondaryLabel` and `badge` exist so a category whose desktop row carries
  * per-row metadata (a terminal's runtime status, its resource usage) can show
@@ -79,15 +81,19 @@ export function SwitcherListRow(props: {
           aria-label={`${nesting.expanded ? "Collapse" : "Expand"} ${label}`}
           aria-expanded={nesting.expanded}
           data-testid={`${selectTestId}-toggle`}
-          className="size-11 shrink-0 text-muted-foreground"
+          // The `before` overlay is the touch target: 32x44 of tappable area
+          // over a control that only occupies an icon's width in the flow. It
+          // bleeds outward into the row's own padding, which is dead space, so
+          // it costs the label nothing and never overlaps the row body.
+          className="relative size-4 shrink-0 p-0 text-muted-foreground before:absolute before:-inset-x-2 before:-inset-y-3.5 before:content-['']"
         >
           <TreeChevron expanded={nesting.expanded} onToggle={undefined} />
         </Button>
       ) : (
-        // Keeps every leaf's icon on its siblings' column. Sized to the chevron
-        // BUTTON, not the glyph, or a leaf would sit 30px left of a parent at
-        // the same depth and the indent would stop reading as depth at all.
-        <span className="flex size-11 shrink-0 items-center justify-center">
+        // Keeps every leaf's icon on its siblings' column. Without it a leaf
+        // CHILD would render left of its own parent, since one indent step is
+        // narrower than the chevron - the nesting would read inverted.
+        <span className="flex size-4 shrink-0 items-center justify-center">
           <TreeChevronSpacer />
         </span>
       )}
@@ -141,18 +147,23 @@ export function SwitcherNewItemRow(props: {
 }) {
   const { label, onSelect, testId } = props;
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      onClick={onSelect}
-      data-testid={testId}
-      className="flex min-h-11 w-full items-center justify-start gap-2 rounded-md px-2 text-left font-normal text-muted-foreground"
-    >
-      <span className="flex size-4 shrink-0 items-center justify-center">
-        <Plus className="size-4" />
-      </span>
-      <span className="min-w-0 flex-1 truncate text-ui-sm">{label}</span>
-    </Button>
+    // The same leading chevron column the item rows carry, so the "+" and this
+    // row's label sit on their columns rather than half a step to their left.
+    <div className="flex min-w-0 items-center gap-1">
+      <span className="size-4 shrink-0" aria-hidden="true" />
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={onSelect}
+        data-testid={testId}
+        className="flex min-h-11 min-w-0 flex-1 items-center justify-start gap-2 rounded-md px-2 text-left font-normal text-muted-foreground"
+      >
+        <span className="flex size-4 shrink-0 items-center justify-center">
+          <Plus className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-ui-sm">{label}</span>
+      </Button>
+    </div>
   );
 }
 

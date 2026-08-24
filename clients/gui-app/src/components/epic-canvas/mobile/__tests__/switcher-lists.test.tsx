@@ -525,8 +525,8 @@ describe("<SwitcherAgentsList />", () => {
     // …and reads as one level deeper: the indent is on the row's wrapper.
     const padding = (element: Element): string =>
       (element.parentElement as HTMLElement).style.paddingLeft;
-    expect(padding(parent)).toBe("8px");
-    expect(padding(child)).toBe("28px");
+    expect(padding(parent)).toBe("0px");
+    expect(padding(child)).toBe("12px");
 
     // Roots are expanded implicitly, so the parent starts open and its chevron
     // closes it.
