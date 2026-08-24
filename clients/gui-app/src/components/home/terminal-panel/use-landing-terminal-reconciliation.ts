@@ -448,10 +448,19 @@ export async function reconcileCapableLandingTerminals(args: {
     pendingKills.map(async (pending) => {
       const collection =
         queryClient.getQueryData<PlainTerminalCollection>(queryKey);
-      if (
-        getPlainTerminal(collection, pending.hostId, pending.sessionId) !==
-        undefined
-      ) {
+      const projection = getPlainTerminal(
+        collection,
+        pending.hostId,
+        pending.sessionId,
+      );
+      if (projection === undefined) {
+        if (
+          pending.pendingCreate === true ||
+          pending.createRejectedAmbiguously === true
+        ) {
+          return;
+        }
+      } else {
         await args.closeTerminal({ terminalId: pending.sessionId });
       }
       useLandingTerminalStore

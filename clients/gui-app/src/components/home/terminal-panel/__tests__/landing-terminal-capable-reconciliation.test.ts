@@ -262,6 +262,55 @@ describe("capable landing-terminal reconciliation", () => {
     expect(useLandingTerminalStore.getState().tabs).toEqual([]);
   });
 
+  it.each([false, true])(
+    "preserves an absent capable create tombstone (ambiguous: %s)",
+    async (ambiguous) => {
+      const pending = {
+        ...tab({
+          instanceId: "pending-create",
+          terminalId: "terminal-pending-create",
+          name: "Pending create",
+        }),
+        pendingCreate: true,
+      };
+      useLandingTerminalStore.getState().addTab(pending);
+      useLandingTerminalStore
+        .getState()
+        .closeTab(LANDING_PAGE_ID, pending.instanceId);
+      if (ambiguous) {
+        useLandingTerminalStore
+          .getState()
+          .settleFailedCreate(
+            pending.instanceId,
+            pending.hostId,
+            pending.sessionId,
+            true,
+          );
+      }
+      queryClient.setQueryData(
+        hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+        freshCollection([]),
+      );
+      const pendingKillsBefore =
+        useLandingTerminalStore.getState().pendingKills;
+
+      await reconcileCapableLandingTerminals({
+        activeHostId: HOST_ID,
+        landingPageId: LANDING_PAGE_ID,
+        capability: CAPABILITY,
+        canMutate: true,
+        closeTerminal: () => Promise.reject(new Error("unexpected close")),
+        importLegacyTerminal: () =>
+          Promise.reject(new Error("unexpected import")),
+        queryClient,
+      });
+
+      expect(useLandingTerminalStore.getState().pendingKills).toEqual(
+        pendingKillsBefore,
+      );
+    },
+  );
+
   it("removes late-hydrated legacy evidence against a retained tombstone without importing", async () => {
     const legacy = tab({
       instanceId: "late-legacy",
