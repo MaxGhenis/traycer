@@ -606,6 +606,7 @@ describe("landing terminal lifecycle", () => {
           ...persisted.state,
           volatileDismissals: [
             {
+              instanceId: "injected-instance",
               hostId: HOST_A,
               sessionId: "injected",
               authoritativePresenceObserved: true,
@@ -623,6 +624,7 @@ describe("landing terminal lifecycle", () => {
     useLandingTerminalStore.setState({
       volatileDismissals: [
         {
+          instanceId: "reset-instance",
           hostId: HOST_A,
           sessionId: "reset-me",
           authoritativePresenceObserved: true,

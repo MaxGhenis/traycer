@@ -361,6 +361,7 @@ describe("<LandingTerminalBoundHostReconciliationFleet />", () => {
         useLandingTerminalStore.getState().volatileDismissals,
       ).toMatchObject([
         {
+          instanceId: "instance-b",
           hostId: "host-b",
           sessionId: "terminal-b",
           authoritativePresenceObserved: true,

@@ -1482,22 +1482,26 @@ describe("<LandingTerminalPanel />", () => {
       hostId: "host-a",
       terminalId: "fresh-session",
     });
-    expect(mocks.kill).toHaveBeenCalledTimes(1);
-    expect(mocks.kill).toHaveBeenCalledWith({
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.killAsync).toHaveBeenCalledTimes(1);
+    expect(mocks.killAsync).toHaveBeenCalledWith({
       hostId: "host-legacy",
       sessionId: "legacy-session",
     });
-    expect(mocks.killAsync).not.toHaveBeenCalled();
     expect(useLandingTerminalStore.getState().pendingKills).toEqual(
       preExistingPendingKills,
     );
     expect(
       useLandingTerminalStore.getState().volatileDismissals,
     ).toContainEqual({
+      instanceId: "fresh-instance",
       hostId: "host-a",
       sessionId: "fresh-session",
       authoritativePresenceObserved: true,
     });
+    expect(
+      useLandingTerminalStore.getState().volatileDismissals,
+    ).not.toContainEqual(expect.objectContaining({ hostId: "host-legacy" }));
 
     await act(async () => {
       rejectFreshClose?.(new Error("rejected close"));
@@ -1669,7 +1673,7 @@ describe("<LandingTerminalPanel />", () => {
     expect(useLandingTerminalStore.getState().tabs[0].instanceId).toBe(
       first.instanceId,
     );
-    expect(mocks.kill).toHaveBeenCalledWith({
+    expect(mocks.killAsync).toHaveBeenCalledWith({
       hostId: second.hostId,
       sessionId: second.sessionId,
     });

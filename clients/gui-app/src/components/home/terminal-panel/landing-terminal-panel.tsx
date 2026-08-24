@@ -328,7 +328,6 @@ export function LandingTerminalPanel(): ReactNode {
   const renameTab = useLandingTerminalStore((state) => state.renameTab);
   const dismissTab = useLandingTerminalStore((state) => state.dismissTab);
   const kill = useLandingTerminalKill();
-  const killTerminal = kill.mutate;
   const killTerminalAsync = kill.mutateAsync;
   // Last settled generation's host context. Manual create uses it only when
   // `hostId` still equals the active host; auto-spawn never reads this alone.
@@ -794,7 +793,16 @@ export function LandingTerminalPanel(): ReactNode {
           })
           .catch(() => undefined);
       } else if (landingTerminalAuthorityReady(authorityEntry)) {
-        killTerminal({ hostId: closed.hostId, sessionId: closed.sessionId });
+        void killTerminalAsync({
+          hostId: closed.hostId,
+          sessionId: closed.sessionId,
+        })
+          .then(() => {
+            useLandingTerminalStore
+              .getState()
+              .clearVolatileDismissal(closed.hostId, closed.sessionId);
+          })
+          .catch(() => undefined);
       }
       // Closing a non-last tab promotes a surviving neighbor - keep the
       // keyboard with the panel. The last-tab case collapses the panel, and
@@ -814,7 +822,7 @@ export function LandingTerminalPanel(): ReactNode {
       clearPending,
       dismissTab,
       authorityEntries,
-      killTerminal,
+      killTerminalAsync,
       landingPageId,
       replaceDirectoryRequest,
     ],

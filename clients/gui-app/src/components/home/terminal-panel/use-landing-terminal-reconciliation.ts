@@ -546,23 +546,22 @@ export async function reconcileCapableLandingTerminals(args: {
     return "snapshot-not-fresh";
   }
   const current = useLandingTerminalStore.getState();
+  const hostTerminals = plainTerminalCollectionValues(collection).filter(
+    (terminal) => terminal.record.hostId === activeHostId,
+  );
   const excludedTerminalKeys = landingTerminalSuppressedSessionKeys(
     current,
     activeHostId,
   );
   current.reconcileVolatileDismissals(
     activeHostId,
-    new Set(
-      plainTerminalCollectionValues(collection).map(
-        (terminal) => terminal.record.terminalId,
-      ),
-    ),
+    new Set(hostTerminals.map((terminal) => terminal.record.terminalId)),
   );
   const reconciliation = reconcileHostAuthoritativeLandingTerminalTabs({
     tabs: current.tabs,
     activeInstanceId: current.activeInstanceId,
     hostId: activeHostId,
-    terminals: plainTerminalCollectionValues(collection),
+    terminals: hostTerminals,
     excludedTerminalKeys,
     mintInstanceId: () => `landing-terminal-${uuidv4()}`,
   });

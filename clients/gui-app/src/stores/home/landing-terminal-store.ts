@@ -38,6 +38,7 @@ export interface LandingTerminalPendingKill {
 
 /** Renderer-local adoption suppression; never persisted or retried as cleanup. */
 export interface LandingTerminalVolatileDismissal {
+  readonly instanceId: string;
   readonly hostId: string;
   readonly sessionId: string;
   readonly authoritativePresenceObserved: boolean;
@@ -114,6 +115,7 @@ export interface LandingTerminalStoreState {
     hostId: string,
     authoritativeSessionIds: ReadonlySet<string>,
   ) => void;
+  readonly clearVolatileDismissal: (hostId: string, sessionId: string) => void;
   readonly rekeyTab: (instanceId: string, sessionId: string) => void;
   readonly adoptHostTerminal: (
     instanceId: string,
@@ -435,6 +437,13 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
             ? state
             : { volatileDismissals };
         }),
+      clearVolatileDismissal: (hostId, sessionId) =>
+        set((state) => ({
+          volatileDismissals: state.volatileDismissals.filter(
+            (dismissal) =>
+              dismissal.hostId !== hostId || dismissal.sessionId !== sessionId,
+          ),
+        })),
       rekeyTab: (instanceId, sessionId) =>
         set((state) => ({
           tabs: state.tabs.map((tab) =>
@@ -449,14 +458,28 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
       // dropped the acknowledgement, left the tab unacknowledged beside a
       // freshly adopted canonical duplicate, and re-imported on the next pass.
       adoptHostTerminal: (instanceId, terminal) =>
-        set((state) => ({
-          tabs: state.tabs.map((tab) =>
-            tab.instanceId === instanceId &&
-            tab.hostId === terminal.record.hostId
-              ? hostAcknowledgedTab(tab, terminal)
-              : tab,
-          ),
-        })),
+        set((state) => {
+          const tabExists = state.tabs.some(
+            (tab) =>
+              tab.instanceId === instanceId &&
+              tab.hostId === terminal.record.hostId,
+          );
+          return {
+            tabs: state.tabs.map((tab) =>
+              tab.instanceId === instanceId &&
+              tab.hostId === terminal.record.hostId
+                ? hostAcknowledgedTab(tab, terminal)
+                : tab,
+            ),
+            volatileDismissals: tabExists
+              ? state.volatileDismissals
+              : adoptCanonicalVolatileDismissal(
+                  state.volatileDismissals,
+                  instanceId,
+                  terminal,
+                ),
+          };
+        }),
       removeHostTerminal: (hostId, terminalId) =>
         set((state) => {
           const tabs = state.tabs.filter(
@@ -668,9 +691,37 @@ function addVolatileDismissal(
   return [
     ...dismissals,
     {
+      instanceId: tab.instanceId,
       hostId: tab.hostId,
       sessionId: tab.sessionId,
       authoritativePresenceObserved: tab.hostAuthorityAcknowledged === true,
+    },
+  ];
+}
+
+function adoptCanonicalVolatileDismissal(
+  dismissals: ReadonlyArray<LandingTerminalVolatileDismissal>,
+  instanceId: string,
+  terminal: PlainTerminalProjection,
+): ReadonlyArray<LandingTerminalVolatileDismissal> {
+  const source = dismissals.find(
+    (dismissal) =>
+      dismissal.instanceId === instanceId &&
+      dismissal.hostId === terminal.record.hostId,
+  );
+  if (source === undefined) return dismissals;
+  return [
+    ...dismissals.filter(
+      (dismissal) =>
+        dismissal !== source &&
+        (dismissal.hostId !== terminal.record.hostId ||
+          dismissal.sessionId !== terminal.record.terminalId),
+    ),
+    {
+      instanceId,
+      hostId: terminal.record.hostId,
+      sessionId: terminal.record.terminalId,
+      authoritativePresenceObserved: true,
     },
   ];
 }

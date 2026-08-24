@@ -45,6 +45,7 @@ function tab(input: {
 
 function terminal(input: {
   readonly terminalId: string;
+  readonly hostId?: string;
   readonly manualTitle: string | null;
   readonly revision: number;
   readonly runtime: "running" | "dormant";
@@ -52,7 +53,7 @@ function terminal(input: {
   return {
     record: {
       terminalId: input.terminalId,
-      hostId: HOST_ID,
+      hostId: input.hostId ?? HOST_ID,
       scope: SCOPE,
       launch: {
         cwd: "/host/launch",
@@ -228,6 +229,7 @@ describe("capable landing-terminal reconciliation", () => {
       .dismissTab(LANDING_PAGE_ID, pending.instanceId);
     expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([
       {
+        instanceId: "pending-instance",
         hostId: HOST_ID,
         sessionId: "terminal-pending",
         authoritativePresenceObserved: false,
@@ -252,6 +254,7 @@ describe("capable landing-terminal reconciliation", () => {
     });
     expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([
       {
+        instanceId: "pending-instance",
         hostId: HOST_ID,
         sessionId: "terminal-pending",
         authoritativePresenceObserved: false,
@@ -280,6 +283,7 @@ describe("capable landing-terminal reconciliation", () => {
     expect(useLandingTerminalStore.getState().tabs).toEqual([]);
     expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([
       {
+        instanceId: "pending-instance",
         hostId: HOST_ID,
         sessionId: "terminal-pending",
         authoritativePresenceObserved: true,
@@ -571,6 +575,102 @@ describe("capable landing-terminal reconciliation", () => {
         .tabs.find((candidate) => candidate.instanceId === legacy.instanceId)
         ?.hostAuthorityAcknowledged,
     ).not.toBe(true);
+  });
+
+  it("carries a dismissed import suppression to the canonical terminal id", async () => {
+    const legacy = tab({
+      instanceId: "dismissed-import",
+      terminalId: "legacy-id",
+      name: "Legacy terminal",
+    });
+    const canonical = terminal({
+      terminalId: "canonical-id",
+      manualTitle: "Canonical terminal",
+      revision: 1,
+      runtime: "running",
+    });
+    useLandingTerminalStore.getState().addTab(legacy);
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+      freshCollection([]),
+    );
+    const pendingImport = deferred<{
+      readonly status: "existing";
+      readonly terminal: PlainTerminalProjection;
+    }>();
+    const importLegacy = vi.fn(() => pendingImport.promise);
+    const reconciliation = reconcileCapableLandingTerminals({
+      activeHostId: HOST_ID,
+      landingPageId: LANDING_PAGE_ID,
+      capability: CAPABILITY,
+      canMutate: true,
+      closeTerminal: () => Promise.resolve(),
+      importLegacyTerminal: importLegacy,
+      queryClient,
+    });
+    await waitFor(() => expect(importLegacy).toHaveBeenCalledTimes(1));
+    useLandingTerminalStore
+      .getState()
+      .dismissTab(LANDING_PAGE_ID, legacy.instanceId);
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+      freshCollection([canonical]),
+    );
+    pendingImport.resolve({ status: "existing", terminal: canonical });
+
+    await expect(reconciliation).resolves.toBe("reconciled");
+    expect(useLandingTerminalStore.getState().tabs).toEqual([]);
+    expect(useLandingTerminalStore.getState().volatileDismissals).toEqual([
+      {
+        instanceId: legacy.instanceId,
+        hostId: HOST_ID,
+        sessionId: canonical.record.terminalId,
+        authoritativePresenceObserved: true,
+      },
+    ]);
+  });
+
+  it("does not adopt another host from a complete-fleet snapshot", async () => {
+    const otherHost = "host-b";
+    const dismissed = {
+      ...tab({
+        instanceId: "dismissed-other-host",
+        terminalId: "shared-id",
+        name: "Other host terminal",
+      }),
+      hostId: otherHost,
+      hostAuthorityAcknowledged: true,
+    };
+    useLandingTerminalStore.getState().addTab(dismissed);
+    useLandingTerminalStore
+      .getState()
+      .dismissTab(LANDING_PAGE_ID, dismissed.instanceId);
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+      freshCollection([
+        terminal({
+          terminalId: dismissed.sessionId,
+          hostId: otherHost,
+          manualTitle: dismissed.name,
+          revision: 1,
+          runtime: "running",
+        }),
+      ]),
+    );
+
+    await expect(
+      reconcileCapableLandingTerminals({
+        activeHostId: HOST_ID,
+        landingPageId: LANDING_PAGE_ID,
+        capability: CAPABILITY,
+        canMutate: true,
+        closeTerminal: () => Promise.resolve(),
+        importLegacyTerminal: () =>
+          Promise.reject(new Error("unexpected import")),
+        queryClient,
+      }),
+    ).resolves.toBe("reconciled");
+    expect(useLandingTerminalStore.getState().tabs).toEqual([]);
   });
 
   it("returns reconciled after a successful pass", async () => {
