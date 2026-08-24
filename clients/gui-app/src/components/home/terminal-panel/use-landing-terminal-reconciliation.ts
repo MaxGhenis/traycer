@@ -330,7 +330,11 @@ export function useLandingTerminalReconciliation(
         freshSessions.map((session) => session.sessionId),
       );
       for (const pending of hostTombstones) {
-        if (!listedSessionIds.has(pending.sessionId)) {
+        if (
+          !listedSessionIds.has(pending.sessionId) &&
+          pending.pendingCreate !== true &&
+          pending.createRejectedAmbiguously !== true
+        ) {
           useLandingTerminalStore
             .getState()
             .clearPendingKill(pending.hostId, pending.sessionId);
@@ -340,7 +344,10 @@ export function useLandingTerminalReconciliation(
         hostTombstones
           .filter((pending) => listedSessionIds.has(pending.sessionId))
           .map((pending) =>
-            killTerminal(pending).then(
+            killTerminal({
+              hostId: pending.hostId,
+              sessionId: pending.sessionId,
+            }).then(
               () => undefined,
               () => undefined,
             ),

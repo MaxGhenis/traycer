@@ -310,6 +310,11 @@ function LandingTerminalDurableBootstrap(
   const ensureTerminalRunning = entry.mutations.ensureRunning.mutateAsync;
   const dispatch = useCallback(
     async (action: "create" | "ensure-running") => {
+      if (action === "create") {
+        useLandingTerminalStore
+          .getState()
+          .markCreateAttempt(props.tab.instanceId);
+      }
       const response =
         action === "create"
           ? await createTerminal({
@@ -334,6 +339,7 @@ function LandingTerminalDurableBootstrap(
       openingGrid.rows,
       props.tab.cwd,
       props.tab.hostId,
+      props.tab.instanceId,
       props.tab.sessionId,
     ],
   );

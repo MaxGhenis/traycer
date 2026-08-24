@@ -38,8 +38,8 @@ interface CapableCloseRetry {
 }
 
 interface TombstoneRetryRefs {
-  readonly ambiguousEntries: {
-    current: Map<string, LandingTerminalAuthorityEntry>;
+  readonly ambiguousEpochs: {
+    current: Map<string, number>;
   };
   readonly authorityEntries: {
     current: LandingTerminalAuthorityEntries;
@@ -158,7 +158,8 @@ function scheduleLegacyKillRetry(args: {
   if (
     !stillPending ||
     args.refs.dialable.current.get(args.pending.hostId) !== true ||
-    currentEntry?.authority.capability.status !== "legacy"
+    (args.pending.legacyEvidence !== true &&
+      currentEntry?.authority.capability.status !== "legacy")
   ) {
     return;
   }
@@ -197,7 +198,10 @@ function dispatchLegacyKill(args: {
     args.key,
   ]);
   void args.kill
-    .mutateAsync(args.pending)
+    .mutateAsync({
+      hostId: args.pending.hostId,
+      sessionId: args.pending.sessionId,
+    })
     .then(
       () => clearCapableCloseRetry(args.refs.retries.current, args.key),
       () =>
@@ -281,13 +285,20 @@ function dispatchCapableClose(args: {
     ) === undefined
   ) {
     if (args.pending.createRejectedAmbiguously === true) {
-      const observedEntry = args.refs.ambiguousEntries.current.get(args.key);
-      if (observedEntry === undefined) {
-        args.refs.ambiguousEntries.current.set(args.key, args.entry);
+      const observedEpoch = args.refs.ambiguousEpochs.current.get(args.key);
+      if (observedEpoch === undefined) {
+        args.refs.ambiguousEpochs.current.set(
+          args.key,
+          args.entry.authority.collection?.snapshotEpoch ?? 0,
+        );
         return;
       }
-      if (observedEntry === args.entry) return;
-      args.refs.ambiguousEntries.current.delete(args.key);
+      if (
+        observedEpoch >= (args.entry.authority.collection?.snapshotEpoch ?? 0)
+      ) {
+        return;
+      }
+      args.refs.ambiguousEpochs.current.delete(args.key);
       useLandingTerminalStore
         .getState()
         .clearPendingKill(args.pending.hostId, args.pending.sessionId);
@@ -355,9 +366,7 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
   const kill = useLandingTerminalKill();
   const killRef = useRef<LegacyKillMutation>(kill);
   const inFlightRef = useRef<ReadonlySet<string>>(new Set());
-  const ambiguousEntriesRef = useRef<
-    Map<string, LandingTerminalAuthorityEntry>
-  >(new Map());
+  const ambiguousEpochsRef = useRef<Map<string, number>>(new Map());
   const retriesRef = useRef<Map<string, CapableCloseRetry>>(new Map());
   const mountedRef = useRef(true);
   const [retryGeneration, setRetryGeneration] = useState(0);
@@ -430,14 +439,14 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
   useEffect(() => {
     mountedRef.current = true;
     const retries = retriesRef.current;
-    const ambiguousEntries = ambiguousEntriesRef.current;
+    const ambiguousEpochs = ambiguousEpochsRef.current;
     return () => {
       mountedRef.current = false;
       for (const retry of retries.values()) {
         if (retry.timer !== null) clearTimeout(retry.timer);
       }
       retries.clear();
-      ambiguousEntries.clear();
+      ambiguousEpochs.clear();
     };
   }, []);
 
@@ -468,7 +477,7 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
     const previousDialable = dialableRef.current;
     dialableRef.current = currentDrainable;
     const retryRefs: TombstoneRetryRefs = {
-      ambiguousEntries: ambiguousEntriesRef,
+      ambiguousEpochs: ambiguousEpochsRef,
       authorityEntries: authorityEntriesRef,
       dialable: dialableRef,
       inFlight: inFlightRef,
@@ -499,7 +508,11 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
       }
       if (inFlightRef.current.has(key)) continue;
       const entry = authorityEntries[pending.hostId];
-      if (entry?.authority.capability.status === "capable") {
+      if (
+        entry !== undefined &&
+        pending.legacyEvidence !== true &&
+        entry.authority.capability.status === "capable"
+      ) {
         dispatchCapableClose({
           entry,
           key,
@@ -510,7 +523,11 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
         });
         continue;
       }
-      if (entry?.authority.capability.status === "legacy") {
+      if (
+        entry !== undefined &&
+        (pending.legacyEvidence === true ||
+          entry.authority.capability.status === "legacy")
+      ) {
         dispatchLegacyKill({
           key,
           kill: killRef.current,

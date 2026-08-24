@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => {
     readySessionHosts: new Set<string>(),
     authorityStatus: initialAuthorityStatus(),
     canMutate: false,
+    snapshotEpoch: 1,
     terminalsById,
     closeAsync: vi.fn(() => Promise.resolve()),
   };
@@ -81,6 +82,7 @@ vi.mock(
                     : { status: mocks.authorityStatus },
                 canMutate: mocks.canMutate,
                 collection: {
+                  snapshotEpoch: mocks.snapshotEpoch,
                   terminalsByIdentity: Object.fromEntries(
                     Object.entries(terminalsById).map(([terminalId, value]) => [
                       JSON.stringify([hostId, terminalId]),
@@ -146,6 +148,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     mocks.readySessionHosts = new Set();
     mocks.authorityStatus = "legacy";
     mocks.canMutate = false;
+    mocks.snapshotEpoch = 1;
     mocks.terminalsById = {};
     mocks.closeAsync.mockReset();
     mocks.closeAsync.mockImplementation(() => Promise.resolve());
@@ -255,7 +258,11 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     await act(async () => Promise.resolve());
 
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: "host-b", sessionId: "registry-lag-session" },
+      {
+        hostId: "host-b",
+        sessionId: "registry-lag-session",
+        legacyEvidence: true,
+      },
     ]);
     expect(mocks.kill).not.toHaveBeenCalled();
   });
@@ -275,7 +282,11 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     await act(async () => Promise.resolve());
 
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: "host-b", sessionId: "boot-session" },
+      {
+        hostId: "host-b",
+        sessionId: "boot-session",
+        legacyEvidence: true,
+      },
     ]);
 
     mocks.entries = [
@@ -485,6 +496,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(1);
 
     mocks.terminalsById = {};
+    mocks.snapshotEpoch += 1;
     view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
 
     await waitFor(() => {
