@@ -90,9 +90,16 @@ export function SwitcherListRow(props: {
           aria-label={`${nesting.expanded ? "Collapse" : "Expand"} ${label}`}
           aria-expanded={nesting.expanded}
           data-testid={`${selectTestId}-toggle`}
+          // `data-slot`, though this is a bare element rather than `ui/button`:
+          // that attribute is what the sheet's touch scope selects on, and its
+          // slop is the only thing here measured in real pixels. The root font
+          // is 15px, so every rem utility renders at 0.9375x and a `h-11` is
+          // 41.25px; the scope's `height: max(100%, 44px)` is a true 44.
+          data-slot="button"
           // Desktop's glyph, untouched. Only the hit box grows on a coarse
-          // pointer, and it grows invisibly - no background, no border, no box
-          // in any state; a press dims the glyph instead.
+          // pointer, and it grows invisibly - the scope forces the pseudo
+          // transparent, and the control itself paints no background, border or
+          // box in any state; a press dims the glyph instead.
           className="flex shrink-0 items-center justify-center bg-transparent text-muted-foreground transition-opacity active:opacity-50 pointer-coarse:h-11 pointer-coarse:w-6"
         >
           <TreeChevron expanded={nesting.expanded} onToggle={undefined} />
