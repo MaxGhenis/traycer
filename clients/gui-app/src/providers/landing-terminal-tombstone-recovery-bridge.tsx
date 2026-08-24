@@ -330,7 +330,10 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
         continue;
       }
       if (entry?.authority.capability.status === "legacy") {
-        killRef.current.mutate(pending);
+        killRef.current.mutate({
+          hostId: pending.hostId,
+          sessionId: pending.sessionId,
+        });
       }
     }
   }, [
