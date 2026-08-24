@@ -1,6 +1,9 @@
 import { useEffect, useReducer, useRef } from "react";
 import { SessionImportScanClient } from "@traycer-clients/shared/host-transport/session-import-scan-client";
-import { useWsStreamClient } from "@/lib/host/stream-runtime-context";
+import {
+  useStreamHostId,
+  useWsStreamClient,
+} from "@/lib/host/stream-runtime-context";
 import {
   SESSION_IMPORT_INITIAL_STATE,
   sessionImportWizardReducer,
@@ -24,28 +27,41 @@ export interface SessionImportScanHandle {
  */
 export function useSessionImportScan(active: boolean): SessionImportScanHandle {
   const wsStreamClient = useWsStreamClient();
+  // Taken off the same binding as the client above, never from the active-host
+  // hook, so the machine named here is the machine this scan is reading (see
+  // `StreamRuntimeBinding.hostId`).
+  const streamHostId = useStreamHostId();
   const [state, dispatch] = useReducer(
     sessionImportWizardReducer,
     SESSION_IMPORT_INITIAL_STATE,
   );
   const clientRef = useRef<SessionImportScanClient | null>(null);
-  // Tells the two restarts apart. The FIRST subscription of an active wizard is
-  // the user opening it; every later one is the transport coming back under
-  // them, which must not throw away the selection they are halfway through.
-  const subscribedRef = useRef(false);
+  // The machine the live subscription is reading, or `null` while there is no
+  // subscription. It is what tells the two restarts apart, and the host is the
+  // load-bearing half: a replacement client dialing the SAME machine is the
+  // transport coming back under a user halfway through picking rows, so their
+  // groups and ticks survive it, while one dialing a DIFFERENT machine is a
+  // different set of sessions entirely. Keeping the old host's groups there
+  // would leave path-keyed folders the new host may not have and submit native
+  // session ids it has never seen. An unnameable host falls to the clearing
+  // restart on purpose - unable to prove it is the same machine is not
+  // evidence that it is.
+  const scannedHostIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!active) {
-      subscribedRef.current = false;
+      scannedHostIdRef.current = null;
       return;
     }
     if (wsStreamClient === null) return;
 
+    const sameHost =
+      streamHostId !== null && streamHostId === scannedHostIdRef.current;
     dispatch({
       kind: "scanRestarted",
-      reason: subscribedRef.current ? "reconnect" : "fresh",
+      reason: sameHost ? "reconnect" : "fresh",
     });
-    subscribedRef.current = true;
+    scannedHostIdRef.current = streamHostId;
     const client = new SessionImportScanClient({
       wsStreamClient,
       providers: null,
@@ -77,7 +93,7 @@ export function useSessionImportScan(active: boolean): SessionImportScanHandle {
       clientRef.current = null;
       client.close();
     };
-  }, [active, wsStreamClient]);
+  }, [active, wsStreamClient, streamHostId]);
 
   return { state, dispatch };
 }

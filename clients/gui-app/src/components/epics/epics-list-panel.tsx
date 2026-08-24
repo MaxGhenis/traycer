@@ -612,7 +612,13 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
         />
         <NotificationIndicatorsProvider indicators={notificationIndicators}>
           <div className="min-h-0 flex-1 overflow-y-auto pb-10">
-            <SessionImportPromptRow />
+            {/*
+             * The picker embed is a read-only destination browser, so it
+             * offers nothing that creates tasks - and an import started from
+             * inside it would settle behind the chooser the user is still
+             * standing in.
+             */}
+            {variant !== "picker" ? <SessionImportPromptRow /> : null}
             <EpicsListBody
               error={error}
               isPending={isPending}

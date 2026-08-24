@@ -169,7 +169,7 @@ describe("SessionImportPromptRow", () => {
     render(<SessionImportPromptRow />);
 
     expect(useSessionImportPromptStore.getState().dismissedAt).toBeNull();
-    fireEvent.click(screen.getByTestId("session-import-prompt-dismiss"));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
 
     expect(useSessionImportPromptStore.getState().dismissedAt).not.toBeNull();
     expect(screen.queryByTestId("session-import-prompt")).toBeNull();
@@ -181,7 +181,7 @@ describe("SessionImportPromptRow", () => {
     render(<SessionImportPromptRow />);
 
     expect(screen.queryByTestId("session-import-dialog-stub")).toBeNull();
-    fireEvent.click(screen.getByTestId("session-import-prompt-open"));
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
 
     expect(screen.getByTestId("session-import-dialog-stub")).toBeTruthy();
   });
@@ -217,7 +217,10 @@ describe("SessionImportSettingsRow (via GeneralSettingsPanel)", () => {
 
     renderPanel();
 
-    expect(screen.queryByTestId("settings-import-sessions")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Import sessions" }),
+    ).toBeNull();
+    // The row's label too, not just its control: the whole row is gone.
     expect(screen.queryByText("Import sessions")).toBeNull();
   });
 
@@ -226,7 +229,9 @@ describe("SessionImportSettingsRow (via GeneralSettingsPanel)", () => {
 
     renderPanel();
 
-    expect(screen.getByTestId("settings-import-sessions")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Import sessions" }),
+    ).toBeTruthy();
     expect(
       screen.getByText(
         "Bring sessions you have already run in Claude Code or Codex into Traycer as tasks.",
@@ -251,6 +256,7 @@ describe("SessionImportSettingsRow (via GeneralSettingsPanel)", () => {
     });
     useSessionImportRunStore.getState().applyProgress(
       progressEntryFrom({
+        runId: "run-live",
         harness: "claude",
         nativeSessionId: "session-1",
         outcome: {

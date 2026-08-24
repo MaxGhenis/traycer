@@ -5,6 +5,7 @@ import {
   render,
   screen,
   within,
+  type RenderResult,
 } from "@testing-library/react";
 import {
   afterEach,
@@ -71,15 +72,31 @@ vi.mock(
   }),
 );
 
-// A non-null stub is all `useSessionImportScan` needs to proceed past its
-// null-guard; the fake `SessionImportScanClient` above never touches it. Its
-// identity must be STABLE: the real `useWsStreamClient` is a
-// `useSyncExternalStore` read that returns the same client across renders, and
-// the scan effect keys its subscription on that identity - a stub minted per
-// render would re-subscribe forever.
-const wsStreamClientStub = vi.hoisted(() => ({ stream: "test" }));
+/**
+ * Stands in for the app-wide stream binding. A non-null client is all
+ * `useSessionImportScan` needs to proceed past its null-guard; the fake
+ * `SessionImportScanClient` above never touches it. Its identity must be
+ * STABLE: the real `useWsStreamClient` is a `useSyncExternalStore` read that
+ * returns the same client across renders, and the scan effect keys its
+ * subscription on that identity - a stub minted per render would re-subscribe
+ * forever.
+ *
+ * Client and host live in one mutable value because the real binding carries
+ * them that way, which is what lets a test replace the transport while naming
+ * the same machine (a reconnect) or a different one (a host switch).
+ */
+interface StreamBindingHarness {
+  client: object;
+  hostId: string | null;
+}
+
+const streamBinding = vi.hoisted((): StreamBindingHarness => ({
+  client: { stream: "test" },
+  hostId: "host-a",
+}));
 vi.mock("@/lib/host/stream-runtime-context", () => ({
-  useWsStreamClient: () => wsStreamClientStub,
+  useWsStreamClient: () => streamBinding.client,
+  useStreamHostId: () => streamBinding.hostId,
 }));
 
 vi.mock("@/components/session-import/session-import-run-handle", () => ({
@@ -224,11 +241,31 @@ function missingFolderGroup(input: {
   };
 }
 
-function renderWizard(onImportStarted: () => void): void {
-  render(
+function renderWizard(onImportStarted: () => void): RenderResult {
+  return render(
     <SessionImportWizard
       surface="dialog"
       onImportStarted={onImportStarted}
+      secondaryAction={null}
+    />,
+  );
+}
+
+/**
+ * Replays what the stream runtime does when its client is replaced: publishes
+ * a new client (and whichever machine it now dials) and lets the wizard
+ * re-render, which is the only thing that re-runs the scan effect.
+ */
+function replaceStreamClient(
+  rerender: RenderResult["rerender"],
+  hostId: string,
+): void {
+  streamBinding.client = { stream: hostId };
+  streamBinding.hostId = hostId;
+  rerender(
+    <SessionImportWizard
+      surface="dialog"
+      onImportStarted={vi.fn()}
       secondaryAction={null}
     />,
   );
@@ -264,6 +301,8 @@ function requireGroupElement(groupKey: string): HTMLElement {
 }
 
 beforeEach(() => {
+  streamBinding.client = { stream: "host-a" };
+  streamBinding.hostId = "host-a";
   openEpicFromListMock.mockClear();
   navigateMock.mockClear();
   scanClient.callbacks = null;
@@ -697,6 +736,177 @@ describe("<SessionImportWizard />", () => {
     expect(request.titles.get("claude:s1")).toBe("Alpha session");
     expect(onImportStarted).toHaveBeenCalledTimes(1);
     expect(analyticsTrackMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the groups and the user's ticks when the transport comes back on the same host", () => {
+    const { rerender } = renderWizard(vi.fn());
+    const callbacks = requireCallbacks();
+
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/a",
+          sessions: [
+            importableCandidate("claude", "s1", "Session one"),
+            importableCandidate("claude", "s2", "Session two"),
+          ],
+        }),
+      );
+    });
+    fireEvent.click(screen.getByTestId("session-import-group-toggle"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Session two" }));
+
+    expect(screen.getByTestId("session-import-submit").textContent).toBe(
+      "Import 1 session",
+    );
+
+    replaceStreamClient(rerender, "host-a");
+
+    expect(screen.getAllByTestId("session-import-group")).toHaveLength(1);
+    // The deliberate untick is the point: a reconnect that re-delivered the
+    // group and re-applied the pre-select-on-arrival rule would silently put
+    // "Session two" back.
+    expect(screen.getByTestId("session-import-submit").textContent).toBe(
+      "Import 1 session",
+    );
+  });
+
+  it("drops the previous host's groups and selection when the stream switches machines", () => {
+    const { rerender } = renderWizard(vi.fn());
+    const callbacks = requireCallbacks();
+
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/a",
+          sessions: [importableCandidate("claude", "s1", "Session one")],
+        }),
+      );
+    });
+
+    expect(screen.getByTestId("session-import-submit").textContent).toBe(
+      "Import 1 session",
+    );
+
+    replaceStreamClient(rerender, "host-b");
+
+    // Host B has never heard of `claude:s1`, and its own `/repo/a` - if it has
+    // one at all - is a different directory. Carrying either across would
+    // submit one machine's sessions to another.
+    expect(screen.queryAllByTestId("session-import-group")).toHaveLength(0);
+    expect(screen.getByTestId("session-import-submit").textContent).toBe(
+      "Import 0 sessions",
+    );
+    expect(screen.getByTestId("session-import-scan-spinner")).toBeTruthy();
+  });
+
+  it("keeps an active provider filter clearable when the rescan returns only the other harness", () => {
+    const { rerender } = renderWizard(vi.fn());
+    const callbacks = requireCallbacks();
+
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/a",
+          sessions: [importableCandidate("claude", "s1", "Claude session")],
+        }),
+      );
+    });
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/b",
+          sessions: [importableCandidate("codex", "s2", "Codex session")],
+        }),
+      );
+    });
+
+    fireEvent.click(
+      within(
+        screen.getByRole("radiogroup", { name: "Filter by provider" }),
+      ).getByText(harnessDisplayName("codex")),
+    );
+    expect(screen.getAllByTestId("session-import-group")).toHaveLength(1);
+
+    // A fresh scan keeps the typed filters and nothing else, so this one lands
+    // with "Codex" still selected and no Codex session in sight.
+    replaceStreamClient(rerender, "host-b");
+    const rescanned = requireCallbacks();
+    act(() => {
+      rescanned.onGroup(
+        folderGroup({
+          path: "/repo/a",
+          sessions: [importableCandidate("claude", "s3", "Claude session")],
+        }),
+      );
+    });
+    act(() => {
+      rescanned.onComplete(ZERO_TOTALS);
+    });
+
+    expect(screen.queryAllByTestId("session-import-group")).toHaveLength(0);
+    expect(screen.getByTestId("session-import-empty")).toBeTruthy();
+
+    const filterGroup = screen.getByRole("radiogroup", {
+      name: "Filter by provider",
+    });
+    fireEvent.click(within(filterGroup).getByText("All"));
+
+    expect(screen.getAllByTestId("session-import-group")).toHaveLength(1);
+  });
+
+  it("reports the groups the submission covers, not every group the scan found", () => {
+    renderWizard(vi.fn());
+    const callbacks = requireCallbacks();
+
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/kept",
+          sessions: [importableCandidate("claude", "s1", "Kept session")],
+        }),
+      );
+    });
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/cleared",
+          sessions: [importableCandidate("claude", "s2", "Cleared session")],
+        }),
+      );
+    });
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/unusable",
+          sessions: [
+            alreadyInTraycerCandidate("claude", "s3", "Already there"),
+            unreadableCandidate("claude", "s4", "Broken session"),
+          ],
+        }),
+      );
+    });
+
+    const clearedKey = sessionImportGroupKey({
+      kind: "folder",
+      path: "/repo/cleared",
+      workspaceId: null,
+    });
+    fireEvent.click(
+      within(requireGroupElement(clearedKey)).getByTestId(
+        "session-import-group-select",
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId("session-import-submit"));
+
+    // Two groups the user is not importing from: one they cleared, one that
+    // never offered anything pickable.
+    expect(analyticsTrackMock).toHaveBeenCalledWith("session_import_started", {
+      surface: "dialog",
+      session_count: 1,
+      group_count: 1,
+    });
   });
 
   it("renders the empty state when the scan completes with nothing found", () => {

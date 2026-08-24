@@ -2,6 +2,10 @@ import { useEffect, useMemo } from "react";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { Search } from "lucide-react";
 import type { GuiHarnessId } from "@traycer/protocol/host/index";
+import type {
+  SessionImportGroup,
+  SessionImportSelection,
+} from "@traycer/protocol/host/session-import/candidate";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +16,7 @@ import {
   buildSessionImportSubmission,
   buildSessionImportView,
   harnessDisplayName,
+  sessionImportSelectionKey,
   type SessionImportProviderFilter,
 } from "@/components/session-import/session-import-model";
 import { SessionImportGroupItem } from "@/components/session-import/session-import-group";
@@ -79,8 +84,12 @@ export function SessionImportWizard(props: {
     for (const group of state.groups) {
       for (const candidate of group.sessions) harnesses.add(candidate.harness);
     }
+    // The filter survives a rescan, so the harness it names has to stay on
+    // offer even when this scan found nothing for it: its lit chip is the only
+    // thing on screen that explains why every row disappeared.
+    if (state.providerFilter !== "all") harnesses.add(state.providerFilter);
     return [...harnesses];
-  }, [state.groups]);
+  }, [state.groups, state.providerFilter]);
 
   if (!runIdle) {
     return (
@@ -109,7 +118,7 @@ export function SessionImportWizard(props: {
     Analytics.getInstance().track(AnalyticsEvent.SessionImportStarted, {
       surface,
       session_count: submission.selections.length,
-      group_count: state.groups.length,
+      group_count: submittedGroupCount(state.groups, submission.selections),
     });
     startSessionImportRun(submission);
     onImportStarted();
@@ -138,7 +147,12 @@ export function SessionImportWizard(props: {
             className={cn("h-8 pl-8 text-ui-sm", tone.input)}
           />
         </div>
-        {providerOptions.length > 1 ? (
+        {/*
+         * One harness needs no filter - but an ACTIVE filter always needs its
+         * row, or a rescan down to a single harness would leave the user
+         * looking at an empty list with no control that can clear it.
+         */}
+        {providerOptions.length > 1 || state.providerFilter !== "all" ? (
           <div
             role="radiogroup"
             aria-label="Filter by provider"
@@ -312,6 +326,34 @@ export function SessionImportWizard(props: {
       </div>
     </div>
   );
+}
+
+/**
+ * How many repos the submission actually brings over.
+ *
+ * Every other number on the event describes the import, so this one has to as
+ * well. `state.groups.length` counts the SCAN instead - folders the user
+ * cleared outright, and folders that only ever held unreadable or
+ * already-imported rows - which would read as "imported 3 sessions across 40
+ * repos". The selections are the source of truth rather than `state.selected`,
+ * so this cannot drift from whatever the submission decided to send.
+ */
+function submittedGroupCount(
+  groups: ReadonlyArray<SessionImportGroup>,
+  selections: ReadonlyArray<SessionImportSelection>,
+): number {
+  const submitted = new Set(
+    selections.map((selection) =>
+      sessionImportSelectionKey(selection.harness, selection.nativeSessionId),
+    ),
+  );
+  return groups.filter((group) =>
+    group.sessions.some((candidate) =>
+      submitted.has(
+        sessionImportSelectionKey(candidate.harness, candidate.nativeSessionId),
+      ),
+    ),
+  ).length;
 }
 
 function emptyMessage(failed: boolean, filteredOut: boolean): string {
