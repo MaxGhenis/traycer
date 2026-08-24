@@ -37,10 +37,22 @@ import {
  * the only measurement here immune to the 15px root font that renders every rem
  * utility at 0.9375x. A 26px row still owns a 44px vertical hit box.
  *
- * The PRICED cost: `ui/select.tsx` warns that slop overhanging flush-stacked
- * rows can capture a neighbour's taps, and at this row height the 44px slop does
- * overhang. Accepted for this surface only. If mis-taps show up in use the
- * lever is a visual `min-h-9`, not a return to 41px.
+ * `ui/select.tsx` warns that slop overhanging flush-stacked rows can capture a
+ * neighbour's taps, and at this row height the 44px slop does overhang. Measured
+ * on device it does NOT bite: the overhang stays inside the inter-row gap and
+ * splits it, so no point inside a painted row ever taps its neighbour.
+ *
+ * `h-auto` is load-bearing. `ui/button`'s default size sets a FIXED `h-8`, which
+ * beats a smaller `min-h-7` - so without it the floor here is inert and the row
+ * is 30px whatever this says. Desktop gets 26px for free because its row is a
+ * bare `<button>` with no height variant at all.
+ *
+ * The chevron keeps desktop's GLYPH but not desktop's target: it widens to a
+ * `w-6` slot on a coarse pointer. Desktop can afford an 8px control because it
+ * has a cursor; here this is the only way to reach a deep child, and at
+ * desktop's width it measured 13px across - by a wide margin the hardest thing
+ * on the row to hit, next to a 41px "…" beside it. Matching desktop's paint
+ * never meant matching its hit geometry.
  *
  * The chevron is desktop's `<span>` glyph rendered as a sibling `<button>`: it
  * needs a real accessible name and `aria-expanded`, since a phone has no
@@ -115,14 +127,14 @@ export function SwitcherListRow(props: {
           // pointer, and it grows invisibly - the scope forces the pseudo
           // transparent, and the control itself paints no background, border or
           // box in any state; a press dims the glyph instead.
-          className="flex shrink-0 items-center justify-center bg-transparent text-muted-foreground transition-opacity active:opacity-50"
+          className="flex shrink-0 items-center justify-center bg-transparent text-muted-foreground transition-opacity active:opacity-50 pointer-coarse:w-6"
         >
           <TreeChevron expanded={nesting.expanded} onToggle={undefined} />
         </button>
       ) : (
         // Desktop's spacer, in a slot the same width as the chevron's at both
         // pointer densities: a leaf's icon sits on its siblings' column.
-        <span className="flex shrink-0 items-center justify-center">
+        <span className="flex shrink-0 items-center justify-center pointer-coarse:w-6">
           <TreeChevronSpacer />
         </span>
       )}
@@ -132,7 +144,7 @@ export function SwitcherListRow(props: {
         onClick={onSelect}
         data-testid={selectTestId}
         aria-current={active ? "true" : undefined}
-        className="flex min-h-7 min-w-0 flex-1 items-center justify-start gap-1.5 rounded-md py-1 pr-2 text-left text-ui-sm font-normal"
+        className="flex h-auto min-h-7 min-w-0 flex-1 items-center justify-start gap-1.5 rounded-md py-1 pr-2 text-left text-ui-sm font-normal"
       >
         <span className="inline-flex h-3.5 w-[1.125rem] shrink-0 items-center justify-center">
           {icon}
@@ -181,7 +193,7 @@ export function SwitcherNewItemRow(props: {
       style={{ paddingLeft: `${SWITCHER_ROW_BASE_PAD_LEFT}px` }}
     >
       <span
-        className="flex shrink-0 items-center justify-center"
+        className="flex shrink-0 items-center justify-center pointer-coarse:w-6"
         aria-hidden="true"
       >
         <TreeChevronSpacer />
@@ -191,7 +203,7 @@ export function SwitcherNewItemRow(props: {
         variant="ghost"
         onClick={onSelect}
         data-testid={testId}
-        className="flex min-h-7 min-w-0 flex-1 items-center justify-start gap-1.5 rounded-md py-1 pr-2 text-left text-ui-sm font-normal text-muted-foreground"
+        className="flex h-auto min-h-7 min-w-0 flex-1 items-center justify-start gap-1.5 rounded-md py-1 pr-2 text-left text-ui-sm font-normal text-muted-foreground"
       >
         <span className="inline-flex h-3.5 w-[1.125rem] shrink-0 items-center justify-center">
           <Plus className="size-3.5" />
