@@ -764,8 +764,8 @@ describe("closeAllTabs", () => {
       false,
     );
     expect(state.pendingKills).toEqual([
-      { hostId: HOST_A, sessionId: "s-a" },
-      { hostId: HOST_B, sessionId: "s-b" },
+      { hostId: HOST_A, sessionId: "s-a", legacyEvidence: true },
+      { hostId: HOST_B, sessionId: "s-b", legacyEvidence: true },
     ]);
   });
 
