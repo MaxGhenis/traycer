@@ -188,6 +188,41 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     expect(mocks.kill).not.toHaveBeenCalled();
   });
 
+  it("preserves a tombstone through a boot-time empty directory", async () => {
+    mocks.entries = [];
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "boot-tab",
+      sessionId: "boot-session",
+      hostId: "host-b",
+      cwd: "/workspace/project",
+      name: "project",
+      titleSource: "default",
+    });
+    useLandingTerminalStore.getState().closeTab("landing-page", "boot-tab");
+    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => Promise.resolve());
+
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+      { hostId: "host-b", sessionId: "boot-session" },
+    ]);
+
+    mocks.entries = [
+      {
+        ...offlineHost,
+        websocketUrl: "ws://host-b/rpc",
+        transportDialability: "dialable",
+      },
+    ];
+    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
+
+    await waitFor(() => {
+      expect(mocks.kill).toHaveBeenCalledWith({
+        hostId: "host-b",
+        sessionId: "boot-session",
+      });
+    });
+  });
+
   it("retries an acknowledged capable-host close only through shared authority", async () => {
     mocks.entries = [
       {

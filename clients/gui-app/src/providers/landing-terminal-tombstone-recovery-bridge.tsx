@@ -86,6 +86,24 @@ function cancelUndrainableCapableCloseRetries(args: {
   }
 }
 
+function retireRemovedHostTombstones(args: {
+  readonly pendingKills: readonly LandingTerminalPendingKill[];
+  readonly previouslyObservedHostIds: ReadonlySet<string>;
+  readonly registeredHostIds: ReadonlySet<string>;
+}): void {
+  for (const pending of args.pendingKills) {
+    if (
+      !args.previouslyObservedHostIds.has(pending.hostId) ||
+      args.registeredHostIds.has(pending.hostId)
+    ) {
+      continue;
+    }
+    useLandingTerminalStore
+      .getState()
+      .clearPendingKill(pending.hostId, pending.sessionId);
+  }
+}
+
 function scheduleCapableCloseRetry(args: {
   readonly key: string;
   readonly pending: LandingTerminalPendingKill;
@@ -194,6 +212,7 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
   const killRef = useRef(kill);
   const inFlightRef = useRef<ReadonlySet<string>>(new Set());
   const retriesRef = useRef<Map<string, CapableCloseRetry>>(new Map());
+  const observedDirectoryHostIdsRef = useRef<ReadonlySet<string>>(new Set());
   const mountedRef = useRef(true);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const [authorityEntries, setAuthorityEntries] =
@@ -249,22 +268,8 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
     [directory.data],
   );
   const authorityHostIds = useMemo(() => {
-    const registeredHostIds =
-      directory.data === undefined
-        ? null
-        : new Set(directory.data.map((entry) => entry.hostId));
-    return [
-      ...new Set(
-        pendingKills
-          .filter(
-            (pending) =>
-              registeredHostIds === null ||
-              registeredHostIds.has(pending.hostId),
-          )
-          .map((pending) => pending.hostId),
-      ),
-    ];
-  }, [directory.data, pendingKills]);
+    return [...new Set(pendingKills.map((pending) => pending.hostId))];
+  }, [pendingKills]);
   const hasReadySessionFor = useRemoteSessionsPollReadiness(directoryHostIds);
   const authorityEntriesRef = useRef(authorityEntries);
 
@@ -292,12 +297,12 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
     const entries = directory.data ?? [];
     const registeredHostIds = new Set(entries.map((entry) => entry.hostId));
     if (directory.data !== undefined) {
-      for (const pending of pendingKills) {
-        if (registeredHostIds.has(pending.hostId)) continue;
-        useLandingTerminalStore
-          .getState()
-          .clearPendingKill(pending.hostId, pending.sessionId);
-      }
+      retireRemovedHostTombstones({
+        pendingKills,
+        previouslyObservedHostIds: observedDirectoryHostIdsRef.current,
+        registeredHostIds,
+      });
+      observedDirectoryHostIdsRef.current = registeredHostIds;
     }
     const currentDrainable = new Map(
       entries.map((entry) => [
