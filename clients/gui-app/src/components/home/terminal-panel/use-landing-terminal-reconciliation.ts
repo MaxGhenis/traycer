@@ -288,6 +288,7 @@ export function useLandingTerminalReconciliation(
                 ...request,
                 hostId: activeHostId,
               }),
+            killTerminal,
             importLegacyTerminal: (request) =>
               plainAuthority.mutations.importLegacy.mutateAsync(request),
             queryClient,
@@ -340,7 +341,10 @@ export function useLandingTerminalReconciliation(
         hostTombstones
           .filter((pending) => listedSessionIds.has(pending.sessionId))
           .map((pending) =>
-            killTerminal(pending).then(
+            killTerminal({
+              hostId: pending.hostId,
+              sessionId: pending.sessionId,
+            }).then(
               () => undefined,
               () => undefined,
             ),
@@ -417,6 +421,9 @@ export async function reconcileCapableLandingTerminals(args: {
   readonly closeTerminal: (
     request: ClosePlainTerminalRequest,
   ) => Promise<unknown>;
+  readonly killTerminal: (
+    request: LandingTerminalKillVariables,
+  ) => Promise<unknown>;
   readonly importLegacyTerminal: (
     request: ImportLegacyPlainTerminalRequest,
   ) => Promise<ImportLegacyPlainTerminalResponse>;
@@ -439,6 +446,16 @@ export async function reconcileCapableLandingTerminals(args: {
 
   await Promise.all(
     pendingKills.map(async (pending) => {
+      if (pending.legacyEvidence === true) {
+        await args.killTerminal({
+          hostId: pending.hostId,
+          sessionId: pending.sessionId,
+        });
+        useLandingTerminalStore
+          .getState()
+          .clearPendingKill(activeHostId, pending.sessionId);
+        return;
+      }
       const collection =
         queryClient.getQueryData<PlainTerminalCollection>(queryKey);
       if (

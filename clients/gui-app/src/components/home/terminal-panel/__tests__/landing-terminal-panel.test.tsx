@@ -1518,7 +1518,11 @@ describe("<LandingTerminalPanel />", () => {
       });
     });
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: "host-a", sessionId: "still-running" },
+      {
+        hostId: "host-a",
+        sessionId: "still-running",
+        legacyEvidence: true,
+      },
     ]);
   });
 

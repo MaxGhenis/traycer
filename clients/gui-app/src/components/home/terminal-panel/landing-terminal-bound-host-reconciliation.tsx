@@ -7,6 +7,7 @@ import type {
 import { useLandingTerminalStore } from "@/stores/home/landing-terminal-store";
 import type { LandingTerminalAuthorityEntry } from "./landing-terminal-authority-fleet";
 import { reconcileCapableLandingTerminals } from "./use-landing-terminal-reconciliation";
+import { useLandingTerminalKill } from "./use-landing-terminal-kill-mutation";
 
 /**
  * Keeps every non-selected host represented in the landing presentation on
@@ -43,6 +44,7 @@ function LandingTerminalBoundHostReconciliation(props: {
   const queryClient = useQueryClient();
   const tabs = useLandingTerminalStore((state) => state.tabs);
   const pendingKills = useLandingTerminalStore((state) => state.pendingKills);
+  const killTerminal = useLandingTerminalKill().mutateAsync;
   const reconciliationRef = useRef<string | null>(null);
 
   const hostTabsFingerprint = tabs
@@ -100,6 +102,7 @@ function LandingTerminalBoundHostReconciliation(props: {
       canMutate: authority.canMutate,
       closeTerminal: (request) =>
         entry.mutations.close.mutateAsync({ ...request, hostId }),
+      killTerminal,
       importLegacyTerminal: (request) =>
         entry.mutations.importLegacy.mutateAsync(request),
       queryClient,
@@ -121,6 +124,7 @@ function LandingTerminalBoundHostReconciliation(props: {
     entry,
     hostId,
     hostTabsFingerprint,
+    killTerminal,
     landingPageId,
     pendingKillsFingerprint,
     queryClient,

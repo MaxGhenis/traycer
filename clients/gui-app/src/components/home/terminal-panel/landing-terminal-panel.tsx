@@ -281,14 +281,19 @@ export function LandingTerminalPanel(): ReactNode {
   const landingPageId = focusedLandingPageId ?? "unbound-landing-page";
   const targetLandingPageId = target.draftId ?? "unbound-landing-page";
   const tabs = useLandingTerminalStore((state) => state.tabs);
+  const pendingKills = useLandingTerminalStore((state) => state.pendingKills);
   const [authorityEntries, setAuthorityEntries] =
     useState<LandingTerminalAuthorityEntries>({});
   const authorityHostIds = useMemo(
     () =>
-      [...new Set([...tabs.map((tab) => tab.hostId), target.hostId])].filter(
-        (hostId): hostId is string => hostId !== null,
-      ),
-    [tabs, target.hostId],
+      [
+        ...new Set([
+          ...tabs.map((tab) => tab.hostId),
+          ...pendingKills.map((pending) => pending.hostId),
+          target.hostId,
+        ]),
+      ].filter((hostId): hostId is string => hostId !== null),
+    [pendingKills, tabs, target.hostId],
   );
   const handleAuthorityEntry = useCallback(
     (hostId: string, entry: LandingTerminalAuthorityEntry | null): void => {

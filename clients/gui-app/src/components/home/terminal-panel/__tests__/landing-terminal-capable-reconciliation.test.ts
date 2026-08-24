@@ -164,6 +164,7 @@ describe("capable landing-terminal reconciliation", () => {
       capability: CAPABILITY,
       canMutate: true,
       closeTerminal: () => Promise.resolve(),
+      killTerminal: () => Promise.resolve(),
       importLegacyTerminal: importLegacy,
       queryClient,
     });
@@ -205,6 +206,7 @@ describe("capable landing-terminal reconciliation", () => {
         capability: CAPABILITY,
         canMutate: true,
         closeTerminal: () => Promise.resolve(),
+        killTerminal: () => Promise.resolve(),
         importLegacyTerminal: () => Promise.reject(new Error("offline")),
         queryClient,
       }),
@@ -250,6 +252,7 @@ describe("capable landing-terminal reconciliation", () => {
       capability: CAPABILITY,
       canMutate: true,
       closeTerminal,
+      killTerminal: () => Promise.resolve(),
       importLegacyTerminal: () =>
         Promise.reject(new Error("unexpected import")),
       queryClient,
@@ -260,6 +263,43 @@ describe("capable landing-terminal reconciliation", () => {
     });
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
     expect(useLandingTerminalStore.getState().tabs).toEqual([]);
+  });
+
+  it("kills legacy tombstones instead of clearing them from the plain collection", async () => {
+    useLandingTerminalStore.setState({
+      pendingKills: [
+        {
+          hostId: HOST_ID,
+          sessionId: "legacy-terminal",
+          legacyEvidence: true,
+        },
+      ],
+    });
+    queryClient.setQueryData(
+      hostQueryKeys.plainTerminals(HOST_ID, SCOPE),
+      freshCollection([]),
+    );
+    const closeTerminal = vi.fn(() => Promise.resolve());
+    const killTerminal = vi.fn(() => Promise.resolve());
+
+    await reconcileCapableLandingTerminals({
+      activeHostId: HOST_ID,
+      landingPageId: LANDING_PAGE_ID,
+      capability: CAPABILITY,
+      canMutate: true,
+      closeTerminal,
+      killTerminal,
+      importLegacyTerminal: () =>
+        Promise.reject(new Error("unexpected import")),
+      queryClient,
+    });
+
+    expect(killTerminal).toHaveBeenCalledWith({
+      hostId: HOST_ID,
+      sessionId: "legacy-terminal",
+    });
+    expect(closeTerminal).not.toHaveBeenCalled();
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
   });
 
   it("removes late-hydrated legacy evidence against a retained tombstone without importing", async () => {
@@ -287,6 +327,7 @@ describe("capable landing-terminal reconciliation", () => {
       capability: CAPABILITY,
       canMutate: true,
       closeTerminal: () => Promise.resolve(),
+      killTerminal: () => Promise.resolve(),
       importLegacyTerminal: importLegacy,
       queryClient,
     });
@@ -313,6 +354,7 @@ describe("capable landing-terminal reconciliation", () => {
         capability: CAPABILITY,
         canMutate: true,
         closeTerminal: () => Promise.resolve(),
+        killTerminal: () => Promise.resolve(),
         importLegacyTerminal: () =>
           Promise.reject(new Error("unexpected import")),
         queryClient,
@@ -356,6 +398,7 @@ describe("capable landing-terminal reconciliation", () => {
         capability: CAPABILITY,
         canMutate: true,
         closeTerminal,
+        killTerminal: () => Promise.resolve(),
         importLegacyTerminal: () =>
           Promise.reject(new Error("unexpected import")),
         queryClient,
@@ -393,6 +436,7 @@ describe("capable landing-terminal reconciliation", () => {
         capability: CAPABILITY,
         canMutate: true,
         closeTerminal: () => Promise.resolve(),
+        killTerminal: () => Promise.resolve(),
         importLegacyTerminal: importLegacy,
         queryClient,
       }),
@@ -445,6 +489,7 @@ describe("capable landing-terminal reconciliation", () => {
       capability: CAPABILITY,
       canMutate: true,
       closeTerminal,
+      killTerminal: () => Promise.resolve(),
       importLegacyTerminal: importLegacy,
       queryClient,
     });
@@ -479,6 +524,7 @@ describe("capable landing-terminal reconciliation", () => {
         capability: CAPABILITY,
         canMutate: true,
         closeTerminal: () => Promise.resolve(),
+        killTerminal: () => Promise.resolve(),
         importLegacyTerminal: () =>
           Promise.reject(new Error("unexpected import")),
         queryClient,
