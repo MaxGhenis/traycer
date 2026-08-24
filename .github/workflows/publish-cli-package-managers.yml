@@ -183,6 +183,14 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.oss_ref }}
           persist-credentials: false
+      - name: Check out the workflow-owned publication guard
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: workflow-guard
+          persist-credentials: false
+          sparse-checkout: scripts/native-packaging/assert-rolling-package-version.cjs
+          sparse-checkout-cone-mode: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.3.12"
@@ -225,7 +233,7 @@ jobs:
         run: |
           set -euo pipefail
           current="$(npm view "@traycerai/cli" dist-tags.latest --registry "https://registry.npmjs.org")"
-          node scripts/native-packaging/assert-rolling-package-version.cjs \
+          node workflow-guard/scripts/native-packaging/assert-rolling-package-version.cjs \
             --candidate="$VERSION" \
             --existing="npm latest=$current"
       - name: Publish npm package (with provenance)
@@ -248,6 +256,7 @@ jobs:
     env:
       VERSION: ${{ needs.resolve.outputs.version }}
       RELEASE_REPO: ${{ github.repository }}
+      ROLLING_HOMEBREW: ${{ inputs.homebrew_versioned_only != true && needs.resolve.outputs.dist_tag == 'latest' }}
     steps:
       - name: Check tap repo secrets
         if: ${{ inputs.dry_run != true }}
@@ -265,6 +274,14 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.oss_ref }}
           persist-credentials: false
+      - name: Check out the workflow-owned publication guard
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: workflow-guard
+          persist-credentials: false
+          sparse-checkout: scripts/native-packaging/assert-rolling-package-version.cjs
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "24.15.0"
@@ -293,8 +310,6 @@ jobs:
           done
           ls -la descriptors/
       - name: Render Homebrew formula
-        env:
-          HOMEBREW_VERSIONED_ONLY: ${{ inputs.homebrew_versioned_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -304,7 +319,7 @@ jobs:
             DESCRIPTOR_ARGS+=(--descriptor "$f")
           done
           VERSIONED_ONLY_ARGS=()
-          if [ "$HOMEBREW_VERSIONED_ONLY" = "true" ]; then
+          if [ "$ROLLING_HOMEBREW" != "true" ]; then
             VERSIONED_ONLY_ARGS+=(--homebrew-versioned-only)
           fi
           node scripts/native-packaging/publish-cli-package-managers.cjs \
@@ -323,7 +338,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TRAYCER_TAP_PUSH_TOKEN }}
           TAP_REPO: ${{ secrets.TRAYCER_HOMEBREW_TAP_REPO }}
-          HOMEBREW_VERSIONED_ONLY: ${{ inputs.homebrew_versioned_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -340,7 +354,7 @@ jobs:
             echo "::notice::Formula already up to date for ${VERSION}; nothing to PR."
             exit 0
           fi
-          if [ "$HOMEBREW_VERSIONED_ONLY" != "true" ]; then
+          if [ "$ROLLING_HOMEBREW" = "true" ]; then
             current="$(git show origin/main:Formula/traycer.rb | sed -nE 's/^[[:space:]]*version "([^"]+)".*/\1/p')"
             if [ -z "$current" ]; then
               echo "::error::Formula/traycer.rb on ${TAP_REPO}@main has no readable version; refusing to replace a rolling selector whose current value is unknown."
@@ -348,6 +362,14 @@ jobs:
             fi
             EXISTING_ARGS=(--existing="Homebrew main=$current")
             STALE_PRS=()
+            OPEN_PR_LIMIT=1000
+            open_prs="$(gh pr list --repo "$TAP_REPO" --state open --limit "$OPEN_PR_LIMIT" \
+              --json number,headRefName,body)"
+            open_pr_count="$(jq 'length' <<<"$open_prs")"
+            if [ "$open_pr_count" -ge "$OPEN_PR_LIMIT" ]; then
+              echo "::error::Found ${open_pr_count} open Homebrew pull requests, reaching the ${OPEN_PR_LIMIT}-PR inspection bound; refusing to publish without proving the complete rolling-selector set."
+              exit 1
+            fi
             while IFS=$'\t' read -r open_number open_branch; do
               [ -n "$open_number" ] || continue
               [ -n "$open_branch" ] || continue
@@ -355,10 +377,8 @@ jobs:
               open_version="${open_branch#traycer-formula-}"
               EXISTING_ARGS+=(--existing="open Homebrew PR ${open_branch}=$open_version")
               STALE_PRS+=("$open_number")
-            done < <(gh pr list --repo "$TAP_REPO" --state open --limit 100 \
-              --json number,headRefName,body \
-              --jq '.[] | select(.body | contains("Updates the rolling Formula/traycer.rb")) | select(.headRefName | startswith("traycer-formula-")) | [.number, .headRefName] | @tsv')
-            node ../scripts/native-packaging/assert-rolling-package-version.cjs \
+            done < <(jq -r '.[] | select(.body | contains("Updates the rolling Formula/traycer.rb")) | select(.headRefName | startswith("traycer-formula-")) | [.number, .headRefName] | @tsv' <<<"$open_prs")
+            node ../workflow-guard/scripts/native-packaging/assert-rolling-package-version.cjs \
               --candidate="$VERSION" \
               "${EXISTING_ARGS[@]}"
             # The serialized job has proved this candidate outranks every
@@ -373,7 +393,7 @@ jobs:
           git commit -m "traycer ${VERSION}"
           git push --force origin "$branch"
           existing="$(gh pr list --repo "$TAP_REPO" --head "$branch" --state open --json number --jq '.[0].number // empty')"
-          if [ "$HOMEBREW_VERSIONED_ONLY" = "true" ]; then
+          if [ "$ROLLING_HOMEBREW" != "true" ]; then
             body="Automated Homebrew formula backfill for Traycer CLI ${VERSION}. Adds/updates only Formula/traycer@${VERSION}.rb; the rolling Formula/traycer.rb is intentionally left untouched. Generated by publish-cli-package-managers.yml. Review and merge to publish."
           else
             body="Automated Homebrew formula update for Traycer CLI ${VERSION}. Updates the rolling Formula/traycer.rb and the exact-version Formula/traycer@${VERSION}.rb formula generated by publish-cli-package-managers.yml. Review and merge to publish."

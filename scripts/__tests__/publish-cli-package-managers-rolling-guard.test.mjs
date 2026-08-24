@@ -104,7 +104,7 @@ describe("publish-npm: the rolling-version guard sits immediately before the mut
       /current="\$\(npm view "@traycerai\/cli" dist-tags\.latest --registry "https:\/\/registry\.npmjs\.org"\)"/u,
     );
     expect(guardStep).toContain(
-      "node scripts/native-packaging/assert-rolling-package-version.cjs",
+      "node workflow-guard/scripts/native-packaging/assert-rolling-package-version.cjs",
     );
     expect(guardStep).toContain('--candidate="$VERSION"');
     expect(guardStep).toContain('--existing="npm latest=$current"');
@@ -115,6 +115,22 @@ describe("publish-npm: the rolling-version guard sits immediately before the mut
 });
 
 describe("publish-homebrew-formula: the rolling-version guard reads origin/main + open rolling PRs", () => {
+  it("runs both guards from the workflow revision, not the historical release checkout", () => {
+    for (const job of [npmJob, homebrewJob]) {
+      expect(job).toContain("ref: ${{ github.workflow_sha }}");
+      expect(job).toContain("path: workflow-guard");
+      expect(job).toContain(
+        "sparse-checkout: scripts/native-packaging/assert-rolling-package-version.cjs",
+      );
+    }
+    expect(npmJob).toContain(
+      "node workflow-guard/scripts/native-packaging/assert-rolling-package-version.cjs",
+    );
+    expect(homebrewJob).toContain(
+      "node ../workflow-guard/scripts/native-packaging/assert-rolling-package-version.cjs",
+    );
+  });
+
   it("reads the pre-existing rolling version from the git ref, not the working tree the release PR is about to overwrite", () => {
     const prStep = stepBlock(homebrewJob, "Open Homebrew formula PR");
     // `cp` overwrites Formula/traycer.rb with the CANDIDATE content before
@@ -133,19 +149,26 @@ describe("publish-homebrew-formula: the rolling-version guard reads origin/main 
     expect(prStep).toContain("exit 1");
   });
 
-  it("collects every OPEN rolling-formula PR (excluding its own branch) as additional --existing observations, from a single gh pr list query", () => {
+  it("collects every inspected open rolling-formula PR from one query and refuses at the explicit completeness bound", () => {
     const prStep = stepBlock(homebrewJob, "Open Homebrew formula PR");
     // Exactly one `gh pr list` call within the guarded block feeds both
     // EXISTING_ARGS and STALE_PRS - there must be no second query re-deriving
     // the close list separately. (A THIRD, unrelated `gh pr list` call later
     // in this step finds this run's OWN branch's PR number for the
     // create-vs-update decision - that one is out of scope here.)
-    const guardedBlock = /\n {10}if \[ "\$HOMEBREW_VERSIONED_ONLY" != "true" \]; then\n([\s\S]*?)\n {10}fi\n/u.exec(
-      prStep,
-    )[1];
+    const guardedBlock = /\n {10}if \[ "\$ROLLING_HOMEBREW" = "true" \]; then\n([\s\S]*?)\n {10}fi\n/u.exec(prStep)[1];
     const listCalls = guardedBlock.match(/gh pr list --repo "\$TAP_REPO"/gu) ?? [];
     expect(listCalls).toHaveLength(1);
-    expect(prStep).toContain('gh pr list --repo "$TAP_REPO" --state open --limit 100');
+    expect(prStep).toContain("OPEN_PR_LIMIT=1000");
+    expect(prStep).toContain(
+      'gh pr list --repo "$TAP_REPO" --state open --limit "$OPEN_PR_LIMIT"',
+    );
+    expect(prStep).toContain(
+      'if [ "$open_pr_count" -ge "$OPEN_PR_LIMIT" ]; then',
+    );
+    expect(prStep).toContain(
+      "refusing to publish without proving the complete rolling-selector set",
+    );
     expect(prStep).toContain(
       'select(.body | contains("Updates the rolling Formula/traycer.rb"))',
     );
@@ -165,7 +188,7 @@ describe("publish-homebrew-formula: the rolling-version guard reads origin/main 
   it("invokes the shared guard with the candidate and every gathered --existing observation", () => {
     const prStep = stepBlock(homebrewJob, "Open Homebrew formula PR");
     expect(prStep).toContain(
-      "node ../scripts/native-packaging/assert-rolling-package-version.cjs",
+      "node ../workflow-guard/scripts/native-packaging/assert-rolling-package-version.cjs",
     );
     expect(prStep).toContain('--candidate="$VERSION"');
     expect(prStep).toContain('"${EXISTING_ARGS[@]}"');
@@ -174,7 +197,7 @@ describe("publish-homebrew-formula: the rolling-version guard reads origin/main 
   it("closes stale rolling-formula PRs only AFTER the guard proves this candidate outranks them, before commit/push", () => {
     const prStep = stepBlock(homebrewJob, "Open Homebrew formula PR");
     const guardIdx = prStep.indexOf(
-      "node ../scripts/native-packaging/assert-rolling-package-version.cjs",
+      "node ../workflow-guard/scripts/native-packaging/assert-rolling-package-version.cjs",
     );
     const closeIdx = prStep.indexOf('for stale_pr in "${STALE_PRS[@]}"; do');
     const commitIdx = prStep.indexOf('git commit -m "traycer ${VERSION}"');
@@ -193,28 +216,32 @@ describe("publish-homebrew-formula: the rolling-version guard reads origin/main 
     // Confirms (again, scoped to the guarded block) there is no independent
     // second query deriving the close list - STALE_PRS from the single
     // earlier read loop is the only source `gh pr close` iterates.
-    const guardedBlock = /\n {10}if \[ "\$HOMEBREW_VERSIONED_ONLY" != "true" \]; then\n([\s\S]*?)\n {10}fi\n/u.exec(
-      prStep,
-    )[1];
+    const guardedBlock = /\n {10}if \[ "\$ROLLING_HOMEBREW" = "true" \]; then\n([\s\S]*?)\n {10}fi\n/u.exec(prStep)[1];
     const listCalls = guardedBlock.match(/gh pr list --repo "\$TAP_REPO"/gu) ?? [];
     expect(listCalls).toHaveLength(1);
   });
 });
 
-describe("publish-homebrew-formula: homebrew_versioned_only bypasses both the rolling guard and stale-PR closure", () => {
-  it("wraps the entire guard + stale-PR-closure block in `if [ \"$HOMEBREW_VERSIONED_ONLY\" != \"true\" ]`", () => {
+describe("publish-homebrew-formula: only stable rolling releases enter the guard and closure", () => {
+  it("derives rolling eligibility from both the input and the resolved dist-tag", () => {
+    expect(homebrewJob).toContain(
+      "ROLLING_HOMEBREW: ${{ inputs.homebrew_versioned_only != true && needs.resolve.outputs.dist_tag == 'latest' }}",
+    );
+  });
+
+  it("wraps the entire guard + stale-PR-closure block in the rolling eligibility check", () => {
     const prStep = stepBlock(homebrewJob, "Open Homebrew formula PR");
     // Outer if/fi at 10-space indent; the nested `if [ -z "$current" ]`
     // guard inside it sits at 12-space indent, so this anchor does not
     // false-match the inner block's `fi`.
     const outer =
-      /\n {10}if \[ "\$HOMEBREW_VERSIONED_ONLY" != "true" \]; then\n([\s\S]*?)\n {10}fi\n/u.exec(
+      /\n {10}if \[ "\$ROLLING_HOMEBREW" = "true" \]; then\n([\s\S]*?)\n {10}fi\n/u.exec(
         prStep,
       );
     expect(outer).not.toBeNull();
     const body = outer[1];
     expect(body).toContain(
-      "node ../scripts/native-packaging/assert-rolling-package-version.cjs",
+      "node ../workflow-guard/scripts/native-packaging/assert-rolling-package-version.cjs",
     );
     expect(body).toContain('gh pr close "$stale_pr"');
   });
@@ -222,7 +249,7 @@ describe("publish-homebrew-formula: homebrew_versioned_only bypasses both the ro
   it("commits and pushes unconditionally, outside the versioned-only-gated block", () => {
     const prStep = stepBlock(homebrewJob, "Open Homebrew formula PR");
     const outer =
-      /\n {10}if \[ "\$HOMEBREW_VERSIONED_ONLY" != "true" \]; then\n[\s\S]*?\n {10}fi\n/u.exec(
+      /\n {10}if \[ "\$ROLLING_HOMEBREW" = "true" \]; then\n[\s\S]*?\n {10}fi\n/u.exec(
         prStep,
       );
     expect(outer).not.toBeNull();
@@ -230,10 +257,10 @@ describe("publish-homebrew-formula: homebrew_versioned_only bypasses both the ro
     expect(afterGuardBlock).toMatch(/^\s*git commit -m "traycer \$\{VERSION\}"/u);
   });
 
-  it("the render step also skips the rolling Formula/traycer.rb output when homebrew_versioned_only is set (backfill leaves it untouched)", () => {
+  it("the render step skips the rolling formula for versioned-only and prerelease publications", () => {
     const renderStep = stepBlock(homebrewJob, "Render Homebrew formula");
-    expect(renderStep).toContain("HOMEBREW_VERSIONED_ONLY");
-    expect(renderStep).toMatch(/if \[ "\$HOMEBREW_VERSIONED_ONLY" = "true" \]; then/u);
+    expect(renderStep).toContain("ROLLING_HOMEBREW");
+    expect(renderStep).toMatch(/if \[ "\$ROLLING_HOMEBREW" != "true" \]; then/u);
     expect(renderStep).toContain("--homebrew-versioned-only");
   });
 });
