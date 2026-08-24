@@ -220,7 +220,7 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Refuse an npm latest regression
-        if: steps.gate.outputs.mode == 'publish' && steps.existing.outputs.exists != 'true'
+        if: steps.gate.outputs.mode == 'publish' && steps.existing.outputs.exists != 'true' && env.DIST_TAG == 'latest'
         shell: bash
         run: |
           set -euo pipefail
@@ -347,14 +347,17 @@ jobs:
               exit 1
             fi
             EXISTING_ARGS=(--existing="Homebrew main=$current")
-            while IFS= read -r open_branch; do
+            STALE_PRS=()
+            while IFS=$'\t' read -r open_number open_branch; do
+              [ -n "$open_number" ] || continue
               [ -n "$open_branch" ] || continue
               [ "$open_branch" = "$branch" ] && continue
               open_version="${open_branch#traycer-formula-}"
               EXISTING_ARGS+=(--existing="open Homebrew PR ${open_branch}=$open_version")
+              STALE_PRS+=("$open_number")
             done < <(gh pr list --repo "$TAP_REPO" --state open --limit 100 \
-              --json headRefName,body \
-              --jq '.[] | select(.body | contains("Updates the rolling Formula/traycer.rb")) | .headRefName | select(startswith("traycer-formula-"))')
+              --json number,headRefName,body \
+              --jq '.[] | select(.body | contains("Updates the rolling Formula/traycer.rb")) | select(.headRefName | startswith("traycer-formula-")) | [.number, .headRefName] | @tsv')
             node ../scripts/native-packaging/assert-rolling-package-version.cjs \
               --candidate="$VERSION" \
               "${EXISTING_ARGS[@]}"
@@ -362,13 +365,10 @@ jobs:
             # other rolling formula PR. Retire those older mutation intents so
             # a human cannot merge one after this version becomes the proven
             # remedy.
-            while IFS= read -r stale_pr; do
-              [ -n "$stale_pr" ] || continue
+            for stale_pr in "${STALE_PRS[@]}"; do
               gh pr close "$stale_pr" --repo "$TAP_REPO" \
                 --comment "Superseded by the monotonic rolling formula update for Traycer ${VERSION}. The older PR is closed so it cannot regress Formula/traycer.rb after a compatibility floor is activated."
-            done < <(gh pr list --repo "$TAP_REPO" --state open --limit 100 \
-              --json number,headRefName,body \
-              --jq ".[] | select(.body | contains(\"Updates the rolling Formula/traycer.rb\")) | select(.headRefName | startswith(\"traycer-formula-\")) | select(.headRefName != \"$branch\") | .number")
+            done
           fi
           git commit -m "traycer ${VERSION}"
           git push --force origin "$branch"

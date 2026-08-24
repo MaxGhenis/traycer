@@ -80,16 +80,22 @@ describe("publish-npm: the rolling-version guard sits immediately before the mut
     expect(publishIdx).toBeLessThan(dryRunIdx);
   });
 
-  it("gates the guard step with the exact same `if:` as the publish step it protects", () => {
+  it("gates the guard step with the publish step's condition PLUS env.DIST_TAG == 'latest', while publish keeps the broader condition", () => {
+    // The rolling guard only makes sense against npm's `latest` dist-tag: a
+    // prerelease/backfill publish under a non-"latest" dist-tag never moves
+    // the rolling selector, so it must not be blocked by (or compared
+    // against) it. The "Publish npm package" step still runs for those
+    // dist-tags, so it deliberately keeps the broader, un-narrowed condition.
     const guardStep = stepBlock(npmJob, "Refuse an npm latest regression");
     const publishStep = stepBlock(
       npmJob,
       "Publish npm package (with provenance)",
     );
-    const expectedIf =
-      "if: steps.gate.outputs.mode == 'publish' && steps.existing.outputs.exists != 'true'";
-    expect(guardStep).toContain(expectedIf);
-    expect(publishStep).toContain(expectedIf);
+    const sharedIf =
+      "steps.gate.outputs.mode == 'publish' && steps.existing.outputs.exists != 'true'";
+    expect(guardStep).toContain(`if: ${sharedIf} && env.DIST_TAG == 'latest'`);
+    expect(publishStep).toContain(`if: ${sharedIf}`);
+    expect(publishStep).not.toContain("env.DIST_TAG == 'latest'");
   });
 
   it("re-reads the live npm dist-tags.latest and feeds it as the sole --existing observation", () => {
@@ -127,17 +133,33 @@ describe("publish-homebrew-formula: the rolling-version guard reads origin/main 
     expect(prStep).toContain("exit 1");
   });
 
-  it("collects every OPEN rolling-formula PR (excluding its own branch) as additional --existing observations", () => {
+  it("collects every OPEN rolling-formula PR (excluding its own branch) as additional --existing observations, from a single gh pr list query", () => {
     const prStep = stepBlock(homebrewJob, "Open Homebrew formula PR");
+    // Exactly one `gh pr list` call within the guarded block feeds both
+    // EXISTING_ARGS and STALE_PRS - there must be no second query re-deriving
+    // the close list separately. (A THIRD, unrelated `gh pr list` call later
+    // in this step finds this run's OWN branch's PR number for the
+    // create-vs-update decision - that one is out of scope here.)
+    const guardedBlock = /\n {10}if \[ "\$HOMEBREW_VERSIONED_ONLY" != "true" \]; then\n([\s\S]*?)\n {10}fi\n/u.exec(
+      prStep,
+    )[1];
+    const listCalls = guardedBlock.match(/gh pr list --repo "\$TAP_REPO"/gu) ?? [];
+    expect(listCalls).toHaveLength(1);
     expect(prStep).toContain('gh pr list --repo "$TAP_REPO" --state open --limit 100');
     expect(prStep).toContain(
       'select(.body | contains("Updates the rolling Formula/traycer.rb"))',
     );
-    expect(prStep).toContain('select(startswith("traycer-formula-"))');
+    expect(prStep).toContain('select(.headRefName | startswith("traycer-formula-"))');
+    // The single query emits number+branch pairs as TSV; the read loop
+    // parses both, skips its own branch, and records the validated PR
+    // number for later closure alongside the --existing observation.
+    expect(prStep).toContain('[.number, .headRefName] | @tsv');
+    expect(prStep).toMatch(/while IFS=\$'\\t' read -r open_number open_branch; do/u);
     expect(prStep).toMatch(/\[ "\$open_branch" = "\$branch" \] && continue/u);
     expect(prStep).toContain(
       '--existing="open Homebrew PR ${open_branch}=$open_version"',
     );
+    expect(prStep).toMatch(/STALE_PRS\+=\("\$open_number"\)/u);
   });
 
   it("invokes the shared guard with the candidate and every gathered --existing observation", () => {
@@ -154,7 +176,7 @@ describe("publish-homebrew-formula: the rolling-version guard reads origin/main 
     const guardIdx = prStep.indexOf(
       "node ../scripts/native-packaging/assert-rolling-package-version.cjs",
     );
-    const closeIdx = prStep.indexOf('gh pr close "$stale_pr"');
+    const closeIdx = prStep.indexOf('for stale_pr in "${STALE_PRS[@]}"; do');
     const commitIdx = prStep.indexOf('git commit -m "traycer ${VERSION}"');
     expect(guardIdx).toBeGreaterThan(-1);
     expect(closeIdx).toBeGreaterThan(-1);
@@ -163,13 +185,19 @@ describe("publish-homebrew-formula: the rolling-version guard reads origin/main 
     expect(closeIdx).toBeLessThan(commitIdx);
   });
 
-  it("only closes OTHER open rolling-formula PRs (excludes this run's own branch)", () => {
+  it("closes exactly the PR numbers recorded in STALE_PRS during the earlier loop, with no second gh pr list query", () => {
     const prStep = stepBlock(homebrewJob, "Open Homebrew formula PR");
-    // This jq filter is embedded in a double-quoted bash string (so `$branch`
-    // interpolates), so its inner quotes are backslash-escaped.
-    expect(prStep).toContain(
-      '--jq ".[] | select(.body | contains(\\"Updates the rolling Formula/traycer.rb\\")) | select(.headRefName | startswith(\\"traycer-formula-\\")) | select(.headRefName != \\"$branch\\") | .number")',
+    expect(prStep).toMatch(
+      /for stale_pr in "\$\{STALE_PRS\[@\]\}"; do\n\s+gh pr close "\$stale_pr" --repo "\$TAP_REPO"/u,
     );
+    // Confirms (again, scoped to the guarded block) there is no independent
+    // second query deriving the close list - STALE_PRS from the single
+    // earlier read loop is the only source `gh pr close` iterates.
+    const guardedBlock = /\n {10}if \[ "\$HOMEBREW_VERSIONED_ONLY" != "true" \]; then\n([\s\S]*?)\n {10}fi\n/u.exec(
+      prStep,
+    )[1];
+    const listCalls = guardedBlock.match(/gh pr list --repo "\$TAP_REPO"/gu) ?? [];
+    expect(listCalls).toHaveLength(1);
   });
 });
 
