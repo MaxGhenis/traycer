@@ -502,6 +502,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
       titleSource: "default",
       pendingCreate: true,
     });
+    useLandingTerminalStore.getState().markCreateAttempt("pending-create-tab");
     useLandingTerminalStore
       .getState()
       .closeTab("landing-page", "pending-create-tab");

@@ -183,7 +183,7 @@ function parseCreateRecovery(
 ): Partial<LandingTerminalTabRef> {
   const hydratedInFlight =
     value.pendingCreate === true &&
-    value.createFailure === undefined &&
+    value.createRetryRequested === true &&
     value.hostAuthorityAcknowledged !== true;
   if (hydratedInFlight) {
     return { createFailure: "ambiguous", retireOnFreshSnapshot: true };
@@ -194,14 +194,7 @@ function parseCreateRecovery(
       : undefined;
   return {
     ...(createFailure === undefined ? {} : { createFailure }),
-    ...(isNonNegativeInteger(value.createRejectedAtSnapshotEpoch)
-      ? {
-          createRejectedAtSnapshotEpoch: value.createRejectedAtSnapshotEpoch,
-        }
-      : {}),
-    ...(createFailure === "ambiguous" && value.retireOnFreshSnapshot === true
-      ? { retireOnFreshSnapshot: true }
-      : {}),
+    ...(createFailure === "ambiguous" ? { retireOnFreshSnapshot: true } : {}),
   };
 }
 
@@ -751,6 +744,13 @@ function pendingKillForTab(
   tab: LandingTerminalTabRef,
 ): LandingTerminalPendingKill | null {
   const base = { hostId: tab.hostId, sessionId: tab.sessionId };
+  if (
+    tab.pendingCreate === true &&
+    tab.createRetryRequested !== true &&
+    tab.createFailure === undefined
+  ) {
+    return null;
+  }
   if (tab.createRetryRequested === true) {
     return {
       ...base,

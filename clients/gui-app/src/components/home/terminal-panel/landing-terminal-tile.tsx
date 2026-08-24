@@ -280,6 +280,10 @@ function LandingTerminalDurableBootstrap(
     props.tab.hostId,
     props.tab.sessionId,
   );
+  const projectionExistsRef = useRef(projection !== undefined);
+  useEffect(() => {
+    projectionExistsRef.current = projection !== undefined;
+  }, [projection]);
   const [measuredGrid, setMeasuredGrid] = useState<{
     readonly cols: number;
     readonly rows: number;
@@ -362,6 +366,7 @@ function LandingTerminalDurableBootstrap(
   );
   const onCreateRejected = useCallback(
     (mayHaveApplied: boolean): void => {
+      if (projectionExistsRef.current) return;
       useLandingTerminalStore
         .getState()
         .settleFailedCreate(

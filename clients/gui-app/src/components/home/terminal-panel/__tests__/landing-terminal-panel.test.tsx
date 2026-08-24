@@ -1234,12 +1234,11 @@ describe("<LandingTerminalPanel />", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Close Shared title" }));
     await waitFor(() => {
-      expect(mocks.plainCloseAsync).toHaveBeenCalledWith({
-        hostId: "host-a",
-        terminalId: "terminal-shared",
-      });
-      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+      expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+        { hostId: "host-a", sessionId: "terminal-shared" },
+      ]);
     });
+    expect(mocks.plainCloseAsync).not.toHaveBeenCalled();
     expect(mocks.kill).not.toHaveBeenCalled();
   });
 

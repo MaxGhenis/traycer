@@ -439,37 +439,13 @@ export async function reconcileCapableLandingTerminals(args: {
   if (initialCollection?.streamSnapshotFresh !== true) {
     return "snapshot-not-fresh";
   }
-  const store = useLandingTerminalStore.getState();
-  const pendingKills = store.pendingKills.filter(
-    (pending) => pending.hostId === activeHostId,
-  );
-
-  await Promise.all(
-    pendingKills.map(async (pending) => {
-      const collection =
-        queryClient.getQueryData<PlainTerminalCollection>(queryKey);
-      const projection = getPlainTerminal(
-        collection,
-        pending.hostId,
-        pending.sessionId,
-      );
-      if (projection === undefined) {
-        if (
-          pending.pendingCreate === true ||
-          pending.createRejectedAmbiguously === true ||
-          pending.legacyEvidence === true
-        ) {
-          return;
-        }
-      } else {
-        await args.closeTerminal({ terminalId: pending.sessionId });
-      }
-      useLandingTerminalStore
-        .getState()
-        .clearPendingKill(activeHostId, pending.sessionId);
-    }),
-  );
-
+  if (
+    useLandingTerminalStore
+      .getState()
+      .pendingKills.some((pending) => pending.hostId === activeHostId)
+  ) {
+    return "reconciled";
+  }
   const postKillCollection =
     queryClient.getQueryData<PlainTerminalCollection>(queryKey);
   if (postKillCollection?.streamSnapshotFresh !== true) {

@@ -170,6 +170,21 @@ describe("landing terminal lifecycle", () => {
     ]);
   });
 
+  it("retires an unstarted create intent without a tombstone", () => {
+    const store = useLandingTerminalStore.getState();
+    store.addTab({
+      ...tab({
+        instanceId: "unstarted-create",
+        sessionId: "unstarted-session",
+        hostId: HOST_A,
+      }),
+      pendingCreate: true,
+    });
+    store.closeTab(LANDING_PAGE_ID, "unstarted-create");
+
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+  });
+
   it("retains prior ambiguity when closing an in-flight retry", () => {
     const store = useLandingTerminalStore.getState();
     store.addTab({
@@ -211,6 +226,7 @@ describe("landing terminal lifecycle", () => {
             hostId: HOST_A,
           }),
           pendingCreate: true,
+          createRetryRequested: true,
         },
       ],
       activeInstanceId: "hydrated-create",
@@ -555,7 +571,7 @@ describe("landing terminal lifecycle", () => {
     ]);
   });
 
-  it("preserves rejection epoch evidence on a restored ambiguous tab", () => {
+  it("resets rejection epoch evidence on a restored ambiguous tab", () => {
     const restored = parsePersistedLandingTerminalState({
       tabs: [
         {
@@ -575,7 +591,8 @@ describe("landing terminal lifecycle", () => {
       pendingKills: [],
     });
 
-    expect(restored.tabs[0]?.createRejectedAtSnapshotEpoch).toBe(7);
+    expect(restored.tabs[0]?.createRejectedAtSnapshotEpoch).toBeUndefined();
+    expect(restored.tabs[0]?.retireOnFreshSnapshot).toBe(true);
   });
 
   it("collapses every open layout when the shared terminal set becomes empty", () => {
