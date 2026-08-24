@@ -41,8 +41,7 @@ export interface LandingTerminalTabStripProps {
   readonly onCloseAll: () => void;
   readonly onRename: (instanceId: string, name: string) => void;
   readonly canRename: (tab: LandingTerminalTabRef) => boolean;
-  /** Whether this local tab presentation can be dismissed. Host reachability
-   * must not gate this: offline sessions are queued for later cleanup. */
+  /** Whether this tab can be dismissed from the local UI. */
   readonly canClose: (tab: LandingTerminalTabRef) => boolean;
   readonly terminalViewModels: Readonly<
     Partial<Record<string, PlainTerminalViewModel>>
@@ -63,8 +62,7 @@ export function LandingTerminalTabStrip(
 ): ReactNode {
   const { createDisabledReason, onAdd } = props;
   const canCreate = createDisabledReason === null;
-  // Keep this generic for callers that may own non-dismissible presentations.
-  // Offline host reachability itself is not a reason to return false.
+  // Close All is available whenever at least one locally dismissible tab exists.
   const canCloseAll = props.tabs.some(props.canClose);
   const handleStripDoubleClick = (event: MouseEvent<HTMLDivElement>): void => {
     if (!canCreate) return;

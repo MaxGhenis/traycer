@@ -26,10 +26,6 @@ import type {
 } from "@/stores/terminals/terminal-session-store";
 import type { TerminalScope } from "@traycer/protocol/host/terminal/unary-schemas";
 import type { PlainTerminalProjection } from "@traycer/protocol/host/terminal/plain-schemas";
-import {
-  HostTransportFailureError,
-  RetryableTransportError,
-} from "@traycer-clients/shared/host-transport/host-messenger";
 import { Button } from "@/components/ui/button";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import type { HostUnavailability } from "@traycer-clients/shared/host-client/remote-fetcher";
@@ -314,42 +310,21 @@ function LandingTerminalDurableBootstrap(
   const ensureTerminalRunning = entry.mutations.ensureRunning.mutateAsync;
   const dispatch = useCallback(
     async (action: "create" | "ensure-running") => {
-      if (action === "create") {
-        useLandingTerminalStore
-          .getState()
-          .markCreateDispatched(props.tab.instanceId);
-      }
-      let response;
-      try {
-        response =
-          action === "create"
-            ? await createTerminal({
-                terminalId: props.tab.sessionId,
-                scope: INDEPENDENT_SCOPE,
-                cwd: props.tab.cwd,
-                cols: openingGrid.cols,
-                rows: openingGrid.rows,
-              })
-            : await ensureTerminalRunning({
-                hostId: props.tab.hostId,
-                terminalId: props.tab.sessionId,
-                cols: openingGrid.cols,
-                rows: openingGrid.rows,
-              });
-      } catch (error: unknown) {
-        const createDefinitelyDidNotCommit =
-          !(error instanceof HostTransportFailureError) ||
-          error instanceof RetryableTransportError;
-        if (action === "create" && createDefinitelyDidNotCommit) {
-          useLandingTerminalStore
-            .getState()
-            .clearCreateDispatched(props.tab.instanceId);
-          useLandingTerminalStore
-            .getState()
-            .clearPendingKill(props.tab.hostId, props.tab.sessionId);
-        }
-        throw error;
-      }
+      const response =
+        action === "create"
+          ? await createTerminal({
+              terminalId: props.tab.sessionId,
+              scope: INDEPENDENT_SCOPE,
+              cwd: props.tab.cwd,
+              cols: openingGrid.cols,
+              rows: openingGrid.rows,
+            })
+          : await ensureTerminalRunning({
+              hostId: props.tab.hostId,
+              terminalId: props.tab.sessionId,
+              cols: openingGrid.cols,
+              rows: openingGrid.rows,
+            });
       return response.terminal;
     },
     [
@@ -359,7 +334,6 @@ function LandingTerminalDurableBootstrap(
       openingGrid.rows,
       props.tab.cwd,
       props.tab.hostId,
-      props.tab.instanceId,
       props.tab.sessionId,
     ],
   );
@@ -375,19 +349,12 @@ function LandingTerminalDurableBootstrap(
     projectionStatus:
       projection === undefined ? "missing" : projection.runtime.status,
     pendingCreate: props.tab.pendingCreate === true,
-    createDispatched: props.tab.createDispatched === true,
     active: props.active,
     canMutate: entry.authority.canMutate,
     gridReady,
     dispatch,
     adopt,
   });
-  const retryLifecycle = (): void => {
-    useLandingTerminalStore
-      .getState()
-      .clearCreateDispatched(props.tab.instanceId);
-    lifecycle.retry();
-  };
 
   useEffect(() => {
     adoptWarmSessionInstance(
@@ -414,7 +381,7 @@ function LandingTerminalDurableBootstrap(
       canMutate={entry.authority.canMutate}
       requestError={lifecycle.requestError}
       requestPending={lifecycle.requestPending}
-      retry={retryLifecycle}
+      retry={lifecycle.retry}
       handle={handle}
       tab={props.tab}
       reportMeasuredGrid={reportMeasuredGrid}

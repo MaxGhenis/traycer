@@ -1234,16 +1234,16 @@ describe("<LandingTerminalPanel />", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Close Shared title" }));
     await waitFor(() => {
-      expect(useLandingTerminalStore.getState().tabs).toEqual([]);
+      expect(mocks.plainCloseAsync).toHaveBeenCalledWith({
+        hostId: "host-a",
+        terminalId: "terminal-shared",
+      });
+      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
     });
-    expect(mocks.plainCloseAsync).not.toHaveBeenCalled();
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: "host-a", sessionId: "terminal-shared" },
-    ]);
     expect(mocks.kill).not.toHaveBeenCalled();
   });
 
-  it("blocks host mutations but queues close while capable authority is stale", async () => {
+  it("allows local close while capable-host authority is stale", async () => {
     mocks.activeHostId = "host-a";
     mocks.clientActiveHostId = "host-a";
     mocks.primaryWorkspacePath = "/workspace/project";
@@ -1282,9 +1282,7 @@ describe("<LandingTerminalPanel />", () => {
     fireEvent.click(closeButton);
 
     expect(useLandingTerminalStore.getState().tabs).toEqual([]);
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: "host-a", sessionId: "terminal-stale" },
-    ]);
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
     expect(mocks.plainCloseAsync).not.toHaveBeenCalled();
     expect(mocks.kill).not.toHaveBeenCalled();
   });
@@ -1380,68 +1378,16 @@ describe("<LandingTerminalPanel />", () => {
       expect(useLandingTerminalStore.getState().tabs).toHaveLength(0);
     });
     expect(testLayout().panelOpen).toBe(false);
-    expect(mocks.kill).not.toHaveBeenCalled();
-    expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(2);
-  });
-
-  it("dismisses an offline terminal locally and queues its host kill", () => {
-    mocks.activeHostId = "host-a";
-    mocks.clientActiveHostId = "host-a";
-    mocks.primaryWorkspacePath = "/workspace/project";
-    mocks.plainAuthorityStatus = "unknown";
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "offline-tab",
-      sessionId: "offline-session",
-      hostId: "host-a",
-      cwd: "/workspace/project",
-      name: "project",
-      titleSource: "default",
-      hostAuthorityAcknowledged: true,
-    });
-    useLandingTerminalStore.getState().setPanelOpen(TEST_LANDING_PAGE_ID, true);
-    render(panelUi());
-
-    fireEvent.click(screen.getByRole("button", { name: "Close project" }));
-
-    expect(useLandingTerminalStore.getState().tabs).toEqual([]);
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: "host-a", sessionId: "offline-session" },
-    ]);
-    expect(mocks.kill).not.toHaveBeenCalled();
-    expect(mocks.plainCloseAsync).not.toHaveBeenCalled();
-  });
-
-  it("dismisses all offline terminals locally and queues every host kill", async () => {
-    mocks.activeHostId = "host-a";
-    mocks.clientActiveHostId = "host-a";
-    mocks.primaryWorkspacePath = "/workspace/project";
-    mocks.plainAuthorityStatus = "unknown";
-    for (const index of [1, 2]) {
-      useLandingTerminalStore.getState().addTab({
-        instanceId: `offline-tab-${index}`,
-        sessionId: `offline-session-${index}`,
-        hostId: "host-a",
-        cwd: "/workspace/project",
-        name: `project-${index}`,
-        titleSource: "default",
-        hostAuthorityAcknowledged: true,
+    // Every closed shell gets its own kill. (The tombstones they were written
+    // with are drained by the reconciliation that follows, once the host list
+    // confirms the sessions are gone - the durable write itself is pinned in
+    // the store test.)
+    before.forEach((tab) => {
+      expect(mocks.kill).toHaveBeenCalledWith({
+        hostId: tab.hostId,
+        sessionId: tab.sessionId,
       });
-    }
-    useLandingTerminalStore.getState().setPanelOpen(TEST_LANDING_PAGE_ID, true);
-    render(panelUi());
-
-    fireEvent.contextMenu(
-      screen.getByTestId("landing-terminal-tab-offline-tab-1"),
-    );
-    fireEvent.click(await screen.findByText("Close All"));
-
-    expect(useLandingTerminalStore.getState().tabs).toEqual([]);
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      { hostId: "host-a", sessionId: "offline-session-1" },
-      { hostId: "host-a", sessionId: "offline-session-2" },
-    ]);
-    expect(mocks.kill).not.toHaveBeenCalled();
-    expect(mocks.plainCloseAsync).not.toHaveBeenCalled();
+    });
   });
 
   it("adopts the probe result before considering an auto-spawn", async () => {
@@ -1481,39 +1427,6 @@ describe("<LandingTerminalPanel />", () => {
         "fresh-orphan",
       );
     });
-  });
-
-  it("leaves close-tombstone delivery to the recovery bridge", async () => {
-    mocks.activeHostId = "host-a";
-    mocks.clientActiveHostId = "host-a";
-    mocks.probeData = emptyList("/Users/dev");
-    mocks.freshProbeData = listWith(
-      [runningSession("still-running")],
-      "/Users/dev",
-    );
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "tab-1",
-      sessionId: "still-running",
-      hostId: "host-a",
-      cwd: "/workspace/project",
-      name: "project",
-      titleSource: "default",
-    });
-    useLandingTerminalStore.getState().closeTab(TEST_LANDING_PAGE_ID, "tab-1");
-    useLandingTerminalStore.getState().setPanelOpen(TEST_LANDING_PAGE_ID, true);
-    render(panelUi());
-
-    await waitFor(() => {
-      expect(mocks.queryClient.fetchQuery).toHaveBeenCalledTimes(1);
-    });
-    expect(mocks.killAsync).not.toHaveBeenCalled();
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      {
-        hostId: "host-a",
-        sessionId: "still-running",
-        legacyEvidence: true,
-      },
-    ]);
   });
 
   it("leaves a live home terminal alone when a workspace becomes available", async () => {
@@ -1604,11 +1517,9 @@ describe("<LandingTerminalPanel />", () => {
     expect(useLandingTerminalStore.getState().tabs[0].instanceId).toBe(
       first.instanceId,
     );
-    expect(mocks.kill).not.toHaveBeenCalled();
-    expect(useLandingTerminalStore.getState().pendingKills).toContainEqual({
+    expect(mocks.kill).toHaveBeenCalledWith({
       hostId: second.hostId,
       sessionId: second.sessionId,
-      legacyEvidence: true,
     });
   });
 

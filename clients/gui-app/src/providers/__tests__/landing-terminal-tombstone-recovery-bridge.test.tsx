@@ -2,22 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import { hostListItemToDirectoryEntry } from "@traycer-clients/shared/host-client/remote-fetcher";
-import { HostTransportFailureError } from "@traycer-clients/shared/host-transport/host-messenger";
 import type {
   HostConnectivity,
   HostListItem,
 } from "@traycer/protocol/host/host-status";
 import { useLandingTerminalStore } from "@/stores/home/landing-terminal-store";
-
-function transientFailure(): HostTransportFailureError {
-  return new HostTransportFailureError({
-    code: "RPC_ERROR",
-    message: "transient",
-    requestId: "request-1",
-    method: "terminal.close",
-    fatalDetails: null,
-  });
-}
 
 const mocks = vi.hoisted(() => {
   const initialAuthorityStatus = (): "legacy" | "capable" | "unknown" =>
@@ -40,10 +29,7 @@ vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
 vi.mock(
   "@/components/home/terminal-panel/use-landing-terminal-kill-mutation",
   () => ({
-    useLandingTerminalKill: () => ({
-      mutate: mocks.kill,
-      mutateAsync: mocks.kill,
-    }),
+    useLandingTerminalKill: () => ({ mutate: mocks.kill }),
   }),
 );
 vi.mock(
@@ -132,7 +118,6 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
   beforeEach(() => {
     mocks.entries = [offlineHost];
     mocks.kill.mockReset();
-    mocks.kill.mockResolvedValue(undefined);
     mocks.readySessionHosts = new Set();
     mocks.authorityStatus = "legacy";
     mocks.canMutate = false;
@@ -213,165 +198,6 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     expect(mocks.kill).not.toHaveBeenCalled();
   });
 
-  it("retains a pending-create tombstone until the terminal appears", async () => {
-    mocks.entries = [
-      {
-        ...offlineHost,
-        websocketUrl: "ws://host-b/rpc",
-        transportDialability: "dialable",
-      },
-    ];
-    mocks.authorityStatus = "capable";
-    mocks.canMutate = true;
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "pending-create-tab",
-      sessionId: "session-pending-create",
-      hostId: "host-b",
-      cwd: "/workspace",
-      name: "Pending create",
-      titleSource: "default",
-      pendingCreate: true,
-    });
-    useLandingTerminalStore
-      .getState()
-      .markCreateDispatched("pending-create-tab");
-    useLandingTerminalStore
-      .getState()
-      .closeTab("landing-page", "pending-create-tab");
-
-    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => Promise.resolve());
-
-    expect(mocks.closeAsync).not.toHaveBeenCalled();
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      {
-        hostId: "host-b",
-        sessionId: "session-pending-create",
-        pendingCreate: true,
-      },
-    ]);
-
-    view.unmount();
-    mocks.terminalsById = { "session-pending-create": {} };
-    render(<LandingTerminalTombstoneRecoveryBridge />);
-
-    await waitFor(() => {
-      expect(mocks.closeAsync).toHaveBeenCalledWith({
-        hostId: "host-b",
-        terminalId: "session-pending-create",
-      });
-      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
-    });
-  });
-
-  it("preserves legacy cleanup routing after the host reports capable authority", async () => {
-    mocks.entries = [
-      {
-        ...offlineHost,
-        websocketUrl: "ws://host-b/rpc",
-        transportDialability: "dialable",
-      },
-    ];
-    mocks.authorityStatus = "capable";
-    mocks.canMutate = true;
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "legacy-tab",
-      sessionId: "session-legacy",
-      hostId: "host-b",
-      cwd: "/legacy",
-      name: "Legacy",
-      titleSource: "default",
-    });
-    useLandingTerminalStore.getState().closeTab("landing-page", "legacy-tab");
-
-    render(<LandingTerminalTombstoneRecoveryBridge />);
-
-    await waitFor(() => {
-      expect(mocks.kill).toHaveBeenCalledWith({
-        hostId: "host-b",
-        sessionId: "session-legacy",
-      });
-    });
-    expect(mocks.closeAsync).not.toHaveBeenCalled();
-  });
-
-  it("waits for capable authority to clean a capable-origin tombstone", async () => {
-    mocks.entries = [
-      {
-        ...offlineHost,
-        websocketUrl: "ws://host-b/rpc",
-        transportDialability: "dialable",
-      },
-    ];
-    mocks.authorityStatus = "legacy";
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "capable-origin-tab",
-      sessionId: "session-capable-origin",
-      hostId: "host-b",
-      cwd: "/workspace",
-      name: "Capable origin",
-      titleSource: "default",
-      hostAuthorityAcknowledged: true,
-    });
-    useLandingTerminalStore
-      .getState()
-      .closeTab("landing-page", "capable-origin-tab");
-
-    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => Promise.resolve());
-    expect(mocks.kill).not.toHaveBeenCalled();
-    expect(mocks.closeAsync).not.toHaveBeenCalled();
-
-    view.unmount();
-    mocks.authorityStatus = "capable";
-    mocks.canMutate = true;
-    mocks.terminalsById = { "session-capable-origin": {} };
-    render(<LandingTerminalTombstoneRecoveryBridge />);
-
-    await waitFor(() => {
-      expect(mocks.closeAsync).toHaveBeenCalledWith({
-        hostId: "host-b",
-        terminalId: "session-capable-origin",
-      });
-    });
-    expect(mocks.kill).not.toHaveBeenCalled();
-  });
-
-  it("retries a recovered legacy kill after a transient failure", async () => {
-    vi.useFakeTimers();
-    mocks.entries = [
-      {
-        ...offlineHost,
-        websocketUrl: "ws://host-b/rpc",
-        transportDialability: "dialable",
-      },
-    ];
-    mocks.kill
-      .mockRejectedValueOnce(transientFailure())
-      .mockResolvedValueOnce(undefined);
-    useLandingTerminalStore.getState().addTab({
-      instanceId: "legacy-retry-tab",
-      sessionId: "session-legacy-retry",
-      hostId: "host-b",
-      cwd: "/legacy",
-      name: "Legacy retry",
-      titleSource: "default",
-    });
-    useLandingTerminalStore
-      .getState()
-      .closeTab("landing-page", "legacy-retry-tab");
-
-    render(<LandingTerminalTombstoneRecoveryBridge />);
-    await act(async () => Promise.resolve());
-    expect(mocks.kill).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      vi.advanceTimersByTime(500);
-      await Promise.resolve();
-    });
-    expect(mocks.kill).toHaveBeenCalledTimes(2);
-  });
-
   it("does not drain capable-host tombstones while authority is stale", async () => {
     mocks.entries = [
       {
@@ -417,7 +243,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     mocks.canMutate = true;
     mocks.terminalsById = { "session-retry": {} };
     mocks.closeAsync
-      .mockRejectedValueOnce(transientFailure())
+      .mockRejectedValueOnce(new Error("transient"))
       .mockResolvedValueOnce(undefined);
     useLandingTerminalStore.getState().addTab({
       instanceId: "retry-tab",
@@ -455,7 +281,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     mocks.authorityStatus = "capable";
     mocks.canMutate = true;
     mocks.terminalsById = { "session-backoff": {} };
-    mocks.closeAsync.mockRejectedValue(transientFailure());
+    mocks.closeAsync.mockRejectedValue(new Error("still unavailable"));
     useLandingTerminalStore.getState().addTab({
       instanceId: "backoff-tab",
       sessionId: "session-backoff",

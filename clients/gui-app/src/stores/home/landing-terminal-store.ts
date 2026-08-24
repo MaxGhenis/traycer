@@ -27,8 +27,6 @@ export interface LandingTerminalTabRef {
   readonly hostAuthorityAcknowledged?: boolean;
   /** A genuinely-new terminal awaiting `terminal.plain.create`. */
   readonly pendingCreate?: boolean;
-  /** The pending create RPC was dispatched and may still commit remotely. */
-  readonly createDispatched?: boolean;
   /** Schema version attached to legacy import evidence. */
   readonly sourceStoreVersion?: number;
 }
@@ -36,8 +34,6 @@ export interface LandingTerminalTabRef {
 export interface LandingTerminalPendingKill {
   readonly hostId: string;
   readonly sessionId: string;
-  readonly legacyEvidence?: boolean;
-  readonly pendingCreate?: boolean;
 }
 
 export interface LandingTerminalLayout {
@@ -74,23 +70,16 @@ export interface LandingTerminalStoreState {
     maximized: boolean,
   ) => void;
   readonly addTab: (tab: LandingTerminalTabRef) => void;
-  readonly markCreateDispatched: (instanceId: string) => void;
-  readonly clearCreateDispatched: (instanceId: string) => void;
   readonly activateTab: (instanceId: string) => void;
   readonly renameTab: (instanceId: string, name: string) => void;
   /** Refreshes a derived title without overwriting a user rename. */
   readonly syncDefaultTitle: (instanceId: string, name: string) => void;
-  /** Atomically tombstones then removes a user-closed tab. */
+  /** Removes a user-closed tab from local UI state. */
   readonly closeTab: (
     landingPageId: string,
     instanceId: string,
   ) => LandingTerminalTabRef | null;
-  /**
-   * Atomically tombstones then removes every tab, returning the removed refs so
-   * the caller can dispatch one kill each. Same durability contract as
-   * {@link closeTab}: the tombstones are written before any kill leaves the
-   * renderer, so a reload mid-kill can never re-adopt a closed shell.
-   */
+  /** Removes every tab from local UI state. */
   readonly closeAllTabs: (
     landingPageId: string,
   ) => ReadonlyArray<LandingTerminalTabRef>;
@@ -181,7 +170,6 @@ export function parseLandingTerminalTabRef(
       ? { hostAuthorityAcknowledged: true }
       : {}),
     ...(value.pendingCreate === true ? { pendingCreate: true } : {}),
-    ...(value.createDispatched === true ? { createDispatched: true } : {}),
     ...(isNonNegativeInteger(value.sourceStoreVersion)
       ? { sourceStoreVersion: value.sourceStoreVersion }
       : {}),
@@ -249,22 +237,6 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
             activeInstanceId: tab.instanceId,
           };
         }),
-      markCreateDispatched: (instanceId) =>
-        set((state) => ({
-          tabs: state.tabs.map((tab) =>
-            tab.instanceId === instanceId
-              ? { ...tab, createDispatched: true }
-              : tab,
-          ),
-        })),
-      clearCreateDispatched: (instanceId) =>
-        set((state) => ({
-          tabs: state.tabs.map((tab) => {
-            if (tab.instanceId !== instanceId) return tab;
-            const { createDispatched: _createDispatched, ...retainedTab } = tab;
-            return retainedTab;
-          }),
-        })),
       activateTab: (instanceId) =>
         set((state) =>
           state.tabs.some((tab) => tab.instanceId === instanceId)
@@ -312,19 +284,12 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
           const tabs = state.tabs.filter(
             (entry) => entry.instanceId !== instanceId,
           );
-          const pendingKill = pendingKillFor(closed);
-          const pendingKills =
-            pendingKill === null ||
-            hasPendingKill(state.pendingKills, closed.hostId, closed.sessionId)
-              ? state.pendingKills
-              : [...state.pendingKills, pendingKill];
           return {
             tabs,
             activeInstanceId: nextActiveInstanceId(
               tabs,
               state.activeInstanceId,
             ),
-            pendingKills,
             ...(tabs.length === 0
               ? collapseLayoutsForEmptyTerminalSet(state)
               : {}),
@@ -338,16 +303,6 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
         set((state) => ({
           tabs: [],
           activeInstanceId: null,
-          pendingKills: closed.reduce(
-            (pending: ReadonlyArray<LandingTerminalPendingKill>, tab) => {
-              const pendingKill = pendingKillFor(tab);
-              return pendingKill === null ||
-                hasPendingKill(pending, tab.hostId, tab.sessionId)
-                ? pending
-                : [...pending, pendingKill];
-            },
-            state.pendingKills,
-          ),
           ...collapseLayoutsForEmptyTerminalSet(state),
         }));
         return closed;
@@ -567,14 +522,7 @@ function parsePendingKills(
     const key = terminalSessionKey(entry.hostId, entry.sessionId);
     if (seen.has(key)) return [];
     seen.add(key);
-    return [
-      {
-        hostId: entry.hostId,
-        sessionId: entry.sessionId,
-        ...(entry.legacyEvidence === true ? { legacyEvidence: true } : {}),
-        ...(entry.pendingCreate === true ? { pendingCreate: true } : {}),
-      },
-    ];
+    return [{ hostId: entry.hostId, sessionId: entry.sessionId }];
   });
 }
 
@@ -605,30 +553,6 @@ function nextActiveInstanceId(
   return tabs[0]?.instanceId ?? null;
 }
 
-function pendingKillFor(
-  tab: LandingTerminalTabRef,
-): LandingTerminalPendingKill | null {
-  if (tab.pendingCreate === true && tab.createDispatched !== true) return null;
-  return {
-    hostId: tab.hostId,
-    sessionId: tab.sessionId,
-    ...(tab.hostAuthorityAcknowledged === true || tab.pendingCreate === true
-      ? {}
-      : { legacyEvidence: true }),
-    ...(tab.pendingCreate === true ? { pendingCreate: true } : {}),
-  };
-}
-
-function hasPendingKill(
-  pendingKills: ReadonlyArray<LandingTerminalPendingKill>,
-  hostId: string,
-  sessionId: string,
-): boolean {
-  return pendingKills.some(
-    (pending) => pending.hostId === hostId && pending.sessionId === sessionId,
-  );
-}
-
 export function terminalSessionKey(hostId: string, sessionId: string): string {
   return `${hostId}\u0000${sessionId}`;
 }
@@ -638,9 +562,8 @@ export function hostAcknowledgedTab(
   terminal: PlainTerminalProjection,
 ): LandingTerminalTabRef {
   const view = selectPlainTerminalViewModel(terminal);
-  const { createDispatched: _createDispatched, ...retainedTab } = tab;
   return {
-    ...retainedTab,
+    ...tab,
     sessionId: terminal.record.terminalId,
     hostId: terminal.record.hostId,
     cwd: terminal.record.launch.cwd,

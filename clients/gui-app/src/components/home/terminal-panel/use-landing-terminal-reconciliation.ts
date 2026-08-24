@@ -288,7 +288,6 @@ export function useLandingTerminalReconciliation(
                 ...request,
                 hostId: activeHostId,
               }),
-            killTerminal,
             importLegacyTerminal: (request) =>
               plainAuthority.mutations.importLegacy.mutateAsync(request),
             queryClient,
@@ -326,6 +325,26 @@ export function useLandingTerminalReconciliation(
         hostTombstones.map((pending) =>
           terminalSessionKey(pending.hostId, pending.sessionId),
         ),
+      );
+      const listedSessionIds = new Set(
+        freshSessions.map((session) => session.sessionId),
+      );
+      for (const pending of hostTombstones) {
+        if (!listedSessionIds.has(pending.sessionId)) {
+          useLandingTerminalStore
+            .getState()
+            .clearPendingKill(pending.hostId, pending.sessionId);
+        }
+      }
+      await Promise.all(
+        hostTombstones
+          .filter((pending) => listedSessionIds.has(pending.sessionId))
+          .map((pending) =>
+            killTerminal(pending).then(
+              () => undefined,
+              () => undefined,
+            ),
+          ),
       );
       if (
         reconciliationGenerationIsStale(controller.signal, client, activeHostId)
@@ -398,9 +417,6 @@ export async function reconcileCapableLandingTerminals(args: {
   readonly closeTerminal: (
     request: ClosePlainTerminalRequest,
   ) => Promise<unknown>;
-  readonly killTerminal: (
-    request: LandingTerminalKillVariables,
-  ) => Promise<unknown>;
   readonly importLegacyTerminal: (
     request: ImportLegacyPlainTerminalRequest,
   ) => Promise<ImportLegacyPlainTerminalResponse>;
@@ -416,6 +432,27 @@ export async function reconcileCapableLandingTerminals(args: {
   if (initialCollection?.streamSnapshotFresh !== true) {
     return "snapshot-not-fresh";
   }
+  const store = useLandingTerminalStore.getState();
+  const pendingKills = store.pendingKills.filter(
+    (pending) => pending.hostId === activeHostId,
+  );
+
+  await Promise.all(
+    pendingKills.map(async (pending) => {
+      const collection =
+        queryClient.getQueryData<PlainTerminalCollection>(queryKey);
+      if (
+        getPlainTerminal(collection, pending.hostId, pending.sessionId) !==
+        undefined
+      ) {
+        await args.closeTerminal({ terminalId: pending.sessionId });
+      }
+      useLandingTerminalStore
+        .getState()
+        .clearPendingKill(activeHostId, pending.sessionId);
+    }),
+  );
+
   const postKillCollection =
     queryClient.getQueryData<PlainTerminalCollection>(queryKey);
   if (postKillCollection?.streamSnapshotFresh !== true) {

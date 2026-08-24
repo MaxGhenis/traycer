@@ -141,10 +141,6 @@ function landingTerminalAuthorityReady(
   return capability.status === "capable" && entry.authority.canMutate;
 }
 
-function canCloseLandingTerminalTab(): boolean {
-  return true;
-}
-
 function directoryRequestFor(
   target: LandingTerminalTarget,
   mode: LandingTerminalDirectoryRequestMode,
@@ -281,19 +277,14 @@ export function LandingTerminalPanel(): ReactNode {
   const landingPageId = focusedLandingPageId ?? "unbound-landing-page";
   const targetLandingPageId = target.draftId ?? "unbound-landing-page";
   const tabs = useLandingTerminalStore((state) => state.tabs);
-  const pendingKills = useLandingTerminalStore((state) => state.pendingKills);
   const [authorityEntries, setAuthorityEntries] =
     useState<LandingTerminalAuthorityEntries>({});
   const authorityHostIds = useMemo(
     () =>
-      [
-        ...new Set([
-          ...tabs.map((tab) => tab.hostId),
-          ...pendingKills.map((pending) => pending.hostId),
-          target.hostId,
-        ]),
-      ].filter((hostId): hostId is string => hostId !== null),
-    [pendingKills, tabs, target.hostId],
+      [...new Set([...tabs.map((tab) => tab.hostId), target.hostId])].filter(
+        (hostId): hostId is string => hostId !== null,
+      ),
+    [tabs, target.hostId],
   );
   const handleAuthorityEntry = useCallback(
     (hostId: string, entry: LandingTerminalAuthorityEntry | null): void => {
@@ -336,8 +327,8 @@ export function LandingTerminalPanel(): ReactNode {
   const activateTab = useLandingTerminalStore((state) => state.activateTab);
   const renameTab = useLandingTerminalStore((state) => state.renameTab);
   const closeTab = useLandingTerminalStore((state) => state.closeTab);
-  const closeAllTabs = useLandingTerminalStore((state) => state.closeAllTabs);
   const kill = useLandingTerminalKill();
+  const killTerminal = kill.mutate;
   const killTerminalAsync = kill.mutateAsync;
   // Last settled generation's host context. Manual create uses it only when
   // `hostId` still equals the active host; auto-spawn never reads this alone.
@@ -771,21 +762,40 @@ export function LandingTerminalPanel(): ReactNode {
     onSettled: handleReconciliationSettled,
   });
 
-  // Rename changes host-owned state immediately, so it remains unavailable
-  // until that host's terminal authority is ready. Closing is different: the
-  // store removes the local presentation and durably records a pending kill,
-  // which the app-wide recovery bridge delivers for online and offline hosts.
-  const canRenameTab = useCallback(
+  // One predicate for every tab mutation, so the affordance and the action it
+  // fires can never disagree. Before this, close silently no-oped behind an
+  // enabled button whenever authority was not ready, with nothing said.
+  const canMutateTab = useCallback(
     (tab: LandingTerminalTabRef): boolean =>
       landingTerminalAuthorityReady(authorityEntries[tab.hostId]),
     [authorityEntries],
   );
+
   const closeTerminalTab = useCallback(
     (tab: LandingTerminalTabRef) => {
       replaceDirectoryRequest(null);
       clearPending();
       const closed = closeTab(landingPageId, tab.instanceId);
       if (closed === null) return;
+      const authorityEntry = authorityEntries[tab.hostId];
+      if (
+        landingTerminalAuthorityReady(authorityEntry) &&
+        authorityEntry.authority.capability.status === "capable"
+      ) {
+        void authorityEntry.mutations.close
+          .mutateAsync({
+            hostId: closed.hostId,
+            terminalId: closed.sessionId,
+          })
+          .then(() => {
+            useLandingTerminalStore
+              .getState()
+              .clearPendingKill(closed.hostId, closed.sessionId);
+          })
+          .catch(() => undefined);
+      } else if (landingTerminalAuthorityReady(authorityEntry)) {
+        killTerminal({ hostId: closed.hostId, sessionId: closed.sessionId });
+      }
       // Closing a non-last tab promotes a surviving neighbor - keep the
       // keyboard with the panel. The last-tab case collapses the panel, and
       // the open-transition effect hands focus back to the composer instead.
@@ -800,19 +810,23 @@ export function LandingTerminalPanel(): ReactNode {
         focusActiveComposer();
       }
     },
-    [clearPending, closeTab, landingPageId, replaceDirectoryRequest],
+    [
+      clearPending,
+      closeTab,
+      authorityEntries,
+      killTerminal,
+      landingPageId,
+      replaceDirectoryRequest,
+    ],
   );
 
   const closeAllTerminalTabs = useCallback(() => {
     replaceDirectoryRequest(null);
     clearPending();
-    // Tombstone every tab in one durable write before dispatching any kills.
-    // Hosts that are currently offline keep their tombstones; their
-    // reconciliation pass drains them after connectivity returns.
-    closeAllTabs(landingPageId);
+    useLandingTerminalStore.getState().tabs.forEach(closeTerminalTab);
     clearPendingTerminalFocus(null);
     focusActiveComposer();
-  }, [clearPending, closeAllTabs, landingPageId, replaceDirectoryRequest]);
+  }, [clearPending, closeTerminalTab, replaceDirectoryRequest]);
 
   const togglePanel = useCallback(() => {
     if (panelOpen) {
@@ -928,7 +942,6 @@ export function LandingTerminalPanel(): ReactNode {
         landingPageId={landingPageId}
         selectedHostId={target.hostId}
         entries={authorityEntries}
-        killTerminal={killTerminalAsync}
       />
       {panelUnavailable ? null : (
         <LandingTerminalPanelContents
@@ -957,8 +970,8 @@ export function LandingTerminalPanel(): ReactNode {
           onCloseTab={closeTerminalTab}
           onCloseAllTabs={closeAllTerminalTabs}
           onRenameTab={renameTerminalTab}
-          canRenameTab={canRenameTab}
-          canCloseTab={canCloseLandingTerminalTab}
+          canRenameTab={canMutateTab}
+          canCloseTab={() => true}
           authorityEntries={authorityEntries}
           terminalViewModels={terminalViewModels}
         />

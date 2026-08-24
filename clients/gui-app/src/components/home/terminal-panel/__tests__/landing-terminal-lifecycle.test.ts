@@ -498,13 +498,7 @@ describe("landing terminal lifecycle", () => {
           maximized: false,
         },
       },
-      pendingKills: [
-        {
-          hostId: HOST_A,
-          sessionId: "session-close",
-          pendingCreate: true,
-        },
-      ],
+      pendingKills: [{ hostId: HOST_A, sessionId: "session-close" }],
     });
     const result = reconcileLandingTerminalTabs({
       tabs: restored.tabs,
@@ -518,11 +512,7 @@ describe("landing terminal lifecycle", () => {
     });
 
     expect(restored.pendingKills).toEqual([
-      {
-        hostId: HOST_A,
-        sessionId: "session-close",
-        pendingCreate: true,
-      },
+      { hostId: HOST_A, sessionId: "session-close" },
     ]);
     expect(result.tabs).toEqual([]);
     expect(result.adoptedTabs).toEqual([]);
@@ -754,7 +744,7 @@ describe("closeAllTabs", () => {
     useLandingTerminalStore.getState().resetForTests();
   });
 
-  it("tombstones every tab in one write and returns them for killing", () => {
+  it("removes every tab locally without queuing host cleanup", () => {
     const store = useLandingTerminalStore.getState();
     store.addTab(tab({ instanceId: "a", sessionId: "s-a", hostId: HOST_A }));
     store.addTab(tab({ instanceId: "b", sessionId: "s-b", hostId: HOST_B }));
@@ -763,9 +753,6 @@ describe("closeAllTabs", () => {
       .getState()
       .closeAllTabs(LANDING_PAGE_ID);
 
-    // Tombstone-first durability: the refs are gone AND every session is
-    // tombstoned by the time the caller gets them back to kill, so a reload
-    // racing the kills can never re-adopt a closed shell as an orphan.
     expect(closed.map((entry) => entry.instanceId)).toEqual(["a", "b"]);
     const state = useLandingTerminalStore.getState();
     expect(state.tabs).toEqual([]);
@@ -773,56 +760,7 @@ describe("closeAllTabs", () => {
     expect(landingTerminalLayoutFor(state, LANDING_PAGE_ID).panelOpen).toBe(
       false,
     );
-    expect(state.pendingKills).toEqual([
-      { hostId: HOST_A, sessionId: "s-a", legacyEvidence: true },
-      { hostId: HOST_B, sessionId: "s-b", legacyEvidence: true },
-    ]);
-  });
-
-  it("preserves capable-create provenance in close tombstones", () => {
-    const store = useLandingTerminalStore.getState();
-    const pendingCreateTab = {
-      ...tab({
-        instanceId: "pending-create",
-        sessionId: "pending-session",
-        hostId: HOST_A,
-      }),
-      hostAuthorityAcknowledged: false,
-      pendingCreate: true,
-    };
-    store.addTab(pendingCreateTab);
-
-    store.closeTab(LANDING_PAGE_ID, "pending-create");
-
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
-
-    store.resetForTests();
-    useLandingTerminalStore.getState().addTab(pendingCreateTab);
-    useLandingTerminalStore.getState().markCreateDispatched("pending-create");
-    useLandingTerminalStore
-      .getState()
-      .closeTab(LANDING_PAGE_ID, "pending-create");
-
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      {
-        hostId: HOST_A,
-        sessionId: "pending-session",
-        pendingCreate: true,
-      },
-    ]);
-
-    store.resetForTests();
-    useLandingTerminalStore.getState().addTab(pendingCreateTab);
-    useLandingTerminalStore.getState().markCreateDispatched("pending-create");
-    useLandingTerminalStore.getState().closeAllTabs(LANDING_PAGE_ID);
-
-    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
-      {
-        hostId: HOST_A,
-        sessionId: "pending-session",
-        pendingCreate: true,
-      },
-    ]);
+    expect(state.pendingKills).toEqual([]);
   });
 
   it("is a no-op with no tabs open", () => {

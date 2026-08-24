@@ -981,7 +981,6 @@ describe("usePlainTerminalAuthority integration", () => {
         },
         canMutate: true,
         closeTerminal: () => Promise.resolve(),
-        killTerminal: () => Promise.resolve(),
         importLegacyTerminal: importLegacy,
         queryClient: test.queryClient,
       }),
@@ -1007,7 +1006,6 @@ describe("usePlainTerminalAuthority integration", () => {
       return useLandingTerminalDurableLifecycle({
         projectionStatus: "missing",
         pendingCreate: pending?.pendingCreate === true,
-        createDispatched: false,
         active: true,
         canMutate: true,
         gridReady: true,

@@ -599,7 +599,6 @@ function HostTerminalTileLive(
     projectionStatus:
       projection === undefined ? "missing" : projection.runtime.status,
     pendingCreate: pendingCreate && durableCreate === null,
-    createDispatched: false,
     active: props.isActive,
     canMutate: props.controller.canMutate,
     gridReady,

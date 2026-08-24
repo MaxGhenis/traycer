@@ -201,7 +201,6 @@ describe("<LandingTerminalBoundHostReconciliationFleet />", () => {
           landingPageId="landing-a"
           selectedHostId={selectedHostId}
           entries={entries}
-          killTerminal={() => Promise.resolve()}
         />
       </QueryClientProvider>
     );
