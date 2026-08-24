@@ -345,15 +345,19 @@ function LandingTerminalDurableBootstrap(
     },
     [props.tab.instanceId],
   );
-  const onCreateRejected = useCallback((): void => {
-    useLandingTerminalStore
-      .getState()
-      .settleFailedCreate(
-        props.tab.instanceId,
-        props.tab.hostId,
-        props.tab.sessionId,
-      );
-  }, [props.tab.hostId, props.tab.instanceId, props.tab.sessionId]);
+  const onCreateRejected = useCallback(
+    (mayHaveApplied: boolean): void => {
+      useLandingTerminalStore
+        .getState()
+        .settleFailedCreate(
+          props.tab.instanceId,
+          props.tab.hostId,
+          props.tab.sessionId,
+          mayHaveApplied,
+        );
+    },
+    [props.tab.hostId, props.tab.instanceId, props.tab.sessionId],
+  );
   const lifecycle = useLandingTerminalDurableLifecycle({
     projectionStatus:
       projection === undefined ? "missing" : projection.runtime.status,

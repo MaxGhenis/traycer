@@ -449,6 +449,50 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
   });
 
+  it("retires an ambiguous failed-create tombstone from a fresh absent snapshot", async () => {
+    mocks.entries = [
+      {
+        ...offlineHost,
+        websocketUrl: "ws://host-b/rpc",
+        transportDialability: "dialable",
+      },
+    ];
+    mocks.authorityStatus = "capable";
+    mocks.canMutate = true;
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "ambiguous-create-tab",
+      sessionId: "ambiguous-create-session",
+      hostId: "host-b",
+      cwd: "/workspace/project",
+      name: "Ambiguous create",
+      titleSource: "default",
+      pendingCreate: true,
+    });
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "ambiguous-create-tab");
+    useLandingTerminalStore
+      .getState()
+      .settleFailedCreate(
+        "ambiguous-create-tab",
+        "host-b",
+        "ambiguous-create-session",
+        true,
+      );
+
+    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => Promise.resolve());
+    expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(1);
+
+    mocks.terminalsById = {};
+    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
+
+    await waitFor(() => {
+      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+    });
+    expect(mocks.closeAsync).not.toHaveBeenCalled();
+  });
+
   it("retries a legacy kill after a transient rejection", async () => {
     vi.useFakeTimers();
     mocks.killAsync

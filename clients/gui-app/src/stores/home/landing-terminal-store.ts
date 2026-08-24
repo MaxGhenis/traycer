@@ -36,6 +36,8 @@ export interface LandingTerminalPendingKill {
   readonly sessionId: string;
   /** Keep probing until an in-flight capable-host create either appears. */
   readonly pendingCreate?: boolean;
+  /** A post-send create failed ambiguously and needs one fresh absence proof. */
+  readonly createRejectedAmbiguously?: boolean;
 }
 
 export interface LandingTerminalLayout {
@@ -103,6 +105,7 @@ export interface LandingTerminalStoreState {
     instanceId: string,
     hostId: string,
     sessionId: string,
+    mayHaveApplied: boolean,
   ) => void;
   readonly rekeyTab: (instanceId: string, sessionId: string) => void;
   readonly adoptHostTerminal: (
@@ -389,18 +392,31 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
               pending.hostId !== hostId || pending.sessionId !== sessionId,
           ),
         })),
-      settleFailedCreate: (instanceId, hostId, sessionId) =>
-        set((state) => ({
-          tabs: state.tabs.map((tab) =>
-            tab.instanceId === instanceId
-              ? { ...tab, pendingCreate: false }
-              : tab,
-          ),
-          pendingKills: state.pendingKills.filter(
-            (pending) =>
-              pending.hostId !== hostId || pending.sessionId !== sessionId,
-          ),
-        })),
+      settleFailedCreate: (instanceId, hostId, sessionId, mayHaveApplied) =>
+        set((state) => {
+          if (state.tabs.some((tab) => tab.instanceId === instanceId)) {
+            return state;
+          }
+          return {
+            pendingKills: state.pendingKills.flatMap((pending) => {
+              if (
+                pending.hostId !== hostId ||
+                pending.sessionId !== sessionId
+              ) {
+                return [pending];
+              }
+              return mayHaveApplied
+                ? [
+                    {
+                      hostId,
+                      sessionId,
+                      createRejectedAmbiguously: true,
+                    },
+                  ]
+                : [];
+            }),
+          };
+        }),
       rekeyTab: (instanceId, sessionId) =>
         set((state) => ({
           tabs: state.tabs.map((tab) =>
@@ -584,6 +600,9 @@ function parsePendingKills(
         hostId: entry.hostId,
         sessionId: entry.sessionId,
         ...(entry.pendingCreate === true ? { pendingCreate: true } : {}),
+        ...(entry.createRejectedAmbiguously === true
+          ? { createRejectedAmbiguously: true }
+          : {}),
       },
     ];
   });

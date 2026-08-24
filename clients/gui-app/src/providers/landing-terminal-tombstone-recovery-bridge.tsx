@@ -38,6 +38,9 @@ interface CapableCloseRetry {
 }
 
 interface TombstoneRetryRefs {
+  readonly ambiguousEntries: {
+    current: Map<string, LandingTerminalAuthorityEntry>;
+  };
   readonly authorityEntries: {
     current: LandingTerminalAuthorityEntries;
   };
@@ -277,6 +280,20 @@ function dispatchCapableClose(args: {
       args.pending.sessionId,
     ) === undefined
   ) {
+    if (args.pending.createRejectedAmbiguously === true) {
+      const observedEntry = args.refs.ambiguousEntries.current.get(args.key);
+      if (observedEntry === undefined) {
+        args.refs.ambiguousEntries.current.set(args.key, args.entry);
+        return;
+      }
+      if (observedEntry === args.entry) return;
+      args.refs.ambiguousEntries.current.delete(args.key);
+      useLandingTerminalStore
+        .getState()
+        .clearPendingKill(args.pending.hostId, args.pending.sessionId);
+      clearCapableCloseRetry(args.refs.retries.current, args.key);
+      return;
+    }
     if (args.pending.pendingCreate === true) {
       scheduleCapableCloseRetry(args);
       return;
@@ -313,6 +330,19 @@ function dispatchCapableClose(args: {
     });
 }
 
+function pendingKillReadyForDispatch(args: {
+  readonly pending: LandingTerminalPendingKill;
+  readonly retry: CapableCloseRetry | undefined;
+  readonly routeRecovered: boolean;
+}): boolean {
+  return (
+    args.routeRecovered ||
+    args.retry?.due === true ||
+    (args.pending.pendingCreate === true && args.retry === undefined) ||
+    args.pending.createRejectedAmbiguously === true
+  );
+}
+
 /**
  * Drains durable landing-terminal close tombstones when their bound host
  * returns. This lives above the router so leaving the landing page cannot
@@ -325,6 +355,9 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
   const kill = useLandingTerminalKill();
   const killRef = useRef<LegacyKillMutation>(kill);
   const inFlightRef = useRef<ReadonlySet<string>>(new Set());
+  const ambiguousEntriesRef = useRef<
+    Map<string, LandingTerminalAuthorityEntry>
+  >(new Map());
   const retriesRef = useRef<Map<string, CapableCloseRetry>>(new Map());
   const mountedRef = useRef(true);
   const [retryGeneration, setRetryGeneration] = useState(0);
@@ -397,12 +430,14 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
   useEffect(() => {
     mountedRef.current = true;
     const retries = retriesRef.current;
+    const ambiguousEntries = ambiguousEntriesRef.current;
     return () => {
       mountedRef.current = false;
       for (const retry of retries.values()) {
         if (retry.timer !== null) clearTimeout(retry.timer);
       }
       retries.clear();
+      ambiguousEntries.clear();
     };
   }, []);
 
@@ -433,6 +468,7 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
     const previousDialable = dialableRef.current;
     dialableRef.current = currentDrainable;
     const retryRefs: TombstoneRetryRefs = {
+      ambiguousEntries: ambiguousEntriesRef,
       authorityEntries: authorityEntriesRef,
       dialable: dialableRef,
       inFlight: inFlightRef,
@@ -458,9 +494,7 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
       const key = terminalSessionKey(pending.hostId, pending.sessionId);
       const retry = retriesRef.current.get(key);
       const routeRecovered = previousDialable.get(pending.hostId) !== true;
-      const newlyPendingCreate =
-        pending.pendingCreate === true && retry === undefined;
-      if (!routeRecovered && retry?.due !== true && !newlyPendingCreate) {
+      if (!pendingKillReadyForDispatch({ pending, retry, routeRecovered })) {
         continue;
       }
       if (inFlightRef.current.has(key)) continue;

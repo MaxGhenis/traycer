@@ -232,7 +232,7 @@ describe("durable landing-terminal bootstrap", () => {
       return Promise.resolve();
     });
 
-    expect(onCreateRejected).toHaveBeenCalledTimes(1);
+    expect(onCreateRejected).toHaveBeenCalledWith(false);
   });
 
   it("retains the error presentation while an explicit retry is pending", async () => {
