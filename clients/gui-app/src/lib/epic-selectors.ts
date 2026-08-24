@@ -172,18 +172,15 @@ export function useEpicDurabilityPauseReason(): NonNullable<
 }
 
 /**
- * Whether this epic has no cloud comment room, and therefore no comments.
+ * Whether this epic has no usable comment room right now.
  *
  * ## Why a shared predicate and not `status === "local"` at each gate
  *
- * Two gates - the sidebar and the collab tile - each compared to the literal
- * `"local"`, and both missed `promoting`. `promoting` is the reserved-but-
- * pre-cutover window: the promotion is recorded, the upload is in flight, and
- * the artifact room's collab provider is STILL null. So comments re-enabled
- * themselves partway through promotion, the core threw a typed
- * `no_active_session`, and the user was shown "Comments couldn't be loaded" /
- * "Couldn't post comment" - a generic failure standing in for a boundary the
- * host knows exactly.
+ * Local artifact rooms have their own disconnected thread provider backed by
+ * the same WAL-persisted Y.Doc as the artifact body, so `local` is usable.
+ * `promoting` is different: the reservation is recorded but the local manager
+ * has been retired before the cloud artifact-room provider is ready. Offering
+ * comments in that interval only produces `no_active_session`.
  *
  * `unknown` is deliberately NOT here. It means the host could not answer, and
  * the honest response to that is the ordinary read path plus whatever it
@@ -191,25 +188,16 @@ export function useEpicDurabilityPauseReason(): NonNullable<
  * either direction on `unknown` is the class of defect `s5-status-truthfulness`
  * exists to correct.
  */
-export function commentsHaveNoCloudRoom(
+export function commentsHaveNoUsableCommentRoom(
   status: NonNullable<OpenEpicState["durabilityStatus"]> | null,
   pauseReason: string | null,
 ): boolean {
-  if (status === "local" || status === "promoting") return true;
-  // A preserved orphan: the epic was paused because its CLOUD copy was
-  // deleted while never-uploaded local edits survived. The cloud comment room
-  // went with the cloud copy, so enabling comments here offers actions that
-  // can only fail against an absent room. The other pause reasons make no
-  // such claim - an entitlement lapse or revoked access leaves the room in
-  // place, merely unreachable, which is not this predicate's question.
-  return (
-    status === "paused" &&
-    pauseReason === "orphaned-local-edits-after-cloud-delete"
-  );
+  return unavailableCommentRoomKind(status, pauseReason) !== null;
 }
 
 /**
- * {@link commentsHaveNoCloudRoom}, held across a subscription cycle's reset.
+ * {@link commentsHaveNoUsableCommentRoom}, held across a subscription cycle's
+ * reset.
  *
  * ## Why the raw predicate is not enough AT A GATE
  *
@@ -221,15 +209,15 @@ export function commentsHaveNoCloudRoom(
  *
  * For the sync pill an unknown collapses toward silence, which is the safe
  * direction. Here it collapses the other way: `false` re-enables the comment
- * shortcut, toolbar, popovers and thread query against an epic that still has
- * no cloud room. A draft begun in that window is wiped by the very frame that
- * restores the gate, and a request sent from it could only fail.
+ * shortcut, toolbar, popovers and thread query against an epic that is still
+ * promoting or preserving edits after its cloud room was deleted. A draft
+ * begun in that window is wiped by the very frame that restores the gate, and
+ * a request sent from it could only fail.
  *
- * The latch is sound because a cloud comment room is a property of the EPIC,
- * not of the subscription cycle - a local-homed epic does not acquire one by
- * reconnecting. Only a POSITIVE statement writes it, `null` leaves the
- * previous answer standing, and it is keyed by epic so a different one never
- * inherits it.
+ * The latch is sound because whether comments are temporarily unavailable is
+ * a property of the epic's durability state, not of the subscription cycle.
+ * Only a POSITIVE statement writes it, `null` leaves the previous answer
+ * standing, and it is keyed by epic so a different one never inherits it.
  *
  * ## Why the absent statement still splits two ways
  *
@@ -240,7 +228,31 @@ export function commentsHaveNoCloudRoom(
  * sync pill: the first waits behind the conservative gate, the second keeps
  * its released behaviour.
  */
-export function useEpicCommentsHaveNoCloudRoom(): boolean {
+export type EpicCommentRoomAvailability =
+  | { readonly kind: "available" }
+  | { readonly kind: "checking" }
+  | { readonly kind: "promoting" }
+  | { readonly kind: "orphaned" };
+
+function unavailableCommentRoomKind(
+  status: NonNullable<OpenEpicState["durabilityStatus"]> | null,
+  pauseReason: string | null,
+): "promoting" | "orphaned" | null {
+  if (status === "promoting") return "promoting";
+  return status === "paused" &&
+    pauseReason === "orphaned-local-edits-after-cloud-delete"
+    ? "orphaned"
+    : null;
+}
+
+/**
+ * The comment-room gate together with the exact closed reason that justified
+ * it. Consumers must switch on this value rather than interpret raw status
+ * and pause fields independently: during a reconnect those raw fields are
+ * intentionally cleared while the retained durability statement still owns
+ * the gate and its user-facing explanation.
+ */
+export function useEpicCommentRoomAvailability(): EpicCommentRoomAvailability {
   const status = useEpicDurabilityStatus();
   const pauseReason = useEpicDurabilityPauseReason();
   // `useMaybeEpicStore`, matching every sibling above: this gate renders in
@@ -259,21 +271,24 @@ export function useEpicCommentsHaveNoCloudRoom(): boolean {
     false,
   );
   // This cycle's own answer wins whenever it has one.
-  if (status !== null) return commentsHaveNoCloudRoom(status, pauseReason);
+  if (status !== null) {
+    const unavailable = unavailableCommentRoomKind(status, pauseReason);
+    return unavailable === null ? { kind: "available" } : { kind: unavailable };
+  }
   // The retained answer is consulted BEFORE the legacy-peer check, and the
   // order is the whole point of the latch rather than a stylistic choice.
   //
   // `startedSubscriptionCycle` resets `durabilityLegsNegotiated` to `false`
   // in the same block that nulls `durabilityStatus`, because a re-subscribe
   // can renegotiate onto a different host incarnation. It deliberately does
-  // NOT clear the retained pair. So the exact state a reconnecting local,
-  // promoting or preserved-orphan epic passes through - no status, legs not
+  // NOT clear the retained pair. So the exact state a reconnecting promoting
+  // or preserved-orphan epic passes through - no status, legs not
   // yet renegotiated, retained still standing - is the state that reaching
   // the legacy-peer arm first would answer `false` for, re-enabling the
   // comment shortcut, toolbar, popovers and thread query against an epic
-  // that still has no cloud room. That is precisely the window this latch
-  // was written to close, so consulting the retained value only after a
-  // check that a reconnect just falsified made the latch inert exactly when
+  // whose comment room is still unavailable. That is precisely the window
+  // this latch was written to close, so consulting the retained value only
+  // after a check that a reconnect just falsified made the latch inert when
   // it was needed. (The fixture that covered it set
   // `durabilityLegsNegotiated: true` by hand, which is the opposite of what
   // the production reconnect produces - so the ordering read as tested.)
@@ -285,33 +300,43 @@ export function useEpicCommentsHaveNoCloudRoom(): boolean {
   // key never populates it, falls through, and still gets its released
   // behaviour from the check below.
   if (retainedStatus !== null) {
-    return commentsHaveNoCloudRoom(retainedStatus, retainedPauseReason);
+    const unavailable = unavailableCommentRoomKind(
+      retainedStatus,
+      retainedPauseReason,
+    );
+    return unavailable === null ? { kind: "available" } : { kind: unavailable };
   }
   // No statement this cycle and none ever retained. A peer that never
   // negotiated the legs cannot produce one at all, so gating on its silence
   // would disable comments forever on every pre-`@1.4` host - the population
   // that has always had them.
-  if (!durabilityLegsNegotiated) return false;
+  if (!durabilityLegsNegotiated) {
+    return { kind: "available" };
+  }
   // A negotiated peer that has not spoken yet, about an epic nothing has ever
   // said anything about. Withholding the affordance is the only direction
   // here that cannot offer an action the host will reject.
-  return true;
+  return { kind: "checking" };
+}
+
+export function useEpicCommentsHaveNoUsableRoom(): boolean {
+  return useEpicCommentRoomAvailability().kind !== "available";
 }
 
 /**
  * Whether this epic has no cloud task for its chats to back up into.
  *
- * The chat-backup twin of {@link commentsHaveNoCloudRoom}, and a separate
- * predicate rather than a reuse because the two gate DIFFERENT surfaces on the
- * same wire fact and may yet diverge: comments need the cloud comment room,
- * chat backup needs the cloud task row the publisher addresses. Today both
- * are absent through exactly the `local` and `promoting` window.
+ * Related to {@link commentsHaveNoUsableCommentRoom}, but deliberately
+ * separate: local comments use a WAL-backed artifact-room provider, while
+ * chat backup still needs the cloud task row the publisher addresses. The
+ * predicates share the promoting and preserved-orphan cases only.
  *
  * The consumer is the sidebar's backup-status indicator: on a local-homed
  * epic every chat is honestly `behind` forever (there is nothing to publish
  * into), so rendering "N chats not backed up" there presents a by-design
  * state as an actionable failure. `unknown` is deliberately NOT gated, per
- * the `s5-status-truthfulness` rule {@link commentsHaveNoCloudRoom} states:
+ * the `s5-status-truthfulness` rule
+ * {@link commentsHaveNoUsableCommentRoom}:
  * the host could not answer, so the ordinary surface renders what the backup
  * query reports.
  */

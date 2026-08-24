@@ -18,7 +18,7 @@ import {
   useEpicAgentRoleClaims,
   useEpicAgentRoleClaimsByAgentId,
   useEpicAgentReference,
-  useEpicCommentsHaveNoCloudRoom,
+  useEpicCommentsHaveNoUsableRoom,
   useEpicSyncPillState,
   useMaybeEpicTuiAgentHarnessId,
   useRegisteredEpicLiveAgents,
@@ -540,14 +540,10 @@ function createHandle(epicId: string): OpenEpicStoreHandle {
   return handle;
 }
 
-describe("useEpicCommentsHaveNoCloudRoom", () => {
-  it("holds a no-cloud-room answer across a subscription cycle's reset", () => {
-    // A stream reconnect clears `durabilityStatus` and its pause reason so the
-    // new cycle cannot inherit the old one's claims. The raw predicate reads
-    // that `null` as "comments are fine" - the unsafe direction for a GATE -
-    // and briefly re-enables the shortcut, toolbar, popovers and thread query
-    // against a local-homed epic that still has no cloud room. A draft begun
-    // in that window is wiped by the very frame that restores the gate.
+describe("useEpicCommentsHaveNoUsableRoom", () => {
+  it("keeps local-home comments enabled across a subscription cycle's reset", () => {
+    // Local artifact rooms now carry a disconnected provider backed by their
+    // WAL, so the retained local answer must not disable the comment surface.
     const handle = createHandle("epic-comment-gate-sticky");
     handle.store.setState({
       durabilityStatus: null,
@@ -557,7 +553,24 @@ describe("useEpicCommentsHaveNoCloudRoom", () => {
       durabilityLegsNegotiated: true,
     });
 
-    const { result } = renderHook(() => useEpicCommentsHaveNoCloudRoom(), {
+    const { result } = renderHook(() => useEpicCommentsHaveNoUsableRoom(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    expect(result.current).toBe(false);
+  });
+
+  it("gates comments during the promoting window before the cloud room is ready", () => {
+    const handle = createHandle("epic-comment-gate-promoting");
+    handle.store.setState({
+      durabilityStatus: "promoting",
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: "local",
+      retainedDurabilityPauseReason: null,
+      durabilityLegsNegotiated: true,
+    });
+
+    const { result } = renderHook(() => useEpicCommentsHaveNoUsableRoom(), {
       wrapper: openEpicWrapper(handle),
     });
 
@@ -580,7 +593,7 @@ describe("useEpicCommentsHaveNoCloudRoom", () => {
       durabilityLegsNegotiated: true,
     });
 
-    const { result } = renderHook(() => useEpicCommentsHaveNoCloudRoom(), {
+    const { result } = renderHook(() => useEpicCommentsHaveNoUsableRoom(), {
       wrapper: openEpicWrapper(handle),
     });
 
@@ -600,7 +613,7 @@ describe("useEpicCommentsHaveNoCloudRoom", () => {
       durabilityLegsNegotiated: false,
     });
 
-    const { result } = renderHook(() => useEpicCommentsHaveNoCloudRoom(), {
+    const { result } = renderHook(() => useEpicCommentsHaveNoUsableRoom(), {
       wrapper: openEpicWrapper(handle),
     });
 
@@ -629,7 +642,7 @@ describe("useEpicCommentsHaveNoCloudRoom", () => {
       durabilityLegsNegotiated: false,
     });
 
-    const { result } = renderHook(() => useEpicCommentsHaveNoCloudRoom(), {
+    const { result } = renderHook(() => useEpicCommentsHaveNoUsableRoom(), {
       wrapper: openEpicWrapper(handle),
     });
 
@@ -649,7 +662,7 @@ describe("useEpicCommentsHaveNoCloudRoom", () => {
       durabilityLegsNegotiated: true,
     });
 
-    const { result } = renderHook(() => useEpicCommentsHaveNoCloudRoom(), {
+    const { result } = renderHook(() => useEpicCommentsHaveNoUsableRoom(), {
       wrapper: openEpicWrapper(handle),
     });
 
