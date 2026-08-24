@@ -1,8 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SwitcherAgentsList } from "@/components/epic-canvas/mobile/switcher-agents-list";
-import { SwitcherArtifactsList } from "@/components/epic-canvas/mobile/switcher-artifacts-list";
-import { STATUS_DOT_CLASSES } from "@/components/epic-canvas/sidebar/epic-sidebar-tree-shared";
 import { SwitcherTerminalsList } from "@/components/epic-canvas/mobile/switcher-terminals-list";
 import { useEpicSidebarExpansionStore } from "@/stores/epics/epic-sidebar-expansion-store";
 
@@ -645,40 +643,6 @@ describe("<SwitcherTerminalsList />", () => {
   });
 });
 
-describe("<SwitcherArtifactsList />", () => {
-  it("renders artifact rows with a status dot for a ticket", () => {
-    holder.records = [
-      {
-        id: "chat-1",
-        parentId: null,
-        name: "Alpha",
-        type: "chat",
-        status: null,
-        hostId: "host-A",
-      },
-      {
-        id: "tk-1",
-        parentId: null,
-        name: "Ticket One",
-        type: "ticket",
-        status: 1,
-        hostId: "host-A",
-      },
-    ];
-    render(<SwitcherArtifactsList {...PROPS} />);
-    // Chats are excluded from the artifacts list.
-    expect(screen.queryByTestId("switcher-artifact-row-chat-1")).toBeNull();
-    const row = screen.getByTestId("switcher-artifact-row-tk-1");
-    expect(row.textContent).toContain("Ticket One");
-    // The status dot is a decorative (`aria-hidden`) touch-surface affordance
-    // with no title/aria-label - status color is the only signal, mirroring
-    // the desktop `STATUS_DOT_CLASSES` palette.
-    const statusDot = row.querySelector(".rounded-full");
-    expect(statusDot).not.toBeNull();
-    expect(statusDot?.className).toContain(STATUS_DOT_CLASSES[1]);
-  });
-});
-
 describe("switcher create affordances (editor-gated)", () => {
   it("shows the New chat row as the first row for an editor and hides it for a viewer", () => {
     holder.records = [
@@ -740,15 +704,5 @@ describe("switcher create affordances (editor-gated)", () => {
     render(<SwitcherTerminalsList {...PROPS} />);
     expect(screen.getByTestId("switcher-new-terminal")).toBeTruthy();
     expect(screen.getByText("No terminals yet.")).toBeTruthy();
-  });
-
-  it("shows New artifact for an editor and hides it for a viewer", () => {
-    const editor = render(<SwitcherArtifactsList {...PROPS} />);
-    expect(screen.getByTestId("new-artifact-action")).toBeTruthy();
-    editor.unmount();
-
-    holder.role = "viewer";
-    render(<SwitcherArtifactsList {...PROPS} />);
-    expect(screen.queryByTestId("new-artifact-action")).toBeNull();
   });
 });

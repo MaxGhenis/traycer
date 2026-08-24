@@ -103,6 +103,8 @@ describe("<SwitcherNewArtifactMenu />", () => {
     );
     fireEvent.pointerDown(screen.getByTestId("switcher-new-artifact"));
     fireEvent.click(screen.getByTestId("switcher-new-artifact-spec"));
-    expect(spies.createArtifact).toHaveBeenCalledWith("spec");
+    // The category's "+" creates at the ROOT; a row's add-child menu is what
+    // passes a parent id through the same hook.
+    expect(spies.createArtifact).toHaveBeenCalledWith("spec", null);
   });
 });

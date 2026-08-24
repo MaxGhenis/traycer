@@ -90,6 +90,32 @@ export function SwitcherNewTerminalRow(props: SwitcherCreateProps) {
 }
 
 /**
+ * The four artifact kinds as menu items, shared by the category's "New
+ * artifact" menu and a row's "add child" menu so both offer the same set under
+ * the same labels and icons. `testIdPrefix` scopes the ids to the surface that
+ * mounted them (`switcher-new-artifact`, `switcher-add-child-<nodeId>`).
+ */
+export function SwitcherArtifactKindItems(props: {
+  readonly testIdPrefix: string;
+  readonly onSelect: (kind: EpicArtifactKind) => void;
+}) {
+  const { testIdPrefix, onSelect } = props;
+  return ARTIFACT_KINDS.map((kind) => {
+    const Icon = EPIC_NODE_ICONS[kind];
+    return (
+      <DropdownMenuItem
+        key={kind}
+        data-testid={`${testIdPrefix}-${kind}`}
+        onSelect={() => onSelect(kind)}
+      >
+        <Icon className="size-3.5" />
+        {EPIC_NODE_LABELS[kind]}
+      </DropdownMenuItem>
+    );
+  });
+}
+
+/**
  * "New artifact" affordance for the Artifacts category: a curated kind menu
  * (spec / ticket / story / review) that fires the exact desktop create path
  * (`useEpicCreateArtifact` + open-when-projected). The artifact tile is not an
@@ -132,19 +158,10 @@ export function SwitcherNewArtifactMenu(props: {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {ARTIFACT_KINDS.map((kind) => {
-          const Icon = EPIC_NODE_ICONS[kind];
-          return (
-            <DropdownMenuItem
-              key={kind}
-              data-testid={`switcher-new-artifact-${kind}`}
-              onSelect={() => create(kind)}
-            >
-              <Icon className="size-3.5" />
-              {EPIC_NODE_LABELS[kind]}
-            </DropdownMenuItem>
-          );
-        })}
+        <SwitcherArtifactKindItems
+          testIdPrefix="switcher-new-artifact"
+          onSelect={(kind) => create(kind, null)}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );

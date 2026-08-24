@@ -11,7 +11,7 @@ import { DEFAULT_EPIC_NODE_NAMES } from "@/lib/artifacts/node-display";
 import type { EpicNodeRef } from "@/stores/epics/canvas/types";
 
 export interface SwitcherCreateArtifact {
-  readonly create: (type: EpicArtifactKind) => void;
+  readonly create: (type: EpicArtifactKind, parentId: string | null) => void;
   readonly isPending: boolean;
 }
 
@@ -23,6 +23,12 @@ export interface SwitcherCreateArtifact {
  * the sheet's active-tile watcher to close. The desktop's inline
  * pending-create staging (a left-panel-only UI) is intentionally omitted; the
  * create + open functions are identical.
+ *
+ * `parentId` names the artifact the new one nests under - `null` for the
+ * category's root "+", a node id for a row's "add child". The desktop
+ * add-child path also requests editor focus on the opened tile; the switcher
+ * omits that, matching the app's other phone surfaces, which never autofocus a
+ * field the user did not tap.
  */
 export function useSwitcherCreateArtifact(
   epicId: string,
@@ -38,11 +44,11 @@ export function useSwitcherCreateArtifact(
   const activeHostId = useEpicSessionHostId() ?? UNKNOWN_HOST_PLACEHOLDER;
 
   const create = useCallback(
-    (type: EpicArtifactKind) => {
+    (type: EpicArtifactKind, parentId: string | null) => {
       createArtifact.mutate(
         {
           epicId,
-          parentId: null,
+          parentId,
           artifactType: type,
           title: DEFAULT_EPIC_NODE_NAMES[type],
         },
