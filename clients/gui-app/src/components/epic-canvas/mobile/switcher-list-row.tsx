@@ -5,6 +5,7 @@ import { TreeChevron, TreeChevronSpacer } from "@/components/ui/tree-chevron";
 import {
   SWITCHER_ROW_BASE_PAD_LEFT,
   SWITCHER_ROW_INDENT_PX,
+  SWITCHER_ROW_MAX_INDENT_DEPTH,
   type SwitcherRowNesting,
 } from "@/components/epic-canvas/mobile/switcher-row-nesting";
 
@@ -53,7 +54,7 @@ export function SwitcherListRow(props: {
     <div
       className="flex min-w-0 items-center gap-1"
       style={{
-        paddingLeft: `${nesting.depth * SWITCHER_ROW_INDENT_PX + SWITCHER_ROW_BASE_PAD_LEFT}px`,
+        paddingLeft: `${Math.min(nesting.depth, SWITCHER_ROW_MAX_INDENT_DEPTH) * SWITCHER_ROW_INDENT_PX + SWITCHER_ROW_BASE_PAD_LEFT}px`,
       }}
     >
       {nesting.hasChildren ? (

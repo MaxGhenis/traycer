@@ -324,6 +324,11 @@ function SwitcherAgentRow(props: {
             <Users
               className="size-3 shrink-0 text-muted-foreground"
               data-testid={`switcher-shared-${nodeId}`}
+              // `role` is explicit: lucide drops its default `aria-hidden` once
+              // any a11y prop is passed, and a bare labelled <svg> maps to
+              // `graphics-document` rather than an image, so the label reaches
+              // assistive technology inconsistently without it.
+              role="img"
               aria-label="Shared with task"
             />
           ) : null}

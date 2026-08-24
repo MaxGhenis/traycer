@@ -4,6 +4,7 @@ import { SwitcherAgentsList } from "@/components/epic-canvas/mobile/switcher-age
 import { SwitcherArtifactsList } from "@/components/epic-canvas/mobile/switcher-artifacts-list";
 import { STATUS_DOT_CLASSES } from "@/components/epic-canvas/sidebar/epic-sidebar-tree-shared";
 import { SwitcherTerminalsList } from "@/components/epic-canvas/mobile/switcher-terminals-list";
+import { useEpicSidebarExpansionStore } from "@/stores/epics/epic-sidebar-expansion-store";
 
 interface FixtureRecord {
   readonly id: string;
@@ -285,6 +286,12 @@ beforeEach(() => {
   holder.updatedAtByNodeId = {};
   holder.archiveSupported = false;
   holder.indicators = { epics: {}, chats: {} };
+  // Module-level and shared with the desktop sidebar, so one test's collapse
+  // would otherwise decide the next test's chevron state - and its label.
+  useEpicSidebarExpansionStore.setState({
+    userExpandedByScope: {},
+    userCollapsedByScope: {},
+  });
 });
 afterEach(cleanup);
 
@@ -541,7 +548,7 @@ describe("<SwitcherAgentsList />", () => {
 
     // Roots are expanded implicitly, so the parent starts open and its chevron
     // closes it.
-    fireEvent.click(screen.getByTestId("switcher-agent-row-chat-1-toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Alpha" }));
     expect(screen.queryByTestId("switcher-agent-row-chat-2")).toBeNull();
   });
 
@@ -565,8 +572,13 @@ describe("<SwitcherAgentsList />", () => {
       },
     ];
     render(<SwitcherAgentsList {...PROPS} />);
-    expect(screen.getByTestId("switcher-agent-row-chat-1-toggle")).toBeTruthy();
-    expect(screen.queryByTestId("switcher-agent-row-chat-2-toggle")).toBeNull();
+    // By role, not test id: the control's accessible name and `aria-expanded`
+    // ARE the contract a phone user reaches it through, and a test-id query
+    // would still pass with both dropped.
+    expect(screen.getByRole("button", { name: "Collapse Alpha" })).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /(Collapse|Expand) Child/ }),
+    ).toBeNull();
   });
 
   it("renders each row's last activity on the shared compact ladder", () => {
