@@ -12,7 +12,7 @@ import {
 import { SwitcherListRow } from "@/components/epic-canvas/mobile/switcher-list-row";
 import type { SwitcherRowNesting } from "@/components/epic-canvas/mobile/switcher-row-nesting";
 import { SwitcherArtifactKindItems } from "@/components/epic-canvas/mobile/switcher-create-actions";
-import { SwitcherRowActions } from "@/components/epic-canvas/mobile/switcher-row-actions";
+import { SwitcherArtifactRowActions } from "@/components/epic-canvas/mobile/switcher-artifact-row-actions";
 import { useSwitcherActivate } from "@/components/epic-canvas/mobile/use-switcher-activate";
 import { useSwitcherCreateArtifact } from "@/components/epic-canvas/mobile/use-switcher-create-artifact";
 import { ArtifactUnreadMarker } from "@/components/epic-canvas/sidebar/epic-sidebar-artifact-tree";
@@ -169,10 +169,9 @@ export function SwitcherArtifactNode(props: SwitcherArtifactNodeProps) {
                 onClose={onClose}
               />
             ) : null}
-            <SwitcherRowActions
+            <SwitcherArtifactRowActions
               epicId={epicId}
               tabId={tabId}
-              kind="artifact"
               nodeId={nodeId}
               name={nodeName}
               cascadeSummary={cascadeSummary}

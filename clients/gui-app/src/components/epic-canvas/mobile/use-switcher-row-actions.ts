@@ -4,8 +4,6 @@ import type { SwitcherRowKind } from "@/components/epic-canvas/mobile/use-switch
 import { useEpicDeleteChat } from "@/hooks/epic/use-epic-chat-mutations";
 import { useEpicDeleteTuiAgent } from "@/hooks/epic/use-epic-tui-agent-mutations";
 import { useEpicDeleteArtifact } from "@/hooks/epic/use-epic-node-mutations";
-import { useTerminalKillFor } from "@/hooks/terminal/use-terminal-kill-for-mutation";
-import { useEpicSessionHostClient } from "@/hooks/epic/use-epic-session-host-client";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { findOpenArtifactInTab } from "@/stores/epics/canvas/canvas-selectors";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
@@ -20,17 +18,16 @@ export interface SwitcherRowActionState {
   readonly setConfirmOpen: (open: boolean) => void;
   readonly confirmDelete: () => void;
   readonly deletePending: boolean;
-  /** Terminates a PTY row immediately - no confirm, matching desktop. */
-  readonly closeTerminal: () => void;
-  readonly terminalClosePending: boolean;
 }
 
 /**
  * Every mutation and dialog a switcher row's "…" menu drives, independent of
- * WHICH entries that menu offers. The agents list and the artifact/terminal
- * lists present different entry sets over exactly this state, so rename, delete
- * (with its confirm) and the open-tile cleanup are defined once here rather
- * than once per list.
+ * WHICH entries that menu offers. The agents list and the artifact tree present
+ * different entry sets over exactly this state, so rename, delete (with its
+ * confirm) and the open-tile cleanup are defined once here rather than once per
+ * list. Raw PTY rows are not among them: their lifetime is gated by a host
+ * authority the projection kinds have no analog for, so they drive
+ * `useEpicTerminalRowActions` instead.
  *
  * The mutations are the desktop ones unchanged - the phone forks the surface,
  * never the write.
@@ -38,8 +35,8 @@ export interface SwitcherRowActionState {
 export function useSwitcherRowActions(args: {
   readonly epicId: string;
   readonly tabId: string;
-  readonly kind: SwitcherRowKind;
-  /** Content id: the node id for agents/artifacts, the session id for a PTY. */
+  readonly kind: Exclude<SwitcherRowKind, "terminal">;
+  /** The row's node id. */
   readonly nodeId: string;
 }): SwitcherRowActionState {
   const { epicId, tabId, kind, nodeId } = args;
@@ -50,13 +47,6 @@ export function useSwitcherRowActions(args: {
   const deleteChat = useEpicDeleteChat();
   const deleteTuiAgent = useEpicDeleteTuiAgent();
   const deleteArtifact = useEpicDeleteArtifact();
-  // The row's terminal lives on the host the switcher LISTS (the Epic
-  // session's), so kill goes to that same client - never the ambient one.
-  const killTerminal = useTerminalKillFor(
-    useEpicSessionHostClient(),
-    "Couldn't close the terminal.",
-    true,
-  );
 
   const navigateNested = useEpicNestedFocusNavigation();
   const prepareCloseCanvasTabFocusTarget = useEpicCanvasStore(
@@ -92,7 +82,8 @@ export function useSwitcherRowActions(args: {
         { epicId, tuiAgentId: nodeId },
         { onSuccess: closeOpenTile },
       );
-    else if (kind === "artifact")
+    // The only kind left once chats and terminal-agents are handled.
+    else
       deleteArtifact.mutate(
         { epicId, artifactId: nodeId },
         { onSuccess: closeOpenTile },
@@ -107,13 +98,6 @@ export function useSwitcherRowActions(args: {
     kind,
     nodeId,
   ]);
-
-  // Closes the open tile first so the action is mount-independent.
-  const closeTerminal = useCallback(() => {
-    if (killTerminal.isPending) return;
-    closeOpenTile();
-    killTerminal.mutate({ sessionId: nodeId });
-  }, [closeOpenTile, killTerminal, nodeId]);
 
   const openRename = useCallback(() => setRenameOpen(true), []);
   const requestDelete = useCallback(() => setConfirmOpen(true), []);
@@ -131,7 +115,5 @@ export function useSwitcherRowActions(args: {
       deleteChat.isPending ||
       deleteTuiAgent.isPending ||
       deleteArtifact.isPending,
-    closeTerminal,
-    terminalClosePending: killTerminal.isPending,
   };
 }
