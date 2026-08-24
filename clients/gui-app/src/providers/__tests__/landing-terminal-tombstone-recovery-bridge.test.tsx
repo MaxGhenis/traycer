@@ -223,6 +223,9 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     });
     useLandingTerminalStore
       .getState()
+      .markCreateDispatched("pending-create-tab");
+    useLandingTerminalStore
+      .getState()
       .closeTab("landing-page", "pending-create-tab");
 
     const view = render(<LandingTerminalTombstoneRecoveryBridge />);
@@ -279,6 +282,48 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
       });
     });
     expect(mocks.closeAsync).not.toHaveBeenCalled();
+  });
+
+  it("waits for capable authority to clean a capable-origin tombstone", async () => {
+    mocks.entries = [
+      {
+        ...offlineHost,
+        websocketUrl: "ws://host-b/rpc",
+        transportDialability: "dialable",
+      },
+    ];
+    mocks.authorityStatus = "legacy";
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "capable-origin-tab",
+      sessionId: "session-capable-origin",
+      hostId: "host-b",
+      cwd: "/workspace",
+      name: "Capable origin",
+      titleSource: "default",
+      hostAuthorityAcknowledged: true,
+    });
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "capable-origin-tab");
+
+    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => Promise.resolve());
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.closeAsync).not.toHaveBeenCalled();
+
+    view.unmount();
+    mocks.authorityStatus = "capable";
+    mocks.canMutate = true;
+    mocks.terminalsById = { "session-capable-origin": {} };
+    render(<LandingTerminalTombstoneRecoveryBridge />);
+
+    await waitFor(() => {
+      expect(mocks.closeAsync).toHaveBeenCalledWith({
+        hostId: "host-b",
+        terminalId: "session-capable-origin",
+      });
+    });
+    expect(mocks.kill).not.toHaveBeenCalled();
   });
 
   it("retries a recovered legacy kill after a transient failure", async () => {

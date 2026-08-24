@@ -27,6 +27,8 @@ export interface LandingTerminalTabRef {
   readonly hostAuthorityAcknowledged?: boolean;
   /** A genuinely-new terminal awaiting `terminal.plain.create`. */
   readonly pendingCreate?: boolean;
+  /** The pending create RPC was dispatched and may still commit remotely. */
+  readonly createDispatched?: boolean;
   /** Schema version attached to legacy import evidence. */
   readonly sourceStoreVersion?: number;
 }
@@ -72,6 +74,7 @@ export interface LandingTerminalStoreState {
     maximized: boolean,
   ) => void;
   readonly addTab: (tab: LandingTerminalTabRef) => void;
+  readonly markCreateDispatched: (instanceId: string) => void;
   readonly activateTab: (instanceId: string) => void;
   readonly renameTab: (instanceId: string, name: string) => void;
   /** Refreshes a derived title without overwriting a user rename. */
@@ -177,6 +180,7 @@ export function parseLandingTerminalTabRef(
       ? { hostAuthorityAcknowledged: true }
       : {}),
     ...(value.pendingCreate === true ? { pendingCreate: true } : {}),
+    ...(value.createDispatched === true ? { createDispatched: true } : {}),
     ...(isNonNegativeInteger(value.sourceStoreVersion)
       ? { sourceStoreVersion: value.sourceStoreVersion }
       : {}),
@@ -244,6 +248,14 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
             activeInstanceId: tab.instanceId,
           };
         }),
+      markCreateDispatched: (instanceId) =>
+        set((state) => ({
+          tabs: state.tabs.map((tab) =>
+            tab.instanceId === instanceId
+              ? { ...tab, createDispatched: true }
+              : tab,
+          ),
+        })),
       activateTab: (instanceId) =>
         set((state) =>
           state.tabs.some((tab) => tab.instanceId === instanceId)
@@ -291,26 +303,12 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
           const tabs = state.tabs.filter(
             (entry) => entry.instanceId !== instanceId,
           );
-          const pendingKills = hasPendingKill(
-            state.pendingKills,
-            closed.hostId,
-            closed.sessionId,
-          )
-            ? state.pendingKills
-            : [
-                ...state.pendingKills,
-                {
-                  hostId: closed.hostId,
-                  sessionId: closed.sessionId,
-                  ...(closed.hostAuthorityAcknowledged === true ||
-                  closed.pendingCreate === true
-                    ? {}
-                    : { legacyEvidence: true }),
-                  ...(closed.pendingCreate === true
-                    ? { pendingCreate: true }
-                    : {}),
-                },
-              ];
+          const pendingKill = pendingKillFor(closed);
+          const pendingKills =
+            pendingKill === null ||
+            hasPendingKill(state.pendingKills, closed.hostId, closed.sessionId)
+              ? state.pendingKills
+              : [...state.pendingKills, pendingKill];
           return {
             tabs,
             activeInstanceId: nextActiveInstanceId(
@@ -332,23 +330,13 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
           tabs: [],
           activeInstanceId: null,
           pendingKills: closed.reduce(
-            (pending: ReadonlyArray<LandingTerminalPendingKill>, tab) =>
-              hasPendingKill(pending, tab.hostId, tab.sessionId)
+            (pending: ReadonlyArray<LandingTerminalPendingKill>, tab) => {
+              const pendingKill = pendingKillFor(tab);
+              return pendingKill === null ||
+                hasPendingKill(pending, tab.hostId, tab.sessionId)
                 ? pending
-                : [
-                    ...pending,
-                    {
-                      hostId: tab.hostId,
-                      sessionId: tab.sessionId,
-                      ...(tab.hostAuthorityAcknowledged === true ||
-                      tab.pendingCreate === true
-                        ? {}
-                        : { legacyEvidence: true }),
-                      ...(tab.pendingCreate === true
-                        ? { pendingCreate: true }
-                        : {}),
-                    },
-                  ],
+                : [...pending, pendingKill];
+            },
             state.pendingKills,
           ),
           ...collapseLayoutsForEmptyTerminalSet(state),
@@ -608,6 +596,20 @@ function nextActiveInstanceId(
   return tabs[0]?.instanceId ?? null;
 }
 
+function pendingKillFor(
+  tab: LandingTerminalTabRef,
+): LandingTerminalPendingKill | null {
+  if (tab.pendingCreate === true && tab.createDispatched !== true) return null;
+  return {
+    hostId: tab.hostId,
+    sessionId: tab.sessionId,
+    ...(tab.hostAuthorityAcknowledged === true || tab.pendingCreate === true
+      ? {}
+      : { legacyEvidence: true }),
+    ...(tab.pendingCreate === true ? { pendingCreate: true } : {}),
+  };
+}
+
 function hasPendingKill(
   pendingKills: ReadonlyArray<LandingTerminalPendingKill>,
   hostId: string,
@@ -627,8 +629,9 @@ export function hostAcknowledgedTab(
   terminal: PlainTerminalProjection,
 ): LandingTerminalTabRef {
   const view = selectPlainTerminalViewModel(terminal);
+  const { createDispatched: _createDispatched, ...retainedTab } = tab;
   return {
-    ...tab,
+    ...retainedTab,
     sessionId: terminal.record.terminalId,
     hostId: terminal.record.hostId,
     cwd: terminal.record.launch.cwd,

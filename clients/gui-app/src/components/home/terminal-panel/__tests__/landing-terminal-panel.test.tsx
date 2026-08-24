@@ -1234,12 +1234,12 @@ describe("<LandingTerminalPanel />", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Close Shared title" }));
     await waitFor(() => {
-      expect(mocks.plainCloseAsync).toHaveBeenCalledWith({
-        hostId: "host-a",
-        terminalId: "terminal-shared",
-      });
-      expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+      expect(useLandingTerminalStore.getState().tabs).toEqual([]);
     });
+    expect(mocks.plainCloseAsync).not.toHaveBeenCalled();
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+      { hostId: "host-a", sessionId: "terminal-shared" },
+    ]);
     expect(mocks.kill).not.toHaveBeenCalled();
   });
 
@@ -1380,16 +1380,8 @@ describe("<LandingTerminalPanel />", () => {
       expect(useLandingTerminalStore.getState().tabs).toHaveLength(0);
     });
     expect(testLayout().panelOpen).toBe(false);
-    // Every closed shell gets its own kill. (The tombstones they were written
-    // with are drained by the reconciliation that follows, once the host list
-    // confirms the sessions are gone - the durable write itself is pinned in
-    // the store test.)
-    before.forEach((tab) => {
-      expect(mocks.kill).toHaveBeenCalledWith({
-        hostId: tab.hostId,
-        sessionId: tab.sessionId,
-      });
-    });
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(useLandingTerminalStore.getState().pendingKills).toHaveLength(2);
   });
 
   it("dismisses an offline terminal locally and queues its host kill", () => {
@@ -1612,9 +1604,11 @@ describe("<LandingTerminalPanel />", () => {
     expect(useLandingTerminalStore.getState().tabs[0].instanceId).toBe(
       first.instanceId,
     );
-    expect(mocks.kill).toHaveBeenCalledWith({
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(useLandingTerminalStore.getState().pendingKills).toContainEqual({
       hostId: second.hostId,
       sessionId: second.sessionId,
+      legacyEvidence: true,
     });
   });
 

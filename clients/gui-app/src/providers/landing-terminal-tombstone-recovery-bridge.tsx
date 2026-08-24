@@ -83,6 +83,22 @@ function cancelUndrainableCloseRetries(args: {
   }
 }
 
+function tombstoneDispatchIsDue(args: {
+  readonly routeRecovered: boolean;
+  readonly pendingAdded: boolean;
+  readonly authorityChanged: boolean;
+  readonly retryDue: boolean;
+  readonly pendingCreate: boolean;
+}): boolean {
+  return (
+    args.routeRecovered ||
+    args.pendingAdded ||
+    args.authorityChanged ||
+    args.retryDue ||
+    args.pendingCreate
+  );
+}
+
 function scheduleCloseRetry(args: {
   readonly key: string;
   readonly pending: LandingTerminalPendingKill;
@@ -201,6 +217,8 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
   const kill = useLandingTerminalKill();
   const killRef = useRef(kill);
   const inFlightRef = useRef<ReadonlySet<string>>(new Set());
+  const pendingKeysRef = useRef<ReadonlySet<string>>(new Set());
+  const authorityStatusRef = useRef<ReadonlyMap<string, string>>(new Map());
   const retriesRef = useRef<Map<string, CloseRetry>>(new Map());
   const mountedRef = useRef(true);
   const [retryGeneration, setRetryGeneration] = useState(0);
@@ -310,6 +328,16 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
         terminalSessionKey(pending.hostId, pending.sessionId),
       ),
     );
+    const previousPendingKeys = pendingKeysRef.current;
+    pendingKeysRef.current = pendingKeys;
+    const currentAuthorityStatus = new Map(
+      Object.entries(authorityEntries).map(([hostId, entry]) => [
+        hostId,
+        entry?.authority.capability.status ?? "missing",
+      ]),
+    );
+    const previousAuthorityStatus = authorityStatusRef.current;
+    authorityStatusRef.current = currentAuthorityStatus;
     cancelUndrainableCloseRetries({
       retries: retriesRef.current,
       pendingKeys,
@@ -323,20 +351,23 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
       const key = terminalSessionKey(pending.hostId, pending.sessionId);
       const retry = retriesRef.current.get(key);
       const routeRecovered = previousDialable.get(pending.hostId) !== true;
+      const pendingAdded = !previousPendingKeys.has(key);
+      const authorityChanged =
+        previousAuthorityStatus.get(pending.hostId) !==
+        currentAuthorityStatus.get(pending.hostId);
       if (
-        !routeRecovered &&
-        retry?.due !== true &&
-        pending.pendingCreate !== true
-      ) {
+        !tombstoneDispatchIsDue({
+          routeRecovered,
+          pendingAdded,
+          authorityChanged,
+          retryDue: retry?.due === true,
+          pendingCreate: pending.pendingCreate === true,
+        })
+      )
         continue;
-      }
       if (inFlightRef.current.has(key)) continue;
       const entry = authorityEntries[pending.hostId];
-      if (
-        entry !== undefined &&
-        (pending.legacyEvidence === true ||
-          entry.authority.capability.status === "legacy")
-      ) {
+      if (entry !== undefined && pending.legacyEvidence === true) {
         if (retry !== undefined) retry.due = false;
         inFlightRef.current = new Set([...inFlightRef.current, key]);
         void killRef.current

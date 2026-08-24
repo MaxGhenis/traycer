@@ -794,6 +794,15 @@ describe("closeAllTabs", () => {
 
     store.closeTab(LANDING_PAGE_ID, "pending-create");
 
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+
+    store.resetForTests();
+    useLandingTerminalStore.getState().addTab(pendingCreateTab);
+    useLandingTerminalStore.getState().markCreateDispatched("pending-create");
+    useLandingTerminalStore
+      .getState()
+      .closeTab(LANDING_PAGE_ID, "pending-create");
+
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([
       {
         hostId: HOST_A,
@@ -804,6 +813,7 @@ describe("closeAllTabs", () => {
 
     store.resetForTests();
     useLandingTerminalStore.getState().addTab(pendingCreateTab);
+    useLandingTerminalStore.getState().markCreateDispatched("pending-create");
     useLandingTerminalStore.getState().closeAllTabs(LANDING_PAGE_ID);
 
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([
