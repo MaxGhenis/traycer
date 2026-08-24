@@ -16,7 +16,10 @@ import {
   useLandingTerminalStore,
   type LandingTerminalPendingKill,
 } from "@/stores/home/landing-terminal-store";
-import { useLandingTerminalKill } from "@/components/home/terminal-panel/use-landing-terminal-kill-mutation";
+import {
+  useLandingTerminalKill,
+  type LandingTerminalKillVariables,
+} from "@/components/home/terminal-panel/use-landing-terminal-kill-mutation";
 import {
   LandingTerminalAuthorityFleet,
   type LandingTerminalAuthorityEntries,
@@ -42,6 +45,35 @@ interface TombstoneRetryRefs {
   readonly inFlight: { current: ReadonlySet<string> };
   readonly mounted: { current: boolean };
   readonly retries: { current: Map<string, CapableCloseRetry> };
+}
+
+interface LegacyKillMutation {
+  readonly mutateAsync: (
+    variables: LandingTerminalKillVariables,
+  ) => Promise<unknown>;
+}
+
+interface RegisteredHostsSnapshot {
+  readonly data:
+    | { readonly hosts: readonly { readonly hostId: string }[] }
+    | null
+    | undefined;
+  readonly isFetching: boolean;
+  readonly isSuccess: boolean;
+}
+
+function authoritativeRegisteredHostIds(
+  snapshot: RegisteredHostsSnapshot,
+): ReadonlySet<string> | null {
+  if (
+    snapshot.data === null ||
+    snapshot.data === undefined ||
+    !snapshot.isSuccess ||
+    snapshot.isFetching
+  ) {
+    return null;
+  }
+  return new Set(snapshot.data.hosts.map((entry) => entry.hostId));
 }
 
 function hostCanDrainLandingTerminalTombstones(
@@ -89,14 +121,95 @@ function cancelUndrainableCapableCloseRetries(args: {
 
 function retireDeregisteredHostTombstones(args: {
   readonly pendingKills: readonly LandingTerminalPendingKill[];
+  readonly directoryHostIds: ReadonlySet<string>;
   readonly registeredHostIds: ReadonlySet<string>;
 }): void {
   for (const pending of args.pendingKills) {
-    if (args.registeredHostIds.has(pending.hostId)) continue;
+    if (
+      args.directoryHostIds.has(pending.hostId) ||
+      args.registeredHostIds.has(pending.hostId)
+    ) {
+      continue;
+    }
     useLandingTerminalStore
       .getState()
       .clearPendingKill(pending.hostId, pending.sessionId);
   }
+}
+
+function scheduleLegacyKillRetry(args: {
+  readonly key: string;
+  readonly pending: LandingTerminalPendingKill;
+  readonly refs: TombstoneRetryRefs;
+  readonly signalRetry: () => void;
+}): void {
+  if (!args.refs.mounted.current) return;
+  const stillPending = useLandingTerminalStore
+    .getState()
+    .pendingKills.some(
+      (candidate) =>
+        candidate.hostId === args.pending.hostId &&
+        candidate.sessionId === args.pending.sessionId,
+    );
+  const currentEntry = args.refs.authorityEntries.current[args.pending.hostId];
+  if (
+    !stillPending ||
+    args.refs.dialable.current.get(args.pending.hostId) !== true ||
+    currentEntry?.authority.capability.status !== "legacy"
+  ) {
+    return;
+  }
+  const prior = args.refs.retries.current.get(args.key);
+  if (prior !== undefined && prior.timer !== null) return;
+  const attempt = (prior?.attempt ?? 0) + 1;
+  const retryDelay = Math.min(
+    CAPABLE_CLOSE_RETRY_BASE_MS * 2 ** (attempt - 1),
+    CAPABLE_CLOSE_RETRY_MAX_MS,
+  );
+  const nextRetry: CapableCloseRetry = {
+    attempt,
+    timer: null,
+    due: false,
+  };
+  nextRetry.timer = window.setTimeout(() => {
+    if (!args.refs.mounted.current) return;
+    nextRetry.timer = null;
+    nextRetry.due = true;
+    args.signalRetry();
+  }, retryDelay);
+  args.refs.retries.current.set(args.key, nextRetry);
+}
+
+function dispatchLegacyKill(args: {
+  readonly key: string;
+  readonly kill: LegacyKillMutation;
+  readonly pending: LandingTerminalPendingKill;
+  readonly retry: CapableCloseRetry | undefined;
+  readonly refs: TombstoneRetryRefs;
+  readonly signalRetry: () => void;
+}): void {
+  if (args.retry !== undefined) args.retry.due = false;
+  args.refs.inFlight.current = new Set([
+    ...args.refs.inFlight.current,
+    args.key,
+  ]);
+  void args.kill
+    .mutateAsync(args.pending)
+    .then(
+      () => clearCapableCloseRetry(args.refs.retries.current, args.key),
+      () =>
+        scheduleLegacyKillRetry({
+          key: args.key,
+          pending: args.pending,
+          refs: args.refs,
+          signalRetry: args.signalRetry,
+        }),
+    )
+    .finally(() => {
+      const next = new Set(args.refs.inFlight.current);
+      next.delete(args.key);
+      args.refs.inFlight.current = next;
+    });
 }
 
 function scheduleCapableCloseRetry(args: {
@@ -205,7 +318,7 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
   const registry = useRegisteredHosts();
   const pendingKills = useLandingTerminalStore((state) => state.pendingKills);
   const kill = useLandingTerminalKill();
-  const killRef = useRef(kill);
+  const killRef = useRef<LegacyKillMutation>(kill);
   const inFlightRef = useRef<ReadonlySet<string>>(new Set());
   const retriesRef = useRef<Map<string, CapableCloseRetry>>(new Map());
   const mountedRef = useRef(true);
@@ -290,12 +403,16 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
 
   useEffect(() => {
     const entries = directory.data ?? [];
-    if (registry.data !== undefined && registry.data !== null) {
+    const registeredHostIds = authoritativeRegisteredHostIds({
+      data: registry.data,
+      isFetching: registry.isFetching,
+      isSuccess: registry.isSuccess,
+    });
+    if (registeredHostIds !== null) {
       retireDeregisteredHostTombstones({
         pendingKills,
-        registeredHostIds: new Set(
-          registry.data.hosts.map((entry) => entry.hostId),
-        ),
+        directoryHostIds: new Set(entries.map((entry) => entry.hostId)),
+        registeredHostIds,
       });
     }
     const currentDrainable = new Map(
@@ -351,7 +468,14 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
         continue;
       }
       if (entry?.authority.capability.status === "legacy") {
-        killRef.current.mutate(pending);
+        dispatchLegacyKill({
+          key,
+          kill: killRef.current,
+          pending,
+          retry,
+          refs: retryRefs,
+          signalRetry: () => setRetryGeneration((current) => current + 1),
+        });
       }
     }
   }, [
@@ -360,6 +484,8 @@ export function LandingTerminalTombstoneRecoveryBridge(): ReactNode {
     pendingKills,
     hasReadySessionFor,
     registry.data,
+    registry.isFetching,
+    registry.isSuccess,
     retryGeneration,
   ]);
 

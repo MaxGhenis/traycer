@@ -16,6 +16,10 @@ const mocks = vi.hoisted(() => {
     entries: [] as readonly HostDirectoryEntry[],
     registeredHostIds: new Set<string>(),
     kill: vi.fn(),
+    killAsync: vi.fn(
+      (_variables: { readonly hostId: string; readonly sessionId: string }) =>
+        Promise.resolve(),
+    ),
     readySessionHosts: new Set<string>(),
     authorityStatus: initialAuthorityStatus(),
     canMutate: false,
@@ -32,12 +36,23 @@ vi.mock("@/hooks/auth/use-registered-hosts-query", () => ({
     data: {
       hosts: [...mocks.registeredHostIds].map((hostId) => ({ hostId })),
     },
+    isFetching: false,
+    isSuccess: true,
   }),
 }));
 vi.mock(
   "@/components/home/terminal-panel/use-landing-terminal-kill-mutation",
   () => ({
-    useLandingTerminalKill: () => ({ mutate: mocks.kill }),
+    useLandingTerminalKill: () => ({
+      mutate: mocks.kill,
+      mutateAsync: (variables: {
+        readonly hostId: string;
+        readonly sessionId: string;
+      }) => {
+        mocks.kill(variables);
+        return mocks.killAsync(variables);
+      },
+    }),
   }),
 );
 vi.mock(
@@ -127,6 +142,8 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     mocks.entries = [offlineHost];
     mocks.registeredHostIds = new Set(["host-b"]);
     mocks.kill.mockReset();
+    mocks.killAsync.mockReset();
+    mocks.killAsync.mockImplementation(() => Promise.resolve());
     mocks.readySessionHosts = new Set();
     mocks.authorityStatus = "legacy";
     mocks.canMutate = false;
@@ -218,6 +235,29 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     await waitFor(() => {
       expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
     });
+    expect(mocks.kill).not.toHaveBeenCalled();
+  });
+
+  it("preserves a tombstone when the directory still knows a host omitted by the registry", async () => {
+    mocks.registeredHostIds = new Set();
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "registry-lag-tab",
+      sessionId: "registry-lag-session",
+      hostId: "host-b",
+      cwd: "/workspace/project",
+      name: "project",
+      titleSource: "default",
+    });
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "registry-lag-tab");
+
+    render(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => Promise.resolve());
+
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+      { hostId: "host-b", sessionId: "registry-lag-session" },
+    ]);
     expect(mocks.kill).not.toHaveBeenCalled();
   });
 
@@ -359,6 +399,42 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
     });
     expect(mocks.closeAsync).toHaveBeenCalledTimes(2);
     expect(useLandingTerminalStore.getState().pendingKills).toEqual([]);
+  });
+
+  it("retries a legacy kill after a transient rejection", async () => {
+    vi.useFakeTimers();
+    mocks.killAsync
+      .mockRejectedValueOnce(new Error("transient"))
+      .mockResolvedValueOnce(undefined);
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "legacy-retry-tab",
+      sessionId: "legacy-retry-session",
+      hostId: "host-b",
+      cwd: "/legacy",
+      name: "Legacy retry",
+      titleSource: "default",
+    });
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "legacy-retry-tab");
+
+    const view = render(<LandingTerminalTombstoneRecoveryBridge />);
+    mocks.entries = [
+      {
+        ...offlineHost,
+        websocketUrl: "ws://host-b/rpc",
+        transportDialability: "dialable",
+      },
+    ];
+    view.rerender(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => Promise.resolve());
+    expect(mocks.kill).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+    expect(mocks.kill).toHaveBeenCalledTimes(2);
   });
 
   it("backs off repeated capable close failures without concurrent retries", async () => {
