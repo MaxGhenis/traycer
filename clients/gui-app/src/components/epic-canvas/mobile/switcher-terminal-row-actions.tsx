@@ -78,7 +78,7 @@ export function SwitcherTerminalRowActions(props: {
             size="icon-sm"
             aria-label={`Actions for ${actions.label}`}
             data-testid={`switcher-more-${session.sessionId}`}
-            className="shrink-0 text-muted-foreground hover:text-foreground pointer-coarse:size-11"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
           >
             <MoreHorizontal className="size-4" />
           </Button>

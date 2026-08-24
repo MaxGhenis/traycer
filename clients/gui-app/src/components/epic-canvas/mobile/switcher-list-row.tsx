@@ -47,6 +47,14 @@ import {
  * is 30px whatever this says. Desktop gets 26px for free because its row is a
  * bare `<button>` with no height variant at all.
  *
+ * For the same reason NO control in this row may carry an explicit coarse-pointer
+ * HEIGHT. The wrapper is `items-center`, so its height is the tallest child, and
+ * a 44px control silently pins the whole row open however short the row button
+ * gets - which is exactly how an earlier `size-11` on the "…" trigger held the
+ * row at 41px while the row itself measured 27.5. Reach the 44px target the way
+ * the chevron does: own the WIDTH, and let the scope's `::after` px literal own
+ * the height.
+ *
  * The chevron keeps desktop's GLYPH but not desktop's target: it widens to a
  * `w-6` slot on a coarse pointer. Desktop can afford an 8px control because it
  * has a cursor; here this is the only way to reach a deep child, and at
