@@ -29,7 +29,10 @@ vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
 vi.mock(
   "@/components/home/terminal-panel/use-landing-terminal-kill-mutation",
   () => ({
-    useLandingTerminalKill: () => ({ mutate: mocks.kill }),
+    useLandingTerminalKill: () => ({
+      mutate: mocks.kill,
+      mutateAsync: mocks.kill,
+    }),
   }),
 );
 vi.mock(
@@ -118,6 +121,7 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
   beforeEach(() => {
     mocks.entries = [offlineHost];
     mocks.kill.mockReset();
+    mocks.kill.mockResolvedValue(undefined);
     mocks.readySessionHosts = new Set();
     mocks.authorityStatus = "legacy";
     mocks.canMutate = false;
@@ -227,6 +231,41 @@ describe("<LandingTerminalTombstoneRecoveryBridge />", () => {
       });
     });
     expect(mocks.closeAsync).not.toHaveBeenCalled();
+  });
+
+  it("retries a recovered legacy kill after a transient failure", async () => {
+    vi.useFakeTimers();
+    mocks.entries = [
+      {
+        ...offlineHost,
+        websocketUrl: "ws://host-b/rpc",
+        transportDialability: "dialable",
+      },
+    ];
+    mocks.kill
+      .mockRejectedValueOnce(new Error("transient"))
+      .mockResolvedValueOnce(undefined);
+    useLandingTerminalStore.getState().addTab({
+      instanceId: "legacy-retry-tab",
+      sessionId: "session-legacy-retry",
+      hostId: "host-b",
+      cwd: "/legacy",
+      name: "Legacy retry",
+      titleSource: "default",
+    });
+    useLandingTerminalStore
+      .getState()
+      .closeTab("landing-page", "legacy-retry-tab");
+
+    render(<LandingTerminalTombstoneRecoveryBridge />);
+    await act(async () => Promise.resolve());
+    expect(mocks.kill).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+    expect(mocks.kill).toHaveBeenCalledTimes(2);
   });
 
   it("does not drain capable-host tombstones while authority is stale", async () => {

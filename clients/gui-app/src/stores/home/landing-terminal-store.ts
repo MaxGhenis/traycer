@@ -301,7 +301,8 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
                 {
                   hostId: closed.hostId,
                   sessionId: closed.sessionId,
-                  ...(closed.hostAuthorityAcknowledged === true
+                  ...(closed.hostAuthorityAcknowledged === true ||
+                  closed.pendingCreate === true
                     ? {}
                     : { legacyEvidence: true }),
                 },
@@ -335,7 +336,8 @@ export const useLandingTerminalStore = create<LandingTerminalStoreState>()(
                     {
                       hostId: tab.hostId,
                       sessionId: tab.sessionId,
-                      ...(tab.hostAuthorityAcknowledged === true
+                      ...(tab.hostAuthorityAcknowledged === true ||
+                      tab.pendingCreate === true
                         ? {}
                         : { legacyEvidence: true }),
                     },

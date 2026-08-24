@@ -769,6 +769,34 @@ describe("closeAllTabs", () => {
     ]);
   });
 
+  it("preserves capable-create provenance in close tombstones", () => {
+    const store = useLandingTerminalStore.getState();
+    const pendingCreateTab = {
+      ...tab({
+        instanceId: "pending-create",
+        sessionId: "pending-session",
+        hostId: HOST_A,
+      }),
+      hostAuthorityAcknowledged: false,
+      pendingCreate: true,
+    };
+    store.addTab(pendingCreateTab);
+
+    store.closeTab(LANDING_PAGE_ID, "pending-create");
+
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+      { hostId: HOST_A, sessionId: "pending-session" },
+    ]);
+
+    store.resetForTests();
+    useLandingTerminalStore.getState().addTab(pendingCreateTab);
+    useLandingTerminalStore.getState().closeAllTabs(LANDING_PAGE_ID);
+
+    expect(useLandingTerminalStore.getState().pendingKills).toEqual([
+      { hostId: HOST_A, sessionId: "pending-session" },
+    ]);
+  });
+
   it("is a no-op with no tabs open", () => {
     useLandingTerminalStore.getState().setPanelOpen(LANDING_PAGE_ID, true);
 
