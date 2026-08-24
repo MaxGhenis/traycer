@@ -186,6 +186,58 @@ describe("sessionImport.scan@1.0 server frames", () => {
     ).toThrow();
   });
 
+  it("parses an unreadable candidate for every reason a read alone reaches", () => {
+    const reasons = [
+      "source_unreadable",
+      "source_empty",
+      "internal_error",
+    ] as const;
+
+    for (const reason of reasons) {
+      const parsed = sessionImportScanServerFrameSchema.parse({
+        kind: "group",
+        group: {
+          location: { kind: "folder", path: "/repo", workspaceId: null },
+          sessions: [
+            {
+              ...importableCandidate,
+              state: { kind: "unreadable", reason, detail: "" },
+            },
+          ],
+        },
+        hasBinaryPayload: false,
+      });
+      const state =
+        parsed.kind === "group" ? parsed.group.sessions[0]?.state : undefined;
+      expect(state).toEqual({ kind: "unreadable", reason, detail: "" });
+    }
+  });
+
+  it("rejects an unreadable candidate blaming work only a run does", () => {
+    // A scan never binds a workspace and never creates a chat, so a candidate
+    // naming either is a host bug. Rejecting the frame is what keeps it from
+    // reaching the wizard as a row it has no treatment for.
+    const runOnly = ["workspace_bind_failed", "creation_failed"] as const;
+
+    for (const reason of runOnly) {
+      expect(() =>
+        sessionImportScanServerFrameSchema.parse({
+          kind: "group",
+          group: {
+            location: { kind: "folder", path: "/repo", workspaceId: null },
+            sessions: [
+              {
+                ...importableCandidate,
+                state: { kind: "unreadable", reason, detail: "" },
+              },
+            ],
+          },
+          hasBinaryPayload: false,
+        }),
+      ).toThrow();
+    }
+  });
+
   it("parses a complete frame", () => {
     const parsed = sessionImportScanServerFrameSchema.parse({
       kind: "complete",

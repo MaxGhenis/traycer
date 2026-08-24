@@ -42,8 +42,9 @@ export type SessionImportSelection = z.infer<
  * - `creation_failed`       - epic or chat creation / seeding failed.
  * - `internal_error`        - anything else; `detail` carries the message.
  *
- * A SCAN can only ever produce the first, the second, or the last: the other
- * two name work only a run does.
+ * A discovered session can only ever carry the first, the second, or the last:
+ * the other two name work only a run does. That half is not left to this
+ * comment - {@link sessionImportUnreadableReasonSchema} enforces it.
  */
 export const sessionImportFailureReasonSchema = z.enum([
   "source_unreadable",
@@ -57,6 +58,30 @@ export type SessionImportFailureReason = z.infer<
 >;
 
 /**
+ * The subset of {@link sessionImportFailureReasonSchema} a DISCOVERED session
+ * can be refused with.
+ *
+ * A scan only ever reads: it opens the vendor's session file and either
+ * understands it or does not. `workspace_bind_failed` and `creation_failed`
+ * name work that only a run performs, so a candidate carrying one is a host
+ * bug rather than a state the wizard has a row treatment for. Validating that
+ * here is what turns such a bug into a rejected frame instead of a row the
+ * wizard renders but cannot explain.
+ *
+ * Deliberately NOT reused by the scan's `providerFailed` frame: that frame
+ * reports a whole provider giving up rather than one session being unreadable,
+ * and it classifies its reason from a thrown error, so it keeps the full enum.
+ */
+export const sessionImportUnreadableReasonSchema = z.enum([
+  "source_unreadable",
+  "source_empty",
+  "internal_error",
+]);
+export type SessionImportUnreadableReason = z.infer<
+  typeof sessionImportUnreadableReasonSchema
+>;
+
+/**
  * Why a discovered session cannot be offered as-is.
  *
  * `already_in_traycer` names the chat it landed in so the wizard can link to
@@ -65,7 +90,8 @@ export type SessionImportFailureReason = z.infer<
  *
  * `unreadable` carries the same closed reason + free-text `detail` pair the
  * run reports, so a session that fails at discovery and one that fails at
- * import are described in the same vocabulary rather than in two.
+ * import are described in the same vocabulary rather than in two - narrowed to
+ * the reasons a read alone can reach.
  */
 export const sessionImportCandidateStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("importable") }),
@@ -76,7 +102,7 @@ export const sessionImportCandidateStateSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("unreadable"),
-    reason: sessionImportFailureReasonSchema,
+    reason: sessionImportUnreadableReasonSchema,
     detail: z.string(),
   }),
 ]);

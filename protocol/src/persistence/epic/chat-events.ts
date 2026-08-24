@@ -186,12 +186,18 @@ export const chatEventSchemaPreImported = z.object({
  * agree on rather than a wire shape. `sourceCwd` is the native session's own
  * working directory, kept even when that folder no longer exists - it is what
  * the row shows a user asking "where did this come from".
+ *
+ * `sourceCwd` is non-empty for the same reason it is here at all: the marker
+ * discloses the source directory through a tooltip, and a tooltip with an
+ * empty label renders nothing, so an empty path would leave a provenance row
+ * that names no provenance. A folderless import does not produce one either -
+ * the session's path survives the folder it named.
  */
 export const chatImportedMetadataSchema = z.object({
   sourceProvider: guiHarnessIdSchema,
   nativeSessionId: z.string().min(1),
   importedAt: z.number(),
-  sourceCwd: z.string(),
+  sourceCwd: z.string().min(1),
 });
 export type ChatImportedMetadata = z.infer<typeof chatImportedMetadataSchema>;
 
