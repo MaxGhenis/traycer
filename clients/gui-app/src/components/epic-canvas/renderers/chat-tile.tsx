@@ -1826,8 +1826,12 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     [chatActions],
   );
   const handleInterviewError = useCallback(
-    (blockId: string, reason: string) => {
-      return chatActions.interviewError(blockId, reason);
+    (
+      blockId: string,
+      reason: string,
+      draftAnswers: ReadonlyArray<InterviewAnswer> | undefined,
+    ) => {
+      return chatActions.interviewError(blockId, reason, draftAnswers);
     },
     [chatActions],
   );

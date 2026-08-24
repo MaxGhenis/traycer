@@ -32,6 +32,7 @@ describe("InterviewSegment", () => {
               question: "Which path?",
               values: ["Option A"],
               notes: null,
+              selection: null,
             },
           ]}
           error={null}

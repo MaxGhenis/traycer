@@ -7059,6 +7059,7 @@ describe("createChatSessionStore", () => {
       blockId: "question-snapshot",
       answers: [],
       resolvedAt: 4,
+      delivery: null,
     });
 
     expect(harness.handle.store.getState().pendingInterviews).toEqual([
@@ -7073,6 +7074,9 @@ describe("createChatSessionStore", () => {
       blockId: "question-live",
       reason: "Skipped",
       resolvedAt: 5,
+      outcome: "skipped",
+      draftAnswers: [],
+      delivery: null,
     });
 
     expect(harness.handle.store.getState().pendingInterviews).toEqual([]);
@@ -7099,7 +7103,7 @@ describe("createChatSessionStore", () => {
       .interviewAnswer("question-answer", []);
     const skipActionId = harness.handle.store
       .getState()
-      .interviewError("question-skip", "Skipped by user");
+      .interviewError("question-skip", "Skipped by user", []);
 
     expect(answerActionId).not.toBeNull();
     expect(skipActionId).not.toBeNull();
@@ -7107,6 +7111,12 @@ describe("createChatSessionStore", () => {
       "interviewAnswer",
       "interviewError",
     ]);
+    expect(harness.sent[1]).toMatchObject({
+      kind: "interviewError",
+      blockId: "question-skip",
+      reason: "Skipped by user",
+      settlement: { outcome: "skipped", draftAnswers: [] },
+    });
     expect(harness.handle.store.getState().pendingInterviews).toEqual([
       { blockId: "question-answer", requestedAt: 2 },
       { blockId: "question-skip", requestedAt: 3 },
@@ -7162,6 +7172,9 @@ describe("createChatSessionStore", () => {
       blockId: "question-skip",
       reason: "Skipped by user",
       resolvedAt: 4,
+      outcome: "skipped",
+      draftAnswers: [],
+      delivery: null,
     });
     expect(harness.handle.store.getState().pendingInterviews).toEqual([
       { blockId: "question-answer", requestedAt: 2 },
@@ -7198,6 +7211,7 @@ describe("createChatSessionStore", () => {
       blockId,
       answers: [],
       resolvedAt: 4,
+      delivery: null,
     });
 
     expect(
@@ -7238,6 +7252,9 @@ describe("createChatSessionStore", () => {
       blockId,
       reason: "Skipped by user",
       resolvedAt: 5,
+      outcome: "skipped",
+      draftAnswers: [],
+      delivery: null,
     });
 
     expect(
@@ -7431,6 +7448,7 @@ describe("createChatSessionStore", () => {
       blockId,
       answers: [],
       resolvedAt: 4,
+      delivery: null,
     });
 
     expect(harness.handle.store.getState().pendingInterviews).toEqual([]);
@@ -7470,7 +7488,7 @@ describe("createChatSessionStore", () => {
 
     const actionId = harness.handle.store
       .getState()
-      .interviewError(blockId, "Skipped by user");
+      .interviewError(blockId, "Skipped by user", []);
     if (actionId === null) {
       throw new Error("expected interviewError action");
     }
@@ -7483,6 +7501,9 @@ describe("createChatSessionStore", () => {
       blockId,
       reason: "Skipped by user",
       resolvedAt: 5,
+      outcome: "skipped",
+      draftAnswers: [],
+      delivery: null,
     });
 
     expect(harness.handle.store.getState().pendingInterviews).toEqual([]);

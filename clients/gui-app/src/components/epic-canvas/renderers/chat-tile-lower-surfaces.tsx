@@ -147,7 +147,11 @@ export interface ChatLowerInterviewState {
     blockId: string,
     answers: ReadonlyArray<InterviewAnswer>,
   ) => string | null;
-  readonly onError: (blockId: string, reason: string) => string | null;
+  readonly onError: (
+    blockId: string,
+    reason: string,
+    draftAnswers: ReadonlyArray<InterviewAnswer> | undefined,
+  ) => string | null;
   // Branch the chat at the pending question (see ChatForkMode). null when the
   // pending interview has no stable fork boundary.
   readonly onFork: ((mode: ChatForkMode) => void) | null;
@@ -543,7 +547,12 @@ function ComposerSurface(props: {
         <UnanswerableInterviewNotice
           interviews={model.interview.unanswerable}
           isBusy={model.interview.unanswerableBusy}
-          onDismiss={model.access.canAct ? model.interview.onError : null}
+          onDismiss={
+            model.access.canAct
+              ? (blockId, reason) =>
+                  model.interview.onError(blockId, reason, undefined)
+              : null
+          }
         />
       </ComposerSlotShell>
     ) : null;

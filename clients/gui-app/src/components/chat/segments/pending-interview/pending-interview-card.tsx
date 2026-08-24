@@ -39,7 +39,13 @@ interface PendingInterviewCardProps {
         answers: ReadonlyArray<InterviewAnswer>,
       ) => string | null)
     | null;
-  onSkip: ((blockId: string, reason: string) => string | null) | null;
+  onSkip:
+    | ((
+        blockId: string,
+        reason: string,
+        draftAnswers: ReadonlyArray<InterviewAnswer> | undefined,
+      ) => string | null)
+    | null;
   /**
    * Opens the fork dialog to branch the chat at this question:
    * `"cross-question"` forks on this chat's own workspace with the question
@@ -62,7 +68,7 @@ export function PendingInterviewCard(props: PendingInterviewCardProps) {
     question,
     draft,
     direction,
-    pendingLabel,
+    pendingOptionIndex,
     isLast,
     answeredCount,
     canAdvance,
@@ -120,7 +126,7 @@ export function PendingInterviewCard(props: PendingInterviewCardProps) {
               draft={draft}
               isActive={props.isActive}
               disabled={props.isBusy}
-              pendingLabel={pendingLabel}
+              pendingOptionIndex={pendingOptionIndex}
               onToggleOption={toggleOption}
               onToggleOther={toggleOther}
               onOtherTextChange={setOtherText}

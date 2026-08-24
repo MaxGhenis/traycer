@@ -60,7 +60,13 @@ function renderCard(
         answers: ReadonlyArray<InterviewAnswer>,
       ) => string | null)
     | null,
-  onSkip: ((blockId: string, reason: string) => string | null) | null,
+  onSkip:
+    | ((
+        blockId: string,
+        reason: string,
+        draftAnswers: ReadonlyArray<InterviewAnswer> | undefined,
+      ) => string | null)
+    | null,
 ) {
   return renderCardFor({
     chatId: "chat-1",
@@ -84,7 +90,13 @@ function renderCardFor(args: {
         answers: ReadonlyArray<InterviewAnswer>,
       ) => string | null)
     | null;
-  readonly onSkip: ((blockId: string, reason: string) => string | null) | null;
+  readonly onSkip:
+    | ((
+        blockId: string,
+        reason: string,
+        draftAnswers: ReadonlyArray<InterviewAnswer> | undefined,
+      ) => string | null)
+    | null;
   readonly onFork: ((mode: ChatForkMode) => void) | null;
 }) {
   return render(
@@ -117,7 +129,13 @@ function cardElement(args: {
         answers: ReadonlyArray<InterviewAnswer>,
       ) => string | null)
     | null;
-  readonly onSkip: ((blockId: string, reason: string) => string | null) | null;
+  readonly onSkip:
+    | ((
+        blockId: string,
+        reason: string,
+        draftAnswers: ReadonlyArray<InterviewAnswer> | undefined,
+      ) => string | null)
+    | null;
   readonly onFork: ((mode: ChatForkMode) => void) | null;
 }) {
   return (
@@ -1241,7 +1259,11 @@ describe("PendingInterviewCard keyboard navigation", () => {
 
     // Second Escape (from the card) skips the interview.
     fireEvent.keyDown(card(), { key: "Escape" });
-    expect(onSkip).toHaveBeenCalledWith("interview-1", "Skipped by user");
+    expect(onSkip).toHaveBeenCalledWith(
+      "interview-1",
+      "Skipped by user",
+      [],
+    );
   });
 
   it("keeps Submit enabled and submits even with nothing answered (mouse)", () => {
@@ -1304,6 +1326,94 @@ describe("PendingInterviewCard keyboard navigation", () => {
     expect(onSkip).toHaveBeenCalledTimes(2);
   });
 
+  it("preserves duplicate-label option indices in exact selection evidence", () => {
+    const onSubmit = vi.fn();
+    renderCard(
+      [multiSelect("q", "Which same label?", ["Same", "Same"])],
+      onSubmit,
+      null,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "2. Same" }));
+    fireEvent.click(screen.getByRole("button", { name: /Submit/ }));
+
+    expect(onSubmit).toHaveBeenCalledWith("interview-1", [
+      expect.objectContaining({
+        values: ["Same"],
+        selection: expect.objectContaining({
+          questionIndex: 0,
+          optionIndices: [1],
+          optionLabels: ["Same"],
+        }),
+      }),
+    ]);
+  });
+
+  it("downgrades legacy label-only drafts to neutral selection evidence", () => {
+    useInterviewDraftStore.getState().saveDraft("chat-1", "interview-1", {
+      pageIndex: 0,
+      answers: [
+        { selected: ["Same"], otherText: "", otherSelected: false },
+      ],
+    });
+    const onSubmit = vi.fn();
+    renderCard(
+      [multiSelect("q", "Which same label?", ["Same", "Same"])],
+      onSubmit,
+      null,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Submit/ }));
+
+    expect(onSubmit).toHaveBeenCalledWith("interview-1", [
+      expect.objectContaining({
+        values: ["Same"],
+        selection: null,
+      }),
+    ]);
+  });
+
+  it("sends only non-empty saved pages when Skip includes draft metadata", () => {
+    vi.useFakeTimers();
+    try {
+      const onSkip = vi.fn();
+      renderCard(
+        [
+          singleSelect("q1", "First question?", ["Keep"]),
+          singleSelect("q2", "Untouched question?", ["Never send"]),
+        ],
+        vi.fn(),
+        onSkip,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "1. Keep" }));
+      act(() => {
+        vi.advanceTimersByTime(ADVANCE_MS);
+      });
+      expect(screen.getByText("Untouched question?")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: /Skip/ }));
+
+      expect(onSkip).toHaveBeenCalledWith(
+        "interview-1",
+        "Skipped by user",
+        [
+          expect.objectContaining({
+            questionId: "q1",
+            values: ["Keep"],
+          }),
+        ],
+      );
+      const draftAnswers = onSkip.mock.calls[0]?.[2] as
+        | ReadonlyArray<InterviewAnswer>
+        | undefined;
+      expect(draftAnswers?.some((answer) => answer.questionId === "q2")).toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("scans between questions with the Right and Left arrow keys", () => {
     renderCard(
       [
@@ -1340,7 +1450,11 @@ describe("PendingInterviewCard keyboard navigation", () => {
         vi.advanceTimersByTime(ADVANCE_MS);
       });
 
-      expect(onSkip).toHaveBeenCalledWith("interview-1", "Skipped by user");
+      expect(onSkip).toHaveBeenCalledWith(
+        "interview-1",
+        "Skipped by user",
+        [],
+      );
       expect(onSubmit).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();

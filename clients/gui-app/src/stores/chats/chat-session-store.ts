@@ -748,7 +748,11 @@ export interface ChatSessionState {
     blockId: string,
     answers: ReadonlyArray<InterviewAnswer>,
   ) => string | null;
-  interviewError: (blockId: string, reason: string) => string | null;
+  interviewError: (
+    blockId: string,
+    reason: string,
+    draftAnswers: ReadonlyArray<InterviewAnswer> | undefined,
+  ) => string | null;
   ackAcceptedAction: (clientActionId: string) => void;
   ackFailedSendRestoration: (clientActionId: string) => void;
   /**
@@ -3708,7 +3712,7 @@ export function createChatSessionStoreWithNotificationDependencies(
         });
         return sentClientActionId;
       },
-      interviewError: (blockId, reason) => {
+      interviewError: (blockId, reason, draftAnswers) => {
         const existing = existingInterviewActionId(get(), blockId);
         if (existing !== null) return existing;
         const clientActionId = uuidv4();
@@ -3720,6 +3724,10 @@ export function createChatSessionStoreWithNotificationDependencies(
           clientActionId,
           blockId,
           reason,
+          settlement:
+            draftAnswers === undefined
+              ? null
+              : { outcome: "skipped", draftAnswers: [...draftAnswers] },
         };
         const sentClientActionId = sendAction({
           set,

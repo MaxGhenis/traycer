@@ -56,8 +56,8 @@ interface QuestionPageProps {
   // tech - callbacks already reject while busy, but the controls must also
   // look and behave disabled.
   disabled: boolean;
-  pendingLabel: string | null;
-  onToggleOption: (label: string) => void;
+  pendingOptionIndex: number | null;
+  onToggleOption: (optionIndex: number) => void;
   onToggleOther: () => void;
   onOtherTextChange: (text: string) => void;
   onFreeTextChange: (text: string) => void;
@@ -69,7 +69,7 @@ export function QuestionPage(props: QuestionPageProps) {
     draft,
     isActive,
     disabled,
-    pendingLabel,
+    pendingOptionIndex,
     onToggleOption,
     onToggleOther,
     onOtherTextChange,
@@ -122,20 +122,20 @@ export function QuestionPage(props: QuestionPageProps) {
     <div className="flex flex-col gap-1.5">
       <ul className="m-0 flex list-none flex-col gap-1.5 pl-0">
         {question.options.map((option, index) => {
-          const selected = draft.selected.has(option.label);
+          const selected = draft.selected.has(index);
           return (
-            <li key={option.label}>
+            <li key={`${index}:${option.label}`}>
               <OptionRow
                 label={option.label}
                 ariaLabel={`${index + 1}. ${option.label}`}
                 details={optionDetails(option)}
                 selected={selected}
-                pending={pendingLabel === option.label}
+                pending={pendingOptionIndex === index}
                 disabled={disabled}
                 badge={
                   <OptionNumberBadge index={index + 1} selected={selected} />
                 }
-                onToggle={() => onToggleOption(option.label)}
+                onToggle={() => onToggleOption(index)}
               />
             </li>
           );
