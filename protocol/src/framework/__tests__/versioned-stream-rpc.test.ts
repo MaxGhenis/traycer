@@ -28,7 +28,9 @@ describe("validateVersionedStreamRpcRegistry", () => {
     // This branch's three status minors re-minted ABOVE the mainline's
     // delta-seed minor (@1.3): durability @1.4, promotion @1.5, s5 pass @1.6.
     expect(hostStreamRpcRegistry["epic.subscribe"][1].latestMinor).toBe(6);
-    expect(hostStreamRpcRegistry["chat.subscribe"][1].latestMinor).toBe(6);
+    // @1.7 arrives from mainline (#1422, interview history review); this
+    // branch added no chat minor of its own, so it is adopted as-is.
+    expect(hostStreamRpcRegistry["chat.subscribe"][1].latestMinor).toBe(7);
     expect(
       hostStreamRpcRegistry["notifications.subscribe"][1].latestMinor,
     ).toBe(1);
