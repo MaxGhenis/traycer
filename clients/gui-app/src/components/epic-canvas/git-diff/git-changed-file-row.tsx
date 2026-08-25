@@ -194,7 +194,11 @@ function gitChangedFileRowClassName(args: {
     // The 24/28px densities below are mouse densities. On touch the row is the
     // tap target that opens the diff (or collapses the bundle section), so it
     // takes the 44px guideline height; the fine-pointer list is untouched.
-    "pointer-coarse:min-h-11",
+    //
+    // Pixel-literal, never `min-h-11`: the root font size is a user setting
+    // clamped to 10-20px, so a rem height tracks it and is shortest exactly
+    // where the text is smallest.
+    "pointer-coarse:min-h-[44px]",
     args.isPanel && args.nested && "min-h-6 gap-1.5 py-0.5 pl-10 pr-3",
     args.isPanel && !args.nested && "min-h-6 gap-1.5 px-3 py-0.5",
     !args.isPanel && "min-h-7 gap-2 px-2 py-1",

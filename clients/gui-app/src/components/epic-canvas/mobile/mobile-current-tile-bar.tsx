@@ -78,7 +78,10 @@ export function MobileCurrentTileBar(props: MobileCurrentTileBarProps) {
     >
       <div
         data-testid="mobile-current-tile-bar"
-        className="flex min-h-11 w-full items-center gap-2 px-3"
+        // `min-h-[44px]`, never `min-h-11`: the root font size is a user
+        // setting clamped to 10-20px, so a rem bar height is 27.5px at the
+        // floor and reaches the touch target only above a ~16px root.
+        className="flex min-h-[44px] w-full items-center gap-2 px-3"
       >
         <TabIcon
           epicId={epicId}

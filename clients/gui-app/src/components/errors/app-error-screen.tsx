@@ -43,6 +43,8 @@ export function AppErrorScreen(props: AppErrorScreenProps): ReactNode {
     >
       <Card className="w-full max-w-md">
         <CardContent className="flex flex-col items-center gap-4 py-8 text-center">
+          {/* touch-target-ok: decorative glyph disc, nothing here is tappable -
+              the rem size is wanted, so the badge tracks the reader's text. */}
           <div className="flex size-11 items-center justify-center rounded-full bg-destructive/10 text-destructive">
             <AlertTriangle className="size-5" aria-hidden />
           </div>

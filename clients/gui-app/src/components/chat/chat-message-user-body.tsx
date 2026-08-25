@@ -1179,11 +1179,17 @@ function UserMessageTouchMenu({
             aria-label="Message actions"
             // Resting bg-muted matches ghost's aria-expanded open surface,
             // so the glyph reads as a button before it is tapped. The
-            // invisible ::after slop widens the 24px visual control to the
-            // 44px touch-target guideline without painting anything (Button
+            // invisible ::after slop widens the visual control to the 44px
+            // touch-target guideline without painting anything (Button
             // renders no ::after of its own, so nothing merges with it).
+            //
+            // `max(100%, 44px)`, never a rem inset: the root font size is a
+            // user setting clamped to 10-20px, so a `size-6` control padded by
+            // a rem inset shrinks with it (27.5px at the floor) and reaches
+            // 44px only above a ~16px root. This form holds the floor at any
+            // root size and still grows with a larger control.
             // muted-fill-ok: transcript row renders on bg-background/canvas
-            className="relative bg-muted text-muted-foreground/70 hover:text-foreground after:absolute after:-inset-2.5 after:content-['']"
+            className="relative bg-muted text-muted-foreground/70 hover:text-foreground after:absolute after:top-1/2 after:left-1/2 after:size-[max(100%,44px)] after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']"
           >
             <MoreHorizontal className="size-3.5" aria-hidden />
           </Button>

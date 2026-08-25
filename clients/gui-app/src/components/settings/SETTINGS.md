@@ -174,10 +174,18 @@ Supporting pieces, all viewport-agnostic where possible:
     popover content to the body. A control the scope enlarges can therefore
     open a list it cannot, which is how the Providers `Select` came to have a
     44px trigger over 28px rows. Anything living in a portal owns its own
-    target instead, at the primitive: `pointer-coarse:min-h-11` on
+    target instead, at the primitive: `pointer-coarse:min-h-[44px]` on
     `ui/select.tsx`'s `SelectItem` and on all four of `ui/dropdown-menu.tsx`'s
     row types (item, checkbox, radio, sub-trigger - keep them in step). Reach
     for a scope rule only for a control that renders in place.
+  - Size a touch target with a **pixel literal**, never a rem utility such as
+    `min-h-11` or a `-inset-*` slop. The root font size is a user setting
+    written onto `<html>` and clamped to 10-20px, so every rem in this app is
+    elastic: `2.75rem` is 27.5px at the floor and only reaches 44px above a
+    ~16px root. A rem-sized target is smallest for the people who chose the
+    smallest text, which inverts the reason the target exists. Where the hit
+    area must also grow with a larger control, use the stylesheets' own form,
+    `max(100%, 44px)`.
 
 ## Key Files
 

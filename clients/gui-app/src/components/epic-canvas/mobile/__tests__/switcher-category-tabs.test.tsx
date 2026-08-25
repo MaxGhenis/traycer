@@ -85,9 +85,10 @@ describe("<SwitcherCategoryTabs />", () => {
 
   it("gives each trigger a pixel-literal 44px minimum, matching the touch-scope hit slop", () => {
     // The slop pseudo in `mobile-shell-touch-targets.css` is `max(100%, 44px)`
-    // in REAL pixels; this surface's root font is 15px, so the rem-based
-    // `min-h-11` idiom is 41.25px and leaves the pseudo hanging out of the
-    // list. Only a px literal makes the fit exact.
+    // in REAL pixels, while the root font size is a user setting clamped to
+    // 10-20px - so the rem-based `min-h-11` idiom is 41.25px at the default
+    // and 27.5px at the floor, leaving the pseudo hanging further out of the
+    // list the smaller the reader sets their text. Only a px literal fits.
     expect(classTokens(renderCategoryBar().trigger)).toContain("min-h-[44px]");
   });
 

@@ -3,6 +3,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import type { GitChangedFile } from "@traycer/protocol/host";
 import { GitChangedFileRow } from "@/components/epic-canvas/git-diff/git-changed-file-row";
 import { NO_HIGHLIGHT, type HighlightRanges } from "@/lib/git/path-highlight";
+import { expectNoRemScaledTouchSize } from "@/__tests__/rem-scaled-touch-size";
 
 import { tooltipTextNear } from "@/components/ui/__tests__/tooltip-probe";
 afterEach(() => {
@@ -324,7 +325,12 @@ describe("GitChangedFileRow panel density", () => {
       name: "Modified app.tsx in src",
     });
     expect(row.className).toContain("min-h-6");
-    expect(row.className).toContain("pointer-coarse:min-h-11");
+    // The pixel literal is asserted, and the rem forms rejected, because the
+    // root font size is a user setting clamped to 10-20px: `min-h-11` is
+    // 27.5px at the floor, so pinning that token here would have pinned the
+    // undersized row and made the fix unlandable from this file.
+    expect(row.className).toContain("pointer-coarse:min-h-[44px]");
+    expectNoRemScaledTouchSize(row.className);
   });
 
   it("leaves inactive rows without aria-current", () => {

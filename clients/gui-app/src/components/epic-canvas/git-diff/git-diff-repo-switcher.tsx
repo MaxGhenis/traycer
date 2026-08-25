@@ -251,7 +251,10 @@ function RepoSwitcherRowButton(props: {
       onClick={handleClick}
       onKeyDown={handleRepoSwitcherRowKeyDown}
       className={cn(
-        "group flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui-sm transition-colors",
+        // `min-h-[44px]`, never `min-h-11`: the root font size is a user
+        // setting clamped to 10-20px, so a rem row height is 27.5px at the
+        // floor and reaches the touch target only above a ~16px root.
+        "group flex min-h-[44px] w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui-sm transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
         row.selected
           ? "bg-accent text-accent-foreground"

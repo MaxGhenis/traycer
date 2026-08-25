@@ -55,10 +55,13 @@ export function DeviceCodeProgress(props: {
 
         <Button
           size={props.isHero ? "lg" : "sm"}
+          // The hero height is a pixel literal. The root font size is a user
+          // setting clamped to 10-20px, so a rem height tracks it and lands at
+          // 27.5px at the floor - and this is the only control on the screen.
           className={cn(
             "w-full",
             props.isHero
-              ? "h-11 border-white/20 bg-white text-zinc-950 hover:bg-white/90"
+              ? "min-h-[44px] border-white/20 bg-white text-zinc-950 hover:bg-white/90"
               : null,
           )}
           onClick={() => openVerificationPageMutation.mutate()}

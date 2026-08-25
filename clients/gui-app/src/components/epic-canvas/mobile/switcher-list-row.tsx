@@ -30,7 +30,10 @@ export function SwitcherListRow(props: {
         onClick={onSelect}
         data-testid={selectTestId}
         aria-current={active ? "true" : undefined}
-        className="flex min-h-11 min-w-0 flex-1 items-center justify-start gap-2 rounded-md px-2 text-left font-normal"
+        // `min-h-[44px]`, never `min-h-11`: the root font size is a user
+        // setting clamped to 10-20px, so a rem row height is 27.5px at the
+        // floor and reaches the touch target only above a ~16px root.
+        className="flex min-h-[44px] min-w-0 flex-1 items-center justify-start gap-2 rounded-md px-2 text-left font-normal"
       >
         <span className="flex size-4 shrink-0 items-center justify-center">
           {icon}
@@ -67,7 +70,7 @@ export function SwitcherNewItemRow(props: {
       variant="ghost"
       onClick={onSelect}
       data-testid={testId}
-      className="flex min-h-11 w-full items-center justify-start gap-2 rounded-md px-2 text-left font-normal text-muted-foreground"
+      className="flex min-h-[44px] w-full items-center justify-start gap-2 rounded-md px-2 text-left font-normal text-muted-foreground"
     >
       <span className="flex size-4 shrink-0 items-center justify-center">
         <Plus className="size-4" />

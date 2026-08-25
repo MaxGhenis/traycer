@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PrDetailTabId } from "@/stores/epics/pr-detail-view-store";
 import { PrDetailTabStrip } from "@/components/epic-canvas/pr/pr-detail-tab-strip";
+import { expectNoRemScaledTouchSize } from "@/__tests__/rem-scaled-touch-size";
 
 function renderStrip(args: {
   readonly tab: PrDetailTabId;
@@ -190,7 +191,12 @@ describe("<PrDetailTabStrip /> on a phone viewport", () => {
     const trigger = screen.getByTestId("pr-detail-tabs");
     expect(trigger.className).toContain("w-full");
     // The touch target the strip never had: its tabs are `py-1.5`, ~30px.
-    expect(trigger.className).toContain("min-h-11");
+    //
+    // The literal is asserted, and the rem forms rejected, because the root
+    // font size is a user setting clamped to 10-20px: pinning `min-h-11` here
+    // would pin a 27.5px floor and make the fix unlandable from this file.
+    expect(trigger.className).toContain("min-h-[44px]");
+    expectNoRemScaledTouchSize(trigger.className);
   });
 
   it("names the panel from the active tab's label", () => {

@@ -227,8 +227,12 @@ export function MobileTerminalKeyBar(props: MobileTerminalKeyBarProps) {
   );
 }
 
+// `min-h-[44px]`, never `min-h-11`: the root font size is a user setting
+// clamped to 10-20px, so a rem key height is 27.5px at the floor and reaches
+// the touch target only above a ~16px root. This bar is reachable by finger
+// only, so its keys are exactly where a shrinking target costs the most.
 const KEY_BUTTON_CLASS =
-  "min-h-11 w-full rounded-md px-0 text-ui-sm font-medium";
+  "min-h-[44px] w-full rounded-md px-0 text-ui-sm font-medium";
 
 const KEY_REPEAT_DELAY_MS = 350;
 const KEY_REPEAT_INTERVAL_MS = 60;

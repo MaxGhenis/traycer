@@ -30,7 +30,11 @@ import { useAuthStore } from "@/stores/auth/auth-store";
 import { useMobileNavStore } from "@/stores/layout/mobile-nav-store";
 import { useSystemTabModalActions } from "@/stores/tabs/use-system-tab-modal";
 
-const ROW_CLASS = "h-11 w-full justify-start gap-3 px-3";
+// `min-h-[44px]`, never `h-11`: the root font size is a user setting clamped
+// to 10-20px, so a rem row height is 27.5px at the floor and reaches the touch
+// target only above a ~16px root. A min-height also cannot clip a row whose
+// label wraps at a large text size, which a fixed height can.
+const ROW_CLASS = "min-h-[44px] w-full justify-start gap-3 px-3";
 
 // The task scroller fades its bottom edge rather than slicing a row against the
 // footer's border. The list carries matching bottom padding, so the gradient
@@ -162,7 +166,12 @@ export function MobileNavDrawer(): ReactNode {
           // Visually a compact h-9 pill, but the tap target must still meet
           // the 44px touch floor: the ::after overlay extends the hit area
           // invisibly without growing the rendered button.
-          className="relative h-9 w-full shrink-0 justify-center gap-2 rounded-md px-4 font-semibold after:absolute after:inset-x-0 after:-inset-y-1.5 after:content-['']"
+          //
+          // `max(100%, 44px)`, never a rem inset: the root font size is a user
+          // setting clamped to 10-20px, so the `h-9` box and a rem inset
+          // around it shrink together - 30px at the floor. This form holds the
+          // floor at any root size and still grows with a taller pill.
+          className="relative h-9 w-full shrink-0 justify-center gap-2 rounded-md px-4 font-semibold after:absolute after:inset-x-0 after:top-1/2 after:h-[max(100%,44px)] after:-translate-y-1/2 after:content-['']"
           data-testid="mobile-nav-new-task"
           onClick={handleNewTask}
         >

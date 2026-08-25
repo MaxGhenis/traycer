@@ -227,9 +227,14 @@ function PrDetailTabMenu(props: PrDetailTabPickerProps): ReactNode {
           type="button"
           data-testid="pr-detail-tabs"
           className={cn(
-            // `min-h-11` is the touch target the strip never had: its tabs are
-            // `py-1.5`, which lands around 30px.
-            "flex min-h-11 w-full min-w-0 items-center gap-2",
+            // The touch target the strip never had: its tabs are `py-1.5`,
+            // which lands around 30px.
+            //
+            // Pixel-literal, never `min-h-11`: the root font size is a user
+            // setting clamped to 10-20px, so `2.75rem` is 27.5px at the floor
+            // and reaches 44px only above a ~16px root - it would not have
+            // given the strip the target either.
+            "flex min-h-[44px] w-full min-w-0 items-center gap-2",
             "rounded-xl border border-border/50 bg-muted/30 px-3 py-2 text-ui-sm",
             "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
           )}
@@ -270,7 +275,7 @@ function PrDetailTabMenu(props: PrDetailTabPickerProps): ReactNode {
               key={definition.id}
               value={definition.id}
               data-testid={`pr-detail-tab-${definition.id}`}
-              className="min-h-11 gap-2"
+              className="min-h-[44px] gap-2"
             >
               <span className="min-w-0 flex-1 truncate">
                 {definition.label}

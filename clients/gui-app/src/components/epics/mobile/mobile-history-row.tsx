@@ -449,7 +449,10 @@ function RowSelectionCheckbox(props: {
       aria-label={`Select ${props.displayTitle}`}
       data-testid="epics-list-row-select"
       className={cn(
-        "flex size-11 shrink-0 self-center items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+        // `size-[44px]`, never `size-11`: the root font size is a user setting
+        // clamped to 10-20px, so a rem box is 27.5px square at the floor and
+        // reaches the touch target only above a ~16px root.
+        "flex size-[44px] shrink-0 self-center items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
         // An `aria-disabled` control still matches `:active`, so the press has
         // to be suppressed explicitly or the row tints for a tap that does
         // nothing.

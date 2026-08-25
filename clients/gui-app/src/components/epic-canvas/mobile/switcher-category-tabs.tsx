@@ -108,9 +108,11 @@ export function SwitcherCategoryTabs(props: SwitcherCategoryTabsProps) {
           <TabsTrigger
             key={definition.id}
             value={definition.id}
-            // `min-h-[44px]`, not `min-h-11`: this surface's root font is 15px,
-            // so a rem-based `11` is 41.25px and would leave the 44px hit-slop
-            // `::after` spilling out of the list's exact fit.
+            // `min-h-[44px]`, not `min-h-11`: the root font size is a user
+            // setting clamped to 10-20px, so a rem-based `11` is 41.25px at
+            // the default and 27.5px at the floor - it would leave the 44px
+            // hit-slop `::after` spilling out of the list's exact fit, by an
+            // amount that grows as the reader shrinks their text.
             //
             // `data-[state=active]:bg-transparent`: force the line-variant
             // active state fill-less (the `:where()`-neutralised line override
