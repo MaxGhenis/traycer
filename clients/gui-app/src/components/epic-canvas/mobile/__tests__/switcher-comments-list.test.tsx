@@ -15,6 +15,7 @@ import type {
   ReplyToCommentThreadRequest,
 } from "@traycer/protocol/host/epic/unary-schemas";
 import { SwitcherCommentsList } from "@/components/epic-canvas/mobile/switcher-comments-list";
+import type { EpicCommentRoomAvailability } from "@/lib/epic-selectors";
 import type { HostRpcRegistry } from "@/lib/host";
 import { createHostQueryInvalidator } from "@/lib/host/query-invalidator";
 import { createAppQueryClient } from "@/lib/query-client";
@@ -44,9 +45,18 @@ const touchTargetsCss = readFileSync(
 // into the real canvas store below, so the resolution under test - shown tile ->
 // artifact - stays real.
 const artifactKind = { value: "spec" as string | null };
+// `CommentSidebar` also reads the comment-room gate from this module, and a
+// wholesale factory mock supplies only what it names. Held as a ref rather
+// than a fixed `available` so the gate stays something this suite can vary -
+// a hardcoded answer would make the panel's handling of a closed room
+// unfalsifiable here.
+const commentRoomKind = {
+  value: "available" as EpicCommentRoomAvailability["kind"],
+};
 vi.mock("@/lib/epic-selectors", () => ({
   useEpicArtifact: () =>
     artifactKind.value === null ? null : { kind: artifactKind.value },
+  useEpicCommentRoomAvailability: () => ({ kind: commentRoomKind.value }),
 }));
 
 // The Epic SESSION's client, which is what the panel must read threads on.
