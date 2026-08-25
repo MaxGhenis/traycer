@@ -64,9 +64,7 @@ function parseStoredAnswer(value: unknown): StoredInterviewDraftAnswer | null {
     selectedOptionIndices: Array.isArray(value.selectedOptionIndices)
       ? value.selectedOptionIndices.filter(
           (index): index is number =>
-            typeof index === "number" &&
-            Number.isInteger(index) &&
-            index >= 0,
+            typeof index === "number" && Number.isInteger(index) && index >= 0,
         )
       : undefined,
     otherText: value.otherText,

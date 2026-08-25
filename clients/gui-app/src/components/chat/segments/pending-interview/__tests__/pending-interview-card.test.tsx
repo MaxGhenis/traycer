@@ -702,8 +702,18 @@ describe("PendingInterviewCard keyboard navigation", () => {
       expect(readInterviewDraftSnapshot("chat-1", "interview-1")).toEqual({
         pageIndex: 0,
         answers: [
-          { selected: [], otherText: "", otherSelected: true },
-          { selected: [], otherText: "", otherSelected: false },
+          {
+            selected: [],
+            selectedOptionIndices: [],
+            otherText: "",
+            otherSelected: true,
+          },
+          {
+            selected: [],
+            selectedOptionIndices: [],
+            otherText: "",
+            otherSelected: false,
+          },
         ],
       });
     } finally {
@@ -754,7 +764,14 @@ describe("PendingInterviewCard keyboard navigation", () => {
       expect(onSubmit).not.toHaveBeenCalled();
       expect(readInterviewDraftSnapshot("chat-1", "interview-1")).toEqual({
         pageIndex: 0,
-        answers: [{ selected: [], otherText: "", otherSelected: true }],
+        answers: [
+          {
+            selected: [],
+            selectedOptionIndices: [],
+            otherText: "",
+            otherSelected: true,
+          },
+        ],
       });
     } finally {
       vi.useRealTimers();
@@ -887,8 +904,18 @@ describe("PendingInterviewCard keyboard navigation", () => {
       expect(readInterviewDraftSnapshot("chat-1", "interview-1")).toEqual({
         pageIndex: 0,
         answers: [
-          { selected: [], otherText: "", otherSelected: false },
-          { selected: ["Gamma"], otherText: "", otherSelected: false },
+          {
+            selected: [],
+            selectedOptionIndices: [],
+            otherText: "",
+            otherSelected: false,
+          },
+          {
+            selected: ["Gamma"],
+            selectedOptionIndices: [0],
+            otherText: "",
+            otherSelected: false,
+          },
         ],
       });
     } finally {
@@ -949,9 +976,24 @@ describe("PendingInterviewCard keyboard navigation", () => {
       expect(readInterviewDraftSnapshot("chat-1", "interview-1")).toEqual({
         pageIndex: 2,
         answers: [
-          { selected: ["Alpha"], otherText: "", otherSelected: false },
-          { selected: [], otherText: "", otherSelected: false },
-          { selected: [], otherText: "", otherSelected: false },
+          {
+            selected: ["Alpha"],
+            selectedOptionIndices: [0],
+            otherText: "",
+            otherSelected: false,
+          },
+          {
+            selected: [],
+            selectedOptionIndices: [],
+            otherText: "",
+            otherSelected: false,
+          },
+          {
+            selected: [],
+            selectedOptionIndices: [],
+            otherText: "",
+            otherSelected: false,
+          },
         ],
       });
     } finally {
@@ -1259,11 +1301,7 @@ describe("PendingInterviewCard keyboard navigation", () => {
 
     // Second Escape (from the card) skips the interview.
     fireEvent.keyDown(card(), { key: "Escape" });
-    expect(onSkip).toHaveBeenCalledWith(
-      "interview-1",
-      "Skipped by user",
-      [],
-    );
+    expect(onSkip).toHaveBeenCalledWith("interview-1", "Skipped by user", []);
   });
 
   it("keeps Submit enabled and submits even with nothing answered (mouse)", () => {
@@ -1327,7 +1365,13 @@ describe("PendingInterviewCard keyboard navigation", () => {
   });
 
   it("preserves duplicate-label option indices in exact selection evidence", () => {
-    const onSubmit = vi.fn();
+    const onSubmit =
+      vi.fn<
+        (
+          blockId: string,
+          answers: ReadonlyArray<InterviewAnswer>,
+        ) => string | null
+      >();
     renderCard(
       [multiSelect("q", "Which same label?", ["Same", "Same"])],
       onSubmit,
@@ -1337,24 +1381,31 @@ describe("PendingInterviewCard keyboard navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "2. Same" }));
     fireEvent.click(screen.getByRole("button", { name: /Submit/ }));
 
-    expect(onSubmit).toHaveBeenCalledWith("interview-1", [
-      expect.objectContaining({
-        values: ["Same"],
-        selection: expect.objectContaining({
-          questionIndex: 0,
-          optionIndices: [1],
-          optionLabels: ["Same"],
-        }),
-      }),
+    expect(onSubmit.mock.calls).toEqual([
+      [
+        "interview-1",
+        [
+          {
+            questionId: "q",
+            question: "Which same label?",
+            values: ["Same"],
+            notes: null,
+            selection: {
+              questionIndex: 0,
+              optionIndices: [1],
+              optionLabels: ["Same"],
+              customText: null,
+            },
+          },
+        ],
+      ],
     ]);
   });
 
   it("downgrades legacy label-only drafts to neutral selection evidence", () => {
     useInterviewDraftStore.getState().saveDraft("chat-1", "interview-1", {
       pageIndex: 0,
-      answers: [
-        { selected: ["Same"], otherText: "", otherSelected: false },
-      ],
+      answers: [{ selected: ["Same"], otherText: "", otherSelected: false }],
     });
     const onSubmit = vi.fn();
     renderCard(
@@ -1393,19 +1444,14 @@ describe("PendingInterviewCard keyboard navigation", () => {
       expect(screen.getByText("Untouched question?")).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: /Skip/ }));
 
-      expect(onSkip).toHaveBeenCalledWith(
-        "interview-1",
-        "Skipped by user",
-        [
-          expect.objectContaining({
-            questionId: "q1",
-            values: ["Keep"],
-          }),
-        ],
-      );
+      expect(onSkip).toHaveBeenCalledWith("interview-1", "Skipped by user", [
+        expect.objectContaining({
+          questionId: "q1",
+          values: ["Keep"],
+        }),
+      ]);
       const draftAnswers = onSkip.mock.calls[0]?.[2] as
-        | ReadonlyArray<InterviewAnswer>
-        | undefined;
+        ReadonlyArray<InterviewAnswer> | undefined;
       expect(draftAnswers?.some((answer) => answer.questionId === "q2")).toBe(
         false,
       );
@@ -1450,11 +1496,12 @@ describe("PendingInterviewCard keyboard navigation", () => {
         vi.advanceTimersByTime(ADVANCE_MS);
       });
 
-      expect(onSkip).toHaveBeenCalledWith(
-        "interview-1",
-        "Skipped by user",
-        [],
-      );
+      expect(onSkip).toHaveBeenCalledWith("interview-1", "Skipped by user", [
+        expect.objectContaining({
+          questionId: "only",
+          values: ["Alpha"],
+        }),
+      ]);
       expect(onSubmit).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();

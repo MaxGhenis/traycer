@@ -9,6 +9,7 @@ import {
 import {
   normalizeInterviewBlocksInShallowSnapshot,
   projectChatClientFrameForVersion,
+  supportsInterviewSettlementActions,
 } from "@traycer/protocol/host/agent/gui/chat-frame-compat";
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import type {
@@ -216,6 +217,16 @@ export class ChatStreamClient {
     // the exact failure this guard exists to prevent.
     const version = this.session.getNegotiatedSchemaVersion();
     return version !== null && version.major === 1 && version.minor >= 5;
+  }
+
+  /**
+   * Whether this chat session can send the settled-interview owner actions
+   * introduced on `chat.subscribe@1.7`.
+   */
+  interviewSettlementActionsProtocolSupported(): boolean {
+    return supportsInterviewSettlementActions(
+      this.session.getNegotiatedSchemaVersion(),
+    );
   }
 
   close(): void {

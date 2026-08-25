@@ -835,7 +835,10 @@ describe("ChatStreamClient.sendAction interview projection", () => {
     const sentError = parseText(sockets[0].textSent[3]);
     expect(sentAnswer).toEqual(answer);
     expect(sentError).toEqual(error);
-    if (!Array.isArray(sentAnswer.answers) || !isRecord(sentAnswer.answers[0])) {
+    if (
+      !Array.isArray(sentAnswer.answers) ||
+      !isRecord(sentAnswer.answers[0])
+    ) {
       throw new Error("expected projected answers");
     }
     expect(Object.hasOwn(sentAnswer.answers[0], "selection")).toBe(true);
@@ -859,7 +862,10 @@ describe("ChatStreamClient.sendAction interview projection", () => {
 
     const sentAnswer = parseText(sockets[0].textSent[2]);
     const sentError = parseText(sockets[0].textSent[3]);
-    if (!Array.isArray(sentAnswer.answers) || !isRecord(sentAnswer.answers[0])) {
+    if (
+      !Array.isArray(sentAnswer.answers) ||
+      !isRecord(sentAnswer.answers[0])
+    ) {
       throw new Error("expected projected answers");
     }
     expect(Object.hasOwn(sentAnswer.answers[0], "selection")).toBe(false);

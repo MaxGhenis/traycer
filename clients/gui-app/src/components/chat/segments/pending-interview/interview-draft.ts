@@ -88,7 +88,7 @@ export function draftToStoredAnswer(
 ): StoredInterviewDraftAnswer {
   return {
     selected: [...draft.selected].flatMap((index) => {
-      const option = question.options[index];
+      const option = question.options.at(index);
       return option === undefined ? [] : [option.label];
     }),
     selectedOptionIndices: [...draft.selected],
@@ -103,7 +103,7 @@ export function draftToAnswerValues(
 ): ReadonlyArray<string> {
   const otherText = draft.otherText.trim();
   const selected = [...draft.selected].flatMap((index) => {
-    const option = question.options[index];
+    const option = question.options.at(index);
     return option === undefined ? [] : [option.label];
   });
   return draft.otherSelected && otherText.length > 0

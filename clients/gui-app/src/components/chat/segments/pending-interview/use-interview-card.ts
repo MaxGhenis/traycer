@@ -199,7 +199,7 @@ export function useInterviewCard(args: UseInterviewCardArgs) {
     saveStoredDraft(chatId, blockId, {
       pageIndex: nextPageIndex,
       answers: nextDrafts.map((draft, index) => {
-        const question = questions[index];
+        const question = questions.at(index);
         if (question === undefined) {
           return {
             selected: [],
@@ -255,7 +255,7 @@ export function useInterviewCard(args: UseInterviewCardArgs) {
         (index) => index >= 0 && index < q.options.length,
       );
       const optionLabels = optionIndices.flatMap((index) => {
-        const option = q.options[index];
+        const option = q.options.at(index);
         return option === undefined ? [] : [option.label];
       });
       return {

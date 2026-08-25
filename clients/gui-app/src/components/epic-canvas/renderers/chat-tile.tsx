@@ -1332,6 +1332,8 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       runStatus: s.runStatus,
       activeTurn: s.activeTurn,
       steerProtocolSupported: s.steerProtocolSupported,
+      interviewDeliveryRetryProtocolSupported:
+        s.interviewDeliveryRetryProtocolSupported,
       turnInProgress: s.turnInProgress,
       pendingApprovals: s.pendingApprovals,
       pendingFileEditApprovals: s.pendingFileEditApprovals,
@@ -1825,23 +1827,24 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
     },
     [chatActions],
   );
-  const handleInterviewError = useCallback(
+  const handleInterviewSkip = useCallback(
     (
       blockId: string,
       reason: string,
       draftAnswers: ReadonlyArray<InterviewAnswer> | undefined,
     ) => {
-      return chatActions.interviewError(blockId, reason, draftAnswers);
+      return chatActions.interviewSkip(blockId, reason, draftAnswers);
     },
     [chatActions],
   );
-
   const { messageActionsFor, forkAtAssistantMessage, revertOnEdit } =
     useChatMessageActions({
       dispatchUi,
       activeInlineEdit,
       canModifyMessages,
       canAct,
+      interviewDeliveryRetryProtocolSupported:
+        state.interviewDeliveryRetryProtocolSupported,
       currentComposerSettings,
       editSettings,
       slashCatalog,
@@ -1855,6 +1858,8 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       events: state.events,
       profile,
       chatActions,
+      pendingActions: state.pendingActions,
+      acceptedActions: state.acceptedActions,
       confirmingDeleteMessageId: uiState.confirmingDeleteMessageId,
       setForkTarget,
       worktreeBinding: state.worktreeBinding,
@@ -2319,7 +2324,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       unanswerable: unanswerableInterviews,
       unanswerableBusy: unanswerableInterviewsBusy,
       onAnswer: handleInterviewAnswer,
-      onError: handleInterviewError,
+      onSkip: handleInterviewSkip,
       onFork: forkFromPendingInterview,
     }),
     [
@@ -2328,7 +2333,7 @@ function useChatTileSessionViewModel(props: ChatTileSessionViewProps) {
       unanswerableInterviews,
       unanswerableInterviewsBusy,
       handleInterviewAnswer,
-      handleInterviewError,
+      handleInterviewSkip,
       forkFromPendingInterview,
     ],
   );

@@ -147,7 +147,7 @@ export interface ChatLowerInterviewState {
     blockId: string,
     answers: ReadonlyArray<InterviewAnswer>,
   ) => string | null;
-  readonly onError: (
+  readonly onSkip: (
     blockId: string,
     reason: string,
     draftAnswers: ReadonlyArray<InterviewAnswer> | undefined,
@@ -550,7 +550,7 @@ function ComposerSurface(props: {
           onDismiss={
             model.access.canAct
               ? (blockId, reason) =>
-                  model.interview.onError(blockId, reason, undefined)
+                  model.interview.onSkip(blockId, reason, undefined)
               : null
           }
         />
@@ -576,7 +576,7 @@ function ComposerSurface(props: {
             isActive={model.composer.isActive}
             isBusy={model.interview.isBusy}
             onSubmit={model.access.canAct ? model.interview.onAnswer : null}
-            onSkip={model.access.canAct ? model.interview.onError : null}
+            onSkip={model.access.canAct ? model.interview.onSkip : null}
             onFork={model.access.canAct ? model.interview.onFork : null}
           />
         </ComposerSlotShell>
