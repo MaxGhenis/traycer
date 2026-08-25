@@ -14,7 +14,7 @@ import {
 } from "@/lib/epic-selectors";
 import { useCompactRelativeTime } from "@/lib/relative-time";
 import { isEpicArtifactKind } from "@/lib/artifacts/node-display";
-import { resolveManageSubscriptionUrl } from "@/lib/auth/manage-subscription-url";
+import { resolvePlatformBaseUrl } from "@/lib/auth/platform-base-url";
 import { cn } from "@/lib/utils";
 import { useRunnerHost } from "@/providers/use-runner-host";
 import type {
@@ -164,7 +164,7 @@ function EpicDurabilityRemedies(props: {
   return (
     <>
       {props.pauseReason === "entitlement-lapsed" ? (
-        <UpgradeAction authnBaseUrl={runnerHost.authnBaseUrl} />
+        <UpgradeAction signInUrl={runnerHost.signInUrl} />
       ) : null}
       {exportIsTheRemedy(props.pauseReason) ? (
         <ExportArtifactsAction
@@ -219,7 +219,7 @@ function BadgeActionSpinner() {
  * directly: the mutation owns the shared query key and the runner-error toast,
  * so a rejected `openExternalLink` is reported instead of silently dropped.
  */
-function UpgradeAction(props: { readonly authnBaseUrl: string }) {
+function UpgradeAction(props: { readonly signInUrl: string }) {
   const openExternalLink = useRunnerOpenExternalLink();
   return (
     <button
@@ -228,9 +228,7 @@ function UpgradeAction(props: { readonly authnBaseUrl: string }) {
       data-testid="epic-durability-upgrade"
       disabled={openExternalLink.isPending}
       onClick={() => {
-        openExternalLink.mutate(
-          resolveManageSubscriptionUrl(props.authnBaseUrl),
-        );
+        openExternalLink.mutate(resolvePlatformBaseUrl(props.signInUrl));
       }}
     >
       Upgrade

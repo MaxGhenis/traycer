@@ -60,7 +60,7 @@ import type {
 } from "@traycer-clients/shared/platform/runner-host";
 import type {
   HostGetInstallationInfoResponse,
-  HostUpdateCheckResponse,
+  HostUpdateCheckResponseV11,
 } from "../ipc-contracts/host-management-types";
 import type {
   AccessibilityThemeSnapshot,
@@ -102,6 +102,14 @@ import type {
   StepUpChallengeFetchResult,
   RetainedStepUpVerifyFetchResult,
 } from "@traycer-clients/shared/auth/devices-sessions-fetcher";
+import {
+  linkLoginStatusViaHttp,
+  mintLinkLoginCodeViaHttp,
+  respondLinkLoginViaHttp,
+  type LinkLoginStatusFetchResult,
+  type MintLinkLoginCodeFetchResult,
+  type RespondLinkLoginFetchResult,
+} from "@traycer-clients/shared/auth/link-login";
 import type { MintHostCredentialRequest } from "@traycer/protocol/auth/devices-sessions";
 import type {
   UpdateHostVersionPolicyFetchResult,
@@ -111,7 +119,9 @@ import type { DeregisterHostFetchResult } from "@traycer-clients/shared/host-cli
 import type { Disposable } from "@traycer-clients/shared/platform/uri-callback";
 import type {
   DesktopAppUpdateCheckIntent,
+  DesktopAppUpdateChannelChange,
   DesktopAppUpdateSnapshot,
+  DesktopCompatRecoveryPlan,
 } from "../ipc-contracts/app-update-types";
 import type {
   GlobalShortcutId,
@@ -319,7 +329,7 @@ export interface DesktopHostManagementBridge {
   cliManifest(): Promise<CliInstallManifestSnapshot | null>;
   maintenanceUpdateCheck(
     input: HostAvailableVersionsInput & { readonly expectedHostId: string },
-  ): Promise<HostUpdateCheckResponse>;
+  ): Promise<HostUpdateCheckResponseV11>;
   maintenanceDoctor(input: {
     readonly expectedHostId: string;
   }): Promise<MaintenanceDoctorProjection>;
@@ -526,9 +536,13 @@ export interface DesktopAppUpdatesBridge {
   ): Promise<DesktopAppUpdateSnapshot>;
   setAllowPrerelease(
     allowPrerelease: boolean,
-  ): Promise<DesktopAppUpdateSnapshot>;
+  ): Promise<DesktopAppUpdateChannelChange>;
   downloadUpdate(): Promise<DesktopAppUpdateSnapshot>;
   installUpdate(): Promise<DesktopAppUpdateSnapshot>;
+  resolveCompatRecovery(request: {
+    readonly minimumEpoch: number;
+    readonly hostAllowsRcRecovery: boolean;
+  }): Promise<DesktopCompatRecoveryPlan>;
   onChange(handler: (snapshot: DesktopAppUpdateSnapshot) => void): {
     dispose: () => void;
   };
@@ -640,6 +654,9 @@ export class DesktopRunnerHost implements IRunnerHost {
   readonly zoom: IZoomHost;
   readonly hostManagement: IHostManagement;
   readonly hostTray: IHostTray;
+  // No OS push on the desktop: notifications here are native `show` calls, not
+  // an APNs/FCM permission the user can revoke from a settings app.
+  readonly pushPermission: null = null;
   readonly hostControllerStatus: DesktopHostControllerStatusBridge;
   readonly selectionAuthority: SelectionAuthorityClient;
   private readonly refreshSelectionFleet: () => Promise<void>;
@@ -914,6 +931,50 @@ export class DesktopRunnerHost implements IRunnerHost {
     bearerToken: string,
   ): Promise<RevokeAllSessionsFetchResult> {
     return this.bridge.revokeAllSessions(bearerToken);
+  }
+
+  // No camera on the desktop shell; sign-in by link code is a phone surface.
+  readonly linkCodeScanner = null;
+  readonly deviceDescriber = null;
+  readonly linkLoginDeepLinks = null;
+
+  mintLinkLoginCode(
+    bearerToken: string,
+    signal: AbortSignal,
+  ): Promise<MintLinkLoginCodeFetchResult> {
+    // Runs in the renderer rather than behind the preload bridge, and that is
+    // fine in a PACKAGED build too: authn allows the renderer's own origin
+    // unconditionally, not just in dev. `registerPlugins` unions the env
+    // allowlist with `corsOrigins(...)`, which always contains
+    // `DESKTOP_RENDERER_ORIGIN` = `app://renderer` — the privileged scheme
+    // Electron serves the packaged GUI from. The dev Vite origin arrives
+    // through the same union's `desktopDevOrigin`.
+    //
+    // The bridge is what `listUserSessions` needs for a different reason: it
+    // handles retained step-up credentials, which must not cross into the
+    // renderer. Nothing here touches those, so there is no second reason to
+    // pay for a main-process hop.
+    return mintLinkLoginCodeViaHttp(this.authnBaseUrl, bearerToken, signal);
+  }
+  linkLoginStatus(
+    bearerToken: string,
+    code: string,
+    signal: AbortSignal,
+  ): Promise<LinkLoginStatusFetchResult> {
+    return linkLoginStatusViaHttp(this.authnBaseUrl, bearerToken, code, signal);
+  }
+
+  respondLinkLogin(
+    bearerToken: string,
+    code: string,
+    approve: boolean,
+  ): Promise<RespondLinkLoginFetchResult> {
+    return respondLinkLoginViaHttp(
+      this.authnBaseUrl,
+      bearerToken,
+      code,
+      approve,
+    );
   }
 
   mintHostCredential(

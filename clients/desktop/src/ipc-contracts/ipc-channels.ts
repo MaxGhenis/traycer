@@ -36,6 +36,7 @@ export const RunnerHostInvoke = {
   authTokenStoreSignIn: "runnerHost:auth:tokenStore:signIn",
   authTokenStoreRotate: "runnerHost:auth:tokenStore:rotate",
   authTokenStoreDelete: "runnerHost:auth:tokenStore:delete",
+  authTokenStoreDeleteIfToken: "runnerHost:auth:tokenStore:deleteIfToken",
   authTokenStoreMigrateLegacy: "runnerHost:auth:tokenStore:migrateLegacy",
   // Remote Host Support (§7): `GET /api/v3/hosts` with the user bearer. Run in
   // main for the same CORS reason as the token validators — authn-v3's CORS
@@ -187,6 +188,7 @@ export const RunnerHostInvoke = {
   appUpdateSetAllowPrerelease: "runnerHost:appUpdate:setAllowPrerelease",
   appUpdateDownload: "runnerHost:appUpdate:download",
   appUpdateInstall: "runnerHost:appUpdate:install",
+  appUpdateResolveCompatRecovery: "runnerHost:appUpdate:resolveCompatRecovery",
   globalShortcutsGetSnapshot: "runnerHost:globalShortcuts:getSnapshot",
   globalShortcutsSet: "runnerHost:globalShortcuts:set",
   systemPreferencesAccentColor: "runnerHost:systemPreferences:accentColor",

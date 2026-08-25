@@ -18,18 +18,25 @@ export function PrimarySignInButton(props: {
    * where the user finds that out.
    */
   readonly offersDifferentAccount: boolean;
+  /**
+   * Visual weight, not behavior: the mobile app's sign-in screen leads with
+   * the scan action and demotes the browser device flow to a same-width
+   * secondary button beneath it; everywhere else this stays the primary.
+   */
+  readonly emphasis: "primary" | "secondary";
 }) {
   const signInMutation = useAuthSignInMutation();
   const isPending = props.isSigningIn || signInMutation.isPending;
   const label = props.offersDifferentAccount
     ? "Sign in with a different account"
     : "Sign in";
+  const heroVariant = props.emphasis === "primary" ? "default" : "secondary";
 
   return (
     <Button
       type="button"
       size={props.isHero ? "lg" : "sm"}
-      variant={props.isHero ? "default" : "outline"}
+      variant={props.isHero ? heroVariant : "outline"}
       disabled={isPending}
       onClick={() => {
         signInMutation.mutate();
@@ -37,7 +44,10 @@ export function PrimarySignInButton(props: {
       data-testid="signin-button"
       className={cn(
         "cursor-pointer",
-        props.isHero && HERO_PRIMARY_BUTTON_CLASS,
+        props.isHero &&
+          props.emphasis === "primary" &&
+          HERO_PRIMARY_BUTTON_CLASS,
+        props.isHero && props.emphasis === "secondary" && "w-full",
       )}
     >
       {label}

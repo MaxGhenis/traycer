@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { AgentActivityCloudSyncStatus } from "@traycer/protocol/host/agent/activity";
 import type { StreamConnectionStatus } from "@traycer-clients/shared/host-transport/i-stream-session";
 import { useAgentActivityStore } from "@/stores/agent-activity-store";
+import { useNotificationsServingHostEntry } from "@/hooks/host/use-notifications-serving-host-entry";
 
 /**
  * How long a degraded reading may hold before the pill is allowed to say so.
@@ -46,20 +47,31 @@ export type AgentActivityPresenceDegradedReason = "stream-down" | "cloud-down";
  * {@link PRESENCE_DEGRADED_GRACE_MS}, keyed on the REASON so a flip between the
  * two restarts the grace rather than inheriting the other's.
  */
-export function useAgentActivityPresenceDegraded(
-  /**
-   * The host whose activity view this surface is reporting on. The store is
-   * keyed by host now, so a bare read would union unrelated machines and let
-   * an idle remote host's dead stream amber a healthy Epic. `null` (the
-   * surface's host is not resolved yet) makes NO claim - the same rule the
-   * `cloudSyncStatus === null` arm below follows.
-   */
-  hostId: string | null,
-): AgentActivityPresenceDegradedReason | null {
+export function useAgentActivityPresenceDegraded(): AgentActivityPresenceDegradedReason | null {
+  // Resolved HERE rather than taken from the caller, and the distinction is
+  // the whole design of this hook.
+  //
+  // Callers want one fact - "may this Epic's agent status be stale?" - and the
+  // answer belongs to the stream CARRYING that activity, which since the
+  // renderer settled on one host-selected activity stream is the SERVING host,
+  // never the surface's own host. A caller that passed its own host id would
+  // amber permanently the moment that host was not the one serving, because
+  // only a host with an open stream has a slice and an absent slice reads as
+  // `stream-down` below. Asking a presentation component to know that is how
+  // the bug gets written; so it is not asked.
+  //
+  // The single-stream assumption is load-bearing and DORMANT, not gone: the
+  // store stays host-keyed (a bare union read would let an idle host's dead
+  // stream amber a healthy Epic), and exactly one slice is populated today. If
+  // anything ever opens a second activity stream - the local-served gap in
+  // `renderer-unserved-plane-assertions` proposes precisely that - this hook
+  // needs a caller-supplied stream identity again, and the keying it reads
+  // through is deliberately still here for that day.
+  const servingHostId = useNotificationsServingHostEntry()?.hostId ?? null;
   const reason = useAgentActivityStore((state) =>
-    hostId === null
+    servingHostId === null
       ? null
-      : selectPresenceDegradedReason(state.byHost.get(hostId) ?? null),
+      : selectPresenceDegradedReason(state.byHost.get(servingHostId) ?? null),
   );
   const [sustained, setSustained] =
     useState<AgentActivityPresenceDegradedReason | null>(null);

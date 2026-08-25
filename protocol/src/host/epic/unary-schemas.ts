@@ -882,7 +882,24 @@ export const taskContextResolutionSchemaPre12 = z.discriminatedUnion("status", [
 export const taskContextResolutionSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("found"),
-    task: listTaskLightSchema,
+    // FROZEN at the row shape `epic.getTaskContexts@1.2` released with, NOT
+    // the live `listTaskLightSchema`.
+    //
+    // This reference is shared by every getTaskContexts minor, so pointing it
+    // at the live row silently reshapes ALREADY-RELEASED versions whenever
+    // `epic.listTasks` grows a row key - which is a different method, on its
+    // own minor line, whose authors have no reason to look here. `@1.2` picked
+    // up `home` and `preservation` that way, with nobody editing a
+    // getTaskContexts schema, and the released-baseline gate caught it as a
+    // BREAKING structural change at a shipped version.
+    //
+    // Nothing wants the newer keys here: `@1.3` deliberately answers the
+    // local-home question with the `localHomedTaskIds` SIBLING list rather
+    // than a row field, and `combineTaskPinnedStateResults` reads that list.
+    // A later minor that genuinely needs a richer row must add its own
+    // resolution schema against the frozen alias of ITS release, never move
+    // this one forward.
+    task: listTaskLightSchemaPre14,
   }),
   z.object({
     status: z.literal("confirmed-absent"),

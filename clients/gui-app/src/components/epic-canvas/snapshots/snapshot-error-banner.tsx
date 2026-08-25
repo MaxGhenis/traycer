@@ -7,7 +7,7 @@ import { ReportIssueAction } from "@/components/report-issue/report-issue-action
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { useRunnerOpenExternalLink } from "@/hooks/runner/use-open-external-link-mutation";
 import { useEpicRequestFreshSnapshot } from "@/lib/epic-selectors";
-import { resolveManageSubscriptionUrl } from "@/lib/auth/manage-subscription-url";
+import { resolvePlatformBaseUrl } from "@/lib/auth/platform-base-url";
 import { getClientAppVersion } from "@/lib/app-version";
 import { describeVersionSkew } from "@/lib/host/version-skew-copy";
 import { cn } from "@/lib/utils";
@@ -169,7 +169,7 @@ function UpgradeButton() {
       disabled={openExternalLink.isPending}
       onClick={() => {
         openExternalLink.mutate(
-          resolveManageSubscriptionUrl(runnerHost.authnBaseUrl),
+          resolvePlatformBaseUrl(runnerHost.signInUrl),
         );
       }}
     >

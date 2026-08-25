@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
+import { ShortcutHint } from "@/components/ui/shortcut-hint";
 import type { TaskPinnedState } from "@/hooks/epic/use-epic-task-pinned-states-query";
 import {
   ContextMenuContent,
@@ -140,7 +141,11 @@ export function TabContextMenuContent(
         >
           <CopyPlus />
           Duplicate Tab
-          <span className="ml-auto text-ui-xs text-muted-foreground">⌘⇧K</span>
+          <ShortcutHint>
+            <span className="ml-auto text-ui-xs text-muted-foreground">
+              ⌘⇧K
+            </span>
+          </ShortcutHint>
         </ContextMenuItem>
       ) : null}
       {showDuplicate ? <ContextMenuSeparator /> : null}

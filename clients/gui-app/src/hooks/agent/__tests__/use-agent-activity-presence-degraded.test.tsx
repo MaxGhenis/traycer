@@ -9,8 +9,17 @@ import {
 } from "@/stores/agent-activity-store";
 
 const GRACE_MS = 2_000;
-/** The store is keyed by host, so every write and the hook name one. */
+/**
+ * The store is keyed by host. The hook no longer takes one - it resolves the
+ * SERVING host itself - so this is both what the writes below key on and what
+ * the mocked serving-host entry returns. They must agree, or the hook reads an
+ * empty slice and every case degrades to `stream-down`.
+ */
 const HOST_ID = "host-1";
+
+vi.mock("@/hooks/host/use-notifications-serving-host-entry", () => ({
+  useNotificationsServingHostEntry: () => ({ hostId: "host-1" }),
+}));
 
 /**
  * Writes THIS host's slice, creating it on first use. `byEpic` is irrelevant
@@ -47,7 +56,7 @@ describe("useAgentActivityPresenceDegraded", () => {
 
   it("stays null for the bootstrap 'connecting' status until the grace elapses, then reads 'stream-down'", () => {
     const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(HOST_ID),
+      useAgentActivityPresenceDegraded(),
     );
 
     expect(result.current).toBe(null);
@@ -65,7 +74,7 @@ describe("useAgentActivityPresenceDegraded", () => {
 
   it("flips back to null immediately once the stream reports 'open'", () => {
     const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(HOST_ID),
+      useAgentActivityPresenceDegraded(),
     );
 
     act(() => {
@@ -81,7 +90,7 @@ describe("useAgentActivityPresenceDegraded", () => {
 
   it("holds 'reconnecting' back for a fresh grace window after being open, then reads 'stream-down'", () => {
     const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(HOST_ID),
+      useAgentActivityPresenceDegraded(),
     );
 
     act(() => {
@@ -107,7 +116,7 @@ describe("useAgentActivityPresenceDegraded", () => {
 
   it("never reads 'stream-down' when a close reopens within the grace window", () => {
     const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(HOST_ID),
+      useAgentActivityPresenceDegraded(),
     );
 
     act(() => {
@@ -139,7 +148,7 @@ describe("useAgentActivityPresenceDegraded", () => {
 
   it("holds 'reconnecting' cloudSyncStatus back while open, then reads 'cloud-down' after the grace", () => {
     const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(HOST_ID),
+      useAgentActivityPresenceDegraded(),
     );
 
     act(() => {
@@ -163,7 +172,7 @@ describe("useAgentActivityPresenceDegraded", () => {
 
   it("holds 'disconnected' cloudSyncStatus back while open, then reads 'cloud-down' after the grace", () => {
     const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(HOST_ID),
+      useAgentActivityPresenceDegraded(),
     );
 
     act(() => {
@@ -187,7 +196,7 @@ describe("useAgentActivityPresenceDegraded", () => {
 
   it("stays null past the grace when open with cloudSyncStatus null - no claim is not degraded", () => {
     const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(HOST_ID),
+      useAgentActivityPresenceDegraded(),
     );
 
     act(() => {
@@ -206,7 +215,7 @@ describe("useAgentActivityPresenceDegraded", () => {
 
   it("stays null while open with cloudSyncStatus 'connected'", () => {
     const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(HOST_ID),
+      useAgentActivityPresenceDegraded(),
     );
 
     act(() => {
@@ -225,7 +234,7 @@ describe("useAgentActivityPresenceDegraded", () => {
 
   it("clears a sustained 'cloud-down' reading immediately once cloudSyncStatus returns to 'connected'", () => {
     const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(HOST_ID),
+      useAgentActivityPresenceDegraded(),
     );
 
     act(() => {
@@ -247,7 +256,7 @@ describe("useAgentActivityPresenceDegraded", () => {
 
   it("restarts the grace under 'stream-down' when the stream closes during a sustained 'cloud-down'", () => {
     const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(HOST_ID),
+      useAgentActivityPresenceDegraded(),
     );
 
     act(() => {

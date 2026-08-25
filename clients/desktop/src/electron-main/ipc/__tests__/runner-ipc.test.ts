@@ -659,12 +659,14 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.deviceFlowStart,
         RunnerHostInvoke.deviceFlowPollNow,
         RunnerHostInvoke.deviceFlowCancel,
-        // §3 FileTokenStore IPC seam (get/signIn/rotate/delete); §6 adds the
-        // one-time legacy→file migration channel.
+        // §3 FileTokenStore IPC seam (get/signIn/rotate/delete, plus the
+        // atomic conditional delete); §6 adds the one-time legacy→file
+        // migration channel.
         RunnerHostInvoke.authTokenStoreGet,
         RunnerHostInvoke.authTokenStoreSignIn,
         RunnerHostInvoke.authTokenStoreRotate,
         RunnerHostInvoke.authTokenStoreDelete,
+        RunnerHostInvoke.authTokenStoreDeleteIfToken,
         RunnerHostInvoke.authTokenStoreMigrateLegacy,
         // Remote Host Support: host-registry read (§7) and version-policy
         // write (§13, T16) run in main for the renderer-origin CORS reason.
@@ -697,6 +699,13 @@ describe("RunnerIpcBridge", () => {
         RunnerHostInvoke.appUpdateDownload,
         RunnerHostInvoke.appUpdateGetSnapshot,
         RunnerHostInvoke.appUpdateInstall,
+        RunnerHostInvoke.appUpdateResolveCompatRecovery,
+        // Previously absent from this list because it was never registered at
+        // all: the preload and renderer halves shipped while the main handler
+        // went with the removed Settings channel toggle, so `setAllowPrerelease`
+        // rejected as an unhandled channel. The compatibility-recovery RC opt-in
+        // is the one caller that reaches it now.
+        RunnerHostInvoke.appUpdateSetAllowPrerelease,
         RunnerHostInvoke.globalShortcutsGetSnapshot,
         RunnerHostInvoke.globalShortcutsSet,
         RunnerHostInvoke.windowsList,
@@ -3591,6 +3600,7 @@ describe("RunnerIpcBridge", () => {
           status: "idle",
           currentVersion: "1.0.0",
           latestVersion: null,
+          latestCompatibilityEpoch: null,
           downloadProgress: null,
           installBlockedReason: null,
           installGuidance: null,

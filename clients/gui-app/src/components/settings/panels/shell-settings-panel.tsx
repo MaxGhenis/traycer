@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/hover-card";
 import { SettingsGroup } from "@/components/settings/settings-group";
 import { SettingsPanelShell } from "@/components/settings/settings-panel-shell";
+import { SETTINGS_ROW_STACK } from "@/components/settings/settings-row-layout";
 import {
   HostConfigUnsupportedNotice,
   LocalConfigFallbackNotice,
@@ -67,8 +68,8 @@ type ShellSaveTarget = "program" | "flags";
 // WSL never reach them. Every other family behaves as users expect
 // (PowerShell / Git Bash profiles are read into the agent env), so only WSL
 // earns a caption (Windows hosts only) - one quiet line under the picker, with
-// the remedy behind a hover card instead of inline prose.
-const WSL_AGENTS_DOCS_URL = "https://docs.traycer.ai/settings/shell#using-wsl";
+// the WSLg remedy behind a hover card instead of inline prose.
+const WSL_INSTALL_DOCS_URL = "https://docs.traycer.ai/install#windows-via-wsl";
 
 /** Final path segment of the resolved shell, used to name its flags. */
 function programName(path: string): string {
@@ -558,10 +559,16 @@ function TerminalShellGroup(props: {
                 // The WSL caption stacks under the picker in its own column,
                 // so the row top-aligns only while it is shown.
                 showWslCaption ? "items-start" : "items-center",
+                SETTINGS_ROW_STACK.container,
                 props.compact ? "px-4 py-2.5" : "px-5 py-4",
               )}
             >
-              <div className="min-w-0 flex-1 space-y-1">
+              <div
+                className={cn(
+                  "min-w-0 flex-1 space-y-1",
+                  SETTINGS_ROW_STACK.label,
+                )}
+              >
                 <div className="text-ui-sm font-medium text-foreground">
                   Shell program
                 </div>
@@ -569,7 +576,7 @@ function TerminalShellGroup(props: {
                   Pick a shell, or add any program on this machine.
                 </p>
               </div>
-              <div className="flex max-w-full flex-col items-end gap-1.5">
+              <div className="flex max-w-full flex-col items-end gap-1.5 max-md:items-start">
                 <div className="flex max-w-full items-center gap-2">
                   <ShellProgramCombobox
                     value={config.path}
@@ -596,10 +603,16 @@ function TerminalShellGroup(props: {
             <div
               className={cn(
                 "flex flex-wrap items-start justify-between gap-4 border-t border-border/40",
+                SETTINGS_ROW_STACK.container,
                 props.compact ? "px-4 py-2.5" : "px-5 py-4",
               )}
             >
-              <div className="min-w-0 flex-1 space-y-1">
+              <div
+                className={cn(
+                  "min-w-0 flex-1 space-y-1",
+                  SETTINGS_ROW_STACK.label,
+                )}
+              >
                 <div className="text-ui-sm font-medium text-foreground">
                   {`Startup flags for ${programName(config.path)}`}
                 </div>
@@ -609,7 +622,12 @@ function TerminalShellGroup(props: {
                     : `Passed to ${programName(config.path)} each time a terminal opens.`}
                 </p>
               </div>
-              <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
+              <div
+                className={cn(
+                  "flex max-w-full flex-wrap items-center justify-end gap-2",
+                  SETTINGS_ROW_STACK.control,
+                )}
+              >
                 <ShellFlagChips
                   args={config.args}
                   disabled={props.pending}
@@ -643,12 +661,12 @@ function TerminalShellGroup(props: {
 }
 
 /**
- * The WSL boundary in one quiet line: terminal tabs open in WSL, but
- * agent chats stay Windows processes, so WSL-installed tools never reach them.
- * The full explanation and the remedy (a Traycer host inside WSL) live
+ * The WSL boundary in one quiet line: the setting changes terminal tabs, but
+ * the host and agent chats stay Windows processes. The full explanation and
+ * the primary remedy (the Linux Traycer app running through WSLg) live
  * in the hover card - reachable because `HoverCard`'s close grace lets the
  * pointer travel into the card's link. The hover card is pointer-only, so the
- * Info glyph is itself a focusable anchor to the same docs page - keyboard
+ * Info glyph is itself a focusable anchor to the install page - keyboard
  * users reach the remedy without a mouse.
  */
 function WslAgentCaption() {
@@ -660,12 +678,12 @@ function WslAgentCaption() {
             aria-hidden
             className="size-1.5 rounded-full bg-[var(--term-ansi-yellow)]"
           />
-          Agents won&apos;t see tools installed in WSL
+          WSL applies to terminal tabs only
           <a
-            href={WSL_AGENTS_DOCS_URL}
+            href={WSL_INSTALL_DOCS_URL}
             target="_blank"
             rel="noreferrer"
-            aria-label="How to run agents inside WSL"
+            aria-label="Install Traycer in WSL"
             className="rounded transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
           >
             <Info className="size-3" />
@@ -677,16 +695,16 @@ function WslAgentCaption() {
         className="w-[min(90vw,20rem)] space-y-2 text-ui-xs"
       >
         <p className="text-muted-foreground">
-          Terminal tabs open in WSL, but agent chats run as Windows processes
-          with the Windows environment.
+          Choosing WSL here changes the shell for new terminal tabs. It does not
+          move the Traycer host or agents into WSL.
         </p>
         <a
-          href={WSL_AGENTS_DOCS_URL}
+          href={WSL_INSTALL_DOCS_URL}
           target="_blank"
           rel="noreferrer"
           className="inline-block font-medium text-foreground underline underline-offset-4 hover:opacity-80"
         >
-          Run agents inside WSL
+          Install Traycer in WSL
         </a>
       </HoverCardContent>
     </HoverCard>

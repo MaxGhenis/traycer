@@ -25,8 +25,10 @@ import { RunnerHostProvider } from "@/providers/runner-host-provider";
 import { useDesktopDialogStore } from "@/stores/dialogs/desktop-dialog-store";
 import type {
   DesktopAppUpdateCheckIntent,
+  DesktopAppUpdateChannelChange,
   DesktopAppUpdateSnapshot,
   DesktopAppUpdatesBridge,
+  DesktopCompatRecoveryPlan,
   DesktopReportIssueForm,
   DesktopSubmitReportResult,
   DesktopSupportBridge,
@@ -319,6 +321,13 @@ function createBaseRunnerHost(): IRunnerHost {
       Promise.resolve({ kind: "network-error" as const }),
     verifyStepUpChallenge: () =>
       Promise.resolve({ kind: "network-error" as const }),
+    mintLinkLoginCode: () =>
+      Promise.resolve({ kind: "network-error" as const }),
+    linkLoginStatus: () => Promise.resolve({ kind: "network-error" as const }),
+    respondLinkLogin: () => Promise.resolve({ kind: "network-error" as const }),
+    linkCodeScanner: null,
+    deviceDescriber: null,
+    linkLoginDeepLinks: null,
     updateHostVersionPolicy: () =>
       Promise.resolve({ kind: "network-error" as const }),
     deregisterHostFromAccount: () =>
@@ -360,6 +369,7 @@ function createBaseRunnerHost(): IRunnerHost {
       rotate: () =>
         Promise.resolve({ outcome: "deleted" as const, pair: null }),
       delete: () => Promise.resolve(),
+      deleteIfToken: () => Promise.resolve("kept" as const),
       subscribe: () => ({ dispose: () => undefined }),
       migrateLegacyCredentials: () =>
         Promise.resolve("identity-unknown" as const),
@@ -374,6 +384,7 @@ function createBaseRunnerHost(): IRunnerHost {
     hostManagement: null,
     hostTray: null,
     zoom: null,
+    pushPermission: null,
   };
 }
 
@@ -1071,6 +1082,7 @@ describe("<DesktopDialogHost />", () => {
       currentVersion: "1.0.0",
       allowPrerelease: false,
       latestVersion: null,
+      latestCompatibilityEpoch: null,
       downloadProgress: null,
       installBlockedReason: null,
       installGuidance: null,
@@ -1090,8 +1102,17 @@ describe("<DesktopDialogHost />", () => {
       ): Promise<DesktopAppUpdateSnapshot> {
         return Promise.resolve(IDLE);
       }
-      setAllowPrerelease(_allow: boolean): Promise<DesktopAppUpdateSnapshot> {
-        return Promise.resolve(IDLE);
+      setAllowPrerelease(
+        _allow: boolean,
+      ): Promise<DesktopAppUpdateChannelChange> {
+        return Promise.resolve({ outcome: "changed", snapshot: IDLE });
+      }
+      resolveCompatRecovery(): Promise<DesktopCompatRecoveryPlan> {
+        return Promise.resolve({
+          route: "manual",
+          rcCandidateVersion: null,
+          stagedVersion: null,
+        });
       }
       downloadUpdate(): Promise<DesktopAppUpdateSnapshot> {
         return Promise.resolve(IDLE);

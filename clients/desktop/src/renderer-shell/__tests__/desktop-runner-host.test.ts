@@ -104,6 +104,13 @@ function buildFakeBridge(
         delete: async () => {
           stored = null;
         },
+        deleteIfToken: async (expectedToken: string) => {
+          if (stored === null || stored.token !== expectedToken) {
+            return "kept" as const;
+          }
+          stored = null;
+          return "deleted" as const;
+        },
         subscribe: () => ({ dispose: () => undefined }),
         migrateLegacyCredentials: async () => "identity-unknown" as const,
       };
@@ -219,6 +226,7 @@ function buildFakeBridge(
         currentVersion: "0.0.0-test",
         allowPrerelease: false,
         latestVersion: null,
+        latestCompatibilityEpoch: null,
         downloadProgress: null,
         installBlockedReason: null,
         installGuidance: null,
@@ -233,6 +241,7 @@ function buildFakeBridge(
         currentVersion: "0.0.0-test",
         allowPrerelease: false,
         latestVersion: null,
+        latestCompatibilityEpoch: null,
         downloadProgress: null,
         installBlockedReason: null,
         installGuidance: null,
@@ -242,18 +251,27 @@ function buildFakeBridge(
         lastCheckIntent: "manual",
       }),
       setAllowPrerelease: async (allowPrerelease) => ({
-        sequence: 2,
-        status: "idle",
-        currentVersion: "0.0.0-test",
-        allowPrerelease,
-        latestVersion: null,
-        downloadProgress: null,
-        installBlockedReason: null,
-        installGuidance: null,
-        installInFlight: false,
-        errorMessage: null,
-        lastCheckedAt: null,
-        lastCheckIntent: null,
+        outcome: "changed",
+        snapshot: {
+          sequence: 2,
+          status: "idle",
+          currentVersion: "0.0.0-test",
+          allowPrerelease,
+          latestVersion: null,
+          latestCompatibilityEpoch: null,
+          downloadProgress: null,
+          installBlockedReason: null,
+          installGuidance: null,
+          installInFlight: false,
+          errorMessage: null,
+          lastCheckedAt: null,
+          lastCheckIntent: null,
+        },
+      }),
+      resolveCompatRecovery: async () => ({
+        route: "manual",
+        rcCandidateVersion: null,
+        stagedVersion: null,
       }),
       downloadUpdate: async () => ({
         sequence: 2,
@@ -261,6 +279,7 @@ function buildFakeBridge(
         currentVersion: "0.0.0-test",
         allowPrerelease: false,
         latestVersion: "1.2.3",
+        latestCompatibilityEpoch: null,
         downloadProgress: 0,
         installBlockedReason: null,
         installGuidance: null,
@@ -275,6 +294,7 @@ function buildFakeBridge(
         currentVersion: "0.0.0-test",
         allowPrerelease: false,
         latestVersion: null,
+        latestCompatibilityEpoch: null,
         downloadProgress: null,
         installBlockedReason: null,
         installGuidance: null,
@@ -544,6 +564,7 @@ function buildFakeBridge(
       registryCheck: async () => ({
         checkedAt: null,
         latestVersion: null,
+        latestCompatibilityEpoch: null,
         installedVersion: null,
         updateAvailable: false,
         reachable: false,

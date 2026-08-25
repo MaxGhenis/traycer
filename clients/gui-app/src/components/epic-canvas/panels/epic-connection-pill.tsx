@@ -77,11 +77,11 @@ export function EpicConnectionPill(props: EpicConnectionPillProps) {
       terminalAuthority.coverage === "partial-serving-host",
     JSON.stringify([terminalAuthority.hostId, props.epicId]),
   );
-  // The RESOLVED id, not the placeholder: an unresolved canvas host has no
-  // activity slice to read, and reporting its absence as a down stream would
-  // amber the pill for a host that was never named.
-  const presenceDegraded =
-    useAgentActivityPresenceDegraded(resolvedCanvasHostId);
+  // No host argument: this reports on the DATA, not a machine. "Agent status
+  // may be stale" names no host, and the hook resolves the stream carrying
+  // this Epic's activity itself - passing the canvas host here would amber
+  // permanently on any remote-bound canvas.
+  const presenceDegraded = useAgentActivityPresenceDegraded();
   // Visuals use the settled state to avoid strobing; the tooltip uses the raw
   // verdict so it can truthfully say synced during the positive settle hold.
   const secondarySignals = {
