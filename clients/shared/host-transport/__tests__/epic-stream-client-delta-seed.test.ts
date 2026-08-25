@@ -96,7 +96,7 @@ function makeRequestContext(bearer: string): RequestContext {
     connectionId: undefined,
     operationId: undefined,
     externalAbortSignal: undefined,
-      cloudAuthorized: true,
+    cloudAuthorized: true,
   });
 }
 
