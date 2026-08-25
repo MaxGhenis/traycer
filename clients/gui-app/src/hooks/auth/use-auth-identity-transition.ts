@@ -60,6 +60,14 @@ export function useAuthIdentityTransition(
     readonly status: AuthStatus;
     readonly userId: string | null;
   } | null>(null);
+  // An interactive attempt is in flight, or has just failed without an
+  // intervening settled identity. This is deliberately SEPARATE from
+  // `previous`, which holds the pre-attempt identity so the eventual settled
+  // state is compared against what the user actually had. Folding the two
+  // together is what made the failure edge below unreachable: holding the
+  // attempt rewinds `previous` past the `signing-in` marker, so a
+  // `prior.status === "signing-in"` test can never observe one.
+  const attemptInFlight = useRef(false);
   const callbackRef = useRef(onTransition);
   // `useLayoutEffect` keeps the ref write out of the render phase (eslint
   // react-hooks flags ref mutation during render) while still happening
@@ -116,16 +124,24 @@ export function useAuthIdentityTransition(
     // transition instead of firing here. That is the conservative direction -
     // state kept a little too long rather than destroyed a little too early -
     // and it is the direction this whole ticket is about.
+    // The failure edge is tested against `attemptInFlight`, NOT against
+    // `prior.status`: the `signing-in` branch below rewinds `previous` to the
+    // pre-attempt identity, so by the time the failure lands `prior` reads as
+    // `unverified`/`signed-in` and a status-based test is dead code.
     const isHeldAttempt =
       status === "signing-in" ||
-      (status === "signed-out" && prior?.status === "signing-in");
+      (status === "signed-out" && attemptInFlight.current);
     if (isHeldAttempt) {
       // Keep the pre-attempt identity as `previous` so the eventual settled
       // state is compared against what the user actually had, not against the
       // attempt.
       previous.current = prior;
+      attemptInFlight.current = true;
       return;
     }
+    // Any settled outcome ends the attempt - the re-admit that follows a held
+    // failure, the new identity that replaces it, or an outright retirement.
+    attemptInFlight.current = false;
 
     const hasIdentity = admitsLocalPlane(status);
     const hadIdentity = prior !== null && admitsLocalPlane(prior.status);

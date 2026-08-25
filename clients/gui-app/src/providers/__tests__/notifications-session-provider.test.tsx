@@ -3606,6 +3606,109 @@ describe("<NotificationsSessionProvider />", () => {
     expect(useNotificationsStore.getState().entries).toEqual([]);
   });
 
+  it("closes only the cloud-authorized lanes on a signed-in to unverified demotion, and reopens them on re-promotion", async () => {
+    const queryClient = new QueryClient();
+    const streamClient = new MockWsStreamClient();
+    hostState.id = mockLocalHostEntry.hostId;
+    streamState.client = streamClient;
+    streamState.cloudFeedSupport = "supported";
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <NotificationsSessionProvider>
+          <div />
+        </NotificationsSessionProvider>
+      </QueryClientProvider>,
+    );
+    act(() => {
+      resetAuth("signed-in", "alice@example.com", "alice@example.com");
+    });
+    await waitFor(() => {
+      expect(streamClient.subscribedMethods).toEqual([
+        "agent.activity.subscribe",
+        "notifications.subscribe",
+        "host.notifications.cloudFeed.subscribe",
+        "host.notifications.feed.subscribe",
+      ]);
+    });
+    const activitySession = streamClient.sessionFor("agent.activity.subscribe");
+    const hostFeedSession = streamClient.sessionFor(
+      "host.notifications.feed.subscribe",
+    );
+    const collaborationSession = streamClient.sessionFor(
+      "notifications.subscribe",
+    );
+    const cloudFeedSession = streamClient.sessionFor(
+      "host.notifications.cloudFeed.subscribe",
+    );
+
+    // The identity is CONTINUOUS across this demotion (same account, same
+    // userId) - `useAuthIdentityTransition` fires nothing for it, so nothing
+    // but this provider's own status effect can close the cloud-authorized
+    // lanes once the `/api/v3/user` verdict is withdrawn.
+    act(() => {
+      useAuthStore.setState({
+        status: "unverified",
+        profile: {
+          userId: "alice@example.com",
+          userName: "alice@example.com",
+          email: "alice@example.com",
+        },
+        contextMetadata: {
+          userId: "alice@example.com",
+          username: "alice@example.com",
+        },
+        subscriptionStatus: null,
+      });
+    });
+
+    await waitFor(() => {
+      // The two CLOUD-authorized lanes (collaboration room + cloud relay)
+      // close - this is the regression fix.
+      expect(collaborationSession.closeCount).toBe(1);
+      expect(cloudFeedSession.closeCount).toBe(1);
+    });
+    // The two HOST/local-plane lanes must survive the demotion untouched -
+    // this machine's own notifications and agent activity are local-plane
+    // truth an unverified session still has every right to. A test that only
+    // checked "something closed" would not catch a blanket `tearDown()` here.
+    expect(activitySession.closeCount).toBe(0);
+    expect(hostFeedSession.closeCount).toBe(0);
+
+    // Re-promotion: the same account regains the verdict.
+    act(() => {
+      useAuthStore.setState({
+        status: "signed-in",
+        profile: {
+          userId: "alice@example.com",
+          userName: "alice@example.com",
+          email: "alice@example.com",
+        },
+        contextMetadata: {
+          userId: "alice@example.com",
+          username: "alice@example.com",
+        },
+        subscriptionStatus: "FREE",
+      });
+    });
+
+    // Without the verdict-loss ref, the reopen gate below asks whether ANY
+    // lane is open - the host lanes never closed, so it would see one open
+    // and never reopen the cloud lanes at all, leaving them shut forever.
+    await waitFor(() => {
+      expect(
+        streamClient.subscribedMethods.filter(
+          (method) => method === "host.notifications.cloudFeed.subscribe",
+        ),
+      ).toHaveLength(2);
+      expect(
+        streamClient.subscribedMethods.filter(
+          (method) => method === "notifications.subscribe",
+        ),
+      ).toHaveLength(2);
+    });
+  });
+
   // ---------------------------------------------------------------------
   // Relay-only fallback: a shell with NO local host serves notifications from
   // the BOUND host instead (`useNotificationsServingHostEntry`). The

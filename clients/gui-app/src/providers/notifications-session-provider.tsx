@@ -49,7 +49,10 @@ import {
   type HostNotificationPresenceFrame,
 } from "@/lib/notifications/notification-presence";
 import { getNotificationsStreamFactoryOverride } from "@/providers/notifications-stream-factory-override";
-import { useAuthStore } from "@/stores/auth/auth-store";
+import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
 import { useAuthService, useHostClient } from "@/lib/host";
 import { useNotificationsServingHostEntry } from "@/hooks/host/use-notifications-serving-host-entry";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
@@ -242,6 +245,10 @@ function NotificationsSessionBody(
   const activityDisposerRef = useRef<(() => void) | null>(null);
   const hostDisposerRef = useRef<(() => void) | null>(null);
   const cloudDisposerRef = useRef<(() => void) | null>(null);
+  // Set when a cloud-verdict loss closed the cloud lanes while the host lanes
+  // stayed up. Distinguishes that half-open state from a normal one, which the
+  // "is any lane open" reopen gate cannot tell apart on its own.
+  const cloudLanesClosedByVerdictLossRef = useRef(false);
   // The stream client all notification streams were opened against. Stream
   // ownership follows the client instance: when the provider context serves a
   // different client (the app-wide liveness rebuild, or any same-identity
@@ -531,6 +538,29 @@ function NotificationsSessionBody(
     }
   }, []);
 
+  // The CLOUD-AUTHORIZED half of the open lanes: the per-user Notifications
+  // room (collaboration) and the cloud feed relay. Both carry the account's
+  // server-side data, so both are a cloud CAPABILITY and may only run while a
+  // `/api/v3/user` verdict is held.
+  //
+  // The host lanes (`hostDisposerRef`, `activityDisposerRef`) are deliberately
+  // untouched. They are this machine's own notifications and agent activity -
+  // local-plane truth an unverified session still has every right to, and
+  // closing them is the local-first regression this whole ticket exists to
+  // prevent.
+  const tearDownCloudLanes = useCallback((): void => {
+    if (disposerRef.current !== null) {
+      const disposer = disposerRef.current;
+      disposerRef.current = null;
+      disposer();
+    }
+    if (cloudDisposerRef.current !== null) {
+      const disposer = cloudDisposerRef.current;
+      cloudDisposerRef.current = null;
+      disposer();
+    }
+  }, []);
+
   // The relay session's rows and its view-consumption bookkeeping are one
   // unit of ownership: the driver holds an in-flight claim and a retry timer
   // that would otherwise outlive the snapshot they were derived from and fire
@@ -589,6 +619,47 @@ function NotificationsSessionBody(
   const resetCloudRelayOwnership = useCallback((): void => {
     resetCloudRelaySession();
   }, [resetCloudRelaySession]);
+
+  /**
+   * Reconcile the open lanes with the CLOUD VERDICT, and report whether the
+   * caller should stop.
+   *
+   * Two different ways to lose the verdict, and only one of them was handled.
+   * A genuine sign-out fires `useAuthIdentityTransition`'s `signedOut`, so
+   * `onAuthTransition` has already torn everything down. A DEMOTION to
+   * `unverified` fires nothing at all: the identity is continuous (same
+   * account, same `userId`, still admitted to the local plane), which is right
+   * for the account-scoped stores and wrong for the lanes. The cloud verdict is
+   * withdrawn, so the cloud-authorized lanes are spending a capability this
+   * session no longer holds. Nothing else closes them - `signedOut` never
+   * fires, and remote-session retirement cannot reach a stream running on the
+   * LOCAL serving host's transport.
+   *
+   * Regaining the verdict needs its own handling because the reopen gate asks
+   * only whether ANY lane is open, and the host lanes never closed - so it
+   * would leave the cloud lanes shut forever. A full teardown rather than a
+   * partial reopen: `openForCurrentUser` opens every lane unconditionally (only
+   * the host lane guards on its own ref), so reopening over live host lanes
+   * would double-subscribe them. The host lanes blip for one pass on the regain
+   * edge only, and the replica is kept - the re-landed snapshot merges into the
+   * same doc.
+   */
+  const settleCloudVerdictEdge = useCallback(
+    (isAuthorized: boolean): boolean => {
+      if (!isAuthorized) {
+        tearDownCloudLanes();
+        resetCloudRelaySession();
+        cloudLanesClosedByVerdictLossRef.current = true;
+        return true;
+      }
+      if (cloudLanesClosedByVerdictLossRef.current) {
+        cloudLanesClosedByVerdictLossRef.current = false;
+        tearDown();
+      }
+      return false;
+    },
+    [tearDown, tearDownCloudLanes, resetCloudRelaySession],
+  );
 
   // A disconnect (IPC drop / host restart) is not a truth reset: rendered
   // host rows and cursors stay put, and only the exact summary degrades to
@@ -893,15 +964,11 @@ function NotificationsSessionBody(
   // snapshot lands; a genuine serving-host identity change is what resets the
   // host replica.
   useEffect(() => {
-    const isSignedIn = status === "signed-in";
+    const isSignedIn = authorizesCloudCapability(status);
     const priorStreamClient = previousStreamClientRef.current;
     previousStreamClientRef.current = servingStreamClient;
 
-    if (!isSignedIn) {
-      // `useAuthIdentityTransition`'s onTransition already tore down on the
-      // signedOut path; no-op here.
-      return;
-    }
+    if (settleCloudVerdictEdge(isSignedIn)) return;
     // Keyed on the HOST, not the client: `useHostStreamClientBindingFor` returns a
     // client exactly when it is given an entry, so in production these two are
     // the same condition - but the test stream-factory override supplies a
@@ -1017,6 +1084,7 @@ function NotificationsSessionBody(
     userId,
     servingStreamClient,
     tearDown,
+    settleCloudVerdictEdge,
     resetHostReplica,
     resetHostProjection,
     resetCloudRelayOwnership,

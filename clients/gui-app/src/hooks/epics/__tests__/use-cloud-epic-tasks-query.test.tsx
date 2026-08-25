@@ -362,6 +362,123 @@ describe("useCloudEpicTasksQuery", () => {
         hasLocalFirstPhase(params, "revalidate"),
       ),
     ).toHaveLength(1);
+
+    // No auth transition happens anywhere in this test - `signed-in` holds
+    // throughout, and the page reached `unavailable` through the
+    // revalidation's OWN rejection arm, not an authorization edge. A guard
+    // that merely tested "authorized AND unavailable" (rather than the
+    // unverified -> signed-in EDGE) would treat every one of these follow-up
+    // renders as reopenable and spin: reopen to `pending` re-arms the
+    // revalidation effect above, which rejects again, landing back on
+    // `unavailable` and re-triggering the same state-based guard. Flushing
+    // extra microtask ticks here gives that spin room to happen before
+    // asserting it did not.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(
+      mockHostClient.request.mock.calls.filter(([, params]) =>
+        hasLocalFirstPhase(params, "revalidate"),
+      ),
+    ).toHaveLength(1);
+    expect(result.current.query.data?.completeness?.cloudPage).toBe(
+      "unavailable",
+    );
+  });
+
+  it("reopens a settled unavailable cloud page and revalidates once on promotion from unverified to signed-in", async () => {
+    const localPage: ListTasksResponse = {
+      tasks: [taskLight("promoted-local", "Served from this disk")],
+      hasMore: false,
+      completeness: {
+        cloudPage: "pending",
+        facets: "partial",
+        localRows: "present",
+        sort: "loaded-union",
+      },
+    };
+    const revalidatedPage: ListTasksResponse = {
+      tasks: [taskLight("promoted-local", "Served from this disk")],
+      hasMore: false,
+      completeness: {
+        cloudPage: "settled",
+        facets: "server",
+        localRows: "present",
+        sort: "server",
+      },
+    };
+    mockHostClient.request.mockImplementation(
+      (_method: string, params: { readonly localFirstPhase?: string }) =>
+        params.localFirstPhase === "revalidate"
+          ? Promise.resolve(revalidatedPage)
+          : Promise.resolve(localPage),
+    );
+    useAuthStore.setState({
+      status: "unverified",
+      profile: {
+        userId: USER_ID,
+        userName: "Test User",
+        email: "test@example.com",
+      },
+      contextMetadata: { userId: USER_ID, username: "test-user" },
+      shareableTeams: [],
+      subscriptionStatus: null,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const { result } = renderHook(
+      () => useCloudEpicTasksQuery(LIST_CLOUD_TASKS_REQUEST, { enabled: true }),
+      { wrapper: makeWrapper(queryClient) },
+    );
+
+    // Settles to `unavailable` with no verdict held - no revalidation leg is
+    // spent for an unverified session.
+    await waitFor(() => {
+      expect(result.current.query.data?.completeness?.cloudPage).toBe(
+        "unavailable",
+      );
+    });
+    expect(
+      mockHostClient.request.mock.calls.filter(([, params]) =>
+        hasLocalFirstPhase(params, "revalidate"),
+      ),
+    ).toHaveLength(0);
+
+    // The promotion edge: the same identity now holds a `/api/v3/user`
+    // verdict.
+    act(() => {
+      useAuthStore.setState({
+        status: "signed-in",
+        profile: {
+          userId: USER_ID,
+          userName: "Test User",
+          email: "test@example.com",
+        },
+        contextMetadata: { userId: USER_ID, username: "test-user" },
+        shareableTeams: [],
+        subscriptionStatus: null,
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        mockHostClient.request.mock.calls.filter(([, params]) =>
+          hasLocalFirstPhase(params, "revalidate"),
+        ),
+      ).toHaveLength(1);
+    });
+    await waitFor(() => {
+      expect(result.current.query.data?.completeness?.cloudPage).toBe(
+        "settled",
+      );
+    });
+    expect(taskLightIds(result.current.tasks)).toEqual(["promoted-local"]);
   });
 
   it("starts a fresh bounded episode for History's raw refresh while the prior follow-up is unresolved", async () => {

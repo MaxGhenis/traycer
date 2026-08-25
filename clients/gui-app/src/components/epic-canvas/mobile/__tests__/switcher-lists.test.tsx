@@ -42,6 +42,8 @@ interface Holder {
   activityTiers: ReadonlyMap<string, "turn" | "background">;
   /** Chat ids the agents list subscribed indicator state for, per render. */
   indicatorChatIdCalls: ReadonlyArray<string>[];
+  /** The `chatEpicIds` map the agents list passed alongside `chatIds`, per render. */
+  indicatorChatEpicIdCalls: Record<string, string>[];
   /** What `useEpicNodeHostId` answers - the row's OWN owner host. */
   ownerHostIdByNodeId: Record<string, string>;
   indicators: IndicatorFixture;
@@ -71,6 +73,7 @@ const holder = vi.hoisted((): Holder => ({
   workingAgentIds: new Set<string>(),
   activityTiers: new Map<string, "turn" | "background">(),
   indicatorChatIdCalls: [],
+  indicatorChatEpicIdCalls: [],
   ownerHostIdByNodeId: {},
   indicators: { epics: {}, chats: {} },
 }));
@@ -164,8 +167,10 @@ vi.mock("@/hooks/epic/use-epic-session-host-id", () => ({
 vi.mock("@/hooks/notifications/use-notification-indicators-query", () => ({
   useNotificationIndicators: (args: {
     readonly chatIds: readonly string[];
+    readonly chatEpicIds: Record<string, string>;
   }) => {
     holder.indicatorChatIdCalls.push(args.chatIds);
+    holder.indicatorChatEpicIdCalls.push(args.chatEpicIds);
     return holder.indicators;
   },
 }));
@@ -197,6 +202,7 @@ beforeEach(() => {
   holder.workingAgentIds = new Set<string>();
   holder.activityTiers = new Map<string, "turn" | "background">();
   holder.indicatorChatIdCalls = [];
+  holder.indicatorChatEpicIdCalls = [];
   holder.ownerHostIdByNodeId = {};
   holder.indicators = { epics: {}, chats: {} };
 });
@@ -418,6 +424,19 @@ describe("<SwitcherAgentsList />", () => {
     // Agents only - the spec artifact in the fixture is not a chat entity, and
     // the ids are sorted so the query key does not churn on every re-sort.
     expect(chatIds).toEqual(["chat-1", "tui-1"]);
+  });
+
+  it("names the switcher's own epic as the owner for every chat id it subscribes indicators for", () => {
+    render(<SwitcherAgentsList {...PROPS} />);
+    const chatIds = holder.indicatorChatIdCalls.at(-1);
+    const chatEpicIds = holder.indicatorChatEpicIdCalls.at(-1);
+    if (chatIds === undefined || chatEpicIds === undefined) {
+      throw new Error("Expected useNotificationIndicators to have been called");
+    }
+    expect(chatIds.length).toBeGreaterThan(0);
+    for (const chatId of chatIds) {
+      expect(chatEpicIds[chatId]).toBe(PROPS.epicId);
+    }
   });
 
   it("shows the '…' menu for an editor and hides it entirely for a viewer", () => {

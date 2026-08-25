@@ -67,10 +67,24 @@ export function SwitcherAgentsList(props: SwitcherListProps) {
   // agents are this session's, `chatId` is host-minted, and the app-wide active
   // host would answer about agents it does not own.
   const epicSessionHostId = useEpicSessionHostId();
+  // Every agent in this switcher belongs to the switcher's epic. Chat ids do
+  // not encode durable home, so without this map mixed mode's `home: local`
+  // partition cannot classify these chat-only ids and their approvals,
+  // failures and pending-fork state all read as clear. The desktop strips
+  // (`layout/tabs/tab-strip`, `epic-canvas/canvas/tab-strip`) already name the
+  // owner; mobile was the call site still passing bare ids.
+  const indicatorChatEpicIds = useMemo(
+    () =>
+      Object.fromEntries(
+        indicatorChatIds.map((chatId) => [chatId, epicId] as const),
+      ),
+    [indicatorChatIds, epicId],
+  );
   const indicators = useNotificationIndicators({
     hostId: epicSessionHostId,
     epicIds: [],
     chatIds: indicatorChatIds,
+    chatEpicIds: indicatorChatEpicIds,
     enabled: indicatorChatIds.length > 0,
   });
 

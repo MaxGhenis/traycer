@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   queryOptions,
   useMutation,
@@ -374,6 +374,31 @@ export function useCloudEpicTasksQuery(
     userId,
   ]);
 
+  // Recovery promoting THIS session from `unverified` to `signed-in` is the one
+  // event that makes a settled `unavailable` page worth asking about again.
+  //
+  // It has to be the EDGE, not the state. `unavailable` is also where the
+  // revalidation's own rejection arm lands, so a guard that merely admitted
+  // `unavailable` while authorized would re-dispatch on every cloud failure and
+  // spin. And it has to happen at all: with `staleTime: Infinity` and
+  // mount/focus/reconnect refetches disabled, nothing else ever asks, so
+  // without this the account's cloud tasks stay absent for the rest of the
+  // session even though the session can now reach its servers.
+  const wasCloudLegAuthorized = useRef(authorizesCloudLeg);
+  useEffect(() => {
+    const wasAuthorized = wasCloudLegAuthorized.current;
+    wasCloudLegAuthorized.current = authorizesCloudLeg;
+    if (wasAuthorized || !authorizesCloudLeg) return;
+    if (hostId === null || userId === null) return;
+    // Reopening to `pending` is the whole action: the revalidation effect above
+    // takes `queryData` as a dependency, so it re-runs, and this time both its
+    // pending check and its authorization check pass.
+    queryClient.setQueryData<ListTasksResponse>(
+      cloudEpicTasksQueryKey(hostId, userId, effectiveRequest),
+      (current) => reopenLocalFirstCloudPage(current),
+    );
+  }, [authorizesCloudLeg, effectiveRequest, hostId, queryClient, userId]);
+
   const tasks = useMemo<readonly ListTaskLightPre15[]>(() => {
     if (queryData === undefined) return EMPTY_TASKS;
     // Dedupe by task id, first occurrence wins (the first page outranks the
@@ -553,6 +578,26 @@ function isPendingLocalFirstResponse(
   response: ListTasksResponse | undefined,
 ): response is PendingLocalFirstResponse {
   return response?.completeness?.cloudPage === "pending";
+}
+
+/**
+ * Flip a settled `unavailable` cloud page back to `pending` so the revalidation
+ * effect will pick it up again.
+ *
+ * `facets` is deliberately left at `partial`: it is already honest while the
+ * cloud leg is back in flight, and the success arm replaces the whole page
+ * (facets included) rather than patching this one field.
+ */
+function reopenLocalFirstCloudPage(
+  response: ListTasksResponse | undefined,
+): ListTasksResponse | undefined {
+  const completeness = response?.completeness;
+  if (response === undefined || completeness === undefined) return response;
+  if (completeness.cloudPage !== "unavailable") return response;
+  return {
+    ...response,
+    completeness: { ...completeness, cloudPage: "pending" },
+  };
 }
 
 function markLocalFirstCloudUnavailable(
