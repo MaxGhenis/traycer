@@ -118,6 +118,11 @@ function MobileHeaderTitleSlot(props: MobileHeaderTitleSlotProps): ReactNode {
         <Link
           to="/settings"
           data-testid="mobile-header-settings-crumb"
+          // The header row is shorter than the coarse-pointer target, so the
+          // crumb needs the shell's hit-area slop the way the header's icon
+          // buttons do. That slop selects on the slot attribute, and an
+          // anchor carries it whenever `Button asChild` renders one.
+          data-slot="button"
           className="flex h-full shrink-0 items-center font-medium text-muted-foreground transition-colors active:text-foreground"
         >
           Settings

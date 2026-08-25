@@ -3,6 +3,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { PORTAL_ICON_BUTTON_HIT_SLOP } from "@/components/ui/coarse-pointer-hit-slop";
 import { XIcon } from "lucide-react";
 import { usePaneAwareContentGuard } from "@/components/epic-tabs/pane-visibility-context";
 import { usePortalConcealed } from "@/components/ui/portal-concealment-context";
@@ -97,7 +98,10 @@ function DialogContent({
           <DialogPrimitive.Close data-slot="dialog-close" asChild>
             <Button
               variant="ghost"
-              className="absolute top-2 right-2"
+              className={cn(
+                "absolute top-2 right-2",
+                PORTAL_ICON_BUTTON_HIT_SLOP,
+              )}
               size="icon-sm"
             >
               <XIcon />

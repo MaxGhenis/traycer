@@ -80,6 +80,9 @@ export function ThemePresetPicker(props: ThemePresetPickerProps) {
         <button
           ref={triggerRef}
           type="button"
+          // Settings' hit-area slop selects on the slot attribute, not on the
+          // element; a hand-rolled popover trigger needs it to be reached.
+          data-slot="button"
           className="inline-flex min-w-44 items-center justify-between gap-3 rounded-md border border-border bg-card px-2.5 py-1.5 text-ui-sm text-foreground transition-colors hover:bg-accent/50"
         >
           <span className="flex min-w-0 items-center gap-2">

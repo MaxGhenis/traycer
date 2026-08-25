@@ -321,7 +321,11 @@ function FilterOption(props: {
       role="checkbox"
       aria-checked={props.checked}
       className={cn(
-        "flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-ui-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50",
+        // Options stack flush, and the popover portals outside every touch
+        // scope, so the row grows to the coarse-pointer target itself - the
+        // same treatment `ui/dropdown-menu.tsx` and `ui/select.tsx` give their
+        // rows. Invisible hit-slop would overlap the neighbouring options.
+        "flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-ui-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50 pointer-coarse:min-h-11",
         props.checked && "bg-accent/60",
       )}
       onClick={props.onToggle}

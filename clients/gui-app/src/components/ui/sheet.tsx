@@ -4,6 +4,7 @@ import { Dialog as SheetPrimitive } from "radix-ui";
 import { cn } from "@/lib/utils";
 import { usePortalConcealed } from "@/components/ui/portal-concealment-context";
 import { Button } from "@/components/ui/button";
+import { PORTAL_ICON_BUTTON_HIT_SLOP } from "@/components/ui/coarse-pointer-hit-slop";
 import { XIcon } from "lucide-react";
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
@@ -97,7 +98,10 @@ function SheetContent({
           <SheetPrimitive.Close data-slot="sheet-close" asChild>
             <Button
               variant="ghost"
-              className="absolute top-3 right-3"
+              className={cn(
+                "absolute top-3 right-3",
+                PORTAL_ICON_BUTTON_HIT_SLOP,
+              )}
               size="icon-sm"
             >
               <XIcon />

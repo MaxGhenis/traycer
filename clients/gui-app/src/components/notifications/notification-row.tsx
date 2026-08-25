@@ -444,6 +444,11 @@ function NotificationRowControlButton(
     >
       <button
         type="button"
+        // The coarse-pointer hit-slop rules key on the shadcn slot attribute,
+        // not on the element, so a hand-rolled control inside a touch scope
+        // is invisible to them without it. This one sits in the mobile
+        // notifications sheet, which carries `data-mobile-shell-touch-scope`.
+        data-slot="button"
         onClick={props.onClick}
         aria-label={props.label}
         data-testid={props.testId}

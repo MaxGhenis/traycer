@@ -182,6 +182,11 @@ export function LandingDraftSurface() {
             <button
               type="button"
               data-testid="home-view-history"
+              // Its padding already clears the coarse-pointer target, but the
+              // slop is `max(100%, 44px)` and so can only ever hold it there.
+              // The slot is what puts the control under the scope's contract
+              // rather than leaving it to survive on its own spacing.
+              data-slot="button"
               className="mt-auto shrink-0 self-center pt-4 pb-safe-bottom-gutter text-ui-xs text-muted-foreground transition-colors active:text-foreground"
               onClick={() => {
                 setNavOpen(true);

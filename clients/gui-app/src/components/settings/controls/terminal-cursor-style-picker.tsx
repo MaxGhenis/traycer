@@ -46,6 +46,11 @@ export function TerminalCursorStylePicker(
           >
             <button
               type="button"
+              // Settings' hit-area slop selects on the slot attribute, not on
+              // the element. The slop is vertical-only, which is what this
+              // control needs: the three glyph segments are flush horizontally,
+              // so horizontal slop would let each capture its neighbour.
+              data-slot="button"
               aria-pressed={active}
               aria-label={style.label}
               onClick={() => {

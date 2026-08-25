@@ -28,6 +28,11 @@ export function ThemeModeToggle(props: ThemeModeToggleProps) {
           <button
             key={mode.id}
             type="button"
+            // Settings' hit-area slop selects on the slot attribute, not on the
+            // element, so a hand-rolled segment needs it to be reached. The
+            // slop is vertical-only and these three segments are flush
+            // horizontally, so none of them captures its neighbour's taps.
+            data-slot="button"
             onClick={() => {
               onChange(mode.id);
             }}

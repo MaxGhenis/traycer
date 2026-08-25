@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 
 interface HistoryRouteMatch {
   readonly search: { readonly historyQuery: string };
@@ -35,6 +35,9 @@ import { HistorySurface } from "@/components/epics/history-surface";
 
 describe("<HistorySurface />", () => {
   afterEach(() => {
+    // `globals: false`, so Testing Library registers no automatic teardown and
+    // a second render would find the first test's tree still mounted.
+    cleanup();
     testState.match = {
       search: { historyQuery: "api" },
       loaderData: { historyNowMs: 123 },
@@ -53,5 +56,25 @@ describe("<HistorySurface />", () => {
 
     expect(probe.dataset.historyQuery).toBe("api");
     expect(probe.dataset.historyNow).toBe("123");
+  });
+
+  it("puts the list chrome inside the home touch scope", () => {
+    // On a phone History is only ever this routed page - never the system-tab
+    // modal, whose host is the other place that carries this scope. The
+    // coarse-pointer hit-slop rules are DESCENDANT selectors rooted at the
+    // attribute, so the list has to sit under it, not merely beside it: the
+    // page's chrome (sort, filter, select, refresh) is the same `Button` set
+    // the modal renders, and without the scope those are the one History path
+    // a finger takes with no enlarged hit area at all.
+    render(<HistorySurface />);
+
+    const scope = screen
+      .getByTestId("history-surface")
+      .closest("[data-home-touch-scope]");
+
+    expect(scope).not.toBeNull();
+    expect(scope?.contains(screen.getByTestId("history-list-probe"))).toBe(
+      true,
+    );
   });
 });
