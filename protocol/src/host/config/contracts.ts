@@ -1,4 +1,7 @@
-import { defineRpcContract } from "@traycer/protocol/framework/index";
+import {
+  defineRpcContract,
+  defineUpgradePath,
+} from "@traycer/protocol/framework/index";
 import {
   configEnvDeleteRequestSchema,
   configEnvDeleteResponseSchema,
@@ -16,6 +19,7 @@ import {
   configShellGetResponseSchema,
   configShellListDetectedRequestSchema,
   configShellListDetectedResponseSchema,
+  configShellListDetectedResponseSchemaV10,
   configShellProbeRequestSchema,
   configShellProbeResponseSchema,
   configShellRemoveRequestSchema,
@@ -71,12 +75,42 @@ export const configShellRevertArgsV10 = defineRpcContract({
   responseSchema: configShellRevertArgsResponseSchema,
 });
 
-/** Shell discovery runs against the connected host's own filesystem. */
+/**
+ * Shell discovery runs against the connected host's own filesystem.
+ *
+ * v1.0 is frozen at the shape that shipped, before the WSL health probe; v1.1
+ * carries the optional `wslHealth` annotation. Additive growth on a released
+ * line takes the next MINOR, not a new major: `versioned-rpc.ts` rejects a
+ * major bump that carries no breaking change, and one optional field is not
+ * one. A peer that negotiated 1.0 keeps receiving the 1.0 shape because the
+ * transport re-parses the response through the frozen 1.0 schema, so the key
+ * only reaches a peer whose own wire contract describes it.
+ */
 export const configShellListDetectedV10 = defineRpcContract({
   method: "config.shell.listDetected",
   schemaVersion: { major: 1, minor: 0 } as const,
   requestSchema: configShellListDetectedRequestSchema,
+  responseSchema: configShellListDetectedResponseSchemaV10,
+});
+
+export const configShellListDetectedV11 = defineRpcContract({
+  method: "config.shell.listDetected",
+  schemaVersion: { major: 1, minor: 1 } as const,
+  requestSchema: configShellListDetectedRequestSchema,
   responseSchema: configShellListDetectedResponseSchema,
+});
+
+// The request is unchanged across the minor, and an unannotated 1.0 row is
+// already a valid 1.1 row - absence is the healthy/not-probed/not-wsl.exe
+// reading - so both halves of the upgrade are the identity.
+export const configShellListDetectedUpgradeV10ToV11 = defineUpgradePath<
+  typeof configShellListDetectedV10,
+  typeof configShellListDetectedV11
+>({
+  from: configShellListDetectedV10.schemaVersion,
+  to: configShellListDetectedV11.schemaVersion,
+  upgradeRequest: (request) => request,
+  upgradeResponse: (response) => response,
 });
 
 /** Shell executable probing runs against the connected host's filesystem. */

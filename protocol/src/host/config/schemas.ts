@@ -109,17 +109,35 @@ export type ConfigShellListDetectedRequest = z.infer<
   typeof configShellListDetectedRequestSchema
 >;
 
-export const configDetectedShellSchema = z.object({
+// ── Frozen protocol-1.0 detected-shell row (before the WSL health probe) ────
+// This is the shape `config.shell.listDetected@1.0` serializes, and the only
+// shape a peer that negotiated 1.0 ever described on the wire. `wslHealth`
+// rides 1.1 above it; the transport re-parses a 1.1 response through this
+// schema when the negotiated version is 1.0, which strips the key.
+export const configDetectedShellSchemaV10 = z.object({
   name: z.string(),
   path: shellPathSchema,
   isDefault: z.boolean(),
   source: z.enum(["detected", "added"]),
   missing: z.boolean(),
-  // Optional both ways: absent from hosts predating the probe, and absent on
-  // every healthy or non-WSL row. See `DetectedShell.wslHealth`.
+});
+export type ConfigDetectedShellV10 = z.infer<
+  typeof configDetectedShellSchemaV10
+>;
+
+export const configDetectedShellSchema = configDetectedShellSchemaV10.extend({
+  // Absent on every healthy or non-WSL row, and on every 1.0 payload. See
+  // `DetectedShell.wslHealth`.
   wslHealth: z.enum(["not-installed", "no-distro"]).optional(),
 });
 export type ConfigDetectedShell = z.infer<typeof configDetectedShellSchema>;
+
+export const configShellListDetectedResponseSchemaV10 = z.object({
+  shells: z.array(configDetectedShellSchemaV10),
+});
+export type ConfigShellListDetectedResponseV10 = z.infer<
+  typeof configShellListDetectedResponseSchemaV10
+>;
 
 export const configShellListDetectedResponseSchema = z.object({
   shells: z.array(configDetectedShellSchema),

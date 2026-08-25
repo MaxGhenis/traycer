@@ -243,7 +243,9 @@ import {
   configLogLevelsSetV10,
   configShellAddV10,
   configShellGetV10,
+  configShellListDetectedUpgradeV10ToV11,
   configShellListDetectedV10,
+  configShellListDetectedV11,
   configShellProbeV10,
   configShellRemoveV10,
   configShellResetV10,
@@ -3767,14 +3769,22 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
       downgradePathsFromLatest: {},
     },
   },
+  // 1.0 is frozen at the shape that shipped; 1.1 adds the optional `wslHealth`
+  // annotation. No cross-major downgrade is needed - a 1.0 peer negotiates 1.0
+  // within the same major, where the transport re-parses the response through
+  // the frozen 1.0 schema and strips the key.
   "config.shell.listDetected": {
     degrade: { kind: "unsupported" },
     1: {
-      latestMinor: 0,
+      latestMinor: 1,
       versions: {
         0: {
           contract: configShellListDetectedV10,
           upgradeFromPreviousVersion: null,
+        },
+        1: {
+          contract: configShellListDetectedV11,
+          upgradeFromPreviousVersion: configShellListDetectedUpgradeV10ToV11,
         },
       },
       downgradePathsFromLatest: {},
