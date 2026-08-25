@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@traycer/protocol/host";
 import { useHostQuery } from "@/hooks/host/use-host-query";
+import { hasWorkspaceReadFileTarget } from "@/lib/workspace/workspace-file-read-target";
 
 const WORKSPACE_FILE_PREVIEW_MAX_BYTES = 500_000;
 
@@ -26,11 +27,7 @@ export function useWorkspaceReadFile(
     method: "workspace.readFile",
     params,
     options: {
-      enabled:
-        workspacePath !== null &&
-        filePath !== null &&
-        workspacePath.length > 0 &&
-        filePath.length > 0,
+      enabled: hasWorkspaceReadFileTarget(workspacePath, filePath),
       staleTime: 5_000,
       // A fresh mount (closing and reopening a tab) must never surface a
       // stale cached read - the file may have changed externally while the

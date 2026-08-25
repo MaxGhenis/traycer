@@ -5,7 +5,9 @@ import {
   DiffContentPrimitive,
 } from "@/components/diff/diff-content-primitive";
 import { useSnapshotDiffQuery } from "@/hooks/snapshots/use-snapshot-diff-query";
+import { hasSnapshotDiffContentToRead } from "@/lib/diff/snapshot-diff-request";
 import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
+import { isHostQueryAwaitingData } from "@/lib/query/host-query-awaiting-data";
 import { FILE_EDIT_REASON_COPY } from "@/lib/chat/file-edit-reason-copy";
 import { buildSnapshotUnifiedPatch } from "@/lib/diff/snapshot-diff-patch";
 
@@ -50,7 +52,16 @@ export function SnapshotHashInlineDiff(props: {
     });
   }, [query.data, props.filePath]);
 
-  if (query.isLoading) {
+  // The read is disabled - and so reports `isLoading: false` - until the tab's
+  // host client resolves and its readiness lands. Falling through then would
+  // print a verdict about the owner's snapshot store for a read that has not
+  // been attempted.
+  if (
+    isHostQueryAwaitingData({
+      query,
+      requested: hasSnapshotDiffContentToRead(props),
+    })
+  ) {
     return (
       <div className="flex items-center gap-2 text-ui-sm text-muted-foreground">
         <AgentSpinningDots

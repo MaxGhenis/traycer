@@ -7,7 +7,9 @@ import { StartTruncatedText } from "@/components/ui/start-truncated-text";
 import { cn } from "@/lib/utils";
 import { buildSnapshotUnifiedPatch } from "@/lib/diff/snapshot-diff-patch";
 import { useSnapshotDiffQuery } from "@/hooks/snapshots/use-snapshot-diff-query";
+import { hasSnapshotDiffContentToRead } from "@/lib/diff/snapshot-diff-request";
 import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
+import { isHostQueryAwaitingData } from "@/lib/query/host-query-awaiting-data";
 import {
   payloadTruncationNotice,
   usePublishedChatSource,
@@ -175,7 +177,14 @@ function LiveFileChangeInlineDiff(props: { segment: FileChangeSegmentModel }) {
     <FileChangeDiffView
       segment={props.segment}
       data={query.data}
-      isLoading={query.isLoading}
+      // The read is disabled - and so reports `isLoading: false` - until the
+      // tab's host client resolves and its readiness lands, which is an
+      // ordinary cold-mount state. Falling through then would print a verdict
+      // about the snapshot store for a read that has not been attempted.
+      awaitingContent={isHostQueryAwaitingData({
+        query,
+        requested: hasSnapshotDiffContentToRead(props.segment),
+      })}
       truncation={null}
       // The local snapshot store either holds the blob or does not; there is no
       // wire to fail, so this arm has nothing to retry.
@@ -198,7 +207,10 @@ function PublishedFileChangeInlineDiff(props: {
     <FileChangeDiffView
       segment={props.segment}
       data={query.data}
-      isLoading={query.isLoading}
+      // Already the awaiting-an-answer fact rather than a TanStack flag: this
+      // arm reports it for a side that is pending without having failed, and
+      // reports `false` for a read it never asked for.
+      awaitingContent={query.isLoading}
       truncation={query.truncation}
       failure={query.failure}
     />
@@ -215,7 +227,12 @@ function FileChangeDiffView(props: {
         readonly reason: FileEditReason;
       }
     | undefined;
-  isLoading: boolean;
+  /**
+   * The read still owes a first answer - in flight, or waiting on a host to
+   * ask. Distinct from a read that came back without content, which is what
+   * the reason copy below describes.
+   */
+  awaitingContent: boolean;
   /**
    * Set when the content is a PREFIX. Always null on the live path, where the
    * snapshot store serves whole blobs; a cloud payload above the reader's
@@ -230,7 +247,7 @@ function FileChangeDiffView(props: {
    */
   failure: PayloadReadFailure | null;
 }) {
-  const { segment, data, isLoading } = props;
+  const { segment, data, awaitingContent } = props;
   const patch = useMemo(() => {
     if (data === undefined || data.reason !== "snapshot") {
       return null;
@@ -243,10 +260,7 @@ function FileChangeDiffView(props: {
     });
   }, [data, segment.filePath]);
 
-  // isLoading (not isPending): a disabled query (e.g. both hashes null) keeps
-  // isPending true forever; only show the spinner while genuinely fetching, and
-  // otherwise fall through to the reason copy.
-  if (isLoading) {
+  if (awaitingContent) {
     return (
       <div className="flex items-center gap-2 text-ui-sm text-muted-foreground">
         <AgentSpinningDots

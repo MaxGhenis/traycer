@@ -3,6 +3,8 @@ import { Button } from "@/components/ui/button";
 import { ReportIssueAction } from "@/components/report-issue/report-issue-action";
 import { StartTruncatedText } from "@/components/ui/start-truncated-text";
 import { useWorkspaceReadFile } from "@/hooks/workspace/use-read-file-query";
+import { hasWorkspaceReadFileTarget } from "@/lib/workspace/workspace-file-read-target";
+import { isHostQueryAwaitingData } from "@/lib/query/host-query-awaiting-data";
 import { useFileEditSession } from "@/hooks/workspace/use-file-edit-session";
 import { fileEditRuntimeRegistry } from "@/lib/workspace/file-edit-runtime-registry";
 import type { FileEditRuntime } from "@/lib/workspace/file-edit-runtime";
@@ -382,6 +384,15 @@ function WorkspaceFileTileLive(props: {
     node.filePath,
     undefined,
   );
+  // The read is disabled - and so reports `isLoading: false` - for as long as
+  // the tab's host client is unresolved or its readiness has not landed, which
+  // is an ordinary cold-mount state rather than an edge case. Every consumer
+  // below must treat that as "still waiting", or a tile that has asked for
+  // nothing yet reads as a file with nothing in it.
+  const awaitingContent = isHostQueryAwaitingData({
+    query,
+    requested: hasWorkspaceReadFileTarget(node.workspacePath, node.filePath),
+  });
   const rawContent = readFileContent(query.data);
   const payloadError = readFilePayloadError(query.data);
   const displayError = readFileDisplayError(
@@ -517,10 +528,13 @@ function WorkspaceFileTileLive(props: {
   // The preview content has loaded into a state the consume effect never runs
   // from - a host/payload error, or an empty/failed read (`renderedContent === null`).
   // Neither mounts the Diffs source renderer, so evict any pending target here rather
-  // than strand it on the channel (CL-5). The loading state is excluded: the
-  // content may still resolve to code and consume the target normally.
+  // than strand it on the channel (CL-5). A read still in flight is excluded: the
+  // content may still resolve to code and consume the target normally, and an
+  // eviction is not recoverable - the target is gone for the tile's life, so a
+  // deep link answered a paint too early lands at the top of the file instead
+  // of its line.
   const settledUnconsumable = isSettledUnconsumableWorkspaceFile({
-    isLoading: query.isLoading,
+    awaitingContent,
     hasError: displayError !== null,
     hasContent: renderedContent !== null,
   });
@@ -550,7 +564,7 @@ function WorkspaceFileTileLive(props: {
   // switches and remount, once the file content has loaded.
   const { scrollContainerRef, onScroll } = useNativeDivScrollRestoration(
     node.instanceId,
-    renderedContent !== null && !query.isLoading,
+    renderedContent !== null && !awaitingContent,
   );
 
   const publishFindEnvironment = useCallback((): void => {
@@ -642,7 +656,7 @@ function WorkspaceFileTileLive(props: {
     findEnvironmentRef.current = {
       viewMode: effectiveViewMode,
       content: findContent,
-      isLoading: query.isLoading,
+      awaitingContent,
       displayError,
       truncated,
       previewRoot: markdownPreviewRootRef.current,
@@ -650,11 +664,11 @@ function WorkspaceFileTileLive(props: {
     };
     publishFindEnvironment();
   }, [
+    awaitingContent,
     displayError,
     effectiveViewMode,
     findContent,
     publishFindEnvironment,
-    query.isLoading,
     revealSourceMatch,
     truncated,
   ]);
@@ -705,7 +719,7 @@ function WorkspaceFileTileLive(props: {
             displayError={displayError}
             reportContext={reportContext}
             fileName={node.name}
-            isLoading={query.isLoading}
+            awaitingContent={awaitingContent}
             language={language}
             viewMode={effectiveViewMode}
             revealLine={revealTarget?.line ?? null}
@@ -796,7 +810,12 @@ function WorkspaceFilePreviewContent(props: {
   readonly displayError: string | null;
   readonly reportContext: ReportIssueContext;
   readonly fileName: string;
-  readonly isLoading: boolean;
+  /**
+   * The read still owes a first answer - in flight, or waiting on a host to
+   * ask. Distinct from "the read came back with nothing", which is what every
+   * branch below this one describes.
+   */
+  readonly awaitingContent: boolean;
   readonly language: string;
   readonly viewMode: WorkspaceFileViewMode;
   readonly revealLine: number | null;
@@ -808,7 +827,7 @@ function WorkspaceFilePreviewContent(props: {
   readonly onMarkdownPreviewRootChange: (root: HTMLElement | null) => void;
   readonly onRevealConsumed: () => void;
 }) {
-  if (props.isLoading) {
+  if (props.awaitingContent) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
         <AgentSpinningDots
@@ -1043,11 +1062,12 @@ function hasEditableWorkspaceFileContent(
 }
 
 function isSettledUnconsumableWorkspaceFile(args: {
-  readonly isLoading: boolean;
+  /** The read still owes an answer, so nothing about it has settled yet. */
+  readonly awaitingContent: boolean;
   readonly hasError: boolean;
   readonly hasContent: boolean;
 }): boolean {
-  return !args.isLoading && (args.hasError || !args.hasContent);
+  return !args.awaitingContent && (args.hasError || !args.hasContent);
 }
 
 function conflictResolutionErrorMessage(error: unknown): string {

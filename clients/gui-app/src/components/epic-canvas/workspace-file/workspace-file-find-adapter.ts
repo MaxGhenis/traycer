@@ -31,7 +31,11 @@ export interface WorkspaceFileSourceFindTarget {
 export interface WorkspaceFileFindEnvironment {
   readonly viewMode: WorkspaceFileFindViewMode;
   readonly content: string | null;
-  readonly isLoading: boolean;
+  /**
+   * The file read still owes a first answer - in flight, or waiting on a host
+   * to ask. Distinct from a read that came back without content.
+   */
+  readonly awaitingContent: boolean;
   readonly displayError: string | null;
   readonly truncated: boolean;
   readonly previewRoot: HTMLElement | null;
@@ -53,7 +57,7 @@ const TRUNCATED_COVERAGE_MESSAGE =
 const EMPTY_ENVIRONMENT: WorkspaceFileFindEnvironment = {
   viewMode: "source",
   content: null,
-  isLoading: true,
+  awaitingContent: true,
   displayError: null,
   truncated: false,
   previewRoot: null,
@@ -391,7 +395,7 @@ function environmentStatus(
 function unavailableMessageFor(
   environment: WorkspaceFileFindEnvironment,
 ): string | null {
-  if (environment.isLoading) return "File is still loading.";
+  if (environment.awaitingContent) return "File is still loading.";
   if (environment.displayError !== null) return environment.displayError;
   if (environment.content === null) return "File content is unavailable.";
   return null;

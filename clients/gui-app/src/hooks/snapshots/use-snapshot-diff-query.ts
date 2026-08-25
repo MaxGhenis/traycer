@@ -4,6 +4,7 @@ import type { FileEditReason } from "@traycer/protocol/persistence/epic/content-
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@/lib/host";
 import { useHostQuery } from "@/hooks/host/use-host-query";
+import { hasSnapshotDiffContentToRead } from "@/lib/diff/snapshot-diff-request";
 
 /**
  * Lazy before/after fetch for a single `file_change` block's snapshot diff.
@@ -47,8 +48,7 @@ export function useSnapshotDiffQuery(args: {
     },
     options: {
       // Nothing to fetch when both sides are absent (would be an empty diff).
-      enabled:
-        args.enabled && (args.beforeHash !== null || args.afterHash !== null),
+      enabled: args.enabled && hasSnapshotDiffContentToRead(args),
       // A resolved `snapshot` is immutable (content-addressed) → cache forever.
       // A non-snapshot reason (blob_missing/binary/too_large) can be TRANSIENT
       // (host momentarily unreachable, blob not yet synced), so give it a
