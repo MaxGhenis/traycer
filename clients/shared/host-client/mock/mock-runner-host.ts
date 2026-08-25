@@ -608,7 +608,13 @@ export class MockRunnerHost implements IRunnerHost {
         return { outcome: "refresh-network", pair: null };
       }
       if (refreshed.kind === "rejected") {
-        return { outcome: "refresh-rejected", pair: null };
+        return {
+          outcome:
+            refreshed.rejection.kind === "account"
+              ? "refresh-rejected-account"
+              : "refresh-rejected-credential",
+          pair: null,
+        };
       }
       const next: StoredCredentials = {
         ...stored,

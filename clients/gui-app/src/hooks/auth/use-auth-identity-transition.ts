@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
+import { admitsLocalPlane, type AuthStatus } from "@/stores/auth/auth-store";
 
 /**
  * Discriminated transition classification emitted by `useAuthIdentityTransition`.
@@ -6,8 +7,10 @@ import { useEffect, useLayoutEffect, useRef } from "react";
  * - `signedIn` - the identity became signed-in. On the component's very first
  *   render `isInitialMount` is `true`; on a transition from `signed-out` /
  *   `signing-in` to `signed-in` it is `false`.
- * - `signedOut` - the identity dropped out of `signed-in` (sign-out, token
- *   rejection, or any other status flip off `signed-in`).
+ * - `signedOut` - the identity dropped out entirely (an explicit sign-out, or
+ *   a credentials file that is gone). NOT a token rejection or an unreachable
+ *   authn: those leave the stored identity in place as `unverified`, and the
+ *   account-scoped stores this drives must stay bound to it.
  * - `userSwitched` - the identity stayed `signed-in` but the ACCOUNT changed
  *   out from under the component (a new user took over the session).
  *
@@ -49,12 +52,12 @@ export type AuthIdentityTransition =
  * does not retrigger the classification effect; only `(status, userId)` do.
  */
 export function useAuthIdentityTransition(
-  status: string,
+  status: AuthStatus,
   userId: string | null,
   onTransition: (transition: AuthIdentityTransition) => void,
 ): void {
   const previous = useRef<{
-    readonly status: string;
+    readonly status: AuthStatus;
     readonly userId: string | null;
   } | null>(null);
   const callbackRef = useRef(onTransition);
@@ -69,10 +72,65 @@ export function useAuthIdentityTransition(
     const prior = previous.current;
     previous.current = { status, userId };
 
-    const isSignedIn = status === "signed-in";
-    const wasSignedIn = prior !== null && prior.status === "signed-in";
+    // Classified on IDENTITY PRESENCE, not on a cloud verdict. `unverified`
+    // holds a stored identity read from disk - the same account, the same
+    // `userId` - so an identity has NOT dropped out when a cold start cannot
+    // reach authn or a refresh is rejected.
+    //
+    // Both directions matter. Treating `unverified` as absent would fire
+    // `signedOut` on a rejection and PURGE the account-scoped local stores
+    // (reading positions are deleted from disk outright), which is exactly
+    // the in-progress local access a rejection must not tear down. And on an
+    // offline cold start it would never fire `signedIn` at all, so the app
+    // would mount with no composer settings, worktree memory, epic canvas or
+    // reading positions bound - a half-working shell over the local plane.
+    //
+    // Consumers that genuinely need a live CLOUD session gate on
+    // `status === "signed-in"` themselves (see `notifications-session-provider`),
+    // which is the right place for that question.
+    // AN ATTEMPT IS NOT A RETIREMENT. `signing-in` holds the prior identity
+    // rather than reading as absent, and a `signed-out` reached FROM it does
+    // not retire either.
+    //
+    // Without this, clicking "Sign in" while `unverified` fires `signedOut`
+    // and every lifecycle bridge runs its destructive arm - reading positions
+    // are deleted from disk outright - before any new identity exists. If the
+    // attempt then fails, recovery re-admits the SAME on-disk identity and the
+    // deleted state is already gone. The user pressed a button and lost local
+    // data belonging to the account they still have.
+    //
+    // Holding the `signing-in` edge alone is not enough, and that is worth
+    // stating because it looks sufficient: a failed attempt routes through
+    // `applyFailure`, which lands on `signed-out` before recovery re-admits, so
+    // the purge simply moves one transition later. The failure edge is safe to
+    // hold for a REASON rather than out of caution - `applyFailure` never
+    // touches the shared credentials file, so the identity provably still
+    // exists on disk at that moment.
+    //
+    // The retirement paths are unaffected: an explicit `signOut()` goes
+    // signed-in/unverified -> signed-out DIRECTLY, never through `signing-in`,
+    // and a different account adopted mid-attempt still emits `userSwitched`.
+    //
+    // RESIDUAL, stated rather than hidden: if the file turns out to be empty
+    // after a failed attempt, the retirement is deferred to a later genuine
+    // transition instead of firing here. That is the conservative direction -
+    // state kept a little too long rather than destroyed a little too early -
+    // and it is the direction this whole ticket is about.
+    const isHeldAttempt =
+      status === "signing-in" ||
+      (status === "signed-out" && prior?.status === "signing-in");
+    if (isHeldAttempt) {
+      // Keep the pre-attempt identity as `previous` so the eventual settled
+      // state is compared against what the user actually had, not against the
+      // attempt.
+      previous.current = prior;
+      return;
+    }
 
-    if (!wasSignedIn && isSignedIn) {
+    const hasIdentity = admitsLocalPlane(status);
+    const hadIdentity = prior !== null && admitsLocalPlane(prior.status);
+
+    if (!hadIdentity && hasIdentity) {
       callbackRef.current({
         kind: "signedIn",
         userId,
@@ -80,11 +138,11 @@ export function useAuthIdentityTransition(
       });
       return;
     }
-    if (wasSignedIn && !isSignedIn) {
+    if (hadIdentity && !hasIdentity) {
       callbackRef.current({ kind: "signedOut" });
       return;
     }
-    if (wasSignedIn && isSignedIn && prior.userId !== userId) {
+    if (hadIdentity && hasIdentity && prior.userId !== userId) {
       callbackRef.current({ kind: "userSwitched", userId });
     }
   }, [status, userId]);

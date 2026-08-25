@@ -18,6 +18,7 @@ import {
   AUTH_ERROR_DEVICE_DENIED,
   AUTH_ERROR_DEVICE_EXPIRED,
   AUTH_ERROR_LAUNCH_FAILED,
+  AUTH_ERROR_ACCOUNT_UNAVAILABLE,
   AUTH_ERROR_SESSION_EXPIRED,
   AUTH_ERROR_SIGN_IN_FAILED,
   AUTH_ERROR_STORE_UNAVAILABLE,
@@ -682,6 +683,92 @@ describe("AuthService", () => {
     expect(refreshCalls).toEqual([]);
   });
 
+  it("does not spend the repair refresh rotation when fetchUserSessions is read from an unverified (no-verdict) session", async () => {
+    // `unverified` holds a REAL bearer read off disk - the whole point of
+    // the local-admission ticket - so `captureLiveSessionAuthority()` (and
+    // `isLiveSessionAuthority`) return non-null/true here exactly as they do
+    // once signed in: nothing downstream of `cloudBearer()`'s gate can tell
+    // the difference on its own. `fetchUserSessions` begins with
+    // `this.cloudBearer() === null` for exactly this reason - without it, a
+    // Devices & Sessions panel poll (every 30s) reached while `unverified`
+    // would fall through to the SAME repair path a signed-in reader hits
+    // (see "refreshes and refetches when a running desktop session predates
+    // tracking" above), spending a single-use `/api/v3/auth/refresh`
+    // rotation that belongs to the recovery loop's own backoff.
+    //
+    // Asserted on the SPEND itself (a spy on the mock's own `rotate`, the
+    // exact seam `AuthTokenStore.rotate` / `forceRefreshExpectedSession`
+    // call through) rather than on an absence of some downstream effect -
+    // a fetch count can read zero for an unrelated reason, but this spy
+    // is wired to the one function a locked rotate can possibly reach.
+    const { service, host } = makeService();
+    await host.tokenStore.signIn(
+      { token: "stored-token", refreshToken: "stored-token-refresh" },
+      { id: "user-1", email: "test@example.com", name: "Test User" },
+    );
+    restoreFetch();
+    restoreFetch = installFetch(() =>
+      Promise.reject(new Error("authn unreachable")),
+    );
+
+    await service.start();
+    expect(useAuthStore.getState().status).toBe("unverified");
+
+    restoreFetch();
+    const rotateSpy = vi.spyOn(host.tokenStore, "rotate");
+    const sessionsRequests: string[] = [];
+    restoreFetch = installFetch((input, init) => {
+      const url = typeof input === "string" ? input : String(input);
+      if (url === SESSIONS_URL) {
+        sessionsRequests.push(String(init?.headers?.Authorization));
+        // The exact response shape that - from a SIGNED-IN reader - drives
+        // the repair path straight into a rotate (see the sibling tests
+        // above): no identified current session in the list.
+        return okWithSessions([]);
+      }
+      if (url === REFRESH_URL) {
+        // Reachable ONLY through a spent rotation. Answering it at all
+        // would let a broken gate pass by accident (a bearer-less caller
+        // could never reach this URL either way) - the `rotateSpy`
+        // assertion below is what actually pins the gate.
+        return okWithRefreshToken("must-not-be-minted");
+      }
+      if (url === VALIDATION_URL) {
+        return okWithProfile();
+      }
+      return status(500);
+    });
+
+    // Settle the promise WITHOUT asserting on how it settled, so the spy
+    // assertion below is the first thing that can fail. Ablate the gate and
+    // production reaches the repair path, spends the rotate, and then throws
+    // ("Couldn't register this signed-in session yet.") - so an
+    // `await expect(...).rejects` here would report the THROW as the red, one
+    // step downstream of the sentence this test is named after. Worse, it
+    // would be a false red on correct code: the green path never reaches that
+    // throw, so asserting a rejection would fail on a tree with no defect.
+    let threw = false;
+    const result = await service
+      .fetchUserSessions(liveQuerySignal())
+      .catch(() => {
+        threw = true;
+        return null;
+      });
+
+    // THE MECHANISM: the single-use refresh rotation was never spent. First,
+    // so the ablation's red names this and not the throw behind it.
+    expect(rotateSpy).not.toHaveBeenCalled();
+    // ...and the green path really does return rather than throwing, so the
+    // `catch` above can never hide a regression into that repair path.
+    expect(threw).toBe(false);
+    expect(result).toBeNull();
+    // The list read itself never went out either - `unverified` holds no
+    // verdict to read a session list FOR.
+    expect(sessionsRequests).toEqual([]);
+    // Reading from an unverified session must not itself change it.
+    expect(useAuthStore.getState().status).toBe("unverified");
+  });
+
   it("rotates the live lease in place when a snapshot re-signs-in the SAME user", async () => {
     // "Same user => same context object" is load-bearing beyond this file:
     // the remote-session cache keys its auth epoch on the lease SOURCE, and
@@ -1112,8 +1199,9 @@ describe("AuthService", () => {
     }
     await start;
 
-    // No verdict yet: signed out but NOT expired, and zero refresh spends.
-    expect(useAuthStore.getState().status).toBe("signed-out");
+    // No verdict yet: the local plane is admitted but NOT expired, and zero
+    // refresh spends.
+    expect(useAuthStore.getState().status).toBe("unverified");
     expect(service.getLastError()).toBeNull();
     expect(collapseConsecutiveCalls(calls)).toEqual([`GET ${VALIDATION_URL}`]);
     expect(
@@ -1125,8 +1213,11 @@ describe("AuthService", () => {
     validationAnswers = true;
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(useAuthStore.getState().status).toBe("signed-out");
-    expect(service.getCurrentSessionSnapshot().token).toBeNull();
+    // The CLOUD session is over - hence the session-expired copy - but the
+    // credentials file is kept, so the identity that names this machine's
+    // local epics survives and the local plane is held rather than torn down.
+    expect(useAuthStore.getState().status).toBe("unverified");
+    expect(service.getCurrentSessionSnapshot().token).toBe("stale-token");
     expect(service.getLastError()).toBe(AUTH_ERROR_SESSION_EXPIRED);
     // Automatic failures never destroy the shared file (tech plan §5).
     expect(await host.tokenStore.get()).toEqual(
@@ -1137,7 +1228,7 @@ describe("AuthService", () => {
     );
   });
 
-  it("UI-only signs out with session-expired when validation rejects with 401 on start()", async () => {
+  it("holds the local plane with session-expired when validation rejects with 401 on start()", async () => {
     const { service, host } = makeService();
     await host.tokenStore.signIn(
       { token: "revoked-token", refreshToken: "revoked-token-refresh" },
@@ -1148,15 +1239,15 @@ describe("AuthService", () => {
 
     await service.start();
 
-    expect(useAuthStore.getState().status).toBe("signed-out");
-    expect(service.getCurrentSessionSnapshot().token).toBeNull();
+    expect(useAuthStore.getState().status).toBe("unverified");
+    expect(service.getCurrentSessionSnapshot().token).toBe("revoked-token");
     expect(service.getLastError()).toBe(AUTH_ERROR_SESSION_EXPIRED);
     expect(await host.tokenStore.get()).toEqual(
       expectedStored("revoked-token", "revoked-token-refresh"),
     );
   });
 
-  it("UI-only signs out with session-expired when validation rejects with 404 on start()", async () => {
+  it("HOLDS the local plane when validation rejects with 404 on start() - the account is gone, the epics on this disk are not", async () => {
     const { service, host } = makeService();
     await host.tokenStore.signIn(
       {
@@ -1170,14 +1261,29 @@ describe("AuthService", () => {
 
     await service.start();
 
-    expect(useAuthStore.getState().status).toBe("signed-out");
-    expect(service.getLastError()).toBe(AUTH_ERROR_SESSION_EXPIRED);
+    // authn answers 404 when `getUser()` throws `UserNotFoundError` - the
+    // account row is gone - so this is a verdict about the ACCOUNT, and it is
+    // classified `refresh-rejected-account` rather than collapsed in with the
+    // token rejections. What that classification DOES is a product ruling, and
+    // the ruling is to hold: gating the renderer here is unenforceable, because
+    // the host serves local-homed epics with zero `/api/v3/user` calls and the
+    // CLI reads the same files, so refusing to render them deletes nothing and
+    // inconveniences only the legitimate owner.
+    expect(useAuthStore.getState().status).toBe("unverified");
+    // TERMINAL, not an expiry - re-authenticating as the same account cannot
+    // succeed, so the copy must not say "sign in again". This error is what
+    // `SignInErrorMessage` and the toast bridge render under `unverified`; both
+    // were keyed on `signed-out` until this arm started holding.
+    expect(service.getLastError()).toBe(AUTH_ERROR_ACCOUNT_UNAVAILABLE);
+    // The FILE survives regardless: only an explicit user sign-out destroys
+    // credentials (tech plan §5), and a status code is not corroboration enough
+    // to delete machine-shared state on the server's behalf.
     expect(await host.tokenStore.get()).toEqual(
       expectedStored("missing-user-token", "missing-user-token-refresh"),
     );
   });
 
-  it("UI-only signs out when a 200 response has no usable profile on start()", async () => {
+  it("holds the local plane when a 200 response has no usable profile on start()", async () => {
     const { service, host } = makeService();
     await host.tokenStore.signIn(
       { token: "profileless-token", refreshToken: "profileless-token-refresh" },
@@ -1190,8 +1296,8 @@ describe("AuthService", () => {
 
     await service.start();
 
-    expect(useAuthStore.getState().status).toBe("signed-out");
-    expect(service.getCurrentSessionSnapshot().token).toBeNull();
+    expect(useAuthStore.getState().status).toBe("unverified");
+    expect(service.getCurrentSessionSnapshot().token).toBe("profileless-token");
     expect(service.getLastError()).toBe(AUTH_ERROR_SESSION_EXPIRED);
     expect(await host.tokenStore.get()).toEqual(
       expectedStored("profileless-token", "profileless-token-refresh"),
@@ -1219,7 +1325,7 @@ describe("AuthService", () => {
     expect(await host.tokenStore.get()).toBeNull();
   });
 
-  it("UI-only signs out (file kept, no session-expired) when startup stays offline", async () => {
+  it("admits the local plane (file kept, no session-expired) when startup stays offline", async () => {
     // Transient refresh-network does not destroy the file and does not claim
     // a dead credential (H1 / §5).
     vi.useFakeTimers();
@@ -1243,8 +1349,8 @@ describe("AuthService", () => {
     }
     await start;
 
-    expect(useAuthStore.getState().status).toBe("signed-out");
-    expect(service.getCurrentSessionSnapshot().token).toBeNull();
+    expect(useAuthStore.getState().status).toBe("unverified");
+    expect(service.getCurrentSessionSnapshot().token).toBe("offline-token");
     expect(await host.tokenStore.get()).toEqual(
       expectedStored("offline-token", "offline-token-refresh"),
     );
@@ -1297,7 +1403,11 @@ describe("AuthService", () => {
     );
     // Let the reconcile settle: validate 401 -> recovery scheduled.
     await vi.advanceTimersByTimeAsync(0);
-    expect(useAuthStore.getState().status).toBe("signed-out");
+    // HOLDS rather than clearing. The rejection is a verdict about the FILE's
+    // token; the identity it names is still on disk, so the plane is held while
+    // the recovery loop owns the rotate. Clearing here used to sign out a window
+    // that was working offline on a different bearer entirely.
+    expect(useAuthStore.getState().status).toBe("unverified");
 
     // First recovery tick: validate 401 -> locked rotate -> fresh pair -> in.
     await vi.advanceTimersByTimeAsync(1_000);
@@ -1338,7 +1448,7 @@ describe("AuthService", () => {
       await vi.advanceTimersByTimeAsync(authRetryDelayMs(retry));
     }
     await start;
-    expect(useAuthStore.getState().status).toBe("signed-out");
+    expect(useAuthStore.getState().status).toBe("unverified");
 
     reachable = true;
     // First recovery tick fires after the initial 1s backoff.
@@ -1383,10 +1493,18 @@ describe("AuthService", () => {
       await vi.advanceTimersByTimeAsync(authRetryDelayMs(retry));
     }
     await start;
-    expect(useAuthStore.getState().status).toBe("signed-out");
+    // Authn was unreachable, so the local plane is admitted against the
+    // identity still on disk at this point.
+    expect(useAuthStore.getState().status).toBe("unverified");
 
     reachable = true;
     await vi.advanceTimersByTimeAsync(1_000);
+    // The probe came back VALID, but the file was deleted while it was in
+    // flight, so the tick must not promote this to a real session. It is
+    // `signed-out` rather than still-`unverified` because the delete also
+    // reached the watcher, and a reconcile that reads an absent file RETIRES
+    // the local plane: that plane is held on behalf of an identity ON DISK,
+    // and there is no longer one.
     expect(useAuthStore.getState().status).toBe("signed-out");
 
     // And it settles instead of spinning: the next tick reads an absent file.
@@ -1425,7 +1543,7 @@ describe("AuthService", () => {
       await vi.advanceTimersByTimeAsync(authRetryDelayMs(retry));
     }
     await start;
-    expect(useAuthStore.getState().status).toBe("signed-out");
+    expect(useAuthStore.getState().status).toBe("unverified");
 
     // Several recovery ticks with /user still down: zero refresh spends.
     for (let tick = 0; tick < 4; tick += 1) {
@@ -1435,7 +1553,7 @@ describe("AuthService", () => {
       }
     }
     expect(refreshCalls).toBe(0);
-    expect(useAuthStore.getState().status).toBe("signed-out");
+    expect(useAuthStore.getState().status).toBe("unverified");
 
     // The probe recovers: the next tick adopts the stored pair AS-IS.
     userReachable = true;
@@ -1477,7 +1595,8 @@ describe("AuthService", () => {
       { id: "user-a", email: "a@example.com", name: "A" },
     );
     await vi.advanceTimersByTimeAsync(0);
-    expect(useAuthStore.getState().status).toBe("signed-out");
+    // Held, not cleared - same reason as the sibling reconcile test above.
+    expect(useAuthStore.getState().status).toBe("unverified");
 
     // Recovery tick: validate 401 -> locked rotate -> refresh HANGS in flight.
     await vi.advanceTimersByTimeAsync(1_000);
@@ -1594,7 +1713,7 @@ describe("AuthService", () => {
     for (let retry = 1; retry < AUTH_FETCH_MAX_ATTEMPTS; retry += 1) {
       await vi.advanceTimersByTimeAsync(authRetryDelayMs(retry));
     }
-    expect(useAuthStore.getState().status).toBe("signed-out");
+    expect(useAuthStore.getState().status).toBe("unverified");
 
     reachable = true;
     await vi.advanceTimersByTimeAsync(1_000);
@@ -1629,8 +1748,10 @@ describe("AuthService", () => {
     const start = service.start();
     await start;
 
-    expect(useAuthStore.getState().status).toBe("signed-out");
-    expect(service.getCurrentSessionSnapshot().token).toBeNull();
+    // The refresh was TRANSIENT (503), so no verdict is held and no dead
+    // credential is claimed - the local plane is admitted meanwhile.
+    expect(useAuthStore.getState().status).toBe("unverified");
+    expect(service.getCurrentSessionSnapshot().token).toBe("fail-closed-token");
     expect(await host.tokenStore.get()).toEqual(
       expectedStored("fail-closed-token", "fail-closed-token-refresh"),
     );
@@ -1669,11 +1790,12 @@ describe("AuthService", () => {
 
     await service.start();
 
-    expect(useAuthStore.getState().status).toBe("signed-out");
-    expect(service.getCurrentSessionSnapshot().token).toBeNull();
-    // `refresh-rejected` is terminal for the SESSION (session-expired copy),
-    // but only an explicit sign-out destroys the credentials file - so the
-    // pair survives for a later re-auth (H1 / §5).
+    expect(useAuthStore.getState().status).toBe("unverified");
+    expect(service.getCurrentSessionSnapshot().token).toBe("rejected-token");
+    // `refresh-rejected` is terminal for the CLOUD session (session-expired
+    // copy), but only an explicit sign-out destroys the credentials file - so
+    // the pair survives for a later re-auth (H1 / §5), and with it the
+    // identity the local plane is held against.
     expect(await host.tokenStore.get()).toEqual(
       expectedStored("rejected-token", "rejected-token-refresh"),
     );
@@ -2218,7 +2340,7 @@ describe("AuthService", () => {
       expect(service.getLastError()).toBeNull();
     });
 
-    it("signs the user out and surfaces SESSION_EXPIRED on rejected", async () => {
+    it("HOLDS the local plane and surfaces SESSION_EXPIRED on rejected", async () => {
       const { service, host } = makeService();
       await service.start();
       await deviceSignIn(service, host, "to-be-revoked");
@@ -2227,9 +2349,16 @@ describe("AuthService", () => {
       restoreFetch = installFetch(() => status(401));
 
       const outcome = await service.revalidateCurrentContext();
+      // The REQUEST is still rejected - a dead credential cannot authorize it.
       expect(outcome?.kind).toBe("rejected");
-      expect(useAuthStore.getState().status).toBe("signed-out");
-      expect(service.getCurrentSessionSnapshot().token).toBeNull();
+      // ...but the SESSION is demoted, not cleared (cold-review P1-4). A mid-
+      // session expiry is a verdict about the token; the person is still at the
+      // keyboard and their epics are still on this disk.
+      expect(useAuthStore.getState().status).toBe("unverified");
+      // The bearer is RETAINED, deliberately: its access token keeps its own
+      // TTL (the refresh token is what died) and it is the credential the host
+      // serves the local plane on.
+      expect(service.getCurrentSessionSnapshot().token).toBe("to-be-revoked");
       expect(service.getLastError()).toBe(AUTH_ERROR_SESSION_EXPIRED);
     });
 
@@ -3020,7 +3149,7 @@ describe("AuthService", () => {
       );
     });
 
-    it("reactive refresh-rejected is UI-only (file kept, session-expired)", async () => {
+    it("reactive refresh-rejected demotes to unverified (file kept, session-expired)", async () => {
       const { service, host } = makeService();
       await service.start();
       await deviceSignIn(service, host, "dead-token");
@@ -3039,7 +3168,10 @@ describe("AuthService", () => {
 
       const outcome = await service.revalidateCurrentContext();
       expect(outcome?.kind).toBe("rejected");
-      expect(useAuthStore.getState().status).toBe("signed-out");
+      // Demoted rather than signed out - see the sibling test above and P1-4.
+      // The file was already kept before this change; what is new is that the
+      // UI no longer throws the user out of local work while it happens.
+      expect(useAuthStore.getState().status).toBe("unverified");
       expect(service.getLastError()).toBe(AUTH_ERROR_SESSION_EXPIRED);
       expect(await host.tokenStore.get()).toEqual(
         expectedStored("dead-token", "dead-token-refresh"),

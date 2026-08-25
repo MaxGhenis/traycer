@@ -97,6 +97,23 @@ export class SupersededAuthEraError extends Error {
 // Stored-session recovery backoff bounds (see `sessionRecoveryTimer`).
 const SESSION_RECOVERY_INITIAL_DELAY_MS = 1_000;
 const SESSION_RECOVERY_MAX_DELAY_MS = 30_000;
+/**
+ * The steady-state ceiling once the local plane has been admitted.
+ *
+ * The 30s ceiling above was chosen when a failure to validate meant the user
+ * was LOCKED OUT: re-probing hard was the only way to let them back into the
+ * app, so the cost was worth it. Each probe is up to
+ * `AUTH_FETCH_MAX_ATTEMPTS` (3) `/api/v3/user` requests, so that ceiling is
+ * ~5.7 requests/minute sustained forever against a server we already know is
+ * unreachable.
+ *
+ * Once `unverified` is projected that justification is gone - the user is
+ * already in the app, working against local disk - and the loop's job narrows
+ * to noticing when the network comes back. Five minutes does that at roughly a
+ * tenth of the traffic. The early ramp is deliberately unchanged: a short blip
+ * still recovers in seconds, which is what the fast ramp is for.
+ */
+const SESSION_RECOVERY_ADMITTED_MAX_DELAY_MS = 300_000;
 
 export interface AuthServiceOptions {
   readonly runnerHost: IRunnerHost;
@@ -188,6 +205,19 @@ export const AUTH_ERROR_SESSION_EXPIRED = "session-expired";
  */
 export const AUTH_ERROR_SIGN_IN_FAILED = "sign-in-failed";
 
+/**
+ * Stable error identifier for an ACCOUNT-scoped rejection - authn answered
+ * 403/404 for this user, so the server's verdict is about the account rather
+ * than the token.
+ *
+ * Distinct from {@link AUTH_ERROR_SESSION_EXPIRED} because that copy ("sign in
+ * again") describes a RECOVERABLE state, and this one is not: signing in again
+ * with the same account cannot succeed. Telling someone whose account is gone
+ * to sign in again sends them round a loop that has no exit, and the loop looks
+ * like our bug rather than their account state.
+ */
+export const AUTH_ERROR_ACCOUNT_UNAVAILABLE = "account-unavailable";
+
 function classifyAuthFailureForLog(error: string): string {
   if (
     error === AUTH_ERROR_LAUNCH_FAILED ||
@@ -277,9 +307,27 @@ type ValidationOutcome = AuthIdentityValidationResult;
  *   - `signed-out` → a terminal outcome cleared the UI session (file kept);
  *   - `transient`  → a `lock-busy`/`refresh-network` retry; state untouched.
  */
+/**
+ * What a live same-user rotation did. These name the fate of the REQUEST that
+ * triggered the rotation, which since `unverified` arrived is no longer the
+ * same thing as the fate of the session:
+ *
+ *  - `rotated`        - a fresh pair is live; re-drive the request.
+ *  - `signed-out`     - the UI session was cleared; the request cannot proceed.
+ *  - `credential-dead`- the refresh token is terminally rejected, so the request
+ *                       cannot proceed EITHER, but the session was demoted to
+ *                       `unverified` rather than cleared and the local plane is
+ *                       still live. Distinct from `signed-out` because the two
+ *                       leave the app in opposite states, and distinct from
+ *                       `transient` because a dead credential must NOT be
+ *                       retried - callers map `transient` to `network-error`,
+ *                       which is precisely an instruction to try again.
+ *  - `transient`      - nothing terminal; the bearer in hand is still usable.
+ */
 type SameUserRotateResult =
   | { readonly status: "rotated"; readonly token: string }
   | { readonly status: "signed-out" }
+  | { readonly status: "credential-dead" }
   | { readonly status: "transient" };
 
 /**
@@ -329,9 +377,18 @@ export class AuthService {
   /**
    * Persistence-only retained bearer. Mirrors the credential lease on the
    * current `RequestContext` and is kept here so cross-window projection
-   * (windows-bridge) and the persisted token store can read the bearer
-   * without going through `ctx.credentials.getBearerToken()`. Host /
-   * runtime consumers must NEVER read this - they thread the context.
+   * (windows-bridge) and the persisted token store can read the bearer without
+   * reaching through a context - a reach that is now lint-fenced outside the
+   * two host-local transport files
+   * (`eslint/traycer-cloud-bearer-fence-rules.mjs`), so this field is the
+   * sanctioned alternative rather than merely the convenient one. Host /
+   * runtime consumers must NEVER read it - they thread the context.
+   *
+   * Inside this class it has TWO classes of reader and they are not
+   * interchangeable: the auth machinery's own recovery reads it directly, and
+   * every cloud product call goes through {@link cloudBearer}, which withholds
+   * it unless a `/api/v3/user` verdict is held. Read that method before adding
+   * a third caller.
    */
   private currentBearer: string | null = null;
   /**
@@ -443,6 +500,32 @@ export class AuthService {
   private sessionRecoveryTimer: number | null = null;
   private sessionRecoveryDelayMs: number = SESSION_RECOVERY_INITIAL_DELAY_MS;
   private sessionRecoveryAttempt: number = 0;
+  // Single-flight for the ASYNC probe, distinct from `sessionRecoveryTimer`
+  // which only covers the WAIT before it (cold review P2-6). The timer nulls
+  // itself the instant it fires, so between that and the probe settling there
+  // is a window - three `withAuthNetworkRetry` attempts wide - in which the
+  // loop looks idle to anything that checks the timer. A wake landing there
+  // would start a second, concurrent probe, and repeated wakes would keep
+  // doing so, which is how the ticket's "18 calls in minute one, 5.7/min at
+  // cap" stopped being a ceiling.
+  private sessionRecoveryInFlight: boolean = false;
+  // A wake that arrived DURING a probe. The probe re-arms from the floor when
+  // it settles rather than being raced; deferring keeps the wake's intent
+  // (re-try now, discard the accumulated backoff) without its concurrency.
+  private sessionRecoveryRerunRequested: boolean = false;
+  // Set when authn issued a TERMINAL verdict on the stored refresh token - a
+  // rejection, as opposed to an unreachable authn. `settleSessionRecovery`
+  // disarms the loop either way, but disarming is not remembering: the wake
+  // nudge re-arms any unverified session on `online` / OS resume, so without
+  // this a terminal 404 was re-POSTed on every laptop open, forever, against a
+  // credential the server had already refused.
+  //
+  // Distinct from "settled" on purpose. A session settled because authn was
+  // unreachable SHOULD re-probe on wake - that is the event it is waiting for.
+  // A session settled because the credential is dead has nothing a network
+  // event can change, and only a new credential (interactive sign-in, or a
+  // sibling writing a fresh pair) can clear this.
+  private sessionRecoveryTerminallyRejected: boolean = false;
 
   constructor(options: AuthServiceOptions) {
     this.runnerHost = options.runnerHost;
@@ -485,11 +568,13 @@ export class AuthService {
     this.wakeDisposers.push(
       onWakeReconnect(() => {
         this.refreshScheduler.notifyResumed();
+        this.nudgeSessionRecoveryOnWake();
       }),
     );
     try {
       const resume = this.runnerHost.onSystemResumed(() => {
         this.refreshScheduler.notifyResumed();
+        this.nudgeSessionRecoveryOnWake();
       });
       this.wakeDisposers.push(() => resume.dispose());
     } catch (error) {
@@ -583,6 +668,34 @@ export class AuthService {
     }
     if (snapshot.status === "signed-out") {
       if (!this.isIdentityCurrent(generation)) {
+        return;
+      }
+      // STALE-BASELINE FENCE (cold review P1-1). An inbound `signed-out` may
+      // not clear a locally-`unverified` session.
+      //
+      // The bridge deliberately never PUBLISHES `unverified` - it is this
+      // window's local statement that it could not reach authn, and the desktop
+      // snapshot has no member for it. The consequence is the defect: on a cold
+      // desktop start where `start()` lands on `unverified`, nothing is ever
+      // written outbound, so the main process still holds the `signed-out` its
+      // constructor initialised it to. The bridge's delayed `authSession.get()`
+      // then reads that INITIALISER - not a sibling's decision - and, because no
+      // identity transition happened in between, the generation fence above lets
+      // it through and it tears down the plane this ticket just admitted.
+      //
+      // Withholding is safe because no sibling can ever have MEANT this: a
+      // window that genuinely signed out advances identity generation and
+      // publishes a real transition, and a real sign-out also DELETES the shared
+      // credentials file - which retires the plane through the reconcile watcher
+      // and the recovery loop's `no-stored-session` arm, neither of which
+      // consults this projection. The file is the authority for "there is no
+      // session"; this channel only carries "a sibling changed session", and an
+      // unwritten baseline carries nothing at all.
+      if (useAuthStore.getState().status === "unverified") {
+        appLogger.debug(
+          "[auth] withholding an inbound signed-out from an unverified session",
+          {},
+        );
         return;
       }
       if (
@@ -703,6 +816,13 @@ export class AuthService {
           "[auth] stored session could not be validated at startup",
           {},
         );
+        // Authn is unreachable, but this machine's epics are not: the host
+        // serves local-homed data from disk with no network call at all.
+        // Project the stored identity as `unverified` so the renderer mounts
+        // the app around that local plane instead of parking the user on the
+        // sign-in page in front of their own data. Recovery stays armed and
+        // upgrades this to a real signed-in session when authn returns.
+        this.applyUnverifiedSession(stored);
         this.scheduleSessionRecovery("startup:validate-network");
         return;
       }
@@ -815,13 +935,13 @@ export class AuthService {
         token: stored.token,
       });
     } catch (error) {
-      if (!stillWanted() || this.hasLiveBearer()) {
+      if (!stillWanted() || this.hasVerifiedSession()) {
         return;
       }
       this.markStoreUnavailable(`${trigger}.rotate`, error);
       return;
     }
-    if (!stillWanted() || this.hasLiveBearer()) {
+    if (!stillWanted() || this.hasVerifiedSession()) {
       return;
     }
     appLogger.info("[auth] stored-session rotate outcome", {
@@ -836,7 +956,7 @@ export class AuthService {
       // The rotated pair carries only the cached identity; re-validate it
       // (access-only) to mint the full `AuthenticatedUser` the context needs.
       const revalidated = await this.validateToken(pair.token);
-      if (!stillWanted() || this.hasLiveBearer()) {
+      if (!stillWanted() || this.hasVerifiedSession()) {
         return;
       }
       if (revalidated.kind === "valid") {
@@ -847,7 +967,7 @@ export class AuthService {
           this.scheduleSessionRecovery(`${trigger}:rotated-pair-superseded`);
           return;
         }
-        if (!stillWanted() || this.hasLiveBearer()) {
+        if (!stillWanted() || this.hasVerifiedSession()) {
           return;
         }
         this.settleSessionRecovery("recovered");
@@ -856,20 +976,25 @@ export class AuthService {
       }
       if (revalidated.kind === "network-error") {
         // The rotated pair is committed on disk; only the identity probe
-        // blipped. Signed-out UI for now - the retry re-validates without
-        // spending anything.
-        this.clearUiSessionIfSignedIn();
+        // blipped. Admit the local plane on the ROTATED token (the one now on
+        // disk, not the stale `stored.token` we came in with) and let the
+        // retry re-validate without spending anything.
+        this.applyUnverifiedSession({ token: pair.token, user: stored.user });
         this.scheduleSessionRecovery(`${trigger}:post-rotate-network`);
         return;
       }
       // A freshly-rotated pair the server rejects outright: terminal
-      // server-side state (epoch revoke / sign-out-everywhere).
+      // server-side state (epoch revoke / sign-out-everywhere). The cloud
+      // session is over, but the epics on this disk are still this user's:
+      // hold the local plane rather than tearing it down mid-use. The error
+      // copy is what tells them to sign in again.
       this.setLastError(AUTH_ERROR_SESSION_EXPIRED);
-      this.clearUiSessionIfSignedIn();
+      this.applyUnverifiedSession({ token: pair.token, user: stored.user });
+      this.sessionRecoveryTerminallyRejected = true;
       this.settleSessionRecovery("rotated-pair-rejected");
       return;
     }
-    this.applyUnadoptedStoredRotateOutcome(rotated.outcome, trigger);
+    this.applyUnadoptedStoredRotateOutcome(rotated.outcome, trigger, stored);
   }
 
   /**
@@ -880,19 +1005,91 @@ export class AuthService {
   private applyUnadoptedStoredRotateOutcome(
     outcome: TokenRotateOutcome,
     trigger: string,
+    stored: StoredCredentials,
   ): void {
+    // This switch is where the CREDENTIAL-scoped / ACCOUNT-scoped line is
+    // actually enforced; the line itself is stated at the `AuthStatus`
+    // definition in `stores/auth/auth-store.ts`. Read it before moving a case
+    // across the boundary.
     switch (outcome) {
-      case "refresh-rejected":
-        // Genuine dead credential: "session expired" copy, file kept.
+      case "refresh-rejected-credential":
+        // CREDENTIAL-scoped: a verdict about a TOKEN, not about the account or
+        // the person. The file is deliberately KEPT here, and with it the
+        // identity that names this machine's local epics - so the person at
+        // the keyboard is still who the disk says, and holding the plane
+        // grants them nothing they did not already have. A dead credential
+        // ends the CLOUD session; it is not grounds to evict someone from data
+        // on their own disk that the host serves without asking authn
+        // anything. The "session expired" copy (surfaced by
+        // `AuthSessionExpiredToastBridge`, which MUST admit `unverified` for
+        // exactly this case) is what drives the re-sign-in.
+        //
+        // This arm is where authn's 400/401 land, INCLUDING a user-initiated
+        // "sign out everywhere" (the per-user epoch gate, which answers 401 and
+        // stamps `revocation_scope`). A global sign-out is still a statement
+        // about tokens, so it holds the plane exactly like an expiry does.
         this.setLastError(AUTH_ERROR_SESSION_EXPIRED);
-        this.clearUiSessionIfSignedIn();
-        this.settleSessionRecovery("refresh-rejected");
+        this.applyUnverifiedSession(stored);
+        this.sessionRecoveryTerminallyRejected = true;
+        this.settleSessionRecovery("refresh-rejected-credential");
+        return;
+      case "refresh-rejected-account":
+        // HOLDS, by product ruling, and it is the one arm on this side of the
+        // line that does. The three below are statements about the LOCAL file -
+        // no identity remains on disk to hold a plane for. This one is a SERVER
+        // verdict about an account whose identity block is still on disk and
+        // whose epics are still on it.
+        //
+        // The deciding argument was enforceability: gating the renderer deletes
+        // nothing. The host serves local-homed epics with zero `/api/v3/user`
+        // calls and the CLI reads the same files, so refusing to render them
+        // inconveniences the legitimate owner and protects nobody. Cloud
+        // surfaces stay gated by `authorizesCloudCapability`; the file stays
+        // kept, which was never in question.
+        //
+        // The error is TERMINAL, not an expiry: re-authenticating as the same
+        // account cannot succeed. `AUTH_ERROR_ACCOUNT_UNAVAILABLE` is what keeps
+        // the copy off "sign in again", and it must reach a surface that renders
+        // under `unverified` - see `SignInErrorMessage` and the toast bridge,
+        // both of which were keyed on `signed-out` until this arm started
+        // holding.
+        this.setLastError(AUTH_ERROR_ACCOUNT_UNAVAILABLE);
+        this.applyUnverifiedSession(stored);
+        this.sessionRecoveryTerminallyRejected = true;
+        this.settleSessionRecovery(outcome);
         return;
       case "deleted":
       case "tombstoned":
       case "user-mismatch":
-        // A sign-out stands or the file changed accounts - both settled; the
-        // §4 watch projects any newer state when it lands.
+        // LOCAL-FILE outcomes: a sign-out stands, the file was tombstoned, or
+        // it changed accounts. In each there is no longer an identity ON DISK
+        // to hold a local plane FOR, so the session clears outright.
+        //
+        // Note what is NOT here: `refresh-rejected-account`. A server 403/404
+        // is a verdict about the account, not about the file, and the identity
+        // block is still on disk - so it holds, in the arm above. These three
+        // are the cases where the thing being held for is genuinely absent.
+        //
+        // THE FILE IS DELIBERATELY KEPT on every one of these, and that is not
+        // an unfinished thought.
+        // Clearing the UI session is not the same act as destroying the shared
+        // credentials file, and the next reader will be tempted to "finish" this
+        // arm with a `tokenStore.delete()`. Do not:
+        //
+        //  - The verdict rests on a STATUS CODE ALONE. `fetchUserResponseOnce`
+        //    parses no error body, so a 404 is not a trustworthy "the account
+        //    was deleted" signal - a proxy, a misconfigured base URL, or an
+        //    authn deploy momentarily dropping the route all mint one.
+        //  - The file is MACHINE-SHARED (every window, and the CLI) and its
+        //    destruction is irreversible. A false positive during a deploy blip
+        //    is a mass sign-out across the machine.
+        //  - The asymmetry decides it: holding on a wrong verdict costs noise,
+        //    clearing on a wrong verdict costs the session permanently.
+        //
+        // If clearing is ever wanted, it belongs behind the file lock in the
+        // main-process mutation store and on corroborating evidence - a parsed
+        // `UserNotFoundError` from the refresh spend - not on a status code from
+        // the validate.
         this.clearUiSessionIfSignedIn();
         this.settleSessionRecovery(outcome);
         return;
@@ -905,20 +1102,92 @@ export class AuthService {
         // Transient. (`applied`/`superseded`/`commit-failed` land here only
         // when the adopt guard declined a null or foreign-user pair from the
         // shared main-process store.)
-        this.clearUiSessionIfSignedIn();
+        this.applyUnverifiedSession(stored);
         this.scheduleSessionRecovery(`${trigger}:${outcome}`);
         return;
     }
   }
 
   /**
-   * Whether a live bearer is installed. A method (not a direct field read) so
-   * checks that straddle `await`s re-read the CURRENT value - TypeScript's
-   * narrowing of the mutable field would otherwise flag (and a reader would
-   * misjudge) the re-checks as tautological.
+   * Whether a SETTLED, server-confirmed session is live. A method (not a
+   * direct field read) so checks that straddle `await`s re-read the CURRENT
+   * value - TypeScript's narrowing of the mutable field would otherwise flag
+   * (and a reader would misjudge) the re-checks as tautological.
+   *
+   * Every "someone else established a session, stand down" guard in this class
+   * means THIS, not the weaker `hasLiveBearer()`. The two came apart when
+   * `unverified` arrived: that state holds a real bearer (read off disk, and
+   * genuinely usable for local host work) while holding no verdict at all, so
+   * a guard written as `hasLiveBearer()` would read it as a settled session,
+   * stand the recovery loop down, and strand the user in a state that can
+   * never upgrade itself when the network returns.
+   *
+   * Derived from the store rather than tracked in a second field on purpose:
+   * the store's `status` is already the one authority on which of the four
+   * session states is live, and a private mirror of it here could disagree.
    */
-  private hasLiveBearer(): boolean {
-    return this.currentBearer !== null;
+  private hasVerifiedSession(): boolean {
+    return (
+      this.currentBearer !== null &&
+      useAuthStore.getState().status === "signed-in"
+    );
+  }
+
+  /**
+   * The bearer for a CLOUD PRODUCT call, or `null` when this session holds no
+   * `/api/v3/user` verdict. No method on this class issues a request to authn
+   * on a caller's behalf without first clearing this gate.
+   *
+   * Stated as a gate rather than as "the one place a cloud bearer is read",
+   * which would be the tidier claim and is false: {@link fetchUserSessions}
+   * clears the gate and then takes its token from
+   * {@link captureLiveSessionAuthority}, because its repair path needs the whole
+   * authority object to fence a rotation on. A rule about where the token comes
+   * from would have to carve that out; a rule about what every caller must clear
+   * does not.
+   *
+   * `unverified` holds a real bearer, read off this machine's disk. That token
+   * is the right credential for local, host-served work - the host serves
+   * local-homed epics from it without asking authn anything - and it is NOT a
+   * capability to act on the account. Nothing has confirmed it is still live,
+   * whose it is, or that the account behind it still exists, so a non-null
+   * check is not an authorization: it answers "is a string present", which is
+   * true for a token revoked an hour ago.
+   *
+   * WHY THIS IS A METHOD AND NOT A GUARD AT EACH CALLER: eight of the nine
+   * callers were unreachable before this ticket. Admitting the local plane
+   * mounted the app shell (`root-route-components.tsx#isStandalone`) and the
+   * settings surfaces (`settings-layout.tsx`) under `unverified`, which is what
+   * put `devices-sessions-panel`, the hosts panel and
+   * `HostCredentialProvisionProvider` in front of a user holding no verdict.
+   * The reachability arrived with the admission, so the refusal lives at one
+   * decision point rather than as nine copies that can drift apart.
+   *
+   * DELIBERATELY NOT GATED: every read that serves the auth machinery's OWN
+   * recovery - the work of turning `unverified` back into `signed-in` - plus the
+   * cross-window projection of what this window holds. Those keep reading
+   * `currentBearer` directly. Gating them would remove the only path out of
+   * `unverified` and strand the session there permanently, which is the defect
+   * `hasVerifiedSession()` exists to prevent, reintroduced one layer down. Today
+   * that class is `revalidateCurrentContextOnce`, `rotateLiveSession`, the
+   * proactive scheduler's `getToken`, `getCurrentSessionSnapshot`, and the
+   * snapshot-ingest comparisons; the class is the rule and the list is examples
+   * of it, so a new recovery read belongs outside this gate without amending
+   * anything here.
+   *
+   * `captureLiveSessionAuthority` is the edge worth knowing about: it is NOT
+   * gated, because rotation is one of its callers and rotation must keep
+   * working while unverified - but it is not exclusively recovery machinery
+   * either. A PRODUCT caller that takes its bearer from it therefore has to
+   * clear this gate on its own, which is what {@link fetchUserSessions} does.
+   * "Serves recovery" is a property of a call site, not of an accessor.
+   *
+   * A method rather than a field for the same reason as
+   * {@link hasVerifiedSession}: callers that straddle an `await` re-read the
+   * current value instead of a narrowed snapshot.
+   */
+  private cloudBearer(): string | null {
+    return this.hasVerifiedSession() ? this.currentBearer : null;
   }
 
   /**
@@ -931,10 +1200,14 @@ export class AuthService {
       return;
     }
     const delayMs = this.sessionRecoveryDelayMs;
-    this.sessionRecoveryDelayMs = Math.min(
-      delayMs * 2,
-      SESSION_RECOVERY_MAX_DELAY_MS,
-    );
+    // Read at each scheduling rather than latched: the ceiling relaxes as soon
+    // as the local plane is admitted, and tightens again if that session is
+    // ever cleared, without this loop having to be restarted.
+    const maxDelayMs =
+      useAuthStore.getState().status === "unverified"
+        ? SESSION_RECOVERY_ADMITTED_MAX_DELAY_MS
+        : SESSION_RECOVERY_MAX_DELAY_MS;
+    this.sessionRecoveryDelayMs = Math.min(delayMs * 2, maxDelayMs);
     this.sessionRecoveryAttempt += 1;
     appLogger.info("[auth] stored-session recovery scheduled", {
       trigger,
@@ -944,8 +1217,71 @@ export class AuthService {
     const generation = this.identityGeneration;
     this.sessionRecoveryTimer = AuthService.scheduleTimeout(() => {
       this.sessionRecoveryTimer = null;
-      void this.runSessionRecovery(generation);
+      this.sessionRecoveryInFlight = true;
+      void this.runSessionRecovery(generation).finally(() => {
+        this.sessionRecoveryInFlight = false;
+        if (!this.sessionRecoveryRerunRequested) {
+          return;
+        }
+        this.sessionRecoveryRerunRequested = false;
+        // A wake landed mid-probe. Honour it now, from the floor, and only if
+        // the state it was about still holds - `runSessionRecovery` may have
+        // settled the loop (signed in) or the session may have been cleared
+        // while the probe ran, and neither wants a re-arm.
+        if (this.disposed || useAuthStore.getState().status !== "unverified") {
+          return;
+        }
+        this.sessionRecoveryDelayMs = SESSION_RECOVERY_INITIAL_DELAY_MS;
+        this.scheduleSessionRecovery("wake:deferred-during-probe");
+      });
     }, delayMs);
+  }
+
+  /**
+   * Network-returned nudge for a session holding the local plane.
+   *
+   * `online` / OS-resume is the precise event the recovery loop spends its
+   * whole life polling FOR, so hearing it directly is strictly better than
+   * waiting out a backoff step. It is also what makes the relaxed
+   * `SESSION_RECOVERY_ADMITTED_MAX_DELAY_MS` ceiling affordable: the long
+   * ceiling covers the case where nothing announces the network's return,
+   * while this covers the common case where something does - so a user who
+   * regains connectivity upgrades to a real session in about a second rather
+   * than sitting at `unverified` for up to five minutes.
+   *
+   * Scoped to `unverified` deliberately. A signed-in session's wake handling
+   * is the refresh scheduler's job (above), and a signed-out one has nothing
+   * to recover.
+   */
+  private nudgeSessionRecoveryOnWake(): void {
+    if (this.disposed) {
+      return;
+    }
+    if (useAuthStore.getState().status !== "unverified") {
+      return;
+    }
+    // A network event cannot revive a credential the server has REFUSED. Waking
+    // is evidence about the network, and this session did not stop for the
+    // network.
+    if (this.sessionRecoveryTerminallyRejected) {
+      return;
+    }
+    // A probe is already running. Record the intent and let it re-arm from the
+    // floor when it settles - starting a second one here is exactly the overlap
+    // P2-6 names, and the running probe is already asking the question this
+    // event wants asked.
+    if (this.sessionRecoveryInFlight) {
+      this.sessionRecoveryRerunRequested = true;
+      return;
+    }
+    // Re-arm from the FLOOR: the accumulated backoff describes how long authn
+    // was unreachable, which is exactly the history this event invalidates.
+    if (this.sessionRecoveryTimer !== null) {
+      AuthService.cancelTimeout(this.sessionRecoveryTimer);
+      this.sessionRecoveryTimer = null;
+    }
+    this.sessionRecoveryDelayMs = SESSION_RECOVERY_INITIAL_DELAY_MS;
+    this.scheduleSessionRecovery("wake:network-returned");
   }
 
   /** Disarm the loop and reset the backoff - the session state is settled. */
@@ -959,6 +1295,9 @@ export class AuthService {
     }
     this.sessionRecoveryDelayMs = SESSION_RECOVERY_INITIAL_DELAY_MS;
     this.sessionRecoveryAttempt = 0;
+    // A wake deferred during the probe that is settling right now must not
+    // re-arm a loop this call just stood down.
+    this.sessionRecoveryRerunRequested = false;
   }
 
   /**
@@ -970,7 +1309,7 @@ export class AuthService {
     if (!this.isIdentityCurrent(generation)) {
       return;
     }
-    if (this.hasLiveBearer()) {
+    if (this.hasVerifiedSession()) {
       this.settleSessionRecovery("already-signed-in");
       return;
     }
@@ -996,15 +1335,22 @@ export class AuthService {
       this.scheduleSessionRecovery("recovery:store-unavailable");
       return;
     }
-    if (!this.isIdentityCurrent(generation) || this.hasLiveBearer()) {
+    if (!this.isIdentityCurrent(generation) || this.hasVerifiedSession()) {
       return;
     }
     if (stored === null || stored.token.length === 0) {
+      // The file is gone (a sibling slot signed out - that deletes the SHARED
+      // file for the whole machine). An `unverified` session is held on behalf
+      // of an identity ON DISK, so once that identity is gone there is nothing
+      // left to hold the local plane for and it must not outlive the file.
+      // Without this the offline session would persist indefinitely: this tick
+      // settles the loop, so no later tick would revisit it.
+      this.clearUiSessionIfSignedIn();
       this.settleSessionRecovery("no-stored-session");
       return;
     }
     const outcome = await this.validateToken(stored.token);
-    if (!this.isIdentityCurrent(generation) || this.hasLiveBearer()) {
+    if (!this.isIdentityCurrent(generation) || this.hasVerifiedSession()) {
       return;
     }
     if (outcome.kind === "valid") {
@@ -1017,6 +1363,11 @@ export class AuthService {
       // half-reachable authn (identity probe down, refresh up) would rotate
       // the freshly-committed pair again on every tick, burning one refresh
       // generation per backoff step for pairs it can never validate.
+      //
+      // Admit the local plane here too, not just at startup: this tick is
+      // also reached from a store fault and from a reconcile blip, and the
+      // user is equally entitled to their own disk in all three.
+      this.applyUnverifiedSession(stored);
       this.scheduleSessionRecovery("recovery:validate-network");
       return;
     }
@@ -1045,7 +1396,7 @@ export class AuthService {
       this.scheduleSessionRecovery("recovery:stored-session-superseded");
       return;
     }
-    if (!this.isIdentityCurrent(generation) || this.hasLiveBearer()) {
+    if (!this.isIdentityCurrent(generation) || this.hasVerifiedSession()) {
       return;
     }
     this.settleSessionRecovery("recovered");
@@ -1323,7 +1674,10 @@ export class AuthService {
    * `onChange(...)` fires on every identity transition (sign-in / sign-out /
    * cross-user). Same-user refresh rotates the existing context's lease in
    * place and is observably silent on the provider - the rotated bearer is
-   * picked up on the next `ctx.credentials.getBearerToken()` extraction.
+   * picked up the next time a transport reads its injected bearer source,
+   * which is the same lease object. (Deliberately not spelled
+   * `ctx.credentials.getBearerToken()`: that reach is lint-fenced outside the
+   * two transport files, and a doc that spells a banned shape teaches it.)
    */
   getRequestContextProvider(): RequestContextProvider {
     return this.contextProvider;
@@ -1557,7 +1911,12 @@ export class AuthService {
    * (the auth boundary), so the My Hosts query hook consumes the parsed
    * envelope without ever touching the token.
    *
-   *   - signed-out / no bearer → `null` (the panel renders its signed-out state).
+   *   - no CLOUD bearer        → `null` (the panel renders its signed-out
+   *                              state). That is signed-out, and equally an
+   *                              `unverified` session: it holds a token off
+   *                              disk but no verdict, so it may not read the
+   *                              account's host registry. See
+   *                              {@link cloudBearer}.
    *   - `unauthorized`         → `null` (a rare mid-rotation 401; the proactive
    *                              refresh keeps the bearer fresh and the ~60s poll
    *                              recovers on the next tick — no forced sign-out
@@ -1607,7 +1966,8 @@ export class AuthService {
       });
       throw new SupersededAuthEraError();
     }
-    if (this.currentBearer === null) {
+    const bearer = this.cloudBearer();
+    if (bearer === null) {
       return null;
     }
     // Two independent callers reach this endpoint: the globally-mounted
@@ -1635,7 +1995,6 @@ export class AuthService {
     // comparison is on the exact bearer rather than on user id — a rotated
     // token for the SAME user is still a different request than the one in
     // flight, and cheap to just re-issue.
-    const bearer = this.currentBearer;
     const inFlight = this.registeredHostsInFlight;
     if (inFlight !== null && inFlight.bearer === bearer) {
       return inFlight.request;
@@ -1706,6 +2065,20 @@ export class AuthService {
     signal: AbortSignal,
   ): Promise<ListUserSessionsResponse | null> {
     signal.throwIfAborted();
+    // Clears {@link cloudBearer}'s gate before taking a token from anywhere
+    // else. This method cannot READ its bearer from that accessor - the repair
+    // path below needs the whole `LiveSessionAuthority` to fence its rotation
+    // on - but it is a cloud product read like the eight that do, and the
+    // panel that drives it mounts under `unverified` since this ticket
+    // admitted the settings surfaces.
+    //
+    // Refusing here also keeps an unverified session out of the REPAIR, which
+    // spends a single-use refresh rotation. That spend belongs to the recovery
+    // loop and its backoff; reached from a 30s panel poll instead, the loop's
+    // request ceiling would not be a ceiling.
+    if (this.cloudBearer() === null) {
+      return null;
+    }
     const initialAuthority = this.captureLiveSessionAuthority();
     if (initialAuthority === null) {
       return null;
@@ -1802,11 +2175,12 @@ export class AuthService {
     familyId: string,
     useStepUpCredential: boolean,
   ): Promise<RevokeUserSessionFetchResult> {
-    if (this.currentBearer === null) {
+    const bearer = this.cloudBearer();
+    if (bearer === null) {
       return { kind: "unauthorized" };
     }
     return this.runnerHost.revokeUserSession(
-      this.currentBearer,
+      bearer,
       familyId,
       useStepUpCredential,
     );
@@ -1818,10 +2192,11 @@ export class AuthService {
    * boundary attaches and clears the retained step-up bearer internally.
    */
   async revokeAllSessions(): Promise<RevokeAllSessionsFetchResult> {
-    if (this.currentBearer === null) {
+    const bearer = this.cloudBearer();
+    if (bearer === null) {
       return { kind: "unauthorized" };
     }
-    return this.runnerHost.revokeAllSessions(this.currentBearer);
+    return this.runnerHost.revokeAllSessions(bearer);
   }
 
   /**
@@ -1832,68 +2207,73 @@ export class AuthService {
   async mintHostCredential(
     request: MintHostCredentialRequest,
   ): Promise<MintHostCredentialFetchResult> {
-    if (this.currentBearer === null) {
+    const bearer = this.cloudBearer();
+    if (bearer === null) {
       return { kind: "unauthorized" };
     }
-    return this.runnerHost.mintHostCredential(this.currentBearer, request);
+    return this.runnerHost.mintHostCredential(bearer, request);
   }
 
   async requestStepUpChallenge(): Promise<StepUpChallengeFetchResult> {
-    if (this.currentBearer === null) {
+    const bearer = this.cloudBearer();
+    if (bearer === null) {
       return { kind: "unauthorized" };
     }
-    return this.runnerHost.requestStepUpChallenge(this.currentBearer);
+    return this.runnerHost.requestStepUpChallenge(bearer);
   }
 
   async verifyStepUpChallenge(
     code: string,
   ): Promise<RetainedStepUpVerifyFetchResult> {
-    if (this.currentBearer === null) {
+    const bearer = this.cloudBearer();
+    if (bearer === null) {
       return { kind: "unauthorized" };
     }
-    return this.runnerHost.verifyStepUpChallenge(this.currentBearer, code);
+    return this.runnerHost.verifyStepUpChallenge(bearer, code);
   }
 
   /**
    * "Update now" / auto-update policy toggle / "Apply now — ends N sessions"
    * (Remote Host Support §13, T16): `PATCH /api/v3/hosts/:hostId` via the
    * runner host (run in Electron main for CORS, mirroring
-   * {@link fetchRegisteredHosts}). Never returns `null` on signed-out —
-   * mutating while signed out is a caller bug, so this throws instead of
-   * silently no-oping (unlike the read path, which has a legitimate
-   * signed-out empty state to render).
+   * {@link fetchRegisteredHosts}). Never returns `null` when there is no cloud
+   * bearer: it throws, because a mutation has no empty state to render the way
+   * the read path does, so its refusal has to be loud enough to reach the user.
+   *
+   * TWO states reach that throw and only one of them is a caller bug. Signed-out
+   * is — nothing should offer this. `unverified` is NOT: this ticket admits the
+   * settings surfaces without a `/api/v3/user` verdict, so the hosts panel
+   * genuinely mounts for someone holding a token nothing has confirmed, and the
+   * button is genuinely pressable. The copy already says the right thing to
+   * them. See {@link cloudBearer}.
    */
   async updateHostVersionPolicy(
     hostId: string,
     input: UpdateHostVersionPolicyInput,
   ): Promise<UpdateHostVersionPolicyFetchResult> {
-    if (this.currentBearer === null) {
+    const bearer = this.cloudBearer();
+    if (bearer === null) {
       throw new Error("Sign in to update this host.");
     }
-    return this.runnerHost.updateHostVersionPolicy(
-      this.currentBearer,
-      hostId,
-      input,
-    );
+    return this.runnerHost.updateHostVersionPolicy(bearer, hostId, input);
   }
 
   /**
    * "Remove from account": `POST /api/v3/hosts/:hostId/deregister` via the
    * runner host (run in Electron main for CORS, mirroring
-   * {@link fetchRegisteredHosts}). Throws on signed-out for the same reason
-   * {@link updateHostVersionPolicy} does — a mutation issued with no bearer is
-   * a caller bug, not a state to render.
+   * {@link fetchRegisteredHosts}). Throws with no cloud bearer for the same
+   * reason {@link updateHostVersionPolicy} does, and reachable from the same
+   * two states — read the note there before narrowing this one back to
+   * signed-out.
    */
   async deregisterHostFromAccount(
     hostId: string,
   ): Promise<DeregisterHostFetchResult> {
-    if (this.currentBearer === null) {
+    const bearer = this.cloudBearer();
+    if (bearer === null) {
       throw new Error("Sign in to remove this host.");
     }
-    return this.runnerHost.deregisterHostFromAccount(
-      this.currentBearer,
-      hostId,
-    );
+    return this.runnerHost.deregisterHostFromAccount(bearer, hostId);
   }
 
   private async revalidateCurrentContextOnce(
@@ -1988,9 +2368,37 @@ export class AuthService {
       if (!this.isIdentityCurrent(generation)) {
         return null;
       }
-      return revalidated.kind === "valid" ? revalidated : { kind: "rejected" };
+      if (revalidated.kind === "valid") {
+        return revalidated;
+      }
+      if (revalidated.kind === "network-error") {
+        // TRANSIENT, and it must not be reported as a terminal rejection. The
+        // rotate succeeded and `result.token` is committed; only the identity
+        // probe failed to answer. Collapsing this to `rejected` told the caller
+        // a live credential was dead, which is the reverse of the mistake the
+        // rest of this file is careful about - and it is the one that spends,
+        // because a caller reading `rejected` goes looking for another rotate.
+        return revalidated;
+      }
+      // The FRESHLY-ROTATED token is itself rejected. Nothing here changed
+      // session state before this fix, so the store stayed `signed-in` on a
+      // bearer authn had just refused: `cloudBearer()` kept handing it out,
+      // attach-grant mints stayed enabled, and the scheduler stayed armed.
+      //
+      // Startup has always handled the same post-rotate verdict correctly (see
+      // `rotateStoredSession`'s tail). This is the live path reaching the same
+      // state and doing nothing about it - the third intake path that failed to
+      // hold the plane, and the reason all of them were enumerated rather than
+      // fixed one at a time.
+      this.setLastError(AUTH_ERROR_SESSION_EXPIRED);
+      this.demoteLiveSessionOnTerminalVerdict(result.token);
+      return { kind: "rejected" };
     }
-    return result.status === "signed-out"
+    // Both terminal shapes report `rejected` to the request layer: the
+    // credential cannot authorize this call either way. They differ in what
+    // happened to the SESSION, which is not this return value's subject - see
+    // `SameUserRotateResult`.
+    return result.status === "signed-out" || result.status === "credential-dead"
       ? { kind: "rejected" }
       : { kind: "network-error" };
   }
@@ -2070,11 +2478,43 @@ export class AuthService {
         // The shared file moved to another account or was signed out - UI-only.
         this.clearUiSession();
         return { status: "signed-out" };
-      case "refresh-rejected":
-        // Genuine dead credential - UI-only sign-out, file kept (settled decision).
-        this.setLastError(AUTH_ERROR_SESSION_EXPIRED);
-        this.clearUiSession();
-        return { status: "signed-out" };
+      case "refresh-rejected-account":
+      case "refresh-rejected-credential": {
+        // The ordinary mid-session expiry: a signed-in user editing local work
+        // whose refresh authn rejects with a verdict about the TOKEN. This arm
+        // used to `clearUiSession()`, which is cold-review P1-4 - it produced a
+        // real `signed-out`, redirecting the shell out from under the work and
+        // firing `useAuthIdentityTransition`'s destructive arm (which PURGES
+        // account-scoped persisted state; reading positions are deleted from
+        // disk). The stored-session path has always treated the identical
+        // verdict as credential-scoped and held the plane, so the two disagreed
+        // about the same outcome.
+        //
+        // The bearer in hand is the right one to hold on: the REFRESH token is
+        // what was rejected, the access token keeps its own TTL, and it is the
+        // credential the host is already serving local epics on. Identity comes
+        // from the live profile rather than the file, because this path never
+        // re-reads the file and `rotated.pair` is `null` on every rejection.
+        // Same demotion, DIFFERENT copy. Both hold the plane, but one is an
+        // expiry the user can clear by signing in again and the other is
+        // terminal for this account - telling the second group to "sign in
+        // again" sends them round a loop with no exit.
+        this.setLastError(
+          rotated.outcome === "refresh-rejected-account"
+            ? AUTH_ERROR_ACCOUNT_UNAVAILABLE
+            : AUTH_ERROR_SESSION_EXPIRED,
+        );
+        if (!this.demoteLiveSessionOnTerminalVerdict(this.currentBearer)) {
+          // No live identity to hold a plane FOR. Nothing to demote, so take
+          // the old behaviour rather than inventing a session.
+          this.clearUiSession();
+          return { status: "signed-out" };
+        }
+        // NOT `signed-out` (the session was demoted, not cleared) and NOT
+        // `transient` (callers read that as retriable, and re-driving a dead
+        // refresh is the spend this whole path avoids).
+        return { status: "credential-dead" };
+      }
       case "lock-busy":
       case "spend-pending":
       case "refresh-network":
@@ -2231,7 +2671,25 @@ export class AuthService {
   ): void {
     if (outcome.kind === "valid") {
       const liveUserId = this.contextProvider.current()?.identity.userId;
-      if (liveUserId !== undefined && liveUserId === outcome.user.user.id) {
+      if (
+        liveUserId !== undefined &&
+        liveUserId === outcome.user.user.id &&
+        // ...AND we already hold a VERIFIED session. Under `unverified` the
+        // live context carries the same `userId` (it was minted from the same
+        // on-disk identity), so this branch would otherwise capture the
+        // promotion case and rotate the bearer in place - and
+        // `rotateLiveBearer` deliberately never touches the store, so the
+        // status would stay `unverified` FOREVER despite a successful verdict
+        // in hand. There is no later trigger to correct it: a
+        // credential-scoped rejection has already settled the recovery loop.
+        //
+        // A first valid verdict for an unverified session is a PROMOTION, not
+        // a rotation, so it falls through to `applySignedIn` - which handles
+        // the same-user case by rotating the context in place anyway (keeping
+        // the "same user => same context object" invariant) while also
+        // projecting the signed-in state the store is missing.
+        this.hasVerifiedSession()
+      ) {
         // Same-user adopt (external sibling rotation or a self-write echo that
         // raced past the pre-validate no-op): rotate the lease in place.
         this.rotateLiveBearer(liveUserId, stored.token);
@@ -2246,17 +2704,32 @@ export class AuthService {
       // never torn down over a blip. With NO live session there is also no
       // later file event guaranteed (authn recovering writes nothing), so the
       // adoption is handed to the recovery loop instead of dropped.
-      if (!this.hasLiveBearer()) {
+      if (!this.hasVerifiedSession()) {
+        // Same entitlement to local disk as the startup and recovery arms.
+        this.applyUnverifiedSession(stored);
         this.scheduleSessionRecovery("reconcile:validate-network");
       }
       return;
     }
     // Invalid/expired but PRESENT: the file may still hold a perfectly
     // refreshable session (a 4h-expired access token next to a 30d refresh
-    // token). Sign the UI out now and hand the spend to the recovery loop,
-    // which owns the locked rotate - never latch signed-out over a file that
-    // one refresh call away from a live session.
-    this.clearUiSessionIfSignedIn();
+    // token), so the spend is handed to the recovery loop, which owns the
+    // locked rotate - never latch a dead state over a file that is one refresh
+    // call away from a live session.
+    //
+    // HOLDS rather than clears, and this arm used to call
+    // `clearUiSessionIfSignedIn()`. That guard fires on a non-null bearer or
+    // context, both of which an `unverified` session has - so a window working
+    // offline on T1 was signed out the moment a sibling wrote a same-user T2
+    // whose validation happened to reject: route unmounted, every destructive
+    // identity-transition consumer fired, local work gone. The rejection is a
+    // verdict about the FILE's token, and this window was not using it.
+    //
+    // `stored` is non-null here, so an identity to hold the plane for exists by
+    // construction - the same identity the network-error arm above holds on.
+    // The file-is-gone case, which genuinely has nobody to hold it for, is
+    // handled earlier and still clears.
+    this.applyUnverifiedSession(stored);
     this.scheduleSessionRecovery("reconcile:rejected");
   }
 
@@ -2358,9 +2831,11 @@ export class AuthService {
       return;
     }
     // `superseded` here adopts a sibling's rotation without spending; `deleted`/
-    // `user-mismatch`/`tombstoned` clear the UI session (no resurrection);
-    // `refresh-rejected` is the genuine expiry; transient outcomes leave the
-    // bearer for the reactive path. Identical handling to the reactive rotate.
+    // `user-mismatch`/`tombstoned`/`refresh-rejected-account` clear the UI
+    // session (no resurrection); `refresh-rejected-credential` is the genuine
+    // expiry and DEMOTES to `unverified` rather than clearing, so the local
+    // plane survives a mid-session expiry; transient outcomes leave the bearer
+    // for the reactive path. Identical handling to the reactive rotate.
     this.applyLiveRotateOutcome(
       rotated,
       expected.userId,
@@ -2846,6 +3321,16 @@ export class AuthService {
     useAuthStore
       .getState()
       .setSignedIn(profile, contextMetadata, projectShareableTeams(user));
+    // A server-confirmed session clears the terminal-rejection latch: whatever
+    // authn refused before, it has just accepted something now, so wake
+    // recovery is meaningful again.
+    //
+    // Cleared HERE and not in `commitLiveCredential`, which was the tempting
+    // spot because it is the single credential-commit site - but the hold paths
+    // commit through it too, so the latch would be erased by the very
+    // transition that sets it. The clear belongs where a credential is
+    // VALIDATED, not merely where one is stored.
+    this.sessionRecoveryTerminallyRejected = false;
     this.emitSessionSnapshot();
     this.refreshScheduler.start();
   }
@@ -2989,6 +3474,235 @@ export class AuthService {
       userId: user.user.id,
       username: usernameFromAuthenticatedUser(user),
     };
+  }
+
+  /**
+   * Project a stored session we could NOT get a verdict for into the
+   * `unverified` state, so the renderer admits the local, disk-served plane.
+   *
+   * This is the whole point of the state: the host already serves local-homed
+   * epics with zero `/api/v3/user` calls, but the renderer used to park the
+   * user on `AuthLandingPage` until a validation SUCCEEDED - so data sitting
+   * on their own disk was unreachable whenever authn was.
+   *
+   * What it deliberately does NOT do:
+   *  - It does not settle the recovery loop. This is a holding state, not a
+   *    resolution; the caller arms recovery and a later success upgrades it
+   *    through the ordinary `applySignedIn`.
+   *  - It does not start the refresh scheduler. Scheduling refreshes against
+   *    an unreachable authn is exactly the spend this path exists to avoid.
+   *  - It does not project entitlement or teams (`setUnverifiedSession`
+   *    clears both), because those are server claims and we hold none.
+   *
+   * Returns whether the projection was made, so callers can log the branch
+   * they actually took.
+   */
+  private applyUnverifiedSession(session: {
+    readonly token: string;
+    readonly user: StoredCredentials["user"];
+  }): boolean {
+    // Never downgrade a live session. A network blip while signed in leaves
+    // the signed-in projection alone (`applyReconciledOutcome` documents the
+    // same rule); this state is for sessions that have no verdict at all.
+    //
+    // A DELIBERATE demotion is a different act and has its own entry point -
+    // see {@link demoteVerifiedSessionToUnverified}. Keeping them apart matters:
+    // this guard protects the far more common "we just could not reach authn"
+    // caller, and loosening it to serve the rare terminal one would silently
+    // let a blip tear down a signed-in session.
+    if (this.hasVerifiedSession()) {
+      return false;
+    }
+    return this.projectUnverifiedSession(session);
+  }
+
+  /**
+   * Demote a session that IS currently verified down to `unverified`, keeping
+   * the local plane alive.
+   *
+   * The one caller is a terminal, server-issued CREDENTIAL verdict on the live
+   * rotation path (`applyLiveRotateOutcome`'s `refresh-rejected-credential`):
+   * authn has said this refresh token is dead, which is a fact about the token
+   * and not about the person or their disk. Before this existed that arm called
+   * `clearUiSession()`, producing a real `signed-out` - which redirected the
+   * shell out from under someone editing local work AND made
+   * `useAuthIdentityTransition` run its destructive arm, purging account-scoped
+   * persisted state (reading positions are deleted from disk outright). That
+   * was cold-review P1-4.
+   *
+   * Deliberately bypasses {@link applyUnverifiedSession}'s live-session guard
+   * rather than weakening it, because the two callers mean opposite things by
+   * the same state: "we hold no verdict yet" versus "the verdict we held has
+   * been revoked". Only the second may demote, and naming it here is what stops
+   * a future edit from relaxing the guard for everyone to reach this case.
+   *
+   * The bearer stays the one in hand: its access token is still valid for its
+   * own TTL (the rejection was of the REFRESH token), and it is the credential
+   * the host is already serving this machine's local epics on. Nulling it is not
+   * an option in the way it looks: `extractBearerForOpenFrame` THROWS on a null
+   * or empty bearer, so a bearerless `unverified` session cannot open the host
+   * WebSocket at all and the local plane never connects. The retained bearer is
+   * what the plane runs on, not a leftover of the dead one.
+   *
+   * KNOWN GAP, recorded rather than papered over. The two paths that reach this
+   * arm leave the retained bearer in different conditions and nothing here
+   * distinguishes them:
+   *
+   *  - REACTIVE (`revalidateCurrentContextOnce`): `/api/v3/user` rejected this
+   *    access token BEFORE the rotate, so it is known-dead.
+   *  - PROACTIVE (the refresh scheduler): the access token was never rejected;
+   *    only its refresh token was, so it stays usable until its own TTL.
+   *
+   * Both are held identically, which means the reactive case retains a secret a
+   * server has already refused. The fix is NOT `null` (see above) but a
+   * present-but-unconfirmed representation that readers can tell apart from a
+   * live bearer - today `currentBearer` has no such third state, and every
+   * cloud caller gates on `=== null`. Out of scope here; it wants its own
+   * ticket rather than an inline invention.
+   */
+  /**
+   * Demote the LIVE session on a terminal server verdict, taking the identity
+   * from the live profile rather than the credentials file.
+   *
+   * Shared by every live-path intake that can land on a terminal verdict, which
+   * is the point: three of them existed and only one held the plane. Each was a
+   * separate reviewer finding, and they were the same defect — an intake path
+   * that reaches a rejection and leaves the store `signed-in` on a credential
+   * the server has refused. Adding a fourth caller should mean calling this,
+   * not re-deriving it.
+   *
+   * `bearerToDemoteOnto` is the credential the plane keeps running on. It is a
+   * parameter rather than a re-read of `currentBearer` because the post-rotate
+   * caller holds a token NEWER than the field at the moment it decides — the
+   * rotate committed it, and it is the one the host is now serving on.
+   *
+   * Returns whether a demotion happened. `false` means there was no live
+   * identity to hold a plane for, and the caller owns what to do instead —
+   * this never invents a session out of a missing profile.
+   */
+  private demoteLiveSessionOnTerminalVerdict(
+    bearerToDemoteOnto: string | null,
+  ): boolean {
+    const profile = this.currentProfile;
+    if (profile === null || bearerToDemoteOnto === null) {
+      return false;
+    }
+    this.demoteVerifiedSessionToUnverified({
+      token: bearerToDemoteOnto,
+      user: {
+        id: profile.userId,
+        email: profile.email,
+        name: profile.userName,
+      },
+    });
+    return true;
+  }
+
+  private demoteVerifiedSessionToUnverified(session: {
+    readonly token: string;
+    readonly user: StoredCredentials["user"];
+  }): boolean {
+    return this.projectUnverifiedSession(session);
+  }
+
+  private projectUnverifiedSession(session: {
+    readonly token: string;
+    readonly user: StoredCredentials["user"];
+  }): boolean {
+    if (this.disposed) {
+      return false;
+    }
+    // Idempotence, and it is load-bearing rather than an optimization: the
+    // recovery loop calls through here on EVERY failed tick, and re-minting
+    // would abort the live context each time - tearing down exactly the
+    // in-progress local work this state exists to protect, once per backoff
+    // step.
+    if (
+      this.currentBearer === session.token &&
+      useAuthStore.getState().status === "unverified"
+    ) {
+      return false;
+    }
+    const profile: AuthProfile = {
+      userId: session.user.id,
+      userName: session.user.name,
+      email: session.user.email,
+      // The credentials file carries no avatar. The header falls back to
+      // initials, which `computeInitials` derives from the name we do have.
+      avatarUrl: null,
+    };
+    const identity = {
+      userId: session.user.id,
+      username:
+        session.user.name.length > 0 ? session.user.name : session.user.email,
+      // The file carries no provider handle either, and `null` is what
+      // `identityFromAuthenticatedUser` projects for a user without one.
+      providerHandle: null,
+    };
+    // STOP THE PROACTIVE SCHEDULER before committing anything.
+    //
+    // Every caller that arrives here from `signed-out` or startup finds it
+    // already stopped and this is a no-op. The caller that does NOT is the
+    // demotion (`demoteVerifiedSessionToUnverified`): `applySignedIn` started
+    // the scheduler, and nothing on the way here stops it. Left running it
+    // re-reads `getToken: () => this.currentBearer` on a timer and spends
+    // refreshes against a refresh token authn has already rejected - which is
+    // the exact spend `unverified` exists to prevent, arriving through the one
+    // path that reaches this state from a live session.
+    //
+    // It is stopped here rather than in the demotion arm so the invariant is
+    // "no unverified session carries a running refresh scheduler", which holds
+    // for a caller added later without that caller having to know it.
+    this.refreshScheduler.stop();
+    // COMMIT BEFORE EMIT, for the same reason `applySignedIn` documents at
+    // length: the context transition below announces synchronously and its
+    // listeners fetch, so every ambient auth read they can reach must already
+    // hold its post-transition value.
+    this.commitLiveCredential(session.token, profile);
+    // RETAIN THE LIVE CONTEXT WHEN THERE IS ONE FOR THIS SAME IDENTITY.
+    //
+    // `setUnverified` mints a FRESH context and aborts the previous one as
+    // `auth-resigned-in`. Downstream, `HostClient` reads that abort as an
+    // identity change: it invalidates every host scope, cancels in-flight
+    // requests and resets the messenger. On a cold start that costs nothing -
+    // there is no context yet. On a DEMOTION it tears down the host runtime
+    // serving the very local work this state exists to protect, which is the
+    // ticket's own line - "refresh-token rejection must not abort in-progress
+    // local access" - broken by the mechanism meant to honour it.
+    //
+    // A same-user demotion is a credential change, not an identity change, so
+    // it takes the same in-place rotation an ordinary refresh does: the context
+    // object and its lease survive, subscribers see no emission, and host
+    // scopes stay warm. Only the verdict, the store and the scheduler move.
+    //
+    // The `setUnverified` branch remains for the case it was written for: no
+    // live context, or one belonging to a different identity, where there is
+    // nothing to retain and minting is the only option.
+    const live = this.contextProvider.current();
+    const canRetainLiveContext =
+      live !== null &&
+      live.identity.userId === identity.userId &&
+      !live.credentials.isReleased;
+    if (canRetainLiveContext) {
+      this.contextProvider.rotateCurrentBearer({
+        userId: identity.userId,
+        bearerToken: session.token,
+      });
+    } else {
+      this.contextProvider.setUnverified({
+        identity,
+        bearerToken: session.token,
+      });
+    }
+    useAuthStore.getState().setUnverifiedSession(profile, {
+      userId: identity.userId,
+      username: identity.username,
+    });
+    this.emitSessionSnapshot();
+    appLogger.info("[auth] local plane admitted on an unverified session", {
+      userId: session.user.id,
+    });
+    return true;
   }
 
   private clearPendingTimeout(): void {

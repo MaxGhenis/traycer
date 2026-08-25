@@ -33,6 +33,10 @@ import {
   wireAvailabilityRecovery,
 } from "@/lib/host/availability-recovery";
 import { appLogger } from "@/lib/logger";
+import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
 
 export interface HostStreamProviderProps {
   readonly children: ReactNode;
@@ -162,6 +166,8 @@ export function HostStreamProvider(props: HostStreamProviderProps): ReactNode {
       target,
       endpoint: () => appHostClient?.getActiveHost() ?? null,
       bearer: () => binding.hostClient.getRequestContext()?.credentials ?? null,
+      cloudAuthorized: () =>
+        authorizesCloudCapability(useAuthStore.getState().status),
       authnBaseUrl,
       auth,
       userId: requestContextUserId,

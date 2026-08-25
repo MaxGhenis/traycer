@@ -50,6 +50,17 @@ export function WindowsBridgeAuthSessionBridge(
 
     const writeOutbound = (snapshot: AuthSessionSnapshot): void => {
       if (projectingInbound) return;
+      // An `unverified` session is NOT a cross-window session transition: it
+      // is this window's local statement that it could not reach authn, and
+      // every sibling window reaches the same conclusion independently from
+      // the same credentials file via its own `start()`. Projecting it would
+      // mean flattening it to the nearest desktop status - `signed-out` - and
+      // an inbound `signed-out` is applied unconditionally
+      // (`applyExternalSession`), so a sibling that was quietly working
+      // offline would be signed out by this window's failure to validate.
+      // Publishing nothing leaves the last real transition standing, which is
+      // the truthful projection: no session transition has occurred.
+      if (snapshot.status === "unverified") return;
       const desktopSnapshot = toDesktopSnapshot(snapshot);
       const serialized = serializeDesktopSnapshot(desktopSnapshot);
       if (serialized === lastWrittenSerialized) {
