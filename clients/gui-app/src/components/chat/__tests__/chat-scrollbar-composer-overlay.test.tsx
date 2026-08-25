@@ -359,10 +359,12 @@ describe("chat scrollbar + lower composer overlay pointer isolation", () => {
       expect(source).toMatch(
         /data-chat-composer="" className="pointer-events-none px-4"/,
       );
-      // Centered backplate: relative, paint, pb-4, pointer-free 1px seal with
-      // after:content-[''] so the pseudo-element actually renders.
+      // Centered backplate: relative, paint, the bottom-edge gutter, and a
+      // pointer-free 1px seal with after:content-[''] so the pseudo-element
+      // actually renders. The backplate is the app's bottom-most chat surface,
+      // so its padding is the safe-area gutter and never a bare `pb-4`.
       expect(source).toContain(
-        `pointer-events-auto relative mx-auto w-full max-w-3xl bg-canvas pb-4 ${BOTTOM_SEAL_CLASSES}`,
+        `pointer-events-auto relative mx-auto w-full max-w-3xl bg-canvas pb-safe-bottom-gutter ${BOTTOM_SEAL_CLASSES}`,
       );
       // Vertical top spacing stays on the centered child, not the outer.
       expect(source).toMatch(

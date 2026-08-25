@@ -555,9 +555,18 @@ function ChatComposerImpl(props: ChatComposerProps) {
         </ChatComposerBannerPortal>
       ) : null}
       <div data-chat-composer="" className="pointer-events-none px-4">
+        {/*
+         * The lower-surface overlay is pinned to the tile's bottom and this
+         * backplate is its last child, so this padding is the only thing
+         * between the toolbar row and the bottom edge of the screen. It is the
+         * gutter token rather than the bare inset: the composer wants its own
+         * 1rem of breathing room wherever the device reports none, and the
+         * home indicator's strip wherever it reports one. `bg-canvas` extends
+         * with it, so the strip is painted rather than left showing transcript.
+         */}
         <div
           className={cn(
-            "pointer-events-auto relative mx-auto w-full max-w-3xl bg-canvas pb-4 after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-px after:bg-canvas after:content-['']",
+            "pointer-events-auto relative mx-auto w-full max-w-3xl bg-canvas pb-safe-bottom-gutter after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-px after:bg-canvas after:content-['']",
             topSpacing === "normal" ? "pt-4" : "pt-0",
           )}
         >

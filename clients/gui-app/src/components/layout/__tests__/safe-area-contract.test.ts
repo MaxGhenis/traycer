@@ -439,6 +439,33 @@ describe("the one sanctioned full-bleed surface", () => {
   });
 });
 
+describe("the chat composer owns the bottom edge it sits on", () => {
+  it("pads the composer backplate with the gutter token instead of a bare rem", () => {
+    // The chat tile pins its lower-surface overlay to `bottom-0` and the
+    // composer backplate is the last thing in it, so this one padding is
+    // everything between the toolbar row and the home indicator. Bottom is the
+    // edge `#root` deliberately leaves to the surface, which is what makes an
+    // unmarked `pb-4` here a real overlap rather than a style choice.
+    //
+    // Pinned per class list rather than per file: the same component paints a
+    // rate-limit banner above the composer, and a file-wide search would let
+    // that literal's spacing vouch for this one.
+    const literals =
+      stripComments(findSource("chat/composer/chat-composer.tsx")).match(
+        /"[^"\n]*"/g,
+      ) ?? [];
+    const backplate = literals.find((literal) =>
+      literal.includes("after:-bottom-px"),
+    );
+    expect(backplate, "composer backplate class list").toBeDefined();
+    // The gutter form, not the bare inset: `max(1rem, inset)` keeps the 1rem
+    // the composer already had wherever the device reports no inset at all,
+    // which is every desktop and browser the app also runs in.
+    expect(backplate).toContain("pb-safe-bottom-gutter");
+    expect(backplate).not.toMatch(/(?<![\w-])pb-\d/);
+  });
+});
+
 describe("mobile header no longer reaches under the status bar", () => {
   it("keeps mobile-app-header.tsx from adding its own top inset or bar-clearing height", () => {
     const source = findSource("layout/header/mobile-app-header.tsx");
