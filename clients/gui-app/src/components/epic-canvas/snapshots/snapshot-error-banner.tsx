@@ -168,9 +168,7 @@ function UpgradeButton() {
       data-testid="snapshot-error-upgrade"
       disabled={openExternalLink.isPending}
       onClick={() => {
-        openExternalLink.mutate(
-          resolvePlatformBaseUrl(runnerHost.signInUrl),
-        );
+        openExternalLink.mutate(resolvePlatformBaseUrl(runnerHost.signInUrl));
       }}
     >
       Upgrade

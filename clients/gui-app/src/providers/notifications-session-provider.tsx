@@ -206,8 +206,7 @@ export function NotificationsSessionProvider(
   );
 }
 
-interface NotificationsSessionBodyProps
-  extends NotificationsSessionProviderProps {
+interface NotificationsSessionBodyProps extends NotificationsSessionProviderProps {
   readonly servingHostEntry: HostDirectoryEntry | null;
   readonly servingStreamClient: IHostStreamClient<HostStreamRpcRegistry> | null;
   readonly notificationFeedMode: "local" | "cloud" | "upgrade-required";

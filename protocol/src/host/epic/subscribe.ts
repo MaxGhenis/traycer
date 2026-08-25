@@ -641,7 +641,6 @@ const epicSubscribeSharedServerFrameSchemasV10 = [
   ...epicSubscribeSharedNonSnapshotServerFrameSchemasV10,
 ] as const;
 
-
 export const epicSubscribeServerFrameSchemaV10 = z.discriminatedUnion(
   "kind",
   epicSubscribeSharedServerFrameSchemasV10,

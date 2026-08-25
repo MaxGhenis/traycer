@@ -148,7 +148,6 @@ export function SignInButton(props: SignInButtonProps) {
         offersDifferentAccount={lastError === AUTH_ERROR_ACCOUNT_UNAVAILABLE}
         deviceProgress={deviceProgress}
       />
-
     </div>
   );
 }

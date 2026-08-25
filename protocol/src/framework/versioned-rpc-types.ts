@@ -176,10 +176,7 @@ type SameMethodPair<
     : false
   : false;
 
-type UpgradePathBase<
-  From extends AnyRpcContract,
-  To extends AnyRpcContract,
-> = {
+type UpgradePathBase<From extends AnyRpcContract, To extends AnyRpcContract> = {
   from: From["schemaVersion"];
   to: To["schemaVersion"];
   upgradeRequest: (request: RequestOf<From>) => RequestOf<To>;
@@ -188,30 +185,30 @@ type UpgradePathBase<
 export type ContextlessUpgradePath<
   From extends AnyRpcContract,
   To extends AnyRpcContract,
-> = SameMethodPair<From, To> extends true
-  ? UpgradePathBase<From, To> & {
-      upgradeResponse: (response: ResponseOf<From>) => ResponseOf<To>;
-    }
-  : never;
+> =
+  SameMethodPair<From, To> extends true
+    ? UpgradePathBase<From, To> & {
+        upgradeResponse: (response: ResponseOf<From>) => ResponseOf<To>;
+      }
+    : never;
 
 export type ContextualUpgradePath<
   From extends AnyRpcContract,
   To extends AnyRpcContract,
-> = SameMethodPair<From, To> extends true
-  ? UpgradePathBase<From, To> & {
-      upgradeResponse: (
-        response: ResponseOf<From>,
-        context: RpcResponseUpgradeContext<RequestOf<From>> | undefined,
-      ) => ResponseOf<To>;
-    }
-  : never;
+> =
+  SameMethodPair<From, To> extends true
+    ? UpgradePathBase<From, To> & {
+        upgradeResponse: (
+          response: ResponseOf<From>,
+          context: RpcResponseUpgradeContext<RequestOf<From>> | undefined,
+        ) => ResponseOf<To>;
+      }
+    : never;
 
 export type UpgradePath<
   From extends AnyRpcContract,
   To extends AnyRpcContract,
-> =
-  | ContextlessUpgradePath<From, To>
-  | ContextualUpgradePath<From, To>;
+> = ContextlessUpgradePath<From, To> | ContextualUpgradePath<From, To>;
 
 export type DowngradeResult<Value> =
   { ok: true; value: Value } | { ok: false; error: RpcErrorDetails };
@@ -773,8 +770,7 @@ export type RuntimeUpgradePath<Registry extends MethodVersionRegistry> = {
   upgradeResponse: (
     response: RegistryResponseValue<Registry>,
     context:
-      | RpcResponseUpgradeContext<RegistryRequestValue<Registry>>
-      | undefined,
+      RpcResponseUpgradeContext<RegistryRequestValue<Registry>> | undefined,
   ) => RegistryResponseValue<Registry>;
 };
 

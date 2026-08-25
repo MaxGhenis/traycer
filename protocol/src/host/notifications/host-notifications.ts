@@ -373,9 +373,7 @@ export type HostNotificationsSummary = z.infer<
  * association that does not exist.
  */
 export const hostNotificationsHomeSchema = z.enum(["local", "cloud"]);
-export type HostNotificationsHome = z.infer<
-  typeof hostNotificationsHomeSchema
->;
+export type HostNotificationsHome = z.infer<typeof hostNotificationsHomeSchema>;
 
 /**
  * Cross-plane ordering is a protocol rule, not a timestamp comparison.
@@ -1336,8 +1334,8 @@ export const hostNotificationsCloudFeedSubscribeV10 = defineStreamRpcContract({
  */
 const hostNotificationsCloudFeedPartitionSnapshotSchemaV11 =
   hostNotificationsCloudFeedSnapshotSchemaV10.extend({
-  kind: z.literal("partitionSnapshot"),
-  partition: hostNotificationsCloudPartitionSchema,
+    kind: z.literal("partitionSnapshot"),
+    partition: hostNotificationsCloudPartitionSchema,
   });
 export const hostNotificationsCloudFeedSubscribeServerFrameSchemaV11 =
   z.discriminatedUnion("kind", [
@@ -1503,8 +1501,8 @@ export const hostNotificationsFeedSubscribeV11 = defineStreamRpcContract({
  */
 const hostNotificationsLocalPartitionSnapshotSchemaV12 =
   hostNotificationsSnapshotSchemaV11.extend({
-  kind: z.literal("partitionSnapshot"),
-  partition: hostNotificationsLocalPartitionSchema,
+    kind: z.literal("partitionSnapshot"),
+    partition: hostNotificationsLocalPartitionSchema,
   });
 export const hostNotificationsSubscribeServerFrameSchemaV12 =
   z.discriminatedUnion("kind", [
@@ -1584,19 +1582,18 @@ export const hostNotificationsIndicatorState =
  * The request half stays identity: `@1.1` only ADDS optional selectors, so a
  * v1.0 request is already a well-formed v1.1 one.
  */
-export const hostNotificationsIndicatorStateUpgradeV10ToV11 =
-  defineUpgradePath<
-    typeof hostNotificationsIndicatorStateV10,
-    typeof hostNotificationsIndicatorStateV11
-  >({
-    from: hostNotificationsIndicatorStateV10.schemaVersion,
-    to: hostNotificationsIndicatorStateV11.schemaVersion,
-    upgradeRequest: (request) => request,
-    upgradeResponse: (response) => ({
-      epics: addPendingForkDefault(response.epics),
-      chats: addPendingForkDefault(response.chats),
-    }),
-  });
+export const hostNotificationsIndicatorStateUpgradeV10ToV11 = defineUpgradePath<
+  typeof hostNotificationsIndicatorStateV10,
+  typeof hostNotificationsIndicatorStateV11
+>({
+  from: hostNotificationsIndicatorStateV10.schemaVersion,
+  to: hostNotificationsIndicatorStateV11.schemaVersion,
+  upgradeRequest: (request) => request,
+  upgradeResponse: (response) => ({
+    epics: addPendingForkDefault(response.epics),
+    chats: addPendingForkDefault(response.chats),
+  }),
+});
 
 function addPendingForkDefault(
   states: Readonly<Record<string, HostNotificationsIndicatorStateV10>>,

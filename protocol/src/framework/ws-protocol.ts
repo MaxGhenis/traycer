@@ -339,7 +339,8 @@ export const fatalErrorDetailsSchema = z.object({
   // the compatibility-epoch gate, and stripped by every client that does -
   // which is exactly the population this rejection is aimed at, so the
   // envelope's `reason` carries the whole remedy on its own.
-  clientCompatibilityRequirement: clientCompatibilityRequirementSchema.optional(),
+  clientCompatibilityRequirement:
+    clientCompatibilityRequirementSchema.optional(),
 });
 
 /** Canonical schema for the client `open` frame. */

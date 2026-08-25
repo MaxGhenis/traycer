@@ -55,9 +55,7 @@ describe("useAgentActivityPresenceDegraded", () => {
   });
 
   it("stays null for the bootstrap 'connecting' status until the grace elapses, then reads 'stream-down'", () => {
-    const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(),
-    );
+    const { result } = renderHook(() => useAgentActivityPresenceDegraded());
 
     expect(result.current).toBe(null);
 
@@ -73,9 +71,7 @@ describe("useAgentActivityPresenceDegraded", () => {
   });
 
   it("flips back to null immediately once the stream reports 'open'", () => {
-    const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(),
-    );
+    const { result } = renderHook(() => useAgentActivityPresenceDegraded());
 
     act(() => {
       vi.advanceTimersByTime(GRACE_MS);
@@ -89,9 +85,7 @@ describe("useAgentActivityPresenceDegraded", () => {
   });
 
   it("holds 'reconnecting' back for a fresh grace window after being open, then reads 'stream-down'", () => {
-    const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(),
-    );
+    const { result } = renderHook(() => useAgentActivityPresenceDegraded());
 
     act(() => {
       setHostHealth({ connectionStatus: "open" });
@@ -115,9 +109,7 @@ describe("useAgentActivityPresenceDegraded", () => {
   });
 
   it("never reads 'stream-down' when a close reopens within the grace window", () => {
-    const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(),
-    );
+    const { result } = renderHook(() => useAgentActivityPresenceDegraded());
 
     act(() => {
       setHostHealth({ connectionStatus: "open" });
@@ -147,9 +139,7 @@ describe("useAgentActivityPresenceDegraded", () => {
   });
 
   it("holds 'reconnecting' cloudSyncStatus back while open, then reads 'cloud-down' after the grace", () => {
-    const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(),
-    );
+    const { result } = renderHook(() => useAgentActivityPresenceDegraded());
 
     act(() => {
       setHostHealth({
@@ -171,9 +161,7 @@ describe("useAgentActivityPresenceDegraded", () => {
   });
 
   it("holds 'disconnected' cloudSyncStatus back while open, then reads 'cloud-down' after the grace", () => {
-    const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(),
-    );
+    const { result } = renderHook(() => useAgentActivityPresenceDegraded());
 
     act(() => {
       setHostHealth({
@@ -195,9 +183,7 @@ describe("useAgentActivityPresenceDegraded", () => {
   });
 
   it("stays null past the grace when open with cloudSyncStatus null - no claim is not degraded", () => {
-    const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(),
-    );
+    const { result } = renderHook(() => useAgentActivityPresenceDegraded());
 
     act(() => {
       setHostHealth({
@@ -214,9 +200,7 @@ describe("useAgentActivityPresenceDegraded", () => {
   });
 
   it("stays null while open with cloudSyncStatus 'connected'", () => {
-    const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(),
-    );
+    const { result } = renderHook(() => useAgentActivityPresenceDegraded());
 
     act(() => {
       setHostHealth({
@@ -233,9 +217,7 @@ describe("useAgentActivityPresenceDegraded", () => {
   });
 
   it("clears a sustained 'cloud-down' reading immediately once cloudSyncStatus returns to 'connected'", () => {
-    const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(),
-    );
+    const { result } = renderHook(() => useAgentActivityPresenceDegraded());
 
     act(() => {
       setHostHealth({
@@ -255,9 +237,7 @@ describe("useAgentActivityPresenceDegraded", () => {
   });
 
   it("restarts the grace under 'stream-down' when the stream closes during a sustained 'cloud-down'", () => {
-    const { result } = renderHook(() =>
-      useAgentActivityPresenceDegraded(),
-    );
+    const { result } = renderHook(() => useAgentActivityPresenceDegraded());
 
     act(() => {
       setHostHealth({
