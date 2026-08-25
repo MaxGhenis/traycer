@@ -430,14 +430,28 @@ export function useCloudEpicTasksQuery(
   const lastPage: ListTasksResponse | undefined =
     extraPages.length > 0 ? extraPages[extraPages.length - 1] : queryData;
   const lastNextCursor = resolveNextCursor(lastPage);
-  const hasNextPage = lastNextCursor !== null && !isPlaceholderData;
+  // Cursor pagination is a CLOUD-ONLY leg, and the identity that keeps this
+  // query alive is deliberately wider than the one that authorizes it: History
+  // stays readable under `unverified`, so a signed-in page with `hasMore` and
+  // its cursor survive the demotion intact. A tail request explicitly omits the
+  // local-first phase, so unlike the initial page it has no local answer to
+  // fall back on - "Show more" after the verdict is withdrawn could only ever
+  // dispatch a cloud request on a bearer the cloud no longer vouches for.
+  //
+  // Gated on BOTH halves on purpose. Hiding the affordance alone would leave
+  // `fetchNextPage` callable by an infinite-scroll sentinel or any other
+  // programmatic caller; gating only the dispatch would leave a "Show more"
+  // button that silently does nothing.
+  const hasNextPage =
+    lastNextCursor !== null && !isPlaceholderData && authorizesCloudLeg;
 
   const fetchNextPage = useCallback(() => {
     if (
       lastNextCursor === null ||
       isFetchingNextPage ||
       hostId === null ||
-      userId === null
+      userId === null ||
+      !authorizesCloudLeg
     ) {
       return;
     }
@@ -454,6 +468,7 @@ export function useCloudEpicTasksQuery(
       scope: { hostId, userId },
     });
   }, [
+    authorizesCloudLeg,
     effectiveRequest,
     hostId,
     identity,

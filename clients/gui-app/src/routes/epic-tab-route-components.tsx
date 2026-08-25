@@ -16,6 +16,10 @@ import {
   tabNavigationResolutionFailed,
 } from "@/lib/tab-navigation";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
 import type { EpicFocusSearch } from "./epic-route-search";
 
 export function EpicRoute() {
@@ -53,10 +57,29 @@ function EpicRouteTabSync(props: {
   );
   const recordViewedMutation = useEpicRecordViewed();
   const recordViewed = recordViewedMutation.mutate;
+  const cloudAuthorized = useAuthStore((state) =>
+    authorizesCloudCapability(state.status),
+  );
 
   useEffect(() => {
+    // `epic.recordViewed` writes personal cloud recency, so it is a CAPABILITY
+    // spend, not part of rendering the epic. The route itself is admitted under
+    // `unverified` on purpose - the epic is on disk and must stay openable - but
+    // merely restoring a tab while authn is unreachable, or after the credential
+    // was rejected, would otherwise fire a cloud mutation on a bearer the cloud
+    // has stopped vouching for.
+    //
+    // A background effect rather than a click, which is why no UI gate covers
+    // it: nothing in this tree is disabled, so the spend happens on mount with
+    // no gesture behind it at all.
+    //
+    // Deliberately dropped rather than deferred. Recency is a "last time you
+    // looked at this" datum whose whole value is being current; replaying it
+    // when the verdict returns would record the wrong moment, and the effect
+    // re-runs on the next open anyway.
+    if (!cloudAuthorized) return;
     recordViewed({ epicId });
-  }, [epicId, recordViewed]);
+  }, [cloudAuthorized, epicId, recordViewed]);
 
   if (resolutionFailed) return <RootLandingPage />;
 
