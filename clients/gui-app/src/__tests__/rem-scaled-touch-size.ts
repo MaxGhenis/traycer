@@ -19,9 +19,18 @@ import { expect } from "vitest";
  *    attempt wherever it appears. `w-11` is NOT included - a width is a layout
  *    measure here (a swatch, an indicator bar), and `min-w-44` is 11rem of menu
  *    width rather than 44px of anything.
- * 2. A negative inset of any nonzero size. Its only purpose is to push a
- *    pseudo-element past the control's own box, which is hit slop by
+ * 2. A negative INSET of any nonzero size. `inset` scopes all four edges at
+ *    once, and pushing all four past the control's own box is hit slop by
  *    definition. Zero is excluded because `inset-0` is root-independent.
+ *
+ *    The single-edge offsets (`-top` / `-right` / `-bottom` / `-left`) are
+ *    deliberately NOT included, even on a pseudo-element. That reads like the
+ *    same idiom spelled one edge at a time, and the tree says otherwise: every
+ *    negative pseudo offset in this app is a painted indicator nudged just
+ *    outside its box (`after:-right-0.5 after:w-0.5 after:bg-primary` in
+ *    `split-tab-item.tsx`, the active-tab bar in `ui/tabs.tsx`). Slop must
+ *    never paint, so those are categorically not it, and flagging them would
+ *    mean four waivers that excuse nothing and teach a false rule.
  * 3. Any rem-valued `min-h` / `min-w` / `size` / `inset` behind a
  *    `pointer-coarse` variant. Gating on the coarse pointer is what declares
  *    the utility a touch affordance, so the value must be a literal there even
@@ -32,6 +41,12 @@ import { expect } from "vitest";
  * stylesheets use: `min-h-[44px]` for a row that stacks flush with its
  * neighbours, and `max(100%, 44px)` for a pseudo that must hold the floor at
  * any root size while still growing with a larger control.
+ *
+ * An arbitrary value is judged by its UNIT, not by its brackets: `-inset-2.5`
+ * and `-inset-y-[0.625rem]` are the same elastic quantity spelled two ways, so
+ * both are rejected, while `-inset-y-[2px]` is root-independent and is not.
+ * Reading brackets alone as "already a literal" would leave the whole defect
+ * reachable through one extra pair of characters.
  */
 
 /**
@@ -56,23 +71,36 @@ export function utilityOf(token: string): string {
 /** The rem spelling of a 44px box. See shape 1 above. */
 const REM_44PX_BOX = /^(?:min-h|h|size)-11$/;
 
+/** A rem-valued scale step, or an arbitrary value in a font-relative unit. */
+const ELASTIC_VALUE = /^(?:(?!0$)[0-9.]+|\[[^\]]*[0-9.](?:r?em)\])$/;
+
 /** Hit slop pushed outside the control's own box. See shape 2 above. */
-const NEGATIVE_INSET_SLOP = /^-inset(?:-[xy])?-(?!0$)[0-9.]+$/;
+const NEGATIVE_INSET_SLOP = /^-inset(?:-[xy])?-(.+)$/;
 
 /**
- * A rem-valued size or inset. Applied only under a `pointer-coarse` variant -
- * see shape 3 above. A bracketed value (`min-h-[44px]`, `size-[max(100%,44px)]`)
- * has no bare number in that position and is deliberately not matched.
+ * A size or inset. Applied only under a `pointer-coarse` variant - see shape 3
+ * above. The VALUE decides: `min-h-[44px]` is a literal and passes,
+ * `min-h-[2.75rem]` is the same elastic quantity as `min-h-11` and does not.
  */
-const REM_VALUED_SIZE =
-  /^-?(?:min-h|min-w|size|inset)(?:-[xy])?-(?!0$)[0-9.]+$/;
+const SIZE_UTILITY = /^-?(?:min-h|min-w|size|inset)(?:-[xy])?-(.+)$/;
 
-/** Whether one class token sizes a touch target in rem. */
+/** The value a utility was given, or null if it is not that utility. */
+function valueOf(utility: string, pattern: RegExp): string | null {
+  const match = pattern.exec(utility);
+  return match === null ? null : match[1];
+}
+
+/** Whether one class token sizes a touch target in a font-relative unit. */
 export function isRemScaledTouchSize(token: string): boolean {
   const utility = utilityOf(token);
   if (REM_44PX_BOX.test(utility)) return true;
-  if (NEGATIVE_INSET_SLOP.test(utility)) return true;
-  return token.includes("pointer-coarse:") && REM_VALUED_SIZE.test(utility);
+
+  const inset = valueOf(utility, NEGATIVE_INSET_SLOP);
+  if (inset !== null && ELASTIC_VALUE.test(inset)) return true;
+
+  if (!token.includes("pointer-coarse:")) return false;
+  const size = valueOf(utility, SIZE_UTILITY);
+  return size !== null && ELASTIC_VALUE.test(size);
 }
 
 /**

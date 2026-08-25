@@ -163,15 +163,18 @@ export function MobileNavDrawer(): ReactNode {
           // the create action from the flat history rows without spanning a
           // heavy full-height slab. Nothing else in this panel may take a
           // resting fill, or the distinction dies.
-          // Visually a compact h-9 pill, but the tap target must still meet
-          // the 44px touch floor: the ::after overlay extends the hit area
-          // invisibly without growing the rendered button.
+          // Sized to the touch floor rather than slopped up to it. Invisible
+          // hit slop only works for a control with room around it, and this one
+          // has `mt-1` between it and the task list - so a pseudo tall enough
+          // to reach 44px hangs over the first row and takes its taps, by more
+          // the smaller the reader sets their text. Every other row in this
+          // drawer takes the same treatment (see `ROW_CLASS`).
           //
-          // `max(100%, 44px)`, never a rem inset: the root font size is a user
-          // setting clamped to 10-20px, so the `h-9` box and a rem inset
-          // around it shrink together - 30px at the floor. This form holds the
-          // floor at any root size and still grows with a taller pill.
-          className="relative h-9 w-full shrink-0 justify-center gap-2 rounded-md px-4 font-semibold after:absolute after:inset-x-0 after:top-1/2 after:h-[max(100%,44px)] after:-translate-y-1/2 after:content-['']"
+          // Pixel-literal, never `h-9` plus a rem inset: the root font size is
+          // a user setting clamped to 10-20px, so the box and any rem padding
+          // around it shrink together and land at 30px at the floor. A
+          // min-height also cannot clip a label that wraps at a large size.
+          className="w-full shrink-0 justify-center gap-2 rounded-md px-4 font-semibold min-h-[44px]"
           data-testid="mobile-nav-new-task"
           onClick={handleNewTask}
         >

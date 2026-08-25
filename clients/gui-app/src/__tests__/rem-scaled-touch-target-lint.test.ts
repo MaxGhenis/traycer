@@ -140,6 +140,12 @@ describe("the rem-scaled touch size matcher", () => {
     "pointer-coarse:before:-inset-y-2.5",
     "pointer-coarse:before:size-7",
     "pointer-coarse:before:inset-x-1.5",
+    // Brackets are not a literal. A font-relative arbitrary value is the same
+    // elastic quantity as the scale step it spells out, so reading brackets
+    // alone as "already fixed" would leave the defect one keystroke away.
+    "-inset-y-[0.625rem]",
+    "pointer-coarse:before:min-h-[2.75rem]",
+    "after:-inset-[2em]",
   ];
 
   const ACCEPTED = [
@@ -164,6 +170,20 @@ describe("the rem-scaled touch size matcher", () => {
     "size-7",
     "size-4",
     "inset-0",
+    // A px arbitrary value is root-independent - the thing this rule wants.
+    "-inset-y-[2px]",
+    "after:-inset-[3px]",
+    // A single-edge negative offset is not this idiom, on a pseudo-element or
+    // anywhere else. Every one in this app is a painted indicator nudged just
+    // outside its box - `split-tab-item.tsx`'s side bar, `ui/tabs.tsx`'s
+    // active-tab bar - and slop must never paint. Rejecting these would mean
+    // four waivers that excuse nothing.
+    "-top-2",
+    "after:-right-0.5",
+    "before:-left-0.5",
+    "group-data-[orientation=vertical]/tabs:after:-right-1",
+    // A percentage offset does not track the root font size either.
+    "after:-top-1/2",
   ];
 
   it.each(REJECTED)("rejects %s", (token) => {

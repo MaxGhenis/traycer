@@ -73,10 +73,12 @@ const DEFAULT_WINDOW_DAYS: UsageSummaryWindowDays = 7;
 // The height is a pixel literal floored against the trigger's own box, the
 // same `max(100%, 44px)` the three touch-target stylesheets use - not a rem
 // inset. The root font size is a user setting clamped to 10-20px, so both the
-// `h-8` box and a rem inset around it shrink together: `-inset-y-2.5` on
-// `h-8` measures 45px at the 15px default and 30px at the floor, reading as
-// correct at every size a developer is likely to test. `max()` holds the
-// floor at any root size and still grows with a taller trigger.
+// `h-8` box and a rem inset around it shrink together: `2rem` plus
+// `-inset-y-2.5`'s `0.625rem` a side is `3.25rem`, which is 48.75px at the
+// 15px default but only 32.5px at the floor - correct at every size a
+// developer is likely to test, and short for everyone who shrinks their text.
+// `max()` holds the floor at any root size and still grows with a taller
+// trigger.
 const COARSE_POINTER_TRIGGER =
   "pointer-coarse:before:absolute pointer-coarse:before:inset-x-0 pointer-coarse:before:top-1/2 pointer-coarse:before:h-[max(100%,44px)] pointer-coarse:before:-translate-y-1/2";
 
