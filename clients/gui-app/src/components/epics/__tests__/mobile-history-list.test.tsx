@@ -50,6 +50,7 @@ import {
 } from "@/components/epics/epics-list-panel";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { HistoryItem } from "@/components/home/data/home-page.data";
+import type { ListTasksCompleteness } from "@traycer/protocol/host/epic/unary-schemas";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useHistorySearchStore } from "@/stores/home/history-search-store";
 import { DEFAULT_HISTORY_SEARCH } from "@/lib/history-search";
@@ -108,6 +109,8 @@ interface SetEpicPinnedVariables {
 
 const testState = vi.hoisted(() => ({
   items: [] as HistoryItem[],
+  completeness: null as ListTasksCompleteness | null,
+  cloudPagePending: false,
   mutate:
     vi.fn<
       (
@@ -130,6 +133,7 @@ vi.mock("@/hooks/home/use-history-query", () => ({
       totalCount: testState.items.length,
       facets: { repos: [], workspaces: [], ownershipScopes: [] },
       worktreesByEpicId: new Map<string, readonly WorktreeHostEntryV12[]>(),
+      completeness: testState.completeness,
     },
     isPending: false,
     isFetching: false,
@@ -139,6 +143,7 @@ vi.mock("@/hooks/home/use-history-query", () => ({
     fetchNextPage: testState.fetchNextPage,
     hasNextPage: false,
     isFetchingNextPage: false,
+    cloudPagePending: testState.cloudPagePending,
   }),
 }));
 
@@ -390,6 +395,8 @@ describe("<MobileHistoryList /> (via <EpicsListPanel /> at a mobile viewport)", 
     setViewportWidth(MOBILE_VIEWPORT_WIDTH);
     window.localStorage.clear();
     testState.items = [historyItem({})];
+    testState.completeness = null;
+    testState.cloudPagePending = false;
     testState.mutate.mockReset();
     testState.renameMutate.mockReset();
     testState.setPinnedMutate.mockReset();
@@ -662,6 +669,44 @@ describe("<MobileHistoryList /> (via <EpicsListPanel /> at a mobile viewport)", 
       });
     });
 
+    it("keeps the local-home pin action unavailable and does not mutate", async () => {
+      testState.items = [
+        historyItem({
+          title: "Local only epic",
+          isLocalHome: true,
+        }),
+      ];
+      renderPanel("embedded", "/");
+
+      const pin = await screen.findByRole("button", {
+        name: "Pinning Local only epic needs cloud sync; it is stored on this device",
+      });
+      expect(pin.getAttribute("aria-disabled")).toBe("true");
+
+      fireEvent.click(pin);
+
+      expect(testState.setPinnedMutate).not.toHaveBeenCalled();
+    });
+
+    it("keeps the preserved-orphan pin action unavailable and does not mutate", async () => {
+      testState.items = [
+        historyItem({
+          title: "Orphaned epic",
+          isPreservedOrphan: true,
+        }),
+      ];
+      renderPanel("embedded", "/");
+
+      const pin = await screen.findByRole("button", {
+        name: "Pinning Orphaned epic is unavailable; its cloud copy was deleted and only this device's edits remain",
+      });
+      expect(pin.getAttribute("aria-disabled")).toBe("true");
+
+      fireEvent.click(pin);
+
+      expect(testState.setPinnedMutate).not.toHaveBeenCalled();
+    });
+
     it("reveals the inline title input on rename", async () => {
       renderPanel("embedded", "/");
 
@@ -670,6 +715,82 @@ describe("<MobileHistoryList /> (via <EpicsListPanel /> at a mobile viewport)", 
       expect(
         await screen.findByTestId("epics-list-row-title-input"),
       ).not.toBeNull();
+    });
+  });
+
+  describe("completeness and pending cloud page", () => {
+    it("explains when cloud tasks are unavailable instead of implying a complete local list", async () => {
+      testState.items = [
+        historyItem({ id: "history-local", epicId: "local", title: "Local" }),
+      ];
+      testState.completeness = {
+        cloudPage: "unavailable",
+        facets: "partial",
+        localRows: "present",
+        sort: "loaded-union",
+      };
+      renderPanel("embedded", "/");
+
+      const notice = await screen.findByTestId("epics-list-completeness");
+      expect(notice.getAttribute("data-cloud-page")).toBe("unavailable");
+      expect(notice.textContent).toContain("Cloud tasks couldn't be reached");
+      expect(notice.textContent).toContain(
+        "Order covers the tasks listed here",
+      );
+    });
+
+    it("explains when local rows are truncated", async () => {
+      testState.completeness = {
+        cloudPage: "settled",
+        facets: "server",
+        localRows: "truncated",
+        sort: "loaded-union",
+      };
+      renderPanel("embedded", "/");
+
+      const notice = await screen.findByTestId("epics-list-completeness");
+      expect(notice.getAttribute("data-local-rows")).toBe("truncated");
+      expect(notice.textContent).toContain(
+        "first tasks stored on this device, not all",
+      );
+    });
+
+    it("explains an empty filtered result when the local filter is unprovable", async () => {
+      testState.items = [];
+      testState.completeness = {
+        cloudPage: "unavailable",
+        facets: "partial",
+        localRows: "suppressed-unprovable-filter",
+        sort: "server",
+      };
+      useHistorySearchStore.setState({
+        search: { ...DEFAULT_HISTORY_SEARCH, query: "missing" },
+      });
+      renderPanel("embedded", "/");
+
+      const notice = await screen.findByTestId("epics-list-completeness");
+      expect(notice.getAttribute("data-local-rows")).toBe(
+        "suppressed-unprovable-filter",
+      );
+      expect(notice.textContent).toContain(
+        "can't be checked against tasks stored on this device",
+      );
+      expect(screen.queryByTestId("epics-list-empty")).toBeNull();
+      expect(screen.getByTestId("epics-list-filtered-empty")).not.toBeNull();
+    });
+
+    it("shows the explicit cloud-pending state when local storage is empty", async () => {
+      testState.items = [];
+      testState.cloudPagePending = true;
+      renderPanel("embedded", "/");
+
+      expect(screen.queryByTestId("epics-list-empty")).toBeNull();
+      expect(
+        await screen.findByTestId("epics-list-cloud-page-pending"),
+      ).not.toBeNull();
+      expect(
+        screen.getByTestId("epics-list-completeness").textContent,
+      ).toContain("Cloud tasks are still loading");
     });
   });
 

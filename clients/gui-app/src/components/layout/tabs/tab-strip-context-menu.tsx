@@ -1,3 +1,4 @@
+import { useCallback, useSyncExternalStore } from "react";
 import {
   ArrowLeftRight,
   CopyPlus,
@@ -24,6 +25,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import type { HeaderTab } from "@/stores/tabs/types";
+import { getOpenEpicRegistry } from "@/lib/registries/epic-session-registry";
 import {
   TAB_SPLIT_COMMANDS,
   resolveTabSplitCommandAvailability,
@@ -54,11 +56,80 @@ interface TabContextMenuContentProps {
  * already in the cloud.
  */
 function pinActionLabel(
-  cloudOnly: boolean,
+  unavailable: boolean,
   taskPinned: boolean | null,
 ): string {
-  if (cloudOnly) return "Pin Task in History \u2014 stored on this device";
+  if (unavailable) return "Pin Task in History \u2014 stored on this device";
   return taskPinned === true ? "Unpin Task in History" : "Pin Task in History";
+}
+
+/**
+ * The epic-only head of the menu: Edit Title and the History pin.
+ *
+ * Split out of `TabContextMenuContent` purely to keep that function under the
+ * complexity ceiling - this block carries most of the menu's branching. It
+ * takes `preservedOrphan` as a PROP rather than calling
+ * `usePreservedOrphanSession` itself, so the hook keeps running for every tab
+ * kind exactly as it did before the split.
+ */
+function EpicTabMenuItems(props: {
+  readonly tabId: string;
+  readonly canEditTitle: boolean;
+  readonly taskPinned: boolean | null;
+  readonly isTaskPinPending: boolean;
+  readonly localOnly: boolean;
+  readonly preservedOrphan: boolean;
+  readonly onEditTitle: () => void;
+  readonly onSetTaskPinned: (pinned: boolean) => void;
+}): React.ReactNode {
+  const { tabId, taskPinned, localOnly, preservedOrphan } = props;
+  const pinUnavailable = localOnly || preservedOrphan;
+  return (
+    <>
+      {props.canEditTitle ? (
+        <ContextMenuItem
+          onSelect={props.onEditTitle}
+          data-testid={`tab-edit-title-epic-${tabId}`}
+        >
+          <Pencil />
+          Edit Title
+        </ContextMenuItem>
+      ) : null}
+      <ContextMenuItem
+        // Pin is a cloud-only personal preference. The get-task-contexts
+        // cache cannot carry list preservation and is intentionally
+        // infinitely fresh, so a live session's orphan-pause state is the
+        // authority for an open cloud-deleted-but-locally-preserved epic.
+        disabled={
+          taskPinned === null || props.isTaskPinPending || pinUnavailable
+        }
+        data-local-home-pin-unavailable={localOnly || undefined}
+        data-preserved-orphan-pin-unavailable={preservedOrphan || undefined}
+        onSelect={() => {
+          if (pinUnavailable || taskPinned === null) return;
+          props.onSetTaskPinned(!taskPinned);
+        }}
+        data-testid={`tab-pin-history-${tabId}`}
+      >
+        <Pin className={taskPinned === true ? "fill-current" : undefined} />
+        {/*
+          States the CONDITION rather than predicting an event: "available
+          after cloud sync" promises a sync that a free-tier account never
+          gets, and a stale `home: "local"` row would keep promising it for
+          an epic already in the cloud.
+        */}
+        {pinActionLabel(pinUnavailable, taskPinned)}
+        {!pinUnavailable && (taskPinned === null || props.isTaskPinPending) ? (
+          <AgentSpinningDots
+            className="ml-auto text-muted-foreground"
+            testId={`tab-pin-history-spinner-${tabId}`}
+            variant={undefined}
+          />
+        ) : null}
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+    </>
+  );
 }
 
 export function TabContextMenuContent(
@@ -83,7 +154,8 @@ export function TabContextMenuContent(
   // absent-`home` case (older host, pre-`@1.1` negotiation) reads as
   // cloud-or-unknown and keeps exactly today's behaviour.
   const taskPinned = taskPinnedState === null ? null : taskPinnedState.pinned;
-  const cloudOnly = taskPinnedState?.home === "local";
+  const localOnly = taskPinnedState?.home === "local";
+  const preservedOrphan = usePreservedOrphanSession(tab);
 
   const showDuplicate = tab.canDuplicate;
   const showOpenInNewWindow = tab.canOpenInNewWindow;
@@ -91,48 +163,16 @@ export function TabContextMenuContent(
   return (
     <ContextMenuContent onCloseAutoFocus={(event) => event.preventDefault()}>
       {tab.kind === "epic" ? (
-        <>
-          {canEditTitle ? (
-            <ContextMenuItem
-              onSelect={onEditTitle}
-              data-testid={`tab-edit-title-${tab.kind}-${tab.id}`}
-            >
-              <Pencil />
-              Edit Title
-            </ContextMenuItem>
-          ) : null}
-          <ContextMenuItem
-            // `cloudOnly` mirrors the History list's `HistoryPinControl`
-            // (`epics-list-panel.tsx`), which already learned this: pin is a
-            // cloud-only personal preference, so offering it on an epic that
-            // lives only on this device is an action the host can only refuse
-            // - and the optimistic toast said it had worked.
-            disabled={taskPinned === null || isTaskPinPending || cloudOnly}
-            data-local-home-pin-unavailable={cloudOnly || undefined}
-            onSelect={() => {
-              if (cloudOnly || taskPinned === null) return;
-              onSetTaskPinned(!taskPinned);
-            }}
-            data-testid={`tab-pin-history-${tab.id}`}
-          >
-            <Pin className={taskPinned === true ? "fill-current" : undefined} />
-            {/*
-              States the CONDITION rather than predicting an event: "available
-              after cloud sync" promises a sync that a free-tier account never
-              gets, and a stale `home: "local"` row would keep promising it for
-              an epic already in the cloud.
-            */}
-            {pinActionLabel(cloudOnly, taskPinned)}
-            {!cloudOnly && (taskPinned === null || isTaskPinPending) ? (
-              <AgentSpinningDots
-                className="ml-auto text-muted-foreground"
-                testId={`tab-pin-history-spinner-${tab.id}`}
-                variant={undefined}
-              />
-            ) : null}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-        </>
+        <EpicTabMenuItems
+          tabId={tab.id}
+          canEditTitle={canEditTitle}
+          taskPinned={taskPinned}
+          isTaskPinPending={isTaskPinPending}
+          localOnly={localOnly}
+          preservedOrphan={preservedOrphan}
+          onEditTitle={onEditTitle}
+          onSetTaskPinned={onSetTaskPinned}
+        />
       ) : null}
       {showDuplicate ? (
         <ContextMenuItem
@@ -172,6 +212,50 @@ export function TabContextMenuContent(
       </ContextMenuItem>
     </ContextMenuContent>
   );
+}
+
+/**
+ * `epic.getTaskContexts@1.1` cannot express a list row's preservation marker.
+ * Its `staleTime: Infinity` cache can therefore still report the deleted
+ * cloud task as pinnable. A live epic session has the host's durable pause
+ * reason, which is the authoritative open-tab signal for this exception.
+ */
+function usePreservedOrphanSession(tab: HeaderTab): boolean {
+  const epicId = tab.kind === "epic" ? tab.epicId : null;
+  const registry = getOpenEpicRegistry();
+  const subscribe = useCallback(
+    (listener: () => void): (() => void) => {
+      if (epicId === null) return () => {};
+      let unsubscribeStore: (() => void) | null = null;
+      const bindStore = (): void => {
+        unsubscribeStore?.();
+        const handle = registry.peek(epicId);
+        unsubscribeStore =
+          handle === null ? null : handle.store.subscribe(listener);
+      };
+      bindStore();
+      const unsubscribeRegistry = registry.subscribe(() => {
+        bindStore();
+        listener();
+      });
+      return () => {
+        unsubscribeRegistry();
+        unsubscribeStore?.();
+      };
+    },
+    [epicId, registry],
+  );
+  const getSnapshot = useCallback((): boolean => {
+    if (epicId === null) return false;
+    const state = registry.peek(epicId)?.store.getState();
+    return (
+      state?.durabilityPauseReason ===
+        "orphaned-local-edits-after-cloud-delete" ||
+      state?.retainedDurabilityPauseReason ===
+        "orphaned-local-edits-after-cloud-delete"
+    );
+  }, [epicId, registry]);
+  return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }
 
 /**

@@ -557,6 +557,7 @@ describe("EpicTabExistenceReconciler fail-closed paths", () => {
  * not to a session marker that a relaunch would have already cleared.
  */
 const LOCAL_HOME_EPIC_ID = "epic-local-homed-across-relaunch";
+const PRESERVED_ORPHAN_EPIC_ID = "epic-preserved-orphan";
 /**
  * A genuinely-stale persisted tab: absent from `getTaskContexts`, absent from
  * the list page, and carrying no session-scoped exemption. Its CLOSURE is what
@@ -573,6 +574,13 @@ function cloudHomedListTasksRow(
 ): ListTasksResponse["tasks"][number] {
   const { home: _home, ...row } = localHomedListTasksRow(epicId);
   return row;
+}
+
+function preservedOrphanListTasksRow(
+  epicId: string,
+): ListTasksResponse["tasks"][number] {
+  const { home: _home, ...row } = localHomedListTasksRow(epicId);
+  return { ...row, preservation: "orphaned-local-edits" };
 }
 
 /** A `getTaskContexts` row the host POSITIVELY confirmed. */
@@ -651,7 +659,12 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
     useAuthStore.getState().setSignedOut();
     useEpicCanvasStore
       .getState()
-      .closeTabsForEpics([OPEN_EPIC_ID, LOCAL_HOME_EPIC_ID, STALE_EPIC_ID]);
+      .closeTabsForEpics([
+        OPEN_EPIC_ID,
+        LOCAL_HOME_EPIC_ID,
+        PRESERVED_ORPHAN_EPIC_ID,
+        STALE_EPIC_ID,
+      ]);
     useInitialChatHandoffStore.getState().resetForTests();
     clearSessionCreatedEpics();
     resetNegotiatedManifests();
@@ -853,6 +866,45 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
       expect(collectOpenEpicIds()).not.toContain(STALE_EPIC_ID);
     });
     expect(collectOpenEpicIds()).toContain(LOCAL_HOME_EPIC_ID);
+    queryClient.clear();
+  });
+
+  it("keeps a preserved orphan open even when home, cloud, and registry are absent", async () => {
+    recordNegotiatedHostMethods(localSnapshot.hostId, [
+      "host.status",
+      "epic.getTaskContexts",
+    ]);
+    useEpicCanvasStore
+      .getState()
+      .openEpicTab(PRESERVED_ORPHAN_EPIC_ID, "Preserved orphan");
+    useEpicCanvasStore.getState().openEpicTab(STALE_EPIC_ID, "Stale Epic");
+
+    const getTaskContexts = vi.fn(
+      (params: GetTaskContextsRequest): GetTaskContextsResponse => {
+        const tasks: GetTaskContextsResponse["tasks"] = {};
+        for (const taskId of params.taskIds) {
+          tasks[taskId] =
+            taskId === PRESERVED_ORPHAN_EPIC_ID || taskId === STALE_EPIC_ID
+              ? { status: "confirmed-absent" as const }
+              : confirmedRow(taskId);
+        }
+        return { tasks };
+      },
+    );
+    const listTasks = vi.fn((_params: ListTasksRequest): ListTasksResponse => ({
+      // The preserved marker is the only protection in this fixture: the row
+      // is cloud-homed (no `home`), has no cloud task-context answer, and no
+      // live registry/session exemption has been installed.
+      tasks: [preservedOrphanListTasksRow(PRESERVED_ORPHAN_EPIC_ID)],
+      hasMore: false,
+    }));
+
+    const { queryClient } = mountReconciler({ getTaskContexts, listTasks });
+
+    await waitFor(() => {
+      expect(collectOpenEpicIds()).not.toContain(STALE_EPIC_ID);
+    });
+    expect(collectOpenEpicIds()).toContain(PRESERVED_ORPHAN_EPIC_ID);
     queryClient.clear();
   });
 });

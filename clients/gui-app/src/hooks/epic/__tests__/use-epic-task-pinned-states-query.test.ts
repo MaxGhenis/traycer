@@ -7,6 +7,8 @@ import {
 import {
   chunkTaskIds,
   combineTaskPinnedStateResults,
+  overlayLocalHomedPinnedStates,
+  type TaskPinnedState,
 } from "@/hooks/epic/use-epic-task-pinned-states-query";
 
 function listTaskLight(epicId: string | null, pinned: boolean): ListTaskLight {
@@ -90,5 +92,81 @@ describe("combineTaskPinnedStateResults", () => {
       ["epic-a", { pinned: true, home: undefined }],
       ["epic-b", { pinned: false, home: undefined }],
     ]);
+  });
+});
+
+describe("overlayLocalHomedPinnedStates", () => {
+  it("returns the SAME map object when there is nothing to overlay", () => {
+    // Deliberate identity preservation, not merely equal content: the common
+    // case (no locally-homed epics among the open tabs) must not hand
+    // consumers a fresh map every render.
+    const queried: ReadonlyMap<string, TaskPinnedState> = new Map([
+      ["epic-a", { pinned: true, home: undefined }],
+    ]);
+
+    const overlaid = overlayLocalHomedPinnedStates(queried, new Set());
+
+    expect(overlaid).toBe(queried);
+  });
+
+  it("adds an entry for a local-homed epic the queried host never resolved", () => {
+    // The wrong-host gap this hook exists to close: the epic id never reached
+    // the queried map at all, so `pinned` has no source and must fall back to
+    // filler rather than being left absent.
+    const queried: ReadonlyMap<string, TaskPinnedState> = new Map();
+
+    const overlaid = overlayLocalHomedPinnedStates(
+      queried,
+      new Set(["epic-local-only"]),
+    );
+
+    expect([...overlaid.entries()]).toEqual([
+      ["epic-local-only", { pinned: false, home: "local" }],
+    ]);
+  });
+
+  it("keeps the queried `pinned` value while overriding `home` to local", () => {
+    // `pinned` is a cloud-only preference the queried host answers correctly
+    // regardless of ownership - only `home` is ever overridden by the
+    // session's own answer.
+    const queried: ReadonlyMap<string, TaskPinnedState> = new Map([
+      ["epic-both", { pinned: true, home: undefined }],
+    ]);
+
+    const overlaid = overlayLocalHomedPinnedStates(
+      queried,
+      new Set(["epic-both"]),
+    );
+
+    expect(overlaid.get("epic-both")).toEqual({
+      pinned: true,
+      home: "local",
+    });
+  });
+
+  it("leaves an epic absent from `localHomedEpicIds` exactly as queried", () => {
+    const queried: ReadonlyMap<string, TaskPinnedState> = new Map([
+      ["epic-cloud", { pinned: true, home: undefined }],
+    ]);
+
+    const overlaid = overlayLocalHomedPinnedStates(
+      queried,
+      new Set(["epic-unrelated"]),
+    );
+
+    expect(overlaid.get("epic-cloud")).toEqual({
+      pinned: true,
+      home: undefined,
+    });
+  });
+
+  it("does not mutate the queried map it was given", () => {
+    const queried: ReadonlyMap<string, TaskPinnedState> = new Map([
+      ["epic-a", { pinned: false, home: undefined }],
+    ]);
+
+    overlayLocalHomedPinnedStates(queried, new Set(["epic-a"]));
+
+    expect(queried.get("epic-a")).toEqual({ pinned: false, home: undefined });
   });
 });

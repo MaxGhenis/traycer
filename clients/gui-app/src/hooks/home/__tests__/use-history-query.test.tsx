@@ -2,6 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  ListTasksCompleteness,
   ListTasksResponse,
   ListTaskLight,
 } from "@traycer/protocol/host/epic/unary-schemas";
@@ -37,6 +38,15 @@ const testState = vi.hoisted(() => {
     chatHostSupport: "supported",
     refetch: vi.fn(),
     fetchNextPage: vi.fn(),
+    // T5a/T5b: `isCloudPagePending` and `completeness` are the two NEW
+    // fields `useCloudEpicTasksQuery` exposes so `useHistoryQuery` can pass
+    // them through as `cloudPagePending` / the union `data.completeness`.
+    // Independent from `isFetching`/`response`: the producer this models is
+    // the caller-owned-tombstone arm, whose page is `{tasks: [], hasMore:
+    // false}` with `isFetching` already settled false - not a fetch in
+    // progress.
+    isCloudPagePending: false,
+    completenessOverride: null as ListTasksCompleteness | null,
   };
 });
 
@@ -77,6 +87,11 @@ vi.mock("@/hooks/epics/use-cloud-epic-tasks-query", () => ({
       fetchNextPage: testState.fetchNextPage,
       hasNextPage: testState.hasNextPage,
       isFetchingNextPage: false,
+      isCloudPagePending: testState.isCloudPagePending,
+      // The UNION statement, deliberately independent of `query.data`'s own
+      // `completeness` above (T5b) - `useHistoryQuery` must read this field,
+      // not `tasksQuery.data.completeness`, for the exposed `data.completeness`.
+      completeness: testState.completenessOverride,
     };
   },
 }));
@@ -147,6 +162,8 @@ describe("useHistoryQuery", () => {
     testState.chatHostSupport = "supported";
     testState.refetch.mockReset();
     testState.fetchNextPage.mockReset();
+    testState.isCloudPagePending = false;
+    testState.completenessOverride = null;
   });
 
   afterEach(() => {
@@ -505,6 +522,168 @@ describe("useHistoryQuery", () => {
     );
   });
 
+  describe("cloud page pending", () => {
+    // T5a: `cloudPagePending` is passed through from `isCloudPagePending`,
+    // independent of `isFetching` and of whether `tasks`/`items` are empty.
+    // The producer this models is the host resolver's caller-owned-tombstone
+    // arm - a `{tasks: [], hasMore: false}` page for an account nobody has
+    // finished asking about, with `isFetching` already settled false (the
+    // follow-up revalidation runs under its own ephemeral query key and is
+    // invisible to `isFetching`). Building the fixture as a "pristine
+    // cloud-only account" was disproved
+    // (`traycer-host/src/transport/rpc/__tests__/epic-list-tasks-discovery.test.ts:249-288`
+    // shows such an account WAITS for cloud instead), so this deliberately
+    // pairs the pending flag with settled-empty rows rather than an
+    // in-flight fetch.
+    it("stays true while the local-first revalidation leg is outstanding, even with settled empty rows", () => {
+      testState.tasks = [];
+      testState.response = { tasks: [], hasMore: false };
+      testState.isFetching = false;
+      testState.isCloudPagePending = true;
+
+      render(<HistoryQueryHarness search={DEFAULT_HISTORY_SEARCH} />);
+
+      expect(screen.getByTestId("fetching").textContent).toBe("false");
+      expect(screen.getByTestId("cloud-page-pending").textContent).toBe("true");
+      expect(
+        screen.getByRole("status", { name: "History titles" }).textContent,
+      ).toBe("");
+    });
+
+    it("clears once the follow-up settles (or fails)", () => {
+      testState.isCloudPagePending = false;
+
+      render(<HistoryQueryHarness search={DEFAULT_HISTORY_SEARCH} />);
+
+      expect(screen.getByTestId("cloud-page-pending").textContent).toBe(
+        "false",
+      );
+    });
+  });
+
+  describe("completeness union", () => {
+    // T5b: `data.completeness` must be the union `useCloudEpicTasksQuery`
+    // computes across the first page AND every retained "Show more" tail
+    // (`unionCompleteness`/`mergeCompleteness` in
+    // `hooks/epics/use-cloud-epic-tasks-query.ts`), never the first page's
+    // own `completeness` alone. The mock deliberately gives the first page
+    // and the union DIFFERENT statements so a regression that reads
+    // `tasksQuery.data.completeness` instead of the hook's `completeness`
+    // field would fail this assertion.
+    it("exposes the worst-of union rather than the first page's own statement", () => {
+      testState.response = {
+        tasks: testState.tasks,
+        hasMore: false,
+        completeness: {
+          cloudPage: "settled",
+          facets: "server",
+          localRows: "none",
+          sort: "server",
+        },
+      };
+      testState.completenessOverride = {
+        cloudPage: "unavailable",
+        facets: "partial",
+        localRows: "truncated",
+        sort: "loaded-union",
+      };
+
+      render(<HistoryQueryHarness search={DEFAULT_HISTORY_SEARCH} />);
+
+      expect(screen.getByTestId("completeness").textContent).toBe(
+        "unavailable|partial|truncated|loaded-union",
+      );
+    });
+
+    it("unions a locally-held workspace and repo into the available filter options when the union reports partial facets", () => {
+      testState.tasks = [
+        taskLight("epic-alpha", "Alpha workbench", "traycer/gui-app"),
+      ];
+      testState.response = {
+        tasks: testState.tasks,
+        hasMore: false,
+        facets: {
+          repos: [
+            { repoIdentifier: { owner: "traycer", repo: "gui-app" }, count: 1 },
+          ],
+          workspaces: [
+            {
+              workspaceIdentifier: {
+                hostId: "host-1",
+                workspacePath: "/server-only",
+              },
+              count: 1,
+            },
+          ],
+          ownershipScopes: [],
+        },
+      };
+      testState.completenessOverride = {
+        cloudPage: "unavailable",
+        facets: "partial",
+        localRows: "truncated",
+        sort: "loaded-union",
+      };
+      testState.worktreeIndex = [
+        {
+          ...worktreeWithPullRequest(1),
+          worktreePath: "/w/local-only",
+          branch: "feature/local-only-workspace",
+          owners: [
+            {
+              epicId: "epic-local",
+              ownerKind: "chat",
+              ownerId: "chat-local",
+              updatedAt: 1,
+            },
+          ],
+        },
+      ];
+      const localTask = taskLight(
+        "epic-local",
+        "Local only workspace",
+        "traycer/local-repo",
+      );
+      if (localTask.epic === undefined || localTask.epic === null) {
+        throw new Error("Expected epic on local task fixture");
+      }
+      testState.taskContexts = new Map([
+        [
+          "epic-local",
+          {
+            ...localTask,
+            epic: {
+              ...localTask.epic,
+              workspaces: [
+                {
+                  task: null,
+                  hostId: "host-2",
+                  workspacePath: "/local-only",
+                  createdAt: 0,
+                },
+              ],
+            },
+          },
+        ],
+      ]);
+
+      render(
+        <HistoryQueryHarness
+          search={patchHistorySearch(DEFAULT_HISTORY_SEARCH, {
+            query: "feature/local-only-workspace",
+          })}
+        />,
+      );
+
+      expect(screen.getByTestId("available-workspaces").textContent).toBe(
+        "host-1:/server-only|host-2:/local-only",
+      );
+      expect(screen.getByTestId("available-repos").textContent).toBe(
+        "traycer/gui-app|traycer/local-repo",
+      );
+    });
+  });
+
   describe("chat-host filter", () => {
     const hostSearch: HistorySearchState = {
       ...DEFAULT_HISTORY_SEARCH,
@@ -657,6 +836,19 @@ describe("useHistoryQuery", () => {
   });
 });
 
+/**
+ * Project an optional list of already-formatted parts into one assertable
+ * string. Every readout below is the same "map then join, or say nothing"
+ * shape, and inlining the `?? fallback` at each of them is what put this
+ * harness over the complexity ceiling.
+ */
+function joined(
+  parts: ReadonlyArray<string> | undefined,
+  fallback: string,
+): string {
+  return parts === undefined ? fallback : parts.join("|");
+}
+
 function HistoryQueryHarness(props: {
   readonly search: HistorySearchState;
 }): ReactElement {
@@ -668,33 +860,72 @@ function HistoryQueryHarness(props: {
       <div data-testid="error">{result.error?.message ?? ""}</div>
       <div data-testid="has-next-page">{String(result.hasNextPage)}</div>
       <div role="status" aria-label="History titles">
-        {result.data?.items.map((item) => item.title).join("|") ?? ""}
+        {joined(
+          result.data?.items.map((item) => item.title),
+          "",
+        )}
       </div>
       <div data-testid="repo-facets">
-        {result.data?.facets.repos
-          .map((facet) => `${facet.label}:${facet.count}`)
-          .join("|") ?? ""}
+        {joined(
+          result.data?.facets.repos.map(
+            (facet) => `${facet.label}:${facet.count}`,
+          ),
+          "",
+        )}
       </div>
       <div data-testid="workspace-facets">
-        {result.data?.facets.workspaces
-          .map(
+        {joined(
+          result.data?.facets.workspaces.map(
             (facet) =>
               `${facet.workspace.hostId}:${facet.workspace.workspacePath}:${facet.count}`,
-          )
-          .join("|") ?? ""}
+          ),
+          "",
+        )}
       </div>
       <div data-testid="chat-host-unsupported">
         {String(result.data?.chatHostFilterUnsupported ?? false)}
       </div>
       <div data-testid="chat-host-facets">
-        {result.data?.facets.chatHosts
-          ?.map((facet) => `${facet.hostId}:${facet.count}`)
-          .join("|") ?? "none"}
+        {joined(
+          result.data?.facets.chatHosts?.map(
+            (facet) => `${facet.hostId}:${facet.count}`,
+          ),
+          "none",
+        )}
       </div>
       <div data-testid="ownership-facets">
-        {result.data?.facets.ownershipScopes
-          .map((facet) => `${facet.value}:${facet.count}`)
-          .join("|") ?? ""}
+        {joined(
+          result.data?.facets.ownershipScopes.map(
+            (facet) => `${facet.value}:${facet.count}`,
+          ),
+          "",
+        )}
+      </div>
+      <div data-testid="cloud-page-pending">
+        {String(result.cloudPagePending)}
+      </div>
+      <div data-testid="completeness">
+        {(() => {
+          const completeness = result.data?.completeness;
+          if (completeness === null || completeness === undefined) return "";
+          return [
+            completeness.cloudPage,
+            completeness.facets,
+            completeness.localRows,
+            completeness.sort,
+          ].join("|");
+        })()}
+      </div>
+      <div data-testid="available-workspaces">
+        {joined(
+          result.data?.availableWorkspaces.map(
+            (workspace) => `${workspace.hostId}:${workspace.workspacePath}`,
+          ),
+          "",
+        )}
+      </div>
+      <div data-testid="available-repos">
+        {joined(result.data?.availableRepos, "")}
       </div>
     </div>
   );

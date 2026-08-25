@@ -78,14 +78,21 @@ import {
 import { EpicsFilterPopover } from "@/components/epics/epics-filter-popover";
 import {
   EpicsListChatHostFilterUnsupported,
+  EpicsListCloudPagePending,
   EpicsListEmpty,
   EpicsListError,
   EpicsListFilteredEmpty,
   EpicsListFilteringLoading,
   EpicsListLoading,
   EpicsListShowMore,
+  HistoryCompletenessNotice,
   HistoryRowLeadingIcon,
 } from "@/components/epics/epics-list-shared";
+import {
+  historyPinControlLabel,
+  historyPinUnavailableReason,
+  historyPinUnavailableTooltip,
+} from "@/components/epics/history-pin-availability";
 import { historyItemDisplayTitle } from "@/components/epics/history-item-title";
 import { MobileHistoryList } from "@/components/epics/mobile/mobile-history-list";
 import { useHistoryOpenItem } from "@/components/epics/use-history-open-item";
@@ -325,6 +332,7 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
+    cloudPagePending,
   } = useHistoryQuery({
     search,
     nowMs: props.historyNowMs,
@@ -687,6 +695,7 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
             worktreesByEpicId={worktreesByEpicId}
             openEpicIds={openEpicIdSet}
             completeness={view.completeness}
+            cloudPagePending={cloudPagePending}
             rowsScopeRef={rowsScopeRef}
             onRowKeyDown={keyboardNav.onRowKeyDown}
             onRefresh={refreshHistory}
@@ -1093,6 +1102,8 @@ function HistoryListBody(props: HistoryListBodyProps): ReactNode {
         hasActiveFilters={props.hasActiveFilters}
         chatHostFilterUnsupported={props.chatHostFilterUnsupported}
         items={props.items}
+        completeness={props.completeness}
+        cloudPagePending={props.cloudPagePending}
         onRetry={props.onRetry}
         selectionMode={props.selectionMode}
         selectedIds={props.selectedIds}
@@ -1141,6 +1152,7 @@ function HistoryListBody(props: HistoryListBodyProps): ReactNode {
         worktreesByEpicId={props.worktreesByEpicId}
         openEpicIds={props.openEpicIds}
         completeness={props.completeness}
+        cloudPagePending={props.cloudPagePending}
         onRowKeyDown={props.onRowKeyDown}
       />
     </div>
@@ -1176,6 +1188,8 @@ interface EpicsListBodyProps {
   >;
   readonly openEpicIds: ReadonlySet<string>;
   readonly completeness: ListTasksCompleteness | null;
+  /** Local-first cloud revalidation for the first page is still outstanding. */
+  readonly cloudPagePending: boolean;
   /** Anchors the arrow-key traversal: DOM order inside it is row order. */
   readonly onRowKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
 }
@@ -1207,6 +1221,7 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
     worktreesByEpicId,
     openEpicIds,
     completeness,
+    cloudPagePending,
     onRowKeyDown,
   } = props;
 
@@ -1234,6 +1249,20 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
   if (chatHostFilterUnsupported) {
     return <EpicsListChatHostFilterUnsupported />;
   }
+  // A pending local-first page is a renderable device snapshot, not a settled
+  // account result. Keep the distinct state ahead of every empty branch so an
+  // empty mirror never becomes the definitive "No tasks yet" claim.
+  if (items.length === 0 && cloudPagePending) {
+    return (
+      <>
+        <HistoryCompletenessNotice
+          completeness={completeness}
+          cloudPagePending={cloudPagePending}
+        />
+        <EpicsListCloudPagePending />
+      </>
+    );
+  }
   if (items.length === 0 && !hasActiveFilters) {
     // The notice renders HERE too, and this is the case it matters most for:
     // an empty History with no explanation is the strongest possible claim of
@@ -1241,7 +1270,10 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
     // unreachable cloud page produces.
     return (
       <>
-        <HistoryCompletenessNotice completeness={completeness} />
+        <HistoryCompletenessNotice
+          completeness={completeness}
+          cloudPagePending={cloudPagePending}
+        />
         <EpicsListEmpty />
       </>
     );
@@ -1249,7 +1281,10 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
   if (items.length === 0 && hasActiveFilters && isFetching) {
     return (
       <>
-        <HistoryCompletenessNotice completeness={completeness} />
+        <HistoryCompletenessNotice
+          completeness={completeness}
+          cloudPagePending={cloudPagePending}
+        />
         <EpicsListFilteringLoading />
       </>
     );
@@ -1272,7 +1307,10 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
   };
   return (
     <>
-      <HistoryCompletenessNotice completeness={completeness} />
+      <HistoryCompletenessNotice
+        completeness={completeness}
+        cloudPagePending={cloudPagePending}
+      />
       {preservedItems.length > 0 ? (
         <section
           className="mb-3 flex flex-col gap-2"
@@ -1339,77 +1377,6 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
         onLoadMore={onLoadMore}
       />
     </>
-  );
-}
-
-/**
- * What this page is NOT, stated once, above the rows.
- *
- * Through `@1.4` a History page that had lost its cloud leg was
- * indistinguishable from a complete one: the host swallowed the failure, fell
- * back to an empty body, prepended local rows, and the user read the result
- * under whatever filter chips and sort they had picked. There was nothing on
- * the wire that could say otherwise, so this is new information rather than a
- * new opinion.
- *
- * Renders NOTHING for a fully server-owned page, and nothing at all when the
- * host did not make a statement - absence is "unknown", and the honest
- * rendering of unknown here is the one we already had, not a warning we cannot
- * substantiate.
- */
-function HistoryCompletenessNotice(props: {
-  readonly completeness: ListTasksCompleteness | null;
-}): ReactNode {
-  const completeness = props.completeness;
-  if (completeness === null) return null;
-  const lines: string[] = [];
-  if (completeness.cloudPage === "unavailable") {
-    lines.push(
-      "Cloud tasks couldn't be reached. Showing what this device holds.",
-    );
-  }
-  if (completeness.localRows === "truncated") {
-    // The host capped how many mirror rows it injects into one page. Without
-    // this line the capped page reads as "these are your offline tasks" when
-    // it is "these are the first N of them".
-    lines.push("Showing the first tasks stored on this device, not all.");
-  }
-  if (completeness.localRows === "suppressed-unprovable-filter") {
-    // The difference between "you have no local epics matching" and "this
-    // filter cannot be answered from this device". Collapsing them is how a
-    // filtered offline History came to look empty and authoritative.
-    lines.push(
-      "This filter can't be checked against tasks stored on this device, so they aren't listed.",
-    );
-  }
-  // `facets: "partial"` is the protocol saying the counts describe a DIFFERENT
-  // set from the rows - host rows were injected beside them, or the cloud page
-  // is missing. Both lines used to assert the opposite ("counts cover the tasks
-  // listed here"), so the one state where the numbers provably disagree with
-  // the list was reported as the state where they agree.
-  if (completeness.sort === "loaded-union") {
-    lines.push(
-      completeness.facets === "partial"
-        ? "Order covers the tasks listed here, and filter counts may leave some of them out."
-        : "Order and counts cover the tasks listed here, not everything you have.",
-    );
-  } else if (completeness.facets === "partial") {
-    lines.push("Filter counts may not include every task listed here.");
-  }
-  if (lines.length === 0) return null;
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      data-testid="epics-list-completeness"
-      data-cloud-page={completeness.cloudPage}
-      data-local-rows={completeness.localRows}
-      className="mb-3 flex flex-col gap-1 rounded-md border border-dashed border-border/60 bg-muted/20 px-3 py-2 text-ui-xs text-muted-foreground"
-    >
-      {lines.map((line) => (
-        <p key={line}>{line}</p>
-      ))}
-    </div>
   );
 }
 
@@ -1814,36 +1781,15 @@ const EpicsListRow = memo(function EpicsListRow(props: EpicsListRowProps) {
  * invitation to tap it. It reads as muted-and-inert, which is what it is; the
  * tooltip carries the reason.
  */
-function historyPinClassName(cloudOnly: boolean, isPinned: boolean): string {
-  if (cloudOnly) return "cursor-default text-muted-foreground opacity-40";
+function historyPinClassName(
+  pinUnavailable: boolean,
+  isPinned: boolean,
+): string {
+  if (pinUnavailable) return "cursor-default text-muted-foreground opacity-40";
   if (isPinned) return "text-primary opacity-100 active:press-scrim";
   // Touch has no hover to reveal the control, and tapping the row navigates -
   // so on coarse pointers an ACTIONABLE pin stays visible.
   return "text-muted-foreground opacity-0 group-hover/list-row:opacity-100 group-focus-within/list-row:opacity-100 pointer-coarse:opacity-100 active:press-scrim";
-}
-
-/**
- * The pin control's accessible name, which doubles as the ENABLED tooltip.
- *
- * Two different reasons the cloud-only action is unavailable, so the copy
- * names the one that applies: an unpromoted epic can still be pinned later,
- * while a preserved orphan's cloud task is gone for good.
- */
-function historyPinLabel(input: {
-  readonly displayTitle: string;
-  readonly cloudOnly: boolean;
-  readonly preservedOrphan: boolean;
-  readonly isPinned: boolean;
-}): string {
-  if (input.preservedOrphan) {
-    return `Pinning ${input.displayTitle} is unavailable; its cloud copy was deleted and only this device's edits remain`;
-  }
-  if (input.cloudOnly) {
-    return `Pinning ${input.displayTitle} needs cloud sync; it is stored on this device`;
-  }
-  return input.isPinned
-    ? `Unpin ${input.displayTitle} from top`
-    : `Pin ${input.displayTitle} to top`;
 }
 
 function HistoryPinControl(props: {
@@ -1854,14 +1800,8 @@ function HistoryPinControl(props: {
 }): ReactNode {
   if (props.selectionMode || props.item.taskType === "phase") return null;
   const displayTitle = historyItemDisplayTitle(props.item);
-  // Two different reasons the cloud-only pin has nothing to act on, and the
-  // row-level `preservation` marker is the one that was missing: an
-  // `orphaned-local-edits` row is cloud-HOMED (so `isLocalHome` is false) but
-  // its cloud task has already been deleted - the row exists only to recover
-  // this device's edits. Pinning it optimistically flipped the icon and fired
-  // `epic.setPinned` against a task the server no longer has.
-  const preservedOrphan = props.item.isPreservedOrphan === true;
-  const cloudOnly = props.item.isLocalHome === true || preservedOrphan;
+  const unavailableReason = historyPinUnavailableReason(props.item);
+  const pinUnavailable = unavailableReason !== null;
   // "…is available after cloud sync" promised a sync that, for a free-tier
   // account, never comes - and `s5-status-truthfulness` folds
   // `s4-promotion-task-list-invalidation` in here for the sharper version of
@@ -1873,15 +1813,15 @@ function HistoryPinControl(props: {
   //
   // The staleness itself is the list-invalidation fix and is not repaired
   // here; this stops the copy from lying while it lasts.
-  const label = historyPinLabel({
+  const label = historyPinControlLabel({
     displayTitle,
-    cloudOnly,
-    preservedOrphan,
+    unavailableReason,
     isPinned: props.item.isPinned,
   });
-  const unavailableTooltip = preservedOrphan
-    ? "This epic's cloud copy was deleted. Only this device's edits remain, so it can't be pinned."
-    : "This epic is stored on this device. Pinning needs cloud sync.";
+  const unavailableTooltip =
+    unavailableReason === null
+      ? null
+      : historyPinUnavailableTooltip(unavailableReason);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -1890,16 +1830,16 @@ function HistoryPinControl(props: {
           aria-label={label}
           aria-pressed={props.item.isPinned}
           data-testid="epics-list-row-pin"
-          data-local-home-pin-unavailable={cloudOnly || undefined}
+          data-local-home-pin-unavailable={pinUnavailable || undefined}
           // `aria-disabled`, NOT `disabled`, for the PERMANENT unavailability:
           // a natively disabled control is unfocusable and fires no pointer
           // events, so the tooltip that carries the only explanation of why
           // pinning is off could be reached with a mouse hover and by nothing
           // else. `disabled` is kept for the transient in-flight window, where
           // there is nothing to explain. The mutation stays blocked by the
-          // `cloudOnly` guard in `onClick`, which keyboard activation also
+          // shared admission guard in `onClick`, which keyboard activation also
           // routes through.
-          aria-disabled={cloudOnly || undefined}
+          aria-disabled={pinUnavailable || undefined}
           disabled={props.isPending}
           className={cn(
             // `active:press-scrim` is NOT here, though main had it in this
@@ -1908,10 +1848,10 @@ function HistoryPinControl(props: {
             // into the two actionable arms of `historyPinClassName` instead,
             // which is the composition this merge owes both sides.
             "pointer-events-auto flex size-5 shrink-0 items-center justify-center rounded-sm outline-none transition-[color,opacity] hover:bg-foreground/5 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-wait",
-            historyPinClassName(cloudOnly, props.item.isPinned),
+            historyPinClassName(pinUnavailable, props.item.isPinned),
           )}
           onClick={() => {
-            if (cloudOnly) return;
+            if (pinUnavailable) return;
             props.onSetPinned(props.item.epicId, !props.item.isPinned);
           }}
         >
@@ -1923,7 +1863,7 @@ function HistoryPinControl(props: {
           />
         </button>
       </TooltipTrigger>
-      <TooltipContent>{cloudOnly ? unavailableTooltip : label}</TooltipContent>
+      <TooltipContent>{unavailableTooltip ?? label}</TooltipContent>
     </Tooltip>
   );
 }

@@ -14,6 +14,7 @@ import {
 import {
   deriveEpicCloudFreshnessView,
   useEpicArtifactRecords,
+  useEpicChatBackupHasNoCloudTask,
   useEpicChatHarnessId,
   useEpicAgentRoleClaims,
   useEpicAgentRoleClaimsByAgentId,
@@ -663,6 +664,59 @@ describe("useEpicCommentsHaveNoUsableRoom", () => {
     });
 
     const { result } = renderHook(() => useEpicCommentsHaveNoUsableRoom(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    expect(result.current).toBe(false);
+  });
+});
+
+describe("useEpicChatBackupHasNoCloudTask", () => {
+  it("uses the retained orphaned pause during a real reconnect shape", () => {
+    const handle = createHandle("epic-chat-backup-reconnect");
+    handle.store.setState({
+      durabilityStatus: null,
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: "paused",
+      retainedDurabilityPauseReason: "orphaned-local-edits-after-cloud-delete",
+      durabilityLegsNegotiated: false,
+    });
+
+    const { result } = renderHook(() => useEpicChatBackupHasNoCloudTask(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    expect(result.current).toBe(true);
+  });
+
+  it("prefers a live cloud statement over retained local state", () => {
+    const handle = createHandle("epic-chat-backup-current-wins");
+    handle.store.setState({
+      durabilityStatus: "cloud",
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: "local",
+      retainedDurabilityPauseReason: null,
+      durabilityLegsNegotiated: true,
+    });
+
+    const { result } = renderHook(() => useEpicChatBackupHasNoCloudTask(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    expect(result.current).toBe(false);
+  });
+
+  it("leaves legacy peers without a retained statement ungated", () => {
+    const handle = createHandle("epic-chat-backup-legacy");
+    handle.store.setState({
+      durabilityStatus: null,
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: null,
+      retainedDurabilityPauseReason: null,
+      durabilityLegsNegotiated: false,
+    });
+
+    const { result } = renderHook(() => useEpicChatBackupHasNoCloudTask(), {
       wrapper: openEpicWrapper(handle),
     });
 

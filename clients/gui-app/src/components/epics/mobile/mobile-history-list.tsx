@@ -1,14 +1,17 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, RefreshCwIcon } from "lucide-react";
 import type { HistoryItem } from "@/components/home/data/home-page.data";
+import type { ListTasksCompleteness } from "@traycer/protocol/host/epic/unary-schemas";
 import {
   EpicsListChatHostFilterUnsupported,
+  EpicsListCloudPagePending,
   EpicsListEmpty,
   EpicsListError,
   EpicsListFilteredEmpty,
   EpicsListFilteringLoading,
   EpicsListLoading,
   EpicsListShowMore,
+  HistoryCompletenessNotice,
 } from "@/components/epics/epics-list-shared";
 import { MobileHistoryRow } from "@/components/epics/mobile/mobile-history-row";
 import {
@@ -27,6 +30,8 @@ export interface MobileHistoryListProps {
   readonly hasActiveFilters: boolean;
   readonly chatHostFilterUnsupported: boolean;
   readonly items: ReadonlyArray<HistoryItem>;
+  readonly completeness: ListTasksCompleteness | null;
+  readonly cloudPagePending: boolean;
   readonly onRetry: () => void;
   readonly selectionMode: boolean;
   readonly selectedIds: ReadonlySet<string>;
@@ -68,6 +73,8 @@ export function MobileHistoryList(props: MobileHistoryListProps): ReactNode {
     hasActiveFilters,
     chatHostFilterUnsupported,
     items,
+    completeness,
+    cloudPagePending,
     onRetry,
     selectionMode,
     selectedIds,
@@ -145,6 +152,8 @@ export function MobileHistoryList(props: MobileHistoryListProps): ReactNode {
           hasActiveFilters={hasActiveFilters}
           chatHostFilterUnsupported={chatHostFilterUnsupported}
           items={items}
+          completeness={completeness}
+          cloudPagePending={cloudPagePending}
           onRetry={onRetry}
           selectionMode={selectionMode}
           selectedIds={selectedIds}
@@ -217,6 +226,8 @@ interface MobileHistoryListBodyProps {
   readonly hasActiveFilters: boolean;
   readonly chatHostFilterUnsupported: boolean;
   readonly items: ReadonlyArray<HistoryItem>;
+  readonly completeness: ListTasksCompleteness | null;
+  readonly cloudPagePending: boolean;
   readonly onRetry: () => void;
   readonly selectionMode: boolean;
   readonly selectedIds: ReadonlySet<string>;
@@ -244,14 +255,47 @@ function MobileHistoryListBody(props: MobileHistoryListBodyProps): ReactNode {
   if (props.chatHostFilterUnsupported) {
     return <EpicsListChatHostFilterUnsupported />;
   }
+  // The first page is a usable local snapshot while the cloud leg resolves.
+  // Empty local storage cannot answer whether the account has tasks yet.
+  if (props.items.length === 0 && props.cloudPagePending) {
+    return (
+      <>
+        <HistoryCompletenessNotice
+          completeness={props.completeness}
+          cloudPagePending={props.cloudPagePending}
+        />
+        <EpicsListCloudPagePending />
+      </>
+    );
+  }
   if (props.items.length === 0 && !props.hasActiveFilters) {
-    return <EpicsListEmpty />;
+    return (
+      <>
+        <HistoryCompletenessNotice
+          completeness={props.completeness}
+          cloudPagePending={props.cloudPagePending}
+        />
+        <EpicsListEmpty />
+      </>
+    );
   }
   if (props.items.length === 0 && props.hasActiveFilters && props.isFetching) {
-    return <EpicsListFilteringLoading />;
+    return (
+      <>
+        <HistoryCompletenessNotice
+          completeness={props.completeness}
+          cloudPagePending={props.cloudPagePending}
+        />
+        <EpicsListFilteringLoading />
+      </>
+    );
   }
   return (
     <>
+      <HistoryCompletenessNotice
+        completeness={props.completeness}
+        cloudPagePending={props.cloudPagePending}
+      />
       {props.items.length > 0 ? (
         <ul className="flex flex-col gap-2" data-testid="epics-list-rows">
           {props.items.map((item) => (

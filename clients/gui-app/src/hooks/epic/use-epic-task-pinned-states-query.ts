@@ -8,6 +8,7 @@ import {
 } from "@traycer/protocol/host/epic/unary-schemas";
 import { useHostQueries } from "@/hooks/host/use-host-queries";
 import { useHostClient, type HostRpcRegistry } from "@/lib/host";
+import { useLocalHomedOpenEpicIds } from "@/lib/registries/epic-session-registry";
 import { useAuthStore } from "@/stores/auth/auth-store";
 
 /**
@@ -19,9 +20,15 @@ import { useAuthStore } from "@/stores/auth/auth-store";
  * tab context menu offered Pin on a local epic, fired the mutation, and the
  * toast claimed it had pinned it.
  *
- * `home` is `undefined` when the host did not say - an older host, or a
- * pre-`@1.1` negotiation. That reads as cloud-or-unknown and keeps today's
- * behaviour, which is the only safe direction for an absence.
+ * `home` is `undefined` when NEITHER source said - the queried host did not
+ * (an older host, a pre-`@1.1` negotiation, or an epic it does not own) and no
+ * live session is reporting local durability for the epic either. That reads
+ * as cloud-or-unknown and keeps today's behaviour, which is the only safe
+ * direction for an absence.
+ *
+ * The two sources are the queried host's `localHomedTaskIds` and the epic's
+ * own open session, merged by {@link overlayLocalHomedPinnedStates}; read it
+ * before treating this field as one host's answer.
  */
 export type TaskPinnedState = {
   readonly pinned: boolean;
@@ -36,6 +43,7 @@ export function useEpicTaskPinnedStates(
   epicIds: ReadonlyArray<string>,
 ): ReadonlyMap<string, TaskPinnedState> {
   const client = useHostClient();
+  const localHomedEpicIds = useLocalHomedOpenEpicIds(epicIds);
   const userId = useAuthStore((state) => state.contextMetadata?.userId ?? null);
   const normalizedIds = useMemo(
     () =>
@@ -51,7 +59,7 @@ export function useEpicTaskPinnedStates(
     [normalizedIds],
   );
 
-  return useHostQueries<
+  const queried = useHostQueries<
     HostRpcRegistry,
     "epic.getTaskContexts",
     ReadonlyMap<string, TaskPinnedState>
@@ -65,6 +73,59 @@ export function useEpicTaskPinnedStates(
     },
     combine: combineTaskPinnedStateResults,
   });
+
+  return useMemo(
+    () => overlayLocalHomedPinnedStates(queried, localHomedEpicIds),
+    [queried, localHomedEpicIds],
+  );
+}
+
+/**
+ * Overlays what the open sessions know onto what the queried host answered.
+ *
+ * The batch above goes to the app-wide host for every open epic id. That host
+ * answers `pinned` correctly whatever it is - pin is a cloud-only preference
+ * and every host proxies it to the cloud - but it can only report local-home
+ * for epics it OWNS (`getTaskContextsResponseSchema@1.3` overlays owned rows).
+ * So a local-homed epic on another host is not resolved at all: no entry, and
+ * the tab strip's Pin item stays disabled behind a spinner instead of saying
+ * the epic is stored on this device.
+ *
+ * The session wins on `home` where the two are both present, deliberately. A
+ * live session is the epic's own stream, and the store's own rule is that
+ * where an epic is durable is a property of the EPIC rather than of whichever
+ * host was asked. `pinned` is never overridden - the queried value is the
+ * cloud's, which is the only thing that can answer it.
+ *
+ * `pinned: false` for an epic the host never resolved is FILLER, not a
+ * reading, and it is never rendered: `TabContextMenuContent` computes
+ * `pinUnavailable` from `home === "local"`, and that flag short-circuits both
+ * the label (`pinActionLabel` ignores `taskPinned` when unavailable) and the
+ * spinner (`!pinUnavailable && ...`), while `disabled` is already true. If a
+ * future consumer reads `pinned` without consulting `home`, this value becomes
+ * load-bearing and is wrong - such a consumer must treat `home === "local"` as
+ * "there is no pin state" rather than as "not pinned".
+ *
+ * ONLY covers epics with a live session. An open tab whose session was never
+ * mounted since reload, or was pruned past the five-live MRU cap, is absent
+ * from `localHomedEpicIds` and keeps today's spinner - see
+ * {@link useLocalHomedOpenEpicIds} for what closing that residual would take.
+ */
+export function overlayLocalHomedPinnedStates(
+  queried: ReadonlyMap<string, TaskPinnedState>,
+  localHomedEpicIds: ReadonlySet<string>,
+): ReadonlyMap<string, TaskPinnedState> {
+  // Identity preserved when there is nothing to overlay, so the common case
+  // does not hand consumers a fresh map every render.
+  if (localHomedEpicIds.size === 0) return queried;
+  const overlaid = new Map(queried);
+  for (const epicId of localHomedEpicIds) {
+    overlaid.set(epicId, {
+      pinned: overlaid.get(epicId)?.pinned ?? false,
+      home: "local",
+    });
+  }
+  return overlaid;
 }
 
 export function combineTaskPinnedStateResults(

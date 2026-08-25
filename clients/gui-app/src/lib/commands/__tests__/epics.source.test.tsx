@@ -69,6 +69,10 @@ function historyResult(
     fetchNextPage: () => undefined,
     hasNextPage: false,
     isFetchingNextPage: false,
+    // Same reasoning as `completeness` above: the palette source never reads
+    // it, so `false` is the quiet fixture rather than a claim that a cloud
+    // page is settled.
+    cloudPagePending: false,
   };
 }
 

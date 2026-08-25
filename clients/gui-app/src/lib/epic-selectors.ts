@@ -245,6 +245,27 @@ function unavailableCommentRoomKind(
     : null;
 }
 
+interface EpicDurabilityStatement {
+  readonly status: NonNullable<OpenEpicState["durabilityStatus"]> | null;
+  readonly pauseReason: string | null;
+}
+
+/**
+ * Selects this subscription cycle's durability statement, falling back to the
+ * last positive statement retained across a reconnect only while this cycle
+ * is silent. Gates that answer a structural durability question must share
+ * this order so a reconnect cannot re-enable one of them transiently.
+ */
+function currentOrRetainedDurabilityStatement(
+  status: NonNullable<OpenEpicState["durabilityStatus"]> | null,
+  pauseReason: string | null,
+  retainedStatus: NonNullable<OpenEpicState["retainedDurabilityStatus"]> | null,
+  retainedPauseReason: string | null,
+): EpicDurabilityStatement {
+  if (status !== null) return { status, pauseReason };
+  return { status: retainedStatus, pauseReason: retainedPauseReason };
+}
+
 /**
  * The comment-room gate together with the exact closed reason that justified
  * it. Consumers must switch on this value rather than interpret raw status
@@ -270,13 +291,16 @@ export function useEpicCommentRoomAvailability(): EpicCommentRoomAvailability {
     (s) => s.durabilityLegsNegotiated,
     false,
   );
-  // This cycle's own answer wins whenever it has one.
-  if (status !== null) {
-    const unavailable = unavailableCommentRoomKind(status, pauseReason);
-    return unavailable === null ? { kind: "available" } : { kind: unavailable };
-  }
-  // The retained answer is consulted BEFORE the legacy-peer check, and the
-  // order is the whole point of the latch rather than a stylistic choice.
+  const durabilityStatement = currentOrRetainedDurabilityStatement(
+    status,
+    pauseReason,
+    retainedStatus,
+    retainedPauseReason,
+  );
+  // The shared helper gives this cycle's statement precedence. When that
+  // statement is absent, its retained fallback is consulted BEFORE the
+  // legacy-peer check; that order is the whole point of the latch rather than
+  // a stylistic choice.
   //
   // `startedSubscriptionCycle` resets `durabilityLegsNegotiated` to `false`
   // in the same block that nulls `durabilityStatus`, because a re-subscribe
@@ -299,10 +323,10 @@ export function useEpicCommentRoomAvailability(): EpicCommentRoomAvailability {
   // emitted a durability status can have one. A host that cannot speak the
   // key never populates it, falls through, and still gets its released
   // behaviour from the check below.
-  if (retainedStatus !== null) {
+  if (durabilityStatement.status !== null) {
     const unavailable = unavailableCommentRoomKind(
-      retainedStatus,
-      retainedPauseReason,
+      durabilityStatement.status,
+      durabilityStatement.pauseReason,
     );
     return unavailable === null ? { kind: "available" } : { kind: unavailable };
   }
@@ -372,7 +396,24 @@ export function useEpicChatBackupHasNoCloudTask(): boolean {
     (s) => s.durabilityPauseReason ?? null,
     null,
   );
-  return chatBackupHasNoCloudTask(status, pauseReason);
+  const retainedStatus = useMaybeEpicStore(
+    (s) => s.retainedDurabilityStatus ?? null,
+    null,
+  );
+  const retainedPauseReason = useMaybeEpicStore(
+    (s) => s.retainedDurabilityPauseReason ?? null,
+    null,
+  );
+  const durabilityStatement = currentOrRetainedDurabilityStatement(
+    status,
+    pauseReason,
+    retainedStatus,
+    retainedPauseReason,
+  );
+  return chatBackupHasNoCloudTask(
+    durabilityStatement.status,
+    durabilityStatement.pauseReason,
+  );
 }
 
 export function useEpicDurabilityPromotionState(): NonNullable<

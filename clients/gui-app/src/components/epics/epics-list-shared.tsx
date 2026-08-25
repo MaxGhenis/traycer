@@ -8,8 +8,9 @@
  * same surface, and a second copy of it would be a second place for the empty
  * copy, the retry affordance and the pager to drift.
  *
- * Components only - the shared row-label rule is a plain function and lives in
- * `history-item-title`, so this module stays hot-reloadable.
+ * Shared row decisions live here too. The responsive bodies have distinct row
+ * layouts, but account-level truth (such as whether a cloud mutation can
+ * target a row) must not drift between them.
  */
 import { useState, type ReactNode } from "react";
 import { Layers } from "lucide-react";
@@ -23,6 +24,7 @@ import { useSurfaceNotificationIndicatorState } from "@/components/notifications
 import { useEpicActivityStatus } from "@/hooks/epic/use-epic-activity-status";
 import { createReportIssueContext } from "@/lib/report-issue-context";
 import type { HistoryItem } from "@/components/home/data/home-page.data";
+import type { ListTasksCompleteness } from "@traycer/protocol/host/epic/unary-schemas";
 
 /**
  * The row's status glyph: the epic's notification indicator when it has one,
@@ -92,6 +94,29 @@ export function EpicsListFilteringLoading(): ReactNode {
 }
 
 /**
+ * A local-first response can be ready to render before its cloud counterpart.
+ * An empty local snapshot is therefore not an empty account: the cloud page is
+ * still authoritative for that answer.
+ */
+export function EpicsListCloudPagePending(): ReactNode {
+  return (
+    <div
+      className="flex flex-col items-center justify-center gap-2 py-16 text-center text-ui-sm text-muted-foreground"
+      data-testid="epics-list-cloud-page-pending"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <AgentSpinningDots
+        variant="dots"
+        className="text-muted-foreground"
+        testId={undefined}
+      />
+      <p className="font-medium text-foreground">Loading cloud tasks</p>
+    </div>
+  );
+}
+
+/**
  * Shown when a host filter is active but the serving peer cannot apply it, so
  * the rows were withheld. Deliberately NOT an empty-history message: the
  * account's tasks exist, this client just declined to show a list it could not
@@ -134,6 +159,86 @@ export function EpicsListFilteredEmpty(): ReactNode {
       <p className="font-medium text-foreground">
         No tasks match these filters.
       </p>
+    </div>
+  );
+}
+
+/**
+ * What this page is NOT, stated once above either responsive list body.
+ *
+ * A `pending` cloud page is deliberately an early return. Its `facets` are
+ * necessarily partial, but a filter-count caveat is secondary to explaining
+ * that the account-wide page has not arrived yet.
+ */
+export function HistoryCompletenessNotice(props: {
+  readonly completeness: ListTasksCompleteness | null;
+  readonly cloudPagePending: boolean;
+}): ReactNode {
+  const { completeness } = props;
+  const cloudPagePending =
+    props.cloudPagePending || completeness?.cloudPage === "pending";
+  if (cloudPagePending) {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        data-testid="epics-list-completeness"
+        data-cloud-page="pending"
+        data-local-rows={completeness?.localRows}
+        className="mb-3 flex flex-col gap-1 rounded-md border border-dashed border-border/60 bg-muted/20 px-3 py-2 text-ui-xs text-muted-foreground"
+      >
+        <p>Cloud tasks are still loading. Showing what this device holds.</p>
+      </div>
+    );
+  }
+  if (completeness === null) return null;
+  const lines: string[] = [];
+  if (completeness.cloudPage === "unavailable") {
+    lines.push(
+      "Cloud tasks couldn't be reached. Showing what this device holds.",
+    );
+  }
+  if (completeness.localRows === "truncated") {
+    // The host capped how many mirror rows it injects into one page. Without
+    // this line the capped page reads as "these are your offline tasks" when
+    // it is "these are the first N of them".
+    lines.push("Showing the first tasks stored on this device, not all.");
+  }
+  if (completeness.localRows === "suppressed-unprovable-filter") {
+    // The difference between "you have no local epics matching" and "this
+    // filter cannot be answered from this device". Collapsing them is how a
+    // filtered offline History came to look empty and authoritative.
+    lines.push(
+      "This filter can't be checked against tasks stored on this device, so they aren't listed.",
+    );
+  }
+  // `facets: "partial"` is the protocol saying the counts describe a DIFFERENT
+  // set from the rows - host rows were injected beside them, or the cloud page
+  // is missing. Both lines used to assert the opposite ("counts cover the tasks
+  // listed here"), so the one state where the numbers provably disagree with
+  // the list was reported as the state where they agree.
+  if (completeness.sort === "loaded-union") {
+    lines.push(
+      completeness.facets === "partial"
+        ? "Order covers the tasks listed here, and filter counts may leave some of them out."
+        : "Order and counts cover the tasks listed here, not everything you have.",
+    );
+  } else if (completeness.facets === "partial") {
+    lines.push("Filter counts may not include every task listed here.");
+  }
+  if (lines.length === 0) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-testid="epics-list-completeness"
+      data-cloud-page={completeness.cloudPage}
+      data-local-rows={completeness.localRows}
+      className="mb-3 flex flex-col gap-1 rounded-md border border-dashed border-border/60 bg-muted/20 px-3 py-2 text-ui-xs text-muted-foreground"
+    >
+      {lines.map((line) => (
+        <p key={line}>{line}</p>
+      ))}
     </div>
   );
 }

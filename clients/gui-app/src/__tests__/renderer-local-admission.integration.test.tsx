@@ -62,23 +62,40 @@ import type {
  * `useHostClient` production primitives (only the WebSocket wire is faked,
  * via `MockHostMessenger`).
  *
- * IMPORTANT, and reported alongside this file: the app's ACTUAL epics-list
- * surfaces (`EpicsListPanel` via `useCloudEpicTasksQuery`, and
- * `EpicTabExistenceReconciler`) do NOT yet honor `admitsLocalPlane` — their
- * own resolvers (`resolveCloudTasksUserId` in
- * `use-cloud-epic-tasks-query.ts`, and the `authStatus !== "signed-in"` gate
- * in `epic-tab-existence-reconciler.tsx`) still require `status ===
- * "signed-in"` before they will even ISSUE `epic.listTasks`, so today they
- * render a permanent loading skeleton under `unverified` rather than the
- * local rows the host would happily serve. That is the sibling ticket
- * `s6-history-local-first-render`'s "resolver-side Promise.all join", which
- * `s6-renderer-local-admission` explicitly scopes OUT. This file's
- * `LocalEpicsProbe` therefore drives `epic.listTasks` directly through the
- * same real `useHostQuery` primitive those components use internally,
- * WITHOUT their auth gate, to isolate and test only what THIS ticket is
- * responsible for: whether the renderer ADMITS the user to a point where
- * local, disk-served, host-RPC-driven content can render and be interactive
- * at all. See the lane report for the full finding.
+ * HISTORY, because this comment used to describe a live defect and now
+ * describes a closed one. It read: the app's ACTUAL epics-list surfaces
+ * "do NOT yet honor `admitsLocalPlane` … so today they render a permanent
+ * loading skeleton under `unverified` rather than the local rows the host
+ * would happily serve", scoped OUT of `s6-renderer-local-admission`.
+ *
+ * That was accurate, and it was the P1 an external reviewer later filed
+ * against this branch — written down here, in prose, before the review
+ * existed. It sat because a limitation recorded in a comment has no owner
+ * and no trigger; the same night, the `it.skip` in
+ * `hooks/epics/__tests__/use-cloud-epic-tasks-query.test.tsx` recorded the
+ * same gap a second time and was un-skipped only after the reviewer found it.
+ *
+ * `resolveCloudTasksUserId` now gates on `admitsLocalPlane` and issues the
+ * `localFirstPhase: "initial"` leg for an admitted identity, so the
+ * epics-list half is CLOSED and asserted by that test.
+ *
+ * `epic-tab-existence-reconciler.tsx`'s `authStatus !== "signed-in"` gate is
+ * NOT the same defect and is staying, deliberately. It was audited alongside
+ * the above and kept: that reconciler force-closes tabs and deletes run
+ * settings, and an `unverified` session still carries a live credential lease
+ * to the host, so `epic.getTaskContexts` can return a genuine
+ * `confirmed-absent` from the cloud. `unverified` commonly means authn's
+ * validation endpoint was unreachable while the cloud-data path was fine — so
+ * admitting it would widen a DESTRUCTIVE path on evidence gathered before the
+ * account verdict. Restored tabs staying unreconciled until `signed-in` is the
+ * cheaper failure. See the note at that gate.
+ *
+ * This file's `LocalEpicsProbe` still drives `epic.listTasks` directly through
+ * the same real `useHostQuery` primitive those components use internally,
+ * WITHOUT their auth gate — now to keep this file testing only what THIS
+ * ticket owns (whether the renderer ADMITS the user to a point where local,
+ * disk-served content renders and is interactive), rather than because the
+ * surfaces cannot do it themselves.
  */
 
 const VALIDATION_URL = "http://localhost:5005/api/v3/user";

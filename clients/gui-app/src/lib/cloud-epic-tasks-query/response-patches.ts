@@ -49,6 +49,11 @@ export function setEpicPinnedInCloudTasksResponse(
  * Removes locally-deleted epics from an incoming page. This is shared by the
  * Query cache and the retained-page store so first pages and cursor pages
  * apply the same deletion result before either surface becomes renderable.
+ *
+ * A row preserved for never-uploaded local edits is the authoritative
+ * exception: the host has withdrawn its deletion tombstone for that row by
+ * listing it with `preservation: "orphaned-local-edits"`. Keep that recovery
+ * row even when this renderer session still remembers the earlier delete.
  */
 export function removeDeletedEpicsFromCloudTasksResponse(
   response: ListTasksResponse,
@@ -56,11 +61,11 @@ export function removeDeletedEpicsFromCloudTasksResponse(
   userId: string,
 ): ListTasksResponse {
   const removedTasks = response.tasks.filter((task) =>
-    deletedEpicIds.has(task.epic?.light?.id ?? ""),
+    isDeletedEpicTask(task, deletedEpicIds),
   );
   if (removedTasks.length === 0) return response;
   const tasks = response.tasks.filter(
-    (task) => !deletedEpicIds.has(task.epic?.light?.id ?? ""),
+    (task) => !isDeletedEpicTask(task, deletedEpicIds),
   );
   return {
     ...response,
@@ -70,6 +75,23 @@ export function removeDeletedEpicsFromCloudTasksResponse(
         ? undefined
         : removeTasksFromFacets(response.facets, removedTasks, userId),
   };
+}
+
+function isDeletedEpicTask(
+  task: ListTaskLight,
+  deletedEpicIds: ReadonlySet<string>,
+): boolean {
+  // This is a standing admission override, not a ledger retraction. It is
+  // safe only because a preserved orphan cannot enter `deletedEpicIds`:
+  // `epic-batch-delete-resolver.ts` refuses its branch rows and removes the
+  // id from `reclaimedIds`, so the renderer receives `success: false` and
+  // never records the delete. If a future force-delete path changes that
+  // contract, replace this exemption with ledger retirement on authoritative
+  // preserved-row arrival; otherwise the next page would resurrect a delete.
+  return (
+    task.preservation !== "orphaned-local-edits" &&
+    deletedEpicIds.has(task.epic?.light?.id ?? "")
+  );
 }
 
 function removeTasksFromFacets(

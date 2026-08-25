@@ -8,12 +8,18 @@ import {
 } from "@tanstack/react-query";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type {
+  ListTasksCompleteness,
   ListTasksResponse,
   ListTaskLightPre15,
 } from "@traycer/protocol/host/epic/unary-schemas";
 import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
 import { useHostClient, type HostRpcRegistry } from "@/lib/host";
-import { useAuthStore, type AuthStatus } from "@/stores/auth/auth-store";
+import {
+  admitsLocalPlane,
+  authorizesCloudCapability,
+  useAuthStore,
+  type AuthStatus,
+} from "@/stores/auth/auth-store";
 import { useReactiveHostReadiness } from "@/hooks/host/use-reactive-host-readiness";
 import { toastFromHostError } from "@/lib/host-error-toast";
 import {
@@ -85,6 +91,29 @@ export interface CloudEpicTasksQueryResult {
   readonly hasNextPage: boolean;
   readonly isFetchingNextPage: boolean;
   readonly refetch: () => void;
+  /**
+   * The local-first revalidation leg is outstanding: the rendered first page is
+   * a renderable LOCAL snapshot whose cloud half has not landed.
+   *
+   * It is not on `query` and cannot be derived from one - the follow-up runs
+   * under its own ephemeral key (see `localFirstRevalidationQueryOptions`), so
+   * `query.isFetching` is false throughout it. Without this signal a page of
+   * `{tasks: [], completeness.cloudPage: "pending"}` - which the host returns
+   * for a caller-owned tombstone with no positive local rows - reaches the
+   * panel's empty branch and renders "No tasks yet" for an account that has
+   * simply not been asked about yet.
+   */
+  readonly isCloudPagePending: boolean;
+  /**
+   * The host's statement about the WHOLE rendered union - the first page and
+   * every retained "Show more" tail - worst-of per member, or `null` when no
+   * page in it said anything (an older host, or a pre-`@1.5` negotiation).
+   *
+   * Read this rather than `query.data.completeness`: `tasks` above is the
+   * union, so a first-page-only statement presents first-page-complete status
+   * over a demonstrably incomplete list the moment one tail is loaded.
+   */
+  readonly completeness: ListTasksCompleteness | null;
 }
 
 export type CloudEpicTasksFirstPageQuery = UseQueryResult<ListTasksResponse>;
@@ -289,6 +318,11 @@ export function useCloudEpicTasksQuery(
     [queryClient],
   );
 
+  // THE CLOUD HALF of the local-first split, and the only half that keeps the
+  // `signed-in` verdict. `resolveCloudTasksUserId` admits the local plane; this
+  // decides whether a revalidation may be SPENT on top of it.
+  const authorizesCloudLeg = authorizesCloudCapability(authIdentity.status);
+
   useEffect(() => {
     if (
       hostId === null ||
@@ -300,6 +334,25 @@ export function useCloudEpicTasksQuery(
       return;
     }
     const queryKey = cloudEpicTasksQueryKey(hostId, userId, effectiveRequest);
+    if (!authorizesCloudLeg) {
+      // No `/api/v3/user` verdict is held, so this session may not ask the
+      // account's servers for anything. SETTLE the page rather than leaving it
+      // `pending` forever: `pending` is an in-flight claim, and with no leg in
+      // flight it would strand `cloudPagePending` true and make the status line
+      // promise a cloud page that is never coming.
+      //
+      // `unavailable` is not a downgrade of the outcome - it is the outcome.
+      // An unverified session reaches this state because authn was unreachable
+      // or refused the credential, so the very same request would have failed
+      // at the host's cloud leg and landed on this exact mark through
+      // `startLocalFirstRevalidation`'s rejection arm. Gating it here only
+      // avoids re-spending a refresh the server has already refused (see the
+      // `refresh-rejected-account` ruling in `auth-store.ts`).
+      queryClient.setQueryData<ListTasksResponse>(queryKey, (current) =>
+        markLocalFirstCloudUnavailable(current),
+      );
+      return;
+    }
     const lease = claimLocalFirstRevalidation(queryClient, queryKey);
     if (lease === null) return;
     const scope = { hostId, userId };
@@ -310,6 +363,7 @@ export function useCloudEpicTasksQuery(
       scope,
     });
   }, [
+    authorizesCloudLeg,
     effectiveRequest,
     hostId,
     queryClient,
@@ -339,15 +393,18 @@ export function useCloudEpicTasksQuery(
       });
   }, [queryData, extraPages]);
 
+  // The union's own statement, over exactly the pages `tasks` was assembled
+  // from. A placeholder page describes a DIFFERENT request than the one being
+  // rendered, so it states nothing - the same suppression the server facets
+  // already apply one layer up.
+  const completeness = useMemo<ListTasksCompleteness | null>(() => {
+    if (isPlaceholderData || queryData === undefined) return null;
+    return unionCompleteness([queryData, ...extraPages]);
+  }, [extraPages, isPlaceholderData, queryData]);
+
   const lastPage: ListTasksResponse | undefined =
     extraPages.length > 0 ? extraPages[extraPages.length - 1] : queryData;
-  const lastNextCursor: string | null =
-    lastPage !== undefined &&
-    lastPage.hasMore &&
-    typeof lastPage.nextCursor === "string" &&
-    lastPage.nextCursor.length > 0
-      ? lastPage.nextCursor
-      : null;
+  const lastNextCursor = resolveNextCursor(lastPage);
   const hasNextPage = lastNextCursor !== null && !isPlaceholderData;
 
   const fetchNextPage = useCallback(() => {
@@ -394,7 +451,102 @@ export function useCloudEpicTasksQuery(
     hasNextPage,
     isFetchingNextPage,
     refetch,
+    isCloudPagePending:
+      !isPlaceholderData && isPendingLocalFirstResponse(queryData),
+    completeness,
   };
+}
+
+/**
+ * The cursor to ask for next, or `null` when the tail is exhausted.
+ *
+ * `hasMore` and a usable `nextCursor` are separate facts on the wire and both
+ * are required: a host that says there is more but hands back no cursor (or an
+ * empty one) has nothing this client can ask with, so the tail ends there
+ * rather than dispatching a request that cannot be positioned.
+ */
+function resolveNextCursor(
+  lastPage: ListTasksResponse | undefined,
+): string | null {
+  if (lastPage === undefined || !lastPage.hasMore) return null;
+  const cursor = lastPage.nextCursor;
+  if (typeof cursor !== "string" || cursor.length === 0) return null;
+  return cursor;
+}
+
+/**
+ * Worst-of union of every page's own completeness statement.
+ *
+ * Each member is ranked by how much of the answer is MISSING, and the union
+ * takes the worst rank present. A hole in any page is a hole in the union, so
+ * the union can never be more complete than its least complete page.
+ *
+ * A SILENT page is skipped rather than collapsing the union to `null`. Absence
+ * genuinely means "this host cannot say", but every page of one identity comes
+ * from one host at one negotiated minor - the resolver stamps `completeness` on
+ * cursor pages exactly as it does on the first - so a mixed union is
+ * structurally unreachable, while deleting a real `unavailable` warning because
+ * a sibling page was silent is a failure with a live path to it. A union whose
+ * pages are ALL silent still answers `null`, which is today's rendering.
+ */
+function unionCompleteness(
+  pages: ReadonlyArray<ListTasksResponse>,
+): ListTasksCompleteness | null {
+  let union: ListTasksCompleteness | null = null;
+  for (const page of pages) {
+    const statement = page.completeness;
+    if (statement === undefined) continue;
+    union = union === null ? statement : mergeCompleteness(union, statement);
+  }
+  return union;
+}
+
+// `pending` outranks `settled` (a page is still owed) and `unavailable`
+// outranks both: a settled failure is a hole nothing is going to fill, so a
+// union carrying one is not "still loading".
+const CLOUD_PAGE_RANK: Record<ListTasksCompleteness["cloudPage"], number> = {
+  settled: 0,
+  pending: 1,
+  unavailable: 2,
+};
+const FACETS_RANK: Record<ListTasksCompleteness["facets"], number> = {
+  server: 0,
+  partial: 1,
+};
+// `none` and `present` are both COMPLETE statements about local rows, ordered
+// only so the union reports the fact that some page carried them. The two above
+// them are the incomplete ones: `truncated` means rows were dropped,
+// `suppressed-unprovable-filter` means the filter could not be answered
+// locally at all - strictly less knowledge, so it ranks worst.
+const LOCAL_ROWS_RANK: Record<ListTasksCompleteness["localRows"], number> = {
+  none: 0,
+  present: 1,
+  truncated: 2,
+  "suppressed-unprovable-filter": 3,
+};
+const SORT_RANK: Record<ListTasksCompleteness["sort"], number> = {
+  server: 0,
+  "loaded-union": 1,
+};
+
+function mergeCompleteness(
+  left: ListTasksCompleteness,
+  right: ListTasksCompleteness,
+): ListTasksCompleteness {
+  return {
+    cloudPage: worseOf(left.cloudPage, right.cloudPage, CLOUD_PAGE_RANK),
+    facets: worseOf(left.facets, right.facets, FACETS_RANK),
+    localRows: worseOf(left.localRows, right.localRows, LOCAL_ROWS_RANK),
+    sort: worseOf(left.sort, right.sort, SORT_RANK),
+  };
+}
+
+function worseOf<Member extends string>(
+  left: Member,
+  right: Member,
+  rank: Record<Member, number>,
+): Member {
+  return rank[right] > rank[left] ? right : left;
 }
 
 function isPendingLocalFirstResponse(
@@ -431,6 +583,28 @@ function hasSameCloudTasksPlaceholderIdentity(
   );
 }
 
+/**
+ * The cache authority for this list, or `null` when this session must issue no
+ * request at all.
+ *
+ * A SURFACE TEST, NOT A CAPABILITY TEST, and the distinction is the whole
+ * reason this is not `status === "signed-in"`. The first `epic.listTasks` leg
+ * is a local-first read of the epics the host already serves off this machine's
+ * disk - it draws no cloud credential (see the resolver's `localFirstInitial`
+ * arm, which projects before `buildCloudHeadersFromContext` is ever called) -
+ * so every identity {@link admitsLocalPlane} admits belongs here. `unverified`
+ * is exactly that cohort: `root-landing-page.tsx` renders `/epics` for it, and
+ * gating this call site on the verdict admitted those users to History and then
+ * showed them "No tasks yet" over their own rows.
+ *
+ * The CLOUD leg keeps the verdict. It is gated separately on
+ * {@link authorizesCloudCapability} in the revalidation effect above, so
+ * widening this predicate spends no capability an `unverified` session does not
+ * hold.
+ *
+ * `signed-out` still resolves `null` and issues nothing: there is no stored
+ * identity to scope a cache to, so there is no local plane to read either.
+ */
 function resolveCloudTasksUserId(
   authIdentity: {
     readonly status: AuthStatus;
@@ -438,7 +612,7 @@ function resolveCloudTasksUserId(
   },
   requestContextUserId: string | null,
 ): string | null {
-  if (authIdentity.status !== "signed-in") return null;
+  if (!admitsLocalPlane(authIdentity.status)) return null;
   if (authIdentity.userId === null) return null;
   if (authIdentity.userId !== requestContextUserId) return null;
   return requestContextUserId;

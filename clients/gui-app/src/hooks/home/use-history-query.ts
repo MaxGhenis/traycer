@@ -70,6 +70,18 @@ export interface UseHistoryQueryResult {
   fetchNextPage: () => void;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
+  /**
+   * True while the local-first revalidation leg is outstanding - the rendered
+   * page is a LOCAL snapshot and its cloud half has not landed yet.
+   *
+   * The follow-up runs under its own ephemeral query key, so it is invisible to
+   * `isFetching` and to every other flag here. A caller that renders an
+   * empty-history message must consult this first: the host answers a
+   * caller-owned tombstone with an immediate `{tasks: [], cloudPage: "pending"}`
+   * page, which is an account nobody has finished asking about, not an empty
+   * one.
+   */
+  readonly cloudPagePending: boolean;
 }
 
 export function useHistoryQuery(
@@ -126,6 +138,8 @@ export function useHistoryQuery(
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
+    isCloudPagePending,
+    completeness: unionCompleteness,
   } = useCloudEpicTasksQuery(request, { enabled: true });
   const tasksQueryRefetch = tasksQuery.refetch;
   const chatHostFilterActive = params.search.chatHosts.length > 0;
@@ -217,9 +231,14 @@ export function useHistoryQuery(
     const facets = canUseServerFacets
       ? mapHistoryFacets(tasksQuery.data.facets)
       : EMPTY_FACETS;
-    const completeness = canUseServerFacets
-      ? (tasksQuery.data.completeness ?? null)
-      : null;
+    // The union's statement, not the first page's. `items` is assembled from
+    // the first page AND every retained "Show more" tail, so reading
+    // `tasksQuery.data.completeness` alone presented first-page-complete status
+    // over a list a later page had already reported as truncated, cloud-less or
+    // partially faceted - and that same first-page-only read decided the
+    // facet-union below, so a tail's `partial` could not restore the filter
+    // options for its own device-only rows either.
+    const completeness = canUseServerFacets ? unionCompleteness : null;
     // `facets: "partial"` is the host saying the server's own faceting ran
     // over a DIFFERENT set from the rows it returned - host rows were injected
     // beside them. Preferring the server arrays outright then hid the filter
@@ -295,6 +314,7 @@ export function useHistoryQuery(
     shouldProjectLocally,
     tasksQuery.data,
     tasksQuery.isPlaceholderData,
+    unionCompleteness,
     worktreesByEpicId,
   ]);
 
@@ -322,6 +342,12 @@ export function useHistoryQuery(
     hasNextPage:
       hasNextPage && !isQueryDebouncing && !tasksQuery.isPlaceholderData,
     isFetchingNextPage,
+    // Passed through unsuppressed by the debounce, unlike the completeness
+    // statement above: this describes a REQUEST that is genuinely outstanding
+    // right now, not a claim about the rows on screen, so a caller must not be
+    // told "nothing is coming" while the previous page's cloud half is still
+    // in flight.
+    cloudPagePending: isCloudPagePending,
   };
 }
 

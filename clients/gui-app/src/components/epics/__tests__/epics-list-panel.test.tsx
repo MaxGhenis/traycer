@@ -161,6 +161,7 @@ const testState = vi.hoisted(() => ({
     ownershipScopes: [] as HistoryFacets["ownershipScopes"],
   },
   isFetching: false,
+  cloudPagePending: false,
   completeness: null as ListTasksCompleteness | null,
   bridge: null as DesktopWindowsBridge | null,
   worktreeCandidates: [] as WorktreeCleanupCandidateStub[],
@@ -192,6 +193,7 @@ vi.mock("@/hooks/home/use-history-query", () => ({
     },
     isPending: false,
     isFetching: testState.isFetching,
+    cloudPagePending: testState.cloudPagePending,
     error: null,
     hostId: "host-test",
     refetch: testState.refetch,
@@ -391,6 +393,7 @@ describe("<EpicsListPanel />", () => {
       ownershipScopes: [],
     };
     testState.isFetching = false;
+    testState.cloudPagePending = false;
     testState.completeness = null;
     testState.bridge = null;
     testState.worktreeCandidates = [];
@@ -514,6 +517,20 @@ describe("<EpicsListPanel />", () => {
         `/epics/epic-from-history/${tabId}`,
       );
     });
+  });
+
+  it("shows the explicit cloud-pending state instead of an empty list", async () => {
+    testState.items = [];
+    testState.cloudPagePending = true;
+    renderPanel("embedded", "/");
+
+    expect(screen.queryByTestId("epics-list-empty")).toBeNull();
+    expect(
+      await screen.findByTestId("epics-list-cloud-page-pending"),
+    ).not.toBeNull();
+    expect(screen.getByTestId("epics-list-completeness").textContent).toContain(
+      "Cloud tasks are still loading",
+    );
   });
 
   it("labels a task that is already open in the tab strip", async () => {

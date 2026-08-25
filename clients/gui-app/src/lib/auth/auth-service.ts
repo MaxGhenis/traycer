@@ -44,6 +44,7 @@ import {
   type RequestContextProvider,
 } from "@traycer-clients/shared/auth/request-context-provider";
 import type { OpenFrameBearerSource } from "@traycer-clients/shared/auth/bearer-source";
+import { retireAllRemoteSessions } from "@traycer-clients/shared/host-transport/remote/active-remote-sessions";
 import {
   createProactiveRefreshScheduler,
   DEFAULT_REFRESH_LEAD_MS,
@@ -1381,10 +1382,48 @@ export class AuthService {
         if (this.disposed || useAuthStore.getState().status !== "unverified") {
           return;
         }
-        this.sessionRecoveryDelayMs = SESSION_RECOVERY_INITIAL_DELAY_MS;
-        this.scheduleSessionRecovery("wake:deferred-during-probe");
+        // REPLACE, never `scheduleSessionRecovery`. The probe that is settling
+        // right now has almost always already armed its own ordinary backoff -
+        // it schedules on the way out of each failure arm, which happens
+        // BEFORE its promise resolves and therefore before this `finally`. So
+        // by the time we get here `sessionRecoveryTimer` is non-null, and
+        // `scheduleSessionRecovery`'s first line returns early: the wake was
+        // recorded, honoured, and then silently dropped, leaving the user
+        // `unverified` for up to the full ceiling.
+        //
+        // Resetting `sessionRecoveryDelayMs` does not rescue it either. The
+        // live timeout captured its delay when it was armed; the field only
+        // decides what the NEXT arming waits.
+        this.replaceScheduledSessionRecovery("wake:deferred-during-probe");
       });
     }, delayMs);
+  }
+
+  /**
+   * Arm the recovery loop from the FLOOR, displacing any timer already pending.
+   *
+   * The wake paths' primitive. Both of them mean "the accumulated backoff
+   * describes how long authn was unreachable, and this event invalidates that
+   * history" - which is a statement `scheduleSessionRecovery` cannot make,
+   * because it is single-armed by design: its `sessionRecoveryTimer !== null`
+   * guard is what stops overlapping ticks, and a wake path is precisely the
+   * caller that must not be deduplicated against a pending tick.
+   *
+   * A separate method rather than a flag on `scheduleSessionRecovery` so the
+   * distinction is a thing a reader (and a test) can hold: "arm if idle" and
+   * "arm instead of whatever is pending" are different requests, and the one
+   * bug this closes was written as the first while meaning the second.
+   */
+  private replaceScheduledSessionRecovery(trigger: string): void {
+    if (this.disposed) {
+      return;
+    }
+    if (this.sessionRecoveryTimer !== null) {
+      AuthService.cancelTimeout(this.sessionRecoveryTimer);
+      this.sessionRecoveryTimer = null;
+    }
+    this.sessionRecoveryDelayMs = SESSION_RECOVERY_INITIAL_DELAY_MS;
+    this.scheduleSessionRecovery(trigger);
   }
 
   /**
@@ -1426,12 +1465,7 @@ export class AuthService {
     }
     // Re-arm from the FLOOR: the accumulated backoff describes how long authn
     // was unreachable, which is exactly the history this event invalidates.
-    if (this.sessionRecoveryTimer !== null) {
-      AuthService.cancelTimeout(this.sessionRecoveryTimer);
-      this.sessionRecoveryTimer = null;
-    }
-    this.sessionRecoveryDelayMs = SESSION_RECOVERY_INITIAL_DELAY_MS;
-    this.scheduleSessionRecovery("wake:network-returned");
+    this.replaceScheduledSessionRecovery("wake:network-returned");
   }
 
   /** Disarm the loop and reset the backoff - the session state is settled. */
@@ -3808,6 +3842,11 @@ export class AuthService {
     if (this.disposed) {
       return;
     }
+    // Read BEFORE anything commits: `false` means this call is a PROMOTION
+    // into a verified session (from `unverified`, `signing-in` or
+    // `signed-out`), rather than a re-validation of one that already held a
+    // verdict. See the announcement at the end of this method.
+    const heldVerdict = this.hasVerifiedSession();
     this.settleSessionRecovery("signed-in");
     // A session being established IS the recovery: any prior transient error
     // (store-unavailable, session-expired) is stale the moment a bearer
@@ -3837,6 +3876,14 @@ export class AuthService {
     //
     // The rotate branch needs it just as much: `rotateCurrentBearer` notifies
     // its own listeners, and they are entitled to the same guarantee.
+    //
+    // ONE THING THIS ORDERING DOES NOT BUY, because it reads as though it
+    // does: the auth STORE is committed further down, and the listener chain
+    // above reaches `cloudBearer()`, which gates on it. So on a transition
+    // INTO `signed-in` that refresh is refused rather than sent — see
+    // `commitLiveCredential`, which carries the full account, and the
+    // `announceSessionVerified()` call at the end of this method, which is
+    // what actually loads the directory for those transitions.
     this.commitLiveCredential(bearerToken, profile);
     this.commitSubscriptionStatus(user.userSubscription.subscriptionStatus);
     let rotatedInPlace = false;
@@ -3881,6 +3928,27 @@ export class AuthService {
     this.sessionRecoveryTerminallyRejected = false;
     this.emitSessionSnapshot();
     this.refreshScheduler.start();
+    // THE POST-STORE VERDICT EDGE, and it is LAST for the same reason
+    // `commitLiveCredential` is first: its listeners act by reading whether
+    // this session may now spend a cloud capability, and the answer to that is
+    // `useAuthStore`'s `status`, committed several lines above. Everything this
+    // method writes has been written by the time it goes out.
+    //
+    // The trap it exists to route around, since the wrong version of it
+    // type-checks and runs: driving the same work from `rotateCurrentBearer`'s
+    // listeners (`onBearerRotated`) puts it INSIDE the context call above,
+    // where `hasVerifiedSession()` still answers `false`. A directory refresh
+    // driven from there asks `fetchRegisteredHosts` for a bearer, is refused by
+    // `cloudBearer()`, and produces the identical empty directory - with a
+    // plausible fix in place and the symptom unchanged.
+    //
+    // Only on a PROMOTION. A re-validation of a session that was already
+    // `signed-in` (the 401 revalidate, the reconcile adopt) moves no ambient
+    // answer, so the refresh those paths already drive was never refused, and
+    // re-asking would be one more `GET /api/v3/hosts` per rotation for nothing.
+    if (!heldVerdict) {
+      this.contextProvider.announceSessionVerified();
+    }
   }
 
   /**
@@ -3965,10 +4033,38 @@ export class AuthService {
    * because the failure it prevents is invisible from here — nothing about
    * these two lines shows that somebody is about to fetch.
    *
-   * The store projection (`useAuthStore`) deliberately stays where it is,
-   * after the announcement: no synchronous listener path reads auth state
-   * from there. The directory's identity accessor reads `currentProfile`
-   * through `getCurrentSessionSnapshot()`, which is why THAT one is here.
+   * The store projection (`useAuthStore`) stays where it is, AFTER the
+   * announcement — but not because nothing reads it there. This comment used
+   * to claim "no synchronous listener path reads auth state from there", and
+   * that claim is FALSE. It is stated as a correction rather than deleted
+   * because it is the specific artifact that let a real defect survive review:
+   *
+   *   `setSignedIn` announces synchronously -> `HostRuntime` ->
+   *   `directory.refreshForEra(era)` -> the auth-bound fetcher ->
+   *   `fetchRegisteredHosts` -> `cloudBearer()` -> `hasVerifiedSession()`,
+   *
+   * every step of which runs BEFORE its first `await`. That last call reads
+   * `useAuthStore.getState().status`, which is still pre-transition here — so
+   * the transition-driven hosts refresh is refused on every sign-in that moves
+   * the status INTO `signed-in`, and the directory stays empty until the ~60s
+   * registry poll covers for it. (A cross-user A->B switch is unaffected: the
+   * status reads `signed-in` on both sides of it, which is why this was only
+   * ever visible on a cold start or an `unverified` promotion.)
+   *
+   * The FIX taken is not this ordering: `applySignedIn` announces the verdict
+   * through `announceSessionVerified()` as its last act, after the store
+   * commit, and the directory refresh rides that instead. Moving the store
+   * projection above the context calls would be the deeper fix and was
+   * deliberately not taken — zustand notifies synchronously, so it would let
+   * components observe `signed-in` while `HostClient` still holds the outgoing
+   * context, which is a worse class of bug than a delayed directory. If anyone
+   * takes that on, it wants its own ticket.
+   *
+   * What IS true of the position: `currentBearer` and `currentProfile` must be
+   * committed first regardless, because the fetch layer's era check reads them
+   * through `currentAuthEra()` on that same synchronous path — the directory's
+   * identity accessor reaches `currentProfile` via `getCurrentSessionSnapshot()`,
+   * which is why THAT one is here.
    */
   private commitLiveCredential(
     bearer: string | null,
@@ -4173,7 +4269,42 @@ export class AuthService {
     readonly token: string;
     readonly user: StoredCredentials["user"];
   }): boolean {
-    return this.projectUnverifiedSession(session);
+    // Read BEFORE the projection commits: this is the only moment the two
+    // states are distinguishable, and only a session that HELD a verdict is
+    // losing one.
+    const heldVerdict = this.hasVerifiedSession();
+    const projected = this.projectUnverifiedSession(session);
+    if (!projected || !heldVerdict) {
+      return projected;
+    }
+    // THE VERDICT-LOSS EDGE, and it has to be an explicit act because every
+    // mechanism that would otherwise have caught it is deliberately inert here.
+    //
+    // The demotion retains the live context (that is the point - the local
+    // plane runs on it), so `onChange` never fires, so the host runtime's
+    // `auth-changed` sweep never runs. The remote session cache keys its
+    // `authEpoch` on the bearer SOURCE OBJECT, which an in-place rotation does
+    // not change, so every established remote session stays a cache HIT and
+    // keeps dispatching. And `cloudAuthorized` gates the attach-grant MINT,
+    // which an already-attached session does not perform again for the life of
+    // the relay's client-leg deadline.
+    //
+    // So an account that has just been refused - including a deliberate "sign
+    // out of all devices" - would keep being served on the connections it
+    // already had. Closing them is the enforcement.
+    //
+    // `retireAllRemoteSessions` force-closes entries a consumer still HOLDS,
+    // which is the property this call site needs and the one it did not have
+    // until this ticket: an open tab is exactly such a holder. Local-host
+    // sessions are untouched by construction - that cache holds remote
+    // sessions only, so the plane `unverified` exists to protect is out of its
+    // reach.
+    appLogger.info(
+      "[auth] closing remote sessions on cloud authorization loss",
+      { userId: session.user.id },
+    );
+    retireAllRemoteSessions();
+    return projected;
   }
 
   private projectUnverifiedSession(session: {

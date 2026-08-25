@@ -119,6 +119,15 @@ function usePersistedEpicTabReconcileSeed(): ReconcileSeed | null {
 
   const identity = useMemo(() => {
     if (!windowsHydrated) return null;
+    // This deliberately remains a VERIFIED-session gate rather than
+    // `admitsLocalPlane`. The reconciler's only effect is destructive:
+    // `confirmed-absent` clears run settings and permanently evicts the tab's
+    // canvas state. An `unverified` session still supplies its stored
+    // RequestContext credential lease to host RPCs; unlike
+    // `AuthService.cloudBearer()`, that transport does not withhold it. Thus
+    // `epic.getTaskContexts` can reach its cloud `resolution: "absent"` arm
+    // and manufacture a destructive verdict before authn has verified the
+    // session. Leave restored tabs alone until that account verdict arrives.
     if (authStatus !== "signed-in") return null;
     if (compatibility.status !== "compatible") return null;
     if (readiness.hostId === null) return null;
@@ -218,14 +227,14 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileSeed }) {
     enabled: true,
   });
 
-  const localHomedEpicIds = useMemo((): ReadonlySet<string> | null => {
+  const locallyProtectedEpicIds = useMemo((): ReadonlySet<string> | null => {
     if (!localHomeListQuery.isSuccess) return null;
-    return localHomedEpicIdsFromListTasks(localHomeListQuery.data);
+    return locallyProtectedEpicIdsFromListTasks(localHomeListQuery.data);
   }, [localHomeListQuery.data, localHomeListQuery.isSuccess]);
 
   useEffect(() => {
     if (confirmedAbsentEpicIds === null) return;
-    if (localHomedEpicIds === null) return;
+    if (locallyProtectedEpicIds === null) return;
     if (completionAppliedRef.current) return;
     completionAppliedRef.current = true;
     // Never force-close an epic this session just created (or is creating):
@@ -240,21 +249,24 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileSeed }) {
     // `accessLost` / unavailable-`snapshotFetchError` signals), not here, so
     // this exclusion cannot hide a real "epic is gone" signal.
     //
-    // Local-homed epics (`home: "local"` on the host-merged listTasks row) are
-    // also never force-close candidates. That marker is durable across app
-    // relaunches (host home registry), not session-scoped - and a cloud
-    // `confirmed-absent` can name an epic whose never-uploaded local edits
-    // are deliberately preserved (the orphan-recovery case).
+    // Local-homed epics (`home: "local"` on the host-merged listTasks row)
+    // and cloud-homed rows preserved for never-uploaded local edits are never
+    // force-close candidates. Both markers are durable across app relaunches;
+    // the latter is intentionally cloud-absent, so `confirmed-absent` is not
+    // proof its locally protected content may be destroyed.
     //
     // A first page whose `completeness.localRows` reports `truncated` did
-    // not carry every local-homed epic, so the force-close exemption set
-    // is incomplete and no destructive reconciliation may rest on it.
+    // not carry every local-homed epic, so the locally protected exemption
+    // set is incomplete and no destructive reconciliation may rest on it.
     const localRowsTruncated =
       localHomeListQuery.isSuccess &&
       localHomeListQuery.data.completeness?.localRows === "truncated";
     const staleEpicIds = localRowsTruncated
       ? []
-      : closableStaleEpicIds([...confirmedAbsentEpicIds], localHomedEpicIds);
+      : closableStaleEpicIds(
+          [...confirmedAbsentEpicIds],
+          locallyProtectedEpicIds,
+        );
     if (staleEpicIds.length > 0) {
       useComposerRunSettingsStore.getState().clearEpicRunSettings(staleEpicIds);
       tabCommandCoordinator.handleEpicAccessLoss(staleEpicIds);
@@ -263,7 +275,7 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileSeed }) {
     confirmedAbsentEpicIds,
     localHomeListQuery.data,
     localHomeListQuery.isSuccess,
-    localHomedEpicIds,
+    locallyProtectedEpicIds,
   ]);
 
   return null;
@@ -298,17 +310,19 @@ function combineConfirmedAbsentEpicIds(
 }
 
 /** The durable force-close exemption, which IS marker-conditional. */
-function localHomedEpicIdsFromListTasks(
+function locallyProtectedEpicIdsFromListTasks(
   page: ListTasksResponse,
 ): ReadonlySet<string> {
-  const localHomed = new Set<string>();
+  const locallyProtected = new Set<string>();
   for (const task of page.tasks) {
-    if (task.home !== "local") continue;
+    if (task.home !== "local" && task.preservation !== "orphaned-local-edits") {
+      continue;
+    }
     const epicId = task.epic?.light?.id;
     if (typeof epicId !== "string" || epicId.length === 0) continue;
-    localHomed.add(epicId);
+    locallyProtected.add(epicId);
   }
-  return localHomed;
+  return locallyProtected;
 }
 
 function chunkEpicIds(
@@ -332,17 +346,19 @@ function chunkEpicIds(
  *  - it has a live open-epic session in the registry (`peek` reads without
  *    disturbing MRU ordering);
  *  - it has an active (non-failed) initial-chat handoff (the GUI-chat flow);
- *  - the host-merged listTasks response tagged it `home: "local"` (durable
- *    across sessions via the home registry — not session-scoped).
+ *  - the host-merged listTasks response tagged it `home: "local"` or
+ *    `preservation: "orphaned-local-edits"` (durable across sessions via the
+ *    home registry — not session-scoped).
  * The first three mark an epic this session opened or created, for which a
  * transient absence from the cloud is propagation lag rather than a deletion.
- * The home marker is the durable counterpart for unpromoted local epics.
+ * The home and preservation markers are durable counterparts for unpromoted
+ * and cloud-deleted-but-locally-preserved epics, respectively.
  * Evaluated fresh here, at close time, so a session/handoff that appears after
  * the reconcile RPC resolves still counts.
  */
 function closableStaleEpicIds(
   candidateEpicIds: ReadonlyArray<string>,
-  localHomedEpicIds: ReadonlySet<string>,
+  locallyProtectedEpicIds: ReadonlySet<string>,
 ): ReadonlyArray<string> {
   if (candidateEpicIds.length === 0) return candidateEpicIds;
   const handoffState = useInitialChatHandoffStore.getState();
@@ -352,7 +368,7 @@ function closableStaleEpicIds(
       !wasEpicCreatedThisSession(epicId) &&
       registry.peek(epicId) === null &&
       !selectHasActiveInitialChatHandoffForEpic(handoffState, epicId) &&
-      !localHomedEpicIds.has(epicId),
+      !locallyProtectedEpicIds.has(epicId),
   );
 }
 

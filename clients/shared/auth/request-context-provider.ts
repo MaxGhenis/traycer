@@ -145,6 +145,36 @@ export interface RequestContextProvider {
    * using `onChange`. Carries no value: listeners re-read the live lease.
    */
   onBearerRotated(listener: () => void): RequestContextSubscription;
+  /**
+   * Fires when the live session has just been CONFIRMED by the account's
+   * servers, after the auth boundary has committed that verdict everywhere it
+   * is readable.
+   *
+   * Two things make this a separate signal rather than a flavour of the two
+   * above, and both are ordering facts rather than taste.
+   *
+   * WHY NOT `onChange`: the promotion of an `unverified` session to a verified
+   * one for the SAME user rotates the lease in place, so the context reference
+   * never changes and `onChange` is silent by contract (see above). Nothing
+   * else announces it, so a consumer whose work is gated on holding a verdict —
+   * the host directory, which may not read the cloud registry while unverified —
+   * had no edge to act on and stayed empty until its next ambient poll.
+   *
+   * WHY NOT `onBearerRotated`: that fires SYNCHRONOUSLY from inside
+   * `rotateCurrentBearer`, which the auth boundary calls BEFORE it commits the
+   * verdict to the auth store. A listener there re-reads the session state, is
+   * told it is still unverified, and reproduces the empty result with a
+   * plausible fix in place. This signal is announced by the boundary itself
+   * once every such read answers "verified", which is the only point at which
+   * acting on it works.
+   *
+   * Carries the {@link AuthEra} the verdict was committed under, for the same
+   * reason `onChange` does: a listener that re-derives it from ambient
+   * accessors is assembling one era out of several reads.
+   */
+  onSessionVerified(
+    listener: (era: AuthEra) => void,
+  ): RequestContextSubscription;
 }
 
 export interface MintRequestContextOptions {
@@ -232,6 +262,7 @@ export class DefaultRequestContextProvider implements RequestContextProvider {
   private currentContext: RequestContext | null = null;
   private readonly listeners = new Set<RequestContextListener>();
   private readonly bearerRotationListeners = new Set<() => void>();
+  private readonly sessionVerifiedListeners = new Set<(era: AuthEra) => void>();
   /**
    * Bumped by every method below that changes the live credential, ALWAYS
    * before that change is announced — see `emitContextChange` /
@@ -271,6 +302,50 @@ export class DefaultRequestContextProvider implements RequestContextProvider {
     return () => {
       this.bearerRotationListeners.delete(listener);
     };
+  }
+
+  onSessionVerified(
+    listener: (era: AuthEra) => void,
+  ): RequestContextSubscription {
+    if (this.disposed) {
+      return () => {};
+    }
+    this.sessionVerifiedListeners.add(listener);
+    return () => {
+      this.sessionVerifiedListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Announce that the live context now belongs to a session the account's
+   * servers have confirmed - see {@link RequestContextProvider.onSessionVerified}.
+   *
+   * DRIVEN BY THE AUTH BOUNDARY, NOT BY THIS CLASS, and that asymmetry is the
+   * contract rather than an omission. Every other transition here is one this
+   * object performs, so it can announce it itself. "Verified" is not: the
+   * verdict lives in the auth store, which this provider deliberately knows
+   * nothing about, and it is committed AFTER the context call that carries the
+   * new bearer. Emitting from inside `setSignedIn` / `rotateCurrentBearer`
+   * would put every listener one commit too early — which is precisely the
+   * failure this signal exists to route around.
+   *
+   * A no-op while signed out: there is no session to have been verified, and
+   * an era naming a `null` identity would tell a listener to go and load an
+   * account that is not there.
+   */
+  announceSessionVerified(): void {
+    this.assertNotDisposed();
+    const value = this.currentContext;
+    if (value === null) {
+      return;
+    }
+    const era: AuthEra = {
+      identity: value.identity.userId,
+      credentialGeneration: this.credentialGeneration,
+    };
+    for (const listener of [...this.sessionVerifiedListeners]) {
+      listener(era);
+    }
   }
 
   /**
@@ -412,6 +487,7 @@ export class DefaultRequestContextProvider implements RequestContextProvider {
     }
     this.listeners.clear();
     this.bearerRotationListeners.clear();
+    this.sessionVerifiedListeners.clear();
   }
 
   private assertNotDisposed(): void {
@@ -432,6 +508,14 @@ export class DefaultRequestContextProvider implements RequestContextProvider {
    * that drives this provider — must already hold its POST-transition value
    * when this runs. Assign first, announce second; there is no second chance
    * once a listener has issued a request.
+   *
+   * The rule holds; the "with a bearer" is CONDITIONAL and worth knowing.
+   * Auth state the boundary owns but this provider does not — the renderer's
+   * verified/unverified verdict, which lives in its auth store — is committed
+   * AFTER this emission, so a listener reaching a verdict gate on this path is
+   * refused rather than sent. That is what {@link
+   * RequestContextProvider.onSessionVerified} exists for, and it is why this
+   * emission is not the only announcement the boundary makes.
    *
    * The era passed alongside the context is the same rule made structural:
    * it is read from committed state at emit time, so a listener that threads

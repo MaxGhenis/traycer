@@ -148,14 +148,114 @@ describe("useCloudEpicTasksQuery", () => {
     });
   });
 
-  it.skip("admits #4's unverified stored identity to local-first History", () => {
-    // Integration pending `s6-renderer-local-admission`: this worktree's
-    // AuthStatus does not yet contain `unverified` or `admitsLocalPlane`.
-    // Once its reviewed definition lands, set the store to `unverified`, keep
-    // the matching stored/request-context user id, and assert this hook sends
-    // the v1.6 `initial` list request. The same fixture must prove a
-    // signed-out identity still issues no request. That arm is intentionally
-    // skipped rather than faked with a cast: #4 owns the state definition.
+  it("admits #4's unverified stored identity to local-first History", async () => {
+    // The cohort this whole feature exists for: a stored identity on disk that
+    // authn could not confirm. `root-landing-page.tsx` renders `/epics` for it,
+    // so it reaches History - and every gate below here has to agree that it
+    // did, or it arrives to "No tasks yet" over its own rows.
+    const localPage: ListTasksResponse = {
+      tasks: [taskLight("unverified-local", "Served from this disk")],
+      hasMore: false,
+      completeness: {
+        cloudPage: "pending",
+        facets: "partial",
+        localRows: "present",
+        sort: "loaded-union",
+      },
+    };
+    mockHostClient.request.mockResolvedValue(localPage);
+    useAuthStore.setState({
+      status: "unverified",
+      profile: {
+        userId: USER_ID,
+        userName: "Test User",
+        email: "test@example.com",
+      },
+      // The stored identity, matching the live RequestContext - the pairing
+      // `resolveCloudTasksUserId` requires before it will name a cache.
+      contextMetadata: { userId: USER_ID, username: "test-user" },
+      shareableTeams: [],
+      // No server verdict is held, so no entitlement is projected.
+      subscriptionStatus: null,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const admitted = renderHook(
+      () => useCloudEpicTasksQuery(LIST_CLOUD_TASKS_REQUEST, { enabled: true }),
+      { wrapper: makeWrapper(queryClient) },
+    );
+
+    await waitFor(() => {
+      expect(taskLightIds(admitted.result.current.tasks)).toEqual([
+        "unverified-local",
+      ]);
+    });
+    expect(mockHostClient.request).toHaveBeenCalledTimes(1);
+    expect(mockHostClient.request.mock.calls[0]?.[1]).toMatchObject({
+      localFirstPhase: "initial",
+    });
+
+    // The OTHER half of the split, and the reason widening the gate is safe:
+    // the local leg went out, the cloud leg did not. `unverified` holds no
+    // `/api/v3/user` verdict, so no revalidation is spent - and the page is
+    // settled to `unavailable` rather than left claiming a cloud half is still
+    // on its way.
+    await waitFor(() => {
+      expect(admitted.result.current.query.data?.completeness?.cloudPage).toBe(
+        "unavailable",
+      );
+    });
+    expect(
+      mockHostClient.request.mock.calls.filter(([, params]) =>
+        hasLocalFirstPhase(params, "revalidate"),
+      ),
+    ).toHaveLength(0);
+    expect(admitted.result.current.isCloudPagePending).toBe(false);
+    admitted.unmount();
+
+    // A SIGNED-OUT identity still issues nothing. This is the arm that keeps
+    // the widening honest: admission moved from "has a verdict" to "has an
+    // identity on disk", and `signed-out` is precisely the state that has
+    // neither, so it must not merely be gated later - no request may leave.
+    mockHostClient.request.mockClear();
+    useAuthStore.setState({
+      status: "signed-out",
+      profile: null,
+      contextMetadata: null,
+      shareableTeams: [],
+      subscriptionStatus: null,
+    });
+    const signedOutQueryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const signedOut = renderHook(
+      () => useCloudEpicTasksQuery(LIST_CLOUD_TASKS_REQUEST, { enabled: true }),
+      { wrapper: makeWrapper(signedOutQueryClient) },
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockHostClient.request).not.toHaveBeenCalled();
+    expect(signedOut.result.current.tasks).toEqual([]);
+    expect(signedOut.result.current.currentUserId).toBeNull();
+    // MUST unmount, and this test is the only one in the file that must.
+    // `vitest.config.ts` sets `globals: false` and the setup file registers no
+    // Testing Library `cleanup`, so nothing here auto-unmounts - a rendered
+    // hook survives into the next test. That is harmless for every other test,
+    // whose hooks stay signed-in with a settled `staleTime: Infinity` query and
+    // never re-fetch. It is NOT harmless here: this hook is parked on the
+    // DISABLED branch only because the store says `signed-out`, and the next
+    // `beforeEach` sets the store back to `signed-in`. A surviving observer
+    // would re-render, resolve a real user id, flip to the enabled branch and
+    // dispatch `epic.listTasks` into the following test's freshly-cleared mock.
+    signedOut.unmount();
   });
 
   it("keeps an old host's one-shot response on today's no-follow-up path", async () => {
@@ -1076,5 +1176,185 @@ describe("useCloudEpicTasksQuery", () => {
         "settled",
       );
     });
+  });
+
+  it("reports the outstanding revalidation on an empty pending page", async () => {
+    // The caller-owned-tombstone answer: a local answer exists (a deletion this
+    // caller owns), so the host returns immediately - with NO rows. That page
+    // reaches the panel's empty branch, and nothing on `query` distinguishes it
+    // from an account that genuinely has nothing.
+    const pendingLocalPage: ListTasksResponse = {
+      tasks: [],
+      hasMore: false,
+      completeness: {
+        cloudPage: "pending",
+        facets: "partial",
+        localRows: "none",
+        sort: "loaded-union",
+      },
+    };
+    const revalidation = createDeferred<ListTasksResponse>();
+    mockHostClient.request.mockImplementation(
+      (_method: string, params: { readonly localFirstPhase?: string }) =>
+        params.localFirstPhase === "revalidate"
+          ? revalidation.promise
+          : Promise.resolve(pendingLocalPage),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const { result } = renderHook(
+      () => useCloudEpicTasksQuery(LIST_CLOUD_TASKS_REQUEST, { enabled: true }),
+      { wrapper: makeWrapper(queryClient) },
+    );
+
+    await waitFor(() => {
+      expect(result.current.isCloudPagePending).toBe(true);
+    });
+    // Why this cannot be derived from the query the caller already holds: the
+    // follow-up runs under its own ephemeral key, so the primary query has
+    // SETTLED SUCCESSFULLY with zero rows while a request for this very list is
+    // still in flight.
+    expect(result.current.query.isFetching).toBe(false);
+    expect(result.current.query.isSuccess).toBe(true);
+    expect(result.current.tasks).toEqual([]);
+
+    await act(async () => {
+      revalidation.resolve({
+        tasks: [taskLight("cloud-row", "Cloud page landed")],
+        hasMore: false,
+        completeness: {
+          cloudPage: "settled",
+          facets: "server",
+          localRows: "none",
+          sort: "server",
+        },
+      });
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(result.current.isCloudPagePending).toBe(false);
+      expect(taskLightIds(result.current.tasks)).toEqual(["cloud-row"]);
+    });
+  });
+
+  it("unions completeness worst-of across the first page and a retained tail", async () => {
+    // Each page is worse than the other on a DIFFERENT member, so neither
+    // "first page wins" nor "last page wins" can produce the expected value -
+    // only a per-member worst-of can. A single-direction fixture would pass
+    // against three different wrong implementations.
+    const firstPage: ListTasksResponse = {
+      tasks: [taskLight("union-first", "First page")],
+      hasMore: true,
+      nextCursor: "cursor-union",
+      completeness: {
+        cloudPage: "unavailable",
+        facets: "partial",
+        localRows: "present",
+        sort: "server",
+      },
+    };
+    const tailPage: ListTasksResponse = {
+      tasks: [taskLight("union-tail", "Tail page")],
+      hasMore: false,
+      completeness: {
+        cloudPage: "settled",
+        facets: "server",
+        localRows: "truncated",
+        sort: "loaded-union",
+      },
+    };
+    mockHostClient.request.mockImplementation(
+      (_method: string, params: MockHostRequest) =>
+        Promise.resolve(params.cursor === undefined ? firstPage : tailPage),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const { result } = renderHook(
+      () => useCloudEpicTasksQuery(LIST_CLOUD_TASKS_REQUEST, { enabled: true }),
+      { wrapper: makeWrapper(queryClient) },
+    );
+
+    await waitFor(() => {
+      expect(taskLightIds(result.current.tasks)).toEqual(["union-first"]);
+    });
+    // With no tail loaded the union is exactly the first page's own statement,
+    // so the change below is attributable to the tail and nothing else.
+    expect(result.current.completeness).toEqual(firstPage.completeness);
+
+    act(() => {
+      result.current.fetchNextPage();
+    });
+    await waitFor(() => {
+      expect(taskLightIds(result.current.tasks)).toEqual([
+        "union-first",
+        "union-tail",
+      ]);
+    });
+    // `unavailable` and `partial` come from the first page, `truncated` and
+    // `loaded-union` from the tail. `tasks` above is the union of both, so the
+    // statement describing it has to carry all four.
+    expect(result.current.completeness).toEqual({
+      cloudPage: "unavailable",
+      facets: "partial",
+      localRows: "truncated",
+      sort: "loaded-union",
+    });
+  });
+
+  it("keeps a first page's warning when a retained tail says nothing", async () => {
+    // The silent-page rule, pinned in the direction that has a live path to it:
+    // a page with no statement contributes none, and must not erase the
+    // `unavailable` warning its sibling did make.
+    const firstPage: ListTasksResponse = {
+      tasks: [taskLight("silent-first", "First page")],
+      hasMore: true,
+      nextCursor: "cursor-silent",
+      completeness: {
+        cloudPage: "unavailable",
+        facets: "partial",
+        localRows: "present",
+        sort: "loaded-union",
+      },
+    };
+    const silentTail: ListTasksResponse = {
+      tasks: [taskLight("silent-tail", "Tail with no statement")],
+      hasMore: false,
+    };
+    mockHostClient.request.mockImplementation(
+      (_method: string, params: MockHostRequest) =>
+        Promise.resolve(params.cursor === undefined ? firstPage : silentTail),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const { result } = renderHook(
+      () => useCloudEpicTasksQuery(LIST_CLOUD_TASKS_REQUEST, { enabled: true }),
+      { wrapper: makeWrapper(queryClient) },
+    );
+
+    await waitFor(() => {
+      expect(taskLightIds(result.current.tasks)).toEqual(["silent-first"]);
+    });
+    act(() => {
+      result.current.fetchNextPage();
+    });
+    await waitFor(() => {
+      expect(taskLightIds(result.current.tasks)).toEqual([
+        "silent-first",
+        "silent-tail",
+      ]);
+    });
+    expect(result.current.completeness).toEqual(firstPage.completeness);
   });
 });

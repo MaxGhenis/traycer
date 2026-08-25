@@ -140,7 +140,21 @@ export function HostReadinessControllerProvider(props: {
   // removal-state read, and burns the one-shot attempt latch on an episode
   // belonging to a machine the user is not pointed at. `hasLocalHost` is
   // folded into the intent - a shell with no local host is never booting one.
-  const canProvision = authStatus === "signed-in" && localBootIntent;
+  // SURFACE, not capability - and worth stating what this still drives, because
+  // its name outlived its old job. The automatic launch-time `convergeReady`
+  // was retired (D14/C5), so this no longer arms any process: what `enabled`
+  // reaches now is the removal-sentinel read in `useHostProvisioning`
+  // (`useRunnerHostRemovalStateQuery`), which asks this machine's own disk
+  // whether the user removed Traycer's background components. Every other
+  // lifecycle fact and gesture there is gated on `hasManagement` instead.
+  //
+  // That read is a purely local question, so it is admitted for `unverified`
+  // like the rest of the local plane - the same predicate this file already
+  // applies in `DefaultHostReadyGate` and `resolveSurfaceReadiness`. Left on
+  // the verdict, an offline user whose host had been removed got the generic
+  // "couldn't reach the host" narration with a Retry that could never succeed,
+  // instead of the removed card that tells them what actually happened.
+  const canProvision = admitsLocalPlane(authStatus) && localBootIntent;
   const directory = binding === null ? null : binding.directory;
   // Stable identities: the presentation is memoized on its inputs, and a
   // fresh closure each render would re-run every readiness consumer in the

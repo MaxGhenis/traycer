@@ -248,6 +248,76 @@ describe("removeDeletedEpicsFromCloudTaskCaches", () => {
         ?.tasks.map((task) => task.epic?.light?.id),
     ).toEqual([]);
   });
+
+  it("admits a preserved first page and cursor tail after a tombstone", () => {
+    const queryClient = new QueryClient();
+    const scope = { hostId: "host-a", userId: "user-1" };
+    const options = cloudEpicTasksFirstPageQueryOptions(
+      scope.hostId,
+      scope.userId,
+      LIST_CLOUD_TASKS_REQUEST,
+    );
+    const normalPage: ListTasksResponse = {
+      tasks: [
+        taskLight("epic-orphan", "Orphan", "traycer/gui-app", scope.userId),
+      ],
+      hasMore: false,
+    };
+
+    // This is the already-cached first page at the moment a local deletion is
+    // processed. The ordinary row is removed immediately.
+    queryClient.getQueryCache().build(queryClient, {
+      queryKey: options.queryKey,
+      queryFn: options.queryFn,
+      structuralSharing: options.structuralSharing,
+    });
+    queryClient.setQueryData(options.queryKey, normalPage);
+    removeDeletedEpicsFromCloudTaskCaches(queryClient, scope, ["epic-orphan"]);
+    expect(
+      queryClient.getQueryData<ListTasksResponse>(options.queryKey)?.tasks,
+    ).toEqual([]);
+
+    const preservedPage: ListTasksResponse = {
+      tasks: [
+        {
+          ...listTaskLight("epic-orphan", "Orphan", scope.userId),
+          preservation: "orphaned-local-edits",
+        },
+      ],
+      hasMore: false,
+    };
+
+    // A late first-page delivery must be allowed back through the same
+    // tombstone boundary when it carries the durable preservation marker.
+    queryClient.setQueryData(options.queryKey, preservedPage);
+    expect(
+      queryClient
+        .getQueryData<ListTasksResponse>(options.queryKey)
+        ?.tasks.map((task) => task.epic?.light?.id),
+    ).toEqual(["epic-orphan"]);
+
+    // Cursor pages use the retained-page store rather than TanStack's first
+    // page. The tombstone already exists, so this late tail must be admitted
+    // for the preserved row and remain rejected for an ordinary row.
+    const identity = cloudEpicTasksPageIdentity(
+      scope.hostId,
+      scope.userId,
+      LIST_CLOUD_TASKS_REQUEST,
+    );
+    const generation = cloudEpicTasksPageGeneration(identity);
+    useCloudEpicTasksPagesStore.getState().appendPage(identity, generation, {
+      tasks: preservedPage.tasks,
+      hasMore: false,
+    });
+    const retained =
+      useCloudEpicTasksPagesStore.getState().pagesByIdentity[identity];
+    // Assert the tail landed before reading through it, so a page that never
+    // arrived fails here rather than as an `undefined` in the row comparison.
+    expect(retained).toHaveLength(1);
+    expect(retained[0].tasks.map((task) => task.epic?.light?.id)).toEqual([
+      "epic-orphan",
+    ]);
+  });
 });
 
 describe("readEpicTitlesFromCloudTaskCaches", () => {
