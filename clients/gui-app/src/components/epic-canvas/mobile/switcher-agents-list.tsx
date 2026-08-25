@@ -30,6 +30,7 @@ import {
   useAncestorIds,
   useEpicNodeArchived,
   useEpicNodeHostId,
+  useEpicNodeHostIds,
   useEpicNodeUpdatedAt,
   useEpicPermissionRole,
   useEpicTreeIndex,
@@ -54,8 +55,8 @@ import {
   isOpenableEpicNodeKind,
   makeOpenableNodeRef,
 } from "@/stores/epics/canvas/types";
-import { NotificationIndicatorsProvider } from "@/components/notifications/notification-indicators-provider";
-import { useNotificationIndicators } from "@/hooks/notifications/use-notification-indicators-query";
+import { ChatIndicatorHostScopes } from "@/components/notifications/chat-indicator-host-scopes";
+import { chatIndicatorHostScopes } from "@/lib/notifications/chat-indicator-scopes";
 import { useEpicSessionHostId } from "@/hooks/epic/use-epic-session-host-id";
 
 interface SwitcherListProps {
@@ -163,17 +164,33 @@ export function SwitcherAgentsList(props: SwitcherListProps) {
         .sort(),
     [tree],
   );
-  // The rows' status glyphs read notification state out of this context. Scoped
-  // to the EPIC SESSION host for the same reason the desktop chat tree is:
-  // these agents are this session's, `chatId` is host-minted, and the app-wide
-  // active host would answer about agents it does not own.
+  // The rows' status glyphs read notification state out of this context, and
+  // each resolves its OWN owner host - so the subscription has to span every
+  // host represented here, not one. `host.notifications.indicatorState` is
+  // computed over ONE host's rows and files its answer under that host alone,
+  // so a single call scoped to the session host leaves every row owned by a
+  // peer reading an absent bucket, i.e. inert. That is worst for a COLLAPSED
+  // parent, whose rollup is the only signal its hidden descendants have: a
+  // host-A parent could not surface a host-B child's failure at all.
+  //
+  // The session host is the fallback for a legacy row whose projection carries
+  // no owner, and the placeholder the last resort for one with neither -
+  // desktop's rule verbatim, so the two surfaces subscribe identically.
   const epicSessionHostId = useEpicSessionHostId();
-  const indicators = useNotificationIndicators({
-    hostId: epicSessionHostId,
-    epicIds: [],
-    chatIds: indicatorChatIds,
-    enabled: indicatorChatIds.length > 0,
-  });
+  const indicatorChatHostIds = useEpicNodeHostIds(indicatorChatIds);
+  const indicatorScopes = useMemo(
+    () =>
+      chatIndicatorHostScopes(
+        indicatorChatIds.map((chatId, index) => ({
+          chatId,
+          hostId:
+            indicatorChatHostIds[index] ??
+            epicSessionHostId ??
+            UNKNOWN_HOST_PLACEHOLDER,
+        })),
+      ),
+    [epicSessionHostId, indicatorChatHostIds, indicatorChatIds],
+  );
 
   const value = useMemo<SwitcherAgentTreeValue>(
     () => ({
@@ -189,7 +206,7 @@ export function SwitcherAgentsList(props: SwitcherListProps) {
   );
 
   return (
-    <NotificationIndicatorsProvider indicators={indicators}>
+    <ChatIndicatorHostScopes scopes={indicatorScopes}>
       <ChatRowMenuFactsProvider epicId={epicId}>
         <SwitcherAgentTreeContext.Provider value={value}>
           <div
@@ -217,7 +234,7 @@ export function SwitcherAgentsList(props: SwitcherListProps) {
           </div>
         </SwitcherAgentTreeContext.Provider>
       </ChatRowMenuFactsProvider>
-    </NotificationIndicatorsProvider>
+    </ChatIndicatorHostScopes>
   );
 }
 

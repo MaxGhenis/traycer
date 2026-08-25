@@ -29,18 +29,9 @@ import {
  * An earlier version took `pointer-coarse:min-h-11` the way every row in
  * `ui/dropdown-menu.tsx` and `ui/select.tsx` does; against a desktop screenshot
  * the result read as a different product - ~41px rows where the sidebar has
- * ~26px. Density was ruled the higher priority for this surface.
- *
- * The touch target survives that because it never came from the row's height:
- * `mobile-shell-touch-targets.css` gives every `[data-slot="button"]` under the
- * sheet an `::after` of `height: max(100%, 44px)`, centred - a px literal, and
- * the only measurement here immune to the 15px root font that renders every rem
- * utility at 0.9375x. A 26px row still owns a 44px vertical hit box.
- *
- * `ui/select.tsx` warns that slop overhanging flush-stacked rows can capture a
- * neighbour's taps, and at this row height the 44px slop does overhang. Measured
- * on device it does NOT bite: the overhang stays inside the inter-row gap and
- * splits it, so no point inside a painted row ever taps its neighbour.
+ * ~26px. Density was ruled the higher priority for this surface, and what that
+ * costs the touch target - which the sheet's hit-slop does NOT buy back here -
+ * is stated below.
  *
  * `h-auto` is load-bearing. `ui/button`'s default size sets a FIXED `h-8`, which
  * beats a smaller `min-h-7` - so without it the floor here is inert and the row
@@ -140,15 +131,15 @@ export function SwitcherListRow(props: {
           aria-expanded={nesting.expanded}
           data-testid={`${selectTestId}-toggle`}
           // `data-slot`, though this is a bare element rather than `ui/button`:
-          // that attribute is what the sheet's touch scope selects on, and its
-          // slop is the only thing here measured in real pixels. The root font
-          // is 15px, so every rem utility renders at 0.9375x and a `h-11` is
-          // 41.25px; the scope's `height: max(100%, 44px)` is a true 44.
+          // the sheet's touch scope selects on that attribute, and so does the
+          // opt-out this list sits under. Without it the scope's 44px `::after`
+          // would attach here and the opt-out could not reach it - a chevron
+          // taking taps from the row above.
           data-slot="button"
-          // Desktop's glyph, untouched. Only the hit box grows on a coarse
-          // pointer, and it grows invisibly - the scope forces the pseudo
-          // transparent, and the control itself paints no background, border or
-          // box in any state; a press dims the glyph instead.
+          // Desktop's glyph, untouched, and its hit box is exactly its painted
+          // box: `self-stretch` takes the row's full height, and the control
+          // paints no background, border or box in any state; a press dims the
+          // glyph instead.
           className="flex shrink-0 items-center justify-center self-stretch bg-transparent text-muted-foreground transition-opacity active:opacity-50"
         >
           <TreeChevron expanded={nesting.expanded} onToggle={undefined} />

@@ -45,7 +45,12 @@ interface Holder {
   updatedAtByNodeId: Record<string, number>;
   /** Whether the epic's host advertises `epic.setChatArchived`. */
   archiveSupported: boolean;
-  indicators: IndicatorFixture;
+  /**
+   * What each host reports about which chats. Keyed by host FIRST, because
+   * that is the fact under test: a host answers only about rows it owns, so a
+   * chat missing from its owner's entry is a chat whose status cannot light.
+   */
+  indicatorsByHost: Record<string, Record<string, IndicatorFlags>>;
 }
 
 interface IndicatorFlags {
@@ -55,14 +60,6 @@ interface IndicatorFlags {
   readonly pendingInterview: boolean;
   readonly unreadDone: boolean;
 }
-interface IndicatorResponseFixture {
-  readonly epics: Record<string, never>;
-  readonly chats: Record<string, IndicatorFlags>;
-}
-interface IndicatorFixture extends IndicatorResponseFixture {
-  readonly byOriginHostId?: Record<string, IndicatorResponseFixture>;
-}
-
 const holder = vi.hoisted((): Holder => ({
   records: [],
   activeId: null,
@@ -75,7 +72,7 @@ const holder = vi.hoisted((): Holder => ({
   archivedIds: new Set<string>(),
   updatedAtByNodeId: {},
   archiveSupported: false,
-  indicators: { epics: {}, chats: {} },
+  indicatorsByHost: {},
 }));
 
 /**
@@ -232,17 +229,33 @@ vi.mock("@/hooks/epic/use-epic-nested-focus-navigation", () => ({
   useEpicNestedFocusNavigation: () => vi.fn(),
 }));
 // The agents list owns the indicator subscription its rows read through
-// context; record what it asks for so the wiring is asserted rather than
-// assumed, and answer from the holder.
+// context; record what each layer asks for so the wiring is asserted rather
+// than assumed, and answer from the holder.
 vi.mock("@/hooks/epic/use-epic-session-host-id", () => ({
   useEpicSessionHostId: () => "host-A",
 }));
-vi.mock("@/hooks/notifications/use-notification-indicators-query", () => ({
-  useNotificationIndicators: (args: {
+// Mocked one level DOWN from the list, at the per-host RPC, because the list
+// subscribes through `ChatIndicatorHostScopes` - one layer per host. Answering
+// only about the ids a layer asked for is what makes the fixture able to
+// express a chat its host has never heard of, which is the cross-host case.
+vi.mock("@/hooks/notifications/use-host-notification-indicators-query", () => ({
+  useHostNotificationIndicators: (args: {
+    readonly hostId: string | null;
     readonly chatIds: readonly string[];
   }) => {
     holder.indicatorChatIdCalls.push(args.chatIds);
-    return holder.indicators;
+    const known = holder.indicatorsByHost[args.hostId ?? ""] ?? {};
+    const chats: Record<string, IndicatorFlags> = {};
+    for (const chatId of args.chatIds) {
+      if (Object.hasOwn(known, chatId)) chats[chatId] = known[chatId];
+    }
+    return {
+      data: { epics: {}, chats },
+      isPending: false,
+      isFetching: false,
+      error: null,
+      refetch: () => Promise.resolve(),
+    };
   },
 }));
 // Each category list renders its own create row/menu (Agents: New chat,
@@ -276,7 +289,7 @@ beforeEach(() => {
   holder.archivedIds = new Set<string>();
   holder.updatedAtByNodeId = {};
   holder.archiveSupported = false;
-  holder.indicators = { epics: {}, chats: {} };
+  holder.indicatorsByHost = {};
   // Module-level and shared with the desktop sidebar, so one test's collapse
   // would otherwise decide the next test's chevron state - and its label.
   useEpicSidebarExpansionStore.setState({
@@ -404,9 +417,8 @@ describe("<SwitcherAgentsList />", () => {
     holder.activityTiers = new Map<string, "turn" | "background">([
       ["chat-1", "turn"],
     ]);
-    holder.indicators = {
-      epics: {},
-      chats: {
+    holder.indicatorsByHost = {
+      "host-A": {
         "chat-1": {
           unreadFailure: false,
           pendingFork: false,
@@ -440,9 +452,8 @@ describe("<SwitcherAgentsList />", () => {
       },
     ];
     holder.ownerHostIdByNodeId = { "chat-1": "host-A" };
-    holder.indicators = {
-      epics: {},
-      chats: {
+    holder.indicatorsByHost = {
+      "host-A": {
         "chat-1": {
           unreadFailure: true,
           pendingFork: false,
@@ -451,25 +462,12 @@ describe("<SwitcherAgentsList />", () => {
           unreadDone: false,
         },
       },
-      byOriginHostId: {
-        "host-A": {
-          epics: {},
-          chats: {
-            "chat-1": {
-              unreadFailure: true,
-              pendingFork: false,
-              pendingApproval: false,
-              pendingInterview: false,
-              unreadDone: false,
-            },
-          },
-        },
-        "host-B": { epics: {}, chats: {} },
-      },
+      "host-B": {},
     };
     render(<SwitcherAgentsList {...PROPS} />);
-    // Passing the record's `hostId` would read `byOriginHostId["host-B"]` -
-    // empty - and the row would render an inert idle glyph.
+    // Subscribing against the record's `hostId` would ask host B about a chat
+    // it has never owned, and the row would read an empty
+    // `byOriginHostId["host-B"]` - an inert idle glyph.
     expect(
       screen.getByTestId("chat-sidebar-spinner-failure-chat-1"),
     ).toBeTruthy();
@@ -564,6 +562,67 @@ describe("<SwitcherAgentsList />", () => {
     // closes it.
     fireEvent.click(screen.getByRole("button", { name: "Collapse Alpha" }));
     expect(screen.queryByTestId("switcher-agent-row-chat-2")).toBeNull();
+  });
+
+  it("rolls a collapsed parent's hidden child up even when the child lives on another host", () => {
+    // The parent and its child are owned by DIFFERENT machines - the shape a
+    // single-host subscription cannot answer, because
+    // `host.notifications.indicatorState` is computed over one host's rows and
+    // files under that host alone. Host A has never heard of chat-2, so a list
+    // that asked only the session host would read an absent bucket for it and
+    // the parent would stand for nothing.
+    holder.records = [
+      {
+        id: "chat-1",
+        parentId: null,
+        name: "Alpha",
+        type: "chat",
+        status: null,
+        hostId: "host-A",
+      },
+      {
+        id: "chat-2",
+        parentId: "chat-1",
+        name: "Child",
+        type: "chat",
+        status: null,
+        hostId: "host-A",
+      },
+    ];
+    holder.ownerHostIdByNodeId = { "chat-1": "host-A", "chat-2": "host-B" };
+    holder.indicatorsByHost = {
+      "host-A": {},
+      "host-B": {
+        "chat-2": {
+          unreadFailure: true,
+          pendingFork: false,
+          pendingApproval: false,
+          pendingInterview: false,
+          unreadDone: false,
+        },
+      },
+    };
+    render(<SwitcherAgentsList {...PROPS} />);
+    // Expanded, the child carries its own failure and the parent stays quiet -
+    // the rollup is for what the user CANNOT see.
+    expect(
+      screen.getByTestId("chat-sidebar-spinner-failure-chat-2"),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("chat-descendant-status-failure-chat-1")).toBe(
+      null,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Alpha" }));
+    expect(screen.queryByTestId("switcher-agent-row-chat-2")).toBeNull();
+    // …and now the parent is the only surface that failure has.
+    expect(
+      screen.getByTestId("chat-descendant-status-failure-chat-1"),
+    ).toBeTruthy();
+
+    // The mechanism behind both, pinned last: one subscription per host, each
+    // asked only about the ids that host owns.
+    expect(holder.indicatorChatIdCalls).toContainEqual(["chat-1"]);
+    expect(holder.indicatorChatIdCalls).toContainEqual(["chat-2"]);
   });
 
   it("gives a leaf no chevron and a parent an expand control", () => {
