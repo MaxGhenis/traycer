@@ -70,7 +70,9 @@ import {
  * The chevron is desktop's `<span>` glyph rendered as a sibling `<button>`: it
  * needs a real accessible name and `aria-expanded`, since a phone has no
  * double-click, drag or context menu to expand by, and a button cannot nest
- * inside a button. It keeps `data-slot="button"` so the scope's slop reaches it.
+ * inside a button. It keeps `data-slot="button"` so this list's slop OPT-OUT
+ * can target it: the attribute is what both that rule and the scope's own
+ * select on, and without it the 44px pseudo would attach here unopposed.
  *
  * `secondaryLabel` and `badge` exist so a category whose desktop row carries
  * per-row metadata (a terminal's runtime status, its resource usage) can show
