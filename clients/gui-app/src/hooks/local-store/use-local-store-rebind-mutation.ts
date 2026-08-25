@@ -66,7 +66,22 @@ export function useLocalStoreRebindMutation(): UseMutationResult<
       // settle must not invalidate the incoming host's fresh data.
       onMutate: () => ({ hostId: sessionHostId }),
       onSuccess: (response, _variables, context) => {
-        if (response.status !== "rebound") return;
+        // `not-needed` is a REPAIR BOUNDARY, not a no-op for this window.
+        //
+        // It is an honest no-op for the HOST - the process-global store is
+        // already healthy, so it declines to tear one down for a stale panel.
+        // But the reason it is already healthy is that a rebind happened: an
+        // earlier fence retry, or another window, which invalidated only its
+        // OWN `QueryClient`. This window's caches were filled by the abandoned
+        // store and nothing has told it so. Skipping invalidation here left
+        // History's infinite-lived first page, its retained tails, task
+        // contexts and notification indicators answering from that store while
+        // the panel reported the repair as done.
+        //
+        // `refused` stays the only successful arm that skips: nothing was
+        // rebound, by this window or any other, so the caches in hand are as
+        // good (or bad) as they were before the click.
+        if (response.status === "refused") return;
         // The "Show more" tails live OUTSIDE TanStack Query, in the pages
         // store, and `useCloudEpicTasksQuery` keeps concatenating them with
         // the refetched first page - so invalidation alone would leave rows,

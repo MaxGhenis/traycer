@@ -1125,6 +1125,48 @@ describe("RemoteSession UNAUTHORIZED session-fatal recovery", () => {
   );
 
   it(
+    "goes terminal - and fires onClosed - when revalidation reports local-plane-retained",
+    async () => {
+      // A relay session needs an attach grant `cloudAuthorized()` refuses once
+      // the cloud verdict is gone, regardless of local-plane admission - so
+      // unlike the bounded-retry story `WsStreamClient` gives this outcome,
+      // a remote session has no better bearer it could ever redial with and
+      // treats it exactly like "rejected": straight to terminal.
+      const relay = new FakeRelayHost();
+      const lease = new MutableBearerLease("demoted-token", "user-1");
+      relay.decideOpen = () => ({
+        kind: "fatal",
+        details: unauthorizedDetails(),
+      });
+      let revalidateCalls = 0;
+      const auth: StreamAuthRevalidator = {
+        revalidateForReconnect: () => {
+          revalidateCalls += 1;
+          return Promise.resolve("local-plane-retained");
+        },
+      };
+      const session = buildSession(relay, lease, auth);
+      let closedEvents = 0;
+      session.onClosed(() => {
+        closedEvents += 1;
+      });
+      try {
+        session.start();
+        await vi.waitFor(() => expect(session.isClosed()).toBe(true), WAIT);
+        // Terminal BECAUSE the revalidation said so - the recovery path ran
+        // exactly once and stopped, rather than never being consulted.
+        expect(revalidateCalls).toBe(1);
+        expect(closedEvents).toBe(1);
+        expect(relay.openBearers).toEqual(["demoted-token"]);
+        expect(relay.errors).toEqual([]);
+      } finally {
+        session.close();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  it(
     "treats a retryable UNAUTHORIZED fatal as a transport drop - reconnects without spending a revalidation",
     async () => {
       const relay = new FakeRelayHost();

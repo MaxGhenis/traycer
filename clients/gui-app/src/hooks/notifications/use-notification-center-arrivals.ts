@@ -66,15 +66,28 @@ export function computeLiveArrivalKeys(
   const previousOccurrenceKeyByFeedId = new Map(
     previousEntries.map((entry) => [entry.feedId, entry.occurrenceKey]),
   );
-  // Each lane's own front, and each lane's own position index. A lane the
-  // reader has nothing loaded from has no front, so its first rows are a first
-  // page rather than an arrival - the same rule the whole list already had.
-  const previousFrontFeedIdByPlane = new Map<string, string>();
+  // Each lane's own prior rows IN ORDER, and each lane's own position index. A
+  // lane the reader has nothing loaded from has no boundary, so its first rows
+  // are a first page rather than an arrival - the same rule the whole list
+  // already had.
+  //
+  // The whole ordered lane rather than just its front, because the front is the
+  // boundary only while it SURVIVES. A cloud snapshot is an authoritative
+  // replacement, so one pass can drop the previous front and introduce a new
+  // row together - another window clearing the old front while a notification
+  // lands. Anchoring on the front alone then found no boundary at all and
+  // rejected every genuinely new row in that lane, so a reader scrolled away
+  // got no "N new" affordance for arrivals `applySnapshot()` had really
+  // installed.
+  const previousFeedIdsByPlane = new Map<string, string[]>();
   for (const entry of previousEntries) {
     const plane = arrivalPlaneOf(entry.feedId);
-    if (!previousFrontFeedIdByPlane.has(plane)) {
-      previousFrontFeedIdByPlane.set(plane, entry.feedId);
+    const lane = previousFeedIdsByPlane.get(plane);
+    if (lane === undefined) {
+      previousFeedIdsByPlane.set(plane, [entry.feedId]);
+      continue;
     }
+    lane.push(entry.feedId);
   }
   const indexWithinPlane = new Map<string, number>();
   const planeIndexByEntry: number[] = [];
@@ -86,12 +99,28 @@ export function computeLiveArrivalKeys(
     planeIndexByEntry.push(next);
     planeOfEntry.push(plane);
   });
-  const previousFrontIndexByPlane = new Map<string, number>();
+  const currentPlaneIndexByFeedId = new Map<string, number>();
   currentEntries.forEach((entry, index) => {
-    const plane = planeOfEntry[index];
-    if (previousFrontFeedIdByPlane.get(plane) !== entry.feedId) return;
-    previousFrontIndexByPlane.set(plane, planeIndexByEntry[index]);
+    currentPlaneIndexByFeedId.set(entry.feedId, planeIndexByEntry[index]);
   });
+  // The first prior row of the lane that is still on screen. It sat behind
+  // every arrival exactly as the front did, so the positional rule below is
+  // unchanged - only its ANCHOR is now one a removal cannot delete. The front
+  // is still chosen whenever it survived, which is every ordinary pass.
+  //
+  // A lane whose prior rows are ALL gone still yields no boundary, and that
+  // stays deliberate: nothing distinguishes a wholesale replacement from a
+  // fresh baseline positionally, and calling a first page "N new" is the
+  // louder mistake.
+  const previousFrontIndexByPlane = new Map<string, number>();
+  for (const [plane, laneFeedIds] of previousFeedIdsByPlane) {
+    for (const feedId of laneFeedIds) {
+      const planeIndex = currentPlaneIndexByFeedId.get(feedId);
+      if (planeIndex === undefined) continue;
+      previousFrontIndexByPlane.set(plane, planeIndex);
+      break;
+    }
+  }
 
   const arrivals: string[] = [];
   currentEntries.forEach((entry, index) => {

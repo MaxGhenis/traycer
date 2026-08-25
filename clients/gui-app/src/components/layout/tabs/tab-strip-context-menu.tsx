@@ -15,6 +15,10 @@ import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { ShortcutHint } from "@/components/ui/shortcut-hint";
 import type { TaskPinnedState } from "@/hooks/epic/use-epic-task-pinned-states-query";
 import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
+import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -55,11 +59,38 @@ interface TabContextMenuContentProps {
  * and a stale `home: "local"` reading would keep promising it for an epic
  * already in the cloud.
  */
+/**
+ * Why the tab's History pin is unavailable, or `null` when it is not.
+ *
+ * The row reasons win over the session one: `local-home` / preserved-orphan are
+ * permanent facts about the epic, while a withdrawn cloud verdict is a
+ * condition the user can recover from - and naming the recoverable one for a
+ * row that could never be pinned would point them at the wrong problem. Same
+ * ordering, and the same reasoning, as `historyPinUnavailableReason`.
+ */
+function tabPinUnavailableReason(input: {
+  readonly rowUnavailable: boolean;
+  readonly cloudAuthorized: boolean;
+}): "row" | "unverified-session" | null {
+  if (input.rowUnavailable) return "row";
+  if (!input.cloudAuthorized) return "unverified-session";
+  return null;
+}
+
 function pinActionLabel(
-  unavailable: boolean,
+  unavailableReason: "row" | "unverified-session" | null,
   taskPinned: boolean | null,
 ): string {
-  if (unavailable) return "Pin Task in History \u2014 stored on this device";
+  // Two different unavailabilities, and one label cannot honestly cover both:
+  // "stored on this device" is a fact about the ROW, and stating it for a
+  // cloud-backed row whose session merely lost its verdict would be a false
+  // statement about where the epic lives.
+  if (unavailableReason === "row") {
+    return "Pin Task in History \u2014 stored on this device";
+  }
+  if (unavailableReason === "unverified-session") {
+    return "Pin Task in History \u2014 sign-in not confirmed";
+  }
   return taskPinned === true ? "Unpin Task in History" : "Pin Task in History";
 }
 
@@ -83,7 +114,17 @@ function EpicTabMenuItems(props: {
   readonly onSetTaskPinned: (pinned: boolean) => void;
 }): React.ReactNode {
   const { tabId, taskPinned, localOnly, preservedOrphan } = props;
-  const pinUnavailable = localOnly || preservedOrphan;
+  // Read here rather than threaded as a prop: the two row-intrinsic reasons
+  // above are facts about the TAB and belong to its owner, while this is a fact
+  // about the session, identical for every tab in the strip.
+  const cloudAuthorized = useAuthStore((state) =>
+    authorizesCloudCapability(state.status),
+  );
+  const pinUnavailableReason = tabPinUnavailableReason({
+    rowUnavailable: localOnly || preservedOrphan,
+    cloudAuthorized,
+  });
+  const pinUnavailable = pinUnavailableReason !== null;
   return (
     <>
       {props.canEditTitle ? (
@@ -118,7 +159,7 @@ function EpicTabMenuItems(props: {
           gets, and a stale `home: "local"` row would keep promising it for
           an epic already in the cloud.
         */}
-        {pinActionLabel(pinUnavailable, taskPinned)}
+        {pinActionLabel(pinUnavailableReason, taskPinned)}
         {!pinUnavailable && (taskPinned === null || props.isTaskPinPending) ? (
           <AgentSpinningDots
             className="ml-auto text-muted-foreground"

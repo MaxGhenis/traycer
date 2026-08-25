@@ -23,6 +23,10 @@ import {
   useHeaderTabs,
 } from "@/stores/tabs/use-header-tabs";
 import { useTabsStore } from "@/stores/tabs/store";
+import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
 import { tabDuplicate, tabResolveIntent } from "@/stores/tabs/registry";
 import type { HeaderTab } from "@/stores/tabs/types";
 import type { TabRef } from "@/stores/tabs/types";
@@ -110,6 +114,13 @@ function TabStripBody() {
   const { mutate: setEpicPinned } = useEpicSetPinned();
   const handleSetTaskPinned = useCallback(
     (epicId: string, pinned: boolean, displayName: string) => {
+      // Fail closed on the CAPABILITY, not just in the menu. This is the one
+      // dispatch site for the whole tab tree, and the Undo action below is a
+      // second entry into it that no menu gate can reach: the toast outlives
+      // the click, so a verdict withdrawn in between would let Undo spend a
+      // cloud capability the session no longer holds. Re-read at the edge
+      // rather than closing over a render-time value for the same reason.
+      if (!authorizesCloudCapability(useAuthStore.getState().status)) return;
       setEpicPinned(
         { epicId, pinned },
         {
@@ -118,6 +129,11 @@ function TabStripBody() {
               action: {
                 label: "Undo",
                 onClick: () => {
+                  if (
+                    !authorizesCloudCapability(useAuthStore.getState().status)
+                  ) {
+                    return;
+                  }
                   setEpicPinned({ epicId, pinned: !pinned });
                 },
               },

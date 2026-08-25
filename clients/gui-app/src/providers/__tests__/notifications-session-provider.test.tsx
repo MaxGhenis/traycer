@@ -560,6 +560,24 @@ function resetAuth(
   });
 }
 
+/**
+ * `resetAuth` only spans the three statuses it predates - `unverified` is
+ * new. Rather than widen its signature (and every existing call site's
+ * literal-union inference along with it), this mirrors what `resetAuth` does
+ * for `signed-in` through the store's own `setUnverifiedSession` reducer: the
+ * same identity pair, but landing `status: "unverified"` with no
+ * `subscriptionStatus` / `shareableTeams`, exactly as the production
+ * "stored session, no held cloud verdict" path does.
+ */
+function resetAuthUnverified(userId: string, email: string): void {
+  useAuthStore
+    .getState()
+    .setUnverifiedSession(
+      { userId, userName: userId, email },
+      { userId, username: userId },
+    );
+}
+
 function invitedEntry(id: string, epicId: string): NotificationEntry {
   return {
     id,
@@ -4265,6 +4283,286 @@ describe("<NotificationsSessionProvider />", () => {
         ]);
       });
       expect(firstClient.subscribedMethods.length).toBe(subscribedBeforeSwitch);
+    });
+  });
+
+  describe("unverified session admission (#4764)", () => {
+    it("a cold start at unverified opens only the local lanes in LOCAL feed mode", async () => {
+      const queryClient = new QueryClient();
+      const streamClient = new MockWsStreamClient();
+      hostState.id = mockLocalHostEntry.hostId;
+      streamState.client = streamClient;
+      streamState.cloudFeedSupport = "unsupported";
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <NotificationsSessionProvider>
+            <div />
+          </NotificationsSessionProvider>
+        </QueryClientProvider>,
+      );
+
+      act(() => {
+        resetAuthUnverified("alice@example.com", "alice@example.com");
+      });
+
+      // Exact equality, not `toContain`: the bug this guards against left
+      // BOTH local lanes shut for the whole unverified period (an early
+      // return before either could open), so a `toContain` here would still
+      // pass on the broken behavior for whichever lane happened to survive.
+      await waitFor(() => {
+        expect(streamClient.subscribedMethods).toEqual([
+          "agent.activity.subscribe",
+          "host.notifications.feed.subscribe",
+        ]);
+      });
+      expect(streamClient.subscribedMethods).not.toContain(
+        "notifications.subscribe",
+      );
+      expect(streamClient.subscribedMethods).not.toContain(
+        "host.notifications.cloudFeed.subscribe",
+      );
+    });
+
+    it("a cold start at unverified opens only the local lanes in CLOUD feed mode", async () => {
+      // Same admission edge as above, but negotiated into the cloud branch of
+      // `openForCurrentUser` - a different `if` withholds the cloud-authorized
+      // pair there than in local mode, so both branches need direct coverage.
+      const queryClient = new QueryClient();
+      const streamClient = new MockWsStreamClient();
+      hostState.id = mockLocalHostEntry.hostId;
+      streamState.client = streamClient;
+      streamState.cloudFeedSupport = "supported";
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <NotificationsSessionProvider>
+            <div />
+          </NotificationsSessionProvider>
+        </QueryClientProvider>,
+      );
+
+      act(() => {
+        resetAuthUnverified("alice@example.com", "alice@example.com");
+      });
+
+      await waitFor(() => {
+        expect(streamClient.subscribedMethods).toEqual([
+          "agent.activity.subscribe",
+          "host.notifications.feed.subscribe",
+        ]);
+      });
+      expect(streamClient.subscribedMethods).not.toContain(
+        "notifications.subscribe",
+      );
+      expect(streamClient.subscribedMethods).not.toContain(
+        "host.notifications.cloudFeed.subscribe",
+      );
+    });
+
+    it("signed-out and signing-in open no lanes at all", () => {
+      const queryClient = new QueryClient();
+      const streamClient = new MockWsStreamClient();
+      hostState.id = mockLocalHostEntry.hostId;
+      streamState.client = streamClient;
+      streamState.cloudFeedSupport = "supported";
+
+      const view = render(
+        <QueryClientProvider client={queryClient}>
+          <NotificationsSessionProvider>
+            <div data-testid="child" />
+          </NotificationsSessionProvider>
+        </QueryClientProvider>,
+      );
+
+      // `beforeEach` already leaves the store at `signed-out`. Asserted
+      // synchronously rather than through `waitFor`, matching the "no local
+      // host" idiom elsewhere in this suite: an absence assertion via
+      // `waitFor` would pass just as well on a stream that simply had not
+      // opened YET, which is not what this case is testing.
+      expect(view.getByTestId("child")).not.toBeNull();
+      expect(streamClient.subscribedMethods).toEqual([]);
+
+      act(() => {
+        resetAuth("signing-in", null, null);
+      });
+      expect(streamClient.subscribedMethods).toEqual([]);
+
+      act(() => {
+        resetAuth("signed-out", null, null);
+      });
+      expect(streamClient.subscribedMethods).toEqual([]);
+    });
+
+    it("demoting signed-in to unverified closes only the cloud lanes, leaving the local pair open exactly once", async () => {
+      const queryClient = new QueryClient();
+      const streamClient = new MockWsStreamClient();
+      hostState.id = mockLocalHostEntry.hostId;
+      streamState.client = streamClient;
+      streamState.cloudFeedSupport = "supported";
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <NotificationsSessionProvider>
+            <div />
+          </NotificationsSessionProvider>
+        </QueryClientProvider>,
+      );
+
+      act(() => {
+        resetAuth("signed-in", "alice@example.com", "alice@example.com");
+      });
+      await waitFor(() => {
+        expect(streamClient.subscribedMethods).toEqual([
+          "agent.activity.subscribe",
+          "notifications.subscribe",
+          "host.notifications.cloudFeed.subscribe",
+          "host.notifications.feed.subscribe",
+        ]);
+      });
+
+      act(() => {
+        resetAuthUnverified("alice@example.com", "alice@example.com");
+      });
+
+      await waitFor(() => {
+        expect(
+          streamClient.sessionFor("notifications.subscribe").closeCount,
+        ).toBe(1);
+        expect(
+          streamClient.sessionFor("host.notifications.cloudFeed.subscribe")
+            .closeCount,
+        ).toBe(1);
+      });
+      // The local pair is untouched by the demotion: no close, and no
+      // duplicate re-subscription anywhere in the method log.
+      expect(
+        streamClient.sessionFor("agent.activity.subscribe").closeCount,
+      ).toBe(0);
+      expect(
+        streamClient.sessionFor("host.notifications.feed.subscribe").closeCount,
+      ).toBe(0);
+      expect(streamClient.subscribedMethods).toEqual([
+        "agent.activity.subscribe",
+        "notifications.subscribe",
+        "host.notifications.cloudFeed.subscribe",
+        "host.notifications.feed.subscribe",
+      ]);
+    });
+
+    it("regaining signed-in from unverified reopens the cloud lanes and does not double-subscribe the local pair", async () => {
+      const queryClient = new QueryClient();
+      const streamClient = new MockWsStreamClient();
+      hostState.id = mockLocalHostEntry.hostId;
+      streamState.client = streamClient;
+      streamState.cloudFeedSupport = "supported";
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <NotificationsSessionProvider>
+            <div />
+          </NotificationsSessionProvider>
+        </QueryClientProvider>,
+      );
+
+      act(() => {
+        resetAuthUnverified("alice@example.com", "alice@example.com");
+      });
+      await waitFor(() => {
+        expect(streamClient.subscribedMethods).toEqual([
+          "agent.activity.subscribe",
+          "host.notifications.feed.subscribe",
+        ]);
+      });
+      const priorActivitySession = streamClient.sessionFor(
+        "agent.activity.subscribe",
+      );
+      const priorHostFeedSession = streamClient.sessionFor(
+        "host.notifications.feed.subscribe",
+      );
+
+      act(() => {
+        resetAuth("signed-in", "alice@example.com", "alice@example.com");
+      });
+
+      // The regain path is a full `tearDown()` + reopen (§ comment on
+      // `settleCloudVerdictEdge`), not a partial reopen of just the cloud
+      // pair - so the local lanes blip for one pass rather than staying
+      // open underneath a second, concurrent subscription for the same
+      // lane. Exact equality catches either failure: a missing cloud lane,
+      // or a local lane left open twice.
+      await waitFor(() => {
+        expect(streamClient.subscribedMethods).toEqual([
+          "agent.activity.subscribe",
+          "host.notifications.feed.subscribe",
+          "agent.activity.subscribe",
+          "notifications.subscribe",
+          "host.notifications.cloudFeed.subscribe",
+          "host.notifications.feed.subscribe",
+        ]);
+      });
+      expect(priorActivitySession.closeCount).toBe(1);
+      expect(priorHostFeedSession.closeCount).toBe(1);
+    });
+
+    it("does not repeatedly reset the cloud relay session while the verdict stays lost across a re-run of the effect", async () => {
+      const queryClient = new QueryClient();
+      const streamClient = new MockWsStreamClient();
+      hostState.id = mockLocalHostEntry.hostId;
+      streamState.client = streamClient;
+      streamState.cloudFeedSupport = "supported";
+
+      const view = render(
+        <QueryClientProvider client={queryClient}>
+          <NotificationsSessionProvider>
+            <div />
+          </NotificationsSessionProvider>
+        </QueryClientProvider>,
+      );
+
+      act(() => {
+        resetAuth("signed-in", "alice@example.com", "alice@example.com");
+      });
+      await waitFor(() => {
+        expect(streamClient.subscribedMethods).toEqual([
+          "agent.activity.subscribe",
+          "notifications.subscribe",
+          "host.notifications.cloudFeed.subscribe",
+          "host.notifications.feed.subscribe",
+        ]);
+      });
+
+      const resetSpy = vi.spyOn(useCloudNotificationsStore.getState(), "reset");
+
+      act(() => {
+        resetAuthUnverified("alice@example.com", "alice@example.com");
+      });
+      await waitFor(() => {
+        expect(resetSpy).toHaveBeenCalledTimes(1);
+      });
+
+      // Drive a second pass of the reopen effect through an UNRELATED
+      // dependency - `cloudFeedSupport` flips to "unknown", which
+      // `settledFeedMode`'s own hold logic maps back onto the already-decided
+      // "cloud" projection (`previousFeedModeRef.current`), so neither the
+      // projection nor `status` actually changes. `status` stays "unverified"
+      // throughout - this is not a second demotion.
+      act(() => {
+        streamState.cloudFeedSupport = "unknown";
+        view.rerender(
+          <QueryClientProvider client={queryClient}>
+            <NotificationsSessionProvider>
+              <div />
+            </NotificationsSessionProvider>
+          </QueryClientProvider>,
+        );
+      });
+
+      expect(useAuthStore.getState().status).toBe("unverified");
+      // The loss is latched on `cloudLanesClosedByVerdictLossRef`, so the
+      // second pass through `settleCloudVerdictEdge` must return before ever
+      // reaching `resetCloudRelaySession()` again.
+      expect(resetSpy).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -50,6 +50,7 @@ import {
 } from "@/lib/notifications/notification-presence";
 import { getNotificationsStreamFactoryOverride } from "@/providers/notifications-stream-factory-override";
 import {
+  admitsLocalPlane,
   authorizesCloudCapability,
   useAuthStore,
 } from "@/stores/auth/auth-store";
@@ -621,8 +622,7 @@ function NotificationsSessionBody(
   }, [resetCloudRelaySession]);
 
   /**
-   * Reconcile the open lanes with the CLOUD VERDICT, and report whether the
-   * caller should stop.
+   * Reconcile the open lanes with the CLOUD VERDICT.
    *
    * Two different ways to lose the verdict, and only one of them was handled.
    * A genuine sign-out fires `useAuthIdentityTransition`'s `signedOut`, so
@@ -635,28 +635,42 @@ function NotificationsSessionBody(
    * fires, and remote-session retirement cannot reach a stream running on the
    * LOCAL serving host's transport.
    *
+   * Losing the verdict is an EDGE, not a state, and this is deliberately no
+   * longer a STOP. Stopping the caller read as "there is nothing left to do",
+   * which is only true of a session that had already opened its lanes. A cold
+   * start admitted straight to `unverified` has opened none, so the stop left
+   * the LOCAL lanes - host notifications and agent activity - shut for the
+   * entire unverified period, withholding exactly the local-plane truth this
+   * state exists to preserve. The caller runs on and `openForCurrentUser`
+   * withholds the cloud lanes instead, so the withholding happens where lanes
+   * are opened rather than before any of them can open.
+   *
+   * Latching the loss on the ref keeps the teardown on the transition:
+   * `resetCloudRelaySession` discards a relay session's rows and its read
+   * driver, and re-running that on every later pass of a state that never
+   * opened one is work with no edge behind it.
+   *
    * Regaining the verdict needs its own handling because the reopen gate asks
-   * only whether ANY lane is open, and the host lanes never closed - so it
+   * only whether ANY lane is open, and the local lanes never closed - so it
    * would leave the cloud lanes shut forever. A full teardown rather than a
-   * partial reopen: `openForCurrentUser` opens every lane unconditionally (only
-   * the host lane guards on its own ref), so reopening over live host lanes
-   * would double-subscribe them. The host lanes blip for one pass on the regain
-   * edge only, and the replica is kept - the re-landed snapshot merges into the
-   * same doc.
+   * partial reopen: `openForCurrentUser` opens a lane SET rather than
+   * reconciling lane by lane, so reopening over live local lanes would
+   * double-subscribe them. The local lanes blip for one pass on the regain edge
+   * only, and the replica is kept - the re-landed snapshot merges into the same
+   * doc.
    */
   const settleCloudVerdictEdge = useCallback(
-    (isAuthorized: boolean): boolean => {
+    (isAuthorized: boolean): void => {
       if (!isAuthorized) {
+        if (cloudLanesClosedByVerdictLossRef.current) return;
+        cloudLanesClosedByVerdictLossRef.current = true;
         tearDownCloudLanes();
         resetCloudRelaySession();
-        cloudLanesClosedByVerdictLossRef.current = true;
-        return true;
+        return;
       }
-      if (cloudLanesClosedByVerdictLossRef.current) {
-        cloudLanesClosedByVerdictLossRef.current = false;
-        tearDown();
-      }
-      return false;
+      if (!cloudLanesClosedByVerdictLossRef.current) return;
+      cloudLanesClosedByVerdictLossRef.current = false;
+      tearDown();
     },
     [tearDown, tearDownCloudLanes, resetCloudRelaySession],
   );
@@ -751,8 +765,20 @@ function NotificationsSessionBody(
     });
   }, [notificationFeedMode, markCloudEntityRead]);
 
+  /**
+   * `cloudAuthorized` is the CLOUD VERDICT, threaded in rather than read here
+   * so the whole lane set is decided in one place. `false` withholds the two
+   * cloud-authorized lanes - the per-user Notifications room and the cloud feed
+   * relay, the same pair `tearDownCloudLanes` closes - and opens the local ones
+   * regardless. An `unverified` session is admitted to the local plane and
+   * holds no cloud capability, so its host notifications and agent activity
+   * must open while its account-backed lanes stay shut.
+   */
   const openForCurrentUser = useCallback(
-    (settledFeedMode: "local" | "cloud" | "upgrade-required"): void => {
+    (
+      settledFeedMode: "local" | "cloud" | "upgrade-required",
+      cloudAuthorized: boolean,
+    ): void => {
       if (
         getNotificationsStreamFactoryOverride() === null &&
         servingStreamClient === null
@@ -826,7 +852,7 @@ function NotificationsSessionBody(
           onAuthError,
         );
       }
-      if (settledFeedMode === "cloud") {
+      if (settledFeedMode === "cloud" && cloudAuthorized) {
         if (servingStreamClient === null) return;
         // The cloud feed owns host/agent rows only. Collaboration events are
         // still written to the per-user Notifications room, so cloud mode must
@@ -875,7 +901,12 @@ function NotificationsSessionBody(
       // `onFeedFrame`, which belongs to the host stream and runs in both modes -
       // so opening this one in mixed mode would be a second subscription whose
       // rows nothing reads.
-      if (settledFeedMode === "local") {
+      //
+      // Cloud-authorized in BOTH modes, hence the same gate as the branch
+      // above: the replica it fills is the per-user Notifications room - the
+      // account's server-side collaboration data, not this machine's - which is
+      // why `tearDownCloudLanes` closes this exact ref on a verdict loss.
+      if (settledFeedMode === "local" && cloudAuthorized) {
         disposerRef.current = openNotificationsStream(
           reconnect,
           createNotificationsStream,
@@ -968,7 +999,17 @@ function NotificationsSessionBody(
     const priorStreamClient = previousStreamClientRef.current;
     previousStreamClientRef.current = servingStreamClient;
 
-    if (settleCloudVerdictEdge(isSignedIn)) return;
+    settleCloudVerdictEdge(isSignedIn);
+    // The two predicates answer different questions and BOTH are needed here.
+    // Reconciling the cloud lanes above is about a lost CAPABILITY; stopping
+    // here is about lost ADMISSION. Collapsing them into the single
+    // `authorizesCloudCapability` test this used to run is what shut the local
+    // lanes on an unverified session - but dropping the stop altogether is the
+    // opposite mistake, and would open this machine's notification and
+    // agent-activity lanes for `signed-out` and `signing-in` too, which hold no
+    // plane at all. `signedOut` has already torn them down via
+    // `onAuthTransition`; this keeps them from being reopened underneath it.
+    if (!admitsLocalPlane(status)) return;
     // Keyed on the HOST, not the client: `useHostStreamClientBindingFor` returns a
     // client exactly when it is given an entry, so in production these two are
     // the same condition - but the test stream-factory override supplies a
@@ -1076,7 +1117,7 @@ function NotificationsSessionBody(
       resetCloudRelayOwnership();
     }
     if (!anyStreamOpen(openStreams)) {
-      openForCurrentUser(settledFeedMode);
+      openForCurrentUser(settledFeedMode, isSignedIn);
     }
   }, [
     servingHostId,

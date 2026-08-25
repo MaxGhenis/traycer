@@ -115,6 +115,10 @@ import {
 import { useRefreshSpinner } from "@/hooks/use-refresh-spinner";
 import { epicDisplayTitle } from "@/lib/display-title";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
 import type {
   HistorySearchPatch,
   HistorySearchState,
@@ -134,6 +138,8 @@ const EMPTY_WORKTREES_BY_EPIC: ReadonlyMap<
 const VIEWER_DELETE_TOOLTIP = "Viewers cannot select task for deletion.";
 const NO_DELETE_PERMISSION_TOOLTIP =
   "You don't have permission to delete this task.";
+const PRESERVED_ORPHAN_DELETE_TOOLTIP =
+  "This epic's cloud copy was already deleted. Only this device's edits remain, so there is nothing left to delete.";
 const HISTORY_REFRESH_TIMEOUT_MS = 10_000;
 
 export type EpicsListPanelVariant = "page" | "embedded" | "picker";
@@ -1798,9 +1804,17 @@ function HistoryPinControl(props: {
   readonly selectionMode: boolean;
   readonly onSetPinned: (epicId: string, pinned: boolean) => void;
 }): ReactNode {
+  // Ahead of the early return: this is a hook, and the return below is
+  // conditional on props.
+  const cloudAuthorized = useAuthStore((state) =>
+    authorizesCloudCapability(state.status),
+  );
   if (props.selectionMode || props.item.taskType === "phase") return null;
   const displayTitle = historyItemDisplayTitle(props.item);
-  const unavailableReason = historyPinUnavailableReason(props.item);
+  const unavailableReason = historyPinUnavailableReason(
+    props.item,
+    cloudAuthorized,
+  );
   const pinUnavailable = unavailableReason !== null;
   // "…is available after cloud sync" promised a sync that, for a free-tier
   // account, never comes - and `s5-status-truthfulness` folds
@@ -1876,6 +1890,10 @@ function historySelectionDisabled(
 }
 
 function historyDeleteDisabledTooltip(item: HistoryItem): string {
+  // Ahead of the role arms: a preserved orphan can carry an `owner` role and
+  // still be undeletable, so a role-derived reason would read as a permissions
+  // problem the user could fix by asking someone.
+  if (item.isPreservedOrphan === true) return PRESERVED_ORPHAN_DELETE_TOOLTIP;
   if (item.permissionRole === "viewer") return VIEWER_DELETE_TOOLTIP;
   return NO_DELETE_PERMISSION_TOOLTIP;
 }

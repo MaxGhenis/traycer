@@ -2562,6 +2562,17 @@ export class RemoteSession<
    *                       is untouched, so this never counts toward the
    *                       give-up bound.
    *   - "rejected"      → terminal (the revalidator has already signed out).
+   *   - "local-plane-retained"
+   *                     → terminal HERE, unlike the local stream transport.
+   *                       That outcome says a local plane survives the lost
+   *                       cloud verdict; a relay session is not on it. Reaching
+   *                       this host means minting an attach grant, which
+   *                       `cloudAuthorized()` now refuses, so every redial is
+   *                       futile - and `demoteVerifiedSessionToUnverified`
+   *                       force-retires these sessions on the same edge for
+   *                       exactly that reason. Kept explicit rather than left
+   *                       to fall through to the "rotated" tail below, where it
+   *                       would spend the whole no-progress bound first.
    * A no-progress streak (revalidation keeps returning a current credential
    * the host keeps rejecting) is bounded and goes terminal to stop looping.
    */
@@ -2576,7 +2587,7 @@ export class RemoteSession<
       // revalidation was in flight.
       return;
     }
-    if (outcome === "rejected") {
+    if (outcome === "rejected" || outcome === "local-plane-retained") {
       this.goTerminalFatal(details);
       return;
     }

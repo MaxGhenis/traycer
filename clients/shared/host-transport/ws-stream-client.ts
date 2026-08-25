@@ -2274,6 +2274,34 @@ class StreamSession<
       this.goTerminal(details);
       return;
     }
+    if (outcome === "local-plane-retained") {
+      // The cloud verdict is gone but the SESSION is not, and it is still
+      // admitted to the local plane - so this stream, which a local host can
+      // still serve, must not be closed the way a sign-out closes it.
+      //
+      // Counted as no-progress UNCONDITIONALLY, which is the difference from
+      // "rotated" below and is not a heuristic: no better bearer can arrive
+      // while the session stays in this state, so the token comparison that
+      // decides progress there can only ever answer "same". Bounding it is
+      // what keeps this from becoming an unbounded reconnect loop that spends
+      // a single-use refresh token on every cycle - the failure the terminal
+      // close was, crudely, preventing.
+      this.noProgressUnauthorizedReconnects += 1;
+      if (
+        this.noProgressUnauthorizedReconnects >=
+        MAX_NO_PROGRESS_UNAUTHORIZED_RECONNECTS
+      ) {
+        console.error(
+          `[stream] giving up after ${this.noProgressUnauthorizedReconnects} ` +
+            `UNAUTHORIZED reconnects on a session with no cloud verdict ` +
+            `(method=${String(this.config.method)}); reload required`,
+        );
+        this.goTerminal(details);
+        return;
+      }
+      this.scheduleReconnect();
+      return;
+    }
     if (outcome === "network-error") {
       // Transient (authn unreachable / refresh timed out): the bearer is
       // untouched. This is NOT a no-progress signal — a wake-time network blip

@@ -15,19 +15,37 @@ import type { HistoryItem } from "@/components/home/data/home-page.data";
 
 /** The reason a history row cannot dispatch the cloud-only pin mutation. */
 export type HistoryPinUnavailableReason =
-  "phase" | "local-home" | "preserved-orphan";
+  "phase" | "local-home" | "preserved-orphan" | "unverified-session";
 
 /**
  * The pin mutation targets a cloud task. Keep its admission rule independent
  * of the desktop/mobile row implementations so each responsive surface, plus
  * other task affordances, makes the same decision.
+ *
+ * `cloudAuthorized` is `authorizesCloudCapability(status)` - a required
+ * argument rather than a store read, so this stays a pure function every
+ * surface can call and test, and so the SESSION half of the rule cannot be
+ * silently omitted by a new caller.
+ *
+ * The row-intrinsic reasons are checked first on purpose: they are permanent
+ * facts about the row, while a withdrawn verdict is a condition the user can
+ * recover from, and reporting the recoverable one for a row that could never
+ * be pinned anyway would send them to fix the wrong thing.
+ *
+ * Why the session belongs in this rule at all: History stays readable under
+ * `unverified` by design - `resolveCloudTasksUserId` admits it and the first
+ * page's cache is infinite-lived - so settled cloud rows keep rendering after
+ * the verdict is withdrawn. Pin is not a read. It is a cloud-capability spend
+ * on the account, dispatched with a bearer the cloud has stopped vouching for.
  */
 export function historyPinUnavailableReason(
   item: HistoryItem,
+  cloudAuthorized: boolean,
 ): HistoryPinUnavailableReason | null {
   if (item.taskType === "phase") return "phase";
   if (item.isPreservedOrphan === true) return "preserved-orphan";
   if (item.isLocalHome === true) return "local-home";
+  if (!cloudAuthorized) return "unverified-session";
   return null;
 }
 
@@ -45,6 +63,9 @@ export function historyPinControlLabel(input: {
   if (input.unavailableReason === "phase") {
     return `Pinning ${input.displayTitle} is unavailable for phases`;
   }
+  if (input.unavailableReason === "unverified-session") {
+    return `Pinning ${input.displayTitle} needs a verified session; sign-in could not be confirmed`;
+  }
   return input.isPinned
     ? `Unpin ${input.displayTitle} from top`
     : `Pin ${input.displayTitle} to top`;
@@ -58,6 +79,9 @@ export function historyPinUnavailableTooltip(
   }
   if (reason === "local-home") {
     return "This epic is stored on this device. Pinning needs cloud sync.";
+  }
+  if (reason === "unverified-session") {
+    return "Your sign-in couldn't be confirmed, so cloud changes are paused. Pinning will work again once it reconnects.";
   }
   return "Phases cannot be pinned.";
 }

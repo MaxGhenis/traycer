@@ -387,7 +387,25 @@ export function canEditHistoryItemTitle(item: HistoryItem): boolean {
   return item.taskType === "epic" && isEditableRole(item.permissionRole);
 }
 
+/**
+ * Deletion is a CLOUD-backed action, so a preserved orphan is excluded however
+ * editable its role looks.
+ *
+ * `@1.5`'s `orphaned-local-edits` row exists precisely because its cloud task
+ * is already gone; the row is a pointer to this device's surviving edits.
+ * `epic.batchDelete` mirrors the delete to the cloud arm and then asks the
+ * preservation guard before reclaiming locally, and that guard refuses while
+ * branch rows survive - so confirming the dialog on one of these rows can only
+ * ever produce a failed deletion. Refusing it up front is the honest answer;
+ * discarding the local edits is a genuinely destructive operation and needs its
+ * own explicit affordance, not a fallback through the cloud delete.
+ *
+ * Deliberately in this ONE helper rather than at the controls: the desktop row
+ * action, desktop bulk selection, and the mobile tray all admit through here,
+ * so a rule added at a control would be a rule two surfaces do not have.
+ */
 export function canDeleteHistoryItem(item: HistoryItem): boolean {
+  if (item.isPreservedOrphan === true) return false;
   return isEditableRole(item.permissionRole);
 }
 

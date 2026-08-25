@@ -20,6 +20,10 @@ import {
   type HistoryPinUnavailableReason,
 } from "@/components/epics/history-pin-availability";
 import { historyItemDisplayTitle } from "@/components/epics/history-item-title";
+import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import {
   TRAY_ACTION_PX,
@@ -103,7 +107,13 @@ export const MobileHistoryRow = memo(function MobileHistoryRow(
   const displayTitle = historyItemDisplayTitle(item);
   const canDelete = canDeleteHistoryItem(item);
   const canRename = canEditHistoryItemTitle(item);
-  const pinUnavailableReason = historyPinUnavailableReason(item);
+  const cloudAuthorized = useAuthStore((state) =>
+    authorizesCloudCapability(state.status),
+  );
+  const pinUnavailableReason = historyPinUnavailableReason(
+    item,
+    cloudAuthorized,
+  );
   const isPhase = item.taskType === "phase";
   const linkTabId = useEpicCanvasStore(
     (s) => s.resolveTabIdForEpic(item.epicId) ?? item.epicId,

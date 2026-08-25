@@ -82,13 +82,30 @@ describe("computeLiveArrivalKeys", () => {
     ).toEqual([]);
   });
 
-  it("returns empty for a brand-new feedId when the prior front feedId is gone", () => {
-    // Previous front feedId vanished entirely - positional reference is lost,
-    // so a brand-new feedId is not treated as a live prepend.
+  it("counts a live prepend when the prior front is gone but a prior row survives", () => {
+    // An authoritative snapshot can drop the previous front and introduce a new
+    // row in the SAME pass - another window clearing the old front while a
+    // notification lands. The positional reference is not lost when that
+    // happens: `host:b@50` is still on screen and still sits behind anything
+    // that arrived, so it is the boundary the departed front used to be.
+    //
+    // This asserted `[]` before, which silently swallowed the "N new"
+    // affordance for genuine arrivals whenever a snapshot removed the front.
     expect(
       computeLiveArrivalKeys(
         entries("host:old-front@100", "host:b@50"),
         entries("host:new@200", "host:b@50"),
+      ),
+    ).toEqual(["host:new@200"]);
+  });
+
+  it("returns empty when NO prior row of the lane survives", () => {
+    // Wholesale replacement. Nothing positional distinguishes it from a fresh
+    // baseline, and announcing a first page as "N new" is the louder mistake.
+    expect(
+      computeLiveArrivalKeys(
+        entries("host:old-front@100", "host:old-b@50"),
+        entries("host:new@200", "host:other-new@150"),
       ),
     ).toEqual([]);
   });

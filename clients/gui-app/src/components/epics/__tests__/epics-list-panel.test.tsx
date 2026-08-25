@@ -35,6 +35,7 @@ import type { HistoryItem } from "@/components/home/data/home-page.data";
 import type { HistoryFacets } from "@/hooks/home/use-history-query";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useHistorySearchStore } from "@/stores/home/history-search-store";
+import { useAuthStore } from "@/stores/auth/auth-store";
 import { DEFAULT_HISTORY_SEARCH } from "@/lib/history-search";
 import { WindowsBridgeContext } from "@/providers/windows-bridge-context";
 import { setDesktopEpicOwnershipBridge } from "@/lib/windows/desktop-epic-ownership";
@@ -413,6 +414,10 @@ describe("<EpicsListPanel />", () => {
     __resetTabNavigationControllerForTesting();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     useHistorySearchStore.setState({ search: DEFAULT_HISTORY_SEARCH });
+    // Pin is a cloud CAPABILITY, so the control is admitted only for a session
+    // holding a verdict. The store defaults to `signed-out`, under which every
+    // pin assertion below would pass vacuously against a disabled control.
+    useAuthStore.setState({ status: "signed-in" });
   });
 
   it("lets a destination picker replace normal row navigation", async () => {
@@ -463,6 +468,9 @@ describe("<EpicsListPanel />", () => {
 
   afterEach(() => {
     cleanup();
+    // Zustand stores are module scope, so an auth status staged here outlives
+    // this file inside the same worker.
+    useAuthStore.setState({ status: "signed-out" });
     __resetTabNavigationControllerForTesting();
     setDesktopEpicOwnershipBridge(null);
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
@@ -574,6 +582,22 @@ describe("<EpicsListPanel />", () => {
       epicId: "epic-from-history",
       pinned: true,
     });
+  });
+
+  it("refuses to pin under an unverified session and says why", async () => {
+    // History stays READABLE while unverified - the first page's cache is
+    // infinite-lived and its user id still resolves - so settled cloud rows go
+    // on rendering after the cloud verdict is withdrawn. Pin is not a read: it
+    // spends a cloud capability on the account with a bearer the cloud has
+    // stopped vouching for.
+    useAuthStore.setState({ status: "unverified" });
+    renderPanel("embedded", "/");
+
+    const pin = await screen.findByRole("button", {
+      name: "Pinning Open from landing needs a verified session; sign-in could not be confirmed",
+    });
+    fireEvent.click(pin);
+    expect(testState.setPinnedMutate).not.toHaveBeenCalled();
   });
 
   it("clicks the pin control without triggering the row navigation layer", async () => {

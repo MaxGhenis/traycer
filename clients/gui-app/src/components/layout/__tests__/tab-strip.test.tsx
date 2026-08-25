@@ -13,6 +13,7 @@ import {
 } from "@/stores/notifications/app-local-notifications-store";
 import { installTabSyncCoordinator } from "@/lib/tab-sync/tab-sync-coordinator";
 import { useTabsStore } from "@/stores/tabs/store";
+import { useAuthStore } from "@/stores/auth/auth-store";
 import { tabItemId } from "@/stores/tabs/layout";
 import type { TabRef } from "@/stores/tabs/types";
 import { getHeaderTabs } from "@/stores/tabs/use-header-tabs";
@@ -558,10 +559,16 @@ describe("<TabStrip />", () => {
     notificationIndicatorTestState.request = null;
     __resetAppLocalNotificationsStoreForTests();
     resetStores();
+    // The tab History pin is a cloud CAPABILITY, and the store defaults to
+    // `signed-out` - under which the menu item is disabled and every pin
+    // assertion below would pass without exercising anything.
+    useAuthStore.setState({ status: "signed-in" });
   });
 
   afterEach(() => {
     cleanup();
+    // Module-scope store: a staged status outlives this file in the worker.
+    useAuthStore.setState({ status: "signed-out" });
     queryClient.clear();
     headerActivityByEpic.clear();
     resetAgentActivity();

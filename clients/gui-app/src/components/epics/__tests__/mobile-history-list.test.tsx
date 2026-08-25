@@ -53,6 +53,7 @@ import type { HistoryItem } from "@/components/home/data/home-page.data";
 import type { ListTasksCompleteness } from "@traycer/protocol/host/epic/unary-schemas";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useHistorySearchStore } from "@/stores/home/history-search-store";
+import { useAuthStore } from "@/stores/auth/auth-store";
 import { DEFAULT_HISTORY_SEARCH } from "@/lib/history-search";
 import {
   __resetTabNavigationControllerForTesting,
@@ -407,11 +408,17 @@ describe("<MobileHistoryList /> (via <EpicsListPanel /> at a mobile viewport)", 
     __resetTabNavigationControllerForTesting();
     useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
     useHistorySearchStore.setState({ search: DEFAULT_HISTORY_SEARCH });
+    // Pin is a cloud CAPABILITY. The store defaults to `signed-out`, under
+    // which the tray's pin action is admitted but unavailable, and the
+    // assertions below would pass against a disabled control.
+    useAuthStore.setState({ status: "signed-in" });
     queryClient.clear();
   });
 
   afterEach(() => {
     cleanup();
+    // Module-scope store: a staged status outlives this file in the worker.
+    useAuthStore.setState({ status: "signed-out" });
     vi.useRealTimers();
     setViewportWidth(ORIGINAL_INNER_WIDTH);
     document.body.innerHTML = "";

@@ -2,7 +2,10 @@ import { useMemo } from "react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@traycer/protocol/host/index";
 import { useHostClientFor } from "@/hooks/host/use-host-client-for";
-import { useReactiveLocalHostEntry } from "@/hooks/host/use-reactive-local-host-entry";
+import {
+  useNotificationsServingHostEntry,
+  useNotificationsServingHostId,
+} from "@/hooks/host/use-notifications-serving-host-entry";
 
 export interface NotificationHost {
   /**
@@ -22,13 +25,13 @@ export interface NotificationHost {
 const NO_NOTIFICATION_HOST: NotificationHost = { hostId: null, client: null };
 
 /**
- * The ONE host the notification centre speaks to - the machine this client
- * runs on, per the G8 decision that notifications never follow the active
- * host.
+ * The ONE host the notification centre speaks to - the host that SERVES this
+ * client's feeds, per the G8 decision that notifications never follow the
+ * active host.
  *
- * `NotificationsSessionProvider` has always opened both notification streams
- * on `useReactiveLocalHostEntry()`, but everything DOWNSTREAM of those streams
- * - the rows' `originHostId` stamp, the mark-read / resolve / paginate
+ * `NotificationsSessionProvider` opens both notification streams on
+ * `useNotificationsServingHostEntry()`, but everything DOWNSTREAM of those
+ * streams - the rows' `originHostId` stamp, the mark-read / resolve / paginate
  * mutations, the indicator query - reached for the app-wide
  * `useReactiveActiveHostId()` / `useHostClient()` instead. Those two agree
  * only while the local host is also the active one. Select a remote host and
@@ -37,10 +40,17 @@ const NO_NOTIFICATION_HOST: NotificationHost = { hostId: null, client: null };
  * writes B's store, and "load older" pages A's cursor against B's feed.
  *
  * Reading the same binding the streams use makes that skew unrepresentable
- * rather than merely unlikely.
+ * rather than merely unlikely - which is why this resolves through the
+ * provider's own authority and NOT through `useReactiveLocalHostEntry()`
+ * directly. They agree on every shell that has a local host, and diverge on
+ * exactly the shell where the local rule has no subject: a relay-only shell
+ * (Capacitor mobile, web) serves its feeds from the BOUND host, where the
+ * local entry is permanently `null`. Resolving the local entry here handed
+ * `useHostClientFor` a `null` target on those shells, so the streams were live
+ * and every mutation against them was inert.
  */
 export function useNotificationHost(): NotificationHost {
-  const entry = useReactiveLocalHostEntry();
+  const entry = useNotificationsServingHostEntry();
   const client = useHostClientFor(entry);
   const hostId = entry?.hostId ?? null;
   return useMemo(
@@ -58,7 +68,10 @@ export function useNotificationHost(): NotificationHost {
  * The indicator query is read by ordinary chrome - the tab strip, the sidebar
  * rows - that renders in trees with no host runtime at all, so pulling the
  * client in just to read an id turned a null host into a render crash.
+ * `useNotificationsServingHostId` exists to answer the same question under
+ * that constraint, and shares the serving rule with the entry hook rather than
+ * restating it.
  */
 export function useNotificationHostId(): string | null {
-  return useReactiveLocalHostEntry()?.hostId ?? null;
+  return useNotificationsServingHostId();
 }

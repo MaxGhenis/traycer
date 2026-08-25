@@ -246,7 +246,16 @@ export function useHistoryQuery(
     // displayed local epic could not be filtered to. Union instead: the server
     // counts stay the (partial) counts, but every displayed row can be
     // selected.
-    const unionLocalOptions = completeness?.facets === "partial";
+    //
+    // A context EXTRA is the second way the rendered union outgrows the
+    // server-faceted set, and it is invisible to `facets` because it never went
+    // through a page at all: branch / worktree-path / PR search adds those rows
+    // through `epic.getTaskContexts` after the fact. A settled page can
+    // therefore report `facets: "server"` honestly while a row on screen
+    // carries a repo or workspace no page ever faceted - and that row's filter
+    // option was missing for exactly the search that surfaced it.
+    const unionLocalOptions =
+      completeness?.facets === "partial" || contextExtrasCount > 0;
     const availableWorkspaces = availableFilterWorkspaces(
       facets.workspaces.map((workspace) => workspace.workspace),
       allItems,
