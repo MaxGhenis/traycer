@@ -322,10 +322,14 @@ function FilterOption(props: {
       aria-checked={props.checked}
       className={cn(
         // Options stack flush, and the popover portals outside every touch
-        // scope, so the row grows to the coarse-pointer target itself - the
-        // same treatment `ui/dropdown-menu.tsx` and `ui/select.tsx` give their
-        // rows. Invisible hit-slop would overlap the neighbouring options.
-        "flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-ui-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50 pointer-coarse:min-h-11",
+        // scope, so the row grows to the coarse-pointer target itself rather
+        // than carrying invisible slop that would overlap its neighbours.
+        //
+        // Pixel-literal, never the `min-h-11` rem idiom: the root font size is
+        // a user setting (clamped 10-20px), so 2.75rem is only >=44px above a
+        // ~16px root and collapses to 27.5px at the minimum - smallest text
+        // paired with the smallest targets, which is backwards.
+        "flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-ui-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50 pointer-coarse:min-h-[44px]",
         props.checked && "bg-accent/60",
       )}
       onClick={props.onToggle}

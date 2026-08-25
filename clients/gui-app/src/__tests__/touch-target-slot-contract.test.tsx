@@ -123,6 +123,28 @@ const GRANTED_BY_SCOPE = new Map(
   TOUCH_SCOPES.map((scope) => [scope.name, grantedSlots(scope)] as const),
 );
 
+/**
+ * Rejects the rem-scaled touch-size idioms.
+ *
+ * `--ui-font-size` is a user setting written straight onto the root element
+ * (`providers/theme-provider.tsx`) and clamped to 10-20px, so EVERY rem in the
+ * app is elastic. A touch target expressed in rem therefore shrinks with the
+ * user's text size — smallest targets for the people who chose the smallest
+ * text, which inverts the accessibility intent. The 15px figure quoted around
+ * these controls is a default, not a constant.
+ */
+function expectNoRemScaledTouchSize(subject: string): void {
+  // The prefix class admits `:` and `-` so a variant chain (`before:`) and a
+  // negative utility (`-inset-`) are both reachable, and the optional axis
+  // segment catches `inset-x-*` / `inset-y-*`. A bracketed value
+  // (`min-h-[44px]`, `size-[max(100%,44px)]`) has no digit in that position and
+  // is deliberately not matched.
+  const remSized = subject.match(
+    /pointer-coarse:[a-z:-]*(?:min-h|min-w|size|inset)(?:-[xy])?-\d/g,
+  );
+  expect(remSized).toBeNull();
+}
+
 function expectSlotIsGranted(element: Element, scopeName: string): void {
   const granted = GRANTED_BY_SCOPE.get(scopeName) ?? [];
   expect(granted.length).toBeGreaterThan(0);
@@ -357,6 +379,16 @@ describe("controls that render inside a portal", () => {
     expect(PORTAL_ICON_BUTTON_HIT_SLOP).toContain("before:");
   });
 
+  it("floors the portal slop in pixels, not in rem", () => {
+    // The root font size is a USER SETTING (`clampUiFontSize`, 10-20px), so a
+    // rem-sized hit area tracks it and is smallest exactly where the text is
+    // smallest. Sizing this control by rem inset measured 45px at the 15px
+    // default and 30px at the 10px minimum, while reading as correct at every
+    // size a developer is likely to test at.
+    expect(PORTAL_ICON_BUTTON_HIT_SLOP).toContain("44px");
+    expectNoRemScaledTouchSize(PORTAL_ICON_BUTTON_HIT_SLOP);
+  });
+
   it("gives the dialog close button its own hit area", () => {
     render(
       <Dialog open>
@@ -387,12 +419,18 @@ describe("controls that render inside a portal", () => {
     }
   });
 
-  it("sizes flush-stacked portal rows instead of slopping them", () => {
+  it("sizes flush-stacked portal rows in pixels, not in rem", () => {
     // Filter options stack with no gap, so invisible slop would overlap the
-    // neighbouring option. They grow the row itself, the way `ui/select.tsx`
-    // and `ui/dropdown-menu.tsx` size their own portalled rows.
+    // neighbouring option - they grow the row itself instead.
+    //
+    // The size must be pixel-literal for the same reason the stylesheets' is.
+    // `min-h-11` is the idiom `ui/select.tsx` and `ui/dropdown-menu.tsx` use,
+    // and it is 2.75rem - only >=44px above a ~16px root, and 27.5px at the
+    // 10px minimum. Asserting the rem token here would have pinned the
+    // undersized value permanently, which is worse than not asserting at all.
     const source = readSource("src/components/epics/epics-filter-popover.tsx");
 
-    expect(source).toContain("pointer-coarse:min-h-11");
+    expect(source).toContain("pointer-coarse:min-h-[44px]");
+    expectNoRemScaledTouchSize(source);
   });
 });

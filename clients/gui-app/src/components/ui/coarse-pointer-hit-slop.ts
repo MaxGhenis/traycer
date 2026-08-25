@@ -22,10 +22,18 @@
  * apply it to a control that already positions itself, or add `relative`
  * alongside it.
  *
- * Symmetric slop, so it suits a control with no flush neighbour — a corner
- * close button. A control in a flush stack needs the row-sizing treatment
- * (`pointer-coarse:min-h-11`) instead, or its slop overlaps its neighbours'.
- * `-inset-2.5` is 0.625rem a side, taking a `size-7` icon button past 44px.
+ * The size is a PIXEL LITERAL with a percentage floor, never a rem inset. The
+ * root font size is a user setting (clamped 10-20px), so anything sized purely
+ * in rem tracks it: a `size-7` button padded by a `0.625rem` inset measures
+ * 45px at the 15px default but only 30px at the minimum — the smallest text
+ * paired with the smallest targets, which is exactly backwards. `max(100%,
+ * 44px)` holds the floor at every root size and still grows with a larger
+ * control, matching what the three scope stylesheets do.
+ *
+ * Symmetric, so it suits a control with no flush neighbour — a corner close
+ * button. A control in a flush stack needs the row-sizing treatment
+ * (`pointer-coarse:min-h-[44px]`) instead, or its slop overlaps its
+ * neighbours'.
  */
 export const PORTAL_ICON_BUTTON_HIT_SLOP =
-  "pointer-coarse:before:absolute pointer-coarse:before:-inset-2.5";
+  "pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:left-1/2 pointer-coarse:before:size-[max(100%,44px)] pointer-coarse:before:-translate-x-1/2 pointer-coarse:before:-translate-y-1/2";
