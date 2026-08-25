@@ -179,6 +179,8 @@ function SwitcherAgentRow(props: {
         />
       }
       label={record.name}
+      secondaryLabel={null}
+      badge={null}
       active={isActive}
       onSelect={onSelect}
       selectTestId={`switcher-agent-row-${record.id}`}
