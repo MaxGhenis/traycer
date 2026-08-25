@@ -716,9 +716,10 @@ describe("renderer local admission — cross-seam (real AuthService × real useA
 
     // Phase B: the network returns, but this credential is genuinely dead —
     // /api/v3/user now answers 401 (rejected, not network-error) and the
-    // locked rotate's refresh also 401s (refresh-rejected). This is the
-    // exact outcome `applyUnadoptedStoredRotateOutcome`'s "refresh-rejected"
-    // branch handles, reached here through the background recovery tick
+    // locked rotate's refresh also 401s. A 401 classifies CREDENTIAL-scoped,
+    // so this is the exact outcome `applyUnadoptedStoredRotateOutcome`'s
+    // "refresh-rejected-credential" branch handles - the arm that HOLDS the
+    // local plane. Reached here through the background recovery tick
     // `scheduleSessionRecovery("startup:validate-network")` already armed.
     harness.setFetchHandler(rejectedFetch(ledger));
     await vi.waitFor(
