@@ -18,6 +18,12 @@ interface GateTestState {
         }
       | undefined;
     isLoading: boolean;
+    /**
+     * `status === "pending"` - no data and no error yet. True for a DISABLED
+     * query too, which is why it cannot be derived from `isLoading`
+     * (`isPending && isFetching`): a disabled query is pending and idle.
+     */
+    isPending: boolean;
     isError: boolean;
     error: Error | null;
   };
@@ -32,6 +38,7 @@ const state = vi.hoisted((): GateTestState => ({
   readFile: {
     data: undefined,
     isLoading: true,
+    isPending: true,
     isError: false,
     error: null,
   },
@@ -119,6 +126,7 @@ describe("<WorkspaceFileTile /> host-binding gate", () => {
     state.readFile = {
       data: undefined,
       isLoading: true,
+      isPending: true,
       isError: false,
       error: null,
     };
@@ -174,6 +182,7 @@ describe("<WorkspaceFileTile /> host-binding gate", () => {
         truncated: false,
       },
       isLoading: false,
+      isPending: false,
       isError: false,
       error: null,
     };
@@ -197,6 +206,7 @@ describe("<WorkspaceFileTile /> host-binding gate", () => {
     state.readFile = {
       data: undefined,
       isLoading: false,
+      isPending: false,
       isError: true,
       error: new HostRpcError({
         code: "UNAUTHORIZED",
@@ -227,6 +237,7 @@ describe("<WorkspaceFileTile /> host-binding gate", () => {
     state.readFile = {
       data: undefined,
       isLoading: false,
+      isPending: false,
       isError: true,
       error: new HostRpcError({
         code: "FORBIDDEN",
@@ -255,6 +266,7 @@ describe("<WorkspaceFileTile /> host-binding gate", () => {
     state.readFile = {
       data: undefined,
       isLoading: false,
+      isPending: false,
       isError: true,
       error: new Error("boom"),
     };
@@ -280,6 +292,7 @@ describe("<WorkspaceFileTile /> host-binding gate", () => {
         truncated: false,
       },
       isLoading: false,
+      isPending: false,
       isError: false,
       error: null,
     };
@@ -322,6 +335,7 @@ describe("<WorkspaceFileTile /> host-binding gate", () => {
         truncated: false,
       },
       isLoading: false,
+      isPending: false,
       isError: false,
       error: null,
     };
@@ -339,6 +353,7 @@ describe("<WorkspaceFileTile /> host-binding gate", () => {
         truncated: false,
       },
       isLoading: false,
+      isPending: false,
       isError: false,
       error: null,
     };
@@ -363,6 +378,7 @@ describe("<WorkspaceFileTile /> host-binding gate", () => {
         truncated: false,
       },
       isLoading: false,
+      isPending: false,
       isError: false,
       error: null,
     };

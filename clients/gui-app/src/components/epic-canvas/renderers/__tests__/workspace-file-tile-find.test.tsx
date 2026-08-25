@@ -24,6 +24,12 @@ interface ReadFileState {
       }
     | undefined;
   readonly isLoading: boolean;
+  /**
+   * `status === "pending"` - no data and no error yet. True for a DISABLED
+   * query too, which is why it cannot be derived from `isLoading`
+   * (`isPending && isFetching`): a disabled query is pending and idle.
+   */
+  readonly isPending: boolean;
   readonly isError: boolean;
   readonly error: Error | null;
 }
@@ -54,6 +60,7 @@ const state = vi.hoisted((): FindTestState => ({
   readFile: {
     data: undefined,
     isLoading: true,
+    isPending: true,
     isError: false,
     error: null,
   },
@@ -372,6 +379,11 @@ describe("<WorkspaceFileTile /> tile find", () => {
       readFile: missingReadFile(),
       coverageMessage: "File content is unavailable.",
     },
+    {
+      label: "not-yet-requested",
+      readFile: disabledReadFile(),
+      coverageMessage: "File is still loading.",
+    },
   ])("reports $label content as unavailable", async (scenario) => {
     state.readFile = scenario.readFile;
     renderTile(CODE_NODE);
@@ -405,6 +417,7 @@ function loadedReadFile(content: string, truncated: boolean): ReadFileState {
   return {
     data: { content, error: null, truncated },
     isLoading: false,
+    isPending: false,
     isError: false,
     error: null,
   };
@@ -414,6 +427,22 @@ function loadingReadFile(): ReadFileState {
   return {
     data: undefined,
     isLoading: true,
+    isPending: true,
+    isError: false,
+    error: null,
+  };
+}
+
+/**
+ * A read that is switched off - no host client bound, or host readiness not
+ * landed. TanStack reports this as pending-and-idle, so `isLoading` is false
+ * while the read has still produced nothing and is still owed.
+ */
+function disabledReadFile(): ReadFileState {
+  return {
+    data: undefined,
+    isLoading: false,
+    isPending: true,
     isError: false,
     error: null,
   };
@@ -423,6 +452,7 @@ function errorReadFile(message: string): ReadFileState {
   return {
     data: { content: "", error: message, truncated: false },
     isLoading: false,
+    isPending: false,
     isError: false,
     error: null,
   };
@@ -430,8 +460,9 @@ function errorReadFile(message: string): ReadFileState {
 
 function missingReadFile(): ReadFileState {
   return {
-    data: undefined,
+    data: { content: null, error: null, truncated: false },
     isLoading: false,
+    isPending: false,
     isError: false,
     error: null,
   };
