@@ -683,6 +683,66 @@ describe("AuthService", () => {
     expect(refreshCalls).toEqual([]);
   });
 
+  it("refuses all three link-login calls from an unverified session WITHOUT reaching the runner host", async () => {
+    // These three arrived with OSS `main`, where `this.currentBearer !== null`
+    // WAS a correct verdict check: on main a present bearer is a confirmed one,
+    // because no state existed in which a bearer is present and unconfirmed.
+    // `unverified` is precisely that state, so this branch's own change
+    // falsified main's gate rather than main failing to meet a new policy.
+    //
+    // Two of the three are the APPROVAL side of linking another device to the
+    // account. An unconfirmed bearer here does not leak a read - it admits a
+    // new device. A token revoked an hour ago satisfies a non-null check.
+    //
+    // Asserted on the MECHANISM: the runner-host method must never be called.
+    // Asserting only the returned `kind` would still pass if a future refactor
+    // called the host and discarded its answer, which is the egress this exists
+    // to prevent.
+    const { service, host } = makeService();
+    await host.tokenStore.signIn(
+      { token: "stored-token", refreshToken: "stored-token-refresh" },
+      { id: "user-1", email: "test@example.com", name: "Test User" },
+    );
+    restoreFetch();
+    restoreFetch = installFetch(() =>
+      Promise.reject(new Error("authn unreachable")),
+    );
+
+    await service.start();
+    expect(useAuthStore.getState().status).toBe("unverified");
+    // Non-vacuity: the session really does hold a bearer, so a non-null check
+    // would have passed and these refusals are not "there was nothing to send".
+    expect(service.getCurrentSessionSnapshot().token).toBe("stored-token");
+
+    const mintSpy = vi.spyOn(host, "mintLinkLoginCode");
+    const statusSpy = vi.spyOn(host, "linkLoginStatus");
+    const respondSpy = vi.spyOn(host, "respondLinkLogin");
+
+    const mint = await service.mintLinkLoginCode(liveQuerySignal());
+    const linkStatus = await service.fetchLinkLoginStatus(
+      "code-1",
+      liveQuerySignal(),
+    );
+    const respond = await service.respondLinkLogin("code-1", true);
+
+    // THE MECHANISM FIRST, so a red names it. Ablating the gate makes these
+    // calls reach the host, and the returned kind changes too - if the kind
+    // assertions came first the red would say "network-error, expected
+    // unauthorized", which is a true statement about a downstream effect and
+    // not the sentence this test is named after.
+    expect(mintSpy).not.toHaveBeenCalled();
+    expect(statusSpy).not.toHaveBeenCalled();
+    expect(respondSpy).not.toHaveBeenCalled();
+    // ...and the refusal is the documented one, so a future refactor that
+    // reaches the host and discards its answer fails on the spies above rather
+    // than passing on these.
+    expect(mint).toEqual({ kind: "unauthorized" });
+    expect(linkStatus).toEqual({ kind: "unauthorized" });
+    expect(respond).toEqual({ kind: "unauthorized" });
+    // Reading from an unverified session must not itself change it.
+    expect(useAuthStore.getState().status).toBe("unverified");
+  });
+
   it("does not spend the repair refresh rotation when fetchUserSessions is read from an unverified (no-verdict) session", async () => {
     // `unverified` holds a REAL bearer read off disk - the whole point of
     // the local-admission ticket - so `captureLiveSessionAuthority()` (and

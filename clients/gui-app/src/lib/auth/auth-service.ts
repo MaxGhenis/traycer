@@ -2431,10 +2431,17 @@ export class AuthService {
   async mintLinkLoginCode(
     signal: AbortSignal,
   ): Promise<MintLinkLoginCodeFetchResult> {
-    if (this.currentBearer === null) {
+    // Gated on the VERDICT, not on a non-null bearer. `this.currentBearer !==
+    // null` was a correct verdict check when this was written - on `main` a
+    // present bearer meant a confirmed one, because no other state existed.
+    // `unverified` is exactly that other state, so OUR change falsified this
+    // gate rather than this gate failing to meet our policy. See
+    // {@link cloudBearer}.
+    const bearer = this.cloudBearer();
+    if (bearer === null) {
       return { kind: "unauthorized" };
     }
-    return this.runnerHost.mintLinkLoginCode(this.currentBearer, signal);
+    return this.runnerHost.mintLinkLoginCode(bearer, signal);
   }
 
   async verifyStepUpChallenge(
@@ -3529,10 +3536,14 @@ export class AuthService {
     code: string,
     signal: AbortSignal,
   ): Promise<LinkLoginStatusFetchResult> {
-    if (this.currentBearer === null) {
+    // Verdict-gated - see `mintLinkLoginCode`. This is the APPROVAL side of
+    // linking another device to the account, so an unconfirmed bearer here does
+    // not leak a read: it grants account access.
+    const bearer = this.cloudBearer();
+    if (bearer === null) {
       return { kind: "unauthorized" };
     }
-    return this.runnerHost.linkLoginStatus(this.currentBearer, code, signal);
+    return this.runnerHost.linkLoginStatus(bearer, code, signal);
   }
 
   /** The panel's approve/reject decision on a claimed code. */
@@ -3540,10 +3551,14 @@ export class AuthService {
     code: string,
     approve: boolean,
   ): Promise<RespondLinkLoginFetchResult> {
-    if (this.currentBearer === null) {
+    // Verdict-gated - see `mintLinkLoginCode`. Approving a device link on a
+    // bearer nothing has confirmed is the sharpest case in this file: a token
+    // revoked an hour ago would otherwise be enough to admit a new device.
+    const bearer = this.cloudBearer();
+    if (bearer === null) {
       return { kind: "unauthorized" };
     }
-    return this.runnerHost.respondLinkLogin(this.currentBearer, code, approve);
+    return this.runnerHost.respondLinkLogin(bearer, code, approve);
   }
 
   /**
