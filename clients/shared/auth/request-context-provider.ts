@@ -12,9 +12,19 @@
  *     context (or `null` on sign-out).
  *
  * The provider intentionally does NOT expose the raw bearer string. Final
- * host transport clients (e.g. `WsRpcClient`, stream clients) extract a
- * bearer through `ctx.credentials.getBearerToken()` only when opening a
- * WS open frame - every other consumer threads `RequestContext` itself.
+ * host transport clients (e.g. `WsRpcClient`, stream clients) extract a bearer
+ * only when opening a WS open frame, and they do it from an
+ * `OpenFrameBearerSource` handed to them by their composition root - never by
+ * reaching through a context themselves. Every other consumer threads
+ * `RequestContext` itself.
+ *
+ * The distinction is now enforced rather than described. Passing
+ * `ctx.credentials` along AS a bearer source is the supported injection
+ * pattern; writing `ctx.credentials.getBearerToken()` is lint-fenced outside
+ * the two transport files that own the open frame - see
+ * `eslint/traycer-cloud-bearer-fence-rules.mjs`. The type system cannot express
+ * that difference (both are ordinary member access on a public field), which is
+ * exactly why it is a lint rule and not an interface.
  *
  * Boundary transitions are driven via the imperative methods on the
  * default implementation:
@@ -42,6 +52,7 @@ import type { AuthenticatedUser } from "@traycer/protocol/auth";
 import {
   createRequestContext,
   identityFromAuthenticatedUser,
+  type AuthenticatedIdentity,
   type RequestContext,
   type RequestContextOrigin,
 } from "@traycer/protocol/auth/request-context";
@@ -180,6 +191,23 @@ export interface RotateCurrentBearerOptions {
   readonly bearerToken: string;
 }
 
+/**
+ * A session established from a STORED identity that no `/api/v3/user` call has
+ * confirmed (authn unreachable at startup, or a rejected refresh).
+ *
+ * It carries an `AuthenticatedIdentity` rather than an `AuthenticatedUser`
+ * because there is no `AuthenticatedUser` to be had - the caller read
+ * `{ id, email, name }` off the credentials file. That is deliberately the
+ * whole difference: an identity is the locally-derivable part (`userId`,
+ * `username`, `providerHandle`), while an `AuthenticatedUser` additionally
+ * carries entitlement and team membership, which are SERVER claims and must
+ * never be synthesized on this path.
+ */
+export interface SetUnverifiedOptions {
+  readonly identity: AuthenticatedIdentity;
+  readonly bearerToken: string;
+}
+
 export interface DefaultRequestContextProviderOptions {
   /**
    * Origin tag attached to every minted context. Renderer/extension
@@ -271,6 +299,47 @@ export class DefaultRequestContextProvider implements RequestContextProvider {
           ? "auth-resigned-in"
           : "auth-identity-changed";
       previous.abort(reason);
+    }
+    this.emitContextChange(next);
+    return next;
+  }
+
+  /**
+   * Establish an UNVERIFIED session (see {@link SetUnverifiedOptions}).
+   *
+   * Structurally identical to {@link setSignedIn} - same mint, same abort of
+   * any previous context, same generation bump, same emit - so every consumer
+   * downstream of `onChange` sees an ordinary context change and needs no
+   * knowledge of this state. That is the point: the local plane's transport
+   * works unchanged, and the distinction lives in the auth store, where the
+   * ADMISSION decision is made, rather than being smeared across every
+   * consumer of a context.
+   *
+   * The bearer is passed through unvalidated on purpose. It is the token this
+   * device already holds on disk; the host accepts it for local, disk-served
+   * work without any authn round-trip, and a cloud call that carries it will
+   * simply 401 - which is the correct outcome for a credential we could not
+   * confirm, and which the cloud-facing surfaces are gated against anyway.
+   */
+  setUnverified(options: SetUnverifiedOptions): RequestContext {
+    this.assertNotDisposed();
+    const previous = this.currentContext;
+    const next = createRequestContext({
+      identity: options.identity,
+      bearerToken: options.bearerToken,
+      origin: this.origin,
+      connectionId: undefined,
+      operationId: undefined,
+      externalAbortSignal: undefined,
+    });
+    this.currentContext = next;
+    this.credentialGeneration += 1;
+    if (previous !== null) {
+      previous.abort(
+        previous.identity.userId === next.identity.userId
+          ? "auth-resigned-in"
+          : "auth-identity-changed",
+      );
     }
     this.emitContextChange(next);
     return next;

@@ -26,6 +26,10 @@ import {
   noteHostCredentialState,
 } from "@/lib/auth/host-credential-provisioning";
 import { acquireHostStreamClient } from "@/lib/host/host-stream-client-cache";
+import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
 import { useHostBinding } from "@/lib/host/runtime";
 import { processReconnectEngine } from "@traycer-clients/shared/host-client/host-connection-reconnect-engine";
 import { transportEvidenceRelay } from "@/lib/host/transport-evidence";
@@ -201,6 +205,14 @@ export function buildHostStreamClient(params: {
   readonly target: HostDirectoryEntry;
   readonly endpoint: HostEndpointProvider;
   readonly bearer: BearerSourceProvider;
+  /**
+   * Gates the remote session's attach-grant MINT only - see
+   * `CreateRemoteTransportOptions.cloudAuthorized`. A parameter rather than an
+   * ambient store read for the same reason as the messenger builder's: this is
+   * the seam tests construct through. Only consulted on the
+   * `target.kind === "remote"` branch, so local hosts are unaffected.
+   */
+  readonly cloudAuthorized: () => boolean;
   readonly authnBaseUrl: string;
   readonly auth: StreamAuthRevalidator | null;
   /**
@@ -243,6 +255,7 @@ export function buildHostStreamClient(params: {
       authnBaseUrl: params.authnBaseUrl,
       hostPublicKey: params.target.publicKey,
       bearer: params.bearer,
+      cloudAuthorized: params.cloudAuthorized,
       // Same UNAUTHORIZED recovery the local branch wires below: an expired
       // bearer at a wake-time re-attach revalidates + redials instead of
       // terminally closing the shared session (`RemoteSessionOptions.auth`).
@@ -469,6 +482,10 @@ export function useHostStreamClientBindingFor(
           target: memoizedTarget,
           endpoint: () => endpoint,
           bearer: () => globalClient.getRequestContext()?.credentials ?? null,
+          // Read at mint time, not captured: a session outlives the verdict it
+          // was built under, in both directions.
+          cloudAuthorized: () =>
+            authorizesCloudCapability(useAuthStore.getState().status),
           authnBaseUrl,
           auth,
           userId,

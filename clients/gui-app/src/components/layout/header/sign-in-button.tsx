@@ -1,4 +1,5 @@
 import { useAuthDeviceProgress } from "@/hooks/auth/use-auth-device-progress";
+import { AUTH_ERROR_ACCOUNT_UNAVAILABLE } from "@/lib/auth/auth-service";
 import { useAuthServiceError } from "@/hooks/auth/use-auth-service-error";
 import { useAuthService } from "@/lib/host";
 import { cn } from "@/lib/utils";
@@ -66,7 +67,13 @@ export function SignInButton(props: SignInButtonProps) {
         <DeviceCodeProgress progress={deviceProgress} isHero={isHero} />
       ) : (
         <>
-          <PrimarySignInButton isHero={isHero} isSigningIn={isSigningIn} />
+          <PrimarySignInButton
+            isHero={isHero}
+            isSigningIn={isSigningIn}
+            offersDifferentAccount={
+              lastError === AUTH_ERROR_ACCOUNT_UNAVAILABLE
+            }
+          />
           <RetrySignInButton isHero={isHero} isSigningIn={isSigningIn} />
         </>
       )}

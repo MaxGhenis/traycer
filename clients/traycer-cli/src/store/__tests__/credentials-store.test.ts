@@ -140,7 +140,10 @@ describe("createStoreBackedRevalidator", () => {
   });
 
   it("reports rejected on a dead refresh token, leaving the bearer untouched", async () => {
-    const { revalidate, lease } = revalidatorFor("refresh-rejected", null);
+    const { revalidate, lease } = revalidatorFor(
+      "refresh-rejected-credential",
+      null,
+    );
     expect(await revalidate()).toBe("rejected");
     expect(lease.getBearerToken()).toBe("old-token");
   });

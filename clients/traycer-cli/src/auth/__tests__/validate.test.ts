@@ -220,7 +220,7 @@ describe("validateStoredCredentials", () => {
   it("maps a dead refresh token to rejected", async () => {
     identityMock.mockResolvedValue({ kind: "rejected" });
     rotateMock.mockResolvedValue({
-      outcome: "refresh-rejected",
+      outcome: "refresh-rejected-credential",
       credentials: null,
     });
     expect(await validateStoredCredentials()).toEqual({ kind: "rejected" });

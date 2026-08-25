@@ -7,9 +7,23 @@ import { HERO_PRIMARY_BUTTON_CLASS } from "./styles";
 export function PrimarySignInButton(props: {
   readonly isHero: boolean;
   readonly isSigningIn: boolean;
+  /**
+   * True when the last error was `AUTH_ERROR_ACCOUNT_UNAVAILABLE`.
+   *
+   * The action is unchanged - the device flow is how you sign in as anybody -
+   * but the LABEL is not, and the difference is the whole point. In that state
+   * the account on this device is gone server-side, so a generic "Sign in" sits
+   * directly beneath "This account is no longer available." and offers the one
+   * path that cannot work. The escape is a DIFFERENT account, and the button is
+   * where the user finds that out.
+   */
+  readonly offersDifferentAccount: boolean;
 }) {
   const signInMutation = useAuthSignInMutation();
   const isPending = props.isSigningIn || signInMutation.isPending;
+  const label = props.offersDifferentAccount
+    ? "Sign in with a different account"
+    : "Sign in";
 
   return (
     <Button
@@ -26,7 +40,7 @@ export function PrimarySignInButton(props: {
         props.isHero && HERO_PRIMARY_BUTTON_CLASS,
       )}
     >
-      Sign in
+      {label}
       {isPending ? (
         <AgentSpinningDots
           variant="dots"

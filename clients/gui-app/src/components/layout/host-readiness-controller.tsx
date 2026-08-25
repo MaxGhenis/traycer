@@ -57,7 +57,11 @@ import {
 import { useRunnerHost } from "@/providers/use-runner-host";
 import { requestAppQuit } from "@/lib/desktop-app-lifecycle";
 import { appLogger, describeLogError } from "@/lib/logger";
-import { useAuthStore, type AuthStatus } from "@/stores/auth/auth-store";
+import {
+  admitsLocalPlane,
+  useAuthStore,
+  type AuthStatus,
+} from "@/stores/auth/auth-store";
 
 /** A single signed-in owner for host reachability and lifecycle state. */
 export function HostReadinessControllerProvider(props: {
@@ -531,7 +535,11 @@ export function DefaultHostReadyGate(props: {
   const predicateInput = {
     readiness,
     hasBeenReady: hasBeenDefaultHostReady,
-    signedIn: authStatus === "signed-in",
+    // Admission, not validation: an `unverified` session DOES have a local
+    // host that can be ready, so the gate must be allowed to narrate its
+    // startup rather than short-circuit to "not signed in" and mount the app
+    // over a host that cannot serve it yet.
+    signedIn: admitsLocalPlane(authStatus),
     bypassed: pathname.startsWith(GATE_BYPASS_PATH_PREFIX),
   };
   if (!gateBlocksApp(predicateInput)) return props.children;

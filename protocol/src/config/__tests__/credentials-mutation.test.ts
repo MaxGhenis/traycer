@@ -177,7 +177,10 @@ describe("credentials mutation store", () => {
     });
 
     it("keeps the file on an authn-confirmed rejection (refresh-rejected)", async () => {
-      const refresh = refreshStub(() => ({ kind: "rejected" }));
+      const refresh = refreshStub(() => ({
+        kind: "rejected",
+        rejection: { kind: "credential", revocation: null },
+      }));
       const store = makeStore(refresh.fn);
       await seedSignedIn(store);
       const result = await store.rotate({
@@ -186,7 +189,7 @@ describe("credentials mutation store", () => {
         refreshTokenOverride: null,
         signal: null,
       });
-      expect(result.outcome).toBe("refresh-rejected");
+      expect(result.outcome).toBe("refresh-rejected-credential");
       // File kept (settled decision: only explicit intent destroys shared state).
       expect((await readCredentialsFile(credentialsPath))?.token).toBe(
         CREDS.token,
@@ -483,14 +486,19 @@ describe("credentials mutation store", () => {
     });
 
     it("returns refresh-rejected without writing when the candidate is dead", async () => {
-      const store = makeStore(refreshStub(() => ({ kind: "rejected" })).fn);
+      const store = makeStore(
+        refreshStub(() => ({
+          kind: "rejected",
+          rejection: { kind: "credential", revocation: null },
+        })).fn,
+      );
       const result = await store.migrateFirstWrite({
         candidate: CANDIDATE,
         identity: MIGRATED_IDENTITY,
         expectedFile: null,
         signal: null,
       });
-      expect(result.outcome).toBe("refresh-rejected");
+      expect(result.outcome).toBe("refresh-rejected-credential");
       expect(await readCredentialsFile(credentialsPath)).toBeNull();
     });
 
@@ -922,7 +930,10 @@ describe("credentials mutation store", () => {
     });
 
     it("clears the marker on an explicit refresh rejection", async () => {
-      const stub = refreshStub(() => ({ kind: "rejected" }));
+      const stub = refreshStub(() => ({
+        kind: "rejected",
+        rejection: { kind: "credential", revocation: null },
+      }));
       const store = makeStore(stub.fn);
       await seedSignedIn(store);
 
@@ -933,7 +944,7 @@ describe("credentials mutation store", () => {
         signal: null,
       });
 
-      expect(result.outcome).toBe("refresh-rejected");
+      expect(result.outcome).toBe("refresh-rejected-credential");
       expect(existsSync(markerPath())).toBe(false);
     });
 
