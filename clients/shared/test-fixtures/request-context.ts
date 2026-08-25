@@ -28,6 +28,13 @@ export interface RequestContextFixtureOverrides {
   readonly connectionId: string | undefined;
   readonly operationId: string | undefined;
   readonly externalAbortSignal: AbortSignal | undefined;
+  /**
+   * The fixture's cloud verdict. Defaults to `true`, which is what the
+   * overwhelming majority of suites mean by "a signed-in context" - pass
+   * `false` to build the `unverified` shape, and `undefined` to model a peer
+   * that does not speak verdicts at all.
+   */
+  readonly cloudAuthorized: boolean | undefined;
 }
 
 const DEFAULT_BEARER = "test-bearer-token";
@@ -61,6 +68,7 @@ export function createRequestContextFixture(
     connectionId: overrides.connectionId,
     operationId: overrides.operationId,
     externalAbortSignal: overrides.externalAbortSignal,
+    cloudAuthorized: overrides.cloudAuthorized ?? true,
   });
 }
 

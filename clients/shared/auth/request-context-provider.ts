@@ -206,6 +206,11 @@ export function mintRequestContextFromValidatedIdentity(
     connectionId: options.connectionId,
     operationId: options.operationId,
     externalAbortSignal: options.externalAbortSignal,
+    // Not a parameter, because this function's CONTRACT is the verdict: it
+    // takes a validated full `AuthenticatedUser`, which only a successful
+    // `/api/v3/user` produces. A session that could not obtain one has no such
+    // object to pass and mints through `setUnverified` instead.
+    cloudAuthorized: true,
   });
 }
 
@@ -391,10 +396,23 @@ export class DefaultRequestContextProvider implements RequestContextProvider {
    * consumer of a context.
    *
    * The bearer is passed through unvalidated on purpose. It is the token this
-   * device already holds on disk; the host accepts it for local, disk-served
-   * work without any authn round-trip, and a cloud call that carries it will
-   * simply 401 - which is the correct outcome for a credential we could not
-   * confirm, and which the cloud-facing surfaces are gated against anyway.
+   * device already holds on disk, and the host accepts it for local,
+   * disk-served work without any authn round-trip.
+   *
+   * What this comment used to add - that a cloud call carrying it "will simply
+   * 401, which the cloud-facing surfaces are gated against anyway" - was the
+   * load-bearing assumption, and it did not hold. An audit of the class found
+   * eighteen dispatch families that spend a cloud capability from surfaces this
+   * state admits, most of them background timers, mount effects and detached
+   * promises that no surface gate can reach at all. And "it will simply 401" is
+   * the wrong standard even where it is true: the request is still made, on a
+   * bearer for an account the cloud may have deliberately refused.
+   *
+   * So the context now CARRIES the verdict rather than leaving it to be
+   * re-derived by each caller. `cloudAuthorized: false` makes
+   * `buildBearerHeadersFromContext` - the single choke point every outbound
+   * cloud call passes through - refuse to mint headers from it, which is a
+   * guarantee rather than a convention.
    */
   setUnverified(options: SetUnverifiedOptions): RequestContext {
     this.assertNotDisposed();
@@ -406,6 +424,7 @@ export class DefaultRequestContextProvider implements RequestContextProvider {
       connectionId: undefined,
       operationId: undefined,
       externalAbortSignal: undefined,
+      cloudAuthorized: false,
     });
     this.currentContext = next;
     this.credentialGeneration += 1;

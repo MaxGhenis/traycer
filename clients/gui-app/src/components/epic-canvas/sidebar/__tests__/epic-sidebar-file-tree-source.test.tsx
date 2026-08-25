@@ -495,6 +495,7 @@ function installSearchHost(script: Partial<SearchScript>): void {
       connectionId: undefined,
       operationId: undefined,
       externalAbortSignal: undefined,
+      cloudAuthorized: true,
     }),
   );
   hostClientRef.current = spine.createRequester(entry);
