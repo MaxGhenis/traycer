@@ -2,6 +2,10 @@ import { useMemo } from "react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import { useEpicCollaboratorsQuery } from "@/hooks/epics/use-epic-collaborators-query";
 import type { HostRpcRegistry } from "@/lib/host";
+import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
 
 /**
  * Mention-picker view over the existing `epic.listCollaborators` query.
@@ -26,8 +30,17 @@ export function useMentionCollaboratorsForClient(
   // the Sharing panel this cache entry is shared with" - but the composer that
   // posts the comment is Epic-scoped, so during an A→B re-point the picker
   // offered B's collaborator list for a thread being written to A (D15).
+  // `epic.listCollaborators` is a cloud read, so the picker may only populate
+  // itself while this session holds a verdict. Withheld, the suggestion list
+  // is empty and the popover says "No matching collaborators" - an honest
+  // statement about what it can offer, and the same thing it says before the
+  // query has answered. It never asserts that the epic HAS no collaborators.
+  const cloudAuthorized = useAuthStore((state) =>
+    authorizesCloudCapability(state.status),
+  );
   const { data } = useEpicCollaboratorsQuery(epicId, {
     client,
+    enabled: cloudAuthorized,
     poll: false,
     staleTime: undefined,
   });

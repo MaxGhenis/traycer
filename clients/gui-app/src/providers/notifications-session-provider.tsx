@@ -1009,7 +1009,14 @@ function NotificationsSessionBody(
     // agent-activity lanes for `signed-out` and `signing-in` too, which hold no
     // plane at all. `signedOut` has already torn them down via
     // `onAuthTransition`; this keeps them from being reopened underneath it.
-    if (!admitsLocalPlane(status)) return;
+    if (!admitsLocalPlane(status)) {
+      // `signing-in` can retain the prior identity while a replacement
+      // account is being verified. Its local lanes must not keep streaming
+      // under that held identity, but the replica itself stays intact until
+      // the identity-transition owner decides whether a reset is warranted.
+      tearDown();
+      return;
+    }
     // Keyed on the HOST, not the client: `useHostStreamClientBindingFor` returns a
     // client exactly when it is given an entry, so in production these two are
     // the same condition - but the test stream-factory override supplies a

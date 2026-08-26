@@ -9,6 +9,7 @@ import {
   EpicsListError,
   EpicsListFilteredEmpty,
   EpicsListFilteringLoading,
+  EpicsListHostRequiresCloudToList,
   EpicsListLoading,
   EpicsListShowMore,
   HistoryCompletenessNotice,
@@ -26,6 +27,13 @@ const SETTLE_CLASS = "transition-transform duration-[220ms]";
 export interface MobileHistoryListProps {
   readonly error: Error | null;
   readonly isPending: boolean;
+  /**
+   * Nothing was asked for: no cloud verdict, and a host that cannot list
+   * locally. Must be checked ahead of `isPending` - a query that never ran
+   * reports `pending` forever, so the spinner below is this state's false
+   * positive rather than a load.
+   */
+  readonly hostRequiresCloudToList: boolean;
   readonly isFetching: boolean;
   readonly hasActiveFilters: boolean;
   readonly chatHostFilterUnsupported: boolean;
@@ -69,6 +77,7 @@ export function MobileHistoryList(props: MobileHistoryListProps): ReactNode {
   const {
     error,
     isPending,
+    hostRequiresCloudToList,
     isFetching,
     hasActiveFilters,
     chatHostFilterUnsupported,
@@ -148,6 +157,7 @@ export function MobileHistoryList(props: MobileHistoryListProps): ReactNode {
         <MobileHistoryListBody
           error={error}
           isPending={isPending}
+          hostRequiresCloudToList={hostRequiresCloudToList}
           isFetching={isFetching}
           hasActiveFilters={hasActiveFilters}
           chatHostFilterUnsupported={chatHostFilterUnsupported}
@@ -222,6 +232,7 @@ function PullIndicator(props: {
 interface MobileHistoryListBodyProps {
   readonly error: Error | null;
   readonly isPending: boolean;
+  readonly hostRequiresCloudToList: boolean;
   readonly isFetching: boolean;
   readonly hasActiveFilters: boolean;
   readonly chatHostFilterUnsupported: boolean;
@@ -246,6 +257,9 @@ interface MobileHistoryListBodyProps {
 function MobileHistoryListBody(props: MobileHistoryListBodyProps): ReactNode {
   if (props.error !== null) {
     return <EpicsListError error={props.error} onRetry={props.onRetry} />;
+  }
+  if (props.hostRequiresCloudToList) {
+    return <EpicsListHostRequiresCloudToList />;
   }
   if (props.isPending) {
     return <EpicsListLoading />;

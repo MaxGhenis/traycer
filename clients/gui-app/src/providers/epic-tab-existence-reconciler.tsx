@@ -5,7 +5,9 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { useQueries, type UseQueryResult } from "@tanstack/react-query";
+import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
+import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import {
   CURRENT_EPIC_VERSION,
   CURRENT_PHASE_VERSION,
@@ -21,8 +23,11 @@ import { useShallow } from "zustand/react/shallow";
 import {
   useHostClient,
   useHostCompatibility,
+  useHostRuntimeClient,
   type HostRpcRegistry,
 } from "@/lib/host";
+import { buildTransientHostClient } from "@/hooks/host/use-host-client-for";
+import { useHostDirectoryList } from "@/hooks/host/use-host-directory-list-query";
 import { useHostQueries } from "@/hooks/host/use-host-queries";
 import { useHostMethodSupport } from "@/hooks/host/use-host-supports-method";
 import { useReactiveHostReadiness } from "@/hooks/host/use-reactive-host-readiness";
@@ -175,7 +180,8 @@ function EpicTabReconciliationRun(props: { readonly seed: ReconcileSeed }) {
 
 function EpicTabExistenceProbe(props: { readonly run: ReconcileSeed }) {
   const client = useHostClient();
-  registerCloudEpicTasksClient(props.run.hostId, client);
+  const hostRuntimeClient = useHostRuntimeClient();
+  const hostDirectory = useHostDirectoryList();
   const completionAppliedRef = useRef(false);
   const openEpicIds = props.run.openEpicIds;
   const requests = useMemo(
@@ -214,23 +220,74 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileSeed }) {
     }),
     [],
   );
-  const localHomeListQuery = useQuery<ListTasksResponse>({
-    ...epicTabLocalHomeListQueryOptions({
-      hostId: props.run.hostId,
-      userId: props.run.userId,
-      params: localHomeListParams,
-      // Same identity the existence probe above keys on, plus a discriminator
-      // so the two queries never share a cache entry. `identity` alone carries
-      // per-run freshness now - the old separate attempt counter is gone.
-      cacheKeyIdentity: props.run.identity,
-    }),
-    enabled: true,
+  const localHomeProbes = useMemo((): ReadonlyArray<LocalHomeProbe> | null => {
+    // Directory rows are the complete set of dialable hosts this shell knows.
+    // A retained successful value while a refresh is in flight is not a stable
+    // set: a newly published host could own the only durable local copy of a
+    // cloud-absent epic. This is a destructive path, so wait for a settled
+    // directory snapshot instead of treating retained rows as authoritative.
+    if (!hostDirectory.isSuccess || hostDirectory.fetchStatus !== "idle") {
+      return null;
+    }
+    const entriesByHostId = new Map<string, HostDirectoryEntry>();
+    for (const entry of hostDirectory.data) {
+      // Duplicate or non-dialable rows mean this client cannot establish one
+      // unambiguous, pinned request lane for every host. Do not guess.
+      if (
+        entriesByHostId.has(entry.hostId) ||
+        entry.transportDialability !== "dialable"
+      ) {
+        return null;
+      }
+      entriesByHostId.set(entry.hostId, entry);
+    }
+    // The host that supplied the positive cloud absence must itself be part of
+    // this authoritative snapshot. Otherwise the directory changed under the
+    // run and the all-host protection proof no longer has a defined scope.
+    if (!entriesByHostId.has(props.run.hostId)) return null;
+
+    const probes: LocalHomeProbe[] = [];
+    for (const entry of entriesByHostId.values()) {
+      const pinnedClient = buildTransientHostClient(hostRuntimeClient, entry);
+      // No credentials, endpoint, or routed requester is an unknown answer,
+      // not an empty local-home page. Let a later settled render retry.
+      if (pinnedClient === null) return null;
+      probes.push({ hostId: entry.hostId, client: pinnedClient });
+    }
+    return probes;
+  }, [
+    hostDirectory.data,
+    hostDirectory.fetchStatus,
+    hostDirectory.isSuccess,
+    hostRuntimeClient,
+    props.run.hostId,
+  ]);
+
+  // The list query reaches its host client through this registry. Register a
+  // client explicitly pinned to EACH directory row; the app-wide client is
+  // deliberately not a stand-in here, because it follows host selection.
+  for (const probe of localHomeProbes ?? []) {
+    registerCloudEpicTasksClient(probe.hostId, probe.client);
+  }
+  const localHomeListQueries = useQueries({
+    queries: (localHomeProbes ?? []).map((probe) => ({
+      ...epicTabLocalHomeListQueryOptions({
+        hostId: probe.hostId,
+        userId: props.run.userId,
+        params: localHomeListParams,
+        // Same identity the existence probe above keys on, plus a discriminator
+        // so the two queries never share a cache entry. `identity` alone carries
+        // per-run freshness now - the old separate attempt counter is gone.
+        cacheKeyIdentity: props.run.identity,
+      }),
+      enabled: true,
+    })),
   });
 
-  const locallyProtectedEpicIds = useMemo((): ReadonlySet<string> | null => {
-    if (!localHomeListQuery.isSuccess) return null;
-    return locallyProtectedEpicIdsFromListTasks(localHomeListQuery.data);
-  }, [localHomeListQuery.data, localHomeListQuery.isSuccess]);
+  const locallyProtectedEpicIds = useMemo(
+    () => combineLocallyProtectedEpicIds(localHomeProbes, localHomeListQueries),
+    [localHomeListQueries, localHomeProbes],
+  );
 
   useEffect(() => {
     if (confirmedAbsentEpicIds === null) return;
@@ -255,30 +312,47 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileSeed }) {
     // the latter is intentionally cloud-absent, so `confirmed-absent` is not
     // proof its locally protected content may be destroyed.
     //
-    // A first page whose `completeness.localRows` reports `truncated` did
-    // not carry every local-homed epic, so the locally protected exemption
-    // set is incomplete and no destructive reconciliation may rest on it.
-    const localRowsTruncated =
-      localHomeListQuery.isSuccess &&
-      localHomeListQuery.data.completeness?.localRows === "truncated";
-    const staleEpicIds = localRowsTruncated
-      ? []
-      : closableStaleEpicIds(
-          [...confirmedAbsentEpicIds],
-          locallyProtectedEpicIds,
-        );
+    const staleEpicIds = closableStaleEpicIds(
+      [...confirmedAbsentEpicIds],
+      locallyProtectedEpicIds,
+    );
     if (staleEpicIds.length > 0) {
       useComposerRunSettingsStore.getState().clearEpicRunSettings(staleEpicIds);
       tabCommandCoordinator.handleEpicAccessLoss(staleEpicIds);
     }
-  }, [
-    confirmedAbsentEpicIds,
-    localHomeListQuery.data,
-    localHomeListQuery.isSuccess,
-    locallyProtectedEpicIds,
-  ]);
+  }, [confirmedAbsentEpicIds, locallyProtectedEpicIds]);
 
   return null;
+}
+
+interface LocalHomeProbe {
+  readonly hostId: string;
+  readonly client: HostClient<HostRpcRegistry>;
+}
+
+/**
+ * A local-home exemption is trustworthy only when EVERY settled directory
+ * host returned a complete-enough first page. A missed host, a rejected
+ * request (including unsupported `epic.listTasks`), or a truncated page
+ * leaves an unprovable hole, so the destructive effect must wait rather than
+ * equate that hole with no local epics. Older successful schemas can omit the
+ * marker; absence is not a truncation claim and their rows remain useful.
+ */
+function combineLocallyProtectedEpicIds(
+  probes: ReadonlyArray<LocalHomeProbe> | null,
+  results: ReadonlyArray<UseQueryResult<ListTasksResponse>>,
+): ReadonlySet<string> | null {
+  if (probes === null || results.length !== probes.length) return null;
+  const locallyProtected = new Set<string>();
+  for (const result of results) {
+    if (!result.isSuccess) return null;
+    const localRows = result.data.completeness?.localRows;
+    if (localRows === "truncated") return null;
+    for (const epicId of locallyProtectedEpicIdsFromListTasks(result.data)) {
+      locallyProtected.add(epicId);
+    }
+  }
+  return locallyProtected;
 }
 
 /**

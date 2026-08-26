@@ -475,7 +475,7 @@ describe("<CommentSidebar /> local durability honesty", () => {
     expect(listThreadsCalls).toBe(0);
   });
 
-  it("shows checking copy when durability legs negotiated without a status", async () => {
+  it("shows checking copy when durability status is negotiated without a statement", async () => {
     if (epicHandle === null) {
       throw new Error("expected open epic handle");
     }
@@ -484,7 +484,11 @@ describe("<CommentSidebar /> local durability honesty", () => {
       durabilityPauseReason: null,
       retainedDurabilityStatus: null,
       retainedDurabilityPauseReason: null,
+      // `@1.6` legs imply the earlier `@1.4` status capability. This is a
+      // manually seeded pre-status window, so preserve both negotiated facts
+      // the real `open` transition publishes together.
       durabilityLegsNegotiated: true,
+      durabilityStatusNegotiated: true,
     });
 
     renderSidebar(epicHandle);

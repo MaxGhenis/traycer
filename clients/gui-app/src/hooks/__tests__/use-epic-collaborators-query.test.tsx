@@ -140,6 +140,7 @@ describe("useEpicCollaboratorsQuery", () => {
     renderHook(() =>
       useEpicCollaboratorsQuery("epic-open", {
         client: fakeClient,
+        enabled: true,
         poll: true,
         staleTime: EPIC_COLLABORATORS_OPEN_REFRESH_MS,
       }),
@@ -160,6 +161,7 @@ describe("useEpicCollaboratorsQuery", () => {
     renderHook(() =>
       useEpicCollaboratorsQuery("epic-closed", {
         client: fakeClient,
+        enabled: true,
         poll: undefined,
         staleTime: undefined,
       }),
@@ -183,6 +185,7 @@ describe("useEpicCollaboratorsQuery", () => {
     const hook = renderHook(() =>
       useEpicCollaboratorsQuery("epic-open", {
         client: fakeClient,
+        enabled: true,
         poll: true,
         staleTime: EPIC_COLLABORATORS_OPEN_REFRESH_MS,
       }),
@@ -212,6 +215,7 @@ describe("useEpicCollaboratorsQuery", () => {
     const hook = renderHook(() =>
       useEpicCollaboratorsQuery("epic-open", {
         client: fakeClient,
+        enabled: true,
         poll: true,
         staleTime: EPIC_COLLABORATORS_OPEN_REFRESH_MS,
       }),

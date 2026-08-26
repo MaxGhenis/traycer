@@ -6,6 +6,7 @@ import type {
 import type { WorktreeHostEntryV12 } from "@traycer/protocol/host/worktree-schemas";
 import {
   buildHistoryItemsFromTasks,
+  canDeleteHistoryItem,
   EMPTY_LOCAL_HOMED_TASK_IDS,
   collectHistoryRepos,
   filterHistoryItems,
@@ -40,6 +41,8 @@ function makeItem(
     ownership: overrides.ownership ?? "mine",
     permissionRole: overrides.permissionRole ?? "owner",
     isPinned: overrides.isPinned ?? false,
+    isLocalHome: overrides.isLocalHome,
+    isPreservedOrphan: overrides.isPreservedOrphan,
   };
 }
 
@@ -467,6 +470,74 @@ describe("home-page history helpers", () => {
 
     it("is inert when no host is selected", () => {
       expect(filterByHosts([], "any")).toEqual(["a", "b", "c", "d"]);
+    });
+  });
+
+  // T13: `canDeleteHistoryItem` now ANDs the cloud-authorization verdict into
+  // every non-local-home row, with the preserved-orphan refusal outranking it
+  // (a row that can never be deleted stays refused regardless of the
+  // verdict).
+  describe("canDeleteHistoryItem", () => {
+    it("refuses a cloud row under an unverified session", () => {
+      const item = makeItem({
+        id: "cloud-row",
+        title: "Cloud row",
+        permissionRole: "owner",
+        isLocalHome: false,
+      });
+      expect(canDeleteHistoryItem(item, false)).toBe(false);
+    });
+
+    it("keeps a local-home row deletable under an unverified session - it reclaims this machine's own disk and spends nothing", () => {
+      const item = makeItem({
+        id: "local-home-row",
+        title: "Local home row",
+        permissionRole: "owner",
+        isLocalHome: true,
+      });
+      expect(canDeleteHistoryItem(item, false)).toBe(true);
+    });
+
+    it("refuses a preserved orphan under either verdict", () => {
+      const orphan = makeItem({
+        id: "orphan-row",
+        title: "Orphan row",
+        permissionRole: "owner",
+        isPreservedOrphan: true,
+      });
+      expect(canDeleteHistoryItem(orphan, true)).toBe(false);
+      expect(canDeleteHistoryItem(orphan, false)).toBe(false);
+      // Not exempted by local-home either - a row can be both, and the
+      // undeletable-regardless-of-verdict fact outranks the spends-nothing one.
+      const localHomeOrphan = makeItem({
+        id: "local-home-orphan-row",
+        title: "Local home orphan row",
+        permissionRole: "owner",
+        isPreservedOrphan: true,
+        isLocalHome: true,
+      });
+      expect(canDeleteHistoryItem(localHomeOrphan, true)).toBe(false);
+    });
+
+    it("keeps signed-in behaviour unchanged for every role", () => {
+      const owner = makeItem({
+        id: "owner-row",
+        title: "Owner row",
+        permissionRole: "owner",
+      });
+      const editor = makeItem({
+        id: "editor-row",
+        title: "Editor row",
+        permissionRole: "editor",
+      });
+      const viewer = makeItem({
+        id: "viewer-row",
+        title: "Viewer row",
+        permissionRole: "viewer",
+      });
+      expect(canDeleteHistoryItem(owner, true)).toBe(true);
+      expect(canDeleteHistoryItem(editor, true)).toBe(true);
+      expect(canDeleteHistoryItem(viewer, true)).toBe(false);
     });
   });
 });

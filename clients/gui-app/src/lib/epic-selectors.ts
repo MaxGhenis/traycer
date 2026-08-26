@@ -287,8 +287,8 @@ export function useEpicCommentRoomAvailability(): EpicCommentRoomAvailability {
     (s) => s.retainedDurabilityPauseReason ?? null,
     null,
   );
-  const durabilityLegsNegotiated = useMaybeEpicStore(
-    (s) => s.durabilityLegsNegotiated,
+  const durabilityStatusNegotiated = useMaybeEpicStore(
+    (s) => s.durabilityStatusNegotiated,
     false,
   );
   const durabilityStatement = currentOrRetainedDurabilityStatement(
@@ -302,20 +302,12 @@ export function useEpicCommentRoomAvailability(): EpicCommentRoomAvailability {
   // legacy-peer check; that order is the whole point of the latch rather than
   // a stylistic choice.
   //
-  // `startedSubscriptionCycle` resets `durabilityLegsNegotiated` to `false`
-  // in the same block that nulls `durabilityStatus`, because a re-subscribe
-  // can renegotiate onto a different host incarnation. It deliberately does
-  // NOT clear the retained pair. So the exact state a reconnecting promoting
-  // or preserved-orphan epic passes through - no status, legs not
-  // yet renegotiated, retained still standing - is the state that reaching
-  // the legacy-peer arm first would answer `false` for, re-enabling the
-  // comment shortcut, toolbar, popovers and thread query against an epic
-  // whose comment room is still unavailable. That is precisely the window
-  // this latch was written to close, so consulting the retained value only
-  // after a check that a reconnect just falsified made the latch inert when
-  // it was needed. (The fixture that covered it set
-  // `durabilityLegsNegotiated: true` by hand, which is the opposite of what
-  // the production reconnect produces - so the ordering read as tested.)
+  // `startedSubscriptionCycle` resets the cycle's durability statement but
+  // publishes the `@1.4` negotiation result before frames arrive. It
+  // deliberately does NOT clear the retained pair. So the exact state a
+  // reconnecting promoting or preserved-orphan epic passes through - no new
+  // status, retained still standing - remains protected by that retained
+  // statement rather than re-enabling comments while the new cycle settles.
   //
   // Reordering cannot regress the pre-`@1.4` population the legacy arm
   // protects: `retainedDurabilityStatus` is written at exactly one site,
@@ -331,10 +323,12 @@ export function useEpicCommentRoomAvailability(): EpicCommentRoomAvailability {
     return unavailable === null ? { kind: "available" } : { kind: unavailable };
   }
   // No statement this cycle and none ever retained. A peer that never
-  // negotiated the legs cannot produce one at all, so gating on its silence
-  // would disable comments forever on every pre-`@1.4` host - the population
-  // that has always had them.
-  if (!durabilityLegsNegotiated) {
+  // negotiated the durability-status minor cannot produce one at all, so
+  // gating on its silence would disable comments forever on every pre-`@1.4`
+  // host - the population that has always had them. The @1.6 legs are a
+  // separate capability and say nothing about whether @1.4/@1.5 peers can
+  // still report the status that this branch is waiting for.
+  if (!durabilityStatusNegotiated) {
     return { kind: "available" };
   }
   // A negotiated peer that has not spoken yet, about an epic nothing has ever

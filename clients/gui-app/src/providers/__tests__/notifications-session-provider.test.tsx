@@ -4394,6 +4394,51 @@ describe("<NotificationsSessionProvider />", () => {
       expect(streamClient.subscribedMethods).toEqual([]);
     });
 
+    it("tears down every local lane when a signed-in session is suspended for signing-in", async () => {
+      const queryClient = new QueryClient();
+      const streamClient = new MockWsStreamClient();
+      hostState.id = mockLocalHostEntry.hostId;
+      streamState.client = streamClient;
+      streamState.cloudFeedSupport = "supported";
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <NotificationsSessionProvider>
+            <div />
+          </NotificationsSessionProvider>
+        </QueryClientProvider>,
+      );
+
+      act(() => {
+        resetAuth("signed-in", "alice@example.com", "alice@example.com");
+      });
+      await waitFor(() => {
+        expect(streamClient.subscribedMethods).toEqual([
+          "agent.activity.subscribe",
+          "notifications.subscribe",
+          "host.notifications.cloudFeed.subscribe",
+          "host.notifications.feed.subscribe",
+        ]);
+      });
+      const sessions = [
+        streamClient.sessionFor("agent.activity.subscribe"),
+        streamClient.sessionFor("notifications.subscribe"),
+        streamClient.sessionFor("host.notifications.cloudFeed.subscribe"),
+        streamClient.sessionFor("host.notifications.feed.subscribe"),
+      ];
+
+      act(() => {
+        resetAuth("signing-in", null, null);
+      });
+
+      await waitFor(() => {
+        expect(sessions.map((session) => session.closeCount)).toEqual([
+          1, 1, 1, 1,
+        ]);
+      });
+      expect(streamClient.subscribedMethods).toHaveLength(4);
+    });
+
     it("demoting signed-in to unverified closes only the cloud lanes, leaving the local pair open exactly once", async () => {
       const queryClient = new QueryClient();
       const streamClient = new MockWsStreamClient();

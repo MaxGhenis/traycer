@@ -1,6 +1,6 @@
 import { createElement, type ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   ListTaskLight,
@@ -8,10 +8,15 @@ import type {
   ListTasksResponse,
 } from "@traycer/protocol/host/epic/unary-schemas";
 import { hostRpcRegistry } from "@traycer/protocol/host/registry";
+import type { ConnectionManifest } from "@traycer/protocol/framework/index";
 import {
   decodeResponsePayload,
   prepareRequestPayload,
 } from "@traycer-clients/shared/host-transport/ws-rpc-client";
+import {
+  recordNegotiatedHostManifest,
+  resetNegotiatedManifests,
+} from "@traycer-clients/shared/host-transport/negotiated-manifest-registry";
 import { useCloudEpicTasksQuery } from "@/hooks/epics/use-cloud-epic-tasks-query";
 import { useEpicRecordViewed } from "@/hooks/epic/use-epic-record-viewed-mutation";
 import { useEpicSetPinned } from "@/hooks/epic/use-epic-set-pinned-mutation";
@@ -146,6 +151,26 @@ describe("useCloudEpicTasksQuery", () => {
       shareableTeams: [],
       subscriptionStatus: null,
     });
+    // Every existing test in this file predates the local-first minor gate and
+    // exercises behaviour that assumes the negotiated host already serves it -
+    // register `epic.listTasks@1.6` for the mocked host so those fixtures keep
+    // their pre-existing meaning. The T18 negotiated-version gate itself is
+    // pinned by the tests below, which override this per case.
+    recordNegotiatedHostManifest(HOST_ID, {
+      "epic.listTasks": { major: 1, minor: 6 },
+    });
+  });
+
+  afterEach(() => {
+    // The T18 cases below flip `useAuthStore` back and forth (unverified <->
+    // signed-in) within the SAME describe run. This file otherwise relies on
+    // every other test's hook staying mounted with steady, never-revisited
+    // state (see the `signed-out` test's own comment on this), so without an
+    // explicit unmount here a surviving hook from an earlier test reacts to a
+    // later test's auth transition and dispatches into that later test's
+    // shared `mockHostClient.request` mock.
+    cleanup();
+    resetNegotiatedManifests();
   });
 
   it("admits #4's unverified stored identity to local-first History", async () => {
@@ -1473,5 +1498,217 @@ describe("useCloudEpicTasksQuery", () => {
       ]);
     });
     expect(result.current.completeness).toEqual(firstPage.completeness);
+  });
+
+  describe("T18: the negotiated epic.listTasks version gates an unverified session's initial leg", () => {
+    function setUnverified(): void {
+      useAuthStore.setState({
+        status: "unverified",
+        profile: {
+          userId: USER_ID,
+          userName: "Test User",
+          email: "test@example.com",
+        },
+        contextMetadata: { userId: USER_ID, username: "test-user" },
+        shareableTeams: [],
+        subscriptionStatus: null,
+      });
+    }
+
+    // ANNOTATED, and both fixture lists in this describe must stay annotated.
+    // Left to inference, `{}` widens to `{ "epic.listTasks"?: undefined }` in a
+    // union with the populated arms, and that arm is not assignable to
+    // `ConnectionManifest` (`Record<string, SchemaVersion>`) - "the key is
+    // present and holds nothing" is a different statement from "the key is
+    // absent", which is exactly the distinction these fixtures exist to draw.
+    const NEGOTIATION_FIXTURES: ReadonlyArray<{
+      readonly label: string;
+      readonly manifest: ConnectionManifest | null;
+    }> = [
+      // `null` - no handshake recorded for the host at all.
+      { label: "no negotiated manifest (null)", manifest: null },
+      // `false` - handshook, but the method is absent from the manifest.
+      { label: "method absent from manifest (false)", manifest: {} },
+      {
+        label: "pre-local-first minor (1.5)",
+        manifest: { "epic.listTasks": { major: 1, minor: 5 } },
+      },
+    ];
+
+    it.each(NEGOTIATION_FIXTURES)(
+      "disables the initial leg for an unverified session when the negotiated version is $label",
+      async ({ manifest }) => {
+        setUnverified();
+        resetNegotiatedManifests();
+        if (manifest !== null) {
+          recordNegotiatedHostManifest(HOST_ID, manifest);
+        }
+        mockHostClient.request.mockResolvedValue({
+          tasks: [taskLight("should-not-dispatch", "Must not be requested")],
+          hasMore: false,
+        });
+        const queryClient = new QueryClient({
+          defaultOptions: {
+            queries: { retry: false },
+            mutations: { retry: false },
+          },
+        });
+        const { result, unmount } = renderHook(
+          () =>
+            useCloudEpicTasksQuery(LIST_CLOUD_TASKS_REQUEST, {
+              enabled: true,
+            }),
+          { wrapper: makeWrapper(queryClient) },
+        );
+
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockHostClient.request).not.toHaveBeenCalled();
+        expect(result.current.tasks).toEqual([]);
+        // The refusal must be a SETTLED fact a caller can render an
+        // explanation for, not merely silence: `query.isPending` alone stays
+        // `true` forever for a disabled TanStack query (no data, never will
+        // be), which is exactly the false "still loading" statement
+        // `initialLegRefused` exists to let a caller correct.
+        expect(result.current.initialLegRefused).toBe(true);
+        expect(result.current.query.isPending).toBe(true);
+        // This file has no global RTL `cleanup()` (see the `signed-out` test's
+        // own comment above) - a surviving hook stays subscribed to the auth
+        // store and the negotiated-manifest registry, both of which the NEXT
+        // case in this parametrized run mutates, so a leaked mount here would
+        // dispatch into a later case's assertions.
+        unmount();
+      },
+    );
+
+    it("enables the initial leg for an unverified session once the negotiated version is 1.6", async () => {
+      setUnverified();
+      resetNegotiatedManifests();
+      recordNegotiatedHostManifest(HOST_ID, {
+        "epic.listTasks": { major: 1, minor: 6 },
+      });
+      mockHostClient.request.mockResolvedValue({
+        tasks: [taskLight("unverified-1-6", "Local-first serving host")],
+        hasMore: false,
+      });
+      const queryClient = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false },
+          mutations: { retry: false },
+        },
+      });
+      const { result, unmount } = renderHook(
+        () =>
+          useCloudEpicTasksQuery(LIST_CLOUD_TASKS_REQUEST, { enabled: true }),
+        { wrapper: makeWrapper(queryClient) },
+      );
+
+      await waitFor(() => {
+        expect(taskLightIds(result.current.tasks)).toEqual(["unverified-1-6"]);
+      });
+      expect(mockHostClient.request.mock.calls[0]?.[1]).toMatchObject({
+        localFirstPhase: "initial",
+      });
+      expect(result.current.initialLegRefused).toBe(false);
+      unmount();
+    });
+
+    // The unverified fixtures plus the 1.6 arm: a signed-in session must
+    // dispatch across the WHOLE range, including the two the unverified session
+    // refuses on. Annotated for the reason spelled out above `NEGOTIATION_FIXTURES`.
+    const SIGNED_IN_NEGOTIATION_FIXTURES: ReadonlyArray<{
+      readonly label: string;
+      readonly manifest: ConnectionManifest | null;
+    }> = [
+      ...NEGOTIATION_FIXTURES,
+      {
+        label: "local-first minor (1.6)",
+        manifest: { "epic.listTasks": { major: 1, minor: 6 } },
+      },
+    ];
+
+    it.each(SIGNED_IN_NEGOTIATION_FIXTURES)(
+      "a signed-in session always dispatches the initial leg regardless of the negotiated version ($label)",
+      async ({ manifest }) => {
+        // `beforeEach` already set `signed-in`; this pins that the capability
+        // verdict alone is what a `signed-in` session's initial leg turns on
+        // - the negotiated-version test above only matters for `unverified`.
+        resetNegotiatedManifests();
+        if (manifest !== null) {
+          recordNegotiatedHostManifest(HOST_ID, manifest);
+        }
+        mockHostClient.request.mockResolvedValue({
+          tasks: [taskLight("signed-in-dispatches", "Always requested")],
+          hasMore: false,
+        });
+        const queryClient = new QueryClient({
+          defaultOptions: {
+            queries: { retry: false },
+            mutations: { retry: false },
+          },
+        });
+        const { result, unmount } = renderHook(
+          () =>
+            useCloudEpicTasksQuery(LIST_CLOUD_TASKS_REQUEST, {
+              enabled: true,
+            }),
+          { wrapper: makeWrapper(queryClient) },
+        );
+
+        await waitFor(() => {
+          expect(taskLightIds(result.current.tasks)).toEqual([
+            "signed-in-dispatches",
+          ]);
+        });
+        expect(result.current.initialLegRefused).toBe(false);
+        unmount();
+      },
+    );
+
+    // `refetch()` is a caller OVERRIDE of TanStack's own `enabled` gate
+    // (query-core 5.101.4: `refetch -> fetch -> #executeFetch`, no gate
+    // consulted) - the same hazard already flagged for the sharing panel's
+    // manual refresh. The hook's returned `refetch` must consult
+    // `initialLegRefused` itself rather than relying on the declarative
+    // `enabled` to have covered it, or a refresh button / pull-to-refresh
+    // under `unverified` + a pre-1.6 host dispatches a request the render-time
+    // gate was supposed to prevent.
+    it("makes refetch() a no-op while the initial leg is refused", async () => {
+      setUnverified();
+      resetNegotiatedManifests();
+      recordNegotiatedHostManifest(HOST_ID, {
+        "epic.listTasks": { major: 1, minor: 5 },
+      });
+      mockHostClient.request.mockResolvedValue({
+        tasks: [taskLight("should-not-dispatch", "Must not be requested")],
+        hasMore: false,
+      });
+      const queryClient = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false },
+          mutations: { retry: false },
+        },
+      });
+      const { result, unmount } = renderHook(
+        () =>
+          useCloudEpicTasksQuery(LIST_CLOUD_TASKS_REQUEST, { enabled: true }),
+        { wrapper: makeWrapper(queryClient) },
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(result.current.initialLegRefused).toBe(true);
+
+      act(() => {
+        result.current.refetch();
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockHostClient.request).not.toHaveBeenCalled();
+      unmount();
+    });
   });
 });

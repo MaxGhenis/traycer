@@ -13,17 +13,25 @@ const testState: {
   signOut: () => Promise<void>;
   openExternalLink: (url: string) => Promise<void>;
   openSettings: () => void;
+  isPending: boolean;
+  hostRequiresCloudToList: boolean;
 } = {
   items: [],
   signOut: () => Promise.resolve(),
   openExternalLink: () => Promise.resolve(),
   openSettings: () => undefined,
+  isPending: false,
+  hostRequiresCloudToList: false,
 };
 
 vi.mock("@/hooks/home/use-history-query", () => ({
   useHistoryQuery: () => ({
-    data: { items: testState.items, totalCount: testState.items.length },
-    isPending: false,
+    data: {
+      items: testState.items,
+      totalCount: testState.items.length,
+      hostRequiresCloudToList: testState.hostRequiresCloudToList,
+    },
+    isPending: testState.isPending,
     isFetching: false,
     error: null,
     refetch: () => Promise.resolve(),
@@ -142,6 +150,8 @@ describe("MobileNavDrawer", () => {
     testState.signOut = () => Promise.resolve();
     testState.openExternalLink = () => Promise.resolve();
     testState.openSettings = () => undefined;
+    testState.isPending = false;
+    testState.hostRequiresCloudToList = false;
     useMobileNavStore.setState({ open: true });
     useAuthStore.setState({
       profile: {
@@ -737,6 +747,28 @@ describe("MobileNavDrawer", () => {
       const rows = await screen.findAllByTestId("mobile-nav-task-row");
 
       expect(rows[0]?.querySelector("svg")).toBeNull();
+    });
+
+    // A refused initial leg (no cloud verdict, host too old to list locally)
+    // is a SETTLED refusal, not a load in progress - `isPending: false` is
+    // what makes that true, and it is also exactly what makes "No tasks yet"
+    // reachable for a session that was simply never asked. Both false
+    // statements must be absent at once, or the fix for one just becomes the
+    // other.
+    it("says sign-in must be confirmed instead of loading forever or claiming there are no tasks", async () => {
+      testState.items = [];
+      testState.isPending = false;
+      testState.hostRequiresCloudToList = true;
+      renderDrawer();
+
+      const notice = await screen.findByTestId(
+        "mobile-nav-task-list-host-requires-cloud",
+      );
+      expect(notice.textContent).toContain(
+        "Tasks can't be listed until your sign-in is confirmed",
+      );
+      expect(screen.queryByTestId("mobile-nav-task-list-loading")).toBeNull();
+      expect(screen.queryByText("No tasks yet")).toBeNull();
     });
   });
 });

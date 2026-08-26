@@ -245,7 +245,9 @@ export function setEpicLocalHomeInCloudTaskCaches(
 ): void {
   patchMatchingQueries(
     queryClient,
-    (query) => cloudEpicTasksQueryKeyMatchesScope(query.queryKey, scope),
+    (query) =>
+      cloudEpicTasksQueryKeyMatchesScope(query.queryKey, scope) ||
+      cloudEpicTasksLastKnownQueryKeyMatchesScope(query.queryKey, scope),
     (response: ListTasksResponse) =>
       setEpicLocalHomeInCloudTasksResponse(response, epicId, localHome),
   );

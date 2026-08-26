@@ -21,6 +21,10 @@ import {
   type AuthStatus,
 } from "@/stores/auth/auth-store";
 import { useReactiveHostReadiness } from "@/hooks/host/use-reactive-host-readiness";
+import {
+  useHostNegotiatedMethodVersion,
+  type NegotiatedMethodVersion,
+} from "@/hooks/host/use-host-negotiated-method-version";
 import { toastFromHostError } from "@/lib/host-error-toast";
 import {
   useCloudEpicTasksPagesStore,
@@ -114,6 +118,24 @@ export interface CloudEpicTasksQueryResult {
    * over a demonstrably incomplete list the moment one tail is loaded.
    */
   readonly completeness: ListTasksCompleteness | null;
+  /**
+   * No initial page was requested AND none ever will be under these
+   * conditions: this session holds no cloud verdict and the negotiated host
+   * cannot answer `epic.listTasks` locally.
+   *
+   * A caller MUST read this, because the shape it leaves behind is
+   * indistinguishable from loading: a query that never runs keeps
+   * `data === undefined`, which TanStack reports as `status: "pending"`
+   * forever. Rendering that as a spinner is a false statement - nothing is in
+   * flight - and rendering it as an empty list is a worse one, since the
+   * account's tasks are neither absent nor known.
+   *
+   * Deliberately NOT folded into `completeness`. That field is the HOST's own
+   * statement about a page it served; this is the absence of any page at all,
+   * and borrowing the host's vocabulary for it would attribute to the host a
+   * claim it never made.
+   */
+  readonly initialLegRefused: boolean;
 }
 
 export type CloudEpicTasksFirstPageQuery = UseQueryResult<ListTasksResponse>;
@@ -154,6 +176,52 @@ function registerCloudEpicTasksClientIfAvailable(
   registerCloudEpicTasksClient(hostId, client);
 }
 
+/**
+ * The minor at which `epic.listTasks` gained `localFirstPhase` - the directive
+ * that makes the initial leg a LOCAL read the host answers off this machine's
+ * disk, and the one that lets it report `cloudPage: "pending"` so the
+ * separately-authorized revalidation can take over.
+ */
+const LIST_TASKS_LOCAL_FIRST_MINOR = 6;
+
+/**
+ * Whether the negotiated host actually honours the local-first initial leg.
+ *
+ * This is what keeps the widened admission from becoming a silent cloud spend,
+ * and the mechanism is easy to miss because the REQUEST looks identical either
+ * way: `dispatchScopedPageWithCurrentRequestContext` always sends
+ * `localFirstPhase`, but a pre-`@1.6` peer parses it against a frozen request
+ * schema that STRIPS the field (`lib/cloud-epic-tasks-query/query.ts`). What
+ * that host then runs is the released one-shot cloud-backed list, on the
+ * retained credential - and because its response cannot carry
+ * `cloudPage: "pending"`, the revalidation gate that exists to prevent exactly
+ * this spend is never consulted. The spend happens on the FIRST leg, under a
+ * flag the host silently discarded.
+ *
+ * So an unverified session must decide before it constructs the request, from
+ * the negotiated version rather than from anything in the response.
+ *
+ * FAILS CLOSED on both non-version answers, and they are different facts that
+ * happen to warrant the same refusal here:
+ *  - `false` - the host handshook and does not advertise the method at all.
+ *  - `null` - unknown: no handshake yet, no bound host, or a name-only legacy
+ *    manifest record. `useHostNegotiatedMethodVersion` keeps these separate
+ *    precisely so a decision that could STRAND data does not assert absence
+ *    without evidence; this one strands nothing, because the manifest arriving
+ *    re-renders the hook and the query enables itself the moment the host says
+ *    `1.6`.
+ *
+ * An authorized (`signed-in`) session never reaches this test - it may spend
+ * the capability whatever the peer's minor is - so legacy behavior for the
+ * signed-in cohort is unchanged.
+ */
+function negotiatedListTasksServesLocalFirst(
+  version: NegotiatedMethodVersion,
+): boolean {
+  if (version === null || version === false) return false;
+  return version.major === 1 && version.minor >= LIST_TASKS_LOCAL_FIRST_MINOR;
+}
+
 export function useCloudEpicTasksQuery(
   request: ListCloudTasksRequest | undefined,
   options: { readonly enabled: boolean },
@@ -170,8 +238,35 @@ export function useCloudEpicTasksQuery(
   );
   registerCloudEpicTasksClientIfAvailable(hostId, client);
 
+  // THE CLOUD HALF of the local-first split, and the only half that keeps the
+  // `signed-in` verdict. `resolveCloudTasksUserId` admits the local plane; this
+  // decides whether a revalidation may be SPENT on top of it.
+  const authorizesCloudLeg = authorizesCloudCapability(authIdentity.status);
+  // ...and whether the INITIAL leg is a spend at all, which is a fact about the
+  // serving host rather than about this session.
+  const listTasksVersion = useHostNegotiatedMethodVersion(
+    client,
+    "epic.listTasks",
+  );
+  const initialLegIsLocalFirst =
+    negotiatedListTasksServesLocalFirst(listTasksVersion);
+  const mayDispatchInitialLeg = authorizesCloudLeg || initialLegIsLocalFirst;
+  // The refusal, narrowed to the case a caller can render an explanation for:
+  // this session and this host between them cannot produce a listing, and no
+  // further waiting changes that. The OTHER disabled states are deliberately
+  // excluded - a null host or user id is a transient not-ready, and reporting
+  // it as a refusal would put a permanent explanation on screen during startup.
+  const initialLegRefused =
+    options.enabled &&
+    hostId !== null &&
+    userId !== null &&
+    !mayDispatchInitialLeg;
+
   const query = useQuery<ListTasksResponse>(
-    !options.enabled || hostId === null || userId === null
+    !options.enabled ||
+      hostId === null ||
+      userId === null ||
+      !mayDispatchInitialLeg
       ? {
           queryKey: uiQueryKeys.cloudEpicTasksDisabled(),
           queryFn: (): Promise<ListTasksResponse> =>
@@ -317,11 +412,6 @@ export function useCloudEpicTasksQuery(
     },
     [queryClient],
   );
-
-  // THE CLOUD HALF of the local-first split, and the only half that keeps the
-  // `signed-in` verdict. `resolveCloudTasksUserId` admits the local plane; this
-  // decides whether a revalidation may be SPENT on top of it.
-  const authorizesCloudLeg = authorizesCloudCapability(authIdentity.status);
 
   useEffect(() => {
     if (
@@ -479,8 +569,15 @@ export function useCloudEpicTasksQuery(
   ]);
 
   const refetch = useCallback(() => {
+    // `refetch()` is a caller OVERRIDE of `enabled` in TanStack v5 -
+    // `refetch → fetch → #executeFetch`, with no gate consulted - so the
+    // declarative refusal above does not cover the refresh button or
+    // pull-to-refresh. Without this, the one gesture a user reaches for when
+    // History looks wrong is the gesture that dispatches the very cloud
+    // request the refusal exists to prevent.
+    if (initialLegRefused) return;
     void queryRefetch();
-  }, [queryRefetch]);
+  }, [initialLegRefused, queryRefetch]);
 
   return {
     hostId,
@@ -494,6 +591,7 @@ export function useCloudEpicTasksQuery(
     isCloudPagePending:
       !isPlaceholderData && isPendingLocalFirstResponse(queryData),
     completeness,
+    initialLegRefused,
   };
 }
 

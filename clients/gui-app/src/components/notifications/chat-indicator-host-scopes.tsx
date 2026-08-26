@@ -53,6 +53,7 @@ export function ChatIndicatorHostScopes(props: {
   readonly children: ReactNode;
 }): ReactNode {
   const isCloud = useNotificationFeedMode() === "cloud";
+  const inherited = useContext(NotificationIndicatorsContext);
   const allChatIds = useMemo(
     () => props.scopes.flatMap((scope) => [...scope.chatIds]),
     [props.scopes],
@@ -62,13 +63,20 @@ export function ChatIndicatorHostScopes(props: {
   // host-INDEPENDENT: a cloud row produced on any machine is already in this
   // client's snapshot, which is the whole reason cloud mode exists. Only the
   // host-local bits below have to be asked for per host.
-  const base = useMemo(
-    () =>
-      isCloud
-        ? selectCloudNotificationIndicators(cloudRows, NO_EPIC_IDS, allChatIds)
-        : EMPTY_INDICATOR_STATE_RESPONSE,
-    [isCloud, cloudRows, allChatIds],
-  );
+  const base = useMemo<SurfaceNotificationIndicators>(() => {
+    if (!isCloud) return inherited;
+    // This scope often sits beneath an Epic-indicator provider. Keep that
+    // outer answer, then add only the cloud chat rows this fan-out owns;
+    // replacing the base would erase every header Epic light as soon as a
+    // chat-host scope mounted.
+    return {
+      ...mergeIndicatorStateResponses(
+        inherited,
+        selectCloudNotificationIndicators(cloudRows, NO_EPIC_IDS, allChatIds),
+      ),
+      byOriginHostId: inherited.byOriginHostId,
+    };
+  }, [isCloud, inherited, cloudRows, allChatIds]);
   return (
     <NotificationIndicatorsProvider indicators={base}>
       <ChatIndicatorHostLayers

@@ -145,6 +145,10 @@ import {
   useCloudChatList,
 } from "@/hooks/chats/use-cloud-chat-queries";
 import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
+import {
   publicationTargetMap,
   useChatPublicationTargets,
 } from "@/hooks/chats/use-chat-publication-targets";
@@ -755,8 +759,18 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
   // shared-with-task glyph must reflect the tab's owning host, not whichever
   // host the app is active on.
   const sessionHostClient = useEpicSessionHostClient();
+  // `epic.listCollaborators` is a cloud read, so it waits on a verdict. The
+  // glyph this feeds degrades to HIDDEN, not to a "not shared" claim:
+  // `taskHasCollaborators` already reads `undefined` as solo so the indicator
+  // cannot flash during load, and `shouldShowSharedWithTaskIndicator` only ever
+  // ADDS a glyph - an unauthorized session shows one fewer badge and asserts
+  // nothing about who has access.
+  const cloudAuthorized = useAuthStore((state) =>
+    authorizesCloudCapability(state.status),
+  );
   const collaboratorsQuery = useEpicCollaboratorsQuery(epicId, {
     client: sessionHostClient,
+    enabled: cloudAuthorized,
     poll: undefined,
     staleTime: undefined,
   });
@@ -1121,7 +1135,20 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
     filterVisibleIds === null &&
     allRootIds.length === 0 &&
     unfoldedCloudChats.length === 0 &&
-    isCloudChatListSettled(cloudChats) &&
+    isCloudChatListSettled(cloudChats, cloudAuthorized) &&
+    !hasPendingRootRows;
+  // The unauthorized TWIN of the arm above, and it is a separate state rather
+  // than a suppression of that one. "No agents yet." is a claim about the TASK,
+  // and an unverified session has no basis for it: the cloud list was never
+  // asked, so a task whose agents all live on other devices looks identical to
+  // an empty one. Going silent instead would be the other failure - this panel
+  // is where a user starts their first agent, and the onboarding line is the
+  // only thing telling them how.
+  const showCloudUncheckedEmptyState =
+    filterVisibleIds === null &&
+    allRootIds.length === 0 &&
+    unfoldedCloudChats.length === 0 &&
+    !cloudAuthorized &&
     !hasPendingRootRows;
   // Rows exist and survive the interface/ownership filters, yet archiving hid
   // every one of them. Distinct from both other arms: the tree is neither empty
@@ -1146,6 +1173,15 @@ export function ChatTreePanelBody(props: ChatTreePanelBodyProps) {
         title="No agents yet."
         description="Add an agent and choose a Chat or Terminal interface."
         testId="epic-chat-sidebar-empty"
+      />
+    );
+  } else if (showCloudUncheckedEmptyState) {
+    panelContent = (
+      <SidebarPanelEmptyState
+        icon={MessagesSquare}
+        title="No agents on this device."
+        description="Agents on your other devices can't be checked until your sign-in is confirmed. Add an agent to start one here."
+        testId="epic-chat-sidebar-cloud-unchecked-empty"
       />
     );
   } else if (filteredTreeEmpty && searchActive) {

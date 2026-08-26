@@ -83,6 +83,7 @@ import {
   EpicsListError,
   EpicsListFilteredEmpty,
   EpicsListFilteringLoading,
+  EpicsListHostRequiresCloudToList,
   EpicsListLoading,
   EpicsListShowMore,
   HistoryCompletenessNotice,
@@ -140,6 +141,11 @@ const NO_DELETE_PERMISSION_TOOLTIP =
   "You don't have permission to delete this task.";
 const PRESERVED_ORPHAN_DELETE_TOOLTIP =
   "This epic's cloud copy was already deleted. Only this device's edits remain, so there is nothing left to delete.";
+// States the CONDITION rather than predicting a reconnect, for the same reason
+// the pin tooltip does: the session may be unverified because authn refused the
+// credential, which no amount of waiting fixes.
+const UNVERIFIED_SESSION_DELETE_TOOLTIP =
+  "Your sign-in couldn't be confirmed, so cloud changes are paused. Deleting this task will work again once it reconnects.";
 const HISTORY_REFRESH_TIMEOUT_MS = 10_000;
 
 export type EpicsListPanelVariant = "page" | "embedded" | "picker";
@@ -374,6 +380,11 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
   });
   const { chatHostFilterSupported, chatHostFilterUnsupported } =
     useChatHostFilterGate(hostId, data);
+  // `=== true` rather than a straight read, for the reason `historyPanelView`
+  // spells out about `completeness`: this field is declared non-optional but
+  // partial fixtures omit it, and an `undefined` must read as "not refused"
+  // rather than being coerced into the branch that suppresses every row.
+  const hostRequiresCloudToList = data?.hostRequiresCloudToList === true;
   const availableRepos = view.availableRepos;
   const availableWorkspaces = view.availableWorkspaces;
   const facets = view.facets;
@@ -443,6 +454,13 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
   // select/delete/sweep flow, so every entry point into it is gated here
   // rather than in the chrome that merely renders it.
   const selectionEnabled = variant !== "picker";
+  // Deletion of a cloud-backed row is a capability spend on the account, and
+  // History renders under `unverified` where no verdict is held. Read once for
+  // the whole panel and hand it to `canDeleteHistoryItem` at each of the three
+  // admission points below - selection, the row control, and the confirmation.
+  const cloudAuthorized = useAuthStore((state) =>
+    authorizesCloudCapability(state.status),
+  );
 
   // A sweep target is a SET: one id from a row action, the whole selection
   // from the bulk action. The set is load-bearing - a worktree shared between
@@ -469,9 +487,9 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
   const selectableItemIds = useMemo(
     () =>
       items
-        .filter((item) => canDeleteHistoryItem(item))
+        .filter((item) => canDeleteHistoryItem(item, cloudAuthorized))
         .map((item) => item.epicId),
-    [items],
+    [cloudAuthorized, items],
   );
   const selectableIdSet = useMemo(
     () => new Set(selectableItemIds),
@@ -533,7 +551,33 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
 
   const handleConfirmDelete = () => {
     if (pendingDeleteIds === null) return;
-    const ids = pendingDeleteIds;
+    // The verdict is re-read HERE, from the store, rather than trusted from the
+    // render that opened this dialog. A confirmation is an unbounded pause with
+    // a human in it, and `unverified` arrives asynchronously - a wake, a failed
+    // refresh, an authn outage - so the session that opened the dialog is not
+    // necessarily the session that confirms it. Gating only at selection time
+    // leaves an already-open dialog dispatching `epic.batchDelete` on a bearer
+    // the cloud stopped vouching for a minute ago.
+    //
+    // Re-FILTERED rather than refused wholesale, because the local-home rows in
+    // a mixed selection are still deletable: they reclaim this machine's disk
+    // and spend nothing. A pending id whose row is no longer in `items` cannot
+    // be proven local-home, so it survives only while authorized - the one arm
+    // that has to fail closed, since "unknown row" is exactly what a withdrawn
+    // verdict must not be allowed to wave through.
+    const authorizedNow = authorizesCloudCapability(
+      useAuthStore.getState().status,
+    );
+    const itemsByEpicId = new Map(items.map((item) => [item.epicId, item]));
+    const ids = pendingDeleteIds.filter((id) => {
+      const item = itemsByEpicId.get(id);
+      if (item === undefined) return authorizedNow;
+      return canDeleteHistoryItem(item, authorizedNow);
+    });
+    if (ids.length === 0) {
+      closeDeleteDialog();
+      return;
+    }
     const approvedWorktrees = worktreeCandidates
       .filter((candidate) => isWorktreePathChecked(candidate.worktreePath))
       .map((candidate) => ({
@@ -681,6 +725,7 @@ function EpicsListPanelBody(props: EpicsListPanelBodyProps): ReactNode {
             isFetching={isFetching}
             hasActiveFilters={hasActiveFilters}
             chatHostFilterUnsupported={chatHostFilterUnsupported}
+            hostRequiresCloudToList={hostRequiresCloudToList}
             items={items}
             onRetry={handleRetry}
             selectionMode={selectionMode}
@@ -1107,6 +1152,7 @@ function HistoryListBody(props: HistoryListBodyProps): ReactNode {
         isFetching={props.isFetching}
         hasActiveFilters={props.hasActiveFilters}
         chatHostFilterUnsupported={props.chatHostFilterUnsupported}
+        hostRequiresCloudToList={props.hostRequiresCloudToList}
         items={props.items}
         completeness={props.completeness}
         cloudPagePending={props.cloudPagePending}
@@ -1138,6 +1184,7 @@ function HistoryListBody(props: HistoryListBodyProps): ReactNode {
         isFetching={props.isFetching}
         hasActiveFilters={props.hasActiveFilters}
         chatHostFilterUnsupported={props.chatHostFilterUnsupported}
+        hostRequiresCloudToList={props.hostRequiresCloudToList}
         items={props.items}
         onRetry={props.onRetry}
         selectionMode={props.selectionMode}
@@ -1171,6 +1218,12 @@ interface EpicsListBodyProps {
   readonly isFetching: boolean;
   readonly hasActiveFilters: boolean;
   readonly chatHostFilterUnsupported: boolean;
+  /**
+   * Nothing was asked for: no cloud verdict, and a host that cannot list
+   * locally. Rendered ahead of every other empty branch - see
+   * `EpicsListHostRequiresCloudToList` for why each alternative is a lie.
+   */
+  readonly hostRequiresCloudToList: boolean;
   readonly items: ReadonlyArray<HistoryItem>;
   readonly onRetry: () => void;
   readonly selectionMode: boolean;
@@ -1207,6 +1260,7 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
     isFetching,
     hasActiveFilters,
     chatHostFilterUnsupported,
+    hostRequiresCloudToList,
     items,
     onRetry,
     selectionMode,
@@ -1246,6 +1300,12 @@ function EpicsListBody(props: EpicsListBodyProps): ReactNode {
 
   if (error !== null) {
     return <EpicsListError error={error} onRetry={onRetry} />;
+  }
+  // Ahead of the spinner, because this state IS the spinner's false positive:
+  // the underlying query never ran, so it reports `pending` forever and every
+  // downstream branch below would describe a load that is not happening.
+  if (hostRequiresCloudToList) {
+    return <EpicsListHostRequiresCloudToList />;
   }
   if (isPending) {
     return <EpicsListLoading />;
@@ -1491,12 +1551,22 @@ const EpicsListRow = memo(function EpicsListRow(props: EpicsListRowProps) {
   });
   const displayTitle = historyItemDisplayTitle(item);
   const canEditTitle = canEditHistoryItemTitle(item);
-  const canDeleteItem = canDeleteHistoryItem(item);
+  // The same verdict the panel gates selection on, read here too rather than
+  // threaded down as a prop: this row renders for a picker variant that never
+  // computes the panel's copy, and a control that admits on a rule its own
+  // panel does not is how the class reopens at a second surface.
+  const cloudAuthorized = useAuthStore((state) =>
+    authorizesCloudCapability(state.status),
+  );
+  const canDeleteItem = canDeleteHistoryItem(item, cloudAuthorized);
   const selectionDisabled = historySelectionDisabled(
     selectionMode,
     canDeleteItem,
   );
-  const deleteDisabledTooltip = historyDeleteDisabledTooltip(item);
+  const deleteDisabledTooltip = historyDeleteDisabledTooltip(
+    item,
+    cloudAuthorized,
+  );
   const { mutate: renameEpicTitle, isPending: isRenamePending } =
     useEpicUpdateTitle();
   const openHistoryItem = useHistoryOpenItem({ onSelectEpic, onOpenItem });
@@ -1889,11 +1959,23 @@ function historySelectionDisabled(
   return selectionMode && !canDeleteItem;
 }
 
-function historyDeleteDisabledTooltip(item: HistoryItem): string {
+function historyDeleteDisabledTooltip(
+  item: HistoryItem,
+  cloudAuthorized: boolean,
+): string {
   // Ahead of the role arms: a preserved orphan can carry an `owner` role and
   // still be undeletable, so a role-derived reason would read as a permissions
   // problem the user could fix by asking someone.
   if (item.isPreservedOrphan === true) return PRESERVED_ORPHAN_DELETE_TOOLTIP;
+  // Also ahead of them, and for the sharper version of that reason: an
+  // unverified session leaves every role on screen exactly as it was, so a
+  // withdrawn verdict reported as "you don't have permission" sends the user to
+  // ask a collaborator for access they already hold. Behind the orphan arm
+  // though - that row could never be deleted, verdict or not, and naming the
+  // recoverable condition for it would be the same misdirection in reverse.
+  if (!cloudAuthorized && item.isLocalHome !== true) {
+    return UNVERIFIED_SESSION_DELETE_TOOLTIP;
+  }
   if (item.permissionRole === "viewer") return VIEWER_DELETE_TOOLTIP;
   return NO_DELETE_PERMISSION_TOOLTIP;
 }

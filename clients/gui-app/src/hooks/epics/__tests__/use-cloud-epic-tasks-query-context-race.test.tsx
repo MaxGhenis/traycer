@@ -70,6 +70,25 @@ vi.mock("@/lib/host", () => ({
   }),
 }));
 
+// `useCloudEpicTasksQuery` reads the negotiated `epic.listTasks` version to
+// decide whether an UNVERIFIED session's initial leg is a local read or a cloud
+// spend. Every test here is `signed-in`, so that gate is already open and the
+// version is irrelevant to what this file is about - but the real hook
+// subscribes to `client.onChange` to follow client rebinding, and `onChange` is
+// exactly the spy these tests count to prove no request-context WAIT was
+// entered. Left unmocked it adds a second, unrelated subscriber and that proxy
+// stops discriminating.
+//
+// Mocked rather than adjusting the counts, deliberately: the counts ARE the
+// safety assertions ("B's page must not be issued under A's key"), and moving
+// their numbers to accommodate an unrelated subscriber is how a real regression
+// later reads as expected noise. The version gate itself is covered directly in
+// `use-cloud-epic-tasks-query.test.tsx` (the negotiated-version matrix), so
+// nothing is left unfalsified by pinning it here.
+vi.mock("@/hooks/host/use-host-negotiated-method-version", () => ({
+  useHostNegotiatedMethodVersion: () => ({ major: 1, minor: 6 }),
+}));
+
 vi.mock("@/hooks/host/use-reactive-host-readiness", () => ({
   // The live HostClient RequestContext changes before the external-store
   // notification commits another renderer snapshot. This is the exact A -> B

@@ -23,6 +23,7 @@ import { useNewConversationModalStore } from "@/stores/epics/new-conversation-mo
 import { useAppDialogStore } from "@/stores/dialogs/app-dialog-store";
 import { useAppLocalNotificationsStore } from "@/stores/notifications/app-local-notifications-store";
 import { usePanelHeaderSearchStore } from "@/stores/epics/panel-header-search-store";
+import { useAuthStore } from "@/stores/auth/auth-store";
 
 interface TestTreeNode {
   readonly id: string;
@@ -526,11 +527,17 @@ vi.mock("@/hooks/chats/use-cloud-chat-queries", async (importOriginal) => {
     // decides: a hard-coded `true` here would hide the difference between "this
     // query will never run" and "its answer has not arrived yet", which is the
     // one distinction the panel's empty state depends on.
-    isCloudChatListSettled: (query: {
-      readonly isEnabled: boolean;
-      readonly isSuccess: boolean;
-      readonly isError: boolean;
-    }) => !query.isEnabled || query.isSuccess || query.isError,
+    isCloudChatListSettled: (
+      query: {
+        readonly isEnabled: boolean;
+        readonly isSuccess: boolean;
+        readonly isError: boolean;
+      },
+      cloudAuthorized: boolean,
+    ) => {
+      if (!cloudAuthorized) return false;
+      return !query.isEnabled || query.isSuccess || query.isError;
+    },
   };
 });
 
@@ -981,8 +988,21 @@ function clearLocalChatFailure(chatId: string): void {
     );
 }
 
+// `isCloudChatListSettled` / `cloudChatListAuthorizesRecordSweep` now take the
+// cloud-capability verdict as a required argument, read here off the REAL
+// `useAuthStore` (only `useCloudChatList` itself is stubbed above). The store
+// defaults to `signed-out`, under which every "settled" assertion in this
+// file would fail closed vacuously - stage `signed-in` for the whole file,
+// module-scope, so every describe block below gets it without its own copy.
+beforeEach(() => {
+  useAuthStore.setState({ status: "signed-in" });
+});
+
 afterEach(() => {
   useAppLocalNotificationsStore.getState().resetForTests();
+  // Zustand stores are module scope, so a status staged here outlives this
+  // file inside the same worker.
+  useAuthStore.setState({ status: "signed-out" });
 });
 
 describe("epic sidebar selection mode", () => {

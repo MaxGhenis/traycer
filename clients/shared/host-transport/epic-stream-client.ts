@@ -37,6 +37,7 @@ import type {
   SnapshotMetaEpic,
 } from "@traycer/protocol/host/epic/snapshot-meta";
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
+import type { SchemaVersion } from "@traycer/protocol/framework/versioned-stream-rpc";
 import type {
   IStreamSession,
   StreamCloseReason,
@@ -226,10 +227,18 @@ export interface EpicStreamCallbacks {
    * (`{ kind: "fatalError", details }`). Consumers can branch on
    * `details.code === "UNAUTHORIZED"` to drive auth-revalidation +
    * recovery flows.
+   *
+   * `durabilityStatusNegotiated` is delivered with the transport transition
+   * rather than through a separate capability callback. In particular, the
+   * `open` transition atomically establishes the new subscription cycle and
+   * whether its selected `epic.subscribe` schema can report durability. A
+   * later read could race the first status frame (or be missed entirely),
+   * making pre-status UI classify a capable peer as legacy.
    */
   readonly onConnectionStatus: (
     status: StreamConnectionStatus,
     reason: StreamCloseReason | null,
+    durabilityStatusNegotiated: boolean,
   ) => void;
 }
 
@@ -276,6 +285,12 @@ export interface EpicStreamClientOptions {
  * comparison site is a literal nobody updates when the next minor lands.
  */
 const EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION = { major: 1, minor: 6 } as const;
+
+/** The `epic.subscribe` minor that first carried durability status. */
+const EPIC_SUBSCRIBE_DURABILITY_STATUS_VERSION = {
+  major: 1,
+  minor: 4,
+} as const;
 
 /**
  * The durability half of a `cloudSyncStatus` frame, as ONE value.
@@ -380,7 +395,11 @@ export class EpicStreamClient {
       this.handleServerFrame(envelope, binaryPayload);
     });
     this.session.onStatusChange((status, reason) => {
-      this.callbacks.onConnectionStatus(status, reason);
+      this.callbacks.onConnectionStatus(
+        status,
+        reason,
+        status === "open" && this.peerSpeaksDurabilityStatus(),
+      );
     });
   }
 
@@ -499,12 +518,21 @@ export class EpicStreamClient {
    * caller had before any handshake, never a floor to assume.
    */
   private peerSpeaksDurabilityLegs(): boolean {
+    return this.peerSpeaksAtLeast(EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION);
+  }
+
+  /** Whether THIS session negotiated a version that can state durability. */
+  private peerSpeaksDurabilityStatus(): boolean {
+    return this.peerSpeaksAtLeast(EPIC_SUBSCRIBE_DURABILITY_STATUS_VERSION);
+  }
+
+  private peerSpeaksAtLeast(version: SchemaVersion): boolean {
     const negotiated = this.session.getNegotiatedSchemaVersion();
     if (negotiated === null) return false;
-    if (negotiated.major !== EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION.major) {
-      return negotiated.major > EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION.major;
+    if (negotiated.major !== version.major) {
+      return negotiated.major > version.major;
     }
-    return negotiated.minor >= EPIC_SUBSCRIBE_DURABILITY_LEGS_VERSION.minor;
+    return negotiated.minor >= version.minor;
   }
 
   private handleServerFrame(

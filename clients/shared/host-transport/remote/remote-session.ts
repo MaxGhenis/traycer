@@ -48,6 +48,7 @@ import {
 import {
   prepareStreamSubscribeRequest,
   type ParamsOf,
+  type StreamMethodSupport,
 } from "../ws-stream-client";
 import { jitteredBackoffFor } from "../backoff";
 import {
@@ -453,6 +454,23 @@ export interface IRemoteSession<
    * died is not a session that became unready).
    */
   subscribeReadinessLost(listener: () => void): () => void;
+  /**
+   * The stream method's compatibility against the manifest from this
+   * connection's most recent `openAck`. Until that acknowledgement arrives,
+   * the remote session has no capability evidence and answers `"unknown"`.
+   */
+  getMethodSupport<Method extends keyof StreamRegistry & string>(
+    method: Method,
+  ): StreamMethodSupport;
+  /**
+   * The version a new subscription would declare against this connection's
+   * current manifest, or `null` before its `openAck` settles.
+   */
+  getMethodSchemaVersion<Method extends keyof StreamRegistry & string>(
+    method: Method,
+  ): SchemaVersion | null;
+  /** Notified when manifest-derived stream capability evidence changes. */
+  subscribeMethodSupport(listener: () => void): () => void;
   close(): void;
 }
 
@@ -612,6 +630,7 @@ export class RemoteSession<
   private readonly closedListeners = new Set<() => void>();
   private readonly availabilityRecoveredListeners = new Set<() => void>();
   private readonly readinessLostListeners = new Set<() => void>();
+  private readonly methodSupportListeners = new Set<() => void>();
   /**
    * Last readiness this session PUBLISHED, not last readiness it had.
    *
@@ -778,6 +797,25 @@ export class RemoteSession<
       this.connection !== null &&
       this.connection.hostAttached
     );
+  }
+
+  getMethodSupport<Method extends keyof StreamRegistry & string>(
+    method: Method,
+  ): StreamMethodSupport {
+    return this.streamMethodCapability(method).support;
+  }
+
+  getMethodSchemaVersion<Method extends keyof StreamRegistry & string>(
+    method: Method,
+  ): SchemaVersion | null {
+    return this.streamMethodCapability(method).schemaVersion;
+  }
+
+  subscribeMethodSupport(listener: () => void): () => void {
+    this.methodSupportListeners.add(listener);
+    return () => {
+      this.methodSupportListeners.delete(listener);
+    };
   }
 
   /**
@@ -2085,6 +2123,11 @@ export class RemoteSession<
     }
     connection.hostManifest = parsed.data.manifest;
     connection.hostRpcMerged = hostRpcMerged;
+    // This is the first moment a remote session can answer a stream
+    // capability pre-check. Publish before re-opening streams: callers such as
+    // notification-feed selection deliberately need the prediction that lets
+    // them decide whether to open an optional stream in the first place.
+    this.notifyMethodSupportListeners();
     connection.credentialUpdateSupported = parsed.data.capabilities.includes(
       SESSION_CAPABILITY_CREDENTIAL_UPDATE,
     );
@@ -2184,6 +2227,56 @@ export class RemoteSession<
       },
       binary: null,
     });
+  }
+
+  /**
+   * Mirrors `openSubscription`'s manifest selection and compatibility check
+   * without opening a stream. A remote session has one peer manifest, so this
+   * is the exact answer a fresh subscription would reach on its current
+   * connection.
+   */
+  private streamMethodCapability(method: string): {
+    readonly support: StreamMethodSupport;
+    readonly schemaVersion: SchemaVersion | null;
+  } {
+    const hostManifest = this.connection?.hostManifest;
+    if (hostManifest === null || hostManifest === undefined) {
+      return { support: "unknown", schemaVersion: null };
+    }
+    const selectedClientManifest = selectConnectionManifestForPeer(
+      this.options.streamRegistry,
+      this.clientManifests.stream,
+      hostManifest.stream,
+    );
+    const clientCanonical = selectedClientManifest[method];
+    const hostCanonical = hostManifest.stream[method];
+    if (clientCanonical === undefined || hostCanonical === undefined) {
+      return { support: "unsupported", schemaVersion: null };
+    }
+    const compatibility = checkStreamMethodCompatibility(
+      this.options.streamRegistry,
+      selectedClientManifest,
+      hostManifest.stream,
+      "client",
+      method,
+    );
+    if (!compatibility.ok) {
+      return { support: "unsupported", schemaVersion: null };
+    }
+    // `prepareStreamSubscribeRequest` declares the older same-major minor.
+    // Compatibility above proved that either canonical can be selected safely;
+    // this is its payload-independent version half.
+    const schemaVersion =
+      clientCanonical.minor <= hostCanonical.minor
+        ? clientCanonical
+        : hostCanonical;
+    return { support: "supported", schemaVersion };
+  }
+
+  private notifyMethodSupportListeners(): void {
+    for (const listener of Array.from(this.methodSupportListeners)) {
+      listener();
+    }
   }
 
   private handleUnaryResponse(json: Record<string, unknown> | null): void {
@@ -3491,6 +3584,12 @@ export class RemoteSession<
     this.retractSession();
     const connection = this.connection;
     this.connection = null;
+    // A reconnect can attach to a different host incarnation. Once this ack's
+    // manifest is gone, retaining its verdict would turn stale capability
+    // evidence into a pre-check answer; observers must re-read `unknown`.
+    if (connection !== null && connection.hostManifest !== null) {
+      this.notifyMethodSupportListeners();
+    }
     this.openFrameBearer = null;
     this.clearPhaseTimer();
     this.clearReauthTimer();

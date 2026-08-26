@@ -338,7 +338,7 @@ describe("<EpicShell /> usage entry point - real host RPC round trip", () => {
 
     renderShell(queryClient);
 
-    controlled.streams()[0].callbacks.onConnectionStatus("open", null);
+    controlled.streams()[0].callbacks.onConnectionStatus("open", null, true);
     controlled
       .streams()[0]
       .callbacks.onSnapshot(
@@ -385,7 +385,7 @@ describe("<EpicShell /> usage entry point - real host RPC round trip", () => {
 
     const view = renderShell(queryClient);
 
-    controlled.streams()[0].callbacks.onConnectionStatus("open", null);
+    controlled.streams()[0].callbacks.onConnectionStatus("open", null, true);
     controlled
       .streams()[0]
       .callbacks.onSnapshot(
@@ -430,7 +430,7 @@ describe("<EpicShell /> usage entry point - real host RPC round trip", () => {
 
     renderShell(queryClient);
 
-    controlled.streams()[0].callbacks.onConnectionStatus("open", null);
+    controlled.streams()[0].callbacks.onConnectionStatus("open", null, true);
     controlled
       .streams()[0]
       .callbacks.onSnapshot(
@@ -459,7 +459,7 @@ describe("<EpicShell /> usage entry point - real host RPC round trip", () => {
 
     renderShell(queryClient);
 
-    controlled.streams()[0].callbacks.onConnectionStatus("open", null);
+    controlled.streams()[0].callbacks.onConnectionStatus("open", null, true);
     controlled
       .streams()[0]
       .callbacks.onSnapshot(

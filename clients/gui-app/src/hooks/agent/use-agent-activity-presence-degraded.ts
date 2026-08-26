@@ -3,6 +3,7 @@ import type { AgentActivityCloudSyncStatus } from "@traycer/protocol/host/agent/
 import type { StreamConnectionStatus } from "@traycer-clients/shared/host-transport/i-stream-session";
 import { useAgentActivityStore } from "@/stores/agent-activity-store";
 import { useNotificationsServingHostEntry } from "@/hooks/host/use-notifications-serving-host-entry";
+import { useReactiveLocalHostId } from "@/hooks/host/use-reactive-local-host-id";
 
 /**
  * How long a degraded reading may hold before the pill is allowed to say so.
@@ -52,13 +53,11 @@ export function useAgentActivityPresenceDegraded(): AgentActivityPresenceDegrade
   // the whole design of this hook.
   //
   // Callers want one fact - "may this Epic's agent status be stale?" - and the
-  // answer belongs to the stream CARRYING that activity, which since the
-  // renderer settled on one host-selected activity stream is the SERVING host,
-  // never the surface's own host. A caller that passed its own host id would
-  // amber permanently the moment that host was not the one serving, because
-  // only a host with an open stream has a slice and an absent slice reads as
-  // `stream-down` below. Asking a presentation component to know that is how
-  // the bug gets written; so it is not asked.
+  // answer belongs to the stream CARRYING that activity. On a local-capable
+  // shell that is the durable local host identity, not the live serving entry:
+  // a restart temporarily removes that entry while the provider retains and
+  // marks its activity slice reconnecting. Relay-only shells have no such
+  // identity, so their bound serving host remains the right fallback.
   //
   // The single-stream assumption is load-bearing and DORMANT, not gone: the
   // store stays host-keyed (a bare union read would let an idle host's dead
@@ -67,7 +66,9 @@ export function useAgentActivityPresenceDegraded(): AgentActivityPresenceDegrade
   // `renderer-unserved-plane-assertions` proposes precisely that - this hook
   // needs a caller-supplied stream identity again, and the keying it reads
   // through is deliberately still here for that day.
-  const servingHostId = useNotificationsServingHostEntry()?.hostId ?? null;
+  const localHostId = useReactiveLocalHostId();
+  const servingHostId =
+    localHostId ?? useNotificationsServingHostEntry()?.hostId ?? null;
   const reason = useAgentActivityStore((state) =>
     servingHostId === null
       ? null

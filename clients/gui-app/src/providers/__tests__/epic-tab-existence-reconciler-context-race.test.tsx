@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ListTasksResponse } from "@traycer/protocol/host/epic/unary-schemas";
+import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import { EpicTabExistenceReconciler } from "@/providers/epic-tab-existence-reconciler";
 import { useAuthStore } from "@/stores/auth/auth-store";
 import {
@@ -18,29 +19,54 @@ const USER_A = "user-a";
 const USER_B = "user-b";
 const OPEN_EPIC_ID = "epic-persisted-for-user-a";
 
-const fixture = vi.hoisted(() => ({
-  requestContextUserId: "user-b",
-  dispatchedAs: new Array<string>(),
-  requestWithSignal: vi.fn(
-    (
-      _method: string,
-      _params: object,
-      _signal: AbortSignal | undefined,
-    ): Promise<ListTasksResponse> => {
-      fixture.dispatchedAs.push(fixture.requestContextUserId);
-      return Promise.resolve({ tasks: [], hasMore: false });
-    },
-  ),
-}));
+const directoryEntry: HostDirectoryEntry = {
+  hostId: HOST_ID,
+  label: "Context-race host",
+  kind: "local",
+  websocketUrl: "ws://127.0.0.1:4765/rpc",
+  version: "1.2.3",
+  transportDialability: "dialable",
+};
 
-vi.mock("@/lib/host", () => ({
-  useHostClient: () => ({
+const fixture = vi.hoisted(() => {
+  const requestContext = {};
+  const runtimeClient = {
     getActiveHostId: () => HOST_ID,
+    getRequestContext: () => requestContext,
     getRequestContextUserId: () => fixture.requestContextUserId,
     onChange: () => () => undefined,
-    requestWithSignal: fixture.requestWithSignal,
-  }),
+    requestWithSignal: vi.fn(
+      (
+        _method: string,
+        _params: object,
+        _signal: AbortSignal | undefined,
+      ): Promise<ListTasksResponse> => {
+        fixture.dispatchedAs.push(fixture.requestContextUserId);
+        return Promise.resolve({ tasks: [], hasMore: false });
+      },
+    ),
+    createRequester: () => runtimeClient,
+  };
+  return {
+    requestContextUserId: "user-b",
+    dispatchedAs: new Array<string>(),
+    requestWithSignal: runtimeClient.requestWithSignal,
+    runtimeClient,
+  };
+});
+
+vi.mock("@/lib/host", () => ({
+  useHostClient: () => fixture.runtimeClient,
+  useHostRuntimeClient: () => fixture.runtimeClient,
   useHostCompatibility: () => ({ status: "compatible" }),
+}));
+
+vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
+  useHostDirectoryList: () => ({
+    data: [directoryEntry],
+    isSuccess: true,
+    fetchStatus: "idle",
+  }),
 }));
 
 vi.mock("@/hooks/host/use-reactive-host-readiness", () => ({

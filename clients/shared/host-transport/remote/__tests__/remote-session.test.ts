@@ -1920,6 +1920,66 @@ describe("RemoteSession host_detached readiness evidence", () => {
 
 describe("RemoteStreamClient dynamic subscribe params", () => {
   it(
+    "publishes manifest-derived stream support and version, then forgets it on disconnect",
+    async () => {
+      const relay = new FakeRelayHost();
+      relay.streamManifest = buildStreamManifest(cursorStreamRegistry);
+      const lease = new MutableBearerLease("valid-token", "user-1");
+      const session = new RemoteSession({
+        ...buildSessionOptions(relay, lease, null),
+        streamRegistry: cursorStreamRegistry,
+      });
+      const streamClient = new RemoteStreamClient<
+        VersionedRpcRegistry,
+        typeof cursorStreamRegistry
+      >(session);
+      const supportChanges: string[] = [];
+      const unsubscribe = streamClient.subscribeMethodSupport(() => {
+        supportChanges.push(streamClient.getMethodSupport("cursor.subscribe"));
+      });
+
+      expect(streamClient.getMethodSupport("cursor.subscribe")).toBe("unknown");
+      expect(streamClient.getMethodSchemaVersion("cursor.subscribe")).toBe(
+        null,
+      );
+
+      try {
+        session.start();
+        await vi.waitFor(() => expect(session.isReady()).toBe(true), WAIT);
+        expect(streamClient.getMethodSupport("cursor.subscribe")).toBe(
+          "supported",
+        );
+        expect(streamClient.getMethodSchemaVersion("cursor.subscribe")).toEqual(
+          { major: 1, minor: 0 },
+        );
+
+        relay.dropCurrentConnection();
+        await vi.waitFor(
+          () =>
+            expect(streamClient.getMethodSupport("cursor.subscribe")).toBe(
+              "unknown",
+            ),
+          WAIT,
+        );
+        await vi.waitFor(
+          () =>
+            expect(supportChanges).toEqual([
+              "supported",
+              "unknown",
+              "supported",
+            ]),
+          WAIT,
+        );
+        expect(relay.errors).toEqual([]);
+      } finally {
+        unsubscribe();
+        session.close();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  it(
     "selects an installed older stream major advertised by an RC host",
     async () => {
       const relay = new FakeRelayHost();

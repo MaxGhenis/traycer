@@ -523,6 +523,8 @@ export interface OpenEpicState {
    * arrive here as `null`, and this bit is what separates them.
    */
   readonly durabilityLegsNegotiated: boolean;
+  /** Whether this connection can report `epic.subscribe@1.4` durability. */
+  readonly durabilityStatusNegotiated: boolean;
   /**
    * The last durability the host actually STATED, kept across subscription
    * cycles - unlike {@link durabilityStatus}, which a reconnect clears.
@@ -1157,6 +1159,7 @@ export function createOpenEpicStore(
   let localProtection: EpicLocalProtection | null = null;
   let cloudFreshness: EpicCloudFreshness | null = null;
   let durabilityLegsNegotiated = false;
+  let durabilityStatusNegotiated = false;
   /**
    * The last durability the host actually STATED for this epic, kept across
    * subscription cycles.
@@ -2385,6 +2388,7 @@ export function createOpenEpicStore(
           | "localProtection"
           | "cloudFreshness"
           | "durabilityLegsNegotiated"
+          | "durabilityStatusNegotiated"
           | "retainedDurabilityStatus"
           | "retainedDurabilityPauseReason"
           | "hasFreshCloudSyncStatus"
@@ -2399,6 +2403,7 @@ export function createOpenEpicStore(
           localProtection,
           cloudFreshness,
           durabilityLegsNegotiated,
+          durabilityStatusNegotiated,
           retainedDurabilityStatus,
           retainedDurabilityPauseReason,
           hasFreshCloudSyncStatus,
@@ -3016,7 +3021,11 @@ export function createOpenEpicStore(
                 set(connectionStateSlice());
                 flushPendingWritesAfterReconnect(client);
               },
-              onConnectionStatus: (status, reason) => {
+              onConnectionStatus: (
+                status,
+                reason,
+                peerSpeaksDurabilityStatus,
+              ) => {
                 if (disposed || generation !== streamGeneration) return;
                 const previousTransportStatus = transportStatus;
                 transportStatus = status;
@@ -3056,6 +3065,11 @@ export function createOpenEpicStore(
                   // incarnation, so the previous cycle's answer is not evidence
                   // about this one's peer.
                   durabilityLegsNegotiated = false;
+                  // Unlike the @1.6 legs, this capability controls the
+                  // pre-status branch: a peer that negotiated @1.4 or @1.5
+                  // can still report durability and its initial silence is
+                  // therefore not legacy reassurance.
+                  durabilityStatusNegotiated = peerSpeaksDurabilityStatus;
                 }
                 const nextStatus = syncCurrentConnectionStatus();
                 hasFreshRootSnapshotForOpenCycle = false;
@@ -3136,6 +3150,7 @@ export function createOpenEpicStore(
           localProtection = null;
           cloudFreshness = null;
           durabilityLegsNegotiated = false;
+          durabilityStatusNegotiated = false;
           // Cleared HERE and not on an ordinary cycle reset: a re-subscribe is
           // the same epic reconnecting, while this is a bootstrap from
           // scratch, and carrying a retained durability across it would be the

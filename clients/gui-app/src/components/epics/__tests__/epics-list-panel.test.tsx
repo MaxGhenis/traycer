@@ -748,7 +748,7 @@ describe("<EpicsListPanel />", () => {
     expect(notice.textContent).not.toContain("filter counts may leave some");
   });
 
-  it("says a capped page shows the first tasks, not all of them", async () => {
+  it("says a truncated page may be missing tasks, without claiming where", async () => {
     testState.items = [
       historyItem({ id: "history-m1", epicId: "m1", title: "Mirror 1" }),
     ];
@@ -762,8 +762,15 @@ describe("<EpicsListPanel />", () => {
 
     const notice = await screen.findByTestId("epics-list-completeness");
     expect(notice.getAttribute("data-local-rows")).toBe("truncated");
-    // A capped page that says nothing reads as covered-everything.
-    expect(notice.textContent).toContain("first tasks stored on this device");
+    // A `truncated` page that says nothing reads as covered-everything - the
+    // banner going silent is what this guards against, not one particular
+    // wording. The copy deliberately does not name WHERE the gap is:
+    // `truncated` has more than one producer (the page cap, an unprovable
+    // filter, an unread root doc), and the wire member does not distinguish
+    // them, so a client must not either.
+    expect(notice.textContent).toContain(
+      "couldn't be checked against your filters",
+    );
   });
 
   it("names a filter this device cannot check rather than showing an empty list", async () => {
@@ -1327,6 +1334,48 @@ describe("<EpicsListPanel />", () => {
       worktreeCleanup: null,
     });
     expect(typeof options.onSuccess).toBe("function");
+  });
+
+  // T13: the delete confirmation is an unbounded pause with a human in it, so
+  // `handleConfirmDelete` re-reads the verdict from the store rather than
+  // trusting the render that opened the dialog. A mixed pending set must
+  // re-filter, not refuse wholesale: the cloud row drops out, the local-home
+  // row - which spends nothing - survives.
+  it("re-filters the pending delete set when the session goes unverified while the dialog is open", async () => {
+    testState.items = [
+      historyItem({}),
+      historyItem({
+        id: "history-epic-local",
+        epicId: "epic-local",
+        title: "Local-home item",
+        isLocalHome: true,
+      }),
+    ];
+    renderPanel("embedded", "/");
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Select history items" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Select all" }));
+    fireEvent.click(screen.getByTestId("epics-list-delete-selected"));
+
+    // The verdict is withdrawn while the confirmation sits open, before
+    // confirming.
+    useAuthStore.setState({ status: "unverified" });
+    fireEvent.click(screen.getByTestId("delete-tasks-confirm"));
+
+    expect(testState.mutate).toHaveBeenCalledTimes(1);
+    const deleteCall = testState.mutate.mock.calls.at(0);
+    if (deleteCall === undefined) {
+      throw new Error("expected the local-home-only delete mutation call");
+    }
+    const [variables] = deleteCall;
+    // The cloud row ("epic-from-history") was NOT dispatched; the local-home
+    // row STILL was.
+    expect(variables).toEqual({
+      ids: ["epic-local"],
+      worktreeCleanup: null,
+    });
   });
 
   it("checks only PROVEN-removable rows by default (unproven and dirty stay unchecked)", async () => {

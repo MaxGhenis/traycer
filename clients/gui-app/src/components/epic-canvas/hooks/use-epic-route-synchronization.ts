@@ -17,6 +17,7 @@ import { useCanvasHostId } from "@/components/epic-canvas/hooks/use-canvas-host-
 import { useEpicSessionHostClient } from "@/hooks/epic/use-epic-session-host-client";
 import {
   cloudChatListAuthorizesRecordSweep,
+  useCloudChatCloudAuthorized,
   useCloudChatList,
 } from "@/hooks/chats/use-cloud-chat-queries";
 import { cloudRowIsViewersOwn } from "@/lib/chats/unified-chat-list";
@@ -100,6 +101,12 @@ export function useEpicRouteSynchronization(
     taskId: epicId,
     enabled: epicId.length > 0,
   });
+  // The same verdict the list above was gated on, read once and handed to the
+  // sweep guard below. `useCloudChatList` disables itself without it, and a
+  // DISABLED list is the guard's strongest authorizing arm - so this is not a
+  // second opinion about authorization, it is the one answer travelling to both
+  // halves of a read/destroy pair that must not disagree.
+  const cloudChatsCloudAuthorized = useCloudChatCloudAuthorized();
   const currentTab = useEpicTab(tabId);
   const renameTab = useEpicCanvasStore((s) => s.renameTab);
   const openTileInTab = useEpicCanvasStore((s) => s.openTileInTab);
@@ -455,8 +462,16 @@ export function useEpicRouteSynchronization(
   // must not authorize closing tabs. `E_HOST_UNSUPPORTED` and a DISABLED
   // query DO authorize - nothing will ever answer through either, and record
   // policing on local records alone is the correct degraded behavior.
-  const cloudChatsAuthorizeSweep =
-    cloudChatListAuthorizesRecordSweep(cloudChats);
+  //
+  // An UNVERIFIED session does not. Its list is disabled because it may not
+  // spend the account's cloud capability, not because there is nothing to
+  // learn - the cloud rows are there and this session simply cannot look - so
+  // the guard fails closed on the authorization arm and no tab is closed on
+  // that ignorance.
+  const cloudChatsAuthorizeSweep = cloudChatListAuthorizesRecordSweep(
+    cloudChats,
+    cloudChatsCloudAuthorized,
+  );
   useEffect(() => {
     if (!snapshotLoaded) return;
     if (!cloudChatsAuthorizeSweep) return;

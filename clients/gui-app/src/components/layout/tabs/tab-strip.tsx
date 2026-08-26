@@ -41,6 +41,8 @@ import { TabStripNewButton } from "@/components/layout/tabs/tab-strip-new-button
 import { useHorizontalWheelScroll } from "@/hooks/use-horizontal-wheel-scroll";
 import { useNotificationIndicators } from "@/hooks/notifications/use-notification-indicators-query";
 import { NotificationIndicatorsProvider } from "@/components/notifications/notification-indicators-provider";
+import { ChatIndicatorHostScopes } from "@/components/notifications/chat-indicator-host-scopes";
+import { chatIndicatorHostScopes } from "@/lib/notifications/chat-indicator-scopes";
 import {
   executeTabSplitCommand,
   preparePairTabsCommand,
@@ -96,17 +98,35 @@ function TabStripBody() {
     () => Object.keys(indicatorChatEpicIds),
     [indicatorChatEpicIds],
   );
+  const indicatorEpicHostIds = useMemo(() => {
+    const hostIds = new Map<string, string>();
+    for (const tab of allTabs) {
+      if (tab.kind !== "epic" || tab.hostId === null) continue;
+      hostIds.set(tab.epicId, tab.hostId);
+    }
+    return hostIds;
+  }, [allTabs]);
+  const indicatorChatScopes = useMemo(
+    () =>
+      chatIndicatorHostScopes(
+        indicatorChatIds.flatMap((chatId) => {
+          const epicId = indicatorChatEpicIds[chatId];
+          const hostId = indicatorEpicHostIds.get(epicId);
+          return hostId === undefined ? [] : [{ hostId, chatId }];
+        }),
+      ),
+    [indicatorChatEpicIds, indicatorChatIds, indicatorEpicHostIds],
+  );
   const notificationIndicators = useNotificationIndicators({
     // Epic ids only, so the notification host is the right one to ask: an
     // Epic is a shared cloud entity, not a host-owned record, and the strip's
     // lights should agree with the feed the notification centre renders.
     hostId: null,
     epicIds: indicatorEpicIds,
-    chatIds: indicatorChatIds,
-    // The live chats' owning epics, so mixed mode's `home: local` partition
-    // can classify each chat id by durable home - without the map those chats
-    // fall out of the partition and their contribution reads as clear.
-    chatEpicIds: indicatorChatEpicIds,
+    // Chats are host-owned, so a single serving-host request cannot answer for
+    // this strip. `ChatIndicatorHostScopes` below fans them out by each tab's
+    // lifetime host binding instead.
+    chatIds: [],
     enabled: indicatorEpicIds.length > 0,
   });
   const taskPinnedStates = useEpicTaskPinnedStates(indicatorEpicIds);
@@ -284,54 +304,59 @@ function TabStripBody() {
 
   return (
     <NotificationIndicatorsProvider indicators={notificationIndicators}>
-      <div
-        role="tablist"
-        aria-label="Open tabs"
-        data-testid="tab-strip"
-        className="relative flex min-w-0 flex-1 items-end"
+      <ChatIndicatorHostScopes
+        scopes={indicatorChatScopes}
+        chatEpicIds={indicatorChatEpicIds}
       >
-        <div className="relative flex min-w-0 max-w-full flex-[0_1_auto] items-end">
-          <LayoutGroup id="header-tabs">
-            <div
-              ref={trailingSlotRef}
-              data-testid="header-tab-strip-scroll"
-              onWheel={handleWheel}
-              className="no-scrollbar flex min-w-0 max-w-full flex-[0_1_auto] touch-pan-x items-end overflow-x-auto overscroll-x-contain"
-            >
-              {headerItemIds.map((itemId, index) => (
-                <HeaderStripItemRenderer
-                  key={itemId}
-                  itemId={itemId}
-                  stripIndex={index}
-                  memberOffset={memberOffsetBefore(layoutItems, index)}
-                  isActive={itemId === activeItemId}
-                  isNextActive={headerItemIds[index + 1] === activeItemId}
-                  nextIsSplit={layoutItems[index + 1]?.kind === "split"}
-                  isLastItem={index === headerItemIds.length - 1}
-                  showDropIndicatorBefore={dropIndicatorIndex === index}
-                  showDropIndicatorAfter={
-                    dropIndicatorIndex === index + 1 &&
-                    index === headerItemIds.length - 1
-                  }
-                  onClose={closeTabFlow.requestCloseTab}
-                  onCloseOtherTabs={closeTabFlow.closeOtherTabs}
-                  onDuplicateTab={handleDuplicateTab}
-                  canCloseOtherTabs={canCloseOtherTabs}
-                  onOpenInNewWindow={openInNewWindowFlow.requestOpen}
-                  canOpenInNewWindow={openInNewWindowFlow.isAvailable}
-                  onSplitCommand={handleSplitCommand}
-                  taskPinnedStates={taskPinnedStates}
-                  pendingSetPinnedEpicIds={pendingSetPinnedEpicIds}
-                  onSetTaskPinned={handleSetTaskPinned}
-                />
-              ))}
-            </div>
-          </LayoutGroup>
-          <TabStripNewButton onNewTab={handleNewTab} />
+        <div
+          role="tablist"
+          aria-label="Open tabs"
+          data-testid="tab-strip"
+          className="relative flex min-w-0 flex-1 items-end"
+        >
+          <div className="relative flex min-w-0 max-w-full flex-[0_1_auto] items-end">
+            <LayoutGroup id="header-tabs">
+              <div
+                ref={trailingSlotRef}
+                data-testid="header-tab-strip-scroll"
+                onWheel={handleWheel}
+                className="no-scrollbar flex min-w-0 max-w-full flex-[0_1_auto] touch-pan-x items-end overflow-x-auto overscroll-x-contain"
+              >
+                {headerItemIds.map((itemId, index) => (
+                  <HeaderStripItemRenderer
+                    key={itemId}
+                    itemId={itemId}
+                    stripIndex={index}
+                    memberOffset={memberOffsetBefore(layoutItems, index)}
+                    isActive={itemId === activeItemId}
+                    isNextActive={headerItemIds[index + 1] === activeItemId}
+                    nextIsSplit={layoutItems[index + 1]?.kind === "split"}
+                    isLastItem={index === headerItemIds.length - 1}
+                    showDropIndicatorBefore={dropIndicatorIndex === index}
+                    showDropIndicatorAfter={
+                      dropIndicatorIndex === index + 1 &&
+                      index === headerItemIds.length - 1
+                    }
+                    onClose={closeTabFlow.requestCloseTab}
+                    onCloseOtherTabs={closeTabFlow.closeOtherTabs}
+                    onDuplicateTab={handleDuplicateTab}
+                    canCloseOtherTabs={canCloseOtherTabs}
+                    onOpenInNewWindow={openInNewWindowFlow.requestOpen}
+                    canOpenInNewWindow={openInNewWindowFlow.isAvailable}
+                    onSplitCommand={handleSplitCommand}
+                    taskPinnedStates={taskPinnedStates}
+                    pendingSetPinnedEpicIds={pendingSetPinnedEpicIds}
+                    onSetTaskPinned={handleSetTaskPinned}
+                  />
+                ))}
+              </div>
+            </LayoutGroup>
+            <TabStripNewButton onNewTab={handleNewTab} />
+          </div>
+          {closeTabFlow.unsyncedDialog}
+          <UnsyncedEpicMoveDialog flow={openInNewWindowFlow.epicFlow} />
         </div>
-        {closeTabFlow.unsyncedDialog}
-        <UnsyncedEpicMoveDialog flow={openInNewWindowFlow.epicFlow} />
-      </div>
+      </ChatIndicatorHostScopes>
     </NotificationIndicatorsProvider>
   );
 }

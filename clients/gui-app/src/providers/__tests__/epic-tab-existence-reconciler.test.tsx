@@ -12,6 +12,7 @@ import {
   type RequestOfMethod,
   type ResponseOfMethod,
 } from "@traycer-clients/shared/host-transport/host-messenger";
+import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import {
   recordNegotiatedHostMethods,
   resetNegotiatedManifests,
@@ -59,6 +60,15 @@ const localSnapshot: LocalHostSnapshot = {
   systemHostName: "hardiks-macbook",
   displayName: "hardiks-macbook",
   availability: "available",
+};
+
+const SECOND_HOST: HostDirectoryEntry = {
+  hostId: "remote-protection-host",
+  label: "Remote protection host",
+  kind: "remote",
+  websocketUrl: "ws://127.0.0.1:4920/rpc",
+  version: "1.2.3",
+  transportDialability: "dialable",
 };
 
 type HostStatusResponse = ResponseOfMethod<HostRpcRegistry, "host.status">;
@@ -173,22 +183,37 @@ interface MountOptions {
   readonly listTasks?: (
     params: ListTasksRequest,
   ) => Promise<ListTasksResponse> | ListTasksResponse;
+  readonly listTasksByHost?: (
+    hostId: string,
+    params: ListTasksRequest,
+  ) => Promise<ListTasksResponse> | ListTasksResponse;
+  readonly remoteEntries?: readonly HostDirectoryEntry[];
 }
 
 function buildMessengerFactory(
   options: MountOptions,
 ): MessengerFactory<HostRpcRegistry> {
   const listTasks = options.listTasks ?? (() => EMPTY_LIST_TASKS_RESPONSE);
-  return (args) =>
-    new MockHostMessenger<HostRpcRegistry>({
+  return (args) => {
+    let messenger: MockHostMessenger<HostRpcRegistry> | null = null;
+    messenger = new MockHostMessenger<HostRpcRegistry>({
       registry: args.registry,
       requestId: () => `req-${String(nextRequestId++)}`,
       handlers: {
         "host.status": () => compatibleHostStatus,
         "epic.getTaskContexts": (params) => options.getTaskContexts(params),
-        "epic.listTasks": (params) => listTasks(params),
+        "epic.listTasks": (params) => {
+          const hostId =
+            messenger?.calls.at(-1)?.authority.endpoint.hostId ??
+            localSnapshot.hostId;
+          return options.listTasksByHost === undefined
+            ? listTasks(params)
+            : options.listTasksByHost(hostId, params);
+        },
       },
     });
+    return messenger;
+  };
 }
 
 let nextRequestId = 1;
@@ -210,7 +235,7 @@ function mountReconciler(options: MountOptions): MountedReconciler {
     signInUrl: "https://auth.traycer.invalid/sign-in",
     authnBaseUrl: "http://localhost:5005",
     localHost: localSnapshot,
-    hosts: [],
+    hosts: options.remoteEntries ?? [],
     workspaceFolderPickerPaths: undefined,
     hasLocalHost: undefined,
     traycerCli: undefined,
@@ -240,7 +265,10 @@ function mountReconciler(options: MountOptions): MountedReconciler {
   // therefore does not restart the runtime.
   const messengerFactory = buildMessengerFactory(options);
   const remoteFetcher = () =>
-    Promise.resolve({ kind: "hosts" as const, entries: [] });
+    Promise.resolve({
+      kind: "hosts" as const,
+      entries: options.remoteEntries ?? [],
+    });
   const tree = (reconcilerMounted: boolean) => (
     <RunnerHostProvider runnerHost={host}>
       <QueryClientProvider client={queryClient}>
@@ -647,6 +675,21 @@ function localHomedListTasksRow(
   };
 }
 
+function completeListTasksResponse(
+  tasks: ReadonlyArray<ListTasksResponse["tasks"][number]>,
+): ListTasksResponse {
+  return {
+    tasks: [...tasks],
+    hasMore: false,
+    completeness: {
+      cloudPage: "settled",
+      facets: "server",
+      localRows: tasks.length === 0 ? "none" : "present",
+      sort: "loaded-union",
+    },
+  };
+}
+
 describe("EpicTabExistenceReconciler local-homed durable protection", () => {
   beforeEach(() => {
     restoreFetch = installAuthFetch();
@@ -670,6 +713,113 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
     resetNegotiatedManifests();
     vi.restoreAllMocks();
     restoreFetch();
+  });
+
+  it("unions local-home protection across every settled directory host", async () => {
+    recordNegotiatedHostMethods(localSnapshot.hostId, [
+      "host.status",
+      "epic.getTaskContexts",
+    ]);
+    useEpicCanvasStore
+      .getState()
+      .openEpicTab(LOCAL_HOME_EPIC_ID, "Remote home");
+    useEpicCanvasStore.getState().openEpicTab(STALE_EPIC_ID, "Stale Epic");
+
+    const getTaskContexts = vi.fn(
+      (params: GetTaskContextsRequest): GetTaskContextsResponse => {
+        const tasks: GetTaskContextsResponse["tasks"] = {};
+        for (const taskId of params.taskIds) {
+          tasks[taskId] =
+            taskId === LOCAL_HOME_EPIC_ID || taskId === STALE_EPIC_ID
+              ? { status: "confirmed-absent" as const }
+              : confirmedRow(taskId);
+        }
+        return { tasks };
+      },
+    );
+    const listTaskHosts: string[] = [];
+    const listTasksByHost = vi.fn(
+      (hostId: string, _params: ListTasksRequest): ListTasksResponse => {
+        listTaskHosts.push(hostId);
+        return completeListTasksResponse(
+          hostId === SECOND_HOST.hostId
+            ? [localHomedListTasksRow(LOCAL_HOME_EPIC_ID)]
+            : [],
+        );
+      },
+    );
+
+    const { queryClient } = mountReconciler({
+      getTaskContexts,
+      listTasksByHost,
+      remoteEntries: [SECOND_HOST],
+    });
+
+    await waitFor(() => {
+      expect(getTaskContexts).toHaveBeenCalledTimes(1);
+      expect(listTasksByHost).toHaveBeenCalledTimes(2);
+    });
+    expect(listTaskHosts).toEqual(
+      expect.arrayContaining([localSnapshot.hostId, SECOND_HOST.hostId]),
+    );
+    await waitFor(() => {
+      expect(collectOpenEpicIds()).not.toContain(STALE_EPIC_ID);
+    });
+    expect(collectOpenEpicIds()).toContain(LOCAL_HOME_EPIC_ID);
+    queryClient.clear();
+  });
+
+  it("does not close tabs when any host's local-home page is truncated", async () => {
+    recordNegotiatedHostMethods(localSnapshot.hostId, [
+      "host.status",
+      "epic.getTaskContexts",
+    ]);
+    useEpicCanvasStore
+      .getState()
+      .openEpicTab(LOCAL_HOME_EPIC_ID, "Remote home");
+    useEpicCanvasStore.getState().openEpicTab(STALE_EPIC_ID, "Stale Epic");
+
+    const getTaskContexts = vi.fn(
+      (params: GetTaskContextsRequest): GetTaskContextsResponse => {
+        const tasks: GetTaskContextsResponse["tasks"] = {};
+        for (const taskId of params.taskIds) {
+          tasks[taskId] =
+            taskId === LOCAL_HOME_EPIC_ID || taskId === STALE_EPIC_ID
+              ? { status: "confirmed-absent" as const }
+              : confirmedRow(taskId);
+        }
+        return { tasks };
+      },
+    );
+    const listTasksByHost = vi.fn(
+      (hostId: string, _params: ListTasksRequest): ListTasksResponse =>
+        hostId === SECOND_HOST.hostId
+          ? {
+              ...completeListTasksResponse([]),
+              completeness: {
+                cloudPage: "settled",
+                facets: "server",
+                localRows: "truncated",
+                sort: "loaded-union",
+              },
+            }
+          : completeListTasksResponse([]),
+    );
+
+    const { queryClient } = mountReconciler({
+      getTaskContexts,
+      listTasksByHost,
+      remoteEntries: [SECOND_HOST],
+    });
+
+    await waitFor(() => {
+      expect(getTaskContexts).toHaveBeenCalledTimes(1);
+      expect(listTasksByHost).toHaveBeenCalledTimes(2);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(collectOpenEpicIds()).toContain(STALE_EPIC_ID);
+    expect(collectOpenEpicIds()).toContain(LOCAL_HOME_EPIC_ID);
+    queryClient.clear();
   });
 
   it("keeps a local-homed epic's tab open even when getTaskContexts reports it missing, with no session-scoped exemption in play", async () => {

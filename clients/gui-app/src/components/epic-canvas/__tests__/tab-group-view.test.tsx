@@ -55,8 +55,24 @@ import {
 import { buildSyntheticTileSurfaceEnvironment } from "@/components/epic-canvas/surface-host/__tests__/synthetic-tile-surface-fixture";
 import { EpicSessionContext } from "@/lib/registries/epic-session-registry";
 import type { OpenEpicStoreHandle } from "@/stores/epics/open-epic/store";
+import { useAuthStore } from "@/stores/auth/auth-store";
 
 const VIEW_TAB_ID = "view-tab-1";
+
+// The `use-cloud-chat-queries` mock below spreads `...actual`, so
+// `useCloudChatCloudAuthorized` / `cloudChatListAuthorizesRecordSweep` /
+// `isCloudChatListSettled` resolve to the REAL implementations, which read
+// the real (module-scope) `useAuthStore`. Stage `signed-in` for the whole
+// file so the remote-deletion / published-copy-fallback paths that depend on
+// cloud authorization behave as they do for an authorized session; the real
+// store otherwise defaults to `signed-out`.
+beforeEach(() => {
+  useAuthStore.setState({ status: "signed-in" });
+});
+
+afterEach(() => {
+  useAuthStore.setState({ status: "signed-out" });
+});
 
 interface TestState {
   readonly mounts: Map<string, number>;

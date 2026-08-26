@@ -14,6 +14,7 @@ import type {
 } from "@/hooks/epics/use-epic-collaborators-query";
 import type { PermissionRole } from "@/lib/epic-collaborator-roles";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useAuthStore } from "@/stores/auth/auth-store";
 
 interface TestState {
   role: PermissionRole;
@@ -324,10 +325,19 @@ describe("SharingPanel invite parsing", () => {
 describe("<SharingPanel />", () => {
   beforeEach(() => {
     resetTestState();
+    // `isOwner` / `canInvitePeople` now AND the cloud-capability verdict with
+    // the role. `useAuthStore` is module-scope Zustand defaulting to
+    // `signed-out`, and a write here does not reliably survive a
+    // `HostRuntimeProvider` mount - so this must be staged before render, not
+    // between render and assertion.
+    useAuthStore.setState({ status: "signed-in" });
   });
 
   afterEach(() => {
     cleanup();
+    // Zustand stores are module scope, so an auth status staged here outlives
+    // this file inside the same worker.
+    useAuthStore.setState({ status: "signed-out" });
   });
 
   it("queues email and GitHub chips with the batch invite label", async () => {
@@ -560,15 +570,115 @@ describe("<SharingPanel />", () => {
       screen.getByTestId("collaborator-role-select").textContent,
     ).toContain("Editor");
   });
+
+  // T16: `isOwner` and `canInvitePeople` now AND the role with the cloud
+  // capability verdict. An `unverified` session holds an owner ROLE but no
+  // verdict, and every owner-only affordance must go inert on that split, not
+  // just the invite card.
+  it("keeps owner controls inert when the session is unverified", () => {
+    useAuthStore.setState({ status: "unverified" });
+    testState.collaborators = {
+      directUsers: [DIRECT_USER],
+      teams: [SHARED_TEAM],
+      flatRows: [DIRECT_USER, ...SHARED_TEAM.members],
+    };
+    testState.shareableTeams = [
+      { teamId: "team-1", slug: "traycerai", avatarUrl: null },
+      { teamId: "team-2", slug: "platform", avatarUrl: null },
+    ];
+
+    renderSharingPanel();
+
+    expect(screen.queryByTestId("invite-card")).toBeNull();
+    expect(screen.queryByTestId("team-share-button")).toBeNull();
+    expect(screen.queryByTestId("team-revoke-button")).toBeNull();
+    expect(screen.queryByTestId("collaborator-revoke-button")).toBeNull();
+  });
+
+  // Delta item 4: with the collaborators query disabled under `unverified`,
+  // `directUsers.length === 0`, so before this the panel rendered "0 people
+  // have direct access." / "No direct collaborators yet." for an epic that
+  // may be shared with a dozen people - a false statement built from an
+  // absence of evidence. Asserting only the NEW copy would still pass if the
+  // old false claim rendered beside it, so both are checked.
+  it("says access can't be checked instead of claiming zero collaborators or no teams, when unverified", () => {
+    useAuthStore.setState({ status: "unverified" });
+    // Empty by default (`resetTestState`), which is exactly the shape that
+    // produced the false "0" / "No ... yet" claims pre-fix.
+    renderSharingPanel();
+
+    expect(
+      screen.getByText(
+        "Collaborators can't be checked until your sign-in is confirmed.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Team access can't be checked until your sign-in is confirmed.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/people have direct access/)).toBeNull();
+    expect(screen.queryByText("No direct collaborators yet.")).toBeNull();
+    expect(screen.queryByText("No teams available.")).toBeNull();
+    expect(screen.queryByText(/^0 /)).toBeNull();
+  });
+
+  // T16: the revoke dialog and refresh outlive the render that opened them -
+  // `readCloudAuthorizedNow()` exists precisely because the verdict can be
+  // withdrawn while a confirm dialog sits open with a human in it, and a
+  // render-time-only assertion would never reach that re-read.
+  it("refuses the revoke confirm and the manual refresh once the session goes unverified after the dialog opened", () => {
+    // `DIRECT_USER` alone is the LAST owner, whose own revoke control is
+    // disabled - use the editor row instead so the click actually opens the
+    // dialog.
+    testState.collaborators = {
+      directUsers: [DIRECT_USER, DIRECT_EDITOR],
+      teams: [],
+      flatRows: [DIRECT_USER, DIRECT_EDITOR],
+    };
+
+    renderSharingPanel();
+
+    // The last-owner row's own revoke control is disabled; the editor row's
+    // is not.
+    const revokeButtons = screen.getAllByTestId("collaborator-revoke-button");
+    const editorRevokeButton = revokeButtons.find(
+      (button) => !button.hasAttribute("disabled"),
+    );
+    if (editorRevokeButton === undefined) {
+      throw new Error("Expected an enabled collaborator revoke button.");
+    }
+    fireEvent.click(editorRevokeButton);
+    // The confirm dialog is open, staged while the session was still
+    // `signed-in`.
+    expect(screen.getByTestId("confirm-destructive-dialog")).toBeTruthy();
+
+    useAuthStore.setState({ status: "unverified" });
+
+    fireEvent.click(screen.getByTestId("confirm-action"));
+    expect(testState.revokeCollaborator.mutate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("epic-sharing-refresh-button"));
+    expect(testState.collaboratorsQuery.refetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("<SharingPanel /> My agents", () => {
   beforeEach(() => {
     resetTestState();
+    // `isOwner` / `canInvitePeople` now AND the cloud-capability verdict with
+    // the role. `useAuthStore` is module-scope Zustand defaulting to
+    // `signed-out`, and a write here does not reliably survive a
+    // `HostRuntimeProvider` mount - so this must be staged before render, not
+    // between render and assertion.
+    useAuthStore.setState({ status: "signed-in" });
   });
 
   afterEach(() => {
     cleanup();
+    // Zustand stores are module scope, so an auth status staged here outlives
+    // this file inside the same worker.
+    useAuthStore.setState({ status: "signed-out" });
   });
 
   it("hides the section when the host does not advertise the RPC", () => {

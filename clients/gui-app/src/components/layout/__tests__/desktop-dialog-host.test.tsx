@@ -462,6 +462,7 @@ function createDirtyEpicHandle(
     rootDirty: false,
     hasDirtySnapshotForOpenCycle: true,
     durabilityLegsNegotiated: false,
+    durabilityStatusNegotiated: false,
     snapshotMeta: null,
     permissionRole: null,
     connectionStatus: "open",

@@ -16,9 +16,20 @@ const GRACE_MS = 2_000;
  * empty slice and every case degrades to `stream-down`.
  */
 const HOST_ID = "host-1";
+const hostRouting = vi.hoisted(() => ({
+  localHostId: "host-1" as string | null,
+  servingHostId: "host-1" as string | null,
+}));
 
 vi.mock("@/hooks/host/use-notifications-serving-host-entry", () => ({
-  useNotificationsServingHostEntry: () => ({ hostId: "host-1" }),
+  useNotificationsServingHostEntry: () =>
+    hostRouting.servingHostId === null
+      ? null
+      : { hostId: hostRouting.servingHostId },
+}));
+
+vi.mock("@/hooks/host/use-reactive-local-host-id", () => ({
+  useReactiveLocalHostId: () => hostRouting.localHostId,
 }));
 
 /**
@@ -30,15 +41,25 @@ function setHostHealth(patch: {
   readonly connectionStatus?: StreamConnectionStatus;
   readonly cloudSyncStatus?: AgentActivityCloudSyncStatus | null;
 }): void {
+  setHostHealthFor(HOST_ID, patch);
+}
+
+function setHostHealthFor(
+  hostId: string,
+  patch: {
+    readonly connectionStatus?: StreamConnectionStatus;
+    readonly cloudSyncStatus?: AgentActivityCloudSyncStatus | null;
+  },
+): void {
   useAgentActivityStore.setState((state) => {
-    const current = state.byHost.get(HOST_ID) ?? {
+    const current = state.byHost.get(hostId) ?? {
       servedBy: null,
       connectionStatus: "connecting" as StreamConnectionStatus,
       cloudSyncStatus: null,
       byEpic: new Map(),
     };
     const next = new Map(state.byHost);
-    next.set(HOST_ID, { ...current, ...patch });
+    next.set(hostId, { ...current, ...patch });
     return { byHost: next };
   });
 }
@@ -47,6 +68,8 @@ describe("useAgentActivityPresenceDegraded", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     __resetAgentActivityStoreForTests();
+    hostRouting.localHostId = HOST_ID;
+    hostRouting.servingHostId = HOST_ID;
   });
 
   afterEach(() => {
@@ -82,6 +105,19 @@ describe("useAgentActivityPresenceDegraded", () => {
       setHostHealth({ connectionStatus: "open" });
     });
     expect(result.current).toBe(null);
+  });
+
+  it("uses the durable local host while the serving entry is absent during a restart", () => {
+    hostRouting.localHostId = "durable-local-host";
+    hostRouting.servingHostId = null;
+    const { result } = renderHook(() => useAgentActivityPresenceDegraded());
+
+    act(() => {
+      setHostHealthFor("durable-local-host", { connectionStatus: "closed" });
+      vi.advanceTimersByTime(GRACE_MS);
+    });
+
+    expect(result.current).toBe("stream-down");
   });
 
   it("holds 'reconnecting' back for a fresh grace window after being open, then reads 'stream-down'", () => {

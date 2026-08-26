@@ -746,7 +746,7 @@ describe("<MobileHistoryList /> (via <EpicsListPanel /> at a mobile viewport)", 
       );
     });
 
-    it("explains when local rows are truncated", async () => {
+    it("explains when local rows are truncated, without claiming where", async () => {
       testState.completeness = {
         cloudPage: "settled",
         facets: "server",
@@ -758,7 +758,7 @@ describe("<MobileHistoryList /> (via <EpicsListPanel /> at a mobile viewport)", 
       const notice = await screen.findByTestId("epics-list-completeness");
       expect(notice.getAttribute("data-local-rows")).toBe("truncated");
       expect(notice.textContent).toContain(
-        "first tasks stored on this device, not all",
+        "couldn't be checked against your filters",
       );
     });
 

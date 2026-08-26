@@ -89,7 +89,7 @@ export function createEpicSessionTestHarness(epicId: string): TestEpicHarness {
         // would race the initial-state construction. Tests await one
         // act() tick after render to flush this.
         setTimeout(() => {
-          stream.callbacks.onConnectionStatus("open", null);
+          stream.callbacks.onConnectionStatus("open", null, true);
           stream.callbacks.onSnapshot(
             makeMeta(epicId, permissionRole),
             snapshot,

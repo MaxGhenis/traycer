@@ -18,6 +18,8 @@ import type {
 import { ChatIndicatorHostScopes } from "@/components/notifications/chat-indicator-host-scopes";
 import { chatIndicatorHostScopes } from "@/lib/notifications/chat-indicator-scopes";
 import { useSurfaceNotificationIndicatorState } from "@/components/notifications/notification-indicator-context";
+import { NotificationIndicatorsProvider } from "@/components/notifications/notification-indicators-provider";
+import type { SurfaceNotificationIndicators } from "@/stores/notifications/notification-indicator-state";
 import { createHostQueryInvalidator } from "@/lib/host/query-invalidator";
 import { createAppQueryClient } from "@/lib/query-client";
 import { useAuthStore } from "@/stores/auth/auth-store";
@@ -168,6 +170,16 @@ function Probe(props: {
   );
 }
 
+function EpicProbe(): ReactNode {
+  const state = useSurfaceNotificationIndicatorState(
+    { epicId: "epic-1" },
+    null,
+  );
+  return (
+    <span data-testid="probe-epic-1">{state.unreadDone ? "done" : ""}</span>
+  );
+}
+
 function renderStrip(
   harness: Harness,
   tabs: ReadonlyArray<{ readonly hostId: string; readonly chatId: string }>,
@@ -266,6 +278,39 @@ describe("ChatIndicatorHostScopes", () => {
       );
     });
     expect(screen.getByTestId(`probe-${HOST_B}-shared`).textContent).toBe("");
+  });
+
+  it("preserves inherited epic indicators while adding scoped chat indicators", async () => {
+    feedMode.value = "cloud";
+    const harness = createHarness([
+      [HOST_A, { "chat-a": lit({ pendingFork: true }) }],
+    ]);
+    const inherited: SurfaceNotificationIndicators = {
+      epics: { "epic-1": lit({ unreadDone: true }) },
+      chats: {},
+    };
+
+    render(
+      <QueryClientProvider client={harness.queryClient}>
+        <NotificationIndicatorsProvider indicators={inherited}>
+          <ChatIndicatorHostScopes
+            scopes={chatIndicatorHostScopes([
+              { hostId: HOST_A, chatId: "chat-a" },
+            ])}
+          >
+            <EpicProbe />
+            <Probe hostId={HOST_A} chatId="chat-a" />
+          </ChatIndicatorHostScopes>
+        </NotificationIndicatorsProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("probe-epic-1").textContent).toBe("done");
+      expect(screen.getByTestId(`probe-${HOST_A}-chat-a`).textContent).toBe(
+        "fork",
+      );
+    });
   });
 
   it("issues no read at all for a surface with no chat tabs", async () => {

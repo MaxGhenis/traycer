@@ -105,11 +105,15 @@ export const MobileHistoryRow = memo(function MobileHistoryRow(
   } = props;
 
   const displayTitle = historyItemDisplayTitle(item);
-  const canDelete = canDeleteHistoryItem(item);
-  const canRename = canEditHistoryItemTitle(item);
   const cloudAuthorized = useAuthStore((state) =>
     authorizesCloudCapability(state.status),
   );
+  // The same verdict the pin gate below already reads, now also asked of
+  // delete: the tray's delete dispatches the same cloud-backed
+  // `epic.batchDelete` the desktop row does, so the two surfaces admit on one
+  // rule or the class survives at whichever of them was left out.
+  const canDelete = canDeleteHistoryItem(item, cloudAuthorized);
+  const canRename = canEditHistoryItemTitle(item);
   const pinUnavailableReason = historyPinUnavailableReason(
     item,
     cloudAuthorized,

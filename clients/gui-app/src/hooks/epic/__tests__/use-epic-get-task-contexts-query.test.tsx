@@ -92,18 +92,20 @@ describe("useEpicGetTaskContexts", () => {
     });
     const taskIds = ["epic-a", "epic-b"];
 
-    const first = renderHook(() => useEpicGetTaskContexts(taskIds, USER_ID), {
-      wrapper: makeWrapper(queryClient),
-    });
+    const first = renderHook(
+      () => useEpicGetTaskContexts(taskIds, USER_ID, { enabled: true }),
+      { wrapper: makeWrapper(queryClient) },
+    );
     await waitFor(() => {
       expect(first.result.current.tasksById.get("epic-a")).toBeDefined();
     });
     expect(request).toHaveBeenCalledTimes(1);
 
     first.unmount();
-    const second = renderHook(() => useEpicGetTaskContexts(taskIds, USER_ID), {
-      wrapper: makeWrapper(queryClient),
-    });
+    const second = renderHook(
+      () => useEpicGetTaskContexts(taskIds, USER_ID, { enabled: true }),
+      { wrapper: makeWrapper(queryClient) },
+    );
     await waitFor(() => {
       expect(second.result.current.tasksById.get("epic-b")).toBeDefined();
     });
@@ -119,7 +121,7 @@ describe("useEpicGetTaskContexts", () => {
 
     const { result, rerender } = renderHook(
       (props: { readonly userId: string }) =>
-        useEpicGetTaskContexts(taskIds, props.userId),
+        useEpicGetTaskContexts(taskIds, props.userId, { enabled: true }),
       {
         wrapper: makeWrapper(queryClient),
         initialProps: { userId: USER_ID },

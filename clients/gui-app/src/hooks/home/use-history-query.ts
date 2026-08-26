@@ -37,6 +37,10 @@ import type {
 import type { WorktreeHostEntryV12 } from "@traycer/protocol/host/worktree-schemas";
 import type { HistorySearchState } from "@/lib/history-search";
 import { patchHistorySearch } from "@/lib/history-search";
+import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
 import Fuse, { type IFuseOptions } from "fuse.js";
 import { useCallback, useMemo, useState } from "react";
 
@@ -87,6 +91,9 @@ export interface UseHistoryQueryResult {
 export function useHistoryQuery(
   params: UseHistoryQueryParams,
 ): UseHistoryQueryResult {
+  const cloudAuthorized = useAuthStore((state) =>
+    authorizesCloudCapability(state.status),
+  );
   const trimmedQuery = params.search.query.trim();
   const debouncedQuery = useDebouncedValue(trimmedQuery, SEARCH_DEBOUNCE_MS);
   const [fallbackNowMs] = useState(() => Date.now());
@@ -140,6 +147,7 @@ export function useHistoryQuery(
     isFetchingNextPage,
     isCloudPagePending,
     completeness: unionCompleteness,
+    initialLegRefused,
   } = useCloudEpicTasksQuery(request, { enabled: true });
   const tasksQueryRefetch = tasksQuery.refetch;
   const chatHostFilterActive = params.search.chatHosts.length > 0;
@@ -147,7 +155,16 @@ export function useHistoryQuery(
   const isQueryDebouncing = debouncedQuery !== trimmedQuery;
   const shouldProjectLocally =
     isQueryDebouncing || tasksQuery.isFetching || tasksQuery.isPlaceholderData;
-  const taskContexts = useEpicGetTaskContexts(localTaskIds, currentUserId);
+  // `currentUserId` is the WIDENED identity - `resolveCloudTasksUserId` admits
+  // `unverified` so History keeps rendering this machine's own epics - so it
+  // cannot double as this batch's authorization. `epic.getTaskContexts` is a
+  // cloud lookup for every id the host cannot answer locally, and the ids
+  // reaching it here come from a local worktree/PR match, which is precisely
+  // the search an `unverified` session still performs. Gate the SPEND on the
+  // verdict and let the local rows stand on their own.
+  const taskContexts = useEpicGetTaskContexts(localTaskIds, currentUserId, {
+    enabled: cloudAuthorized,
+  });
   const baseItems = useMemo(
     // The cloud page carries `home` ON the row, so it needs no sibling list.
     () =>
@@ -209,6 +226,25 @@ export function useHistoryQuery(
   );
 
   const data = useMemo<HistoryFetchResult | undefined>(() => {
+    // Ahead of the `undefined` guard, because the refusal PRODUCES that
+    // `undefined` and would otherwise be indistinguishable from a first load.
+    // A settled result is the whole point: it is what moves the panel off the
+    // spinner and onto a sentence that names the actual condition.
+    if (initialLegRefused) {
+      return {
+        items: [],
+        availableRepos: EMPTY_REPOS,
+        availableWorkspaces: EMPTY_WORKSPACE_REFS,
+        totalCount: 0,
+        facets: EMPTY_FACETS,
+        worktreesByEpicId,
+        // No page was served, so the host made no statement to report - the
+        // same reason the withheld-rows branch below reports `null`.
+        completeness: null,
+        chatHostFilterUnsupported: false,
+        hostRequiresCloudToList: true,
+      };
+    }
     if (tasksQuery.data === undefined) {
       return undefined;
     }
@@ -296,6 +332,7 @@ export function useHistoryQuery(
         // "unknown" at every render site.
         completeness: null,
         chatHostFilterUnsupported: true,
+        hostRequiresCloudToList: false,
       };
     }
     return {
@@ -305,6 +342,7 @@ export function useHistoryQuery(
       totalCount: items.length,
       facets,
       worktreesByEpicId,
+      hostRequiresCloudToList: false,
       // Only from a SETTLED page. While the query is debouncing or serving
       // placeholder data the statement describes a different request than the
       // rows on screen, which is the same reason the server facets are
@@ -318,6 +356,7 @@ export function useHistoryQuery(
     contextExtrasCount,
     hostChatHostSupport,
     debouncedQuery,
+    initialLegRefused,
     isQueryDebouncing,
     params.search,
     shouldProjectLocally,
@@ -331,7 +370,10 @@ export function useHistoryQuery(
 
   return {
     data,
-    isPending: tasksQuery.isPending,
+    // A refused leg is SETTLED, not pending. The underlying query reports
+    // `pending` forever - it has no data and never will - and passing that
+    // through is what put a permanent skeleton on History.
+    isPending: !initialLegRefused && tasksQuery.isPending,
     isFetching:
       tasksQuery.isFetching ||
       isQueryDebouncing ||
@@ -385,6 +427,17 @@ export interface HistoryFetchResult {
    * explanation, never an empty-history message.
    */
   chatHostFilterUnsupported: boolean;
+  /**
+   * No listing was requested at all: this session holds no cloud verdict and
+   * the negotiated host predates the local-first `epic.listTasks` leg, so it
+   * can only answer by spending the account's cloud credential.
+   *
+   * `items` is EMPTY because nothing was asked, not because nothing exists.
+   * Render the explanation ahead of every other empty branch - both "No tasks
+   * yet" and a loading skeleton are false statements here, and this is the
+   * only field that can tell them apart from the truth.
+   */
+  hostRequiresCloudToList: boolean;
 }
 
 export interface HistoryFacets {

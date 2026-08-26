@@ -621,6 +621,46 @@ describe("useEpicCommentsHaveNoUsableRoom", () => {
     expect(result.current).toBe(false);
   });
 
+  it("gates a pre-status @1.4 peer independently of the @1.6 durability legs", () => {
+    // @1.4 peers can report durability status even when they do not have the
+    // later local/cloud legs. Initial silence is therefore a settling window,
+    // not legacy reassurance.
+    const handle = createHandle("epic-comment-gate-status-only");
+    handle.store.setState({
+      durabilityStatus: null,
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: null,
+      durabilityStatusNegotiated: true,
+      durabilityLegsNegotiated: false,
+    });
+
+    const { result } = renderHook(() => useEpicCommentsHaveNoUsableRoom(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    expect(result.current).toBe(true);
+  });
+
+  it("does not gate a peer with only the later @1.6 legs negotiated", () => {
+    // The @1.6 legs are not evidence that this peer can emit the status this
+    // selector waits for. Treating them as the old gate would disable every
+    // pre-status peer forever.
+    const handle = createHandle("epic-comment-gate-legs-only");
+    handle.store.setState({
+      durabilityStatus: null,
+      durabilityPauseReason: null,
+      retainedDurabilityStatus: null,
+      durabilityStatusNegotiated: false,
+      durabilityLegsNegotiated: true,
+    });
+
+    const { result } = renderHook(() => useEpicCommentsHaveNoUsableRoom(), {
+      wrapper: openEpicWrapper(handle),
+    });
+
+    expect(result.current).toBe(false);
+  });
+
   it("holds the retained answer through the state a real reconnect produces", () => {
     // The two tests above hand-set `durabilityLegsNegotiated: true` beside a
     // null status, and no production transition produces that pair. A

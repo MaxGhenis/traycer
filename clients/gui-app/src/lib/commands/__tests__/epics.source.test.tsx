@@ -58,6 +58,9 @@ function historyResult(
     // is the honest fixture value: the palette source under test never reads
     // it, so claiming a definite answer here would be inventing evidence.
     completeness: null,
+    // The refused-initial-leg fixture is `true`; this suite's fixture is a
+    // served page, so `false` is the honest value here too.
+    hostRequiresCloudToList: false,
   };
   return {
     data,

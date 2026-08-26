@@ -16,6 +16,7 @@ import {
 import {
   readEpicTitlesFromCloudTaskCaches,
   removeDeletedEpicsFromCloudTaskCaches,
+  setEpicLocalHomeInCloudTaskCaches,
   setEpicPinnedInCloudTaskCaches,
   updateEpicTitleInCloudTaskCaches,
   updateEpicTitleInTaskContextsCaches,
@@ -317,6 +318,27 @@ describe("removeDeletedEpicsFromCloudTaskCaches", () => {
     expect(retained[0].tasks.map((task) => task.epic?.light?.id)).toEqual([
       "epic-orphan",
     ]);
+  });
+});
+
+describe("setEpicLocalHomeInCloudTaskCaches", () => {
+  it("patches the matching row in the cloud.listTasks.lastKnown cache", () => {
+    const queryClient = new QueryClient();
+    const scope = { hostId: "host-a", userId: "user-1" };
+    const lastKnownKey = cloudEpicTasksLastKnownQueryKey(
+      scope.hostId,
+      scope.userId,
+    );
+    queryClient.setQueryData<ListTasksResponse>(lastKnownKey, {
+      tasks: [listTaskLight("epic-local", "Local epic", scope.userId)],
+      hasMore: false,
+    });
+
+    setEpicLocalHomeInCloudTaskCaches(queryClient, scope, "epic-local", true);
+
+    expect(
+      queryClient.getQueryData<ListTasksResponse>(lastKnownKey)?.tasks[0]?.home,
+    ).toBe("local");
   });
 });
 

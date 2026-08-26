@@ -403,9 +403,32 @@ export function canEditHistoryItemTitle(item: HistoryItem): boolean {
  * Deliberately in this ONE helper rather than at the controls: the desktop row
  * action, desktop bulk selection, and the mobile tray all admit through here,
  * so a rule added at a control would be a rule two surfaces do not have.
+ *
+ * ## `cloudAuthorized`, and why a LOCAL-HOME row is exempt from it
+ *
+ * `authorizesCloudCapability(status)`, required for the same reason
+ * {@link historyPinUnavailableReason} takes it: History stays readable under
+ * `unverified`, so every settled cloud row is still on screen with a role that
+ * still reads `owner`, and a role test alone would let a session with no
+ * `/api/v3/user` verdict dispatch `epic.batchDelete` against the account.
+ *
+ * The exemption is not a softening of that rule, it is the rule applied
+ * honestly. A `isLocalHome` row IS this machine's disk: `epic.batchDelete`
+ * reclaims it locally without a cloud arm to mirror to, so refusing it would
+ * withhold an operation that spends nothing and lock the user out of deleting
+ * their own local epics for the whole of an authn outage - which is precisely
+ * the local plane `admitsLocalPlane` exists to keep serving.
+ *
+ * Required rather than defaulted: a permissive default is how a second surface
+ * inherits an answer nobody made for it, and this predicate is the only thing
+ * standing between three delete controls and a destructive dispatch.
  */
-export function canDeleteHistoryItem(item: HistoryItem): boolean {
+export function canDeleteHistoryItem(
+  item: HistoryItem,
+  cloudAuthorized: boolean,
+): boolean {
   if (item.isPreservedOrphan === true) return false;
+  if (item.isLocalHome !== true && !cloudAuthorized) return false;
   return isEditableRole(item.permissionRole);
 }
 

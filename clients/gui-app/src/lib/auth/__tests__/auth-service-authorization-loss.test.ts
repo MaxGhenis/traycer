@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockRunnerHost } from "@traycer-clients/shared/host-client/mock/mock-runner-host";
-import type { VersionedRpcRegistry } from "@traycer/protocol/framework/index";
+import type {
+  SchemaVersion,
+  VersionedRpcRegistry,
+} from "@traycer/protocol/framework/index";
 import type { VersionedStreamRpcRegistry } from "@traycer/protocol/framework/versioned-stream-rpc";
 import type { IRemoteSession } from "@traycer-clients/shared/host-transport/remote/remote-session";
+import type { StreamMethodSupport } from "@traycer-clients/shared/host-transport/ws-stream-client";
 import {
   acquireRemoteSession,
   remoteSessionRefCountForTest,
@@ -235,10 +239,22 @@ interface FakeSession extends IRemoteSession<
   VersionedStreamRpcRegistry
 > {
   readonly closeCalls: number;
+  /**
+   * Lets a test model an `openAck`-derived capability transition. The
+   * acquired cache view must forward this underlying session state instead
+   * of freezing a fake permissive answer at its own boundary.
+   */
+  setMethodSupport(
+    support: StreamMethodSupport,
+    schemaVersion: SchemaVersion | null,
+  ): void;
 }
 
 function fakeSession(): FakeSession {
   let closeCalls = 0;
+  let methodSupport: StreamMethodSupport = "unknown";
+  let methodSchemaVersion: SchemaVersion | null = null;
+  const methodSupportListeners = new Set<() => void>();
   const session: FakeSession = {
     get closeCalls() {
       return closeCalls;
@@ -260,7 +276,20 @@ function fakeSession(): FakeSession {
     onClosed: () => () => undefined,
     subscribeAvailabilityRecovered: () => () => undefined,
     subscribeReadinessLost: () => () => undefined,
+    getMethodSupport: () => methodSupport,
+    getMethodSchemaVersion: () => methodSchemaVersion,
+    subscribeMethodSupport: (listener) => {
+      methodSupportListeners.add(listener);
+      return () => {
+        methodSupportListeners.delete(listener);
+      };
+    },
     terminalFatal: () => null,
+    setMethodSupport: (support, schemaVersion) => {
+      methodSupport = support;
+      methodSchemaVersion = schemaVersion;
+      for (const listener of methodSupportListeners) listener();
+    },
     close: () => {
       closeCalls += 1;
     },

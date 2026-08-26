@@ -742,14 +742,25 @@ export type ListTasksResponsePre15 = z.infer<
  *   collapsing that one is how a filtered offline History came to look
  *   empty-but-authoritative.
  *
- *   `truncated` has TWO producers and a client must not read it as the cap
+ *   `truncated` has THREE producers and a client must not read it as the cap
  *   alone. The first is the page-injection cap trimming admissible mirror
  *   rows. The second is a repo/workspace filter meeting a row that carries no
  *   association evidence to be judged against - an ordinary cloud mirror, or a
- *   local epic created before those associations were retained. Both leave the
- *   page missing rows for a reason the client cannot see, which is the only
- *   distinction this member is asked to carry; the difference between them is
- *   diagnostic and lives in the host log.
+ *   local epic created before those associations were retained. The third is a
+ *   text query judged against a row whose root document could not be read, so
+ *   the only title available was the immutable creation payload: an epic
+ *   renamed after creation is then dropped from a search for its CURRENT name
+ *   on evidence that is known stale, which is a drop the host cannot prove and
+ *   must not report as proven.
+ *
+ *   All three leave the page missing rows for a reason the client cannot see,
+ *   which is the only distinction this member is asked to carry; the
+ *   differences between them are diagnostic and live in the host log.
+ *
+ *   The producers are deliberately not distinguished on the wire, and the
+ *   count above is documentation rather than contract - a client that branches
+ *   on WHICH producer fired is reading a distinction this member does not
+ *   carry, and will break when a fourth is added.
  * - `sort` - `server` when the returned order is the server's evaluation of
  *   the requested sort; `loaded-union` when host rows were merged in, so the
  *   order holds over the rows present and is not a global ranking.

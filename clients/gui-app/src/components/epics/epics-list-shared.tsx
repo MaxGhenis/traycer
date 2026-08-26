@@ -139,6 +139,42 @@ export function EpicsListChatHostFilterUnsupported(): ReactNode {
   );
 }
 
+/**
+ * Shown when NO listing was requested: this session holds no cloud verdict and
+ * the negotiated host predates the local-first `epic.listTasks` leg, so the
+ * only listing it can produce is one that spends the account's credential.
+ *
+ * The copy names the HOST's missing capability, and every other phrasing this
+ * state could take is a false statement, which is why the wording is fenced
+ * here rather than left to a call site:
+ *
+ *  - a spinner claims something is in flight; nothing is, and nothing will be;
+ *  - "No tasks yet" claims the account is empty, which is unknown;
+ *  - "Showing what this device holds" claims the device is empty, and on this
+ *    exact host it is not - the epics are there, the host simply has no way to
+ *    list them without the cloud.
+ *
+ * It also does not say the cloud is unreachable. The cloud may be perfectly
+ * fine; this client is declining to spend it on an unverified session.
+ */
+export function EpicsListHostRequiresCloudToList(): ReactNode {
+  return (
+    <div
+      className="flex flex-col items-center justify-center gap-2 py-[min(4rem,12vh)] text-center text-ui-sm text-muted-foreground"
+      data-testid="epics-list-host-requires-cloud-to-list"
+    >
+      <p className="font-medium text-foreground">
+        This host needs cloud access to list Epics
+      </p>
+      <p className="max-w-full">
+        It&apos;s running a version that can&apos;t list Epics from this device
+        alone, and your sign-in couldn&apos;t be confirmed. Update the host, or
+        reconnect your account, to see them.
+      </p>
+    </div>
+  );
+}
+
 export function EpicsListEmpty(): ReactNode {
   return (
     <div
@@ -199,10 +235,25 @@ export function HistoryCompletenessNotice(props: {
     );
   }
   if (completeness.localRows === "truncated") {
-    // The host capped how many mirror rows it injects into one page. Without
-    // this line the capped page reads as "these are your offline tasks" when
-    // it is "these are the first N of them".
-    lines.push("Showing the first tasks stored on this device, not all.");
+    // Deliberately says INCOMPLETE and not WHERE, because `truncated` has more
+    // than one producer and they leave the gap in different places. The page
+    // cap does drop a suffix; a filter meeting a row with no association
+    // evidence, or a text query judged against a row whose root document could
+    // not be read (so only the immutable creation title was available), drops a
+    // row from the MIDDLE - an epic renamed after creation vanishes from a
+    // search for the name it now has.
+    //
+    // The previous copy - "Showing the first tasks stored on this device, not
+    // all" - was written when the cap was the only producer, and for the others
+    // it is the wrong SHAPE of claim rather than merely imprecise: a reader
+    // told they have a prefix concludes the rest is further down the list.
+    //
+    // Do NOT branch this line on which producer fired. The wire member
+    // deliberately does not distinguish them, so a client that split the copy
+    // would be reading a distinction it was never sent.
+    lines.push(
+      "Some tasks on this device couldn't be checked against your filters, so this list may be missing a few.",
+    );
   }
   if (completeness.localRows === "suppressed-unprovable-filter") {
     // The difference between "you have no local epics matching" and "this

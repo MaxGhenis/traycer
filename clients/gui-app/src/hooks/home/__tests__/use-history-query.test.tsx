@@ -14,6 +14,7 @@ import {
 } from "@/lib/history-search";
 import type { HistorySearchState } from "@/lib/history-search";
 import { useHistoryQuery } from "@/hooks/home/use-history-query";
+import { useAuthStore } from "@/stores/auth/auth-store";
 
 const testState = vi.hoisted(() => {
   const tasks: ListTaskLight[] = [];
@@ -47,6 +48,19 @@ const testState = vi.hoisted(() => {
     // progress.
     isCloudPagePending: false,
     completenessOverride: null as ListTasksCompleteness | null,
+    initialLegRefused: false,
+    // Otherwise-hardcoded `false` in the mock below, so a test asserting the
+    // T18 refusal's `isPending: false` has something to distinguish it from -
+    // without this, `query.isPending` never varies and that assertion would
+    // pass whether or not the hook's own `!initialLegRefused && ...` guard
+    // existed at all.
+    queryIsPending: false,
+    // T12: the `enabled` argument `useEpicGetTaskContexts` was actually
+    // called with, most-recent last. The mock below otherwise ignores it (it
+    // always returns `taskContexts` regardless), so asserting on the mock's
+    // RESULT would pass whether or not `useHistoryQuery` gated the spend on
+    // the cloud-authorization verdict - only capturing the argument proves it.
+    taskContextsEnabledCalls: [] as boolean[],
   };
 });
 
@@ -78,7 +92,7 @@ vi.mock("@/hooks/epics/use-cloud-epic-tasks-query", () => ({
           query.length === 0
             ? testState.response
             : { tasks, hasMore: false, facets: testState.response.facets },
-        isPending: false,
+        isPending: testState.queryIsPending,
         isFetching: testState.isFetching,
         isPlaceholderData: testState.isPlaceholderData,
         error: null,
@@ -87,6 +101,7 @@ vi.mock("@/hooks/epics/use-cloud-epic-tasks-query", () => ({
       fetchNextPage: testState.fetchNextPage,
       hasNextPage: testState.hasNextPage,
       isFetchingNextPage: false,
+      initialLegRefused: testState.initialLegRefused,
       isCloudPagePending: testState.isCloudPagePending,
       // The UNION statement, deliberately independent of `query.data`'s own
       // `completeness` above (T5b) - `useHistoryQuery` must read this field,
@@ -122,20 +137,27 @@ vi.mock("@/hooks/home/use-chat-host-filter-support", () => ({
 }));
 
 vi.mock("@/hooks/epic/use-epic-get-task-contexts-query", () => ({
-  useEpicGetTaskContexts: (taskIds: readonly string[]) => ({
-    tasksById: new Map(
-      taskIds.flatMap((taskId) => {
-        const task = testState.taskContexts.get(taskId);
-        return task === undefined ? [] : [[taskId, task] as const];
-      }),
-    ),
-    // `epic.getTaskContexts@1.2`'s sibling home-marker list. Kept on the fake
-    // because the projection now READS it - a context-only hit is the one path
-    // where nothing else can say the epic is local-homed.
-    localHomedTaskIds: testState.localHomedTaskIds,
-    isFetching: false,
-    error: testState.taskContextsError,
-  }),
+  useEpicGetTaskContexts: (
+    taskIds: readonly string[],
+    _userId: string | null,
+    options: { readonly enabled: boolean },
+  ) => {
+    testState.taskContextsEnabledCalls.push(options.enabled);
+    return {
+      tasksById: new Map(
+        taskIds.flatMap((taskId) => {
+          const task = testState.taskContexts.get(taskId);
+          return task === undefined ? [] : [[taskId, task] as const];
+        }),
+      ),
+      // `epic.getTaskContexts@1.2`'s sibling home-marker list. Kept on the fake
+      // because the projection now READS it - a context-only hit is the one path
+      // where nothing else can say the epic is local-homed.
+      localHomedTaskIds: testState.localHomedTaskIds,
+      isFetching: false,
+      error: testState.taskContextsError,
+    };
+  },
 }));
 
 describe("useHistoryQuery", () => {
@@ -164,11 +186,22 @@ describe("useHistoryQuery", () => {
     testState.fetchNextPage.mockReset();
     testState.isCloudPagePending = false;
     testState.completenessOverride = null;
+    testState.initialLegRefused = false;
+    testState.queryIsPending = false;
+    testState.taskContextsEnabledCalls = [];
+    // `useEpicGetTaskContexts` is gated on `authorizesCloudCapability`, read
+    // off the REAL store (not mocked in this file) - default to `signed-in`
+    // so every pre-existing test here keeps exercising the id-fetched union
+    // exactly as before. The T12 test below overrides this per case.
+    useAuthStore.setState({ status: "signed-in" });
   });
 
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    // Zustand stores are module scope, so a status staged here outlives this
+    // file inside the same worker.
+    useAuthStore.setState({ status: "signed-out" });
   });
 
   it("locally narrows existing rows while a new search query is debouncing", () => {
@@ -834,6 +867,50 @@ describe("useHistoryQuery", () => {
       ).toBe("");
     });
   });
+
+  // T12: `epic.getTaskContexts` is a CLOUD spend for the ids an id-fetched
+  // worktree/PR match surfaces. `currentUserId` is the WIDENED identity
+  // (`unverified` resolves one too, so History keeps rendering this
+  // machine's own epics), so it cannot double as this batch's authorization -
+  // the hook must gate `enabled` on `authorizesCloudCapability` separately.
+  it("gates the task-context batch's enabled flag on the cloud-authorization verdict, not on search activity", () => {
+    useAuthStore.setState({ status: "unverified" });
+    const { rerender } = render(
+      <HistoryQueryHarness search={DEFAULT_HISTORY_SEARCH} />,
+    );
+    expect(testState.taskContextsEnabledCalls.at(-1)).toBe(false);
+
+    useAuthStore.setState({ status: "signed-in" });
+    rerender(<HistoryQueryHarness search={DEFAULT_HISTORY_SEARCH} />);
+    expect(testState.taskContextsEnabledCalls.at(-1)).toBe(true);
+  });
+
+  // T18: `useCloudEpicTasksQuery`'s `initialLegRefused` maps to a SETTLED
+  // empty result, not `undefined` (which every render site here treats as
+  // still loading). Ahead of the `tasksQuery.data === undefined` guard in the
+  // `data` memo for exactly that reason - the refusal PRODUCES that
+  // `undefined`, so checking it first would misread the refusal as a load in
+  // progress and never reach `hostRequiresCloudToList` at all.
+  it("settles to an empty, non-pending page and flags hostRequiresCloudToList when the initial leg is refused", () => {
+    testState.initialLegRefused = true;
+    // The underlying TanStack query for a refused leg is disabled and reports
+    // `isPending: true` forever - this models that, so the assertion below
+    // proves `useHistoryQuery` overrides it rather than merely inheriting an
+    // already-false value from the mock.
+    testState.queryIsPending = true;
+    render(<HistoryQueryHarness search={DEFAULT_HISTORY_SEARCH} />);
+
+    expect(screen.getByTestId("host-requires-cloud-to-list").textContent).toBe(
+      "true",
+    );
+    // The false statement this exists to prevent: a query that never ran
+    // reports `status: "pending"` forever, which the render sites read as a
+    // permanent skeleton.
+    expect(screen.getByTestId("pending").textContent).toBe("false");
+    expect(
+      screen.getByRole("status", { name: "History titles" }).textContent,
+    ).toBe("");
+  });
 });
 
 /**
@@ -857,6 +934,9 @@ function HistoryQueryHarness(props: {
     <div>
       <div data-testid="pending">{String(result.isPending)}</div>
       <div data-testid="fetching">{String(result.isFetching)}</div>
+      <div data-testid="host-requires-cloud-to-list">
+        {String(result.data?.hostRequiresCloudToList ?? false)}
+      </div>
       <div data-testid="error">{result.error?.message ?? ""}</div>
       <div data-testid="has-next-page">{String(result.hasNextPage)}</div>
       <div role="status" aria-label="History titles">

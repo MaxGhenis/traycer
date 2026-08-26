@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VersionedRpcRegistry } from "@traycer/protocol/framework/index";
-import type { VersionedStreamRpcRegistry } from "@traycer/protocol/framework/versioned-stream-rpc";
+import type {
+  SchemaVersion,
+  VersionedStreamRpcRegistry,
+} from "@traycer/protocol/framework/versioned-stream-rpc";
 import { REMOTE_SESSION_LINGER_MS } from "../config";
 import type { IRemoteSession } from "../remote-session";
+import type { StreamMethodSupport } from "../../ws-stream-client";
 import {
   acquireRemoteSession,
   hasReadyRemoteSession,
@@ -43,6 +47,9 @@ function fakeSession(): FakeSession {
   const recoveredListeners = new Set<() => void>();
   const readinessLostListeners = new Set<() => void>();
   const closedListeners = new Set<() => void>();
+  const methodSupportListeners = new Set<() => void>();
+  const methodSupport: StreamMethodSupport = "supported";
+  const methodSchemaVersion: SchemaVersion = { major: 1, minor: 0 };
   const session: FakeSession = {
     get closeCalls() {
       return closeCalls;
@@ -77,6 +84,14 @@ function fakeSession(): FakeSession {
       readinessLostListeners.add(listener);
       return () => {
         readinessLostListeners.delete(listener);
+      };
+    },
+    getMethodSupport: () => methodSupport,
+    getMethodSchemaVersion: () => methodSchemaVersion,
+    subscribeMethodSupport: (listener) => {
+      methodSupportListeners.add(listener);
+      return () => {
+        methodSupportListeners.delete(listener);
       };
     },
     terminalFatal: () => null,

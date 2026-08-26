@@ -43,6 +43,25 @@ export interface EpicTaskContexts {
   readonly error: Error | null;
 }
 
+export interface UseEpicGetTaskContextsOptions {
+  /**
+   * Whether this caller may SPEND the account's cloud capability on the batch.
+   *
+   * Required, and deliberately not derived here from the auth store: `userId`
+   * below is an ADMISSION fact (`admitsLocalPlane` resolves one for an
+   * `unverified` session, off this device's credentials file), and reading it
+   * as an authorization is exactly the conflation this parameter exists to
+   * break. `epic.getTaskContexts` reaches the account's servers for every id it
+   * cannot answer locally, so a caller that passes a widened identity has to
+   * state the cloud half separately - the value is
+   * `authorizesCloudCapability(status)` at every current call site.
+   *
+   * A caller that has already gated its whole surface on the verdict passes
+   * `true`; what is not available is omitting the question.
+   */
+  readonly enabled: boolean;
+}
+
 /**
  * Resolves task ids to their cloud `ListTaskLight` contexts via cap-sized
  * `epic.getTaskContexts` batches. Only `found` rows enter the map; absence and
@@ -50,10 +69,15 @@ export interface EpicTaskContexts {
  * scoped by `userId` because permission-dependent responses must not leak
  * across account switches; the hook stays disabled until a user is known.
  * An older host without the method degrades to an empty map, not an error.
+ *
+ * `options.enabled` is the cloud-authorization half and is ANDed with the two
+ * intrinsic gates below rather than replacing either - a known user and a
+ * non-empty id list are still required of an authorized caller.
  */
 export function useEpicGetTaskContexts(
   taskIds: readonly string[],
   userId: string | null,
+  options: UseEpicGetTaskContextsOptions,
 ): EpicTaskContexts {
   const client = useHostClient();
   const requests = useMemo(
@@ -73,7 +97,7 @@ export function useEpicGetTaskContexts(
     requests,
     cacheKeyIdentity: userId === null ? undefined : userId,
     options: {
-      enabled: userId !== null && taskIds.length > 0,
+      enabled: options.enabled && userId !== null && taskIds.length > 0,
       staleTime: TASK_CONTEXT_TITLE_STALE_TIME_MS,
     },
     combine: combineTaskContextResults,

@@ -450,6 +450,10 @@ export function acquireRemoteSession<
       session.subscribeAvailabilityRecovered(listener),
     subscribeReadinessLost: (listener) =>
       session.subscribeReadinessLost(listener),
+    getMethodSupport: (method) => session.getMethodSupport(method),
+    getMethodSchemaVersion: (method) => session.getMethodSchemaVersion(method),
+    subscribeMethodSupport: (listener) =>
+      session.subscribeMethodSupport(listener),
     close: release,
   };
 }
