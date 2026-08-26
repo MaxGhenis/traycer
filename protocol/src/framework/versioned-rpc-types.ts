@@ -167,7 +167,8 @@ export type RpcErrorFor<Contract> = Contract extends AnyRpcContract
   : never;
 
 export type RpcResultFor<Contract> =
-  RpcSuccessFor<Contract> | RpcErrorFor<Contract>;
+  | RpcSuccessFor<Contract>
+  | RpcErrorFor<Contract>;
 
 export type RpcResponseUpgradeContext<Request> = {
   readonly request: Request;
@@ -218,7 +219,8 @@ export type UpgradePath<
 > = ContextlessUpgradePath<From, To> | ContextualUpgradePath<From, To>;
 
 export type DowngradeResult<Value> =
-  { ok: true; value: Value } | { ok: false; error: RpcErrorDetails };
+  | { ok: true; value: Value }
+  | { ok: false; error: RpcErrorDetails };
 
 export type DowngradePath<
   From extends AnyRpcContract,

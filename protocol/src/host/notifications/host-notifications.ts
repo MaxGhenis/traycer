@@ -1582,6 +1582,12 @@ export const hostNotificationsIndicatorState =
  * The request half stays identity: `@1.1` only ADDS optional selectors, so a
  * v1.0 request is already a well-formed v1.1 one.
  */
+// Targets the FROZEN `V11` rather than the live `hostNotificationsIndicatorState`
+// alias, which is what `origin/main` still names here. The two are the same object
+// today, so the reformat this resolves against was a no-op - but the moment a V12
+// lands, the live alias moves and a `V10ToV11` path written against it silently
+// starts claiming to upgrade to V12. Naming the frozen contract is what keeps this
+// path pinned to the version in its own name.
 export const hostNotificationsIndicatorStateUpgradeV10ToV11 = defineUpgradePath<
   typeof hostNotificationsIndicatorStateV10,
   typeof hostNotificationsIndicatorStateV11

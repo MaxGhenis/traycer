@@ -1139,7 +1139,8 @@ describe("useCloudEpicTasksQuery", () => {
       sort: "oldest" as const,
     };
     let resolvePromotedRequest:
-      ((value: ListTasksResponse) => void) | undefined;
+      | ((value: ListTasksResponse) => void)
+      | undefined;
     mockHostClient.request.mockImplementation(
       (_method: string, params: MockHostRequest) => {
         if (params.sort === "oldest") {

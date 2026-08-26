@@ -692,7 +692,11 @@ export interface TraycerPidMetadata {
 }
 
 export type BootstrapPhase =
-  "starting" | "exited" | "crashed" | "killed" | "failed-to-spawn";
+  | "starting"
+  | "exited"
+  | "crashed"
+  | "killed"
+  | "failed-to-spawn";
 
 export interface BootstrapMarkerEntry {
   readonly timestamp: string;
@@ -1272,7 +1276,9 @@ export interface ITokenStore {
  *   platform must not retry forever.
  */
 export type NotificationShowOutcome =
-  "presented" | "duplicate" | "undeliverable";
+  | "presented"
+  | "duplicate"
+  | "undeliverable";
 
 /**
  * Which feed produced the notification being shown - delivery provenance,
@@ -1413,7 +1419,10 @@ export interface HostInstallResult {
   readonly previousVersion: string | null;
   readonly serviceLifecycle: {
     readonly priorServiceState:
-      "running" | "stopped" | "not-installed" | "externally-managed";
+      | "running"
+      | "stopped"
+      | "not-installed"
+      | "externally-managed";
     readonly stoppedBeforeSwap: boolean;
     readonly postSwapAction: "install" | "restart" | "start" | "none";
     readonly postSwapError: string | null;
@@ -1599,7 +1608,10 @@ export interface DownloadLaneStatus {
 }
 
 export type HostActivationState =
-  "activated" | "pendingActivation" | "activationUnknown" | "unavailable";
+  | "activated"
+  | "pendingActivation"
+  | "activationUnknown"
+  | "unavailable";
 
 export interface HostControllerStatus {
   readonly download: DownloadLaneStatus | null;
@@ -1768,7 +1780,9 @@ export type DoctorRepairIntent = "converge-ready" | "register-service";
  * predecessor.
  */
 export type QueuedDoctorRepair =
-  "converge-ready" | "register-service" | "restart";
+  | "converge-ready"
+  | "register-service"
+  | "restart";
 
 /**
  * `declined` covers both "nothing was enqueued because this is no longer that
