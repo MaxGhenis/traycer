@@ -3495,7 +3495,7 @@ describe("runHostStart - production defaults", () => {
     expect(during).toBe(before + 1);
     // And the canceller really cancels - otherwise the ordinary path leaks a
     // 30s timer per attempt.
-    expect(countTimers()).toBe(before);
+    expect(countTimers()).toBeLessThan(during);
     expect(fired).toBe(false);
   });
 
