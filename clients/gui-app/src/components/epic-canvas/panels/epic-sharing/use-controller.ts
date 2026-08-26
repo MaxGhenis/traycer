@@ -28,6 +28,7 @@ import type {
   SharingPendingAction,
 } from "./types";
 import type { AssignableCollaboratorRole } from "@/lib/epic-collaborator-roles";
+import type { PermissionRole } from "@traycer/protocol/host/epic/unary-schemas";
 import { useEpicPermissionRole } from "@/lib/epic-selectors";
 import {
   buildExistingInviteIndex,
@@ -145,9 +146,10 @@ export function useEpicSharingPanelController(
   const cloudAuthorized = useAuthStore((state) =>
     authorizesCloudCapability(state.status),
   );
-  const isOwner = currentRole === "owner" && cloudAuthorized;
-  const canInvitePeople =
-    (currentRole === "owner" || currentRole === "editor") && cloudAuthorized;
+  const { isOwner, canInvitePeople } = buildSharingCapabilities({
+    currentRole,
+    cloudAuthorized,
+  });
   const shareableTeams = useEpicShareableTeams();
 
   // The Epic SESSION's client, and the mutations below moved with it: the
@@ -478,13 +480,13 @@ export function useEpicSharingPanelController(
         });
       },
     },
-    teamHint: buildTeamHint(
+    teamHint: buildTeamHint({
       isLoading,
-      collaboratorsQuery.isError,
-      teams.length,
-      isOwner ? shareableTeams.length : 0,
+      isError: collaboratorsQuery.isError,
+      sharedCount: teams.length,
+      availableCount: isOwner ? shareableTeams.length : 0,
       cloudAuthorized,
-    ),
+    }),
     teamsProps: {
       loadState,
       rows: teamRows,
@@ -630,15 +632,50 @@ function buildPeopleHint(
   return `${count} ${subject} direct access.`;
 }
 
-function buildTeamHint(
-  isLoading: boolean,
-  isError: boolean,
-  sharedCount: number,
-  availableCount: number,
-  cloudAuthorized: boolean,
-): string {
-  if (isLoading) return "Loading teams...";
-  if (isError) return "Couldn't load teams.";
+interface SharingCapabilities {
+  /** Owner-only affordances: team sharing, role changes, revoke. */
+  readonly isOwner: boolean;
+  /** Owner AND editor may invite. */
+  readonly canInvitePeople: boolean;
+}
+
+/**
+ * Both capability answers, derived from BOTH questions at once.
+ *
+ * Kept together and out of the hook body because they are one decision made
+ * twice, not two: each is `role && verdict`, and a later affordance that
+ * consulted only the role is exactly the widened-admission defect this panel
+ * was gated for. Reading them from one helper makes the pairing the obvious
+ * thing to copy.
+ */
+function buildSharingCapabilities(input: {
+  readonly currentRole: PermissionRole | null;
+  readonly cloudAuthorized: boolean;
+}): SharingCapabilities {
+  const { currentRole, cloudAuthorized } = input;
+  return {
+    isOwner: currentRole === "owner" && cloudAuthorized,
+    canInvitePeople:
+      (currentRole === "owner" || currentRole === "editor") && cloudAuthorized,
+  };
+}
+
+/**
+ * Object-shaped rather than positional, like {@link buildTeamPendingState}:
+ * five same-typed arguments in a row (two booleans, two numbers, a boolean)
+ * are silently swappable at the call site, and swapping the two counts still
+ * type-checks while inverting which hint the user reads.
+ */
+function buildTeamHint(input: {
+  readonly isLoading: boolean;
+  readonly isError: boolean;
+  readonly sharedCount: number;
+  readonly availableCount: number;
+  readonly cloudAuthorized: boolean;
+}): string {
+  const { sharedCount, availableCount, cloudAuthorized } = input;
+  if (input.isLoading) return "Loading teams...";
+  if (input.isError) return "Couldn't load teams.";
   // Same as the people hint: both counts below are zero for want of a request,
   // and "No teams available." is the false statement that falls out of that.
   if (!cloudAuthorized)

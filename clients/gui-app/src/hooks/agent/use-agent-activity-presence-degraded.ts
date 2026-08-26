@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { AgentActivityCloudSyncStatus } from "@traycer/protocol/host/agent/activity";
 import type { StreamConnectionStatus } from "@traycer-clients/shared/host-transport/i-stream-session";
 import { useAgentActivityStore } from "@/stores/agent-activity-store";
-import { useNotificationsServingHostEntry } from "@/hooks/host/use-notifications-serving-host-entry";
+import { useNotificationsServingHostId } from "@/hooks/host/use-notifications-serving-host-entry";
 import { useReactiveLocalHostId } from "@/hooks/host/use-reactive-local-host-id";
 
 /**
@@ -66,9 +66,25 @@ export function useAgentActivityPresenceDegraded(): AgentActivityPresenceDegrade
   // `renderer-unserved-plane-assertions` proposes precisely that - this hook
   // needs a caller-supplied stream identity again, and the keying it reads
   // through is deliberately still here for that day.
+  // BOTH read unconditionally, and the fallback chosen afterwards. Written as
+  // `localHostId ?? useNotificationsServingHostId()` this is a conditional hook
+  // call: `??` short-circuits, so the moment a booting local host publishes its
+  // id the second hook stops being called and the hook order changes mid-mount
+  // - which React answers by throwing, on the exact edge (local host arrives)
+  // this hook exists to survive. The `??` below is a choice between two values
+  // already in hand.
+  //
+  // The ID half rather than `useNotificationsServingHostEntry()?.hostId`: that
+  // one resolves the relay fallback through `useHostDirectoryEntry`, which
+  // reads `useHostDirectory()` and THROWS outside a `<HostRuntimeProvider>` -
+  // and subscribes this hook to a directory row it never looks at. The two
+  // agree on the id in every state, including the window before a bound host's
+  // row lands: the entry hook answers `null` there, and so does this one,
+  // because `fallbackHostId` comes from `useAddressableHostId`, which is itself
+  // `null` until that row exists. Their shared suite asserts that agreement.
   const localHostId = useReactiveLocalHostId();
-  const servingHostId =
-    localHostId ?? useNotificationsServingHostEntry()?.hostId ?? null;
+  const relayServingHostId = useNotificationsServingHostId();
+  const servingHostId = localHostId ?? relayServingHostId;
   const reason = useAgentActivityStore((state) =>
     servingHostId === null
       ? null

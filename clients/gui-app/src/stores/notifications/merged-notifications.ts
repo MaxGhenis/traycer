@@ -1152,7 +1152,13 @@ export function useMergedNotificationsActions(): MergedNotificationsActions {
         }
         if (parsed.source === "host") {
           if (feedMode === "upgrade-required") return;
-          if (client === null) return;
+          // Both halves, matching `markAllAsRead` / `clearAll`. A retained
+          // `host:` row outlives the host that minted it, and after that
+          // disconnect the client can still be non-null while
+          // `notificationHostId` is already null - dispatching then sends an
+          // unbound mutation whose only visible effect is an error toast on a
+          // row that was never going to update.
+          if (client === null || notificationHostId === null) return;
           markHostRead.mutate({
             feedId,
             sourceId: parsed.sourceId,

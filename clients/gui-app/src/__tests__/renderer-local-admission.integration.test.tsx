@@ -739,9 +739,21 @@ describe("renderer local admission — cross-seam (real AuthService × real useA
     // local plane. Reached here through the background recovery tick
     // `scheduleSessionRecovery("startup:validate-network")` already armed.
     harness.setFetchHandler(rejectedFetch(ledger));
+    // Wait on the APPLIED verdict, not on the request having been issued.
+    // `rejectedFetch` bumps `refreshAttempts` BEFORE it returns the 401, so a
+    // ledger-only wait settles while the rejection is still unprocessed -
+    // `applyUnadoptedStoredRotateOutcome` is several microtasks downstream of
+    // it. The status assertion below would then read the state phase A already
+    // established, and pass because nothing had happened yet rather than
+    // because the local plane was held. `getLastError()` is the discriminating
+    // marker: it flips only once the rejection has been applied, so waiting on
+    // it is what makes the assertion that follows mean anything.
     await vi.waitFor(
       () => {
         expect(ledger.refreshAttempts).toBeGreaterThanOrEqual(1);
+        expect(getHostBindingSnapshot()?.auth.getLastError()).toBe(
+          AUTH_ERROR_SESSION_EXPIRED,
+        );
       },
       { timeout: 5000, interval: 50 },
     );
@@ -751,9 +763,6 @@ describe("renderer local admission — cross-seam (real AuthService × real useA
     // A wrong implementation that reused `applyLiveRotateOutcome`'s
     // sibling handling (clearUiSession on refresh-rejected) fails here.
     expect(useAuthStore.getState().status).toBe("unverified");
-    expect(getHostBindingSnapshot()?.auth.getLastError()).toBe(
-      AUTH_ERROR_SESSION_EXPIRED,
-    );
     // Never signed-in at any point across phases A/B, so the real hosts
     // fetcher's bearer gate never opened — no `GET /api/v3/hosts` reached
     // the wire (same fetch-boundary discrimination as arm 1).

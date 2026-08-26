@@ -16,17 +16,43 @@ const GRACE_MS = 2_000;
  * empty slice and every case degrades to `stream-down`.
  */
 const HOST_ID = "host-1";
-const hostRouting = vi.hoisted(() => ({
-  localHostId: "host-1" as string | null,
-  servingHostId: "host-1" as string | null,
-}));
+/**
+ * Annotated rather than `"host-1" as string | null` on each field. The
+ * assertion form does not survive the lint step: `eslint --fix` runs with
+ * `no-unnecessary-type-assertion`, strips both assertions, and the fields
+ * narrow to `string` - which then fails the `= null` writes below, and turned
+ * a `=== null` comparison into a "types have no overlap" error. An annotation
+ * expresses the same widening and is not a fixable offence.
+ */
+interface HostRouting {
+  localHostId: string | null;
+  servingHostId: string | null;
+}
+const hostRouting = vi.hoisted(
+  (): HostRouting => ({
+    localHostId: "host-1",
+    servingHostId: "host-1",
+  }),
+);
 
-vi.mock("@/hooks/host/use-notifications-serving-host-entry", () => ({
-  useNotificationsServingHostEntry: () =>
-    hostRouting.servingHostId === null
-      ? null
-      : { hostId: hostRouting.servingHostId },
-}));
+/**
+ * Deliberately HOOK-SHAPED, and the `useState` is the whole point rather than
+ * incidental detail. The real `useNotificationsServingHostId` consumes three
+ * hooks; a mock that consumes none is invisible to React's hook counter, so a
+ * conditional call site would reorder nothing and the transition test below
+ * would pass against the very defect it exists to catch. Consuming one real
+ * hook restores the property being asserted: call this conditionally and the
+ * render throws.
+ */
+vi.mock("@/hooks/host/use-notifications-serving-host-entry", async () => {
+  const { useState } = await import("react");
+  return {
+    useNotificationsServingHostId: (): string | null => {
+      useState(0);
+      return hostRouting.servingHostId;
+    },
+  };
+});
 
 vi.mock("@/hooks/host/use-reactive-local-host-id", () => ({
   useReactiveLocalHostId: () => hostRouting.localHostId,
@@ -105,6 +131,39 @@ describe("useAgentActivityPresenceDegraded", () => {
       setHostHealth({ connectionStatus: "open" });
     });
     expect(result.current).toBe(null);
+  });
+
+  it("survives the local host arriving mid-mount, which a short-circuited serving-host read cannot", () => {
+    // The regression: `localHostId ?? useNotificationsServingHostId()` drops
+    // the second hook the instant the first answers, so the hook order changes
+    // between these two renders and React throws "Rendered fewer hooks than
+    // expected". A booting local host publishing its id IS that edge, and it
+    // is reached on every cold start of a local-capable shell - so the defect
+    // is a crash on the ordinary path, not a corner case.
+    hostRouting.localHostId = null;
+    hostRouting.servingHostId = "relay-serving-host";
+    const { result, rerender } = renderHook(() =>
+      useAgentActivityPresenceDegraded(),
+    );
+
+    act(() => {
+      setHostHealthFor("relay-serving-host", { connectionStatus: "open" });
+    });
+    expect(result.current).toBe(null);
+
+    // The local host lands. Both reads must still happen.
+    hostRouting.localHostId = "durable-local-host";
+    expect(() => {
+      rerender();
+    }).not.toThrow();
+
+    act(() => {
+      setHostHealthFor("durable-local-host", { connectionStatus: "closed" });
+      vi.advanceTimersByTime(GRACE_MS);
+    });
+    // And the answer moved to the newly-arrived local host, proving the
+    // rerender re-resolved rather than merely surviving.
+    expect(result.current).toBe("stream-down");
   });
 
   it("uses the durable local host while the serving entry is absent during a restart", () => {

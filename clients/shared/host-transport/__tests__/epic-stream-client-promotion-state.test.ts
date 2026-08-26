@@ -15,7 +15,13 @@ import type { IStreamClient } from "../i-stream-client";
 import type { IStreamSession, StreamFrameEnvelope } from "../i-stream-session";
 
 /** The `epic.subscribe` minor this suite's frames are shaped for. */
-const NEGOTIATED_SCHEMA_VERSION: SchemaVersion = { major: 1, minor: 3 };
+/**
+ * The `epic.subscribe` minor this suite's frames are shaped for. `1.6`, not
+ * `1.3`: `promotionState` and the durability legs do not exist below it, so a
+ * `1.3` session could never send the frames injected here and the suite was
+ * asserting behaviour for an input the wire cannot produce.
+ */
+const NEGOTIATED_SCHEMA_VERSION: SchemaVersion = { major: 1, minor: 6 };
 
 function makeSessionWithInjector(): {
   readonly session: IStreamSession;

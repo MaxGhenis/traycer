@@ -9,7 +9,10 @@ import {
 import { useHostQueries } from "@/hooks/host/use-host-queries";
 import { useHostClient, type HostRpcRegistry } from "@/lib/host";
 import { useLocalHomedOpenEpicIds } from "@/lib/registries/epic-session-registry";
-import { useAuthStore } from "@/stores/auth/auth-store";
+import {
+  authorizesCloudCapability,
+  useAuthStore,
+} from "@/stores/auth/auth-store";
 
 /**
  * What the tab strip knows about one open epic's History pin.
@@ -45,6 +48,21 @@ export function useEpicTaskPinnedStates(
   const client = useHostClient();
   const localHomedEpicIds = useLocalHomedOpenEpicIds(epicIds);
   const userId = useAuthStore((state) => state.contextMetadata?.userId ?? null);
+  // `contextMetadata.userId` admits the local plane and is deliberately not
+  // the spend gate. `epic.getTaskContexts` can reach the account's servers,
+  // and the host connection does not carry the renderer's verdict - so a
+  // withdrawn verdict would otherwise still spend cloud capability to paint
+  // pin state on the tab strip.
+  //
+  // Withholding the batch is safe HERE specifically because the sole consumer
+  // does not read an absent entry as "not pinned": `tabPinUnavailableReason`
+  // answers `unverified-session` on the same verdict and the item announces
+  // itself unavailable. The LOCAL half is unaffected - `localHomedEpicIds`
+  // comes from the live-session registry, not from this query - so a
+  // local-homed tab keeps its `home: "local"` reading through the overlay.
+  const cloudAuthorized = useAuthStore((state) =>
+    authorizesCloudCapability(state.status),
+  );
   const normalizedIds = useMemo(
     () =>
       [...new Set(epicIds)].sort((left, right) => left.localeCompare(right)),
@@ -68,7 +86,7 @@ export function useEpicTaskPinnedStates(
     requests,
     cacheKeyIdentity: userId ?? undefined,
     options: {
-      enabled: userId !== null && normalizedIds.length > 0,
+      enabled: cloudAuthorized && userId !== null && normalizedIds.length > 0,
       staleTime: Infinity,
     },
     combine: combineTaskPinnedStateResults,

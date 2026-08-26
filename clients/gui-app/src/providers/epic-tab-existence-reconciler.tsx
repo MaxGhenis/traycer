@@ -16,6 +16,7 @@ import {
   GET_TASK_CONTEXTS_MAX_IDS,
   isConfirmedAbsentTaskContext,
   type GetTaskContextsResponse,
+  type ListTasksCompleteness,
   type ListTasksResponse,
 } from "@traycer/protocol/host/epic/unary-schemas";
 import type { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
@@ -269,7 +270,14 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileSeed }) {
   for (const probe of localHomeProbes ?? []) {
     registerCloudEpicTasksClient(probe.hostId, probe.client);
   }
-  const localHomeListQueries = useQueries({
+  // Combined THROUGH `useQueries` rather than by a `useMemo` over its return
+  // value, matching `confirmedAbsentEpicIds` above. `useQueries` builds a fresh
+  // results array every render, so a `useMemo` keyed on it recomputed every
+  // render regardless - the memo read as a stability guarantee it never
+  // provided, which is what `@tanstack/query/no-unstable-deps` flags. Folding
+  // it into `combine` drops the false guarantee without changing when the
+  // combiner runs.
+  const locallyProtectedEpicIds = useQueries({
     queries: (localHomeProbes ?? []).map((probe) => ({
       ...epicTabLocalHomeListQueryOptions({
         hostId: probe.hostId,
@@ -282,12 +290,11 @@ function EpicTabExistenceProbe(props: { readonly run: ReconcileSeed }) {
       }),
       enabled: true,
     })),
+    combine: (
+      results: ReadonlyArray<UseQueryResult<ListTasksResponse>>,
+    ): ReadonlySet<string> | null =>
+      combineLocallyProtectedEpicIds(localHomeProbes, results),
   });
-
-  const locallyProtectedEpicIds = useMemo(
-    () => combineLocallyProtectedEpicIds(localHomeProbes, localHomeListQueries),
-    [localHomeListQueries, localHomeProbes],
-  );
 
   useEffect(() => {
     if (confirmedAbsentEpicIds === null) return;
@@ -338,6 +345,34 @@ interface LocalHomeProbe {
  * equate that hole with no local epics. Older successful schemas can omit the
  * marker; absence is not a truncation claim and their rows remain useful.
  */
+/**
+ * Whether a page's `localRows` marker says the host-synthesized rows on it are
+ * the WHOLE local answer.
+ *
+ * An ALLOWLIST, deliberately, and not `!== "truncated"`. Every value that is
+ * not one of these three is the host declining to make a complete claim, and
+ * the consumer here force-closes tabs for epics it does not find - so reading
+ * an incomplete page as complete deletes a tab whose epic is locally homed.
+ * `suppressed-unprovable-filter` is exactly that case and was previously
+ * accepted; the protocol's own note on this member names the collapse ("the
+ * difference between 'you have no local epics matching' and 'this filter
+ * cannot be answered locally'"). Stated as an allowlist so a fourth value
+ * added later fails closed here instead of silently joining the accepted set -
+ * which is the same warning the schema doc gives about branching on WHICH
+ * producer fired.
+ *
+ * `undefined` is the one absent-marker that IS complete: a pre-`1.6` host does
+ * not carry `completeness` at all, and treating a legacy peer as permanently
+ * incomplete would strand every tab it serves.
+ */
+function localRowsAreComplete(
+  localRows: ListTasksCompleteness["localRows"] | undefined,
+): boolean {
+  return (
+    localRows === undefined || localRows === "none" || localRows === "present"
+  );
+}
+
 function combineLocallyProtectedEpicIds(
   probes: ReadonlyArray<LocalHomeProbe> | null,
   results: ReadonlyArray<UseQueryResult<ListTasksResponse>>,
@@ -347,7 +382,7 @@ function combineLocallyProtectedEpicIds(
   for (const result of results) {
     if (!result.isSuccess) return null;
     const localRows = result.data.completeness?.localRows;
-    if (localRows === "truncated") return null;
+    if (!localRowsAreComplete(localRows)) return null;
     for (const epicId of locallyProtectedEpicIdsFromListTasks(result.data)) {
       locallyProtected.add(epicId);
     }

@@ -334,6 +334,20 @@ export function subscribeAgentActivity(listener: () => void): () => void {
 export function markAgentActivityReconnecting(): void {
   useAgentActivityStore.setState((state) => {
     if (state.byHost.size === 0) return state;
+    // Identity is load-bearing here, so a no-op write is not free: `patchHost`
+    // already skips them, and the merge cache is keyed on the `byHost`
+    // snapshot. Replacing every slice when they all already read
+    // `reconnecting` discards that cache and re-renders every activity
+    // consumer with unchanged data - once per callback, and a flapping link
+    // delivers a stream of them.
+    let changed = false;
+    for (const host of state.byHost.values()) {
+      if (host.connectionStatus !== "reconnecting") {
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) return state;
     const next = new Map<string, HostAgentActivity>();
     for (const [hostId, host] of state.byHost) {
       next.set(hostId, { ...host, connectionStatus: "reconnecting" });

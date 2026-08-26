@@ -222,6 +222,39 @@ function negotiatedListTasksServesLocalFirst(
   return version.major === 1 && version.minor >= LIST_TASKS_LOCAL_FIRST_MINOR;
 }
 
+interface InitialLegAdmission {
+  /** The initial (non-cursor) leg may be dispatched. */
+  readonly dispatchable: boolean;
+  /**
+   * ...and its absence is EXPLICABLE - this session and this host between them
+   * cannot produce a listing, and no further waiting changes that.
+   */
+  readonly refused: boolean;
+}
+
+/**
+ * One predicate, both readings, derived together.
+ *
+ * `refused` is deliberately NOT `!dispatchable`: the other disabled states are
+ * transient not-ready (a null host or user id during startup), and reporting
+ * one of those as a refusal puts a permanent explanation on screen while the
+ * app is merely still booting. Computing the two apart is how that distinction
+ * gets lost, so they are computed off one shared `scopeReady`.
+ */
+function resolveInitialLegAdmission(input: {
+  readonly enabled: boolean;
+  readonly hostId: string | null;
+  readonly userId: string | null;
+  readonly mayDispatchInitialLeg: boolean;
+}): InitialLegAdmission {
+  const scopeReady =
+    input.enabled && input.hostId !== null && input.userId !== null;
+  return {
+    dispatchable: scopeReady && input.mayDispatchInitialLeg,
+    refused: scopeReady && !input.mayDispatchInitialLeg,
+  };
+}
+
 export function useCloudEpicTasksQuery(
   request: ListCloudTasksRequest | undefined,
   options: { readonly enabled: boolean },
@@ -251,22 +284,18 @@ export function useCloudEpicTasksQuery(
   const initialLegIsLocalFirst =
     negotiatedListTasksServesLocalFirst(listTasksVersion);
   const mayDispatchInitialLeg = authorizesCloudLeg || initialLegIsLocalFirst;
-  // The refusal, narrowed to the case a caller can render an explanation for:
-  // this session and this host between them cannot produce a listing, and no
-  // further waiting changes that. The OTHER disabled states are deliberately
-  // excluded - a null host or user id is a transient not-ready, and reporting
-  // it as a refusal would put a permanent explanation on screen during startup.
-  const initialLegRefused =
-    options.enabled &&
-    hostId !== null &&
-    userId !== null &&
-    !mayDispatchInitialLeg;
+  const initialLeg = resolveInitialLegAdmission({
+    enabled: options.enabled,
+    hostId,
+    userId,
+    mayDispatchInitialLeg,
+  });
+  const initialLegRefused = initialLeg.refused;
 
   const query = useQuery<ListTasksResponse>(
-    !options.enabled ||
-      hostId === null ||
-      userId === null ||
-      !mayDispatchInitialLeg
+    // The null re-checks are redundant with `dispatchable` and kept anyway:
+    // they are what narrows both ids to `string` for the enabled arm below.
+    !initialLeg.dispatchable || hostId === null || userId === null
       ? {
           queryKey: uiQueryKeys.cloudEpicTasksDisabled(),
           queryFn: (): Promise<ListTasksResponse> =>
