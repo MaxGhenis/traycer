@@ -31,7 +31,10 @@ export interface AuthorityBoundAuthRevalidator {
 }
 
 export type RevalidateOutcome =
-  "rotated" | "rejected" | "network-error" | "local-plane-retained";
+  | "rotated"
+  | "rejected"
+  | "network-error"
+  | "local-plane-retained";
 
 /**
  * Stream-side auth recovery hook the `/stream` transport invokes after the

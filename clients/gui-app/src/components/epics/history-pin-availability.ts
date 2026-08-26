@@ -15,7 +15,10 @@ import type { HistoryItem } from "@/components/home/data/home-page.data";
 
 /** The reason a history row cannot dispatch the cloud-only pin mutation. */
 export type HistoryPinUnavailableReason =
-  "phase" | "local-home" | "preserved-orphan" | "unverified-session";
+  | "phase"
+  | "local-home"
+  | "preserved-orphan"
+  | "unverified-session";
 
 /**
  * The pin mutation targets a cloud task. Keep its admission rule independent

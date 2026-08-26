@@ -270,9 +270,10 @@ export function TabStrip(props: TabStripProps) {
     () =>
       Object.fromEntries(
         indicatorScopes.flatMap((scope) =>
-          scope.chatIds.map(
-            (chatId): readonly [string, string] => [chatId, epicId],
-          ),
+          scope.chatIds.map((chatId): readonly [string, string] => [
+            chatId,
+            epicId,
+          ]),
         ),
       ),
     [indicatorScopes, epicId],

@@ -28,12 +28,10 @@ interface UnaryVersions {
   list: SchemaVersion | false | null;
   markAllRead: SchemaVersion | false | null;
 }
-const unaryVersions = vi.hoisted(
-  (): UnaryVersions => ({
-    list: { major: 2, minor: 2 },
-    markAllRead: { major: 1, minor: 1 },
-  }),
-);
+const unaryVersions = vi.hoisted((): UnaryVersions => ({
+  list: { major: 2, minor: 2 },
+  markAllRead: { major: 1, minor: 1 },
+}));
 
 vi.mock("@/lib/host/stream-runtime-context", () => ({
   useStreamMethodSupport: () => cloudFeedSupport.value,
@@ -96,7 +94,8 @@ describe("useNotificationFeedMode", () => {
     cloudFeedSupport.value = "supported";
 
     expect(
-      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result
+        .current,
     ).toBe("cloud");
   });
 
@@ -124,21 +123,24 @@ describe("useNotificationFeedMode", () => {
     feedVersions.cloud = { major: 1, minor: 0 };
     feedVersions.local = { major: 1, minor: 2 };
     expect(
-      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result
+        .current,
     ).toBe("local");
 
     // Local feed present but pre-partition (pre-1.2).
     feedVersions.cloud = { major: 1, minor: 1 };
     feedVersions.local = { major: 1, minor: 1 };
     expect(
-      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result
+        .current,
     ).toBe("local");
 
     // Both projection minors present → mixed (named "cloud" feed mode).
     feedVersions.cloud = { major: 1, minor: 1 };
     feedVersions.local = { major: 1, minor: 2 };
     expect(
-      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result
+        .current,
     ).toBe("cloud");
   });
 
@@ -157,26 +159,30 @@ describe("useNotificationFeedMode", () => {
     // `host.notifications.list` one minor short of the partition selector.
     unaryVersions.list = { major: 2, minor: 1 };
     expect(
-      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result
+        .current,
     ).toBe("local");
 
     // ...and on the wrong major line entirely, which is not a scale.
     unaryVersions.list = { major: 1, minor: 9 };
     expect(
-      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result
+        .current,
     ).toBe("local");
 
     // `markAllRead` short instead, with `list` at its floor.
     unaryVersions.list = { major: 2, minor: 2 };
     unaryVersions.markAllRead = { major: 1, minor: 0 };
     expect(
-      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result
+        .current,
     ).toBe("local");
 
     // Both unary floors met, with the stream minors already there → mixed.
     unaryVersions.markAllRead = { major: 1, minor: 1 };
     expect(
-      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result
+        .current,
     ).toBe("cloud");
   });
 
@@ -189,13 +195,15 @@ describe("useNotificationFeedMode", () => {
     // unary ack.
     unaryVersions.list = null;
     expect(
-      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result
+        .current,
     ).toBe("local");
 
     // `false` is a completed handshake that did not advertise the method.
     unaryVersions.list = false;
     expect(
-      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result
+        .current,
     ).toBe("local");
 
     // No host to read a manifest from at all - the provider passes `null` when

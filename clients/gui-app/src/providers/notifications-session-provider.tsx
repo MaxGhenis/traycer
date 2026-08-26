@@ -872,7 +872,11 @@ function NotificationsSessionBody(
       // a cloud-lane problem left this machine's own notification lane shut
       // for the rest of the session. Machine notifications do not depend on
       // cloud access and must survive a cloud lane that cannot open.
-      if (settledFeedMode === "cloud" && cloudAuthorized && servingStreamClient !== null) {
+      if (
+        settledFeedMode === "cloud" &&
+        cloudAuthorized &&
+        servingStreamClient !== null
+      ) {
         // The cloud feed owns host/agent rows only. Collaboration events are
         // still written to the per-user Notifications room, so cloud mode must
         // keep that replica live alongside the relay or sharing notifications

@@ -1019,9 +1019,9 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
     const { queryClient } = mountReconciler({ getTaskContexts, listTasks });
 
     await waitFor(() => {
-      expect(
-        queriesSettled(queryClient, reconcileQueryKeys(queryClient)),
-      ).toBe(true);
+      expect(queriesSettled(queryClient, reconcileQueryKeys(queryClient))).toBe(
+        true,
+      );
       expect(
         queriesSettled(queryClient, reconcileLocalHomeQueryKeys(queryClient)),
       ).toBe(true);

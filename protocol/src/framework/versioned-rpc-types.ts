@@ -779,7 +779,8 @@ export type RuntimeUpgradePath<Registry extends MethodVersionRegistry> = {
   upgradeResponse: (
     response: RegistryResponseValue<Registry>,
     context:
-      RpcResponseUpgradeContext<RegistryRequestValue<Registry>> | undefined,
+      | RpcResponseUpgradeContext<RegistryRequestValue<Registry>>
+      | undefined,
   ) => RegistryResponseValue<Registry>;
 };
 

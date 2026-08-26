@@ -69,7 +69,10 @@ import { Analytics } from "@/lib/analytics";
  * opt in through {@link admitsLocalPlane} admit it.
  */
 export type AuthStatus =
-  "signed-out" | "signing-in" | "signed-in" | "unverified";
+  | "signed-out"
+  | "signing-in"
+  | "signed-in"
+  | "unverified";
 
 /**
  * Whether this session may render the LOCAL, disk-served plane - the epics the

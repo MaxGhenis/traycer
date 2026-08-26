@@ -43,7 +43,10 @@ export type TeamRow =
  * a definite claim about access, manufactured from a question nobody asked.
  */
 export type SharingAccessLoadState =
-  "loading" | "error" | "ready" | "unauthorized";
+  | "loading"
+  | "error"
+  | "ready"
+  | "unauthorized";
 export type SharingAccessPermission = "owner" | "read_only";
 
 export interface TeamPendingState {

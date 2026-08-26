@@ -52,7 +52,10 @@ vi.mock("@/hooks/host/use-addressable-host-id", () => ({
 // describing is unchanged.
 vi.mock("@/hooks/notifications/use-notification-host", () => ({
   useNotificationResolveHostId: () => activeHostIdRef.value,
-  useNotificationResolveHost: () => ({ hostId: activeHostIdRef.value, client: null }),
+  useNotificationResolveHost: () => ({
+    hostId: activeHostIdRef.value,
+    client: null,
+  }),
 }));
 
 vi.mock("@/hooks/host/use-host-directory-entry", async (importOriginal) => {

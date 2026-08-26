@@ -82,7 +82,10 @@ vi.mock("@/hooks/notifications/use-notification-host", () => ({
   // This suite is about geometry, and never binds a host client - the
   // mutations behind the feed controls are not what it asserts.
   useNotificationResolveHostId: () => activeHostIdRef.value,
-  useNotificationResolveHost: () => ({ hostId: activeHostIdRef.value, client: null }),
+  useNotificationResolveHost: () => ({
+    hostId: activeHostIdRef.value,
+    client: null,
+  }),
 }));
 
 vi.mock("@/hooks/host/use-host-directory-entry", async (importOriginal) => {

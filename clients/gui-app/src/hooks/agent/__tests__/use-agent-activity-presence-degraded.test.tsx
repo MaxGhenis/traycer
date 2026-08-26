@@ -28,12 +28,10 @@ interface HostRouting {
   localHostId: string | null;
   servingHostId: string | null;
 }
-const hostRouting = vi.hoisted(
-  (): HostRouting => ({
-    localHostId: "host-1",
-    servingHostId: "host-1",
-  }),
-);
+const hostRouting = vi.hoisted((): HostRouting => ({
+  localHostId: "host-1",
+  servingHostId: "host-1",
+}));
 
 /**
  * Deliberately HOOK-SHAPED, and the `useState` is the whole point rather than

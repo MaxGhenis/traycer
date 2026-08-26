@@ -35,7 +35,9 @@ const USER_ID = "user-test";
 
 type MockHostRequest = ListTasksRequest & { readonly pinned?: boolean };
 type MockHostResponse =
-  ListTasksResponse | { readonly pinned: boolean } | Record<string, never>;
+  | ListTasksResponse
+  | { readonly pinned: boolean }
+  | Record<string, never>;
 type MockHostRequestFunction = (
   method: string,
   params: MockHostRequest,
