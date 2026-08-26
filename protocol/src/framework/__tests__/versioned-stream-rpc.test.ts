@@ -31,6 +31,10 @@ describe("validateVersionedStreamRpcRegistry", () => {
     // @1.7 arrives from mainline (#1422, interview history review); this
     // branch added no chat minor of its own, so it is adopted as-is.
     expect(hostStreamRpcRegistry["chat.subscribe"][1].latestMinor).toBe(7);
+    expect(hostStreamRpcRegistry["terminal.subscribe"][1].latestMinor).toBe(6);
+    expect(hostStreamRpcRegistry["worktree.deleteByPath"][1].latestMinor).toBe(
+      1,
+    );
     expect(
       hostStreamRpcRegistry["notifications.subscribe"][1].latestMinor,
     ).toBe(1);
