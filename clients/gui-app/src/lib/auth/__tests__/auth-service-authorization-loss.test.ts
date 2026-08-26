@@ -10,8 +10,13 @@ import {
   type RemoteSessionIdentity,
 } from "@traycer-clients/shared/host-transport/remote/active-remote-sessions";
 import {
+  AUTH_FETCH_MAX_ATTEMPTS,
+  authRetryDelayMs,
+} from "@traycer-clients/shared/auth/auth-validation";
+import {
   AuthService,
   AUTH_ERROR_SESSION_EXPIRED,
+  type ExternalSession,
 } from "@/lib/auth/auth-service";
 import { useAuthStore } from "@/stores/auth/auth-store";
 
@@ -104,6 +109,74 @@ function okWithProfile(): Promise<Response> {
 
 function status(code: number): Promise<Response> {
   return Promise.resolve(new Response(null, { status: code }));
+}
+
+// The `/api/v3/auth/refresh` response rotates both tokens. Copied from the
+// sibling `auth-service.test.ts` harness for the same reason `deviceSignIn`
+// is - that file is deliberately not touched by this task.
+function okWithRefreshToken(token: string): Promise<Response> {
+  return Promise.resolve(
+    new Response(JSON.stringify({ token, refreshToken: `${token}-refresh` }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+}
+
+/**
+ * A cross-window `ExternalSession` for `applyExternalSession`, mirroring the
+ * sibling suite's `externalSessionForUser` helper (copied rather than
+ * imported for the same reason as `deviceSignIn`/`okWithRefreshToken` above).
+ */
+function externalSessionForUser(
+  userId: string,
+  token: string,
+): ExternalSession {
+  const now = new Date("2026-07-30T10:00:00.000Z");
+  return {
+    status: "signed-in",
+    token,
+    profile: {
+      userId,
+      userName: `${userId} display`,
+      email: `${userId}@example.com`,
+      avatarUrl: null,
+    },
+    user: {
+      user: {
+        id: userId,
+        name: `${userId} display`,
+        providerId: `gh-${userId}`,
+        providerHandle: userId,
+        providerType: "GITHUB",
+        email: `${userId}@example.com`,
+        avatarUrl: null,
+        activatedAt: null,
+        createdAt: now,
+        updatedAt: now,
+        lastSeenAt: null,
+        privacyMode: false,
+        isLearningEnabled: true,
+      },
+      userSubscription: {
+        id: `sub-${userId}`,
+        userID: userId,
+        orgID: null,
+        teamID: null,
+        customerId: `cus-${userId}`,
+        createdAt: now,
+        updatedAt: now,
+        subscriptionExpiry: null,
+        trialEndsAt: null,
+        subscriptionStatus: "FREE",
+        hasPaymentMethod: false,
+        isInTrial: false,
+        rechargeRateSeconds: 0,
+      },
+      teamSubscriptions: [],
+      payAsYouGoUsage: { allowPayAsYouGo: false },
+    },
+  };
 }
 
 /**
@@ -339,5 +412,227 @@ describe("AuthService authorization-loss remote-session sweep", () => {
     expect(remoteSessionRefCountForTest(identity)).toBe(1);
 
     view.close();
+  });
+});
+
+// Covers the actual bug: `cloudAuthorized` was set at mint time and never
+// mutated on the four in-place paths that retain/rotate a LIVE context for
+// the SAME identity (demotion, recovery promotion, cross-window promotion).
+// Every case below must fail if the corresponding `setCloudAuthorized` call
+// is removed from `auth-service.ts` - a test that reads the verdict without
+// having driven a REAL in-place rotation (same context object survives)
+// would not be exercising the fix at all.
+describe("AuthService cloudAuthorized verdict propagation on in-place transitions", () => {
+  let restoreFetch: () => void = () => undefined;
+
+  beforeEach(() => {
+    useAuthStore.getState().setSignedOut();
+    restoreFetch = installFetch(() => okWithProfile());
+  });
+
+  afterEach(() => {
+    while (trackedServices.length > 0) {
+      const service = trackedServices.pop();
+      if (service !== undefined) {
+        service.dispose();
+      }
+    }
+    useAuthStore.getState().setSignedOut();
+    resetRemoteSessionReadinessListenersForTest();
+    vi.useRealTimers();
+    restoreFetch();
+  });
+
+  it("withdraws the retained context's verdict on a same-user demotion to unverified", async () => {
+    const { service, host } = makeService();
+    trackedServices.push(service);
+    await service.start();
+    await deviceSignIn(service, host, "dead-token");
+    expect(useAuthStore.getState().status).toBe("signed-in");
+
+    const provider = service.getRequestContextProvider();
+    const contextBefore = provider.current();
+    expect(contextBefore).not.toBeNull();
+    expect(contextBefore?.cloudAuthorized).toBe(true);
+
+    // Terminal server verdict on both the access token and the refresh -
+    // the same driving mechanism as the remote-session sweep suite above.
+    restoreFetch();
+    restoreFetch = installFetch((input) => {
+      const url = typeof input === "string" ? input : String(input);
+      if (url === VALIDATION_URL || url === REFRESH_URL) {
+        return status(401);
+      }
+      return status(500);
+    });
+
+    const outcome = await service.revalidateCurrentContext();
+    expect(outcome?.kind).toBe("rejected");
+    expect(useAuthStore.getState().status).toBe("unverified");
+
+    // THE FIX (edit B / `projectUnverifiedSession`'s retain branch): the
+    // SAME context object survives the demotion (retain, not re-mint) - and
+    // its verdict is withdrawn rather than left `true`.
+    const contextAfter = provider.current();
+    expect(contextAfter).toBe(contextBefore);
+    expect(contextAfter?.cloudAuthorized).toBe(false);
+  });
+
+  it("restores the verdict when the recovery loop promotes a minted unverified context back to signed-in", async () => {
+    vi.useFakeTimers();
+    const { service, host } = makeService();
+    trackedServices.push(service);
+    await host.tokenStore.signIn(
+      { token: "late-authn-token", refreshToken: "late-authn-refresh" },
+      { id: "user-1", email: "test@example.com", name: "Test User" },
+    );
+    restoreFetch();
+    let reachable = false;
+    restoreFetch = installFetch((input) => {
+      const url = typeof input === "string" ? input : String(input);
+      if (!reachable) {
+        return Promise.reject(new Error("connection refused"));
+      }
+      if (url === VALIDATION_URL) {
+        return okWithProfile();
+      }
+      return status(500);
+    });
+
+    const start = service.start();
+    for (let retry = 1; retry < AUTH_FETCH_MAX_ATTEMPTS; retry += 1) {
+      await vi.advanceTimersByTimeAsync(authRetryDelayMs(retry));
+    }
+    await start;
+    expect(useAuthStore.getState().status).toBe("unverified");
+
+    const provider = service.getRequestContextProvider();
+    const contextBefore = provider.current();
+    // A never-verified startup mints a fresh context (no live context existed
+    // yet) with `cloudAuthorized: false` at construction.
+    expect(contextBefore).not.toBeNull();
+    expect(contextBefore?.cloudAuthorized).toBe(false);
+
+    reachable = true;
+    // First recovery tick fires after the initial 1s backoff.
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(useAuthStore.getState().status).toBe("signed-in");
+    // THE FIX (edit A.2 / `applySignedIn`'s rotate branch): the promotion
+    // rotates the SAME context in place (the "same user => same context
+    // object" invariant) and now also restores the verdict it withdrew.
+    const contextAfter = provider.current();
+    expect(contextAfter).toBe(contextBefore);
+    expect(contextAfter?.cloudAuthorized).toBe(true);
+  });
+
+  it("restores the verdict when a cross-window snapshot re-signs-in the same unverified user", async () => {
+    const { service, host } = makeService();
+    trackedServices.push(service);
+    await service.start();
+    await deviceSignIn(service, host, "live-token");
+
+    // Demote to unverified via the same terminal-refresh-rejection mechanism
+    // as the first test in this block, so the live context is RETAINED
+    // (same object) rather than re-minted, and its verdict is withdrawn.
+    restoreFetch();
+    restoreFetch = installFetch((input) => {
+      const url = typeof input === "string" ? input : String(input);
+      if (url === VALIDATION_URL || url === REFRESH_URL) {
+        return status(401);
+      }
+      return status(500);
+    });
+    const demoteOutcome = await service.revalidateCurrentContext();
+    expect(demoteOutcome?.kind).toBe("rejected");
+    expect(useAuthStore.getState().status).toBe("unverified");
+
+    const provider = service.getRequestContextProvider();
+    const contextBefore = provider.current();
+    expect(contextBefore).not.toBeNull();
+    expect(contextBefore?.cloudAuthorized).toBe(false);
+
+    // A sibling window validated a fresh sign-in for the SAME user end to
+    // end and projects it here via the cross-window bridge.
+    service.applyExternalSession(
+      externalSessionForUser("user-1", "sibling-window-token"),
+    );
+
+    expect(useAuthStore.getState().status).toBe("signed-in");
+    expect(service.getCurrentSessionSnapshot().token).toBe(
+      "sibling-window-token",
+    );
+    // THE FIX (edit A.3 / `applyExternalSession`'s rotate branch): the SAME
+    // context object carries on (not an aborted predecessor plus a fresh
+    // successor) and its verdict is restored.
+    const contextAfter = provider.current();
+    expect(contextAfter).toBe(contextBefore);
+    expect(contextAfter?.cloudAuthorized).toBe(true);
+  });
+
+  it("a plain same-user bearer rotation through rotateLiveBearer leaves an unverified session's verdict false", async () => {
+    // Regression guard flagged in the task brief: a successful token refresh
+    // is NOT a `/api/v3/user` verdict, so the one rotation path that is NOT
+    // one of the four fixed call sites (`rotateLiveBearer`, reached here via
+    // the reactive 401 path) must NOT flip the verdict back to `true`.
+    const { service, host } = makeService();
+    trackedServices.push(service);
+    await service.start();
+    await deviceSignIn(service, host, "dead-token");
+
+    // Demote to unverified (retain branch) exactly as in the first test.
+    restoreFetch();
+    restoreFetch = installFetch((input) => {
+      const url = typeof input === "string" ? input : String(input);
+      if (url === VALIDATION_URL || url === REFRESH_URL) {
+        return status(401);
+      }
+      return status(500);
+    });
+    const demoteOutcome = await service.revalidateCurrentContext();
+    expect(demoteOutcome?.kind).toBe("rejected");
+    expect(useAuthStore.getState().status).toBe("unverified");
+
+    const provider = service.getRequestContextProvider();
+    const contextBefore = provider.current();
+    expect(contextBefore?.cloudAuthorized).toBe(false);
+
+    // The stored refresh token is still good (the file was kept on demotion):
+    // a fresh reactive 401 rotate succeeds ("applied"), which drives
+    // `rotateLiveBearer` while the session is still `unverified`. The
+    // handler must distinguish the two validate calls by bearer - the stale
+    // "dead-token" (rejected, driving the rotate) and the freshly-rotated
+    // "post-demotion-token" (accepted, driving `revalidateCurrentContextOnce`'s
+    // post-rotate re-check) - or the second call would also read as rejected.
+    restoreFetch();
+    restoreFetch = installFetch((input, init) => {
+      const url = typeof input === "string" ? input : String(input);
+      if (
+        url === VALIDATION_URL &&
+        init?.headers?.Authorization === "Bearer post-demotion-token"
+      ) {
+        return okWithProfile();
+      }
+      if (url === VALIDATION_URL) {
+        return status(401);
+      }
+      if (url === REFRESH_URL) {
+        return okWithRefreshToken("post-demotion-token");
+      }
+      return status(500);
+    });
+
+    const rotateOutcome = await service.revalidateCurrentContext();
+    expect(rotateOutcome?.kind).toBe("valid");
+    expect(service.getCurrentSessionSnapshot().token).toBe(
+      "post-demotion-token",
+    );
+
+    // Still unverified, still unauthorized: a bearer rotation alone is not a
+    // verdict, so `rotateLiveBearer` must not have touched `cloudAuthorized`.
+    expect(useAuthStore.getState().status).toBe("unverified");
+    const contextAfter = provider.current();
+    expect(contextAfter).toBe(contextBefore);
+    expect(contextAfter?.cloudAuthorized).toBe(false);
   });
 });

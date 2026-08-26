@@ -1977,10 +1977,10 @@ export class AuthService {
       this.applySignedOut();
       return;
     }
-    const currentUserId = this.contextProvider.current()?.identity.userId;
+    const liveContext = this.contextProvider.current();
     if (
-      currentUserId !== undefined &&
-      currentUserId === session.user.user.id &&
+      liveContext !== null &&
+      liveContext.identity.userId === session.user.user.id &&
       this.currentBearer !== session.token
     ) {
       // COMMIT BEFORE EMIT (see `applySignedIn`) - the rotation notification
@@ -1990,8 +1990,16 @@ export class AuthService {
       this.commitSubscriptionStatus(
         session.user.userSubscription.subscriptionStatus,
       );
+      // RESTORE THE VERDICT: a sibling window validated this session end to
+      // end, so this is a verdict-bearing transition and not merely a new
+      // token - the store lands on `signed-in` a few lines below. An in-place
+      // rotation moves the bearer and nothing else, so a window that took this
+      // path while `unverified` would otherwise show a signed-in session whose
+      // every direct cloud worker is still fenced by
+      // `buildBearerHeadersFromContext`, with no later edge to release it.
+      liveContext.setCloudAuthorized(true);
       this.contextProvider.rotateCurrentBearer({
-        userId: currentUserId,
+        userId: liveContext.identity.userId,
         bearerToken: session.token,
       });
       const contextMetadata =
@@ -3855,7 +3863,7 @@ export class AuthService {
     this.setLastError(null);
     this.setDeviceProgress(null);
     this.setLinkLoginProgress(null);
-    const liveUserId = this.contextProvider.current()?.identity.userId;
+    const liveContext = this.contextProvider.current();
     const profile = profileOverride ?? this.profileFromUser(user);
     const contextMetadata = this.contextMetadataFromUser(user);
     // COMMIT BEFORE EMIT — the ordering contract for this whole class of bug.
@@ -3887,10 +3895,28 @@ export class AuthService {
     this.commitLiveCredential(bearerToken, profile);
     this.commitSubscriptionStatus(user.userSubscription.subscriptionStatus);
     let rotatedInPlace = false;
-    if (liveUserId !== undefined && liveUserId === user.user.id) {
+    if (liveContext !== null && liveContext.identity.userId === user.user.id) {
       try {
+        // RESTORE THE VERDICT, the exact inverse of the withdrawal in
+        // `projectUnverifiedSession`. A context minted by `setUnverified`
+        // carries `cloudAuthorized: false`, and rotating its bearer does not
+        // undo that - so without this an `unverified` session that recovers
+        // keeps every direct cloud worker fenced off permanently, the fence
+        // outliving the condition it was raised for. That half is as real as
+        // the over-permissive half and has no other edge to clear it: the
+        // recovery path rotates rather than mints precisely so nothing tears
+        // down, which also means nothing re-authorizes.
+        //
+        // Unconditional rather than gated on `heldVerdict`: arriving here means
+        // a validated `AuthenticatedUser`, which IS the verdict, so asserting
+        // it states ground truth and is idempotent on a context already
+        // holding it. Ordered before the rotation announces, per COMMIT BEFORE
+        // EMIT above. A rotation that then throws is harmless - the
+        // `setSignedIn` fallback aborts this context, and an aborted context
+        // fails closed ahead of any verdict read.
+        liveContext.setCloudAuthorized(true);
         this.contextProvider.rotateCurrentBearer({
-          userId: liveUserId,
+          userId: liveContext.identity.userId,
           bearerToken,
         });
         rotatedInPlace = true;
@@ -4386,6 +4412,22 @@ export class AuthService {
       live.identity.userId === identity.userId &&
       !live.credentials.isReleased;
     if (canRetainLiveContext) {
+      // WITHDRAW THE VERDICT. This is the half of `setUnverified` that
+      // retention cannot inherit by rotating, and the line above - "only the
+      // verdict, the store and the scheduler move" - described an intent the
+      // code did not carry out: the verdict was the one thing that did not
+      // move. The mint branch below asserts `cloudAuthorized: false` at
+      // construction; an in-place rotation moves the bearer alone, so the
+      // retained context kept the `true` it was signed in with and
+      // `buildBearerHeadersFromContext` kept minting headers from it - for
+      // precisely the background timers, mount effects and detached promises
+      // no surface gate reaches, which is why the verdict lives on the context
+      // at all.
+      //
+      // Ordered before `rotateCurrentBearer` on this file's COMMIT BEFORE EMIT
+      // rule: that call notifies its listeners synchronously and they are
+      // entitled to read the post-transition verdict.
+      live.setCloudAuthorized(false);
       this.contextProvider.rotateCurrentBearer({
         userId: identity.userId,
         bearerToken: session.token,
