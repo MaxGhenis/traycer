@@ -42,8 +42,9 @@ function listTaskLight(epicId: string | null, pinned: boolean): ListTaskLight {
 
 function taskContexts(
   tasks: GetTaskContextsResponse["tasks"],
+  localHomedTaskIds: GetTaskContextsResponse["localHomedTaskIds"],
 ): GetTaskContextsResponse {
-  return { tasks };
+  return { tasks, localHomedTaskIds };
 }
 
 describe("chunkTaskIds", () => {
@@ -71,16 +72,22 @@ describe("combineTaskPinnedStateResults", () => {
   it("merges found rows and skips unknown or incomplete task entries", () => {
     const pinnedStates = combineTaskPinnedStateResults([
       {
-        data: taskContexts({
-          first: { status: "found", task: listTaskLight("epic-a", true) },
-          missing: { status: "unknown", reason: "transport" },
-          incomplete: { status: "found", task: listTaskLight(null, true) },
-        }),
+        data: taskContexts(
+          {
+            first: { status: "found", task: listTaskLight("epic-a", true) },
+            missing: { status: "unknown", reason: "transport" },
+            incomplete: { status: "found", task: listTaskLight(null, true) },
+          },
+          undefined,
+        ),
       },
       {
-        data: taskContexts({
-          second: { status: "found", task: listTaskLight("epic-b", false) },
-        }),
+        data: taskContexts(
+          {
+            second: { status: "found", task: listTaskLight("epic-b", false) },
+          },
+          undefined,
+        ),
       },
       { data: undefined },
     ]);
@@ -91,6 +98,46 @@ describe("combineTaskPinnedStateResults", () => {
     expect([...pinnedStates.entries()]).toEqual([
       ["epic-a", { pinned: true, home: undefined }],
       ["epic-b", { pinned: false, home: undefined }],
+    ]);
+  });
+
+  it("marks a row local when the host's localHomedTaskIds names it", () => {
+    // The populated arm: `localHomedTaskIds` is a real answer that must flip
+    // `home` to `"local"` for exactly the ids it names.
+    const pinnedStates = combineTaskPinnedStateResults([
+      {
+        data: taskContexts(
+          {
+            first: { status: "found", task: listTaskLight("epic-a", true) },
+          },
+          ["epic-a"],
+        ),
+      },
+    ]);
+
+    expect([...pinnedStates.entries()]).toEqual([
+      ["epic-a", { pinned: true, home: "local" }],
+    ]);
+  });
+
+  it("treats an EMPTY localHomedTaskIds as a real answer of none, not absence", () => {
+    // An absent key means the host did not answer; an empty array means it
+    // did, and the answer is "no task here is local-homed". Both must leave
+    // `home` at `undefined`, but for different reasons - this pins the
+    // second one so it cannot silently start behaving like the first.
+    const pinnedStates = combineTaskPinnedStateResults([
+      {
+        data: taskContexts(
+          {
+            first: { status: "found", task: listTaskLight("epic-a", true) },
+          },
+          [],
+        ),
+      },
+    ]);
+
+    expect([...pinnedStates.entries()]).toEqual([
+      ["epic-a", { pinned: true, home: undefined }],
     ]);
   });
 });

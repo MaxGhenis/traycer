@@ -157,6 +157,82 @@ export function getOpenEpicRegistry(): OpenEpicSessionRegistry {
 }
 
 const EMPTY_LIVE_CHAT_EPIC_IDS: Readonly<Record<string, string>> = {};
+const EMPTY_LOCAL_HOMED_EPIC_IDS: ReadonlySet<string> = new Set();
+
+interface LiveSessionSnapshotCache<T> {
+  readonly signature: string;
+  readonly snapshot: T;
+}
+
+/**
+ * Subscribe to the live sessions for `epicIds` and project a cached snapshot.
+ *
+ * Both public live-session readers share this: canonicalize, bind a store
+ * listener per `registry.peek(epicId)`, rebind on every registry emission,
+ * then cache the projection on a `JSON.stringify` signature. Only the
+ * projection differs.
+ */
+function useEpicReadLiveSessionSnapshot<T>(
+  epicIds: ReadonlyArray<string>,
+  project: (
+    canonicalEpicIds: ReadonlyArray<string>,
+  ) => LiveSessionSnapshotCache<T>,
+  getServerSnapshot: () => T,
+): T {
+  const canonicalEpicIds = useMemo(
+    () =>
+      [...new Set(epicIds)].sort((left, right) => left.localeCompare(right)),
+    [epicIds],
+  );
+  const snapshotCache = useRef<LiveSessionSnapshotCache<T> | null>(null);
+  const subscribe = useCallback(
+    (listener: () => void): (() => void) => {
+      let storeUnsubscribers: Array<() => void> = [];
+      const bindStores = (): void => {
+        for (const unsubscribe of storeUnsubscribers) unsubscribe();
+        storeUnsubscribers = canonicalEpicIds.flatMap((epicId) => {
+          const handle = registry.peek(epicId);
+          return handle === null ? [] : [handle.store.subscribe(listener)];
+        });
+      };
+      bindStores();
+      // Rebound through the registry as well as each store: a session that is
+      // acquired, re-pointed, or pruned changes the answer without any store
+      // this closure is currently holding ever emitting.
+      const unsubscribeRegistry = registry.subscribe(() => {
+        bindStores();
+        listener();
+      });
+      return () => {
+        unsubscribeRegistry();
+        for (const unsubscribe of storeUnsubscribers) unsubscribe();
+      };
+    },
+    [canonicalEpicIds],
+  );
+  const getSnapshot = useCallback((): T => {
+    const next = project(canonicalEpicIds);
+    const cached = snapshotCache.current;
+    if (cached?.signature === next.signature) return cached.snapshot;
+    snapshotCache.current = next;
+    return next.snapshot;
+  }, [canonicalEpicIds, project]);
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+}
+
+function projectLiveChatEpicIds(
+  canonicalEpicIds: ReadonlyArray<string>,
+): LiveSessionSnapshotCache<Readonly<Record<string, string>>> {
+  const entries = canonicalEpicIds.flatMap((epicId) =>
+    (registry.peek(epicId)?.store.getState().chats.allIds ?? []).map(
+      (chatId): readonly [string, string] => [chatId, epicId],
+    ),
+  );
+  entries.sort(([left], [right]) => left.localeCompare(right));
+  const snapshot: Readonly<Record<string, string>> =
+    Object.fromEntries(entries);
+  return { signature: JSON.stringify(entries), snapshot };
+}
 
 /**
  * The chat ids that still exist in the currently-live sessions for a set of
@@ -171,60 +247,12 @@ const EMPTY_LIVE_CHAT_EPIC_IDS: Readonly<Record<string, string>> = {};
 export function useLiveChatEpicIdsForEpics(
   epicIds: ReadonlyArray<string>,
 ): Readonly<Record<string, string>> {
-  const canonicalEpicIds = useMemo(
-    () =>
-      [...new Set(epicIds)].sort((left, right) => left.localeCompare(right)),
-    [epicIds],
-  );
-  const snapshotCache = useRef<{
-    readonly signature: string;
-    readonly chatEpicIds: Readonly<Record<string, string>>;
-  } | null>(null);
-  const subscribe = useCallback(
-    (listener: () => void): (() => void) => {
-      let storeUnsubscribers: Array<() => void> = [];
-      const bindStores = (): void => {
-        for (const unsubscribe of storeUnsubscribers) unsubscribe();
-        storeUnsubscribers = canonicalEpicIds.flatMap((epicId) => {
-          const handle = registry.peek(epicId);
-          return handle === null ? [] : [handle.store.subscribe(listener)];
-        });
-      };
-      bindStores();
-      const unsubscribeRegistry = registry.subscribe(() => {
-        bindStores();
-        listener();
-      });
-      return () => {
-        unsubscribeRegistry();
-        for (const unsubscribe of storeUnsubscribers) unsubscribe();
-      };
-    },
-    [canonicalEpicIds],
-  );
-  const getSnapshot = useCallback((): Readonly<Record<string, string>> => {
-    const entries = canonicalEpicIds.flatMap((epicId) =>
-      (registry.peek(epicId)?.store.getState().chats.allIds ?? []).map(
-        (chatId): readonly [string, string] => [chatId, epicId],
-      ),
-    );
-    entries.sort(([left], [right]) => left.localeCompare(right));
-    const snapshot: Readonly<Record<string, string>> =
-      Object.fromEntries(entries);
-    const signature = JSON.stringify(entries);
-    const cached = snapshotCache.current;
-    if (cached?.signature === signature) return cached.chatEpicIds;
-    snapshotCache.current = { signature, chatEpicIds: snapshot };
-    return snapshot;
-  }, [canonicalEpicIds]);
-  return useSyncExternalStore(
-    subscribe,
-    getSnapshot,
+  return useEpicReadLiveSessionSnapshot(
+    epicIds,
+    projectLiveChatEpicIds,
     () => EMPTY_LIVE_CHAT_EPIC_IDS,
   );
 }
-
-const EMPTY_LOCAL_HOMED_EPIC_IDS: ReadonlySet<string> = new Set();
 
 /**
  * Whether a LIVE session says this epic is still local-homed.
@@ -267,6 +295,14 @@ function isLocalHomedLiveEpic(epicId: string): boolean {
   return status === "local" || status === "promoting";
 }
 
+function projectLocalHomedEpicIds(
+  canonicalEpicIds: ReadonlyArray<string>,
+): LiveSessionSnapshotCache<ReadonlySet<string>> {
+  const matches = canonicalEpicIds.filter(isLocalHomedLiveEpic);
+  const snapshot: ReadonlySet<string> = new Set(matches);
+  return { signature: JSON.stringify(matches), snapshot };
+}
+
 /**
  * Which of `epicIds` a live session reports as local-homed.
  *
@@ -298,52 +334,9 @@ function isLocalHomedLiveEpic(epicId: string): boolean {
 export function useLocalHomedOpenEpicIds(
   epicIds: ReadonlyArray<string>,
 ): ReadonlySet<string> {
-  const canonicalEpicIds = useMemo(
-    () =>
-      [...new Set(epicIds)].sort((left, right) => left.localeCompare(right)),
-    [epicIds],
-  );
-  const snapshotCache = useRef<{
-    readonly signature: string;
-    readonly localHomedEpicIds: ReadonlySet<string>;
-  } | null>(null);
-  const subscribe = useCallback(
-    (listener: () => void): (() => void) => {
-      let storeUnsubscribers: Array<() => void> = [];
-      const bindStores = (): void => {
-        for (const unsubscribe of storeUnsubscribers) unsubscribe();
-        storeUnsubscribers = canonicalEpicIds.flatMap((epicId) => {
-          const handle = registry.peek(epicId);
-          return handle === null ? [] : [handle.store.subscribe(listener)];
-        });
-      };
-      bindStores();
-      // Rebound through the registry as well as each store: a session that is
-      // acquired, re-pointed, or pruned changes the answer without any store
-      // this closure is currently holding ever emitting.
-      const unsubscribeRegistry = registry.subscribe(() => {
-        bindStores();
-        listener();
-      });
-      return () => {
-        unsubscribeRegistry();
-        for (const unsubscribe of storeUnsubscribers) unsubscribe();
-      };
-    },
-    [canonicalEpicIds],
-  );
-  const getSnapshot = useCallback((): ReadonlySet<string> => {
-    const matches = canonicalEpicIds.filter(isLocalHomedLiveEpic);
-    const signature = JSON.stringify(matches);
-    const cached = snapshotCache.current;
-    if (cached?.signature === signature) return cached.localHomedEpicIds;
-    const localHomedEpicIds: ReadonlySet<string> = new Set(matches);
-    snapshotCache.current = { signature, localHomedEpicIds };
-    return localHomedEpicIds;
-  }, [canonicalEpicIds]);
-  return useSyncExternalStore(
-    subscribe,
-    getSnapshot,
+  return useEpicReadLiveSessionSnapshot(
+    epicIds,
+    projectLocalHomedEpicIds,
     () => EMPTY_LOCAL_HOMED_EPIC_IDS,
   );
 }

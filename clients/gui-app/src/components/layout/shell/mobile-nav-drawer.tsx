@@ -272,6 +272,7 @@ function DrawerTaskList(props: DrawerTaskListProps): ReactNode {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
+    cloudPagePending,
   } = useHistoryQuery({ search, nowMs: null });
   const items = data?.items ?? [];
 
@@ -321,6 +322,19 @@ function DrawerTaskList(props: DrawerTaskListProps): ReactNode {
       </div>
     );
   } else if (isPending) {
+    body = (
+      <div
+        className="flex flex-col gap-1 px-1"
+        data-testid="mobile-nav-task-list-loading"
+        aria-busy="true"
+        aria-label="Loading tasks"
+      >
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="h-10 w-full rounded-md" />
+        ))}
+      </div>
+    );
+  } else if (cloudPagePending) {
     body = (
       <div
         className="flex flex-col gap-1 px-1"

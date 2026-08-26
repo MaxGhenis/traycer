@@ -43,7 +43,7 @@ import {
  * viewer is resolved - there is no such thing as an unattributed cloud read.
  *
  * Every hook here also disables itself when the session holds no cloud verdict
- * (see {@link useCloudChatCloudAuthorized}). A resolved viewer is not an
+ * (see {@link useCloudChatHasCloudAuthorization}). A resolved viewer is not an
  * authorization: `unverified` carries an identity read off this device's disk
  * precisely so the LOCAL plane stays readable, and these four methods are the
  * cloud one. The read gate has a destructive companion - see
@@ -90,7 +90,7 @@ export function useCloudChatViewerId(): string {
  * consumer would eventually disagree with this one, and the direction it would
  * disagree in is "authorize a sweep the list was never allowed to inform".
  */
-export function useCloudChatCloudAuthorized(): boolean {
+export function useCloudChatHasCloudAuthorization(): boolean {
   return useAuthStore((state) => authorizesCloudCapability(state.status));
 }
 
@@ -120,7 +120,7 @@ export function useCloudChatList(
   HostRpcError
 > {
   const viewerUserId = useCloudChatViewerId();
-  const cloudAuthorized = useCloudChatCloudAuthorized();
+  const cloudAuthorized = useCloudChatHasCloudAuthorization();
   const params = useMemo(() => ({ taskId: args.taskId }), [args.taskId]);
   return useHostQuery<HostRpcRegistry, "epic.listCloudChats">({
     // The one shared spelling of this key's viewer component -
@@ -308,7 +308,7 @@ export function useCloudChatRead(
   args: UseCloudChatReadArgs,
 ): UseQueryResult<CloudChatRead, HostRpcError> {
   const viewerUserId = useCloudChatViewerId();
-  const cloudAuthorized = useCloudChatCloudAuthorized();
+  const cloudAuthorized = useCloudChatHasCloudAuthorization();
   const { client, identity } = args;
   const hostId = client?.getActiveHostId() ?? null;
 
@@ -471,7 +471,7 @@ export function useCloudChatPayloadList(args: {
   HostRpcError
 > {
   const viewerUserId = useCloudChatViewerId();
-  const cloudAuthorized = useCloudChatCloudAuthorized();
+  const cloudAuthorized = useCloudChatHasCloudAuthorization();
   const { identity } = args;
   // `identity` is frequently a fresh object per render at the call site, so the
   // params are memoized on its three fields rather than its reference -
@@ -536,7 +536,7 @@ export function useCloudChatPayload(args: {
   readonly enabled: boolean;
 }): UseQueryResult<CloudChatPayloadBytes, HostRpcError> {
   const viewerUserId = useCloudChatViewerId();
-  const cloudAuthorized = useCloudChatCloudAuthorized();
+  const cloudAuthorized = useCloudChatHasCloudAuthorization();
   const { client, identity, ref } = args;
   const hostId = client?.getActiveHostId() ?? null;
 

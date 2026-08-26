@@ -672,10 +672,13 @@ describe("useHistoryQuery", () => {
           ],
         },
       ];
+      // Local-only labels that sort BEFORE the server counterparts. A fixture
+      // that was already alphabetical cannot tell server-first union from a
+      // full re-sort, so only this order makes `dedupSortWorkspaces` fail.
       const localTask = taskLight(
         "epic-local",
         "Local only workspace",
-        "traycer/local-repo",
+        "aaa/local-repo",
       );
       if (localTask.epic === undefined || localTask.epic === null) {
         throw new Error("Expected epic on local task fixture");
@@ -690,8 +693,8 @@ describe("useHistoryQuery", () => {
               workspaces: [
                 {
                   task: null,
-                  hostId: "host-2",
-                  workspacePath: "/local-only",
+                  hostId: "aaa-host",
+                  workspacePath: "/aaa-local",
                   createdAt: 0,
                 },
               ],
@@ -709,10 +712,10 @@ describe("useHistoryQuery", () => {
       );
 
       expect(screen.getByTestId("available-workspaces").textContent).toBe(
-        "host-1:/server-only|host-2:/local-only",
+        "host-1:/server-only|aaa-host:/aaa-local",
       );
       expect(screen.getByTestId("available-repos").textContent).toBe(
-        "traycer/gui-app|traycer/local-repo",
+        "traycer/gui-app|aaa/local-repo",
       );
     });
   });

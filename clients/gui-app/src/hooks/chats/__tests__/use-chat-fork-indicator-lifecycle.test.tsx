@@ -67,8 +67,8 @@ vi.mock("@/hooks/host/use-addressable-host-id", () => ({
 // client and the query never leaves `isPending`. See `use-notification-host`
 // on why the two must not be allowed to diverge here.
 vi.mock("@/hooks/notifications/use-notification-host", () => ({
-  useNotificationHostId: () => mockLocalHostEntry.hostId,
-  useNotificationHost: () => ({
+  useNotificationResolveHostId: () => mockLocalHostEntry.hostId,
+  useNotificationResolveHost: () => ({
     hostId: mockLocalHostEntry.hostId,
     client: requireHostClient(),
   }),

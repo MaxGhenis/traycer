@@ -45,11 +45,11 @@ vi.mock("@/hooks/host/use-host-client-for", () => ({
 }));
 
 import {
-  useNotificationHost,
-  useNotificationHostId,
+  useNotificationResolveHost,
+  useNotificationResolveHostId,
 } from "@/hooks/notifications/use-notification-host";
 
-describe("useNotificationHost", () => {
+describe("useNotificationResolveHost", () => {
   afterEach(() => {
     cleanup();
     state.entry = null;
@@ -60,7 +60,7 @@ describe("useNotificationHost", () => {
   });
 
   it("returns a non-null client on a relay-only shell once the serving entry resolves to the bound host - the bug this fix closes", () => {
-    // Before the fix, `useNotificationHost` read the local entry directly,
+    // Before the fix, `useNotificationResolveHost` read the local entry directly,
     // which is permanently null on a relay-only shell (Capacitor mobile /
     // web). The streams were live but every mutation against them was inert
     // because `useHostClientFor` was handed a null target. Here the serving
@@ -72,7 +72,7 @@ describe("useNotificationHost", () => {
     };
     state.entry = boundEntry;
 
-    const { result } = renderHook(() => useNotificationHost());
+    const { result } = renderHook(() => useNotificationResolveHost());
 
     expect(result.current.hostId).toBe("host-bound");
     expect(result.current.client).not.toBeNull();
@@ -81,7 +81,7 @@ describe("useNotificationHost", () => {
 
   it("returns the local host from the serving entry even when a different host would be the app-wide active one - G8: notifications never follow the active host", () => {
     // No app-wide "active host" selector is mocked or imported here at all -
-    // if `useNotificationHost` reached for one, this render would throw on
+    // if `useNotificationResolveHost` reached for one, this render would throw on
     // the unmocked module. The hook must resolve purely from the serving
     // entry it is handed.
     const localEntry: HostDirectoryEntry = {
@@ -90,7 +90,7 @@ describe("useNotificationHost", () => {
     };
     state.entry = localEntry;
 
-    const { result } = renderHook(() => useNotificationHost());
+    const { result } = renderHook(() => useNotificationResolveHost());
 
     expect(result.current.hostId).toBe("mock-local");
     expect(result.current.hostId).not.toBe("some-other-active-host");
@@ -99,14 +99,14 @@ describe("useNotificationHost", () => {
   it("returns a null hostId and a null client when there is no serving entry", () => {
     state.entry = null;
 
-    const { result } = renderHook(() => useNotificationHost());
+    const { result } = renderHook(() => useNotificationResolveHost());
 
     expect(result.current.hostId).toBeNull();
     expect(result.current.client).toBeNull();
   });
 });
 
-describe("useNotificationHostId", () => {
+describe("useNotificationResolveHostId", () => {
   afterEach(() => {
     cleanup();
     state.entry = null;
@@ -119,7 +119,7 @@ describe("useNotificationHostId", () => {
   it("returns null when the serving id projection is null", () => {
     state.entryId = null;
 
-    const { result } = renderHook(() => useNotificationHostId());
+    const { result } = renderHook(() => useNotificationResolveHostId());
 
     expect(result.current).toBeNull();
   });
@@ -127,7 +127,7 @@ describe("useNotificationHostId", () => {
   it("returns the serving id when present", () => {
     state.entryId = "host-c";
 
-    const { result } = renderHook(() => useNotificationHostId());
+    const { result } = renderHook(() => useNotificationResolveHostId());
 
     expect(result.current).toBe("host-c");
   });
@@ -136,7 +136,7 @@ describe("useNotificationHostId", () => {
     state.entryId = "host-c";
     state.entry = { ...mockLocalHostEntry, hostId: "host-c" };
 
-    renderHook(() => useNotificationHostId());
+    renderHook(() => useNotificationResolveHostId());
 
     expect(useNotificationsServingHostIdMock).toHaveBeenCalled();
     expect(useNotificationsServingHostEntryMock).not.toHaveBeenCalled();

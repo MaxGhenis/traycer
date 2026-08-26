@@ -99,10 +99,18 @@ function TabStripBody() {
     [indicatorChatEpicIds],
   );
   const indicatorEpicHostIds = useMemo(() => {
-    const hostIds = new Map<string, string>();
+    const hostIds: Map<string, ReadonlySet<string>> = new Map();
     for (const tab of allTabs) {
       if (tab.kind !== "epic" || tab.hostId === null) continue;
-      hostIds.set(tab.epicId, tab.hostId);
+      const epicHostIds = hostIds.get(tab.epicId);
+      hostIds.set(
+        tab.epicId,
+        new Set(
+          epicHostIds === undefined
+            ? [tab.hostId]
+            : [...epicHostIds, tab.hostId],
+        ),
+      );
     }
     return hostIds;
   }, [allTabs]);
@@ -111,8 +119,10 @@ function TabStripBody() {
       chatIndicatorHostScopes(
         indicatorChatIds.flatMap((chatId) => {
           const epicId = indicatorChatEpicIds[chatId];
-          const hostId = indicatorEpicHostIds.get(epicId);
-          return hostId === undefined ? [] : [{ hostId, chatId }];
+          const hostIds = indicatorEpicHostIds.get(epicId);
+          return hostIds === undefined
+            ? []
+            : [...hostIds].map((hostId) => ({ hostId, chatId }));
         }),
       ),
     [indicatorChatEpicIds, indicatorChatIds, indicatorEpicHostIds],

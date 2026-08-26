@@ -76,7 +76,7 @@ interface TestState {
   cloudCollaboratorChatIds: ReadonlySet<string>;
   chatRecordListAuthoritative: boolean;
   /**
-   * The verdict `useCloudChatCloudAuthorized()` answers - whether this session
+   * The verdict `useCloudChatHasCloudAuthorization()` answers - whether this session
    * may SPEND the account's cloud capability. `false` models `unverified`: the
    * cloud-chat list is disabled for want of authorization, not because there is
    * nothing left to ask, and the sweep guard must fail closed on that
@@ -260,7 +260,7 @@ vi.mock("@/hooks/chats/use-cloud-chat-queries", () => {
     // without the query mock above having to fake a disabled state - the two
     // are DIFFERENT reasons a real query disables and the sweep guard must
     // tell them apart (see `cloudChatListAuthorizesRecordSweep` below).
-    useCloudChatCloudAuthorized: () => testState.cloudAuthorized,
+    useCloudChatHasCloudAuthorization: () => testState.cloudAuthorized,
     isCloudChatListSettled: (
       query: {
         readonly isEnabled: boolean;

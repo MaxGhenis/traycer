@@ -16,6 +16,7 @@ import {
   prioritizePinnedHistoryItems,
   sortHistoryItems,
   withHistoryItemWorktreeMetadata,
+  workspaceKey,
 } from "@/components/home/data/home-page.data";
 import { useCloudEpicTasksQuery } from "@/hooks/epics/use-cloud-epic-tasks-query";
 import { useChatHostFilterSupport } from "@/hooks/home/use-chat-host-filter-support";
@@ -560,7 +561,7 @@ function availableFilterWorkspaces(
 ): ReadonlyArray<HistoryWorkspaceRef> {
   if (serverWorkspaces.length === 0) return collectHistoryWorkspaces(allItems);
   if (!unionLocalOptions) return serverWorkspaces;
-  return dedupSortWorkspaces(
+  return unionSortedWorkspaces(
     serverWorkspaces,
     collectHistoryWorkspaces(allItems),
   );
@@ -586,6 +587,23 @@ function unionSortedLabels(
   const seen = new Set(serverLabels);
   const extras = localLabels.filter((label) => !seen.has(label));
   return extras.length === 0 ? serverLabels : [...serverLabels, ...extras];
+}
+
+/** Same ranking rule as {@link unionSortedLabels}: the server's order is
+ * the ranking, local-only workspaces are appended. `dedupSortWorkspaces`
+ * re-sorts the whole set and is reserved for {@link collectHistoryWorkspaces},
+ * which has no server ranking to preserve. */
+function unionSortedWorkspaces(
+  serverWorkspaces: ReadonlyArray<HistoryWorkspaceRef>,
+  localWorkspaces: ReadonlyArray<HistoryWorkspaceRef>,
+): ReadonlyArray<HistoryWorkspaceRef> {
+  const seen = new Set(serverWorkspaces.map(workspaceKey));
+  const extras = localWorkspaces.filter(
+    (workspace) => !seen.has(workspaceKey(workspace)),
+  );
+  return extras.length === 0
+    ? serverWorkspaces
+    : [...serverWorkspaces, ...extras];
 }
 
 function collectHistoryWorkspaces(

@@ -128,13 +128,13 @@ vi.mock("@/hooks/host/use-addressable-host-id", () => ({
   useAddressableHostId: () => activeHostIdRef.value,
 }));
 
-// The notification centre reads its host from `useNotificationHost` (the local
+// The notification centre reads its host from `useNotificationResolveHost` (the local
 // host that owns the streams), not from the app-wide active host. Projected
 // from this suite's existing host ref so the scenario it was already
 // describing is unchanged.
 vi.mock("@/hooks/notifications/use-notification-host", () => ({
-  useNotificationHostId: () => activeHostIdRef.value,
-  useNotificationHost: () => ({
+  useNotificationResolveHostId: () => activeHostIdRef.value,
+  useNotificationResolveHost: () => ({
     hostId: activeHostIdRef.value,
     client: hostBindingState.current?.hostClient ?? null,
   }),
@@ -1315,6 +1315,39 @@ describe("NotificationsPopover", () => {
         "This permanently clears every notification currently visible in this feed.",
       ),
     ).toBeDefined();
+  });
+
+  it("names retained host rows that Clear all cannot reach", async () => {
+    notificationFeedMode.value = "cloud";
+    bindHostClient();
+    useCloudNotificationsStore.getState().applySnapshot({
+      rows: [cloudDone("entry-cloud-connected", null)],
+      summary: { totalCount: 1, unreadCount: 1, attentionCount: 0 },
+      version: 9,
+    });
+    useCloudNotificationsStore.getState().setConnectionState("connected");
+    applyHostSnapshot([hostDone("entry-retained-host", 100, null)], {
+      unreadCount: 1,
+      attentionCount: 0,
+    });
+    simulateHostDisconnect();
+    const captured: TargetCapture = {
+      epicId: null,
+      tabId: null,
+      focusArtifactId: null,
+      focusThreadId: null,
+    };
+    const { router } = buildRouterWithCapture(captured, () => undefined);
+    renderRouter(router);
+
+    fireEvent.click(await screen.findByTestId("notifications-clear-all"));
+
+    expect(
+      screen.getByText(/retained from an unavailable host/, { exact: false }),
+    ).toBeDefined();
+    expect(
+      screen.queryByText(/except the cloud ones/, { exact: false }),
+    ).toBeNull();
   });
 
   it("uses the same clear-notifications action for the local host feed", async () => {

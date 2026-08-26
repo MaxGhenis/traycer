@@ -19,6 +19,16 @@ interface LocalStoreRebindContext {
   readonly hostId: string | null;
 }
 
+export type LocalStoreRebindMutationResult = UseMutationResult<
+  ResponseOfMethod<HostRpcRegistry, "host.rebindLocalStore">,
+  HostRpcError,
+  RequestOfMethod<HostRpcRegistry, "host.rebindLocalStore">,
+  LocalStoreRebindContext
+> & {
+  /** The session host exists, but its directory entry has not arrived yet. */
+  readonly isHostEntryPending: boolean;
+};
+
 /**
  * The GUI repair route for a fail-closed local store refusal.
  *
@@ -29,12 +39,7 @@ interface LocalStoreRebindContext {
  * here reached the throwing `useTabHostId()` and crashed the one screen whose
  * entire job is to offer the recovery.
  */
-export function useLocalStoreRebindMutation(): UseMutationResult<
-  ResponseOfMethod<HostRpcRegistry, "host.rebindLocalStore">,
-  HostRpcError,
-  RequestOfMethod<HostRpcRegistry, "host.rebindLocalStore">,
-  LocalStoreRebindContext
-> {
+export function useLocalStoreRebindMutation(): LocalStoreRebindMutationResult {
   const sessionHostId = useEpicSessionHostId();
   const directory = useHostDirectoryList();
   const entry = useMemo(
@@ -47,7 +52,7 @@ export function useLocalStoreRebindMutation(): UseMutationResult<
   );
   const client = useHostClientFor(entry);
   const queryClient = useQueryClient();
-  return useHostMutation<
+  const mutation = useHostMutation<
     HostRpcRegistry,
     "host.rebindLocalStore",
     LocalStoreRebindContext
@@ -101,4 +106,9 @@ export function useLocalStoreRebindMutation(): UseMutationResult<
       },
     },
   });
+  const isHostEntryPending = sessionHostId !== null && directory.isPending;
+  return useMemo<LocalStoreRebindMutationResult>(
+    () => ({ ...mutation, isHostEntryPending }),
+    [isHostEntryPending, mutation],
+  );
 }

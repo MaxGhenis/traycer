@@ -14,6 +14,7 @@ const testState: {
   openExternalLink: (url: string) => Promise<void>;
   openSettings: () => void;
   isPending: boolean;
+  cloudPagePending: boolean;
   hostRequiresCloudToList: boolean;
 } = {
   items: [],
@@ -21,6 +22,7 @@ const testState: {
   openExternalLink: () => Promise.resolve(),
   openSettings: () => undefined,
   isPending: false,
+  cloudPagePending: false,
   hostRequiresCloudToList: false,
 };
 
@@ -32,6 +34,7 @@ vi.mock("@/hooks/home/use-history-query", () => ({
       hostRequiresCloudToList: testState.hostRequiresCloudToList,
     },
     isPending: testState.isPending,
+    cloudPagePending: testState.cloudPagePending,
     isFetching: false,
     error: null,
     refetch: () => Promise.resolve(),
@@ -151,6 +154,7 @@ describe("MobileNavDrawer", () => {
     testState.openExternalLink = () => Promise.resolve();
     testState.openSettings = () => undefined;
     testState.isPending = false;
+    testState.cloudPagePending = false;
     testState.hostRequiresCloudToList = false;
     useMobileNavStore.setState({ open: true });
     useAuthStore.setState({
@@ -747,6 +751,18 @@ describe("MobileNavDrawer", () => {
       const rows = await screen.findAllByTestId("mobile-nav-task-row");
 
       expect(rows[0]?.querySelector("svg")).toBeNull();
+    });
+
+    it("keeps loading while the local-first cloud page is pending", async () => {
+      testState.items = [];
+      testState.isPending = false;
+      testState.cloudPagePending = true;
+      renderDrawer();
+
+      expect(
+        await screen.findByTestId("mobile-nav-task-list-loading"),
+      ).not.toBeNull();
+      expect(screen.queryByText("No tasks yet")).toBeNull();
     });
 
     // A refused initial leg (no cloud verdict, host too old to list locally)

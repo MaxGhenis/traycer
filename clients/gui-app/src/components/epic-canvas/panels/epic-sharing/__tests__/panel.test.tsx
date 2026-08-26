@@ -639,15 +639,12 @@ describe("<SharingPanel />", () => {
 
     renderSharingPanel();
 
-    // The last-owner row's own revoke control is disabled; the editor row's
-    // is not.
-    const revokeButtons = screen.getAllByTestId("collaborator-revoke-button");
-    const editorRevokeButton = revokeButtons.find(
-      (button) => !button.hasAttribute("disabled"),
-    );
-    if (editorRevokeButton === undefined) {
-      throw new Error("Expected an enabled collaborator revoke button.");
-    }
+    // The row's `aria-label` names the collaborator ("Remove Editor User"),
+    // so this reaches the editor row's own control directly instead of
+    // filtering every revoke button in the list for the one that is enabled.
+    const editorRevokeButton = screen.getByRole("button", {
+      name: "Remove Editor User",
+    });
     fireEvent.click(editorRevokeButton);
     // The confirm dialog is open, staged while the session was still
     // `signed-in`.

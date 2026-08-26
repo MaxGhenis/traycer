@@ -4,6 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import { mockLocalHostEntry } from "@traycer-clients/shared/host-client/mock/mock-host-directory";
 import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock-host-messenger";
+import {
+  recordNegotiatedHostManifest,
+  resetNegotiatedManifests,
+} from "@traycer-clients/shared/host-transport/negotiated-manifest-registry";
 import { createRequestContextFixture } from "@traycer-clients/shared/test-fixtures/request-context";
 import { hostRpcRegistry, type HostRpcRegistry } from "@traycer/protocol/host";
 import type {
@@ -51,9 +55,9 @@ function requireHostClient(): HostClient<HostRpcRegistry> {
 // which reaches the host runtime provider this suite does not mount - so it is
 // stubbed to the same client the streams here are opened on.
 vi.mock("@/hooks/notifications/use-notification-host", () => ({
-  useNotificationHostId: () =>
+  useNotificationResolveHostId: () =>
     hostState.client === null ? null : mockLocalHostEntry.hostId,
-  useNotificationHost: () => ({
+  useNotificationResolveHost: () => ({
     hostId: hostState.client === null ? null : mockLocalHostEntry.hostId,
     client: hostState.client,
   }),
@@ -406,6 +410,18 @@ beforeEach(() => {
   resetCloudEntityReadDriver();
   feedSupport.value = "supported";
   hostState.client = createHostClient();
+  // T28: mixed mode also requires `host.notifications.list@2.2` and
+  // `host.notifications.markAllRead@1.1` negotiated on the SERVING host
+  // (always `mockLocalHostEntry` here, per `useReactiveLocalHostEntry`
+  // above), read through the real negotiated-manifest registry rather than
+  // the `stream-runtime-context` mock, which only stands in for the stream
+  // minors. Staged at floor by default so every existing cloud-mode case
+  // keeps working; the "local-mode view consumption" describe below adds a
+  // case that deliberately withholds this.
+  recordNegotiatedHostManifest(mockLocalHostEntry.hostId, {
+    "host.notifications.list": { major: 2, minor: 2 },
+    "host.notifications.markAllRead": { major: 1, minor: 1 },
+  });
   useCloudNotificationsStore.getState().reset();
   __resetHostNotificationsStoreForTests();
   __resetNotificationsStoreForTests();
@@ -422,6 +438,10 @@ afterEach(() => {
   resetCloudEntityReadDriver();
   hostState.client = null;
   useAuthStore.setState(useAuthStore.getInitialState(), true);
+  // `negotiated-manifest-registry` is process-global state shared with every
+  // other suite in this worker - clearing it here is what keeps the
+  // `beforeEach` staging above from leaking into an unrelated test file.
+  resetNegotiatedManifests();
 });
 
 describe("cloud-mode view consumption", () => {
@@ -1000,6 +1020,44 @@ describe("local-mode view consumption", () => {
 
     await waitFor(() => {
       expect(useCloudNotificationsStore.getState().version).toBe(2);
+    });
+    expect(calls.cloudMarkRead).toEqual([]);
+    expect(readAtFor("entry-done")).toBeNull();
+  });
+
+  /**
+   * T28's other half, at the integration layer this file owns: the stream
+   * axis above (`feedSupport.value = "unsupported"`) is not the only way
+   * local mode is reached. Per-floor and wrong-major arithmetic on
+   * `useNotificationFeedModeFor` itself is already covered directly in
+   * `notification-feed-mode.test.tsx`; this pins that a host whose stream is
+   * fully negotiated but whose UNARY partition methods
+   * (`host.notifications.list@2.2` / `host.notifications.markAllRead@1.1`)
+   * are still below floor never fans a mark-read out to the cloud RPC this
+   * file's own `createHostClient` would otherwise record.
+   */
+  it("never fans out cloud mark-reads when the unary partition methods are below floor, even with a fully negotiated stream", async () => {
+    recordNegotiatedHostManifest(mockLocalHostEntry.hostId, {
+      "host.notifications.list": { major: 2, minor: 1 },
+      "host.notifications.markAllRead": { major: 1, minor: 0 },
+    });
+    renderProvider();
+    applyCloudSnapshot(
+      [
+        cloudRow({
+          entryId: "entry-done",
+          originHostId: OTHER_HOST_ID,
+          severity: "done",
+          chatId: CHAT_ID,
+        }),
+      ],
+      1,
+    );
+
+    focusChat(EPIC_ID, CHAT_ID, OTHER_HOST_ID);
+
+    await waitFor(() => {
+      expect(useEpicCanvasStore.getState().activeTabId).not.toBeNull();
     });
     expect(calls.cloudMarkRead).toEqual([]);
     expect(readAtFor("entry-done")).toBeNull();

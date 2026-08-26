@@ -2062,6 +2062,111 @@ describe("RemoteStreamClient dynamic subscribe params", () => {
   );
 });
 
+describe("RemoteSession method-support listener isolation", () => {
+  it(
+    "survives a throwing capability observer instead of dropping the connection",
+    async () => {
+      // The `openAck` publish runs inside inbound frame dispatch, whose
+      // rejection handler reads ANY throw as `inbound-decode-failed` and drops
+      // the connection. Removing the per-listener guard does not merely lose
+      // one notification: the redial re-throws on the NEXT openAck, so the
+      // session never reaches ready at all and this `waitFor` times out.
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const relay = new FakeRelayHost();
+      relay.streamManifest = buildStreamManifest(cursorStreamRegistry);
+      const lease = new MutableBearerLease("valid-token", "user-1");
+      const session = new RemoteSession({
+        ...buildSessionOptions(relay, lease, null),
+        streamRegistry: cursorStreamRegistry,
+      });
+      const streamClient = new RemoteStreamClient<
+        VersionedRpcRegistry,
+        typeof cursorStreamRegistry
+      >(session);
+      // Registered FIRST, so the set's insertion order puts the fault ahead of
+      // the healthy observer - which is what makes the second assertion below
+      // evidence that a throw does not silence the rest of the set.
+      const unsubscribeThrowing = streamClient.subscribeMethodSupport(() => {
+        throw new Error("capability observer faulted");
+      });
+      const observed: string[] = [];
+      const unsubscribeHealthy = streamClient.subscribeMethodSupport(() => {
+        observed.push(streamClient.getMethodSupport("cursor.subscribe"));
+      });
+      try {
+        session.start();
+        await vi.waitFor(() => expect(session.isReady()).toBe(true), WAIT);
+        // One `open` on the wire: the session reached ready on its FIRST
+        // physical connection, so nothing was dropped and redialled behind it.
+        expect(relay.openBearers).toHaveLength(1);
+        expect(observed).toEqual(["supported"]);
+        const errorCalls: ReadonlyArray<ReadonlyArray<unknown>> =
+          errorSpy.mock.calls;
+        expect(
+          errorCalls
+            .map((call) => String(call[0]))
+            .filter(
+              (line) =>
+                line === "[remote-session] method-support listener threw",
+            ),
+        ).toHaveLength(1);
+        expect(relay.errors).toEqual([]);
+      } finally {
+        unsubscribeThrowing();
+        unsubscribeHealthy();
+        session.close();
+        errorSpy.mockRestore();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+
+  it(
+    "delivers the terminal retraction to its observers before retiring them",
+    async () => {
+      // `emitClosed` clears `methodSupportListeners`, and the retirement
+      // itself has no public observation point - an already-closed session
+      // notifies nobody either way, so asserting "not called after close"
+      // would pass with or without the fix. What IS observable, and what the
+      // clear must not preempt, is the last publish: the terminal
+      // `teardownConnection` retracts this connection's manifest evidence, and
+      // an observer that missed it would keep reading a dead session's
+      // capability as `supported`.
+      const relay = new FakeRelayHost();
+      relay.streamManifest = buildStreamManifest(cursorStreamRegistry);
+      const lease = new MutableBearerLease("valid-token", "user-1");
+      const session = new RemoteSession({
+        ...buildSessionOptions(relay, lease, null),
+        streamRegistry: cursorStreamRegistry,
+      });
+      const streamClient = new RemoteStreamClient<
+        VersionedRpcRegistry,
+        typeof cursorStreamRegistry
+      >(session);
+      const observed: string[] = [];
+      const unsubscribe = streamClient.subscribeMethodSupport(() => {
+        observed.push(streamClient.getMethodSupport("cursor.subscribe"));
+      });
+      try {
+        session.start();
+        await vi.waitFor(() => expect(session.isReady()).toBe(true), WAIT);
+        expect(observed).toEqual(["supported"]);
+
+        session.close();
+        expect(observed).toEqual(["supported", "unknown"]);
+        expect(streamClient.getMethodSupport("cursor.subscribe")).toBe(
+          "unknown",
+        );
+        expect(relay.errors).toEqual([]);
+      } finally {
+        unsubscribe();
+        session.close();
+      }
+    },
+    TEST_BUDGET_MS,
+  );
+});
+
 describe("RemoteSession dial-failure logging", () => {
   // These pin the WIRING, not the throttle itself (dial-failure-log.test.ts
   // owns that): a failing connect loop must produce a line saying WHY, and a

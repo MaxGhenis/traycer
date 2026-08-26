@@ -24,7 +24,7 @@ import {
 import { useExistingChatSessionFatalClose } from "@/lib/registries/chat-session-registry";
 import {
   cloudChatListAuthorizesRecordSweep,
-  useCloudChatCloudAuthorized,
+  useCloudChatHasCloudAuthorization,
   useCloudChatList,
 } from "@/hooks/chats/use-cloud-chat-queries";
 import { cloudRowIsViewersOwn } from "@/lib/chats/unified-chat-list";
@@ -756,7 +756,7 @@ function usePublishedChatFallbackRef(args: {
   // so the pair cannot disagree. Without it an `unverified` session - whose
   // list is DISABLED rather than answered - would read "no cloud row" as proof
   // that this chat is gone and let the tab be treated as absent.
-  const cloudChatsCloudAuthorized = useCloudChatCloudAuthorized();
+  const cloudChatsCloudAuthorized = useCloudChatHasCloudAuthorization();
   const cloudChatRecord = wantsCloudChatFallback
     ? (cloudChats.data?.chats.find(
         // The OWNER is half the identity, not a refinement of the id: `chatId`

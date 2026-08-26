@@ -60,7 +60,7 @@ import { useAuthStore } from "@/stores/auth/auth-store";
 const VIEW_TAB_ID = "view-tab-1";
 
 // The `use-cloud-chat-queries` mock below spreads `...actual`, so
-// `useCloudChatCloudAuthorized` / `cloudChatListAuthorizesRecordSweep` /
+// `useCloudChatHasCloudAuthorization` / `cloudChatListAuthorizesRecordSweep` /
 // `isCloudChatListSettled` resolve to the REAL implementations, which read
 // the real (module-scope) `useAuthStore`. Stage `signed-in` for the whole
 // file so the remote-deletion / published-copy-fallback paths that depend on

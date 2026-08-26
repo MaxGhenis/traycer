@@ -17,7 +17,7 @@ import { useCanvasHostId } from "@/components/epic-canvas/hooks/use-canvas-host-
 import { useEpicSessionHostClient } from "@/hooks/epic/use-epic-session-host-client";
 import {
   cloudChatListAuthorizesRecordSweep,
-  useCloudChatCloudAuthorized,
+  useCloudChatHasCloudAuthorization,
   useCloudChatList,
 } from "@/hooks/chats/use-cloud-chat-queries";
 import { cloudRowIsViewersOwn } from "@/lib/chats/unified-chat-list";
@@ -106,7 +106,7 @@ export function useEpicRouteSynchronization(
   // DISABLED list is the guard's strongest authorizing arm - so this is not a
   // second opinion about authorization, it is the one answer travelling to both
   // halves of a read/destroy pair that must not disagree.
-  const cloudChatsCloudAuthorized = useCloudChatCloudAuthorized();
+  const cloudChatsCloudAuthorized = useCloudChatHasCloudAuthorization();
   const currentTab = useEpicTab(tabId);
   const renameTab = useEpicCanvasStore((s) => s.renameTab);
   const openTileInTab = useEpicCanvasStore((s) => s.openTileInTab);

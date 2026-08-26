@@ -305,6 +305,44 @@ function reconcileQueryKeys(queryClient: QueryClient): ReadonlyArray<QueryKey> {
     .filter((queryKey) => queryKey.includes("epic.getTaskContexts"));
 }
 
+/**
+ * Every cache key the reconciler's local-home exemption probe currently
+ * occupies - `epicTabLocalHomeListQueryOptions` tags its key with this
+ * literal so it never collides with History's own `epic.listTasks` cache.
+ */
+function reconcileLocalHomeQueryKeys(
+  queryClient: QueryClient,
+): ReadonlyArray<QueryKey> {
+  return queryClient
+    .getQueryCache()
+    .getAll()
+    .map((query) => query.queryKey)
+    .filter((queryKey) => queryKey.includes("local-home"));
+}
+
+/**
+ * Whether every query named by `keys` has settled to `"success"` in the
+ * cache - i.e. the RESPONSE was incorporated, not merely that the mock was
+ * called. `useHostQueries`/`useQueries` recompute their combined value off
+ * this same cache, so once both the existence batch and the local-home
+ * probe read back `"success"` here, the reconciler's apply effect has
+ * everything it will ever have for this run and has had a render to act on
+ * it - the deterministic version of "give it a moment".
+ */
+function queriesSettled(
+  queryClient: QueryClient,
+  keys: ReadonlyArray<QueryKey>,
+): boolean {
+  return (
+    keys.length > 0 &&
+    keys.every(
+      (queryKey) =>
+        queryClient.getQueryCache().find({ queryKey })?.state.status ===
+        "success",
+    )
+  );
+}
+
 function unsupportedError(): HostRpcError {
   return new HostRpcError({
     code: "E_HOST_UNSUPPORTED",
@@ -594,6 +632,9 @@ const PRESERVED_ORPHAN_EPIC_ID = "epic-preserved-orphan";
  * reconciler mounts, so waiting for it passes on the first tick either way.
  */
 const STALE_EPIC_ID = "epic-stale-persisted";
+/** A second confirmed-absent tab, used only by the truncation test below to
+ * prove a COMPLETE exemption set would have force-closed more than one. */
+const SECOND_STALE_EPIC_ID = "epic-also-stale-truncated";
 
 /** A LISTED row with no `home` marker - a cloud-homed epic, which is what a
  * promotion that lands between the two reconciliation RPCs produces. */
@@ -707,6 +748,7 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
         LOCAL_HOME_EPIC_ID,
         PRESERVED_ORPHAN_EPIC_ID,
         STALE_EPIC_ID,
+        SECOND_STALE_EPIC_ID,
       ]);
     useInitialChatHandoffStore.getState().resetForTests();
     clearSessionCreatedEpics();
@@ -928,18 +970,35 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
     // 100-row list page does not carry every local epic - so the force-close
     // exemption set is provably incomplete and nothing destructive may rest
     // on it.
+    //
+    // The truncation guard means the apply effect can NEVER complete its
+    // destructive branch for this run (`locallyProtectedEpicIds` stays
+    // `null` forever) - so unlike the sibling tests, there is no tab-closing
+    // event this test can wait on as proof the sweep actually ran. A second
+    // confirmed-absent tab is opened alongside `STALE_EPIC_ID` - both are
+    // exactly what a COMPLETE exemption set would force-close - and the
+    // assertion is anchored on both underlying queries reaching `"success"`
+    // in the cache (the response genuinely incorporated, not merely
+    // requested) before checking that neither closed. A fixed sleep here
+    // previously let the assertion run before the apply pass had a chance to
+    // observe the settled data on a loaded runner, which would have passed
+    // for the wrong reason - because nothing had been checked yet, not
+    // because the guard held.
+    useEpicCanvasStore.getState().openEpicTab(STALE_EPIC_ID, "Maybe Stale");
+    useEpicCanvasStore
+      .getState()
+      .openEpicTab(SECOND_STALE_EPIC_ID, "Also Maybe Stale");
     recordNegotiatedHostMethods(localSnapshot.hostId, [
       "host.status",
       "epic.getTaskContexts",
     ]);
-    useEpicCanvasStore.getState().openEpicTab(STALE_EPIC_ID, "Maybe Stale");
 
     const getTaskContexts = vi.fn(
       (params: GetTaskContextsRequest): GetTaskContextsResponse => {
         const tasks: GetTaskContextsResponse["tasks"] = {};
         for (const taskId of params.taskIds) {
           tasks[taskId] =
-            taskId === STALE_EPIC_ID
+            taskId === STALE_EPIC_ID || taskId === SECOND_STALE_EPIC_ID
               ? { status: "confirmed-absent" as const }
               : confirmedRow(taskId);
         }
@@ -958,16 +1017,26 @@ describe("EpicTabExistenceReconciler local-homed durable protection", () => {
     }));
 
     const { queryClient } = mountReconciler({ getTaskContexts, listTasks });
+
     await waitFor(() => {
-      expect(getTaskContexts).toHaveBeenCalledTimes(1);
+      expect(
+        queriesSettled(queryClient, reconcileQueryKeys(queryClient)),
+      ).toBe(true);
+      expect(
+        queriesSettled(queryClient, reconcileLocalHomeQueryKeys(queryClient)),
+      ).toBe(true);
     });
-    await waitFor(() => {
-      expect(listTasks).toHaveBeenCalledTimes(1);
+    // One more flush past the settled render: `useHostQueries`/`useQueries`
+    // notify their subscribers on a microtask, so this gives the apply
+    // effect a commit on the data this `waitFor` just confirmed is there,
+    // rather than trusting that the poll that satisfied it already included
+    // one.
+    await act(async () => {
+      await Promise.resolve();
     });
-    // Give the apply effect a settled pass, then assert nothing closed - the
-    // truncated exemption set refuses the destructive step entirely.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+
     expect(collectOpenEpicIds()).toContain(STALE_EPIC_ID);
+    expect(collectOpenEpicIds()).toContain(SECOND_STALE_EPIC_ID);
     queryClient.clear();
   });
 

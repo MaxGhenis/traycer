@@ -469,7 +469,13 @@ export interface IRemoteSession<
   getMethodSchemaVersion<Method extends keyof StreamRegistry & string>(
     method: Method,
   ): SchemaVersion | null;
-  /** Notified when manifest-derived stream capability evidence changes. */
+  /**
+   * Notified when manifest-derived stream capability evidence changes. A
+   * closed session retires its observers after the terminal retraction and
+   * accepts no new ones - like `onClosed`, a late attacher must check
+   * `isClosed()` and read `getMethodSupport` directly, which answers
+   * `"unknown"` forever from there.
+   */
   subscribeMethodSupport(listener: () => void): () => void;
   close(): void;
 }
@@ -812,6 +818,12 @@ export class RemoteSession<
   }
 
   subscribeMethodSupport(listener: () => void): () => void {
+    // The closed guard the other three subscribers carry, for the same reason:
+    // `emitClosed` retires the set, so an attacher arriving after that would
+    // be added to a set nothing ever clears or notifies again.
+    if (this.phase === "closed") {
+      return () => undefined;
+    }
     this.methodSupportListeners.add(listener);
     return () => {
       this.methodSupportListeners.delete(listener);
@@ -2274,8 +2286,18 @@ export class RemoteSession<
   }
 
   private notifyMethodSupportListeners(): void {
+    // Guarded per listener, same reason as the readiness-lost and
+    // availability-recovered emitters: the `handleOpenAck` publish runs inside
+    // inbound frame dispatch, whose rejection handler reads ANY throw as
+    // `inbound-decode-failed` and drops the connection. A capability observer
+    // that faults would therefore cost a healthy session - and would silence
+    // the other observers on the way out.
     for (const listener of Array.from(this.methodSupportListeners)) {
-      listener();
+      try {
+        listener();
+      } catch (error) {
+        console.error("[remote-session] method-support listener threw", error);
+      }
     }
   }
 
@@ -3511,6 +3533,13 @@ export class RemoteSession<
     this.closedListeners.clear();
     this.availabilityRecoveredListeners.clear();
     this.readinessLostListeners.clear();
+    // Retired AFTER its last notification, not before: both terminal paths
+    // (`close`, `goTerminalFatal`) run `teardownConnection` first, and that is
+    // where the final `unknown` publish is delivered. A retired session can
+    // never answer anything but `unknown` again, so a retained observer is
+    // pure retention - the closure, and everything it captured, outliving the
+    // session that was cached for it.
+    this.methodSupportListeners.clear();
     for (const listener of listeners) {
       try {
         listener();

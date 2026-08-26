@@ -64,6 +64,10 @@ import type { HostStreamClientBinding } from "@/hooks/host/use-host-stream-clien
 import type { NotificationShow } from "@/hooks/notifications/use-notifications";
 import type { NotificationShowOutcome } from "@traycer-clients/shared/platform/runner-host";
 import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
+import {
+  recordNegotiatedHostManifest,
+  resetNegotiatedManifests,
+} from "@traycer-clients/shared/host-transport/negotiated-manifest-registry";
 
 interface HostState {
   id: string | null;
@@ -138,8 +142,8 @@ const mockAuth = {
 // which reaches the host runtime provider this suite does not mount - so it is
 // stubbed to the same client the streams here are opened on.
 vi.mock("@/hooks/notifications/use-notification-host", () => ({
-  useNotificationHostId: () => hostState.id,
-  useNotificationHost: () => ({
+  useNotificationResolveHostId: () => hostState.id,
+  useNotificationResolveHost: () => ({
     hostId: hostState.id,
     client: hostState.client,
   }),
@@ -875,10 +879,37 @@ function indicatorKey(
   ];
 }
 
+/**
+ * T28: mixed feed mode now also requires `host.notifications.list@2.2` and
+ * `host.notifications.markAllRead@1.1` on the SERVING host, read through the
+ * real negotiated-manifest registry (`useHostNegotiatedMethodVersions`),
+ * not through the `@/lib/host/stream-runtime-context` mock above - that mock
+ * only stands in for the STREAM minors. Every host id this file ever assigns
+ * to `hostState.id` or `servingHostFallbackState.boundHostId` is staged here
+ * at floor, so a case built before this thread that only cared about the
+ * stream axis keeps working without redoing its own staging.
+ */
+const NOTIFICATION_HOST_IDS_UNDER_TEST = [
+  "host-a",
+  "host-b",
+  "host-c",
+  mockLocalHostEntry.hostId,
+] as const;
+
+function stageNotificationPartitionFloors(): void {
+  for (const hostId of NOTIFICATION_HOST_IDS_UNDER_TEST) {
+    recordNegotiatedHostManifest(hostId, {
+      "host.notifications.list": { major: 2, minor: 2 },
+      "host.notifications.markAllRead": { major: 1, minor: 1 },
+    });
+  }
+}
+
 describe("<NotificationsSessionProvider />", () => {
   beforeEach(() => {
     window.localStorage.clear();
     hostState.id = "host-a";
+    stageNotificationPartitionFloors();
     // A real client with a fixed test identity, not `null`: production
     // `useHostClient()` never returns `null`, and the provider reads
     // `getRequestContextUserId()` unconditionally on every render, so a
@@ -921,6 +952,11 @@ describe("<NotificationsSessionProvider />", () => {
     __setNotificationsStreamFactoryForTests(null);
     resetAuth("signed-out", null, null);
     vi.restoreAllMocks();
+    // `negotiated-manifest-registry` is process-global state shared with every
+    // other suite in this worker - clearing it here is what keeps
+    // `stageNotificationPartitionFloors()` from leaking a "host-a"/"host-b"
+    // manifest into an unrelated test file.
+    resetNegotiatedManifests();
   });
 
   it("marks a restored focused entity read through the local host before effective-host selection", async () => {
@@ -1207,6 +1243,57 @@ describe("<NotificationsSessionProvider />", () => {
         "notifications.subscribe",
       ]);
     });
+    streamState.useClientSupport = false;
+  });
+
+  it("keeps mixed mode withheld when both stream minors are complete but the unary partition methods have not negotiated", async () => {
+    // T28's other half: the stream axis above can be fully negotiated and
+    // mixed mode must STILL stay withheld until `host.notifications.list@2.2`
+    // and `host.notifications.markAllRead@1.1` are also known, because those
+    // are what license `home: "local"` on the two UNARY calls
+    // `useMergedNotificationsActions` makes in mixed mode. Per-floor and
+    // wrong-major arithmetic on that gate is already covered directly against
+    // `useNotificationFeedModeFor` in `notification-feed-mode.test.tsx`; this
+    // pins that the composed provider actually reads the real
+    // negotiated-manifest registry for it rather than only the stream mock.
+    const queryClient = new QueryClient();
+    const streamClient = new MockWsStreamClient();
+    hostState.id = mockLocalHostEntry.hostId;
+    streamState.client = streamClient;
+    streamState.cloudFeedSupport = "supported";
+    streamState.useClientSupport = true;
+    vi.spyOn(streamClient, "getMethodSupport").mockReturnValue("supported");
+    vi.spyOn(streamClient, "getMethodSchemaVersion").mockImplementation(
+      (method: string) =>
+        method === "host.notifications.cloudFeed.subscribe"
+          ? { major: 1, minor: 1 }
+          : { major: 1, minor: 2 },
+    );
+    // Undoes this file's own `beforeEach` staging for every host, including
+    // `mockLocalHostEntry.hostId` above - the point of this test is a host
+    // that has not (yet) negotiated either unary method at all.
+    resetNegotiatedManifests();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <NotificationsSessionProvider>
+          <div />
+        </NotificationsSessionProvider>
+      </QueryClientProvider>,
+    );
+    act(() => {
+      resetAuth("signed-in", "alice@example.com", "alice@example.com");
+    });
+    await waitFor(() => {
+      expect([...streamClient.subscribedMethods].sort()).toEqual([
+        "agent.activity.subscribe",
+        "host.notifications.feed.subscribe",
+        "notifications.subscribe",
+      ]);
+    });
+    expect(streamClient.subscribedMethods).not.toContain(
+      "host.notifications.cloudFeed.subscribe",
+    );
     streamState.useClientSupport = false;
   });
 

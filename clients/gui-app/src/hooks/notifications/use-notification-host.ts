@@ -49,7 +49,7 @@ const NO_NOTIFICATION_HOST: NotificationHost = { hostId: null, client: null };
  * `useHostClientFor` a `null` target on those shells, so the streams were live
  * and every mutation against them was inert.
  */
-export function useNotificationHost(): NotificationHost {
+export function useNotificationResolveHost(): NotificationHost {
   const entry = useNotificationsServingHostEntry();
   const client = useHostClientFor(entry);
   const hostId = entry?.hostId ?? null;
@@ -60,10 +60,10 @@ export function useNotificationHost(): NotificationHost {
 }
 
 /**
- * {@link useNotificationHost}'s id half, for the consumers that only need to
+ * {@link useNotificationResolveHost}'s id half, for the consumers that only need to
  * FILE rows under the owning host rather than talk to it.
  *
- * Deliberately not `useNotificationHost().hostId`: resolving the client goes
+ * Deliberately not `useNotificationResolveHost().hostId`: resolving the client goes
  * through `useHostClient()`, which THROWS outside a `<HostRuntimeProvider>`.
  * The indicator query is read by ordinary chrome - the tab strip, the sidebar
  * rows - that renders in trees with no host runtime at all, so pulling the
@@ -72,6 +72,6 @@ export function useNotificationHost(): NotificationHost {
  * that constraint, and shares the serving rule with the entry hook rather than
  * restating it.
  */
-export function useNotificationHostId(): string | null {
+export function useNotificationResolveHostId(): string | null {
   return useNotificationsServingHostId();
 }

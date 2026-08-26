@@ -23,7 +23,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import { NotificationFilterMenu } from "@/components/notifications/notification-filter-menu";
 import { NotificationRow } from "@/components/notifications/notification-row";
-import { useNotificationHostId } from "@/hooks/notifications/use-notification-host";
+import { useNotificationResolveHostId } from "@/hooks/notifications/use-notification-host";
 import { useNotificationActivation } from "@/hooks/notifications/use-notification-activation";
 import { useNotificationCenterArrivals } from "@/hooks/notifications/use-notification-center-arrivals";
 import { useNotificationCenterScrollAnchor } from "@/hooks/notifications/use-notification-center-scroll-anchor";
@@ -177,17 +177,31 @@ function clearAllConfirmDescription(input: {
   readonly cloudHasSnapshot: boolean;
   readonly cloudConnectionState: CloudNotificationsConnectionState;
   readonly cloudTotalCount: number;
+  readonly hasRetainedHostRows: boolean;
 }): string {
   const cloudRowsStayBehind =
     input.feedMode === "cloud" &&
     input.cloudHasSnapshot &&
     input.cloudTotalCount > 0 &&
     input.cloudConnectionState !== "connected";
+  if (cloudRowsStayBehind && input.hasRetainedHostRows) {
+    return (
+      "This permanently clears every notification except the cloud ones and " +
+      "notifications retained from an unavailable host. The cloud feed is " +
+      "disconnected, so those stay in the list."
+    );
+  }
   if (cloudRowsStayBehind) {
     return (
       "This permanently clears every notification except the cloud ones. " +
       "The cloud feed is disconnected, so those stay in the list until it " +
       "reconnects."
+    );
+  }
+  if (input.hasRetainedHostRows) {
+    return (
+      "This permanently clears every notification except notifications " +
+      "retained from an unavailable host. Those stay in the list."
     );
   }
   return "This permanently clears every notification currently visible in this feed.";
@@ -314,7 +328,7 @@ export function NotificationsPopover(
   // enablement gates - the SAME notification host the mutations behind those
   // buttons are bound to, and `null` during a disconnect even though the
   // runtime binding is retained.
-  const notificationHostId = useNotificationHostId();
+  const notificationHostId = useNotificationResolveHostId();
   // Loaded HOST Attention rows (feed ids are `host:<id>`); app-local/global
   // attention is locally actionable and already reflected in `unreadCount`.
   const loadedHostAttentionCount = attentionIds.filter((feedId) =>
@@ -374,6 +388,10 @@ export function NotificationsPopover(
   const hasLoadedHostNotifications = fullOccurrenceOrder.some((entry) =>
     entry.feedId.startsWith("host:"),
   );
+  // These rows survive a clear-all request after their source host has
+  // disconnected: the action intentionally skips an unbound host RPC.
+  const hasRetainedHostRows =
+    notificationHostId === null && hasLoadedHostNotifications;
   // Renderer-local lanes - app-local failures and the collaboration room -
   // are client state, so "Clear all" can always act on them. Read off the
   // UNFILTERED order for the same reason the host probe above is: the action
@@ -637,6 +655,7 @@ export function NotificationsPopover(
           cloudHasSnapshot,
           cloudConnectionState,
           cloudTotalCount,
+          hasRetainedHostRows,
         })}
         cascadeSummary={null}
         actionLabel="Clear all"

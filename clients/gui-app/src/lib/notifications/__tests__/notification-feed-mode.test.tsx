@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
+import type { SchemaVersion } from "@traycer/protocol/framework/index";
 import type { StreamMethodSupport } from "@traycer-clients/shared/host-transport/ws-stream-client";
 import { useNotificationFeedModeFor } from "@/lib/notifications/notification-feed-mode";
 import { useAuthStore } from "@/stores/auth/auth-store";
+
+const HOST_ID = "host-1";
 
 const cloudFeedSupport = vi.hoisted<{ value: StreamMethodSupport | null }>(
   () => ({ value: null }),
@@ -11,6 +14,26 @@ const feedVersions = vi.hoisted(() => ({
   cloud: { major: 1, minor: 1 },
   local: { major: 1, minor: 2 },
 }));
+
+/**
+ * The UNARY half of the negotiation, which is a separate transport from the two
+ * stream minors above and is why it needs its own fixture.
+ *
+ * Annotated rather than asserted: `--fix` runs with
+ * `no-unnecessary-type-assertion` and would delete an `as SchemaVersion | false
+ * | null`, narrowing these to `SchemaVersion` and breaking the `false` / `null`
+ * writes the fail-closed cases below depend on.
+ */
+interface UnaryVersions {
+  list: SchemaVersion | false | null;
+  markAllRead: SchemaVersion | false | null;
+}
+const unaryVersions = vi.hoisted(
+  (): UnaryVersions => ({
+    list: { major: 2, minor: 2 },
+    markAllRead: { major: 1, minor: 1 },
+  }),
+);
 
 vi.mock("@/lib/host/stream-runtime-context", () => ({
   useStreamMethodSupport: () => cloudFeedSupport.value,
@@ -25,12 +48,47 @@ vi.mock("@/lib/host/stream-runtime-context", () => ({
       : feedVersions.local,
 }));
 
+/**
+ * Deliberately HOOK-SHAPED. The real `useHostNegotiatedMethodVersions` consumes
+ * `useSyncExternalStore` and friends; a mock that consumes no hooks is
+ * invisible to React's hook counter, so a call site that later became
+ * conditional would reorder nothing and these tests would pass against the
+ * defect. The `useState` is the point, not incidental.
+ *
+ * It answers per requested host id, so passing NO host ids yields an empty map -
+ * which is exactly what the production hook does with `hostId: null`, and what
+ * the fail-closed case below relies on.
+ */
+vi.mock("@/hooks/host/use-host-negotiated-method-version", async () => {
+  const { useState } = await import("react");
+  return {
+    useHostNegotiatedMethodVersions: (
+      hostIds: readonly string[],
+      method: string,
+    ): ReadonlyMap<string, SchemaVersion | false | null> => {
+      useState(0);
+      const versions = new Map<string, SchemaVersion | false | null>();
+      for (const hostId of hostIds) {
+        versions.set(
+          hostId,
+          method === "host.notifications.list"
+            ? unaryVersions.list
+            : unaryVersions.markAllRead,
+        );
+      }
+      return versions;
+    },
+  };
+});
+
 describe("useNotificationFeedMode", () => {
   afterEach(() => {
     useAuthStore.setState({ subscriptionStatus: null });
     cloudFeedSupport.value = null;
     feedVersions.cloud = { major: 1, minor: 1 };
     feedVersions.local = { major: 1, minor: 2 };
+    unaryVersions.list = { major: 2, minor: 2 };
+    unaryVersions.markAllRead = { major: 1, minor: 1 };
   });
 
   it("selects cloud for a free-tier user when the host confirms support", () => {
@@ -38,13 +96,13 @@ describe("useNotificationFeedMode", () => {
     cloudFeedSupport.value = "supported";
 
     expect(
-      renderHook(() => useNotificationFeedModeFor(null)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
     ).toBe("cloud");
   });
 
   it("keeps methodless and pending capability local and upgrades only after confirmed support", () => {
     cloudFeedSupport.value = null;
-    const hook = renderHook(() => useNotificationFeedModeFor(null));
+    const hook = renderHook(() => useNotificationFeedModeFor(null, HOST_ID));
 
     expect(hook.result.current).toBe("local");
     cloudFeedSupport.value = "unknown";
@@ -66,21 +124,86 @@ describe("useNotificationFeedMode", () => {
     feedVersions.cloud = { major: 1, minor: 0 };
     feedVersions.local = { major: 1, minor: 2 };
     expect(
-      renderHook(() => useNotificationFeedModeFor(null)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
     ).toBe("local");
 
     // Local feed present but pre-partition (pre-1.2).
     feedVersions.cloud = { major: 1, minor: 1 };
     feedVersions.local = { major: 1, minor: 1 };
     expect(
-      renderHook(() => useNotificationFeedModeFor(null)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
     ).toBe("local");
 
     // Both projection minors present → mixed (named "cloud" feed mode).
     feedVersions.cloud = { major: 1, minor: 1 };
     feedVersions.local = { major: 1, minor: 2 };
     expect(
-      renderHook(() => useNotificationFeedModeFor(null)).result.current,
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
     ).toBe("cloud");
+  });
+
+  /**
+   * The stream minors alone must NOT select mixed mode. Mixed mode makes
+   * `useMergedNotificationsActions` send `home: "local"` as a partition
+   * selector on two UNARY methods, and a host below their minors parses that
+   * against its frozen schema and strips it - so pagination merges
+   * whole-origin cloud replicas into the cloud lane and mark-all reaches
+   * cloud-home rows. Every case here holds both stream minors at their
+   * negotiated floor, so only the unary half can move the answer.
+   */
+  it("stays local until the unary partition minors negotiate too", () => {
+    cloudFeedSupport.value = "supported";
+
+    // `host.notifications.list` one minor short of the partition selector.
+    unaryVersions.list = { major: 2, minor: 1 };
+    expect(
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+    ).toBe("local");
+
+    // ...and on the wrong major line entirely, which is not a scale.
+    unaryVersions.list = { major: 1, minor: 9 };
+    expect(
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+    ).toBe("local");
+
+    // `markAllRead` short instead, with `list` at its floor.
+    unaryVersions.list = { major: 2, minor: 2 };
+    unaryVersions.markAllRead = { major: 1, minor: 0 };
+    expect(
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+    ).toBe("local");
+
+    // Both unary floors met, with the stream minors already there → mixed.
+    unaryVersions.markAllRead = { major: 1, minor: 1 };
+    expect(
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+    ).toBe("cloud");
+  });
+
+  it("fails closed on an unknown or absent unary negotiation, and with no host", () => {
+    cloudFeedSupport.value = "supported";
+
+    // `null` is "no handshake recorded yet", NOT evidence of absence - but it
+    // is still not evidence of PRESENCE, and mixed mode needs presence. This
+    // is safe to collapse only because the registry self-corrects on the next
+    // unary ack.
+    unaryVersions.list = null;
+    expect(
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+    ).toBe("local");
+
+    // `false` is a completed handshake that did not advertise the method.
+    unaryVersions.list = false;
+    expect(
+      renderHook(() => useNotificationFeedModeFor(null, HOST_ID)).result.current,
+    ).toBe("local");
+
+    // No host to read a manifest from at all - the provider passes `null` when
+    // there is no serving host ENTRY. There is nothing to ask, so mixed mode is
+    // withheld rather than assumed.
+    unaryVersions.list = { major: 2, minor: 2 };
+    expect(
+      renderHook(() => useNotificationFeedModeFor(null, null)).result.current,
+    ).toBe("local");
   });
 });

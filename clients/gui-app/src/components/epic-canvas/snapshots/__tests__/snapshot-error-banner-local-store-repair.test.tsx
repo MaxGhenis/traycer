@@ -23,6 +23,8 @@ import type { SnapshotFetchError } from "@/stores/epics/open-epic/store";
 
 const mocks = vi.hoisted(() => ({
   requestFreshSnapshot: vi.fn(),
+  sessionHostId: null as string | null,
+  isDirectoryLoading: false,
 }));
 
 vi.mock("@/lib/epic-selectors", () => ({
@@ -34,12 +36,21 @@ vi.mock("@/hooks/host/use-host-client-for", () => ({
 }));
 
 vi.mock("@/hooks/host/use-host-directory-list-query", () => ({
-  useHostDirectoryList: () => ({ data: [] }),
+  useHostDirectoryList: () => ({
+    data: mocks.isDirectoryLoading ? undefined : [],
+    isPending: mocks.isDirectoryLoading,
+  }),
+}));
+
+vi.mock("@/hooks/epic/use-epic-session-host-id", () => ({
+  useEpicSessionHostId: () => mocks.sessionHostId,
 }));
 
 afterEach(() => {
   cleanup();
   mocks.requestFreshSnapshot.mockClear();
+  mocks.sessionHostId = null;
+  mocks.isDirectoryLoading = false;
 });
 
 const LOCAL_STORE_ERROR: SnapshotFetchError = {
@@ -50,12 +61,16 @@ const LOCAL_STORE_ERROR: SnapshotFetchError = {
 };
 
 function renderBanner(): void {
+  renderBannerForError(LOCAL_STORE_ERROR);
+}
+
+function renderBannerForError(error: SnapshotFetchError): void {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   render(
     <QueryClientProvider client={queryClient}>
-      <SnapshotErrorBanner error={LOCAL_STORE_ERROR} className={undefined} />
+      <SnapshotErrorBanner error={error} className={undefined} />
     </QueryClientProvider>,
   );
 }
@@ -76,5 +91,32 @@ describe("SnapshotErrorBanner local-store repair", () => {
     expect(
       screen.getByRole("button", { name: "I’ve stopped the other host" }),
     ).toBeTruthy();
+  });
+
+  it("keeps rebind available when the host supplied no remedy", async () => {
+    const user = userEvent.setup();
+    renderBannerForError({
+      ...LOCAL_STORE_ERROR,
+      localStoreRemedy: undefined,
+    });
+
+    expect(screen.queryByTestId("local-store-refusal-remedy")).toBeNull();
+    expect(
+      screen.getByTestId<HTMLButtonElement>("local-store-rebind").disabled,
+    ).toBe(false);
+    await user.click(screen.getByTestId("local-store-rebind"));
+    expect(screen.getByTestId("confirm-destructive-dialog")).toBeTruthy();
+  });
+
+  it("waits for the session host directory entry before confirming", async () => {
+    const user = userEvent.setup();
+    mocks.sessionHostId = "host-pending";
+    mocks.isDirectoryLoading = true;
+    renderBanner();
+
+    await user.click(screen.getByTestId("local-store-rebind"));
+    expect(
+      screen.getByTestId<HTMLButtonElement>("confirm-action").disabled,
+    ).toBe(true);
   });
 });

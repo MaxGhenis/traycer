@@ -1,7 +1,8 @@
 import "../../../../../__tests__/test-browser-apis";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
+  fireEvent,
   render,
   screen,
   type RenderResult,
@@ -85,10 +86,31 @@ vi.mock("@/hooks/epic/use-epic-export-artifacts-mutation", () => ({
   useEpicExportArtifacts: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
+/**
+ * A configured platform origin, distinct from `resolvePlatformBaseUrl`'s
+ * production fallback (`https://platform.traycer.ai`) - T2: without this,
+ * every case exercised `resolvePlatformBaseUrl(undefined)`'s fallback arm
+ * and never proved the badge reads a REAL `signInUrl` off the runner host.
+ */
+const CONFIGURED_SIGN_IN_URL = "https://auth.configured-shell.test/sign-in";
+
 vi.mock("@/providers/use-runner-host", () => ({
   useRunnerHost: () => ({
     authnBaseUrl: "https://authn.test",
+    signInUrl: CONFIGURED_SIGN_IN_URL,
     openExternalLink: vi.fn(),
+  }),
+}));
+
+const openExternalLinkMutate = vi.hoisted(() => vi.fn());
+
+// The badge opens the upgrade link through this hook rather than the bridge
+// directly (see the component's own comment), so this mock is what T2's new
+// assertion below spies on instead of asserting on copy alone.
+vi.mock("@/hooks/runner/use-open-external-link-mutation", () => ({
+  useRunnerOpenExternalLink: () => ({
+    mutate: openExternalLinkMutate,
+    isPending: false,
   }),
 }));
 
@@ -105,10 +127,30 @@ function renderBadge(): RenderResult {
   );
 }
 
+/**
+ * T3: `durability` is one hoisted object shared by every test in both
+ * `describe` blocks below, and a per-test `afterEach` that only restores
+ * `cloudFreshness` lets every OTHER field leak forward into the next test -
+ * `status`, `pauseReason`, `promotionState`, `localProtection` and
+ * `peerSpeaksDurabilityLegs` all keep whatever the previous test last wrote.
+ * Reseeding the whole fixture before each test (not just after) removes that
+ * ordering dependency instead of relying on every test happening to set
+ * every field it is read against.
+ */
+function resetDurabilityFixture(): void {
+  durability.status = "paused";
+  durability.pauseReason = "access-revoked";
+  durability.promotionState = null;
+  durability.localProtection = null;
+  durability.cloudFreshness = null;
+  durability.peerSpeaksDurabilityLegs = true;
+}
+
 describe("<EpicDurabilityBadge />", () => {
+  beforeEach(resetDurabilityFixture);
   afterEach(() => {
     cleanup();
-    durability.cloudFreshness = null;
+    openExternalLinkMutate.mockClear();
   });
 
   it("renders the revoked-access export surface, not the upgrade story", () => {
@@ -156,6 +198,25 @@ describe("<EpicDurabilityBadge />", () => {
     expect(screen.getByText("Sync paused")).toBeTruthy();
     expect(screen.getByText("Upgrade")).toBeTruthy();
     expect(screen.queryByText("Export artifacts")).toBeNull();
+  });
+
+  it("opens the upgrade link at the runner host's configured platform origin, not the production fallback", () => {
+    // T2: `resolvePlatformBaseUrl(undefined)` falls back to production, so a
+    // mock with no `signInUrl` cannot tell "reads the configured origin"
+    // apart from "always sends production". `CONFIGURED_SIGN_IN_URL`'s
+    // origin is neither, and clicking through to the mutation proves the
+    // badge actually resolves THAT url rather than merely showing the label.
+    durability.status = "paused";
+    durability.pauseReason = "entitlement-lapsed";
+    durability.promotionState = null;
+
+    renderBadge();
+
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
+
+    expect(openExternalLinkMutate).toHaveBeenCalledWith(
+      new URL(CONFIGURED_SIGN_IN_URL).origin,
+    );
   });
 
   it("keeps an omitted pause reason neutral with no call to action", () => {
@@ -333,9 +394,10 @@ describe("<EpicDurabilityBadge />", () => {
  * still not what the cloud has.
  */
 describe("<EpicDurabilityBadge /> - cloud freshness", () => {
+  beforeEach(resetDurabilityFixture);
   afterEach(() => {
     cleanup();
-    durability.cloudFreshness = null;
+    openExternalLinkMutate.mockClear();
   });
 
   /** The calm baseline every case below is measured against. */

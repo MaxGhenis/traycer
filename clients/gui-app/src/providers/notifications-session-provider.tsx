@@ -190,7 +190,21 @@ export function NotificationsSessionProvider(
   // app-wide active host - those differ whenever a tab is bound to a remote
   // host, and reading the remote manifest here selected mixed mode from one
   // host while consuming the other host's snapshots.
-  const notificationFeedMode = useNotificationFeedModeFor(servingStreamClient);
+  //
+  // The unary half is keyed by host id, and that id comes from the serving
+  // ENTRY rather than from the settled stream client. The entry is already the
+  // app's answer to "which host serves notifications", and it is the INCOMING
+  // host during the window where the binding still names the outgoing one - so
+  // reading it directly is what avoids the cross-host mismatch, not a further
+  // gate on the client. Coupling the two would also be wrong on its own terms:
+  // the mode drives the `home: "local"` partition selector on UNARY calls,
+  // which travel on the host client and do not need a stream to exist at all.
+  // A null entry yields a null id, which withholds mixed mode - the safe way
+  // for this to be unknown.
+  const notificationFeedMode = useNotificationFeedModeFor(
+    servingStreamClient,
+    servingHostEntry?.hostId ?? null,
+  );
   // The session body itself consumes the mode (through
   // `useMergedNotificationsActions`), and a component cannot read a context it
   // renders. So the outer shell owns the negotiation and the provider, and the
@@ -852,8 +866,13 @@ function NotificationsSessionBody(
           onAuthError,
         );
       }
-      if (settledFeedMode === "cloud" && cloudAuthorized) {
-        if (servingStreamClient === null) return;
+      // Both cloud-lane bail-outs below are `if` bodies rather than early
+      // returns from `openForCurrentUser`, and that is the whole point: the
+      // HOST feed is opened at the bottom of this function, so returning from
+      // a cloud-lane problem left this machine's own notification lane shut
+      // for the rest of the session. Machine notifications do not depend on
+      // cloud access and must survive a cloud lane that cannot open.
+      if (settledFeedMode === "cloud" && cloudAuthorized && servingStreamClient !== null) {
         // The cloud feed owns host/agent rows only. Collaboration events are
         // still written to the per-user Notifications room, so cloud mode must
         // keep that replica live alongside the relay or sharing notifications
@@ -884,9 +903,12 @@ function NotificationsSessionBody(
           },
         );
       }
+      // `upgrade-required` describes the CLOUD feed alone - this host speaks a
+      // notifications minor the cloud lane needs and cannot supply. It says
+      // nothing about the host's own feed, so it marks the cloud store
+      // unavailable and falls through rather than returning.
       if (settledFeedMode === "upgrade-required") {
         useCloudNotificationsStore.getState().setConnectionState("unavailable");
-        return;
       }
       // Every transport session starts with a baseline snapshot. Keep durable,
       // bounded receipts for replay bookkeeping, but never treat a row from

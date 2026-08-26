@@ -42,13 +42,16 @@ import {
   registerCloudEpicTasksClient,
   type ListCloudTasksRequest,
 } from "@/lib/cloud-epic-tasks-query";
-import { writeCloudEpicTasksLastKnown } from "@/lib/cloud-epic-tasks-query/cache";
+import {
+  cloudEpicTasksQueryKeyMatchesScope,
+  writeCloudEpicTasksLastKnown,
+} from "@/lib/cloud-epic-tasks-query/cache";
 import {
   claimLocalFirstRevalidation,
   isCurrentLocalFirstRevalidation,
   type LocalFirstRevalidationLease,
 } from "@/lib/cloud-epic-tasks-query/local-first-revalidation-coordinator";
-import { uiQueryKeys } from "@/lib/query-keys";
+import { queryKeys, uiQueryKeys } from "@/lib/query-keys";
 
 /**
  * Variables for the next-page mutation. `identity`/`generation` are captured
@@ -144,13 +147,12 @@ function localFirstRevalidationQueryOptions(
   variables: LocalFirstRevalidationVariables,
 ) {
   return queryOptions<ListTasksResponse>({
-    queryKey: [
-      "cloud-epic-tasks-local-first-revalidation",
+    queryKey: queryKeys.cloudEpicTasksLocalFirstRevalidation(
       variables.scope.hostId,
       variables.scope.userId,
       variables.request,
       variables.lease.generation,
-    ],
+    ),
     queryFn: () =>
       fetchCloudEpicTasksFirstPageByHostId(
         variables.scope.hostId,
@@ -512,11 +514,31 @@ export function useCloudEpicTasksQuery(
     // Reopening to `pending` is the whole action: the revalidation effect above
     // takes `queryData` as a dependency, so it re-runs, and this time both its
     // pending check and its authorization check pass.
-    queryClient.setQueryData<ListTasksResponse>(
-      cloudEpicTasksQueryKey(hostId, userId, effectiveRequest),
+    //
+    // EVERY cached scope for this host/user, not just the one this hook is
+    // currently observing. An unverified user who visited several History
+    // filters left a settled `unavailable` page behind each one, and the
+    // settings that make this edge necessary at all - `staleTime: Infinity`
+    // with mount/focus/reconnect refetches disabled - apply to those pages
+    // just as much. Reopening only `effectiveRequest` would leave every other
+    // filter permanently cloud-less for the rest of the session, and revisiting
+    // one would serve its infinite-stale cache rather than ask again.
+    //
+    // The scope match deliberately spans all requests: `cloudEpicTasksQueryKeyMatchesScope`
+    // keys on host and user only. It also excludes the `lastKnown` placeholder
+    // keys, which is correct - that cache is overwritten by whichever real page
+    // settles next, and `reopenLocalFirstCloudPage` describes a first page.
+    queryClient.setQueriesData<ListTasksResponse>(
+      {
+        predicate: (query) =>
+          cloudEpicTasksQueryKeyMatchesScope(query.queryKey, {
+            hostId,
+            userId,
+          }),
+      },
       (current) => reopenLocalFirstCloudPage(current),
     );
-  }, [authorizesCloudLeg, effectiveRequest, hostId, queryClient, userId]);
+  }, [authorizesCloudLeg, hostId, queryClient, userId]);
 
   const tasks = useMemo<readonly ListTaskLightPre15[]>(() => {
     if (queryData === undefined) return EMPTY_TASKS;

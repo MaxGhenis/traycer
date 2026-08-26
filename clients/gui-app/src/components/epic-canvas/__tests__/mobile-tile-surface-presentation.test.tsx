@@ -87,7 +87,7 @@ vi.mock("@/hooks/chats/use-cloud-chat-queries", () => ({
     isPending: false,
     isFetching: false,
   }),
-  useCloudChatCloudAuthorized: () => true,
+  useCloudChatHasCloudAuthorization: () => true,
   cloudChatListAuthorizesRecordSweep: () => false,
 }));
 

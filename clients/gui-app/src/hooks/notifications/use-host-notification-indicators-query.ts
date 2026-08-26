@@ -8,7 +8,7 @@ import type {
 import { HOST_NOTIFICATIONS_INDICATOR_BATCH_CAP } from "@traycer/protocol/host/notifications/contracts";
 import type { HostRpcRegistry } from "@/lib/host";
 import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
-import { useNotificationHostId } from "@/hooks/notifications/use-notification-host";
+import { useNotificationResolveHostId } from "@/hooks/notifications/use-notification-host";
 import { useHostQueries } from "@/hooks/host/use-host-queries";
 import { notificationsQueryKeys } from "@/lib/query-keys";
 import { useAuthStore } from "@/stores/auth/auth-store";
@@ -88,7 +88,7 @@ export function useHostNotificationIndicators(
   // it does. The id-half hook keeps this null-safe in provider-less trees;
   // only when no local host exists does the resolver fall back to the
   // app-wide client, which is the pre-local-room behaviour.
-  const notificationHostId = useNotificationHostId();
+  const notificationHostId = useNotificationResolveHostId();
   const resolvedHostId = args.hostId ?? notificationHostId;
   const client = useHostClientForHostId(resolvedHostId);
   const userId = useAuthStore((state) => state.contextMetadata?.userId ?? null);

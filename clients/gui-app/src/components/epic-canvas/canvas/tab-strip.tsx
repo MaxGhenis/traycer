@@ -266,11 +266,13 @@ export function TabStrip(props: TabStripProps) {
   // epic; naming the owner lets each host layer ask for its exact
   // `home: local` partition in mixed mode instead of the pendingFork-only
   // import a whole-origin answer permits.
-  const chatEpicIds = useMemo(
+  const chatEpicIds = useMemo<Readonly<Record<string, string>>>(
     () =>
       Object.fromEntries(
         indicatorScopes.flatMap((scope) =>
-          scope.chatIds.map((chatId) => [chatId, epicId]),
+          scope.chatIds.map(
+            (chatId): readonly [string, string] => [chatId, epicId],
+          ),
         ),
       ),
     [indicatorScopes, epicId],

@@ -11,6 +11,7 @@ import {
   acquireRemoteSession,
   remoteSessionRefCountForTest,
   resetRemoteSessionReadinessListenersForTest,
+  retireAllRemoteSessions,
   type RemoteSessionIdentity,
 } from "@traycer-clients/shared/host-transport/remote/active-remote-sessions";
 import {
@@ -440,7 +441,15 @@ describe("AuthService authorization-loss remote-session sweep", () => {
     expect(underlying.closeCalls).toBe(0);
     expect(remoteSessionRefCountForTest(identity)).toBe(1);
 
+    // This entry was never swept (that is the point of the test), so
+    // `view.close()` alone only releases it into the keep-warm linger - it
+    // stays in the process-global cache with a real pending timer for
+    // `REMOTE_SESSION_LINGER_MS` after this test ends. `retireAllRemoteSessions`
+    // force-closes and evicts it synchronously, the same scoped cleanup the
+    // sibling `active-remote-sessions.test.ts` harness relies on via fake
+    // timers - here it is unconditional since this suite runs on real timers.
     view.close();
+    retireAllRemoteSessions();
   });
 });
 

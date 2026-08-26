@@ -48,8 +48,8 @@ vi.mock("@/lib/host", async (importOriginal) => {
 // the centre renders - rather than the app-wide active host, so a `home:
 // local` partition question is not asked of some other host's local partition.
 vi.mock("@/hooks/notifications/use-notification-host", () => ({
-  useNotificationHostId: () => hostClient.getActiveHostId(),
-  useNotificationHost: () => ({
+  useNotificationResolveHostId: () => hostClient.getActiveHostId(),
+  useNotificationResolveHost: () => ({
     hostId: hostClient.getActiveHostId(),
     client: hostClient,
   }),
@@ -125,6 +125,21 @@ describe("indicatorRequests", () => {
         })),
       ),
     );
+  });
+
+  it("scopes chatEpicIds to the chat ids known to have a parent epic", () => {
+    // `chat-b` has no entry in the map, so `Object.hasOwn` must keep it out
+    // of `chatEpicIds` even though it is still in the request's `chatIds`.
+    const requests = indicatorRequests(
+      [],
+      ["chat-a", "chat-b"],
+      { "chat-a": "epic-x" },
+      undefined,
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].chatIds).toEqual(["chat-a", "chat-b"]);
+    expect(requests[0].chatEpicIds).toEqual({ "chat-a": "epic-x" });
   });
 });
 

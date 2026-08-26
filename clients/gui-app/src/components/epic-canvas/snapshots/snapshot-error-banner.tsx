@@ -92,14 +92,17 @@ function LocalStoreRepair(props: { readonly error: SnapshotFetchError }) {
     readonly message: string;
     readonly remedy: string;
   } | null>(null);
+  const remedy = repairRefusal?.remedy ?? props.error.localStoreRemedy;
   return (
     <>
-      <p
-        className="text-ui-xs text-muted-foreground"
-        data-testid="local-store-refusal-remedy"
-      >
-        {repairRefusal?.remedy ?? props.error.localStoreRemedy}
-      </p>
+      {remedy === undefined || remedy.trim().length === 0 ? null : (
+        <p
+          className="text-ui-xs text-muted-foreground"
+          data-testid="local-store-refusal-remedy"
+        >
+          {remedy}
+        </p>
+      )}
       {repairRefusal === null ? null : (
         <p className="text-ui-xs text-muted-foreground">
           {repairRefusal.message}
@@ -109,7 +112,6 @@ function LocalStoreRepair(props: { readonly error: SnapshotFetchError }) {
         type="button"
         size="sm"
         data-testid="local-store-rebind"
-        disabled={props.error.localStoreRemedy === undefined}
         onClick={() => setConfirmRepairOpen(true)}
       >
         Rebind local store
@@ -121,7 +123,9 @@ function LocalStoreRepair(props: { readonly error: SnapshotFetchError }) {
         description="Confirm that no other Traycer host is using this data directory. Rebinding while another host is writing could put your local data at risk."
         cascadeSummary={null}
         actionLabel="I’ve stopped the other host"
-        isPending={rebindLocalStore.isPending}
+        isPending={
+          rebindLocalStore.isPending || rebindLocalStore.isHostEntryPending
+        }
         onConfirm={() => {
           rebindLocalStore.mutate(
             { confirmOldHostStopped: true },

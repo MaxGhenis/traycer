@@ -54,12 +54,6 @@ interface TabContextMenuContentProps {
 }
 
 /**
- * The pin item's label. States the CONDITION rather than predicting an event:
- * "available after cloud sync" promises a sync a free-tier account never gets,
- * and a stale `home: "local"` reading would keep promising it for an epic
- * already in the cloud.
- */
-/**
  * Why the tab's History pin is unavailable, or `null` when it is not.
  *
  * The row reasons win over the session one: `local-home` / preserved-orphan are
@@ -77,6 +71,12 @@ function tabPinUnavailableReason(input: {
   return null;
 }
 
+/**
+ * The pin item's label. States the CONDITION rather than predicting an event:
+ * "available after cloud sync" promises a sync a free-tier account never gets,
+ * and a stale `home: "local"` reading would keep promising it for an epic
+ * already in the cloud.
+ */
 function pinActionLabel(
   unavailableReason: "row" | "unverified-session" | null,
   taskPinned: boolean | null,
@@ -153,12 +153,6 @@ function EpicTabMenuItems(props: {
         data-testid={`tab-pin-history-${tabId}`}
       >
         <Pin className={taskPinned === true ? "fill-current" : undefined} />
-        {/*
-          States the CONDITION rather than predicting an event: "available
-          after cloud sync" promises a sync that a free-tier account never
-          gets, and a stale `home: "local"` row would keep promising it for
-          an epic already in the cloud.
-        */}
         {pinActionLabel(pinUnavailableReason, taskPinned)}
         {!pinUnavailable && (taskPinned === null || props.isTaskPinPending) ? (
           <AgentSpinningDots

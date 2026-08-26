@@ -347,7 +347,9 @@ describe("local-plane admission for the removal-sentinel read", () => {
                 onOpenSettings={() => undefined}
               >
                 <DefaultHostReadyGate>
-                  <main data-testid="app-mounted">app</main>
+                  <main aria-label="mounted app" data-testid="app-mounted">
+                    app
+                  </main>
                 </DefaultHostReadyGate>
               </HostReadinessControllerProvider>
             </HostCompatibilityProvider>
@@ -401,12 +403,12 @@ describe("local-plane admission for the removal-sentinel read", () => {
     // setup.
     await waitFor(() => {
       expect(
-        screen.queryByTestId("host-ready-gate-removed-host"),
+        screen.queryByRole("heading", { name: "Traycer was removed" }),
       ).not.toBeNull();
     });
     expect(useAuthStore.getState().status).toBe("unverified");
     expect(spy.removalStateCalls()).toBeGreaterThan(0);
-    expect(screen.queryByTestId("app-mounted")).toBeNull();
+    expect(screen.queryByRole("main", { name: "mounted app" })).toBeNull();
   });
 
   it("does not arm the removal-sentinel read for a signed-out session", async () => {

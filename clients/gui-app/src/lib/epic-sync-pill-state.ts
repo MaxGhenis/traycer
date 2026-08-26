@@ -43,15 +43,15 @@ export type EpicSyncPillState =
    */
   | "storedLocally"
   /**
-   * This session has NO local WAL, and the cloud link is not currently
-   * carrying the work either.
+   * This session has NO local WAL, and nothing is carrying the work durably.
    *
    * The one pill state that reports a risk rather than a stage. An unarmed
-   * session used to render identically to a protected one, and while
-   * disconnected it is strictly less durable than pre-WAL builds: edits live
-   * in the doc alone and die on crash AND on graceful quit. Never shown while
-   * the cloud is connected - there the work IS reaching somewhere, and the
-   * durability badge carries the protection warning instead.
+   * session used to render identically to a protected one; edits live in the
+   * doc alone and die on crash AND on graceful quit. Reachable while
+   * `cloudSyncStatus === "connected"`: a `LocalRoomConnection` satisfies that
+   * status without saying the bytes are anywhere but this process, so
+   * `cloudUpState` returns this when `localProtection === "unavailable"`.
+   * Disconnected, the same unarmed session lands here from `cloudDownState`.
    */
   | "unprotected"
   /** GUI↔host is open, but cloud or host-durability state is still unknown. */

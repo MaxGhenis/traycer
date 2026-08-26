@@ -107,6 +107,26 @@ describe("useLocalHomedOpenEpicIds", () => {
     expect([...result.current]).toEqual(["epic-reconnecting"]);
   });
 
+  it("prefers a fresh `cloud` status over a retained `local` one, the promotion-completed path", () => {
+    // `isLocalHomedLiveEpic` reads `durabilityStatus ?? retainedDurabilityStatus`,
+    // so a CURRENT answer must win once the epic has promoted to the cloud -
+    // never the stale `local` retained from before the promotion. Swapping
+    // the operand order would make every promoted epic stay local-homed and
+    // unpinnable forever, and this is the only case in the suite that pins
+    // that ordering.
+    const handle = mountSession("epic-promoted");
+    handle.store.setState({
+      durabilityStatus: "cloud",
+      retainedDurabilityStatus: "local",
+    });
+
+    const { result } = renderHook(() =>
+      useLocalHomedOpenEpicIds(["epic-promoted"]),
+    );
+
+    expect([...result.current]).toEqual([]);
+  });
+
   it("does not read a retained status left over from a DIFFERENT epic's session", () => {
     const localHandle = mountSession("epic-local-2");
     localHandle.store.setState({ durabilityStatus: "local" });
