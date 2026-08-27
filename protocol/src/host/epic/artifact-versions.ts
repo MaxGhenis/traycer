@@ -243,7 +243,11 @@ export const MAX_ARTIFACT_VERSION_BYTES_PER_ARTIFACT = 1024 * 1024 * 1024;
 
 export const artifactVersionSettingsSchema = z.object({
   enabled: z.boolean(),
-  retentionDays: z.number().int().min(1).max(MAX_ARTIFACT_VERSION_RETENTION_DAYS),
+  retentionDays: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_ARTIFACT_VERSION_RETENTION_DAYS),
   maxVersionsPerArtifact: z
     .number()
     .int()

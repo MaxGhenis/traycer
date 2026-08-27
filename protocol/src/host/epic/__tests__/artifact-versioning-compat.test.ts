@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkCompatibility,
   mergeConnectionManifests,
+  SERVES_EVERY_INSTALLED_MAJOR,
   splitConnectionManifest,
 } from "@traycer/protocol/framework/index";
 import { releasedMethodNames } from "@traycer/protocol/host/__tests__/__fixtures__/released-method-names";
@@ -31,6 +32,7 @@ describe("artifact-versioning handshake compatibility", () => {
   const current = splitConnectionManifest(
     hostRpcRegistry,
     RELEASED_FLOOR_METHOD_NAMES,
+    SERVES_EVERY_INSTALLED_MAJOR,
   );
 
   it.each(ARTIFACT_VERSION_METHODS)(
@@ -47,12 +49,7 @@ describe("artifact-versioning handshake compatibility", () => {
   it("keeps the floor manifest compatible with itself from the host role, with the artifact-version family absent from both sides", () => {
     const floorManifest = current.manifest;
     expect(
-      checkCompatibility(
-        hostRpcRegistry,
-        floorManifest,
-        floorManifest,
-        "host",
-      ),
+      checkCompatibility(hostRpcRegistry, floorManifest, floorManifest, "host"),
     ).toEqual({ ok: true });
     for (const method of ARTIFACT_VERSION_METHODS) {
       expect(floorManifest[method]).toBeUndefined();

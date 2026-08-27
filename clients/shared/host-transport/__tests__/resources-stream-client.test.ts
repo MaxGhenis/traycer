@@ -25,6 +25,7 @@ import {
   type ResourcesStreamCallbacks,
 } from "../resources-stream-client";
 import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
+import { TEST_CLIENT_IDENTITY } from "@traycer-clients/shared/test-fixtures/client-identity";
 
 class StubStreamWebSocket implements StreamWebSocketLike {
   onopen: ((event: WebSocketOpenEvent) => void) | null = null;
@@ -90,6 +91,7 @@ function makeWsStreamClient(
 ): WsStreamClient<typeof hostStreamRpcRegistry> {
   const ctx = makeRequestContext("token");
   return new WsStreamClient({
+    clientIdentity: TEST_CLIENT_IDENTITY,
     registry: hostStreamRpcRegistry,
     endpoint: () => mockLocalHostEntry,
     bearer: () => ctx?.credentials ?? null,
@@ -282,7 +284,7 @@ describe("ResourcesStreamClient", () => {
     expect(parseText(sockets[0].textSent[1])).toEqual({
       kind: "subscribe",
       method: "resources.subscribe",
-      schemaVersion: { major: 1, minor: 4 },
+      schemaVersion: { major: 1, minor: 4, supportedMajors: [1] },
       params: {
         epicId: "epic-1",
         scope: { kind: "epic", epicId: "epic-1" },

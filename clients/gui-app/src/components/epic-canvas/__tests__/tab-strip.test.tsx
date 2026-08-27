@@ -226,7 +226,8 @@ function renderTabStrip(input: {
   readonly onPromotePreview: (groupId: string) => void;
   readonly onOpenBlankTab: (groupId: string) => void;
   readonly onSplit:
-    ((groupId: string, direction: SplitDirection) => void) | undefined;
+    | ((groupId: string, direction: SplitDirection) => void)
+    | undefined;
 }) {
   renderTabStripForTab(TAB, input);
 }
@@ -240,7 +241,8 @@ function renderTabStripForTab(
     readonly onPromotePreview: (groupId: string) => void;
     readonly onOpenBlankTab: (groupId: string) => void;
     readonly onSplit:
-      ((groupId: string, direction: SplitDirection) => void) | undefined;
+      | ((groupId: string, direction: SplitDirection) => void)
+      | undefined;
   },
 ) {
   seedActivePreviewTab(tab);

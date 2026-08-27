@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { hostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { buildStreamManifest } from "@traycer/protocol/framework/stream-compat";
+import { SERVES_EVERY_INSTALLED_MAJOR } from "@traycer/protocol/framework/capability-manifest";
+import { CLIENT_SERVED_STREAM_MAJORS } from "../served-stream-majors";
 import {
   defineStreamRpcContract,
   defineVersionedStreamRpcRegistry,
@@ -54,6 +56,7 @@ import {
 } from "@traycer-clients/shared/host-selection/transport-evidence";
 import { RecordingTransportEvidence } from "../../host-selection/__tests__/recording-transport-evidence";
 import { HOST_RESTARTING_FATAL_CODE } from "@traycer/protocol/framework/index";
+import { TEST_CLIENT_IDENTITY } from "@traycer-clients/shared/test-fixtures/client-identity";
 
 /**
  * StubWebSocket - fully scriptable `StreamWebSocketLike` mirror of the
@@ -164,6 +167,7 @@ function makeClient(options: {
   const ctx =
     options.authToken === null ? null : makeRequestContext(options.authToken);
   return new WsStreamClient({
+    clientIdentity: TEST_CLIENT_IDENTITY,
     registry: hostStreamRpcRegistry,
     endpoint: () => mockLocalHostEntry,
     bearer: () => ctx?.credentials ?? null,
@@ -207,6 +211,7 @@ function makeRotatableClient(
 } {
   const ctx = makeRequestContext(bearer);
   const client = new WsStreamClient({
+    clientIdentity: TEST_CLIENT_IDENTITY,
     registry: hostStreamRpcRegistry,
     endpoint: () => mockLocalHostEntry,
     bearer: () => ctx.credentials,
@@ -240,6 +245,7 @@ function makeClientWithEvidence(options: {
   const ctx =
     options.authToken === null ? null : makeRequestContext(options.authToken);
   return new WsStreamClient({
+    clientIdentity: TEST_CLIENT_IDENTITY,
     registry: hostStreamRpcRegistry,
     endpoint: options.endpoint,
     bearer: () => ctx?.credentials ?? null,
@@ -276,6 +282,9 @@ async function flush(): Promise<void> {
 const GIT_STATUS_VERSION = {
   major: 1,
   minor: hostStreamRpcRegistry["git.subscribeStatus"][1].latestMinor,
+  supportedMajors: Object.keys(hostStreamRpcRegistry["git.subscribeStatus"])
+    .map(Number)
+    .sort((left, right) => left - right),
 };
 
 function completeHandshake(socket: StubStreamWebSocket): void {
@@ -357,12 +366,26 @@ describe("WsStreamClient", () => {
     // newer minor unconditionally (additive minors), so it never poisons an
     // unrelated method's open handshake the way the old major bump once did.
     expect(openFrame.manifest).toEqual(
-      buildStreamManifest(hostStreamRpcRegistry),
+      buildStreamManifest(hostStreamRpcRegistry, CLIENT_SERVED_STREAM_MAJORS),
     );
     expect(openFrame).not.toHaveProperty("optionalManifest");
+    // WHO IS CONNECTING. `/stream` authenticates independently of `/rpc`, so a
+    // stream socket that forgot to identify itself would read to a floored
+    // host as a legacy client no matter what the unary transport sent.
+    expect(openFrame.clientIdentity).toEqual({
+      kind: TEST_CLIENT_IDENTITY.kind,
+      compatibilityEpoch: TEST_CLIENT_IDENTITY.compatibilityEpoch,
+      appVersion: TEST_CLIENT_IDENTITY.appVersion,
+    });
 
     stub.fireText(
-      streamOpenAck(buildStreamManifest(hostStreamRpcRegistry), undefined),
+      streamOpenAck(
+        buildStreamManifest(
+          hostStreamRpcRegistry,
+          SERVES_EVERY_INSTALLED_MAJOR,
+        ),
+        undefined,
+      ),
     );
 
     expect(stub.textSent).toHaveLength(2);
@@ -370,7 +393,7 @@ describe("WsStreamClient", () => {
     expect(subscribeFrame).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 3, supportedMajors: [1] },
       params: { epicId: "epic-1" },
     });
 
@@ -399,7 +422,10 @@ describe("WsStreamClient", () => {
     // exercises method isolation, independent of chat.subscribe's real,
     // currently-bridgeable version history.
     const skewedManifest = {
-      ...buildStreamManifest(hostStreamRpcRegistry),
+      ...buildStreamManifest(
+        hostStreamRpcRegistry,
+        SERVES_EVERY_INSTALLED_MAJOR,
+      ),
       "chat.subscribe": { major: 2, minor: 0 },
     };
     stub.fireText(streamOpenAck(skewedManifest, undefined));
@@ -408,7 +434,7 @@ describe("WsStreamClient", () => {
     expect(parseText(stub.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 3, supportedMajors: [1] },
       params: { epicId: "epic-1" },
     });
 
@@ -435,7 +461,7 @@ describe("WsStreamClient", () => {
     sockets[0].socket.fireOpen();
     const openFrame = parseText(sockets[0].socket.textSent[0]);
     expect(openFrame.manifest).toEqual(
-      buildStreamManifest(hostStreamRpcRegistry),
+      buildStreamManifest(hostStreamRpcRegistry, CLIENT_SERVED_STREAM_MAJORS),
     );
     expect(openFrame).not.toHaveProperty("optionalManifest");
 
@@ -461,7 +487,7 @@ describe("WsStreamClient", () => {
 
     const openFrame = parseText(stub.textSent[0]);
     expect(openFrame.manifest).toEqual(
-      buildStreamManifest(hostStreamRpcRegistry),
+      buildStreamManifest(hostStreamRpcRegistry, CLIENT_SERVED_STREAM_MAJORS),
     );
     expect(openFrame).not.toHaveProperty("optionalManifest");
 
@@ -471,16 +497,17 @@ describe("WsStreamClient", () => {
     stub.fireText({
       kind: "openAck",
       manifest: {
-        "epic.subscribe": buildStreamManifest(hostStreamRpcRegistry)[
-          "epic.subscribe"
-        ],
+        "epic.subscribe": buildStreamManifest(
+          hostStreamRpcRegistry,
+          SERVES_EVERY_INSTALLED_MAJOR,
+        )["epic.subscribe"],
       },
     });
 
     expect(parseText(stub.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 3, supportedMajors: [1] },
       params: { epicId: "epic-1" },
     });
 
@@ -515,7 +542,10 @@ describe("WsStreamClient", () => {
     stub.fireOpen();
 
     const hostV100Manifest = {
-      ...buildStreamManifest(hostStreamRpcRegistry),
+      ...buildStreamManifest(
+        hostStreamRpcRegistry,
+        SERVES_EVERY_INSTALLED_MAJOR,
+      ),
       "chat.subscribe": { major: 1, minor: 0 },
     };
     stub.fireText(streamOpenAck(hostV100Manifest, undefined));
@@ -585,6 +615,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: versionSkewRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -680,6 +711,7 @@ describe("WsStreamClient", () => {
     });
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -710,7 +742,7 @@ describe("WsStreamClient", () => {
     expect(parseText(stub.textSent[1])).toEqual({
       kind: "subscribe",
       method: "dual-major.subscribe",
-      schemaVersion: { major: 1, minor: 0 },
+      schemaVersion: { major: 1, minor: 0, supportedMajors: [1, 2] },
       params: { id: "item-1" },
     });
 
@@ -726,9 +758,13 @@ describe("WsStreamClient", () => {
     const stub = sockets[0].socket;
     stub.fireOpen();
     stub.fireText(
-      streamOpenAck(buildStreamManifest(hostStreamRpcRegistry), [
-        "credentialUpdate",
-      ]),
+      streamOpenAck(
+        buildStreamManifest(
+          hostStreamRpcRegistry,
+          SERVES_EVERY_INSTALLED_MAJOR,
+        ),
+        ["credentialUpdate"],
+      ),
     );
     const sentBeforeRotation = stub.textSent.length;
 
@@ -757,7 +793,13 @@ describe("WsStreamClient", () => {
     stub.fireOpen();
     // Older host: openAck omits `capabilities` (schema defaults it to []).
     stub.fireText(
-      streamOpenAck(buildStreamManifest(hostStreamRpcRegistry), undefined),
+      streamOpenAck(
+        buildStreamManifest(
+          hostStreamRpcRegistry,
+          SERVES_EVERY_INSTALLED_MAJOR,
+        ),
+        undefined,
+      ),
     );
     const sentBeforeRotation = stub.textSent.length;
 
@@ -795,9 +837,13 @@ describe("WsStreamClient", () => {
     // openAck (capability-advertising) → on becoming subscribed the client
     // reconciles the missed rotation and pushes exactly one credentialUpdate.
     stub.fireText(
-      streamOpenAck(buildStreamManifest(hostStreamRpcRegistry), [
-        "credentialUpdate",
-      ]),
+      streamOpenAck(
+        buildStreamManifest(
+          hostStreamRpcRegistry,
+          SERVES_EVERY_INSTALLED_MAJOR,
+        ),
+        ["credentialUpdate"],
+      ),
     );
 
     const credentialUpdates = stub.textSent
@@ -1414,6 +1460,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1470,6 +1517,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1494,7 +1542,7 @@ describe("WsStreamClient", () => {
     expect(firstSubscribe).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 3, supportedMajors: [1] },
       params: { epicId: "epic-42" },
     });
 
@@ -1514,7 +1562,7 @@ describe("WsStreamClient", () => {
     expect(secondSubscribe).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 3, supportedMajors: [1] },
       params: { epicId: "epic-42" },
     });
 
@@ -1527,6 +1575,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1657,6 +1706,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1700,7 +1750,7 @@ describe("WsStreamClient", () => {
     expect(parseText(sockets[1].socket.textSent[1])).toEqual({
       kind: "subscribe",
       method: "epic.subscribe",
-      schemaVersion: { major: 1, minor: 3 },
+      schemaVersion: { major: 1, minor: 3, supportedMajors: [1] },
       params: { epicId: "epic-42" },
     });
     expect(statuses.at(-1)).toBe("open");
@@ -1716,6 +1766,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1766,6 +1817,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1802,6 +1854,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1851,6 +1904,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1893,6 +1947,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -1949,6 +2004,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2000,6 +2056,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2048,6 +2105,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2124,6 +2182,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2162,6 +2221,7 @@ describe("WsStreamClient", () => {
 
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2206,6 +2266,7 @@ describe("WsStreamClient", () => {
   it("closing a stream client closes every owned session socket", async () => {
     const { factory, sockets } = makeFactory();
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2315,6 +2376,7 @@ describe("WsStreamClient", () => {
       transportDialability: "dialable",
     };
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => entry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2351,6 +2413,7 @@ describe("WsStreamClient", () => {
       transportDialability: "dialable",
     };
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => entry,
       bearer: () => makeRequestContext("t")?.credentials ?? null,
@@ -2548,6 +2611,7 @@ describe("WsStreamClient UNAUTHORIZED auth recovery", () => {
     initialBackoffMs: number,
   ): WsStreamClient<typeof hostStreamRpcRegistry> {
     return new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       // A fixed bearer the host keeps rejecting (the test's revalidator never
@@ -2794,7 +2858,7 @@ describe("WsStreamClient UNAUTHORIZED auth recovery", () => {
       method: "host.notifications.feed.subscribe",
       // `@1.1` is the newest installed minor of the feed (the arm carrying
       // `host.operation.finished`); the mirrored handshake negotiates it.
-      schemaVersion: { major: 1, minor: 1 },
+      schemaVersion: { major: 1, minor: 1, supportedMajors: [1] },
       params: {
         initialAttentionLimit: 50,
         initialRecentLimit: 50,
@@ -2829,7 +2893,7 @@ describe("WsStreamClient UNAUTHORIZED auth recovery", () => {
       method: "host.notifications.feed.subscribe",
       // `@1.1` is the newest installed minor of the feed (the arm carrying
       // `host.operation.finished`); the mirrored handshake negotiates it.
-      schemaVersion: { major: 1, minor: 1 },
+      schemaVersion: { major: 1, minor: 1, supportedMajors: [1] },
       params: {
         initialAttentionLimit: 50,
         initialRecentLimit: 50,
@@ -3125,6 +3189,7 @@ describe("WsStreamClient UNAUTHORIZED auth recovery", () => {
       },
     };
     const client = new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: () => mockLocalHostEntry,
       bearer: () => ctx.credentials,
@@ -3440,6 +3505,7 @@ describe("WsStreamClient host credential provisioning", () => {
     const token = options.authToken ?? "token-abc";
     const ctx = makeRequestContext(token);
     return new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: options.endpoint,
       bearer: () => ctx.credentials,
@@ -3473,6 +3539,7 @@ describe("WsStreamClient host credential provisioning", () => {
     const token = options.authToken ?? "token-abc";
     const ctx = makeRequestContext(token);
     return new WsStreamClient({
+      clientIdentity: TEST_CLIENT_IDENTITY,
       registry: hostStreamRpcRegistry,
       endpoint: options.endpoint,
       bearer: () => ctx.credentials,
@@ -4628,6 +4695,111 @@ describe("WsStreamClient host credential provisioning", () => {
   });
 });
 
+describe("WsStreamClient readiness", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function readinessClient(): {
+    readonly client: WsStreamClient<typeof hostStreamRpcRegistry>;
+    readonly sockets: { url: string; socket: StubStreamWebSocket }[];
+  } {
+    const { factory, sockets } = makeFactory();
+    return {
+      client: makeClient({
+        factory,
+        authToken: "token-abc",
+        pingIntervalMs: 25_000,
+        pongTimeoutMs: 50_000,
+        initialBackoffMs: 10,
+        maxBackoffMs: 1_000,
+      }),
+      sockets,
+    };
+  }
+
+  it("reports ready while it owns no sessions at all", () => {
+    const { client } = readinessClient();
+
+    // Vacuously ready ON PURPOSE. This client is not one connection - it owns
+    // N independent per-method sockets - so "ready" can only mean "nothing I
+    // own is down". A client that has not subscribed to anything is not
+    // evidence of an outage, and answering `false` here would make every
+    // client flip to not-ready the moment its last stream is legitimately
+    // unsubscribed. Do not "fix" this to false-when-empty.
+    expect(client.isReady()).toBe(true);
+
+    client.close("test-teardown");
+  });
+
+  it("is not ready while an owned session is still dialing, and is once it opens", async () => {
+    const { client, sockets } = readinessClient();
+    const session = client.subscribe("epic.subscribe", { epicId: "epic-1" });
+
+    await flush();
+    // The socket exists but has not opened: this session is `connecting`, so
+    // the client owns something that is not carrying traffic.
+    expect(client.isReady()).toBe(false);
+
+    const stub = sockets[0].socket;
+    stub.fireOpen();
+    stub.fireText(
+      streamOpenAck(
+        buildStreamManifest(
+          hostStreamRpcRegistry,
+          SERVES_EVERY_INSTALLED_MAJOR,
+        ),
+        undefined,
+      ),
+    );
+
+    expect(client.isReady()).toBe(true);
+
+    session.close();
+    client.close("test-teardown");
+  });
+
+  it("is not ready once an owned session loses its socket", async () => {
+    const { client, sockets } = readinessClient();
+    const session = client.subscribe("epic.subscribe", { epicId: "epic-1" });
+
+    await flush();
+    const stub = sockets[0].socket;
+    stub.fireOpen();
+    stub.fireText(
+      streamOpenAck(
+        buildStreamManifest(
+          hostStreamRpcRegistry,
+          SERVES_EVERY_INSTALLED_MAJOR,
+        ),
+        undefined,
+      ),
+    );
+    expect(client.isReady()).toBe(true);
+
+    // The drop puts the session into its reconnect loop. The client still
+    // owns it, and it is not carrying traffic.
+    stub.fireClose(1006, "abnormal-closure", false);
+
+    expect(client.isReady()).toBe(false);
+
+    session.close();
+    client.close("test-teardown");
+  });
+
+  it("is never ready once closed", () => {
+    const { client } = readinessClient();
+
+    client.close("test-teardown");
+
+    expect(client.isReady()).toBe(false);
+  });
+});
+
 describe("WsStreamClient wake probe vs the stale heartbeat deadline", () => {
   // Fake timers are installed BEFORE the client exists: the heartbeat interval
   // is armed at subscribe time, and an interval created under real timers is
@@ -4648,7 +4820,13 @@ describe("WsStreamClient wake probe vs the stale heartbeat deadline", () => {
     const stub = sockets[0].socket;
     stub.fireOpen();
     stub.fireText(
-      streamOpenAck(buildStreamManifest(hostStreamRpcRegistry), undefined),
+      streamOpenAck(
+        buildStreamManifest(
+          hostStreamRpcRegistry,
+          SERVES_EVERY_INSTALLED_MAJOR,
+        ),
+        undefined,
+      ),
     );
     await vi.advanceTimersByTimeAsync(0);
     return stub;

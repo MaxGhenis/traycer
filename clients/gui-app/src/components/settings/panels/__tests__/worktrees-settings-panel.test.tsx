@@ -47,6 +47,7 @@ import {
   WORKTREE_TEST_VIRTUAL_ITEM_HEIGHT,
 } from "./worktrees-virtualizer-test-utils";
 import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
+import { TEST_CLIENT_IDENTITY } from "@traycer-clients/shared/test-fixtures/client-identity";
 
 // The delete is a stream: mock the wrapper so a test can drive server frames
 // (started / phase / output / complete / failed) and assert the modal + cache
@@ -290,6 +291,7 @@ vi.mock(
 // lets `useWorktreeDeleteRun` proceed past its `streamClient === null` gate.
 function stubStreamClient(): WsStreamClient<HostStreamRpcRegistry> {
   return new WsStreamClient<HostStreamRpcRegistry>({
+    clientIdentity: TEST_CLIENT_IDENTITY,
     registry: hostStreamRpcRegistry,
     endpoint: () => null,
     bearer: () => null,
@@ -435,11 +437,13 @@ function renderList(args: {
   readonly queryClient: QueryClient;
   readonly worktrees: readonly WorktreeHostEntryV16[];
   readonly enrichedByPath:
-    ReadonlyMap<string, WorktreeHostEntryV16> | undefined;
+    | ReadonlyMap<string, WorktreeHostEntryV16>
+    | undefined;
   readonly erroredPaths: ReadonlySet<string> | undefined;
   readonly seededPaths: ReadonlySet<string> | undefined;
   readonly onVisiblePathsChange:
-    ((paths: readonly string[]) => void) | undefined;
+    | ((paths: readonly string[]) => void)
+    | undefined;
   readonly taskTitlesByEpicId: ReadonlyMap<string, string> | undefined;
 }) {
   const Wrapper = (props: { readonly children: ReactNode }): ReactNode => (
@@ -3787,7 +3791,8 @@ describe("WorktreesList virtualization + per-viewport enrichment", () => {
     readonly enrichedByPath: ReadonlyMap<string, WorktreeHostEntryV16>;
     readonly erroredPaths: ReadonlySet<string> | undefined;
     readonly onVisiblePathsChange:
-      ((paths: readonly string[]) => void) | undefined;
+      | ((paths: readonly string[]) => void)
+      | undefined;
   }): ReactNode {
     return (
       <QueryClientProvider client={new QueryClient()}>
