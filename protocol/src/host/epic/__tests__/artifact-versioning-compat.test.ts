@@ -41,7 +41,11 @@ describe("artifact-versioning handshake compatibility", () => {
       expect(RELEASED_FLOOR_METHOD_NAMES).not.toContain(method);
       expect(releasedMethodNames).not.toContain(method);
       expect(current.manifest[method]).toBeUndefined();
-      expect(current.optionalManifest[method]).toEqual({ major: 1, minor: 0 });
+      expect(current.optionalManifest[method]).toEqual({
+        major: 1,
+        minor: 0,
+        supportedMajors: [1],
+      });
       expect(hostRpcRegistry[method].degrade).toEqual({ kind: "unsupported" });
     },
   );
@@ -86,7 +90,11 @@ describe("artifact-versioning handshake compatibility", () => {
       ),
     ).toEqual({ ok: true });
     for (const method of ARTIFACT_VERSION_METHODS) {
-      expect(negotiatedManifest[method]).toEqual({ major: 1, minor: 0 });
+      expect(negotiatedManifest[method]).toEqual({
+        major: 1,
+        minor: 0,
+        supportedMajors: [1],
+      });
     }
   });
 });
