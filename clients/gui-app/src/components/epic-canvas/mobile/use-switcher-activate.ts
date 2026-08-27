@@ -3,11 +3,13 @@ import { useMobileEpicTiles } from "@/components/epic-canvas/mobile/use-mobile-e
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { findOpenArtifactInTab } from "@/stores/epics/canvas/canvas-selectors";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
-import type { EpicNodeRef } from "@/stores/epics/canvas/types";
+import type { EpicCanvasTileRef } from "@/stores/epics/canvas/types";
 
 export type SwitcherActivate = (
   contentId: string,
-  buildRef: () => EpicNodeRef,
+  // The full tile union rather than `EpicNodeRef`: the chat tree hands this a
+  // published-chat tile ref for a row that reads someone else's shared chat.
+  buildRef: () => EpicCanvasTileRef,
 ) => void;
 
 /**

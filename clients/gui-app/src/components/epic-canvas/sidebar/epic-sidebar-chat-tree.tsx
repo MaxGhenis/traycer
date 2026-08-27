@@ -227,6 +227,10 @@ import {
 } from "@/components/epic-canvas/sidebar/chat-row-leading-icon";
 import { chatDescendantKind } from "@/components/epic-canvas/sidebar/chat-row-status-ladder";
 import {
+  useChatTreeSurface,
+  useRevealRowControls,
+} from "@/components/epic-canvas/sidebar/chat-tree-surface";
+import {
   chatRowArchiveEntry,
   chatRowMenuEntries,
   SidebarArchiveSupportedContext,
@@ -1075,6 +1079,9 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
   const node = useEpicTreeNode(nodeId);
   const childIds = useFilteredPanelChildIds(nodeId, treeFilter);
   const navigateNested = useEpicNestedFocusNavigation();
+  // Non-null only where this tree is mounted on a surface that cannot express
+  // the desktop open gestures - see `ChatTreeSurface`.
+  const surface = useChatTreeSurface();
   const prepareOpenTileInTabFocusTarget = useEpicCanvasStore(
     (s) => s.prepareOpenTileInTabFocusTarget,
   );
@@ -1204,6 +1211,14 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
   const selectChatNode = useCallback(() => {
     if (isRenaming) return;
     if (openableType === null) return;
+    // A preview tile is a DESKTOP affordance: it exists to be promoted by the
+    // double click this row also handles. A surface with no second gesture
+    // would strand every row it opened in preview, so it opens its own way -
+    // off the same ref, so the tile's host binding is identical either way.
+    if (surface !== null) {
+      surface.activate(nodeId, () => ({ ...openRef(), instanceId: uuidv4() }));
+      return;
+    }
     navigateNested(epicId, tabId, () =>
       prepareOpenTilePreviewInTabFocusTarget(tabId, {
         ...openRef(),
@@ -1211,14 +1226,17 @@ const ChatNode = memo(function ChatNode(props: ChatNodeProps) {
       }),
     );
   }, [
-    // No `nodeId` / `nodeName`: the tile ref is built inside `openRef`, which
-    // closes over both and is itself a dependency.
+    // No `nodeName`: the tile ref is built inside `openRef`, which closes over
+    // it and is itself a dependency. `nodeId` is the surface's own lookup key,
+    // not part of the ref, so it is named.
     openRef,
     epicId,
     isRenaming,
     navigateNested,
+    nodeId,
     openableType,
     prepareOpenTilePreviewInTabFocusTarget,
+    surface,
     tabId,
   ]);
 
@@ -2013,12 +2031,17 @@ function chatRowClassName(state: {
   readonly selectionMode: boolean;
   readonly isArchived: boolean;
   readonly isActive: boolean;
+  readonly revealRowControls: boolean;
 }): string {
   return cn(
     "flex min-h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md py-1 text-left text-ui-sm font-normal transition-colors",
     "focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-2",
     state.isDragging && "cursor-grabbing opacity-60",
-    nodePadRightClass(state.showRowControls, state.reserveArchiveSlot),
+    nodePadRightClass(
+      state.showRowControls,
+      state.reserveArchiveSlot,
+      state.revealRowControls,
+    ),
     state.selectionMode && "cursor-pointer",
     state.isArchived && ARCHIVED_ROW_CLASS,
     state.isActive
@@ -2112,6 +2135,7 @@ function ChatRowButton(props: ChatRowButtonProps) {
   // that menu as "New child agent"), so the single-control pad-right reserve is
   // claimed whenever the row is editable and not bulk-selecting.
   const showRowControls = selectionMode ? false : canEdit;
+  const revealRowControls = useRevealRowControls();
   const rowClassName = chatRowClassName({
     isDragging,
     showRowControls,
@@ -2119,6 +2143,7 @@ function ChatRowButton(props: ChatRowButtonProps) {
     selectionMode,
     isArchived,
     isActive,
+    revealRowControls,
   });
   const selectionInputId = `epic-sidebar-select-input-${nodeId}`;
   if (selectionMode) {
@@ -2499,6 +2524,7 @@ function ChatRowArchiveButton(props: {
   const label = props.isArchived
     ? `Unarchive ${props.nodeName}`
     : `Archive ${props.nodeName}`;
+  const revealed = useRevealRowControls();
   return (
     <TooltipWrapper
       label={label}
@@ -2513,7 +2539,12 @@ function ChatRowArchiveButton(props: {
         aria-label={label}
         disabled={props.pending}
         data-testid={`epic-sidebar-archive-${props.nodeId}`}
-        className="absolute right-7 top-1/2 -translate-y-1/2 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/tree-item:opacity-100"
+        className={cn(
+          "absolute right-7 top-1/2 -translate-y-1/2 transition-opacity",
+          revealed
+            ? "opacity-100"
+            : "opacity-0 focus-visible:opacity-100 group-hover/tree-item:opacity-100",
+        )}
         onClick={(event) => {
           event.stopPropagation();
           props.onToggle();
@@ -2535,6 +2566,7 @@ function ChatMoreMenu(props: {
   readonly entries: ReadonlyArray<SidebarRowMenuEntry>;
 }) {
   const { nodeId, nodeName, entries } = props;
+  const revealed = useRevealRowControls();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -2544,7 +2576,12 @@ function ChatMoreMenu(props: {
           size="icon-xs"
           aria-label={`Agent actions for ${nodeName}`}
           data-testid={`epic-sidebar-more-${nodeId}`}
-          className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/tree-item:opacity-100 aria-expanded:opacity-100"
+          className={cn(
+            "absolute right-1 top-1/2 -translate-y-1/2 transition-opacity",
+            revealed
+              ? "opacity-100"
+              : "opacity-0 focus-visible:opacity-100 group-hover/tree-item:opacity-100 aria-expanded:opacity-100",
+          )}
           onClick={(event) => {
             event.stopPropagation();
           }}
