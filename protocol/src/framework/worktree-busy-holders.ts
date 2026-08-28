@@ -65,30 +65,43 @@ export const worktreeBusyHoldersWireFieldSchema = worktreeBusyHoldersSchema
   .catch(undefined);
 
 /**
+ * Host-computed digest of the actor-grouped inventory. Optional so a
+ * pre-revision host still parses; a current host always emits it next
+ * to `holders`. Malformed values sanitize to absent rather than
+ * rejecting the envelope.
+ */
+export const holdersRevisionWireFieldSchema = z
+  .string()
+  .optional()
+  .catch(undefined);
+
+/**
  * `WORKTREE_BUSY` envelope a current client parses when it wants the typed
  * inventory. `holders` omitted = old host; the prose `message` still names
- * the refusal.
+ * the refusal. `holdersRevision` is the digest of that inventory.
  */
 export const worktreeBusyErrorDetailsSchema = z.object({
   code: z.literal("WORKTREE_BUSY"),
   message: z.string(),
   holders: worktreeBusyHoldersSchema.optional(),
+  holdersRevision: z.string().optional(),
 });
 export type WorktreeBusyErrorDetails = z.infer<
   typeof worktreeBusyErrorDetailsSchema
 >;
 
 /**
- * Pre-teardown expected-set mismatch. Same envelope shape as
- * `WORKTREE_BUSY` (`message` + optional `holders`); a distinguishable
- * `code` so a current GUI can refresh consent instead of treating it as
- * a generic busy. Old clients see an unknown code and keep the 4xx
- * busy-class refusal.
+ * Pre-teardown expected-revision mismatch. Same envelope shape as
+ * `WORKTREE_BUSY` (`message` + optional `holders` + optional
+ * `holdersRevision`); a distinguishable `code` so a current GUI can
+ * refresh consent instead of treating it as a generic busy. Old clients
+ * see an unknown code and keep the 4xx busy-class refusal.
  */
 export const worktreeHoldersChangedErrorDetailsSchema = z.object({
   code: z.literal("WORKTREE_HOLDERS_CHANGED"),
   message: z.string(),
   holders: worktreeBusyHoldersSchema.optional(),
+  holdersRevision: z.string().optional(),
 });
 export type WorktreeHoldersChangedErrorDetails = z.infer<
   typeof worktreeHoldersChangedErrorDetailsSchema

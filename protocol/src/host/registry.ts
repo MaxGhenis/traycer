@@ -1130,9 +1130,9 @@ export const worktreeDeleteUpgradeV10ToV11 = defineUpgradePath<
 });
 
 /**
- * `worktree.delete@1.2` - optional `expectedHolderIds`. Absent reproduces
- * @1.1 (stop whatever the fresh inventory finds). Present with
- * `stopOwners: true` is a set-equality compare before teardown.
+ * `worktree.delete@1.2` - optional `expectedHoldersRevision`. Absent
+ * reproduces @1.1 (stop whatever the fresh inventory finds). Present
+ * with `stopOwners: true` is a digest-equality compare before teardown.
  */
 export const worktreeDeleteV12 = defineRpcContract({
   method: "worktree.delete",
@@ -1149,7 +1149,7 @@ export const worktreeDeleteUpgradeV11ToV12 = defineUpgradePath<
   to: worktreeDeleteV12.schemaVersion,
   upgradeRequest: (request) => ({
     ...request,
-    expectedHolderIds: undefined,
+    expectedHoldersRevision: undefined,
   }),
   upgradeResponse: (response) => response,
 });

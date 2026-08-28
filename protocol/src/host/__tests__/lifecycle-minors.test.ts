@@ -86,6 +86,17 @@ describe("WORKTREE_BUSY typed holders", () => {
       holders: [holder],
     });
     expect(parsed.holders).toEqual([holder]);
+    expect(parsed.holdersRevision).toBeUndefined();
+  });
+
+  it("accepts holdersRevision on a WORKTREE_BUSY envelope", () => {
+    const parsed = worktreeBusyErrorDetailsSchema.parse({
+      code: "WORKTREE_BUSY",
+      message: "Worktree is in use by an active agent or terminal.",
+      holders: [holder],
+      holdersRevision: "rev-1",
+    });
+    expect(parsed.holdersRevision).toBe("rev-1");
   });
 
   it("keeps holders on the current error envelope", () => {
@@ -93,8 +104,10 @@ describe("WORKTREE_BUSY typed holders", () => {
       code: "WORKTREE_BUSY",
       message: "busy",
       holders: [holder],
+      holdersRevision: "rev-1",
     });
     expect(parsed.holders).toEqual([holder]);
+    expect(parsed.holdersRevision).toBe("rev-1");
   });
 
   it("sanitizes malformed holders on the WS and mux error envelopes", () => {
@@ -167,9 +180,11 @@ describe("WORKTREE_BUSY typed holders", () => {
       code: "WORKTREE_BUSY",
       message: "busy",
       holders: [holder],
+      holdersRevision: "rev-1",
     });
     expect(parsed).toEqual({ code: "WORKTREE_BUSY", message: "busy" });
     expect(parsed).not.toHaveProperty("holders");
+    expect(parsed).not.toHaveProperty("holdersRevision");
   });
 });
 
@@ -262,10 +277,10 @@ describe("worktree.delete@1.1 stopOwners", () => {
   });
 });
 
-describe("worktree.delete@1.2 expectedHolderIds", () => {
+describe("worktree.delete@1.2 expectedHoldersRevision", () => {
   const deleteRegistry = hostRpcRegistry["worktree.delete"];
 
-  it("1.1 body parses as 1.2 with expectedHolderIds absent", () => {
+  it("1.1 body parses as 1.2 with expectedHoldersRevision absent", () => {
     const parsed = worktreeDeleteRequestSchemaV12.parse({
       epicId: "e1",
       workspacePath: "/repo",
@@ -273,21 +288,21 @@ describe("worktree.delete@1.2 expectedHolderIds", () => {
       stopOwners: true,
     });
     expect(parsed.stopOwners).toBe(true);
-    expect(parsed.expectedHolderIds).toBeUndefined();
+    expect(parsed.expectedHoldersRevision).toBeUndefined();
   });
 
-  it("accepts expectedHolderIds", () => {
+  it("accepts expectedHoldersRevision", () => {
     const parsed = worktreeDeleteRequestSchemaV12.parse({
       epicId: "e1",
       workspacePath: "/repo",
       worktreePath: "/wt",
       stopOwners: true,
-      expectedHolderIds: ["chat:chat-1", "shell:cmd-1"],
+      expectedHoldersRevision: "rev-abc",
     });
-    expect(parsed.expectedHolderIds).toEqual(["chat:chat-1", "shell:cmd-1"]);
+    expect(parsed.expectedHoldersRevision).toBe("rev-abc");
   });
 
-  it("upgrades a 1.1 request with expectedHolderIds absent", () => {
+  it("upgrades a 1.1 request with expectedHoldersRevision absent", () => {
     const upgraded = upgradeRequestToVersion(deleteRegistry, V11, V12, {
       epicId: "e1",
       workspacePath: "/repo",
@@ -295,30 +310,32 @@ describe("worktree.delete@1.2 expectedHolderIds", () => {
       stopOwners: true,
     });
     expect(worktreeDeleteRequestSchemaV12.parse(upgraded)).toEqual(upgraded);
-    expect(upgraded.expectedHolderIds).toBeUndefined();
+    expect(upgraded.expectedHoldersRevision).toBeUndefined();
     expect(upgraded.stopOwners).toBe(true);
   });
 
-  it("1.1 request schema strips expectedHolderIds (old-host degrade)", () => {
+  it("1.1 request schema strips expectedHoldersRevision (old-host degrade)", () => {
     const parsed = worktreeDeleteRequestSchemaV11.parse({
       epicId: "e1",
       workspacePath: "/repo",
       worktreePath: "/wt",
       stopOwners: true,
-      expectedHolderIds: ["chat:chat-1"],
+      expectedHoldersRevision: "rev-abc",
     });
-    expect(parsed).not.toHaveProperty("expectedHolderIds");
+    expect(parsed).not.toHaveProperty("expectedHoldersRevision");
   });
 
-  it("parses a WORKTREE_HOLDERS_CHANGED envelope with holders", () => {
+  it("parses a WORKTREE_HOLDERS_CHANGED envelope with holders and revision", () => {
     const parsed = worktreeHoldersChangedErrorDetailsSchema.parse({
       code: "WORKTREE_HOLDERS_CHANGED",
       message: "holders changed",
       holders: [{ ...holder, holderId: "chat:chat-1" }],
+      holdersRevision: "rev-abc",
     });
     expect(parsed.code).toBe("WORKTREE_HOLDERS_CHANGED");
     expect(parsed.holders).toHaveLength(1);
     expect(parsed.holders?.[0]?.holderId).toBe("chat:chat-1");
+    expect(parsed.holdersRevision).toBe("rev-abc");
   });
 });
 
@@ -389,46 +406,62 @@ describe("worktree.deleteByPath@1.1 stopOwners + failed holders", () => {
   });
 });
 
-describe("worktree.deleteByPath@1.2 expectedHolderIds", () => {
-  it("1.1 open body parses as 1.2 with expectedHolderIds absent", () => {
+describe("worktree.deleteByPath@1.2 expectedHoldersRevision", () => {
+  it("1.1 open body parses as 1.2 with expectedHoldersRevision absent", () => {
     const parsed = worktreeDeleteByPathOpenRequestSchemaV12.parse({
       worktreePath: "/wt",
       stopOwners: true,
     });
     expect(parsed.stopOwners).toBe(true);
-    expect(parsed.expectedHolderIds).toBeUndefined();
+    expect(parsed.expectedHoldersRevision).toBeUndefined();
   });
 
-  it("accepts expectedHolderIds on the open request", () => {
+  it("accepts expectedHoldersRevision on the open request", () => {
     const parsed = worktreeDeleteByPathOpenRequestSchemaV12.parse({
       worktreePath: "/wt",
       stopOwners: true,
-      expectedHolderIds: ["shell:cmd-1"],
+      expectedHoldersRevision: "rev-abc",
     });
-    expect(parsed.expectedHolderIds).toEqual(["shell:cmd-1"]);
+    expect(parsed.expectedHoldersRevision).toBe("rev-abc");
   });
 
-  it("1.1 open schema strips expectedHolderIds", () => {
+  it("1.1 open schema strips expectedHoldersRevision", () => {
     const parsed = worktreeDeleteByPathOpenRequestSchemaV11.parse({
       worktreePath: "/wt",
       stopOwners: true,
-      expectedHolderIds: ["shell:cmd-1"],
+      expectedHoldersRevision: "rev-abc",
     });
-    expect(parsed).not.toHaveProperty("expectedHolderIds");
+    expect(parsed).not.toHaveProperty("expectedHoldersRevision");
   });
 
-  it("1.2 failed frame accepts HOLDERS_CHANGED code with holders", () => {
+  it("1.2 failed frame accepts HOLDERS_CHANGED code with holders and revision", () => {
     const parsed = worktreeDeleteByPathServerFrameSchemaV12.parse({
       kind: "failed",
       reason: "holders changed",
       code: "WORKTREE_HOLDERS_CHANGED",
       holders: [{ ...holder, holderId: "chat:chat-1" }],
+      holdersRevision: "rev-abc",
       hasBinaryPayload: false,
     });
     expect(parsed.kind).toBe("failed");
     if (parsed.kind === "failed") {
       expect(parsed.code).toBe("WORKTREE_HOLDERS_CHANGED");
       expect(parsed.holders?.[0]?.holderId).toBe("chat:chat-1");
+      expect(parsed.holdersRevision).toBe("rev-abc");
+    }
+  });
+
+  it("1.1 failed frame strips holdersRevision (old-client degrade)", () => {
+    const parsed = worktreeDeleteByPathServerFrameSchemaV11.parse({
+      kind: "failed",
+      reason: "holders changed",
+      holdersRevision: "rev-abc",
+      holders: [holder],
+      hasBinaryPayload: false,
+    });
+    expect(parsed.kind).toBe("failed");
+    if (parsed.kind === "failed") {
+      expect(parsed).not.toHaveProperty("holdersRevision");
     }
   });
 
@@ -489,6 +522,7 @@ describe("worktree.listHolders@1.0", () => {
   it("response accepts an empty holders list (unknown path/owner)", () => {
     const parsed = worktreeListHoldersResponseSchema.parse({ holders: [] });
     expect(parsed.holders).toEqual([]);
+    expect(parsed.holdersRevision).toBeUndefined();
   });
 
   it("response accepts T2 holders", () => {
@@ -496,5 +530,13 @@ describe("worktree.listHolders@1.0", () => {
       holders: [holder],
     });
     expect(parsed.holders).toEqual([holder]);
+  });
+
+  it("response accepts holdersRevision", () => {
+    const parsed = worktreeListHoldersResponseSchema.parse({
+      holders: [holder],
+      holdersRevision: "rev-abc",
+    });
+    expect(parsed.holdersRevision).toBe("rev-abc");
   });
 });

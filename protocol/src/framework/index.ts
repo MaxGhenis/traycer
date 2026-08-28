@@ -64,6 +64,7 @@ export type {
   WorktreeHoldersChangedErrorDetails,
 } from "./worktree-busy-holders";
 export {
+  holdersRevisionWireFieldSchema,
   worktreeBusyErrorDetailsSchema,
   worktreeBusyHoldKindSchema,
   worktreeBusyHolderActivitySchema,
