@@ -327,7 +327,7 @@ describe("<EpicSurface />", () => {
           .rightActionEntries.get(epicTabRightActionsKey("tab-a"))}
       </>,
     );
-    expect(screen.getByTestId("mobile-epic-switcher-trigger")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Switch tab" })).not.toBeNull();
   });
 
   // A retained-but-unfocused pane registers too: a focus switch onto an

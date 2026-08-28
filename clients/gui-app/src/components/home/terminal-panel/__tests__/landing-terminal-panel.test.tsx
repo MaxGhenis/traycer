@@ -758,7 +758,9 @@ describe("<LandingTerminalPanel />", () => {
         ).not.toBeUndefined();
       });
 
-      expect(screen.queryByTestId("landing-terminal-toggle")).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Open terminal panel" }),
+      ).toBeNull();
     });
 
     // The return leg of a launch round-trip: leaving for a task and coming
@@ -773,18 +775,20 @@ describe("<LandingTerminalPanel />", () => {
           <MobileHeaderSlotProbe />
         </>,
       );
-      await screen.findByTestId("landing-terminal-toggle");
+      await screen.findByRole("button", { name: "Open terminal panel" });
 
       act(() => {
         seedTabsLayout([PANEL_DRAFT_TAB, PANEL_EPIC_TAB], PANEL_EPIC_TAB.id);
       });
-      expect(screen.queryByTestId("landing-terminal-toggle")).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Open terminal panel" }),
+      ).toBeNull();
 
       act(() => {
         seedTabsLayout([PANEL_DRAFT_TAB, PANEL_EPIC_TAB], PANEL_DRAFT_TAB.id);
       });
       expect(
-        await screen.findByTestId("landing-terminal-toggle"),
+        await screen.findByRole("button", { name: "Open terminal panel" }),
       ).not.toBeNull();
     });
 
