@@ -226,9 +226,7 @@ export const worktreeDeleteByPathServerFrameSchemaV12 = z.discriminatedUnion(
       kind: z.literal("failed"),
       reason: z.string(),
       holders: worktreeBusyHoldersWireFieldSchema,
-      code: z
-        .enum(["WORKTREE_BUSY", "WORKTREE_HOLDERS_CHANGED"])
-        .optional(),
+      code: z.enum(["WORKTREE_BUSY", "WORKTREE_HOLDERS_CHANGED"]).optional(),
       hasBinaryPayload: z.literal(false),
     }),
     z.object({
