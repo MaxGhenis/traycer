@@ -91,6 +91,11 @@ export type RpcErrorDetails = {
    * `worktreeBusyHolderSchema`.
    */
   holders?: readonly WorktreeBusyHolder[];
+  /**
+   * Host-computed digest of `holders`. Present on `WORKTREE_BUSY` and
+   * `WORKTREE_HOLDERS_CHANGED` from a current host; omitted otherwise.
+   */
+  holdersRevision?: string;
 };
 
 export type RpcContract<

@@ -881,18 +881,20 @@ export type WorktreeDeleteRequestV11 = z.infer<
 >;
 
 /**
- * `worktree.delete@1.2` request. `expectedHolderIds` is the set the
- * caller reviewed. When present with `stopOwners: true`, the host
- * compares it to the fresh inventory before teardown; mismatch refuses
- * with `WORKTREE_HOLDERS_CHANGED` and does not stop or delete. Absent
+ * `worktree.delete@1.2` request. `expectedHoldersRevision` is the
+ * digest of the inventory the caller reviewed. When present with
+ * `stopOwners: true`, the host compares it to a fresh inventory
+ * digest before teardown; mismatch refuses with
+ * `WORKTREE_HOLDERS_CHANGED` and does not stop or delete. Absent
  * reproduces @1.1 (stop whatever the fresh read finds).
  *
- * Degrade: a 1.1 host's request schema strips `expectedHolderIds`. A
- * 1.1 client talking to a 1.2 host is upgraded with the field absent.
+ * Degrade: a 1.1 host's request schema strips
+ * `expectedHoldersRevision`. A 1.1 client talking to a 1.2 host is
+ * upgraded with the field absent.
  */
 export const worktreeDeleteRequestSchemaV12 =
   worktreeDeleteRequestSchemaV11.extend({
-    expectedHolderIds: z.array(z.string()).optional(),
+    expectedHoldersRevision: z.string().optional(),
   });
 export type WorktreeDeleteRequestV12 = z.infer<
   typeof worktreeDeleteRequestSchemaV12
@@ -930,6 +932,11 @@ export type WorktreeListHoldersRequest = z.infer<
 
 export const worktreeListHoldersResponseSchema = z.object({
   holders: worktreeBusyHoldersSchema,
+  /**
+   * Host-computed digest of `holders`. Optional so a pre-revision
+   * response still parses; a current host always emits it.
+   */
+  holdersRevision: z.string().optional(),
 });
 export type WorktreeListHoldersResponse = z.infer<
   typeof worktreeListHoldersResponseSchema

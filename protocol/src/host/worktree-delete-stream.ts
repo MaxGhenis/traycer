@@ -43,7 +43,10 @@
  */
 import { z } from "zod";
 import { defineStreamRpcContract } from "@traycer/protocol/framework/versioned-stream-rpc";
-import { worktreeBusyHoldersWireFieldSchema } from "@traycer/protocol/framework/worktree-busy-holders";
+import {
+  holdersRevisionWireFieldSchema,
+  worktreeBusyHoldersWireFieldSchema,
+} from "@traycer/protocol/framework/worktree-busy-holders";
 import { worktreeEntryScriptsSchema } from "@traycer/protocol/host/worktree-schemas";
 
 export const worktreeDeleteByPathOpenRequestSchema = z.object({
@@ -63,14 +66,14 @@ export type WorktreeDeleteByPathOpenRequestV11 = z.infer<
 >;
 
 /**
- * `worktree.deleteByPath@1.2` open request. `expectedHolderIds` matches
- * unary `worktree.delete@1.2`: present with `stopOwners: true` is a
- * set-equality compare against the fresh inventory before teardown.
- * Absent reproduces @1.1.
+ * `worktree.deleteByPath@1.2` open request. `expectedHoldersRevision`
+ * matches unary `worktree.delete@1.2`: present with `stopOwners: true`
+ * is a digest-equality compare against the fresh inventory before
+ * teardown. Absent reproduces @1.1.
  */
 export const worktreeDeleteByPathOpenRequestSchemaV12 =
   worktreeDeleteByPathOpenRequestSchemaV11.extend({
-    expectedHolderIds: z.array(z.string()).optional(),
+    expectedHoldersRevision: z.string().optional(),
   });
 export type WorktreeDeleteByPathOpenRequestV12 = z.infer<
   typeof worktreeDeleteByPathOpenRequestSchemaV12
@@ -226,6 +229,7 @@ export const worktreeDeleteByPathServerFrameSchemaV12 = z.discriminatedUnion(
       kind: z.literal("failed"),
       reason: z.string(),
       holders: worktreeBusyHoldersWireFieldSchema,
+      holdersRevision: holdersRevisionWireFieldSchema,
       code: z.enum(["WORKTREE_BUSY", "WORKTREE_HOLDERS_CHANGED"]).optional(),
       hasBinaryPayload: z.literal(false),
     }),
