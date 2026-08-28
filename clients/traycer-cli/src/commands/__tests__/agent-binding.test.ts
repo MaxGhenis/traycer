@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HostRpcError } from "../../../../shared/host-transport/host-messenger";
-import { callHostRpc } from "../../internal/host-rpc";
+import {
+  callHostRpc,
+  callHostRpcAtEndpoint,
+  resolveEndpoint,
+} from "../../internal/host-rpc";
 import { noopLogger } from "../../logger";
 import { CLI_ERROR_CODES, CliError } from "../../runner/errors";
 import type { CommandContext } from "../../runner/runner";
@@ -24,10 +28,21 @@ vi.mock("../../internal/host-rpc", async () => {
   const actual = await vi.importActual<
     typeof import("../../internal/host-rpc")
   >("../../internal/host-rpc");
-  return { ...actual, callHostRpc: vi.fn() };
+  return {
+    ...actual,
+    callHostRpc: vi.fn(),
+    callHostRpcAtEndpoint: vi.fn(),
+    resolveEndpoint: vi.fn(),
+  };
 });
 
 const rpcMock = vi.mocked(callHostRpc);
+const rpcAtEndpointMock = vi.mocked(callHostRpcAtEndpoint);
+const resolveEndpointMock = vi.mocked(resolveEndpoint);
+const endpoint = {
+  hostId: "host-local",
+  websocketUrl: "ws://127.0.0.1:9000/rpc",
+};
 
 const response = {
   agentId: "agent-target",
@@ -36,6 +51,62 @@ const response = {
   profileSelection: { kind: "ambient" as const },
   harnessSessionId: "session-123",
 };
+
+function agentSummary(overrides: Record<string, unknown> | undefined) {
+  return {
+    id: "agent-target",
+    parentId: "agent-caller",
+    hostId: "host-local",
+    isLocal: true,
+    surface: "tui" as const,
+    harnessId: "claude",
+    isSelf: false,
+    title: "Sensitive title discarded by projection",
+    capabilities: { readTranscript: true, sendMessage: true },
+    active: true,
+    folderPaths: ["/private/workspace"],
+    isWorktree: false,
+    runConfig: null,
+    ...(overrides ?? {}),
+  };
+}
+
+function agentList(overrides: Record<string, unknown> | undefined) {
+  return {
+    caller: { agentId: "agent-caller", canSendMessages: true },
+    scope: "user" as const,
+    agents: [agentSummary(overrides)],
+  };
+}
+
+function tuiRecord(overrides: Record<string, unknown> | undefined) {
+  return {
+    tuiAgentId: "agent-target",
+    ownerUserId: "user-private",
+    hostId: "host-local",
+    harnessId: "claude",
+    harnessSessionId: "native-session-456",
+    parentId: "agent-caller",
+    title: "Sensitive title discarded by projection",
+    isTitleEditedByUser: false,
+    createdAt: 1,
+    updatedAt: 2,
+    archived: false,
+    archivedAt: null,
+    workspaceFolders: ["/private/workspace"],
+    workspaceMode: null,
+    model: "sensitive-model",
+    reasoningEffort: null,
+    agentMode: "regular" as const,
+    profileId: "profile-work",
+    terminalAgentArgs: "--private-arg",
+    terminalShellCommand: null,
+    terminalShellArgs: null,
+    revision: 1,
+    docResident: false,
+    ...(overrides ?? {}),
+  };
+}
 
 function makeCtx(): CommandContext {
   return {
@@ -93,6 +164,10 @@ function hostError(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  rpcMock.mockReset();
+  rpcAtEndpointMock.mockReset();
+  resolveEndpointMock.mockReset();
+  resolveEndpointMock.mockResolvedValue(endpoint);
 });
 
 describe("agent binding", () => {
@@ -101,6 +176,7 @@ describe("agent binding", () => {
 
     await buildCommand()(makeCtx());
 
+    expect(resolveEndpointMock).not.toHaveBeenCalled();
     expect(rpcMock).toHaveBeenCalledTimes(1);
     expect(rpcMock).toHaveBeenCalledWith("agent.getNativeSessionBinding", {
       epicId: "epic-1",
@@ -153,12 +229,13 @@ describe("agent binding", () => {
   });
 
   it("maps an old host to actionable per-call upgrade guidance", async () => {
-    rpcMock.mockRejectedValue(
+    rpcMock.mockRejectedValueOnce(
       hostError(
         "E_HOST_UNSUPPORTED",
         "This host does not support 'agent.getNativeSessionBinding'. Upgrade the host to use this feature.",
       ),
     );
+    rpcAtEndpointMock.mockResolvedValueOnce(agentList({ surface: "gui" }));
 
     const error = await buildCommand()(makeCtx()).catch(
       (caught: unknown) => caught,
@@ -172,7 +249,262 @@ describe("agent binding", () => {
         method: "agent.getNativeSessionBinding",
       },
     });
+    expect(rpcMock).toHaveBeenCalledTimes(1);
+    expect(rpcAtEndpointMock).toHaveBeenCalledTimes(1);
   });
+
+  it("recovers an observed TUI binding from released Host record reads", async () => {
+    rpcMock.mockRejectedValueOnce(
+      hostError(
+        "E_HOST_UNSUPPORTED",
+        "This host does not support 'agent.getNativeSessionBinding'.",
+      ),
+    );
+    rpcAtEndpointMock
+      .mockResolvedValueOnce(agentList(undefined))
+      .mockResolvedValueOnce({ tuiAgents: [tuiRecord(undefined)] });
+
+    const result = await buildCommand()(makeCtx());
+
+    expect(rpcMock).toHaveBeenCalledWith("agent.getNativeSessionBinding", {
+      epicId: "epic-1",
+      senderAgentId: "agent-caller",
+      agentId: "agent-target",
+    });
+    expect(rpcAtEndpointMock).toHaveBeenNthCalledWith(
+      1,
+      "agent.list",
+      {
+        epicId: "epic-1",
+        senderAgentId: "agent-caller",
+        scope: "user",
+      },
+      endpoint,
+    );
+    expect(rpcAtEndpointMock).toHaveBeenNthCalledWith(
+      2,
+      "epic.listTuiAgents",
+      {
+        epicId: "epic-1",
+        hasDocReplica: false,
+      },
+      endpoint,
+    );
+    expect(result.data).toEqual({
+      agentId: "agent-target",
+      surface: "tui",
+      harnessId: "claude",
+      profileSelection: { kind: "profile", profileId: "profile-work" },
+      harnessSessionId: "native-session-456",
+    });
+    expect(result.data).not.toHaveProperty("workspaceFolders");
+    expect(result.data).not.toHaveProperty("terminalAgentArgs");
+    expect(result.data).not.toHaveProperty("title");
+    expect([
+      ...rpcMock.mock.calls.map(([method]) => method),
+      ...rpcAtEndpointMock.mock.calls.map(([method]) => method),
+    ]).toEqual([
+      "agent.getNativeSessionBinding",
+      "agent.list",
+      "epic.listTuiAgents",
+    ]);
+  });
+
+  it("recovers a pending ambient TUI binding", async () => {
+    rpcMock.mockRejectedValueOnce(
+      hostError(
+        "E_HOST_UNSUPPORTED",
+        "This host does not support 'agent.getNativeSessionBinding'.",
+      ),
+    );
+    rpcAtEndpointMock
+      .mockResolvedValueOnce(agentList({ harnessId: "codex" }))
+      .mockResolvedValueOnce({
+        tuiAgents: [
+          tuiRecord({
+            harnessId: "codex",
+            harnessSessionId: null,
+            profileId: null,
+          }),
+        ],
+      });
+
+    const result = await buildCommand()(makeCtx());
+
+    expect(result.data).toMatchObject({
+      harnessId: "codex",
+      profileSelection: { kind: "ambient" },
+      harnessSessionId: null,
+    });
+    expect(result.human).toContain("Native session: not observed yet");
+  });
+
+  it.each([
+    ["missing", { agents: [] }, CLI_ERROR_CODES.AGENT_NOT_FOUND],
+    [
+      "cross-host",
+      agentList({ isLocal: false }),
+      CLI_ERROR_CODES.AGENT_NOT_LOCAL,
+    ],
+  ])(
+    "preserves the non-enumerating %s refusal in the released Host fallback",
+    async (_case, listed, expectedCode) => {
+      rpcMock.mockRejectedValueOnce(
+        hostError(
+          "E_HOST_UNSUPPORTED",
+          "This host does not support 'agent.getNativeSessionBinding'.",
+        ),
+      );
+      rpcAtEndpointMock.mockResolvedValueOnce(
+        "agents" in listed
+          ? {
+              caller: {
+                agentId: "agent-caller",
+                canSendMessages: true,
+              },
+              scope: "user",
+              ...listed,
+            }
+          : listed,
+      );
+
+      const error = await buildCommand()(makeCtx()).catch(
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toBeInstanceOf(CliError);
+      expect(error).toMatchObject({ code: expectedCode });
+      expect(rpcMock).toHaveBeenCalledTimes(1);
+      expect(rpcAtEndpointMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    ["record host", undefined, undefined, { hostId: "host-other" }],
+    ["endpoint host", { hostId: "host-other" }, undefined, undefined],
+    ["doc-resident row", undefined, undefined, { docResident: true }],
+    ["harness", undefined, undefined, { harnessId: "codex" }],
+  ])(
+    "rejects inconsistent released Host %s metadata",
+    async (_case, endpointOverrides, targetOverrides, recordOverrides) => {
+      if (endpointOverrides !== undefined) {
+        resolveEndpointMock.mockResolvedValueOnce({
+          ...endpoint,
+          ...endpointOverrides,
+        });
+      }
+      rpcMock.mockRejectedValueOnce(
+        hostError(
+          "E_HOST_UNSUPPORTED",
+          "This host does not support 'agent.getNativeSessionBinding'.",
+        ),
+      );
+      rpcAtEndpointMock
+        .mockResolvedValueOnce(agentList(targetOverrides))
+        .mockResolvedValueOnce({
+          tuiAgents: [tuiRecord(recordOverrides)],
+        });
+
+      const error = await buildCommand()(makeCtx()).catch(
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toBeInstanceOf(CliError);
+      expect(error).toMatchObject({ code: CLI_ERROR_CODES.HOST_INCOMPATIBLE });
+    },
+  );
+
+  it("maps a target deleted between released Host reads to not found", async () => {
+    rpcMock.mockRejectedValueOnce(
+      hostError(
+        "E_HOST_UNSUPPORTED",
+        "This host does not support 'agent.getNativeSessionBinding'.",
+      ),
+    );
+    rpcAtEndpointMock
+      .mockResolvedValueOnce(agentList(undefined))
+      .mockResolvedValueOnce({ tuiAgents: [] })
+      .mockResolvedValueOnce(agentList({ id: "agent-other" }));
+
+    const error = await buildCommand()(makeCtx()).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(CliError);
+    expect(error).toMatchObject({ code: CLI_ERROR_CODES.AGENT_NOT_FOUND });
+    expect(rpcAtEndpointMock.mock.calls.map(([method]) => method)).toEqual([
+      "agent.list",
+      "epic.listTuiAgents",
+      "agent.list",
+    ]);
+  });
+
+  it.each([
+    [
+      "agent summaries",
+      agentList(undefined),
+      { tuiAgents: [tuiRecord(undefined)] },
+    ],
+    [
+      "TUI records",
+      agentList(undefined),
+      { tuiAgents: [tuiRecord(undefined), tuiRecord({ revision: 2 })] },
+    ],
+  ])("rejects duplicate released Host %s", async (kind, listed, tuiAgents) => {
+    const duplicatedAgentList =
+      kind === "agent summaries"
+        ? {
+            ...listed,
+            agents: [
+              agentSummary(undefined),
+              agentSummary({ title: "duplicate" }),
+            ],
+          }
+        : listed;
+    rpcMock.mockRejectedValueOnce(
+      hostError(
+        "E_HOST_UNSUPPORTED",
+        "This host does not support 'agent.getNativeSessionBinding'.",
+      ),
+    );
+    rpcAtEndpointMock
+      .mockResolvedValueOnce(duplicatedAgentList)
+      .mockResolvedValueOnce(tuiAgents);
+
+    const error = await buildCommand()(makeCtx()).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(CliError);
+    expect(error).toMatchObject({ code: CLI_ERROR_CODES.HOST_INCOMPATIBLE });
+  });
+
+  it.each([
+    ["empty session", { harnessSessionId: "" }],
+    ["reserved ambient profile", { profileId: "ambient" }],
+  ])(
+    "maps a malformed released Host %s projection to incompatibility",
+    async (_case, recordOverrides) => {
+      rpcMock.mockRejectedValueOnce(
+        hostError(
+          "E_HOST_UNSUPPORTED",
+          "This host does not support 'agent.getNativeSessionBinding'.",
+        ),
+      );
+      rpcAtEndpointMock
+        .mockResolvedValueOnce(agentList(undefined))
+        .mockResolvedValueOnce({
+          tuiAgents: [tuiRecord(recordOverrides)],
+        });
+
+      const error = await buildCommand()(makeCtx()).catch(
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toBeInstanceOf(CliError);
+      expect(error).toMatchObject({ code: CLI_ERROR_CODES.HOST_INCOMPATIBLE });
+    },
+  );
 
   it.each([
     ["E_AGENT_NOT_FOUND", CLI_ERROR_CODES.AGENT_NOT_FOUND],
