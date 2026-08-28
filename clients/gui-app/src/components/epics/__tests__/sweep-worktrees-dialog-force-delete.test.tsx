@@ -96,6 +96,7 @@ const testState = vi.hoisted(() => {
     failed: [] as string[],
     uncertain: [] as string[],
     rows: [] as TestRow[],
+    hostId: "host-1",
     agentNames: new Map<string, string>(),
     taskTitles: new Map<string, string>(),
     refresh: vi.fn(() => Promise.resolve(testState.rows)),
@@ -104,7 +105,7 @@ const testState = vi.hoisted(() => {
 
 vi.mock("@/hooks/epic/use-epic-sweep-worktree-candidates-query", () => ({
   useEpicSweepWorktreeCandidatesForClient: () => ({
-    hostId: "host-1",
+    hostId: testState.hostId,
     rows: testState.rows,
     isPending: false,
     isError: false,
@@ -197,6 +198,7 @@ describe("SweepWorktreesDialog ergonomics", () => {
     testState.uncertain = [];
     testState.agentNames = new Map();
     testState.taskTitles = new Map();
+    testState.hostId = "host-1";
     testState.refresh.mockReset();
     testState.refresh.mockImplementation(() =>
       Promise.resolve(testState.rows),
@@ -1676,6 +1678,115 @@ describe("SweepWorktreesDialog ergonomics", () => {
           .hasAttribute("disabled"),
       ).toBe(false);
     });
+    expect(screen.queryByTestId("sweep-worktrees-row-outcome")).toBeNull();
+  });
+
+  it("does not inherit host A's uncertain outcome onto host B's same path", async () => {
+    // A host switch is a retarget (session identity is hostId + epic set,
+    // matching sweepWorktreeCandidates). Switching back to A does not restore
+    // A's session — it is gone.
+    const path = "/repo/wt";
+    const onA = {
+      entry: worktreeEntry({
+        worktreePath: path,
+        branch: "feat-wt",
+        inUse: true,
+      }),
+      tier: "in-use" as const,
+      defaultChecked: false,
+      disabled: false,
+      note: "in-use" as const,
+      holders: HOLDERS,
+      holdersStatus: "ready" as const,
+      holdersRevision: REV_A,
+    };
+    const sibling = {
+      entry: worktreeEntry({
+        worktreePath: "/repo/other",
+        branch: "feat-other",
+        inUse: true,
+      }),
+      tier: "in-use" as const,
+      defaultChecked: false,
+      disabled: false,
+      note: "in-use" as const,
+      holders: HOLDERS,
+      holdersStatus: "ready" as const,
+      holdersRevision: REV_A,
+    };
+    testState.hostId = "host-a";
+    testState.rows = [onA, sibling];
+    testState.uncertain = [path];
+    testState.holdersChanged = [
+      {
+        worktreePath: "/repo/other",
+        holders: HOLDERS,
+        holdersRevision: REV_B,
+      },
+    ];
+    const view = render(
+      <SweepWorktreesDialog
+        epicIds={["epic-1"]}
+        hostClient={null}
+        taskTitle="Task"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Sweep worktree feat-wt" }),
+    );
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Sweep worktree feat-other" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Review consequences" }),
+    );
+    await waitFor(() => {
+      expect(screen.getByText("Review this sweep")).toBeTruthy();
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Stop work & sweep" }),
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("sweep-review-uncertain")).toBeTruthy();
+    });
+    fireEvent.click(screen.getByTestId("sweep-worktrees-back"));
+    expect(
+      screen
+        .getByRole("checkbox", { name: "Sweep worktree feat-wt" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    testState.hostId = "host-b";
+    testState.rows = [onA];
+    testState.uncertain = [];
+    testState.holdersChanged = [];
+    view.rerender(
+      <SweepWorktreesDialog
+        epicIds={["epic-1"]}
+        hostClient={null}
+        taskTitle="Task"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const onB = screen.getByRole("checkbox", {
+      name: "Sweep worktree feat-wt",
+    });
+    expect(onB.hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByTestId("sweep-worktrees-row-outcome")).toBeNull();
+    testState.hostId = "host-a";
+    testState.rows = [onA];
+    view.rerender(
+      <SweepWorktreesDialog
+        epicIds={["epic-1"]}
+        hostClient={null}
+        taskTitle="Task"
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const backOnA = screen.getByRole("checkbox", {
+      name: "Sweep worktree feat-wt",
+    });
+    expect(backOnA.hasAttribute("disabled")).toBe(false);
     expect(screen.queryByTestId("sweep-worktrees-row-outcome")).toBeNull();
   });
 });

@@ -173,8 +173,7 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
   const [checkOverrides, setCheckOverrides] = useState<
     ReadonlyMap<string, boolean>
   >(() => new Map());
-  const selectionKey =
-    epicIds === null ? null : [...new Set(epicIds)].sort().join(",");
+  const selectionKey = sweepSessionKey(hostId, epicIds);
   const [previousSelectionKey, setPreviousSelectionKey] =
     useState(selectionKey);
   const [previousInUseByPath, setPreviousInUseByPath] = useState<
@@ -387,6 +386,22 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
       </DialogContent>
     </Dialog>
   );
+}
+
+/**
+ * Dialog-session identity. Matches the candidates query key
+ * (`hostQueryKeys.sweepWorktreeCandidates(hostId, epicKey)`): a host
+ * change with the same Task set is a retarget, so host A's uncertain/
+ * failed map cannot attach to host B's identically named path.
+ */
+function sweepSessionKey(
+  hostId: string | null,
+  epicIds: ReadonlyArray<string> | null,
+): string | null {
+  if (hostId === null || epicIds === null || epicIds.length === 0) {
+    return null;
+  }
+  return `${hostId}\n${[...new Set(epicIds)].sort().join(",")}`;
 }
 
 function applySelectionRetarget(input: {
