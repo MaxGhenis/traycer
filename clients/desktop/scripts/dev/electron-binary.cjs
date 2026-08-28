@@ -14,37 +14,6 @@ const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 
-// Electron's postinstall (`install.js`) downloads the platform binary into
-// the package's `dist/`. A blocked or once-failed download leaves the package
-// importable but binary-less, and bun only re-runs lifecycle scripts on a
-// fresh package install — so `require("electron")` (which resolves the binary
-// path from `dist/`) throws forever after. Repair it here instead of asking
-// the user to reinstall: run the package's own installer when the binary is
-// absent. Must be called BEFORE the first `require("electron")`.
-function ensureElectronBinaryInstalled(requireResolve) {
-  const electronPackageDir = path.dirname(
-    requireResolve("electron/package.json"),
-  );
-  const pathFile = path.join(electronPackageDir, "path.txt");
-  if (existsSync(pathFile)) {
-    const binaryPath = path.join(
-      electronPackageDir,
-      "dist",
-      readFileSync(pathFile, "utf8"),
-    );
-    if (existsSync(binaryPath)) {
-      return;
-    }
-  }
-  console.log(
-    "[dev-main] electron binary missing under its package dist/ — running electron's install.js to fetch it",
-  );
-  execFileSync(process.execPath, ["install.js"], {
-    cwd: electronPackageDir,
-    stdio: "inherit",
-  });
-}
-
 // Chromium on Linux sandboxes renderers with unprivileged user namespaces,
 // falling back to the setuid `chrome-sandbox` helper. A dev-loop Electron
 // under node_modules can satisfy neither on kernels that restrict
@@ -108,6 +77,9 @@ function shouldDisableChromiumSandbox(electronBinaryPath) {
   });
 }
 
+// The Ozone platforms an Electron build accepts for `--ozone-platform`.
+const OZONE_PLATFORMS = ["auto", "headless", "wayland", "x11"];
+
 // Chromium's default Ozone platform selection prefers Wayland whenever
 // `WAYLAND_DISPLAY` is set — and its Wayland connect has no timeout, so a
 // compositor socket that exists but never answers (GNOME Remote Desktop
@@ -115,7 +87,9 @@ function shouldDisableChromiumSandbox(electronBinaryPath) {
 // before `app.whenReady()`, with no log line and no window. The dev runner
 // therefore picks the platform deterministically:
 //
-//   - an explicit `TRAYCER_DESKTOP_OZONE_PLATFORM` always wins;
+//   - an explicit `TRAYCER_DESKTOP_OZONE_PLATFORM` always wins (validated
+//     against the platforms Chromium accepts, so a typo fails here with the
+//     accepted values named rather than deep inside Chromium's startup);
 //   - a user who set Electron's own `ELECTRON_OZONE_PLATFORM_HINT` has
 //     expressed a choice — leave selection to Electron;
 //   - `DISPLAY` present → force `x11`. On real Wayland desktops this is
@@ -141,7 +115,19 @@ function decideOzonePlatform({
     typeof ozonePlatformOverride === "string" &&
     ozonePlatformOverride.length > 0
   ) {
-    return ozonePlatformOverride;
+    // Returns the matching entry from this list rather than the caller's
+    // string: the value is destined for a command line and a log, and an
+    // unvalidated env var reaching either is exactly what CodeQL's
+    // clear-text-logging rule objects to.
+    const accepted = OZONE_PLATFORMS.find(
+      (candidate) => candidate === ozonePlatformOverride,
+    );
+    if (accepted === undefined) {
+      throw new Error(
+        `TRAYCER_DESKTOP_OZONE_PLATFORM must be one of: ${OZONE_PLATFORMS.join(", ")}`,
+      );
+    }
+    return accepted;
   }
   if (typeof electronOzoneHint === "string" && electronOzoneHint.length > 0) {
     return null;
@@ -277,7 +263,6 @@ module.exports = {
   createDevBundleState,
   decideDisableChromiumSandbox,
   decideOzonePlatform,
-  ensureElectronBinaryInstalled,
   prepareElectronBinary,
   shouldDisableChromiumSandbox,
 };

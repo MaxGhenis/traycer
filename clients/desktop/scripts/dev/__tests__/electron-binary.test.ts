@@ -156,6 +156,16 @@ describe("decideOzonePlatform", () => {
     ).toBe("wayland");
   });
 
+  it("rejects an override Chromium would not accept", () => {
+    expect(() =>
+      electronBinary.decideOzonePlatform({
+        ...bare,
+        ozonePlatformOverride: "wyland",
+        display: ":0",
+      }),
+    ).toThrow(/TRAYCER_DESKTOP_OZONE_PLATFORM must be one of/);
+  });
+
   it("defers to a user-set ELECTRON_OZONE_PLATFORM_HINT", () => {
     expect(
       electronBinary.decideOzonePlatform({

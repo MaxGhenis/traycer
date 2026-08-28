@@ -5,7 +5,6 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const {
   decideOzonePlatform,
-  ensureElectronBinaryInstalled,
   prepareElectronBinary,
   shouldDisableChromiumSandbox,
 } = require("./electron-binary.cjs");
@@ -36,9 +35,6 @@ if (!existsSync(bundledPreloadPath)) {
 }
 
 const devDesktopDisplayName = resolveDevDesktopDisplayName(process.env);
-// `require("electron")` throws when the package's postinstall never fetched
-// the binary, so the repair must run before the first require of it.
-ensureElectronBinaryInstalled((request) => require.resolve(request));
 const electronBin = prepareElectronBinary(
   require("electron"),
   workspaceRoot,
