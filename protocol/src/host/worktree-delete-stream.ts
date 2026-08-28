@@ -47,7 +47,11 @@ import {
   holdersRevisionWireFieldSchema,
   worktreeBusyHoldersWireFieldSchema,
 } from "@traycer/protocol/framework/worktree-busy-holders";
-import { worktreeEntryScriptsSchema } from "@traycer/protocol/host/worktree-schemas";
+import {
+  expectedHoldersRevisionFieldSchema,
+  refineConsentRevisionRequiresStopOwners,
+  worktreeEntryScriptsSchema,
+} from "@traycer/protocol/host/worktree-schemas";
 
 export const worktreeDeleteByPathOpenRequestSchema = z.object({
   worktreePath: z.string(),
@@ -69,12 +73,15 @@ export type WorktreeDeleteByPathOpenRequestV11 = z.infer<
  * `worktree.deleteByPath@1.2` open request. `expectedHoldersRevision`
  * matches unary `worktree.delete@1.2`: present with `stopOwners: true`
  * is a digest-equality compare against the fresh inventory before
- * teardown. Absent reproduces @1.1.
+ * teardown. Absent reproduces @1.1. Present-empty, non-digest, and
+ * revision-with-stopOwners-false fail parse.
  */
 export const worktreeDeleteByPathOpenRequestSchemaV12 =
-  worktreeDeleteByPathOpenRequestSchemaV11.extend({
-    expectedHoldersRevision: z.string().optional(),
-  });
+  worktreeDeleteByPathOpenRequestSchemaV11
+    .extend({
+      expectedHoldersRevision: expectedHoldersRevisionFieldSchema,
+    })
+    .superRefine(refineConsentRevisionRequiresStopOwners);
 export type WorktreeDeleteByPathOpenRequestV12 = z.infer<
   typeof worktreeDeleteByPathOpenRequestSchemaV12
 >;

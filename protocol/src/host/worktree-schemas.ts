@@ -881,21 +881,59 @@ export type WorktreeDeleteRequestV11 = z.infer<
 >;
 
 /**
+ * Host-computed SHA-256 hex digest of a holder inventory. Present
+ * consent must be a real digest — empty and non-digest strings are
+ * rejected rather than silently treated as "no consent".
+ */
+export const HOLDERS_REVISION_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+
+export const expectedHoldersRevisionFieldSchema = z
+  .string()
+  .regex(HOLDERS_REVISION_DIGEST_PATTERN)
+  .optional();
+
+/**
+ * A consent revision without `stopOwners: true` can never be honored
+ * (absent-revision + stopOwners false is T7 refuse-on-busy; a present
+ * revision with stopOwners false would be silently ignored). Refuse
+ * at parse instead.
+ */
+export function refineConsentRevisionRequiresStopOwners(
+  value: {
+    readonly stopOwners: boolean;
+    readonly expectedHoldersRevision?: string;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.expectedHoldersRevision === undefined) return;
+  if (value.stopOwners) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["expectedHoldersRevision"],
+    message: "expectedHoldersRevision requires stopOwners to be true",
+  });
+}
+
+/**
  * `worktree.delete@1.2` request. `expectedHoldersRevision` is the
  * digest of the inventory the caller reviewed. When present with
  * `stopOwners: true`, the host compares it to a fresh inventory
  * digest before teardown; mismatch refuses with
  * `WORKTREE_HOLDERS_CHANGED` and does not stop or delete. Absent
- * reproduces @1.1 (stop whatever the fresh read finds).
+ * reproduces @1.1 (stop whatever the fresh read finds). Present-empty
+ * and non-digest values, and a revision with `stopOwners: false`,
+ * fail parse.
  *
  * Degrade: a 1.1 host's request schema strips
  * `expectedHoldersRevision`. A 1.1 client talking to a 1.2 host is
  * upgraded with the field absent.
  */
 export const worktreeDeleteRequestSchemaV12 =
-  worktreeDeleteRequestSchemaV11.extend({
-    expectedHoldersRevision: z.string().optional(),
-  });
+  worktreeDeleteRequestSchemaV11
+    .extend({
+      expectedHoldersRevision: expectedHoldersRevisionFieldSchema,
+    })
+    .superRefine(refineConsentRevisionRequiresStopOwners);
 export type WorktreeDeleteRequestV12 = z.infer<
   typeof worktreeDeleteRequestSchemaV12
 >;
