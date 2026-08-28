@@ -928,12 +928,11 @@ export function refineConsentRevisionRequiresStopOwners(
  * `expectedHoldersRevision`. A 1.1 client talking to a 1.2 host is
  * upgraded with the field absent.
  */
-export const worktreeDeleteRequestSchemaV12 =
-  worktreeDeleteRequestSchemaV11
-    .extend({
-      expectedHoldersRevision: expectedHoldersRevisionFieldSchema,
-    })
-    .superRefine(refineConsentRevisionRequiresStopOwners);
+export const worktreeDeleteRequestSchemaV12 = worktreeDeleteRequestSchemaV11
+  .extend({
+    expectedHoldersRevision: expectedHoldersRevisionFieldSchema,
+  })
+  .superRefine(refineConsentRevisionRequiresStopOwners);
 export type WorktreeDeleteRequestV12 = z.infer<
   typeof worktreeDeleteRequestSchemaV12
 >;
