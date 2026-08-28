@@ -3,8 +3,8 @@ import { useTabsStore } from "@/stores/tabs/store";
 import { selectHostFocusedRef } from "@/stores/tabs/selectors";
 import type { TabRef } from "@/stores/tabs/types";
 import {
-  LANDING_TERMINAL_RIGHT_ACTIONS_KEY,
   epicTabRightActionsKey,
+  landingTerminalRightActionsKey,
   useMobileHeaderStore,
 } from "@/stores/layout/mobile-header-store";
 
@@ -15,18 +15,23 @@ import {
  * Resolved from the tab layout's focused ref - the same authority the header
  * titles from - because the layout is the one presentation fact that survives
  * a phone cold restore, where the router still sits on the landing route while
- * the restored tab fills the screen. A `null` focus and a draft both present
- * the composer surface, which is where the landing terminal panel's controls
- * belong; History and Settings present nothing, so a registered entry from a
- * surface merely retained behind them can never leak into their header.
+ * the restored tab fills the screen. A focused draft resolves the landing
+ * terminal entry keyed by THAT draft - so switching between two mounted start
+ * pages never renders the departing page's toggle across the focus commit; it
+ * renders nothing until the panel's rebuild registers for the new host, the
+ * same first-mount boundary every surface has. History and Settings present
+ * nothing, so a registered entry from a surface merely retained behind them
+ * can never leak into their header. No focus at all (an empty split slot's
+ * chooser, a window with no tabs yet) also presents nothing: the toggle acts
+ * on one start page's layout, and no start page is presented.
  */
 export function resolveMobileHeaderRightActionsKey(
   focused: TabRef | null,
 ): string | null {
-  if (focused === null) return LANDING_TERMINAL_RIGHT_ACTIONS_KEY;
+  if (focused === null) return null;
   switch (focused.kind) {
     case "draft":
-      return LANDING_TERMINAL_RIGHT_ACTIONS_KEY;
+      return landingTerminalRightActionsKey(focused.id);
     case "epic":
       return epicTabRightActionsKey(focused.id);
     case "history":

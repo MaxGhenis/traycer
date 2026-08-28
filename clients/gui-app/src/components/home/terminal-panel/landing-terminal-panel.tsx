@@ -33,7 +33,7 @@ import {
 import { useCoarsePointer } from "@/hooks/ui/use-coarse-pointer";
 import { useIsMobileViewport } from "@/hooks/ui/use-mobile-viewport";
 import {
-  LANDING_TERMINAL_RIGHT_ACTIONS_KEY,
+  landingTerminalRightActionsKey,
   useMobileHeaderStore,
 } from "@/stores/layout/mobile-header-store";
 import { useVirtualKeyboardInset } from "@/hooks/ui/use-virtual-keyboard-inset";
@@ -1678,14 +1678,16 @@ function MobileLandingTerminalActionBinder(props: {
     (state) => state.unregisterRightActions,
   );
   useEffect(() => {
-    // Re-baked whenever the hosting landing page changes, so the registered
-    // node always toggles the layout of the page that hosts the panel.
+    // Keyed and re-baked by the hosting landing page, so the entry both names
+    // and toggles the page that hosts the panel - a hosting move retires the
+    // old page's entry with its own key before registering the new one.
+    const key = landingTerminalRightActionsKey(props.landingPageId);
     registerRightActions(
-      LANDING_TERMINAL_RIGHT_ACTIONS_KEY,
+      key,
       <LandingTerminalHeaderToggle landingPageId={props.landingPageId} />,
     );
     return () => {
-      unregisterRightActions(LANDING_TERMINAL_RIGHT_ACTIONS_KEY);
+      unregisterRightActions(key);
     };
   }, [registerRightActions, unregisterRightActions, props.landingPageId]);
   return null;

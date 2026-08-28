@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  LANDING_TERMINAL_RIGHT_ACTIONS_KEY,
   epicTabRightActionsKey,
+  landingTerminalRightActionsKey,
   useMobileHeaderStore,
 } from "@/stores/layout/mobile-header-store";
 import { resolveMobileHeaderRightActionsKey } from "@/stores/layout/mobile-header-right-actions";
@@ -57,20 +57,25 @@ describe("useMobileHeaderStore right-actions registry", () => {
 });
 
 /**
- * The display policy: the presented surface picks the entry. The composer
- * surfaces (no focus at all, or a draft) own the landing terminal entry; an
- * epic tab owns its own keyed entry; History and Settings present no surface
+ * The display policy: the presented surface picks the entry. A focused draft
+ * owns ITS landing terminal entry - keyed per hosting page, so a focus move
+ * between two start pages never resolves the departing page's toggle; an epic
+ * tab owns its own keyed entry; History and Settings present no surface
  * actions, which is what keeps a retained surface's registration from leaking
- * into their header.
+ * into their header; no focus at all presents nothing.
  */
 describe("resolveMobileHeaderRightActionsKey", () => {
-  it("resolves no focus and a draft to the landing terminal entry", () => {
-    expect(resolveMobileHeaderRightActionsKey(null)).toBe(
-      LANDING_TERMINAL_RIGHT_ACTIONS_KEY,
-    );
+  it("resolves a draft to that draft's landing terminal entry", () => {
     expect(
       resolveMobileHeaderRightActionsKey({ kind: "draft", id: "page-1" }),
-    ).toBe(LANDING_TERMINAL_RIGHT_ACTIONS_KEY);
+    ).toBe(landingTerminalRightActionsKey("page-1"));
+    expect(
+      resolveMobileHeaderRightActionsKey({ kind: "draft", id: "page-2" }),
+    ).not.toBe(landingTerminalRightActionsKey("page-1"));
+  });
+
+  it("resolves no focus to no entry", () => {
+    expect(resolveMobileHeaderRightActionsKey(null)).toBeNull();
   });
 
   it("resolves an epic tab to that tab's entry", () => {

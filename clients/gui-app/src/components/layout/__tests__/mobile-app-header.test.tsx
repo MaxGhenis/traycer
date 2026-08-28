@@ -13,8 +13,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MobileAppHeader } from "@/components/layout/header/mobile-app-header";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import {
-  LANDING_TERMINAL_RIGHT_ACTIONS_KEY,
   epicTabRightActionsKey,
+  landingTerminalRightActionsKey,
   useMobileHeaderStore,
 } from "@/stores/layout/mobile-header-store";
 import { useMobileNavStore } from "@/stores/layout/mobile-nav-store";
@@ -357,7 +357,7 @@ describe("MobileAppHeader", () => {
     useMobileHeaderStore
       .getState()
       .registerRightActions(
-        LANDING_TERMINAL_RIGHT_ACTIONS_KEY,
+        landingTerminalRightActionsKey("page-1"),
         <button type="button">terminal toggle</button>,
       );
     presentHistoryTab();
@@ -376,14 +376,14 @@ describe("MobileAppHeader", () => {
     ).toBeNull();
   });
 
-  // The return leg of a launch round-trip: the landing surface is presented
+  // The return leg of a launch round-trip: the same start page is presented
   // again and its long-lived registration simply resolves - no surface had to
   // observe the switch and re-publish.
-  it("shows the landing terminal entry again when the composer surface returns", async () => {
+  it("shows the landing terminal entry again when its start page returns", async () => {
     useMobileHeaderStore
       .getState()
       .registerRightActions(
-        LANDING_TERMINAL_RIGHT_ACTIONS_KEY,
+        landingTerminalRightActionsKey("page-1"),
         <button type="button">terminal toggle</button>,
       );
     presentEpicTab("t1", "e1", "Wire up billing");
@@ -393,10 +393,27 @@ describe("MobileAppHeader", () => {
       screen.queryByRole("button", { name: "terminal toggle" }),
     ).toBeNull();
 
-    presentNoTab();
+    focusTab({ kind: "draft", id: "page-1" }, emptySystemTabs());
     expect(
       await screen.findByRole("button", { name: "terminal toggle" }),
     ).not.toBeNull();
+  });
+
+  // Keyed per hosting page: a focus move between two start pages must not
+  // resolve the departing page's toggle across the switch.
+  it("ignores a landing entry registered for another start page", async () => {
+    useMobileHeaderStore
+      .getState()
+      .registerRightActions(
+        landingTerminalRightActionsKey("page-1"),
+        <button type="button">terminal toggle</button>,
+      );
+    focusTab({ kind: "draft", id: "page-2" }, emptySystemTabs());
+    renderAt("/");
+    await screen.findByRole("button", { name: "Open menu" });
+    expect(
+      screen.queryByRole("button", { name: "terminal toggle" }),
+    ).toBeNull();
   });
 
   // A departing epic tab's entry may outlive its focus by a commit; a stale

@@ -32,11 +32,16 @@ interface MobileHeaderState {
 }
 
 /**
- * Key for the landing terminal panel's header toggle. A constant, because
- * there is exactly one window-wide panel: which start page hosts it is baked
- * into the registered node, not into the key.
+ * Key for the landing terminal toggle as hosted by one start page. There is
+ * exactly one window-wide panel, but its entry is keyed by the start page
+ * HOSTING it: two mounted start pages are two presentation targets, and an
+ * entry named only "the panel" would keep resolving - with the previous
+ * page's toggle baked in - across the focus commit that moves the panel
+ * between them.
  */
-export const LANDING_TERMINAL_RIGHT_ACTIONS_KEY = "landing-terminal";
+export function landingTerminalRightActionsKey(landingPageId: string): string {
+  return `landing-terminal:${landingPageId}`;
+}
 
 /** Key for an epic tab's header actions (the tab switcher trigger). */
 export function epicTabRightActionsKey(tabId: string): string {

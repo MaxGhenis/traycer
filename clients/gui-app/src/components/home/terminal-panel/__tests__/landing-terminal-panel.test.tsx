@@ -15,7 +15,7 @@ import {
   useLandingTerminalStore,
 } from "@/stores/home/landing-terminal-store";
 import {
-  LANDING_TERMINAL_RIGHT_ACTIONS_KEY,
+  landingTerminalRightActionsKey,
   useMobileHeaderStore,
 } from "@/stores/layout/mobile-header-store";
 import { useMobileHeaderRightActions } from "@/stores/layout/mobile-header-right-actions";
@@ -645,6 +645,10 @@ describe("<LandingTerminalPanel />", () => {
       mocks.isMobile = true;
       mocks.activeHostId = "host-a";
       mocks.clientActiveHostId = "host-a";
+      // The hosting start page is FOCUSED by default - resolution keys the
+      // landing entry by the presented draft, so the probe (standing in for
+      // the header) only renders the toggle while that page is on screen.
+      seedTabsLayout([PANEL_DRAFT_TAB], PANEL_DRAFT_TAB.id);
       mocks.probeData = emptyList("/Users/dev");
     });
 
@@ -654,7 +658,9 @@ describe("<LandingTerminalPanel />", () => {
         expect(
           useMobileHeaderStore
             .getState()
-            .rightActionEntries.get(LANDING_TERMINAL_RIGHT_ACTIONS_KEY),
+            .rightActionEntries.get(
+              landingTerminalRightActionsKey(TEST_LANDING_PAGE_ID),
+            ),
         ).not.toBeUndefined();
       });
 
@@ -717,7 +723,9 @@ describe("<LandingTerminalPanel />", () => {
         expect(
           useMobileHeaderStore
             .getState()
-            .rightActionEntries.get(LANDING_TERMINAL_RIGHT_ACTIONS_KEY),
+            .rightActionEntries.get(
+              landingTerminalRightActionsKey(TEST_LANDING_PAGE_ID),
+            ),
         ).not.toBeUndefined();
       });
 
@@ -744,7 +752,9 @@ describe("<LandingTerminalPanel />", () => {
         expect(
           useMobileHeaderStore
             .getState()
-            .rightActionEntries.get(LANDING_TERMINAL_RIGHT_ACTIONS_KEY),
+            .rightActionEntries.get(
+              landingTerminalRightActionsKey(TEST_LANDING_PAGE_ID),
+            ),
         ).not.toBeUndefined();
       });
 
@@ -789,7 +799,9 @@ describe("<LandingTerminalPanel />", () => {
         expect(
           useMobileHeaderStore
             .getState()
-            .rightActionEntries.get(LANDING_TERMINAL_RIGHT_ACTIONS_KEY),
+            .rightActionEntries.get(
+              landingTerminalRightActionsKey(TEST_LANDING_PAGE_ID),
+            ),
         ).not.toBeUndefined();
       });
 
@@ -802,7 +814,9 @@ describe("<LandingTerminalPanel />", () => {
 
       const entries = useMobileHeaderStore.getState().rightActionEntries;
       expect(entries.get("epic-tab:t1")).toBe(epicTrigger);
-      expect(entries.has(LANDING_TERMINAL_RIGHT_ACTIONS_KEY)).toBe(false);
+      expect(
+        entries.has(landingTerminalRightActionsKey(TEST_LANDING_PAGE_ID)),
+      ).toBe(false);
     });
   });
 
