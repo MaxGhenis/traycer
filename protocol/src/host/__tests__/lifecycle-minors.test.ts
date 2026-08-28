@@ -29,18 +29,23 @@ import {
 import {
   worktreeDeleteRequestSchema,
   worktreeDeleteRequestSchemaV11,
+  worktreeDeleteRequestSchemaV12,
+  worktreeHoldersChangedErrorDetailsSchema,
   worktreeListHoldersRequestSchema,
   worktreeListHoldersResponseSchema,
 } from "@traycer/protocol/host/worktree-schemas";
 import {
   worktreeDeleteByPathOpenRequestSchema,
   worktreeDeleteByPathOpenRequestSchemaV11,
+  worktreeDeleteByPathOpenRequestSchemaV12,
   worktreeDeleteByPathServerFrameSchema,
   worktreeDeleteByPathServerFrameSchemaV11,
+  worktreeDeleteByPathServerFrameSchemaV12,
 } from "@traycer/protocol/host/worktree-delete-stream";
 
 const V10 = { major: 1, minor: 0 } as const;
 const V11 = { major: 1, minor: 1 } as const;
+const V12 = { major: 1, minor: 2 } as const;
 
 const holder = {
   ownerRef: {
@@ -57,6 +62,13 @@ describe("WORKTREE_BUSY typed holders", () => {
   it("parses a full holder and round-trips", () => {
     const parsed = worktreeBusyHolderSchema.parse(holder);
     expect(worktreeBusyHolderSchema.parse(parsed)).toEqual(parsed);
+  });
+
+  it("accepts an optional holderId and round-trips it", () => {
+    const withId = { ...holder, holderId: "chat:chat-1" };
+    const parsed = worktreeBusyHolderSchema.parse(withId);
+    expect(parsed.holderId).toBe("chat:chat-1");
+    expect(worktreeBusyHolderSchema.parse(holder).holderId).toBeUndefined();
   });
 
   it("accepts a WORKTREE_BUSY envelope without holders (old host)", () => {
@@ -204,8 +216,8 @@ describe("terminal.subscribe@1.6 viewer intent", () => {
 describe("worktree.delete@1.1 stopOwners", () => {
   const deleteRegistry = hostRpcRegistry["worktree.delete"];
 
-  it("is registered as latest minor 1", () => {
-    expect(deleteRegistry[1].latestMinor).toBe(1);
+  it("is registered as latest minor 2", () => {
+    expect(deleteRegistry[1].latestMinor).toBe(2);
   });
 
   it("defaults absent stopOwners to false", () => {
@@ -250,10 +262,70 @@ describe("worktree.delete@1.1 stopOwners", () => {
   });
 });
 
+describe("worktree.delete@1.2 expectedHolderIds", () => {
+  const deleteRegistry = hostRpcRegistry["worktree.delete"];
+
+  it("1.1 body parses as 1.2 with expectedHolderIds absent", () => {
+    const parsed = worktreeDeleteRequestSchemaV12.parse({
+      epicId: "e1",
+      workspacePath: "/repo",
+      worktreePath: "/wt",
+      stopOwners: true,
+    });
+    expect(parsed.stopOwners).toBe(true);
+    expect(parsed.expectedHolderIds).toBeUndefined();
+  });
+
+  it("accepts expectedHolderIds", () => {
+    const parsed = worktreeDeleteRequestSchemaV12.parse({
+      epicId: "e1",
+      workspacePath: "/repo",
+      worktreePath: "/wt",
+      stopOwners: true,
+      expectedHolderIds: ["chat:chat-1", "shell:cmd-1"],
+    });
+    expect(parsed.expectedHolderIds).toEqual(["chat:chat-1", "shell:cmd-1"]);
+  });
+
+  it("upgrades a 1.1 request with expectedHolderIds absent", () => {
+    const upgraded = upgradeRequestToVersion(deleteRegistry, V11, V12, {
+      epicId: "e1",
+      workspacePath: "/repo",
+      worktreePath: "/wt",
+      stopOwners: true,
+    });
+    expect(worktreeDeleteRequestSchemaV12.parse(upgraded)).toEqual(upgraded);
+    expect(upgraded.expectedHolderIds).toBeUndefined();
+    expect(upgraded.stopOwners).toBe(true);
+  });
+
+  it("1.1 request schema strips expectedHolderIds (old-host degrade)", () => {
+    const parsed = worktreeDeleteRequestSchemaV11.parse({
+      epicId: "e1",
+      workspacePath: "/repo",
+      worktreePath: "/wt",
+      stopOwners: true,
+      expectedHolderIds: ["chat:chat-1"],
+    });
+    expect(parsed).not.toHaveProperty("expectedHolderIds");
+  });
+
+  it("parses a WORKTREE_HOLDERS_CHANGED envelope with holders", () => {
+    const parsed = worktreeHoldersChangedErrorDetailsSchema.parse({
+      code: "WORKTREE_HOLDERS_CHANGED",
+      message: "holders changed",
+      holders: [{ ...holder, holderId: "chat:chat-1" }],
+    });
+    expect(parsed.code).toBe("WORKTREE_HOLDERS_CHANGED");
+    expect(parsed.holders).toHaveLength(1);
+    expect(parsed.holders?.[0]?.holderId).toBe("chat:chat-1");
+  });
+});
+
 describe("worktree.deleteByPath@1.1 stopOwners + failed holders", () => {
-  it("is registered as latest minor 1", () => {
+  it("is registered as latest minor 2", () => {
     expect(hostStreamRpcRegistry["worktree.deleteByPath"][1].latestMinor).toBe(
-      1,
+      2,
     );
   });
 
@@ -313,6 +385,64 @@ describe("worktree.deleteByPath@1.1 stopOwners + failed holders", () => {
     expect(parsed.kind).toBe("failed");
     if (parsed.kind === "failed") {
       expect(parsed).not.toHaveProperty("holders");
+    }
+  });
+});
+
+describe("worktree.deleteByPath@1.2 expectedHolderIds", () => {
+  it("1.1 open body parses as 1.2 with expectedHolderIds absent", () => {
+    const parsed = worktreeDeleteByPathOpenRequestSchemaV12.parse({
+      worktreePath: "/wt",
+      stopOwners: true,
+    });
+    expect(parsed.stopOwners).toBe(true);
+    expect(parsed.expectedHolderIds).toBeUndefined();
+  });
+
+  it("accepts expectedHolderIds on the open request", () => {
+    const parsed = worktreeDeleteByPathOpenRequestSchemaV12.parse({
+      worktreePath: "/wt",
+      stopOwners: true,
+      expectedHolderIds: ["shell:cmd-1"],
+    });
+    expect(parsed.expectedHolderIds).toEqual(["shell:cmd-1"]);
+  });
+
+  it("1.1 open schema strips expectedHolderIds", () => {
+    const parsed = worktreeDeleteByPathOpenRequestSchemaV11.parse({
+      worktreePath: "/wt",
+      stopOwners: true,
+      expectedHolderIds: ["shell:cmd-1"],
+    });
+    expect(parsed).not.toHaveProperty("expectedHolderIds");
+  });
+
+  it("1.2 failed frame accepts HOLDERS_CHANGED code with holders", () => {
+    const parsed = worktreeDeleteByPathServerFrameSchemaV12.parse({
+      kind: "failed",
+      reason: "holders changed",
+      code: "WORKTREE_HOLDERS_CHANGED",
+      holders: [{ ...holder, holderId: "chat:chat-1" }],
+      hasBinaryPayload: false,
+    });
+    expect(parsed.kind).toBe("failed");
+    if (parsed.kind === "failed") {
+      expect(parsed.code).toBe("WORKTREE_HOLDERS_CHANGED");
+      expect(parsed.holders?.[0]?.holderId).toBe("chat:chat-1");
+    }
+  });
+
+  it("1.1 failed frame strips the 1.2 code (old-client degrade)", () => {
+    const parsed = worktreeDeleteByPathServerFrameSchemaV11.parse({
+      kind: "failed",
+      reason: "holders changed",
+      code: "WORKTREE_HOLDERS_CHANGED",
+      holders: [holder],
+      hasBinaryPayload: false,
+    });
+    expect(parsed.kind).toBe("failed");
+    if (parsed.kind === "failed") {
+      expect(parsed).not.toHaveProperty("code");
     }
   });
 });

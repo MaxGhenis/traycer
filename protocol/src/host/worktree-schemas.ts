@@ -22,6 +22,7 @@ export {
   worktreeBusyHoldersSchema,
   worktreeBusyOwnerKindSchema,
   worktreeBusyOwnerRefSchema,
+  worktreeHoldersChangedErrorDetailsSchema,
 } from "@traycer/protocol/framework/worktree-busy-holders";
 export type {
   WorktreeBusyErrorDetails,
@@ -31,6 +32,7 @@ export type {
   WorktreeBusyHolders,
   WorktreeBusyOwnerKind,
   WorktreeBusyOwnerRef,
+  WorktreeHoldersChangedErrorDetails,
 } from "@traycer/protocol/framework/worktree-busy-holders";
 
 // Inlined to avoid a circular import with `epic-schemas.ts` (which
@@ -876,6 +878,24 @@ export const worktreeDeleteRequestSchemaV11 =
   });
 export type WorktreeDeleteRequestV11 = z.infer<
   typeof worktreeDeleteRequestSchemaV11
+>;
+
+/**
+ * `worktree.delete@1.2` request. `expectedHolderIds` is the set the
+ * caller reviewed. When present with `stopOwners: true`, the host
+ * compares it to the fresh inventory before teardown; mismatch refuses
+ * with `WORKTREE_HOLDERS_CHANGED` and does not stop or delete. Absent
+ * reproduces @1.1 (stop whatever the fresh read finds).
+ *
+ * Degrade: a 1.1 host's request schema strips `expectedHolderIds`. A
+ * 1.1 client talking to a 1.2 host is upgraded with the field absent.
+ */
+export const worktreeDeleteRequestSchemaV12 =
+  worktreeDeleteRequestSchemaV11.extend({
+    expectedHolderIds: z.array(z.string()).optional(),
+  });
+export type WorktreeDeleteRequestV12 = z.infer<
+  typeof worktreeDeleteRequestSchemaV12
 >;
 
 export const worktreeDeleteResponseSchema = z.object({
