@@ -50,6 +50,11 @@ export const sessionImportScanOpenRequestSchema = z.object({
   // because an empty list is a scan that can only ever return nothing - which
   // is a client bug, not a request worth serving.
   providers: z.array(guiHarnessIdSchema).min(1).nullable(),
+  // Epoch ms; sessions last active before this are not scanned at all. The
+  // wizard's scan-window control ("Last 2 weeks") lives here rather than as a
+  // client-side filter so the host never pays to enumerate work the user is
+  // not being shown. `null` scans everything.
+  updatedAfter: z.number().nullable(),
 });
 export type SessionImportScanOpenRequest = z.infer<
   typeof sessionImportScanOpenRequestSchema

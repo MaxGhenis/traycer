@@ -55,6 +55,7 @@ describe("sessionImport.scan@1.0 server frames", () => {
     const parsed = sessionImportScanServerFrameSchema.parse({
       kind: "group",
       group: {
+        gitBacked: false,
         location: {
           kind: "folder",
           path: "/Users/dev/repos/traycer",
@@ -76,6 +77,7 @@ describe("sessionImport.scan@1.0 server frames", () => {
     const parsed = sessionImportScanServerFrameSchema.parse({
       kind: "group",
       group: {
+        gitBacked: false,
         location: { kind: "missing_folder", path: "/Users/dev/repos/gone" },
         sessions: [],
       },
@@ -106,6 +108,7 @@ describe("sessionImport.scan@1.0 server frames", () => {
       const parsed = sessionImportScanServerFrameSchema.parse({
         kind: "group",
         group: {
+          gitBacked: false,
           location: { kind: "folder", path: "/repo", workspaceId: null },
           sessions: [{ ...importableCandidate, state }],
         },
@@ -122,6 +125,7 @@ describe("sessionImport.scan@1.0 server frames", () => {
     const parsed = sessionImportScanServerFrameSchema.parse({
       kind: "group",
       group: {
+        gitBacked: false,
         location: { kind: "folder", path: "/repo", workspaceId: null },
         sessions: [
           {
@@ -169,6 +173,7 @@ describe("sessionImport.scan@1.0 server frames", () => {
       sessionImportScanServerFrameSchema.parse({
         kind: "group",
         group: {
+          gitBacked: false,
           location: { kind: "folder", path: "/repo", workspaceId: null },
           sessions: [
             {
@@ -197,6 +202,7 @@ describe("sessionImport.scan@1.0 server frames", () => {
       const parsed = sessionImportScanServerFrameSchema.parse({
         kind: "group",
         group: {
+          gitBacked: false,
           location: { kind: "folder", path: "/repo", workspaceId: null },
           sessions: [
             {
@@ -224,6 +230,7 @@ describe("sessionImport.scan@1.0 server frames", () => {
         sessionImportScanServerFrameSchema.parse({
           kind: "group",
           group: {
+            gitBacked: false,
             location: { kind: "folder", path: "/repo", workspaceId: null },
             sessions: [
               {
@@ -270,6 +277,7 @@ describe("sessionImport.scan@1.0 server frames", () => {
       sessionImportScanServerFrameSchema.parse({
         kind: "group",
         group: {
+          gitBacked: false,
           location: { kind: "folder", path: "/repo", workspaceId: null },
           sessions: [],
         },
@@ -283,6 +291,7 @@ describe("sessionImport.scan@1.0 server frames", () => {
       sessionImportScanServerFrameSchema.parse({
         kind: "group",
         group: {
+          gitBacked: false,
           location: { kind: "folder", path: "/repo", workspaceId: null },
           sessions: [{ ...importableCandidate, nativeSessionId: "" }],
         },
@@ -296,6 +305,7 @@ describe("sessionImport.scan@1.0 server frames", () => {
       sessionImportScanServerFrameSchema.parse({
         kind: "group",
         group: {
+          gitBacked: false,
           location: { kind: "folder", path: "/repo", workspaceId: null },
           sessions: [
             { ...importableCandidate, state: { kind: "needs_upgrade" } },
@@ -318,25 +328,37 @@ describe("sessionImport.scan@1.0 client frames and open request", () => {
 
   it("accepts a null provider filter as 'every provider'", () => {
     expect(
-      sessionImportScanV10.openRequestSchema.parse({ providers: null }),
-    ).toEqual({ providers: null });
+      sessionImportScanV10.openRequestSchema.parse({
+        providers: null,
+        updatedAfter: null,
+      }),
+    ).toEqual({ providers: null, updatedAfter: null });
   });
 
   it("rejects an empty provider filter, which could only ever return nothing", () => {
     expect(() =>
-      sessionImportScanV10.openRequestSchema.parse({ providers: [] }),
+      sessionImportScanV10.openRequestSchema.parse({
+        providers: [],
+        updatedAfter: null,
+      }),
     ).toThrow();
   });
 
   it("accepts a narrowed provider filter", () => {
     expect(
-      sessionImportScanV10.openRequestSchema.parse({ providers: ["codex"] }),
-    ).toEqual({ providers: ["codex"] });
+      sessionImportScanV10.openRequestSchema.parse({
+        providers: ["codex"],
+        updatedAfter: 1_750_000_000_000,
+      }),
+    ).toEqual({ providers: ["codex"], updatedAfter: 1_750_000_000_000 });
   });
 
   it("rejects a provider that is not a harness", () => {
     expect(() =>
-      sessionImportScanV10.openRequestSchema.parse({ providers: ["aider"] }),
+      sessionImportScanV10.openRequestSchema.parse({
+        providers: ["aider"],
+        updatedAfter: null,
+      }),
     ).toThrow();
   });
 });

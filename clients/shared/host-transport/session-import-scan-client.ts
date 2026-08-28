@@ -44,6 +44,8 @@ export interface SessionImportScanClientOptions {
   readonly wsStreamClient: IStreamClient<HostStreamRpcRegistry>;
   /** `null` scans every provider the host has a reader for. */
   readonly providers: ReadonlyArray<GuiHarnessId> | null;
+  /** Epoch ms; sessions last active before this are not scanned. `null` scans everything. */
+  readonly updatedAfter: number | null;
   readonly callbacks: SessionImportScanCallbacks;
 }
 
@@ -66,6 +68,7 @@ export class SessionImportScanClient {
 
     this.session = options.wsStreamClient.subscribe("sessionImport.scan", {
       providers: options.providers === null ? null : [...options.providers],
+      updatedAfter: options.updatedAfter,
     });
     this.session.onServerFrame((envelope, binaryPayload) => {
       this.handleServerFrame(envelope, binaryPayload);

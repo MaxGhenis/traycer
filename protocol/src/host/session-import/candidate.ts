@@ -84,9 +84,11 @@ export type SessionImportUnreadableReason = z.infer<
 /**
  * Why a discovered session cannot be offered as-is.
  *
- * `already_in_traycer` names the chat it landed in so the wizard can link to
- * it rather than just greying the row out; the epic is what the left list
- * navigates to.
+ * `already_in_traycer` is legacy: current hosts hide an already-imported
+ * session from the scan entirely (the native-session index is what enforces
+ * import-once, so the wizard's second visit shows only what is new). The
+ * variant stays in the schema because an older host still emits it, and a
+ * client must be able to parse - and then discard - those rows.
  *
  * `unreadable` carries the same closed reason + free-text `detail` pair the
  * run reports, so a session that fails at discovery and one that fails at
@@ -160,6 +162,10 @@ export type SessionImportGroupLocation = z.infer<
 
 export const sessionImportGroupSchema = z.object({
   location: sessionImportGroupLocationSchema,
+  // Whether the folder is a git checkout. Carried so the wizard can rank
+  // repos above loose folders - that ordering is the host's knowledge (it
+  // resolved the repo root during grouping), not something a path reveals.
+  gitBacked: z.boolean(),
   sessions: z.array(sessionImportCandidateSchema),
 });
 export type SessionImportGroup = z.infer<typeof sessionImportGroupSchema>;
