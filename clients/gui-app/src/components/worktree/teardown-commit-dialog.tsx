@@ -69,6 +69,7 @@ export function TeardownCommitDialog(props: {
           <TeardownDisclosure
             holders={props.holders}
             failures={props.failures}
+            agentNames={undefined}
           />
         </div>
         <DialogFooter className="mx-0 mb-0 mt-2 gap-2 rounded-b-xl border-t border-border/40 bg-foreground/2 px-6 py-4">

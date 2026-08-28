@@ -983,6 +983,7 @@ function startQueuedDelete(item: QueuedWorktreeDelete): void {
           worktreePath: item.target.worktreePath,
           scripts: item.scripts,
           stopOwners: item.stopOwners,
+          expectedHoldersRevision: undefined,
           callbacks: {
             onStarted: (hasTeardown) =>
               useWorktreeDeleteRunStore

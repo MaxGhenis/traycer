@@ -47,7 +47,9 @@ describe("TeardownForceDeleteDialog", () => {
     );
     expect(
       screen.getByTestId("teardown-disclosure-working").textContent,
-    ).toContain("Claude Code agent polite-ocelot is working");
+    ).toContain(
+      "Terminal agent “Claude Code agent polite-ocelot” is working — will be stopped",
+    );
     expect(
       screen.getByTestId("teardown-disclosure-idle").textContent,
     ).toContain("bun run dev");

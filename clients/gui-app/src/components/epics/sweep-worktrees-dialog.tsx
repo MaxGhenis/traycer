@@ -1,9 +1,8 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
-import { AlertTriangle, Paintbrush } from "lucide-react";
+import { AlertTriangle, ArrowRight, Paintbrush } from "lucide-react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@/lib/host";
 import {
-  describeReviewReasons,
   WORKTREE_TIER_LABEL,
   WORKTREE_TIER_TOOLTIP,
   type WorktreeTier,
@@ -27,7 +26,9 @@ import {
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import type { WorktreeBusyHolder } from "@traycer/protocol/framework/worktree-busy-holders";
 import { WorktreePrPills } from "@/components/worktree/worktree-pr-metadata";
-import { TeardownDisclosure } from "@/components/worktree/teardown-disclosure";
+import { SelectAllToggle } from "@/components/ui/select-all-toggle";
+import { TeardownInlineDisclosure } from "@/components/worktree/teardown-disclosure";
+import { SweepWorktreesReview } from "@/components/epics/sweep-worktrees-review";
 import {
   useEpicSweepWorktreeCandidatesForClient,
   type EpicSweepWorktreeRow,
@@ -35,24 +36,30 @@ import {
 import {
   useEpicSweepWorktrees,
   useSweepingWorktreePaths,
+  type SweepWorktreesResult,
 } from "@/hooks/epic/use-epic-sweep-worktrees-mutation";
 import { useRefreshSpinner } from "@/hooks/use-refresh-spinner";
 import { useBareKeyClaimer } from "@/lib/keybindings/use-bare-key-claimer";
 import { useCompactRelativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
+import {
+  captureReviewSnapshot,
+  isBulkScopeRow,
+  safeSummaryCopy,
+  selectionIsSafeOnly,
+  selectAllCountCopy,
+  sharedRowHint,
+  unprovenRowHint,
+  unknownConsequenceForRow,
+  type SweepReviewSnapshot,
+} from "@/lib/epics/sweep-consequences";
+import {
+  formatUncheckedInUseKnown,
+  formatUncheckedInUseUnknown,
+  sanitizeHoldersRevision,
+} from "@/lib/worktree/teardown-holder-copy";
 
 const SWEEP_WORKTREES_REFRESH_TIMEOUT_MS = 20_000;
-
-/**
- * Generic stop consequence when an in-use row has no named holder inventory
- * (production until T7's `listHolders` provider). Loud, through the same
- * disclosure surface as a working holder — never silent authorization.
- * `worktreeIdentity` is the row's branch (or path if detached) so two
- * unknown worktrees never render identical lines.
- */
-function unknownInUseStopLabel(worktreeIdentity: string): string {
-  return `Background work in ${worktreeIdentity} will be stopped (details unavailable on this host)`;
-}
 
 interface SweepWorktreesDialogProps {
   /**
@@ -93,9 +100,8 @@ const TIER_PILL_CLASS: Record<WorktreeTier, string> = {
 };
 
 const NOTE_COPY: Record<NonNullable<EpicSweepWorktreeRow["note"]>, string> = {
-  shared:
-    "Also used by a Task outside this selection — sweeping breaks its binding",
-  "in-use": "In use by an active agent or terminal",
+  shared: "Also used by a Task outside this sweep",
+  "in-use": "In use",
   checking: "Still checking — facts unverified",
   "not-landed": "Not proven landed — work here may be lost",
 };
@@ -132,22 +138,25 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
     timeoutMs: SWEEP_WORKTREES_REFRESH_TIMEOUT_MS,
   });
   const triggerRefresh = refresh.trigger;
+  const [step, setStep] = useState<"choose" | "review">("choose");
+  const [reviewSnapshot, setReviewSnapshot] =
+    useState<SweepReviewSnapshot | null>(null);
+  const [typedSweep, setTypedSweep] = useState("");
+  const [inventoryChanged, setInventoryChanged] = useState(false);
   const claimRefreshKey = useBareKeyClaimer("r", (event) => {
     event.preventDefault();
     triggerRefresh();
   });
   useEffect(
-    () => (taskCount > 0 && canRefresh ? claimRefreshKey() : undefined),
-    [canRefresh, claimRefreshKey, taskCount],
+    () =>
+      taskCount > 0 && canRefresh && step === "choose"
+        ? claimRefreshKey()
+        : undefined,
+    [canRefresh, claimRefreshKey, step, taskCount],
   );
-  // Explicit user toggles, cleared whenever the dialog retargets so a
-  // reopened dialog starts from the per-row defaults again (the
-  // React-recommended "adjust state during render" idiom).
   const [checkOverrides, setCheckOverrides] = useState<
     ReadonlyMap<string, boolean>
   >(() => new Map());
-  // Keyed on the selection itself so re-opening with a DIFFERENT set of Tasks
-  // starts from the per-row defaults again.
   const selectionKey =
     epicIds === null ? null : [...new Set(epicIds)].sort().join(",");
   const [previousSelectionKey, setPreviousSelectionKey] =
@@ -156,30 +165,26 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
     ReadonlyMap<string, boolean>
   >(() => new Map());
   const selectionRetargeted = selectionKey !== previousSelectionKey;
-  if (selectionRetargeted) {
-    setPreviousSelectionKey(selectionKey);
-    setCheckOverrides(new Map());
-    setPreviousInUseByPath(new Map());
-  }
-  const inUseTransition = takeInUseFalseToTrueTransition({
+  applySelectionRetarget({
+    selectionRetargeted,
+    selectionKey,
+    setPreviousSelectionKey,
+    setCheckOverrides,
+    setPreviousInUseByPath,
+    setStep,
+    setReviewSnapshot,
+    setTypedSweep,
+    setInventoryChanged,
+  });
+  applyInUseConsentDrop({
     previousInUseByPath,
     rows,
     checkOverrides,
     isPending,
     selectionRetargeted,
+    setPreviousInUseByPath,
+    setCheckOverrides,
   });
-  if (inUseTransition !== null) {
-    setPreviousInUseByPath(inUseTransition.nextInUseByPath);
-    if (inUseTransition.droppedForcePaths.length > 0) {
-      setCheckOverrides(
-        withoutOverridePaths(checkOverrides, inUseTransition.droppedForcePaths),
-      );
-    }
-  }
-  // Read from the mutation cache, not this instance: the dialog is mounted
-  // per surface (History row and task-status strip each render their own), so
-  // a component-local `isPending` would miss a run started from the other one
-  // and happily re-stream the same paths.
   const sweepingPaths = useSweepingWorktreePaths(hostId);
   const isRowSweeping = (row: EpicSweepWorktreeRow): boolean =>
     sweepingPaths.has(row.entry.worktreePath);
@@ -188,128 +193,469 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
     return checkOverrides.get(row.entry.worktreePath) ?? row.defaultChecked;
   };
   const checkedRows = rows.filter(isRowChecked);
-  const selectedInUseHolders = disclosureHoldersForCheckedRows(checkedRows);
-  // Only THIS dialog's own run disables the whole form; a sweep of some other
-  // Task's worktrees just removes its own paths from selection above.
   const isSweeping = sweepMutation.isPending;
   const proofReady = !isPending && !isError;
-
-  const handleConfirm = () => {
-    if (!proofReady || hostId === null || checkedRows.length === 0) return;
-    // Background model, matching Settings worktree deletion: confirm hands
-    // the streamed run off and closes immediately. The mutation acknowledges
-    // the kickoff and reports the outcome via toasts; re-opening while the
-    // run is live keeps Sweep disabled so the same paths can't double-stream.
-    sweepMutation.mutate({
-      hostId,
-      worktrees: checkedRows.map((row) => ({
-        worktreePath: row.entry.worktreePath,
-        branch: row.entry.branch,
-        repoIdentifier: row.entry.repoIdentifier,
-        stopOwners: row.entry.inUse,
-      })),
+  const bulkRows = rows.filter(
+    (row) => isBulkScopeRow(row) && !isRowSweeping(row),
+  );
+  const bulkSelectedCount = bulkRows.filter(isRowChecked).length;
+  const allBulkSelected =
+    bulkRows.length > 0 && bulkSelectedCount === bulkRows.length;
+  const inUseRowCount = rows.filter((row) => row.note === "in-use").length;
+  const claimSelectAllKey = useBareKeyClaimer("a", (event) => {
+    event.preventDefault();
+    toggleSweepSelectAll({
+      allBulkSelected,
+      bulkRows,
+      rows,
+      isRowSweeping,
+      checkOverrides,
+      setCheckOverrides,
     });
-    onOpenChange(false);
+  });
+  useEffect(
+    () =>
+      taskCount > 0 && step === "choose" ? claimSelectAllKey() : undefined,
+    [claimSelectAllKey, step, taskCount],
+  );
+  const selectedEpicIds = new Set(epicIds ?? []);
+  const kickoff = (targets: ReadonlyArray<EpicSweepWorktreeRow>): void => {
+    startSweepKickoff({
+      hostId,
+      targets,
+      mutate: sweepMutation.mutate,
+      onClose: () => onOpenChange(false),
+      onHoldersChanged: (changed) => {
+        setInventoryChanged(true);
+        setTypedSweep("");
+        setReviewSnapshot((current) => applyHoldersChanged(current, changed));
+      },
+    });
+  };
+  const handlePrimary = (): void => {
+    startSweepPrimary({
+      proofReady,
+      hostId,
+      checkedRows,
+      refreshCandidates,
+      kickoff,
+      setReviewSnapshot,
+      setTypedSweep,
+      setInventoryChanged,
+      setStep,
+    });
   };
 
   return (
     <Dialog open={taskCount > 0} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
-        className="flex max-h-[min(90dvh,42rem)] w-[min(92vw,34rem)] min-w-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-xl"
+        className="flex max-h-[min(90dvh,42rem)] w-[min(92vw,45rem)] min-w-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl"
         data-testid="sweep-worktrees-dialog"
       >
-        <div className="flex min-w-0 shrink-0 items-start gap-3 px-5 pt-5 pb-4">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary ring-1 ring-primary/15">
-            <Paintbrush className="size-4" aria-hidden />
-          </div>
-          <div className="min-h-0 min-w-0 flex-1 space-y-1.5">
-            <DialogTitle className="text-ui font-semibold leading-snug wrap-anywhere">
-              {sweepDialogTitle(taskCount, taskTitle)}
-            </DialogTitle>
-            <DialogDescription className="text-ui-sm leading-relaxed text-muted-foreground wrap-anywhere">
-              Removes the selected worktrees and their branches from this host.
-              Worktrees proven landed or still at their base commit are
-              pre-selected; anything else may carry unmerged work — select it
-              only deliberately. This cannot be undone.
-            </DialogDescription>
-          </div>
-        </div>
-
-        <TooltipProvider>
-          <section
-            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t border-border/60 bg-foreground/2 px-5 py-4"
-            data-testid="sweep-worktrees-candidates"
-          >
-            <SweepRowList
-              isPending={isPending}
-              isError={isError}
-              rows={rows}
-              isRowChecked={isRowChecked}
-              isRowSweeping={isRowSweeping}
-              interactionDisabled={
-                isSweeping || refresh.refreshing || !proofReady
-              }
-              onToggle={(path, checked) => {
-                setCheckOverrides((prev) => {
-                  const next = new Map(prev);
-                  next.set(path, checked);
-                  return next;
-                });
-              }}
-            />
-            {selectedInUseHolders.length > 0 ? (
-              <div className="mt-3 min-w-0">
-                <TeardownDisclosure holders={selectedInUseHolders} />
-              </div>
-            ) : null}
-            <SweepWorktreesRefreshFooter
-              checkedAt={checkedAt}
-              refreshing={refresh.refreshing}
-              canRefresh={canRefresh}
-              onRefresh={triggerRefresh}
-            />
-          </section>
-        </TooltipProvider>
-
-        <div className="grid min-w-0 shrink-0 grid-cols-2 gap-2 border-t border-border/60 bg-foreground/3 px-5 py-3 sm:flex sm:justify-end">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="w-full sm:w-auto"
-            onClick={() => onOpenChange(false)}
-            data-testid="sweep-worktrees-cancel"
-          >
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            className="w-full sm:w-auto"
-            disabled={
+        {step === "review" && reviewSnapshot !== null ? (
+          <SweepWorktreesReview
+            snapshot={reviewSnapshot}
+            selectedEpicIds={selectedEpicIds}
+            typedValue={typedSweep}
+            inventoryChanged={inventoryChanged}
+            submitting={isSweeping}
+            onTypedValueChange={setTypedSweep}
+            onBack={() => {
+              setStep("choose");
+              setReviewSnapshot(null);
+              setTypedSweep("");
+              setInventoryChanged(false);
+            }}
+            onCancel={() => onOpenChange(false)}
+            onConfirm={() => kickoff(reviewSnapshot.all)}
+          />
+        ) : (
+          <SweepWorktreesChoose
+            taskCount={taskCount}
+            taskTitle={taskTitle}
+            hostId={hostId}
+            isPending={isPending}
+            isError={isError}
+            proofReady={proofReady}
+            rows={rows}
+            isRowChecked={isRowChecked}
+            isRowSweeping={isRowSweeping}
+            interactionDisabled={
+              isSweeping || refresh.refreshing || !proofReady
+            }
+            bulkRows={bulkRows}
+            bulkSelectedCount={bulkSelectedCount}
+            allBulkSelected={allBulkSelected}
+            selectedCount={checkedRows.length}
+            inUseRowCount={inUseRowCount}
+            checkedAt={checkedAt}
+            refreshing={refresh.refreshing}
+            canRefresh={canRefresh}
+            onRefresh={triggerRefresh}
+            onToggle={(path, checked) => {
+              setCheckOverrides((prev) => {
+                const next = new Map(prev);
+                next.set(path, checked);
+                return next;
+              });
+            }}
+            onToggleSelectAll={() =>
+              toggleSweepSelectAll({
+                allBulkSelected,
+                bulkRows,
+                rows,
+                isRowSweeping,
+                checkOverrides,
+                setCheckOverrides,
+              })
+            }
+            onCancel={() => onOpenChange(false)}
+            onPrimary={handlePrimary}
+            primaryDisabled={
               hostId === null ||
               !proofReady ||
               isSweeping ||
               refresh.refreshing ||
               checkedRows.length === 0
             }
-            onClick={handleConfirm}
-            data-testid="sweep-worktrees-confirm"
-          >
-            {isSweeping ? (
-              <AgentSpinningDots
-                className={undefined}
-                testId={undefined}
-                variant={undefined}
-              />
-            ) : null}
-            Sweep
-          </Button>
-        </div>
+            elevated={!selectionIsSafeOnly(checkedRows)}
+            isSweeping={isSweeping}
+            selectedEpicIds={selectedEpicIds}
+          />
+        )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function applySelectionRetarget(input: {
+  readonly selectionRetargeted: boolean;
+  readonly selectionKey: string | null;
+  readonly setPreviousSelectionKey: (key: string | null) => void;
+  readonly setCheckOverrides: (next: ReadonlyMap<string, boolean>) => void;
+  readonly setPreviousInUseByPath: (
+    next: ReadonlyMap<string, boolean>,
+  ) => void;
+  readonly setStep: (step: "choose" | "review") => void;
+  readonly setReviewSnapshot: (next: SweepReviewSnapshot | null) => void;
+  readonly setTypedSweep: (value: string) => void;
+  readonly setInventoryChanged: (value: boolean) => void;
+}): void {
+  if (!input.selectionRetargeted) return;
+  input.setPreviousSelectionKey(input.selectionKey);
+  input.setCheckOverrides(new Map());
+  input.setPreviousInUseByPath(new Map());
+  input.setStep("choose");
+  input.setReviewSnapshot(null);
+  input.setTypedSweep("");
+  input.setInventoryChanged(false);
+}
+
+function applyInUseConsentDrop(input: {
+  readonly previousInUseByPath: ReadonlyMap<string, boolean>;
+  readonly rows: ReadonlyArray<EpicSweepWorktreeRow>;
+  readonly checkOverrides: ReadonlyMap<string, boolean>;
+  readonly isPending: boolean;
+  readonly selectionRetargeted: boolean;
+  readonly setPreviousInUseByPath: (
+    next: ReadonlyMap<string, boolean>,
+  ) => void;
+  readonly setCheckOverrides: (next: ReadonlyMap<string, boolean>) => void;
+}): void {
+  const inUseTransition = takeInUseFalseToTrueTransition({
+    previousInUseByPath: input.previousInUseByPath,
+    rows: input.rows,
+    checkOverrides: input.checkOverrides,
+    isPending: input.isPending,
+    selectionRetargeted: input.selectionRetargeted,
+  });
+  if (inUseTransition === null) return;
+  input.setPreviousInUseByPath(inUseTransition.nextInUseByPath);
+  if (inUseTransition.droppedForcePaths.length === 0) return;
+  input.setCheckOverrides(
+    withoutOverridePaths(input.checkOverrides, inUseTransition.droppedForcePaths),
+  );
+}
+
+function startSweepPrimary(input: {
+  readonly proofReady: boolean;
+  readonly hostId: string | null;
+  readonly checkedRows: ReadonlyArray<EpicSweepWorktreeRow>;
+  readonly refreshCandidates: () => Promise<void>;
+  readonly kickoff: (targets: ReadonlyArray<EpicSweepWorktreeRow>) => void;
+  readonly setReviewSnapshot: (next: SweepReviewSnapshot | null) => void;
+  readonly setTypedSweep: (value: string) => void;
+  readonly setInventoryChanged: (value: boolean) => void;
+  readonly setStep: (step: "choose" | "review") => void;
+}): void {
+  if (!input.proofReady || input.hostId === null || input.checkedRows.length === 0) {
+    return;
+  }
+  if (selectionIsSafeOnly(input.checkedRows)) {
+    input.kickoff(input.checkedRows);
+    return;
+  }
+  void input.refreshCandidates().then(() => {
+    input.setReviewSnapshot(captureReviewSnapshot(input.checkedRows));
+    input.setTypedSweep("");
+    input.setInventoryChanged(false);
+    input.setStep("review");
+  });
+}
+
+function startSweepKickoff(input: {
+  readonly hostId: string | null;
+  readonly targets: ReadonlyArray<EpicSweepWorktreeRow>;
+  readonly mutate: ReturnType<typeof useEpicSweepWorktrees>["mutate"];
+  readonly onClose: () => void;
+  readonly onHoldersChanged: (
+    changed: SweepWorktreesResult["holdersChanged"],
+  ) => void;
+}): void {
+  if (input.hostId === null) return;
+  input.mutate(
+    {
+      hostId: input.hostId,
+      worktrees: input.targets.map((row) => ({
+        worktreePath: row.entry.worktreePath,
+        branch: row.entry.branch,
+        repoIdentifier: row.entry.repoIdentifier,
+        stopOwners: row.entry.inUse,
+        expectedHoldersRevision:
+          row.note === "in-use"
+            ? sanitizeHoldersRevision(row.holdersRevision)
+            : undefined,
+      })),
+    },
+    {
+      onSuccess: (result) => {
+        if (result.holdersChanged.length === 0) {
+          input.onClose();
+          return;
+        }
+        input.onHoldersChanged(result.holdersChanged);
+      },
+    },
+  );
+}
+
+function toggleSweepSelectAll(input: {
+  readonly allBulkSelected: boolean;
+  readonly bulkRows: ReadonlyArray<EpicSweepWorktreeRow>;
+  readonly rows: ReadonlyArray<EpicSweepWorktreeRow>;
+  readonly isRowSweeping: (row: EpicSweepWorktreeRow) => boolean;
+  readonly checkOverrides: ReadonlyMap<string, boolean>;
+  readonly setCheckOverrides: (next: ReadonlyMap<string, boolean>) => void;
+}): void {
+  if (input.allBulkSelected) {
+    const next = new Map<string, boolean>();
+    for (const row of input.rows) {
+      if (!row.disabled && !input.isRowSweeping(row)) {
+        next.set(row.entry.worktreePath, false);
+      }
+    }
+    input.setCheckOverrides(next);
+    return;
+  }
+  const next = new Map(input.checkOverrides);
+  for (const row of input.bulkRows) {
+    next.set(row.entry.worktreePath, true);
+  }
+  input.setCheckOverrides(next);
+}
+
+function applyHoldersChanged(
+  current: SweepReviewSnapshot | null,
+  changed: ReadonlyArray<{
+    readonly worktreePath: string;
+    readonly holders: readonly WorktreeBusyHolder[];
+    readonly holdersRevision: string | undefined;
+  }>,
+): SweepReviewSnapshot | null {
+  if (current === null) return current;
+  const byPath = new Map(
+    changed.map((entry) => [entry.worktreePath, entry]),
+  );
+  const inUse = current.inUse.map((row) => {
+    const update = byPath.get(row.entry.worktreePath);
+    if (update === undefined) return row;
+    const holdersRevision = sanitizeHoldersRevision(update.holdersRevision);
+    if (update.holders.length === 0 || holdersRevision === undefined) {
+      return {
+        ...row,
+        holders: [],
+        holdersStatus: "unknown" as const,
+        holdersRevision: undefined,
+      };
+    }
+    return {
+      ...row,
+      holders: update.holders,
+      holdersStatus: "ready" as const,
+      holdersRevision,
+    };
+  });
+  return captureReviewSnapshot([
+    ...current.unproven,
+    ...inUse,
+    ...current.shared,
+    ...current.all.filter(
+      (row) =>
+        row.note !== "not-landed" &&
+        row.note !== "in-use" &&
+        row.note !== "shared",
+    ),
+  ]);
+}
+
+function SweepWorktreesChoose(props: {
+  readonly taskCount: number;
+  readonly taskTitle: string | null;
+  readonly hostId: string | null;
+  readonly isPending: boolean;
+  readonly isError: boolean;
+  readonly proofReady: boolean;
+  readonly rows: ReadonlyArray<EpicSweepWorktreeRow>;
+  readonly isRowChecked: (row: EpicSweepWorktreeRow) => boolean;
+  readonly isRowSweeping: (row: EpicSweepWorktreeRow) => boolean;
+  readonly interactionDisabled: boolean;
+  readonly bulkRows: ReadonlyArray<EpicSweepWorktreeRow>;
+  readonly bulkSelectedCount: number;
+  readonly allBulkSelected: boolean;
+  readonly selectedCount: number;
+  readonly inUseRowCount: number;
+  readonly checkedAt: number | null;
+  readonly refreshing: boolean;
+  readonly canRefresh: boolean;
+  readonly onRefresh: () => void;
+  readonly onToggle: (path: string, checked: boolean) => void;
+  readonly onToggleSelectAll: () => void;
+  readonly onCancel: () => void;
+  readonly onPrimary: () => void;
+  readonly primaryDisabled: boolean;
+  readonly elevated: boolean;
+  readonly isSweeping: boolean;
+  readonly selectedEpicIds: ReadonlySet<string>;
+}): ReactNode {
+  return (
+    <>
+      <div className="flex min-w-0 shrink-0 items-start gap-3 px-5 pt-5 pb-4">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary ring-1 ring-primary/15">
+          <Paintbrush className="size-4" aria-hidden />
+        </div>
+        <div className="min-h-0 min-w-0 flex-1 space-y-1.5">
+          <DialogTitle className="text-ui font-semibold leading-snug wrap-anywhere">
+            {sweepDialogTitle(props.taskCount, props.taskTitle)}
+          </DialogTitle>
+          <DialogDescription className="text-ui-sm leading-relaxed text-muted-foreground wrap-anywhere">
+            Choose the worktrees to remove from this host. Proven-safe worktrees
+            are selected for you.
+          </DialogDescription>
+        </div>
+      </div>
+      <TooltipProvider>
+        <section
+          className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t border-border/60 bg-foreground/2 px-5 py-4"
+          data-testid="sweep-worktrees-candidates"
+        >
+          <div className="mb-2 flex min-w-0 flex-wrap items-center justify-between gap-2">
+            <SelectAllToggle
+              accessibleLabel={
+                props.allBulkSelected ? "Deselect all" : "Select all"
+              }
+              selectableCount={props.bulkRows.length}
+              selectedCount={props.bulkSelectedCount}
+              disabled={
+                props.interactionDisabled || props.bulkRows.length === 0
+              }
+              testId="sweep-worktrees-select-all"
+              onToggle={props.onToggleSelectAll}
+              actionLabel={
+                props.allBulkSelected ? "Deselect all" : "Select all"
+              }
+              shortcut="A"
+            />
+            <span
+              className="text-ui-xs text-muted-foreground"
+              data-testid="sweep-worktrees-count"
+            >
+              {selectAllCountCopy({
+                selected: props.selectedCount,
+                total: props.rows.length,
+                inUse: props.inUseRowCount,
+              })}
+            </span>
+          </div>
+          <SweepRowList
+            isPending={props.isPending}
+            isError={props.isError}
+            rows={props.rows}
+            isRowChecked={props.isRowChecked}
+            isRowSweeping={props.isRowSweeping}
+            interactionDisabled={props.interactionDisabled}
+            selectedEpicIds={props.selectedEpicIds}
+            onToggle={props.onToggle}
+          />
+          {!props.elevated &&
+          props.proofReady &&
+          props.selectedCount > 0 &&
+          !props.isPending ? (
+            <p
+              className="mt-2 text-ui-xs text-muted-foreground wrap-anywhere"
+              data-testid="sweep-worktrees-safe-summary"
+            >
+              {safeSummaryCopy(
+                props.selectedCount,
+                props.rows.filter(
+                  (row) =>
+                    props.isRowChecked(row) && row.entry.branch !== null,
+                ).length,
+              )}
+            </p>
+          ) : null}
+          <SweepWorktreesRefreshFooter
+            checkedAt={props.checkedAt}
+            refreshing={props.refreshing}
+            canRefresh={props.canRefresh}
+            onRefresh={props.onRefresh}
+          />
+        </section>
+      </TooltipProvider>
+      <div className="grid min-w-0 shrink-0 grid-cols-2 gap-2 border-t border-border/60 bg-foreground/3 px-5 py-3 sm:flex sm:justify-end">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="w-full sm:w-auto"
+          onClick={props.onCancel}
+          data-testid="sweep-worktrees-cancel"
+        >
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          variant={props.elevated ? "default" : "destructive"}
+          size="sm"
+          className="w-full sm:w-auto"
+          disabled={props.primaryDisabled}
+          onClick={props.onPrimary}
+          data-testid="sweep-worktrees-confirm"
+        >
+          {props.isSweeping ? (
+            <AgentSpinningDots
+              className={undefined}
+              testId={undefined}
+              variant={undefined}
+            />
+          ) : null}
+          {props.elevated ? "Review consequences" : "Sweep selected"}
+          {props.elevated ? (
+            <ArrowRight className="size-3.5" aria-hidden />
+          ) : null}
+        </Button>
+      </div>
+    </>
   );
 }
 
@@ -452,33 +798,6 @@ function withoutOverridePaths(
   return changed ? next : overrides;
 }
 
-function unknownInUseIdentity(row: EpicSweepWorktreeRow): string {
-  return row.entry.branch ?? row.entry.worktreePath;
-}
-
-function unknownInUseHolder(row: EpicSweepWorktreeRow): WorktreeBusyHolder {
-  return {
-    ownerRef: {
-      epicId: "",
-      ownerKind: "chat",
-      ownerId: row.entry.worktreePath,
-    },
-    holdKind: "active-run-cwd",
-    activity: "working",
-    label: unknownInUseStopLabel(unknownInUseIdentity(row)),
-  };
-}
-
-function disclosureHoldersForCheckedRows(
-  rows: ReadonlyArray<EpicSweepWorktreeRow>,
-): readonly WorktreeBusyHolder[] {
-  return rows.flatMap((row) => {
-    if (!row.entry.inUse) return [];
-    if (row.holders.length > 0) return row.holders;
-    return [unknownInUseHolder(row)];
-  });
-}
-
 /**
  * Names what is being swept. A single Task uses its title when we have one;
  * a bulk sweep names the count instead, because listing titles would push the
@@ -498,6 +817,7 @@ function SweepRowList(props: {
   readonly isRowChecked: (row: EpicSweepWorktreeRow) => boolean;
   readonly isRowSweeping: (row: EpicSweepWorktreeRow) => boolean;
   readonly interactionDisabled: boolean;
+  readonly selectedEpicIds: ReadonlySet<string>;
   readonly onToggle: (worktreePath: string, checked: boolean) => void;
 }) {
   if (props.isPending && props.rows.length === 0) {
@@ -533,6 +853,7 @@ function SweepRowList(props: {
           checked={props.isRowChecked(row)}
           isSweeping={props.isRowSweeping(row)}
           interactionDisabled={props.interactionDisabled}
+          selectedEpicIds={props.selectedEpicIds}
           onToggle={props.onToggle}
         />
       ))}
@@ -546,6 +867,7 @@ function SweepWorktreeRowItem(props: {
   /** A sweep of this exact path is already streaming (from any surface). */
   readonly isSweeping: boolean;
   readonly interactionDisabled: boolean;
+  readonly selectedEpicIds: ReadonlySet<string>;
   readonly onToggle: (worktreePath: string, checked: boolean) => void;
 }) {
   const { row, checked, isSweeping, interactionDisabled, onToggle } = props;
@@ -614,7 +936,19 @@ function SweepWorktreeRowItem(props: {
             {entry.worktreePath}
           </span>
         </TooltipWrapper>
-        <SweepRowHint row={row} />
+        <SweepRowHint
+          row={row}
+          checked={checked}
+          selectedEpicIds={props.selectedEpicIds}
+        />
+        {checked && row.note === "in-use" ? (
+          <TeardownInlineDisclosure
+            holders={row.holders}
+            heading="Stopping work on this worktree"
+            agentNames={undefined}
+            unknownConsequence={unknownConsequenceForRow(row)}
+          />
+        ) : null}
       </div>
     </li>
   );
@@ -649,15 +983,24 @@ function SweepTierPill(props: { readonly row: EpicSweepWorktreeRow }) {
  */
 function SweepRowHint(props: {
   readonly row: EpicSweepWorktreeRow;
+  readonly checked: boolean;
+  readonly selectedEpicIds: ReadonlySet<string>;
 }): ReactNode {
   const { row } = props;
   if (row.note === null) return null;
-  const reviewReasons =
-    row.note === "not-landed" ? describeReviewReasons(row.entry) : [];
-  const detail =
-    reviewReasons.length > 0
-      ? `${NOTE_COPY[row.note]}: ${reviewReasons.join("; ")}`
-      : NOTE_COPY[row.note];
+  let detail: string = NOTE_COPY[row.note];
+  if (row.note === "not-landed") {
+    detail = unprovenRowHint(row);
+  } else if (row.note === "shared") {
+    detail = sharedRowHint(row, props.selectedEpicIds);
+  } else if (row.note === "in-use" && !props.checked) {
+    detail =
+      row.holdersStatus === "unknown" || row.holders.length === 0
+        ? formatUncheckedInUseUnknown()
+        : formatUncheckedInUseKnown(row.holders.length);
+  } else if (row.note === "in-use" && props.checked) {
+    detail = "In use · selected individually for this review";
+  }
   const cautious = row.note === "not-landed" || row.note === "shared";
   return (
     <span

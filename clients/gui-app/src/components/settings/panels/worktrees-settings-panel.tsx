@@ -1597,6 +1597,8 @@ export function WorktreesList(props: {
                 disabled={false}
                 testId="worktrees-select-all"
                 onToggle={toggleSelectAllVisible}
+                actionLabel={undefined}
+                shortcut={undefined}
               />
               <WorktreesRepoExpansionControl
                 allCollapsed={allReposCollapsed}
