@@ -277,6 +277,8 @@ describe("worktree.delete@1.1 stopOwners", () => {
   });
 });
 
+const HOLDERS_REVISION_DIGEST = "a".repeat(64);
+
 describe("worktree.delete@1.2 expectedHoldersRevision", () => {
   const deleteRegistry = hostRpcRegistry["worktree.delete"];
 
@@ -297,9 +299,42 @@ describe("worktree.delete@1.2 expectedHoldersRevision", () => {
       workspacePath: "/repo",
       worktreePath: "/wt",
       stopOwners: true,
+      expectedHoldersRevision: HOLDERS_REVISION_DIGEST,
+    });
+    expect(parsed.expectedHoldersRevision).toBe(HOLDERS_REVISION_DIGEST);
+  });
+
+  it("rejects a present-empty expectedHoldersRevision", () => {
+    const parsed = worktreeDeleteRequestSchemaV12.safeParse({
+      epicId: "e1",
+      workspacePath: "/repo",
+      worktreePath: "/wt",
+      stopOwners: true,
+      expectedHoldersRevision: "",
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects a non-digest expectedHoldersRevision", () => {
+    const parsed = worktreeDeleteRequestSchemaV12.safeParse({
+      epicId: "e1",
+      workspacePath: "/repo",
+      worktreePath: "/wt",
+      stopOwners: true,
       expectedHoldersRevision: "rev-abc",
     });
-    expect(parsed.expectedHoldersRevision).toBe("rev-abc");
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects expectedHoldersRevision when stopOwners is false", () => {
+    const parsed = worktreeDeleteRequestSchemaV12.safeParse({
+      epicId: "e1",
+      workspacePath: "/repo",
+      worktreePath: "/wt",
+      stopOwners: false,
+      expectedHoldersRevision: HOLDERS_REVISION_DIGEST,
+    });
+    expect(parsed.success).toBe(false);
   });
 
   it("upgrades a 1.1 request with expectedHoldersRevision absent", () => {
@@ -420,9 +455,36 @@ describe("worktree.deleteByPath@1.2 expectedHoldersRevision", () => {
     const parsed = worktreeDeleteByPathOpenRequestSchemaV12.parse({
       worktreePath: "/wt",
       stopOwners: true,
+      expectedHoldersRevision: HOLDERS_REVISION_DIGEST,
+    });
+    expect(parsed.expectedHoldersRevision).toBe(HOLDERS_REVISION_DIGEST);
+  });
+
+  it("rejects a present-empty expectedHoldersRevision on the open request", () => {
+    const parsed = worktreeDeleteByPathOpenRequestSchemaV12.safeParse({
+      worktreePath: "/wt",
+      stopOwners: true,
+      expectedHoldersRevision: "",
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects a non-digest expectedHoldersRevision on the open request", () => {
+    const parsed = worktreeDeleteByPathOpenRequestSchemaV12.safeParse({
+      worktreePath: "/wt",
+      stopOwners: true,
       expectedHoldersRevision: "rev-abc",
     });
-    expect(parsed.expectedHoldersRevision).toBe("rev-abc");
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects expectedHoldersRevision when stopOwners is false on the open request", () => {
+    const parsed = worktreeDeleteByPathOpenRequestSchemaV12.safeParse({
+      worktreePath: "/wt",
+      stopOwners: false,
+      expectedHoldersRevision: HOLDERS_REVISION_DIGEST,
+    });
+    expect(parsed.success).toBe(false);
   });
 
   it("1.1 open schema strips expectedHoldersRevision", () => {

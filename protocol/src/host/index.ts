@@ -119,6 +119,8 @@ export {
   worktreeDeleteRequestSchema,
   worktreeDeleteRequestSchemaV11,
   worktreeDeleteRequestSchemaV12,
+  expectedHoldersRevisionFieldSchema,
+  HOLDERS_REVISION_DIGEST_PATTERN,
   worktreeDeleteResponseSchema,
   worktreeListHoldersRequestSchema,
   worktreeListHoldersResponseSchema,
