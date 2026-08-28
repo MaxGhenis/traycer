@@ -6,6 +6,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { WorktreeBusyHolder } from "@traycer/protocol/framework/worktree-busy-holders";
 import type { WorktreeHostEntryV14 } from "@traycer/protocol/host/index";
 import { formatUnknownHolderConsequence } from "@/lib/worktree/teardown-holder-copy";
@@ -878,10 +879,24 @@ describe("SweepWorktreesDialog ergonomics", () => {
         .getByRole("checkbox", { name: "Sweep worktree feat-review" })
         .getAttribute("aria-checked"),
     ).toBe("true");
+    const user = userEvent.setup();
     const toggle = screen.getByTestId("sweep-worktrees-select-all");
-    fireEvent.keyDown(toggle, { key: " " });
-    fireEvent.keyDown(toggle, { key: "Enter" });
-    fireEvent.click(toggle);
+    toggle.focus();
+    await user.keyboard("{Enter}");
+    expect(
+      screen
+        .getByRole("checkbox", { name: "Sweep worktree feat-review" })
+        .getAttribute("aria-checked"),
+    ).toBe("false");
+    toggle.focus();
+    await user.keyboard(" ");
+    expect(
+      screen
+        .getByRole("checkbox", { name: "Sweep worktree feat-review" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    toggle.focus();
+    await user.keyboard("{Enter}");
     expect(
       screen
         .getByRole("checkbox", { name: "Sweep worktree feat-review" })
@@ -901,7 +916,7 @@ describe("SweepWorktreesDialog ergonomics", () => {
       target: { value: "a" },
     });
     expect(
-      (screen.getByTestId("sweep-typed-confirm")).value,
+      screen.getByTestId<HTMLInputElement>("sweep-typed-confirm").value,
     ).toBe("a");
   });
 
@@ -1172,5 +1187,157 @@ describe("SweepWorktreesDialog ergonomics", () => {
         expectedHoldersRevision: REV_A,
       },
     ]);
+  });
+
+  it("resubmits only the refused path after uncertain + HOLDERS_CHANGED", async () => {
+    const uncertainBusy = {
+      entry: worktreeEntry({
+        worktreePath: "/wt/maybe",
+        branch: "feat-maybe",
+        inUse: true,
+      }),
+      tier: "in-use" as const,
+      defaultChecked: false,
+      disabled: false,
+      note: "in-use" as const,
+      holders: HOLDERS,
+      holdersStatus: "ready" as const,
+      holdersRevision: REV_A,
+    };
+    const refuseBusy = {
+      entry: worktreeEntry({
+        worktreePath: "/wt/busy",
+        branch: "feat-busy",
+        inUse: true,
+      }),
+      tier: "in-use" as const,
+      defaultChecked: false,
+      disabled: false,
+      note: "in-use" as const,
+      holders: HOLDERS,
+      holdersStatus: "ready" as const,
+      holdersRevision: REV_A,
+    };
+    testState.rows = [uncertainBusy, refuseBusy];
+    testState.uncertain = ["/wt/maybe"];
+    testState.holdersChanged = [
+      {
+        worktreePath: "/wt/busy",
+        holders: HOLDERS,
+        holdersRevision: REV_B,
+      },
+    ];
+    renderDialog();
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Sweep worktree feat-maybe" }),
+    );
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Sweep worktree feat-busy" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Review consequences" }),
+    );
+    await waitFor(() => {
+      expect(screen.getByText("Review this sweep")).toBeTruthy();
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Stop work & sweep" }),
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("sweep-review-uncertain").textContent).toContain(
+        "feat-maybe",
+      );
+    });
+    expect(screen.getByTestId("sweep-review-removal").textContent).toContain(
+      "1 worktree will be removed",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Stop work & sweep" }),
+    );
+    expect(testState.mutate).toHaveBeenCalledTimes(2);
+    expect(
+      testState.lastVariables.worktrees.map((target) => target.worktreePath),
+    ).toEqual(["/wt/busy"]);
+    expect(testState.lastVariables.worktrees[0]?.expectedHoldersRevision).toBe(
+      REV_B,
+    );
+  });
+
+  it("stays on choose when pre-review refresh rejects", async () => {
+    testState.rows = [
+      {
+        entry: worktreeEntry({
+          worktreePath: "/wt/busy",
+          branch: "feat-busy",
+          inUse: true,
+        }),
+        tier: "in-use",
+        defaultChecked: false,
+        disabled: false,
+        note: "in-use",
+        holders: HOLDERS,
+        holdersStatus: "ready",
+        holdersRevision: REV_A,
+      },
+    ];
+    testState.refresh.mockImplementation(() =>
+      Promise.reject(new Error("refresh failed")),
+    );
+    renderDialog();
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Sweep worktree feat-busy" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Review consequences" }),
+    );
+    await waitFor(() => {
+      expect(testState.refresh).toHaveBeenCalled();
+    });
+    expect(screen.queryByText("Review this sweep")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Review consequences" }),
+    ).toBeTruthy();
+    expect(testState.mutate).not.toHaveBeenCalled();
+  });
+
+  it("ignores a second review click while refresh is in flight", async () => {
+    testState.rows = [
+      {
+        entry: worktreeEntry({
+          worktreePath: "/wt/busy",
+          branch: "feat-busy",
+          inUse: true,
+        }),
+        tier: "in-use",
+        defaultChecked: false,
+        disabled: false,
+        note: "in-use",
+        holders: HOLDERS,
+        holdersStatus: "ready",
+        holdersRevision: REV_A,
+      },
+    ];
+    let release: ((rows: TestRow[]) => void) | undefined;
+    testState.refresh.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    renderDialog();
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Sweep worktree feat-busy" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Review consequences" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Review consequences" }),
+    );
+    expect(testState.refresh).toHaveBeenCalledTimes(1);
+    release?.(testState.rows);
+    await waitFor(() => {
+      expect(screen.getByText("Review this sweep")).toBeTruthy();
+    });
   });
 });

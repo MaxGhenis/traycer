@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowRight, Paintbrush } from "lucide-react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@/lib/host";
@@ -147,6 +147,7 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
     useState<SweepReviewSnapshot | null>(null);
   const [typedSweep, setTypedSweep] = useState("");
   const [inventoryChanged, setInventoryChanged] = useState(false);
+  const reviewRefreshGate = useRef(false);
   const claimRefreshKey = useBareKeyClaimer("r", (event) => {
     event.preventDefault();
     triggerRefresh();
@@ -242,7 +243,7 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
         setInventoryChanged(true);
         setTypedSweep("");
         setCheckOverrides((current) =>
-          withoutOverridePaths(current, result.removed),
+          uncheckNonResubmittableOverrides(current, result),
         );
         setReviewSnapshot((current) => applySweepOutcome(current, result));
       },
@@ -255,6 +256,7 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
       checkedRows,
       refreshCandidates,
       kickoff,
+      reviewRefreshGate,
       setReviewSnapshot,
       setTypedSweep,
       setInventoryChanged,
@@ -403,6 +405,7 @@ function startSweepPrimary(input: {
   readonly checkedRows: ReadonlyArray<EpicSweepWorktreeRow>;
   readonly refreshCandidates: () => Promise<ReadonlyArray<EpicSweepWorktreeRow>>;
   readonly kickoff: (targets: ReadonlyArray<EpicSweepWorktreeRow>) => void;
+  readonly reviewRefreshGate: { current: boolean };
   readonly setReviewSnapshot: (next: SweepReviewSnapshot | null) => void;
   readonly setTypedSweep: (value: string) => void;
   readonly setInventoryChanged: (value: boolean) => void;
@@ -415,6 +418,7 @@ function startSweepPrimary(input: {
     input.kickoff(input.checkedRows);
     return;
   }
+  if (input.reviewRefreshGate.current) return;
   const selectedPaths = new Set(
     input.checkedRows.map((row) => row.entry.worktreePath),
   );
@@ -423,25 +427,34 @@ function startSweepPrimary(input: {
       .filter((row) => row.note === "in-use")
       .map((row) => row.entry.worktreePath),
   );
-  void input.refreshCandidates().then((freshRows) => {
-    const selected = freshRows.filter((row) => {
-      if (!selectedPaths.has(row.entry.worktreePath) || row.disabled) {
-        return false;
-      }
-      if (
-        row.note === "in-use" &&
-        !previouslyInUse.has(row.entry.worktreePath)
-      ) {
-        return false;
-      }
-      return true;
+  input.reviewRefreshGate.current = true;
+  void input
+    .refreshCandidates()
+    .then((freshRows) => {
+      const selected = freshRows.filter((row) => {
+        if (!selectedPaths.has(row.entry.worktreePath) || row.disabled) {
+          return false;
+        }
+        if (
+          row.note === "in-use" &&
+          !previouslyInUse.has(row.entry.worktreePath)
+        ) {
+          return false;
+        }
+        return true;
+      });
+      if (selected.length === 0 || selectionIsSafeOnly(selected)) return;
+      input.setReviewSnapshot(captureReviewSnapshot(selected, undefined));
+      input.setTypedSweep("");
+      input.setInventoryChanged(false);
+      input.setStep("review");
+    })
+    .catch(() => {
+      // Hook already toasted. Stay on Choose; do not open a stale receipt.
+    })
+    .finally(() => {
+      input.reviewRefreshGate.current = false;
     });
-    if (selected.length === 0 || selectionIsSafeOnly(selected)) return;
-    input.setReviewSnapshot(captureReviewSnapshot(selected));
-    input.setTypedSweep("");
-    input.setInventoryChanged(false);
-    input.setStep("review");
-  });
 }
 
 function startSweepKickoff(input: {
@@ -509,9 +522,12 @@ function applySweepOutcome(
 ): SweepReviewSnapshot | null {
   if (current === null) return current;
   const removed = new Set(result.removed);
-  const remaining = current.all.filter(
-    (row) => !removed.has(row.entry.worktreePath),
-  );
+  const uncertain = new Set(result.uncertain);
+  const failed = new Set(result.failed);
+  const remaining = current.all.filter((row) => {
+    const path = row.entry.worktreePath;
+    return !removed.has(path) && !uncertain.has(path) && !failed.has(path);
+  });
   if (remaining.length === 0) return null;
   const byPath = new Map(
     result.holdersChanged.map((entry) => [entry.worktreePath, entry]),
@@ -535,7 +551,14 @@ function applySweepOutcome(
       holdersRevision,
     };
   });
-  return captureReviewSnapshot(updated);
+  return captureReviewSnapshot(updated, {
+    pendingUncertain: current.all.filter((row) =>
+      uncertain.has(row.entry.worktreePath),
+    ),
+    retryableFailed: current.all.filter((row) =>
+      failed.has(row.entry.worktreePath),
+    ),
+  });
 }
 
 function SweepWorktreesChoose(props: {
@@ -827,6 +850,20 @@ function withoutOverridePaths(
     if (next.delete(path)) changed = true;
   }
   return changed ? next : overrides;
+}
+
+function uncheckNonResubmittableOverrides(
+  overrides: ReadonlyMap<string, boolean>,
+  result: SweepWorktreesResult,
+): ReadonlyMap<string, boolean> {
+  const next = new Map(withoutOverridePaths(overrides, result.removed));
+  for (const path of result.uncertain) {
+    next.set(path, false);
+  }
+  for (const path of result.failed) {
+    next.set(path, false);
+  }
+  return next;
 }
 
 /**

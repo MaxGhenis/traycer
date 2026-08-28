@@ -77,6 +77,29 @@ export function SweepWorktreesReview(props: {
             continuing.
           </p>
         ) : null}
+        {props.snapshot.pendingUncertain.length > 0 ? (
+          <p
+            className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-ui-sm text-foreground"
+            data-testid="sweep-review-uncertain"
+          >
+            {props.snapshot.pendingUncertain
+              .map((row) => worktreeIdentity(row))
+              .join(", ")}{" "}
+            unconfirmed — check the worktree. That deletion is not being
+            retried.
+          </p>
+        ) : null}
+        {props.snapshot.retryableFailed.length > 0 ? (
+          <p
+            className="rounded-md border border-destructive/40 bg-destructive/8 px-3 py-2 text-ui-sm text-foreground"
+            data-testid="sweep-review-failed"
+          >
+            {props.snapshot.retryableFailed
+              .map((row) => worktreeIdentity(row))
+              .join(", ")}{" "}
+            {`couldn't be removed — go back and select again to retry.`}
+          </p>
+        ) : null}
         {props.snapshot.unproven.length > 0 ? (
           <ReviewSection
             title="Work may be permanently lost"

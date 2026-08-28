@@ -143,13 +143,28 @@ export interface SweepReviewSnapshot {
   readonly unproven: readonly EpicSweepWorktreeRow[];
   readonly inUse: readonly EpicSweepWorktreeRow[];
   readonly shared: readonly EpicSweepWorktreeRow[];
+  /**
+   * Rows the next confirm will submit. Removed, uncertain, and failed
+   * outcomes are not in this list — uncertain must not be replayed, and
+   * failed needs a fresh Choose-step selection.
+   */
   readonly all: readonly EpicSweepWorktreeRow[];
   readonly disclosedHolders: readonly WorktreeBusyHolder[];
   readonly branchNames: readonly string[];
+  /** Host may still be deleting these; shown, never resubmitted. */
+  readonly pendingUncertain: readonly EpicSweepWorktreeRow[];
+  /** Visible failures that require a deliberate re-check to retry. */
+  readonly retryableFailed: readonly EpicSweepWorktreeRow[];
 }
 
 export function captureReviewSnapshot(
   rows: ReadonlyArray<EpicSweepWorktreeRow>,
+  deferred:
+    | {
+        readonly pendingUncertain: readonly EpicSweepWorktreeRow[];
+        readonly retryableFailed: readonly EpicSweepWorktreeRow[];
+      }
+    | undefined,
 ): SweepReviewSnapshot {
   const disclosedHolders = rows.flatMap((row) =>
     row.note === "in-use" ? [...row.holders] : [],
@@ -164,6 +179,8 @@ export function captureReviewSnapshot(
     branchNames: rows.flatMap((row) =>
       row.entry.branch === null ? [] : [row.entry.branch],
     ),
+    pendingUncertain: deferred?.pendingUncertain ?? [],
+    retryableFailed: deferred?.retryableFailed ?? [],
   };
 }
 
