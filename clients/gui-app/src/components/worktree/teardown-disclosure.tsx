@@ -83,6 +83,14 @@ export function TeardownInlineDisclosure(props: {
               className="text-ui-xs wrap-anywhere text-foreground"
             >
               {actor.sentence}
+              {actor.evidence.map((line) => (
+                <span
+                  key={line}
+                  className="mt-0.5 block wrap-anywhere text-muted-foreground"
+                >
+                  {line}
+                </span>
+              ))}
             </li>
           ))
         )}
@@ -129,6 +137,14 @@ function ActorGroup(props: {
               <span className="min-w-0 wrap-anywhere text-foreground">
                 {actor.sentence}
               </span>
+              {actor.evidence.map((line) => (
+                <span
+                  key={line}
+                  className="min-w-0 wrap-anywhere text-ui-xs text-muted-foreground"
+                >
+                  {line}
+                </span>
+              ))}
               {failure === undefined ? null : (
                 <span
                   className="text-ui-xs text-destructive"

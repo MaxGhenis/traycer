@@ -61,8 +61,25 @@ export function externalOwnerCount(
   row: EpicSweepWorktreeRow,
   selectedEpicIds: ReadonlySet<string>,
 ): number {
-  return row.entry.owners.filter((owner) => !selectedEpicIds.has(owner.epicId))
-    .length;
+  return distinctExternalEpicIds([row], selectedEpicIds).length;
+}
+
+export function distinctExternalEpicIds(
+  rows: ReadonlyArray<EpicSweepWorktreeRow>,
+  selectedEpicIds: ReadonlySet<string>,
+): readonly string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    for (const owner of row.entry.owners) {
+      if (selectedEpicIds.has(owner.epicId) || seen.has(owner.epicId)) {
+        continue;
+      }
+      seen.add(owner.epicId);
+      ids.push(owner.epicId);
+    }
+  }
+  return ids;
 }
 
 export function sharedRowHint(

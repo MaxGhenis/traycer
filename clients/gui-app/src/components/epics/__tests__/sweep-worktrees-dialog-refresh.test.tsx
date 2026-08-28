@@ -43,6 +43,14 @@ vi.mock("@/components/worktree/worktree-pr-metadata", () => ({
   WorktreePrPills: () => null,
 }));
 
+vi.mock("@/lib/worktree/teardown-agent-names", () => ({
+  useTeardownAgentNames: () => new Map<string, string>(),
+}));
+
+vi.mock("@/components/settings/panels/use-worktree-task-titles", () => ({
+  useWorktreeTaskTitles: () => new Map<string, string>(),
+}));
+
 import { SweepWorktreesDialog } from "@/components/epics/sweep-worktrees-dialog";
 
 function worktreeEntry(): WorktreeHostEntryV14 {

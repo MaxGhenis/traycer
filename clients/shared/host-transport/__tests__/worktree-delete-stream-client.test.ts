@@ -215,7 +215,8 @@ describe("WorktreeDeleteStreamClient", () => {
       worktreePath: "/wt/a",
       scripts: null,
       stopOwners: true,
-      expectedHoldersRevision: "rev-1",
+      expectedHoldersRevision:
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       callbacks: {
         onStarted: () => {},
         onPhase: () => {},
@@ -231,14 +232,16 @@ describe("WorktreeDeleteStreamClient", () => {
         worktreePath: "/wt/a",
         scripts: null,
         stopOwners: true,
-        expectedHoldersRevision: "rev-1",
+        expectedHoldersRevision:
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       },
     );
     session.emitFrame({
       kind: "failed",
       reason: "Holders changed",
       holders: HOLDERS,
-      holdersRevision: "rev-2",
+      holdersRevision:
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       code: "WORKTREE_HOLDERS_CHANGED",
       hasBinaryPayload: false,
     });
@@ -246,7 +249,7 @@ describe("WorktreeDeleteStreamClient", () => {
       "Holders changed",
       HOLDERS,
       "WORKTREE_HOLDERS_CHANGED",
-      "rev-2",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     );
     client.close();
   });

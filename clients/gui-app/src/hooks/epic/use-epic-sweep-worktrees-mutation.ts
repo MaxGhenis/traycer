@@ -117,14 +117,21 @@ export function useEpicSweepWorktrees(): UseMutationResult<
       return { ...outcome, hostId: variables.hostId };
     },
     onSuccess: (result, variables) => {
+      const settled =
+        result.removed.length > 0 ||
+        result.failed.length > 0 ||
+        result.uncertain.length > 0;
+      if (settled) {
+        emitSweepSummaryToast(result);
+        purgeIntentsForRemovedWorktrees(
+          result.hostId,
+          variables.worktrees,
+          result.removed,
+        );
+        invalidateWorktreeListingAndBindingCaches(queryClient, result.hostId);
+      }
       if (result.holdersChanged.length > 0) return;
-      emitSweepSummaryToast(result);
-      purgeIntentsForRemovedWorktrees(
-        result.hostId,
-        variables.worktrees,
-        result.removed,
-      );
-      invalidateWorktreeListingAndBindingCaches(queryClient, result.hostId);
+      if (!settled) emitSweepSummaryToast(result);
     },
     onError: (error) => {
       toast.error(error.message);

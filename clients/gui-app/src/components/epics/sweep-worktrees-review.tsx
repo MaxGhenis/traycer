@@ -11,7 +11,7 @@ import {
 } from "@/lib/worktree/teardown-holder-copy";
 import {
   bindingHeading,
-  externalOwnerCount,
+  distinctExternalEpicIds,
   finalSweepButtonLabel,
   removalSummaryCopy,
   unprovenRowHint,
@@ -23,6 +23,8 @@ import { cn } from "@/lib/utils";
 export function SweepWorktreesReview(props: {
   readonly snapshot: SweepReviewSnapshot;
   readonly selectedEpicIds: ReadonlySet<string>;
+  readonly agentNames: ReadonlyMap<string, string>;
+  readonly taskTitles: ReadonlyMap<string, string>;
   readonly typedValue: string;
   readonly inventoryChanged: boolean;
   readonly submitting: boolean;
@@ -33,13 +35,16 @@ export function SweepWorktreesReview(props: {
 }): ReactNode {
   const needsTypedGate = props.snapshot.unproven.length > 0;
   const typedOk = !needsTypedGate || props.typedValue === "sweep";
-  const stopCount = formatTeardownActors(
+  const stopActors = formatTeardownActors(
     props.snapshot.disclosedHolders,
-    new Map(),
+    props.agentNames,
+  );
+  const unknownRows = props.snapshot.inUse.filter(
+    (row) => row.holders.length === 0,
   ).length;
-  const externalTasks = props.snapshot.shared.reduce(
-    (sum, row) => sum + externalOwnerCount(row, props.selectedEpicIds),
-    0,
+  const externalEpicIds = distinctExternalEpicIds(
+    props.snapshot.shared,
+    props.selectedEpicIds,
   );
   const removal = removalSummaryCopy(
     props.snapshot.all.length,
@@ -92,9 +97,10 @@ export function SweepWorktreesReview(props: {
         ) : null}
         {props.snapshot.inUse.length > 0 ? (
           <ReviewSection
-            title={formatStopHeading(
-              stopCount > 0 ? stopCount : props.snapshot.inUse.length,
-            )}
+            title={formatStopHeading({
+              knownActors: stopActors.length,
+              unknownRows,
+            })}
             danger={false}
             testId="sweep-review-stops"
           >
@@ -108,14 +114,23 @@ export function SweepWorktreesReview(props: {
                     {formatUnknownHolderConsequence(worktreeIdentity(row))}
                   </p>
                 ) : (
-                  formatTeardownActors(row.holders, new Map()).map((actor) => (
-                    <p
-                      key={actor.key}
-                      className="text-ui-xs wrap-anywhere text-foreground"
-                    >
-                      {actor.sentence}
-                    </p>
-                  ))
+                  formatTeardownActors(row.holders, props.agentNames).map(
+                    (actor) => (
+                      <div key={actor.key} className="space-y-0.5">
+                        <p className="text-ui-xs wrap-anywhere text-foreground">
+                          {actor.sentence}
+                        </p>
+                        {actor.evidence.map((line) => (
+                          <p
+                            key={line}
+                            className="text-ui-xs wrap-anywhere text-muted-foreground"
+                          >
+                            {line}
+                          </p>
+                        ))}
+                      </div>
+                    ),
+                  )
                 )}
               </div>
             ))}
@@ -123,17 +138,26 @@ export function SweepWorktreesReview(props: {
         ) : null}
         {props.snapshot.shared.length > 0 ? (
           <ReviewSection
-            title={bindingHeading(Math.max(externalTasks, 1))}
+            title={bindingHeading(Math.max(externalEpicIds.length, 1))}
             danger={false}
             testId="sweep-review-shared"
           >
             {props.snapshot.shared.map((row) => (
-              <p
-                key={row.entry.worktreePath}
-                className="text-ui-xs wrap-anywhere"
-              >
-                {worktreeIdentity(row)}
-              </p>
+              <div key={row.entry.worktreePath} className="space-y-0.5">
+                <p className="text-ui-xs wrap-anywhere">
+                  {worktreeIdentity(row)}
+                </p>
+                {distinctExternalEpicIds([row], props.selectedEpicIds).map(
+                  (epicId) => (
+                    <p
+                      key={epicId}
+                      className="text-ui-xs wrap-anywhere text-muted-foreground"
+                    >
+                      {props.taskTitles.get(epicId) ?? epicId}
+                    </p>
+                  ),
+                )}
+              </div>
             ))}
           </ReviewSection>
         ) : null}

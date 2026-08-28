@@ -541,7 +541,12 @@ describe("runWorktreeCleanup stopOwners paths", () => {
       paths: ["/wt/idle", "/wt/busy"],
       source: "task_sweep",
       stopOwnersPaths: new Set(["/wt/busy"]),
-      expectedHoldersRevisionByPath: new Map([["/wt/busy", "rev-1"]]),
+      expectedHoldersRevisionByPath: new Map([
+        [
+          "/wt/busy",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+      ]),
     });
 
     expect(legacyMock.paths).toEqual(["/wt/busy"]);
@@ -561,7 +566,7 @@ describe("runWorktreeCleanup stopOwners paths", () => {
         },
       ],
       "WORKTREE_HOLDERS_CHANGED",
-      "rev-2",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     );
 
     await expect(promise).resolves.toEqual({
@@ -584,9 +589,55 @@ describe("runWorktreeCleanup stopOwners paths", () => {
               holderId: "epic-1:chat:chat-1",
             },
           ],
-          holdersRevision: "rev-2",
+          holdersRevision:
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         },
       ],
+    });
+    expect(commandMock.commands).toHaveLength(0);
+  });
+
+  it("keeps settled force outcomes and does not start the idle batch on mixed HOLDERS_CHANGED", async () => {
+    const digest =
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const promise = runWorktreeCleanup(stubOpenStreamTransport(), {
+      hostId: "host-1",
+      paths: ["/wt/idle", "/wt/ok", "/wt/busy"],
+      source: "task_sweep",
+      stopOwnersPaths: new Set(["/wt/ok", "/wt/busy"]),
+      expectedHoldersRevisionByPath: new Map([
+        ["/wt/ok", digest],
+        ["/wt/busy", digest],
+      ]),
+    });
+
+    expect(legacyMock.paths.sort()).toEqual(["/wt/busy", "/wt/ok"]);
+    expect(commandMock.commands).toHaveLength(0);
+    legacyCallbacksFor("/wt/ok").onComplete(true);
+    legacyCallbacksFor("/wt/busy").onFailed(
+      "Holders changed",
+      [
+        {
+          ownerRef: {
+            epicId: "epic-1",
+            ownerKind: "chat",
+            ownerId: "chat-1",
+          },
+          holdKind: "chat-turn",
+          activity: "working",
+          label: "new actor",
+          holderId: "epic-1:chat:chat-1",
+        },
+      ],
+      "WORKTREE_HOLDERS_CHANGED",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
+
+    await expect(promise).resolves.toMatchObject({
+      removed: ["/wt/ok"],
+      failed: [],
+      uncertain: [],
+      holdersChanged: [{ worktreePath: "/wt/busy" }],
     });
     expect(commandMock.commands).toHaveLength(0);
   });

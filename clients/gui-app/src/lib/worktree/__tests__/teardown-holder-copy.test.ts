@@ -3,13 +3,18 @@ import type { WorktreeBusyHolder } from "@traycer/protocol/framework/worktree-bu
 import {
   canSubmitExpectedHoldersRevision,
   formatHolderSentence,
+  formatStopHeading,
   formatTeardownActors,
   formatUncheckedInUseKnown,
   formatUncheckedInUseUnknown,
   formatUnknownHolderConsequence,
   holderIdOf,
   sanitizeHoldersRevision,
+  UNNAMED_AGENT_FALLBACK,
 } from "@/lib/worktree/teardown-holder-copy";
+
+const REV_A =
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 const OWNER: WorktreeBusyHolder["ownerRef"] = {
   epicId: "epic-1",
@@ -104,7 +109,7 @@ describe("teardown holder copy", () => {
     );
   });
 
-  it("echoes a holdersRevision only when it is a non-empty string", () => {
+  it("echoes a holdersRevision only when it is a 64-hex digest", () => {
     const withId = {
       ...holder({
         holdKind: "chat-turn",
@@ -114,10 +119,63 @@ describe("teardown holder copy", () => {
       holderId: "epic-1:chat:chat-1",
     };
     expect(holderIdOf(withId)).toBe("epic-1:chat:chat-1");
-    expect(canSubmitExpectedHoldersRevision("rev-1")).toBe(true);
+    expect(canSubmitExpectedHoldersRevision(REV_A)).toBe(true);
     expect(canSubmitExpectedHoldersRevision(undefined)).toBe(false);
     expect(canSubmitExpectedHoldersRevision("")).toBe(false);
-    expect(sanitizeHoldersRevision("rev-1")).toBe("rev-1");
-    expect(sanitizeHoldersRevision("")).toBeUndefined();
+    expect(canSubmitExpectedHoldersRevision("rev-1")).toBe(false);
+    expect(sanitizeHoldersRevision(REV_A)).toBe(REV_A);
+    expect(sanitizeHoldersRevision("rev-abc")).toBeUndefined();
+  });
+
+  it("never uses Run directory as a name when the map is empty", () => {
+    const sentence = formatHolderSentence(
+      holder({
+        holdKind: "active-run-cwd",
+        activity: "working",
+        label: "Run directory",
+      }),
+      new Map(),
+    );
+    expect(sentence).toBe(
+      `Agent “${UNNAMED_AGENT_FALLBACK}” is still running from this worktree — will be stopped`,
+    );
+    expect(sentence).not.toMatch(/Run directory/i);
+  });
+
+  it("formats mixed hold kinds for one actor from the working record and keeps evidence", () => {
+    const idleChat: WorktreeBusyHolder & { readonly holderId: string } = {
+      ...holder({
+        holdKind: "chat-turn",
+        activity: "idle",
+        label: "a",
+      }),
+      holderId: "epic-1:chat:chat-1",
+    };
+    const workingRun: WorktreeBusyHolder & { readonly holderId: string } = {
+      ...holder({
+        holdKind: "active-run-cwd",
+        activity: "working",
+        label: "Run directory",
+      }),
+      holderId: "epic-1:chat:chat-1",
+    };
+    const actors = formatTeardownActors([idleChat, workingRun], names);
+    expect(actors).toHaveLength(1);
+    expect(actors[0]?.tone).toBe("working");
+    expect(actors[0]?.sentence).toContain("still running from this worktree");
+    expect(actors[0]?.evidence.some((line) => line.includes("idle session"))).toBe(
+      true,
+    );
+  });
+
+  it("does not claim an exact process count when unknown inventories are mixed in", () => {
+    expect(
+      formatStopHeading({ knownActors: 1, unknownRows: 1 }),
+    ).toBe(
+      "1 process will be stopped, and unidentified background work",
+    );
+    expect(formatStopHeading({ knownActors: 0, unknownRows: 2 })).toBe(
+      "Unidentified background work will be stopped",
+    );
   });
 });

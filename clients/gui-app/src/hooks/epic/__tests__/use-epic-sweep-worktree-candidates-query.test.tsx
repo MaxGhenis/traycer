@@ -333,7 +333,7 @@ describe("useEpicSweepWorktreeCandidatesForClient", () => {
     });
 
     pauseForcedProbe = true;
-    let refreshPromise: Promise<void> | null = null;
+    let refreshPromise: Promise<unknown> | null = null;
     act(() => {
       refreshPromise = result.current.refresh();
     });
@@ -563,7 +563,8 @@ describe("useEpicSweepWorktreeCandidatesForClient", () => {
     };
     listHoldersHandler = () => ({
       holders: [holder],
-      holdersRevision: "rev-1",
+      holdersRevision:
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     });
     const probed = [
       entry({
@@ -582,7 +583,8 @@ describe("useEpicSweepWorktreeCandidatesForClient", () => {
       note: "in-use",
       disabled: false,
       holdersStatus: "ready",
-      holdersRevision: "rev-1",
+      holdersRevision:
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       holders: [holder],
     });
   });

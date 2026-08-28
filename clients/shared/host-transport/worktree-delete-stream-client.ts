@@ -1,4 +1,5 @@
 import type { WorktreeBusyHolder } from "@traycer/protocol/framework/worktree-busy-holders";
+import { HOLDERS_REVISION_DIGEST_PATTERN } from "@traycer/protocol/host/worktree-schemas";
 import {
   worktreeDeleteByPathServerFrameSchemaV12,
   type WorktreeDeleteByPathServerFrameV12,
@@ -96,8 +97,9 @@ export class WorktreeDeleteStreamClient {
       worktreePath: options.worktreePath,
       scripts: options.scripts,
       ...(options.stopOwners ? { stopOwners: true } : {}),
-      ...(options.expectedHoldersRevision !== undefined &&
-      options.expectedHoldersRevision.length > 0
+      ...(options.stopOwners &&
+      options.expectedHoldersRevision !== undefined &&
+      HOLDERS_REVISION_DIGEST_PATTERN.test(options.expectedHoldersRevision)
         ? { expectedHoldersRevision: options.expectedHoldersRevision }
         : {}),
     });

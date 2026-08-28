@@ -148,14 +148,17 @@ describe("HostRpcError holders", () => {
         code: "WORKTREE_HOLDERS_CHANGED",
         message: "holders changed",
         holders: worktreeBusyHolders,
-        holdersRevision: "rev-2",
+        holdersRevision:
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       },
       "req-6",
       "worktree.delete",
     );
     expect(error.code).toBe("WORKTREE_HOLDERS_CHANGED");
     expect(error.holders).toEqual(worktreeBusyHolders);
-    expect(error.holdersRevision).toBe("rev-2");
+    expect(error.holdersRevision).toBe(
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
   });
 
   it("fromWireEnvelope keeps holdersRevision on WORKTREE_HOLDERS_CHANGED", () => {
@@ -164,13 +167,16 @@ describe("HostRpcError holders", () => {
         code: "WORKTREE_HOLDERS_CHANGED",
         message: "holders changed",
         holders: worktreeBusyHolders,
-        holdersRevision: "rev-3",
+        holdersRevision:
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       },
       "req-7",
       "worktree.delete",
     );
     expect(error.holders).toEqual(worktreeBusyHolders);
-    expect(error.holdersRevision).toBe("rev-3");
+    expect(error.holdersRevision).toBe(
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    );
   });
 
   it("drops holdersRevision on a non-holder-carrying code", () => {

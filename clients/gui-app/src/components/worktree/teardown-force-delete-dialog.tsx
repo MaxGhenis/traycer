@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { TeardownDisclosure } from "@/components/worktree/teardown-disclosure";
+import { useTeardownAgentNames } from "@/lib/worktree/teardown-agent-names";
 
 /**
  * Force-delete confirm built on the shared `TeardownDisclosure`. Title and
@@ -20,6 +21,7 @@ export function TeardownForceDeleteDialog(props: {
   readonly onConfirm: () => void;
   readonly onDismiss: () => void;
 }) {
+  const agentNames = useTeardownAgentNames(props.holders);
   return (
     <Dialog
       open={props.open}
@@ -49,7 +51,7 @@ export function TeardownForceDeleteDialog(props: {
         <div className="min-w-0 px-5 pb-4">
           <TeardownDisclosure
             holders={props.holders}
-            agentNames={undefined}
+            agentNames={agentNames}
           />
         </div>
         <div className="flex justify-end gap-2 border-t border-border/60 bg-foreground/3 px-5 py-3">

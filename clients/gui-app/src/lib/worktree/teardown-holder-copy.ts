@@ -1,5 +1,8 @@
 import type { WorktreeBusyHolder } from "@traycer/protocol/framework/worktree-busy-holders";
+import { HOLDERS_REVISION_DIGEST_PATTERN } from "@traycer/protocol/host/worktree-schemas";
 import { teardownHolderRowKey } from "@/lib/worktree/owner-teardown-snapshot";
+
+export const UNNAMED_AGENT_FALLBACK = "This agent";
 
 /**
  * Half A `holderId`. Used to group hold records of one actor (rule 7).
@@ -18,7 +21,8 @@ export function holderIdOf(holder: WorktreeBusyHolder): string | undefined {
 export function sanitizeHoldersRevision(
   value: string | undefined,
 ): string | undefined {
-  return value !== undefined && value.length > 0 ? value : undefined;
+  if (value === undefined) return undefined;
+  return HOLDERS_REVISION_DIGEST_PATTERN.test(value) ? value : undefined;
 }
 
 export function ownerNameKey(holder: WorktreeBusyHolder): string {
@@ -42,6 +46,7 @@ export interface FormattedTeardownActor {
   readonly holderId: string | undefined;
   readonly tone: "working" | "idle";
   readonly sentence: string;
+  readonly evidence: readonly string[];
   readonly holders: readonly WorktreeBusyHolder[];
 }
 
@@ -60,9 +65,19 @@ export function formatUncheckedInUseUnknown(): string {
   return "This host reports background work here, but cannot identify it · Select individually to review";
 }
 
-export function formatStopHeading(processCount: number): string {
-  const unit = processCount === 1 ? "process" : "processes";
-  return `${String(processCount)} ${unit} will be stopped`;
+export function formatStopHeading(input: {
+  readonly knownActors: number;
+  readonly unknownRows: number;
+}): string {
+  if (input.unknownRows > 0 && input.knownActors === 0) {
+    return "Unidentified background work will be stopped";
+  }
+  if (input.unknownRows > 0) {
+    const unit = input.knownActors === 1 ? "process" : "processes";
+    return `${String(input.knownActors)} ${unit} will be stopped, and unidentified background work`;
+  }
+  const unit = input.knownActors === 1 ? "process" : "processes";
+  return `${String(input.knownActors)} ${unit} will be stopped`;
 }
 
 export function formatTeardownActors(
@@ -92,15 +107,32 @@ function formatActorGroup(
   group: readonly WorktreeBusyHolder[],
   agentNames: ReadonlyMap<string, string>,
 ): FormattedTeardownActor {
-  const primary = group[0];
+  const primary = worstHolder(group);
   const working = group.some((holder) => holder.activity === "working");
+  const sentence = formatHolderSentence(primary, agentNames);
+  const evidence: string[] = [];
+  const seen = new Set<string>([sentence]);
+  for (const holder of group) {
+    const line = formatHolderSentence(holder, agentNames);
+    if (seen.has(line)) continue;
+    seen.add(line);
+    evidence.push(line);
+  }
   return {
     key: teardownHolderRowKey(primary),
     holderId: holderIdOf(primary),
     tone: working ? "working" : "idle",
-    sentence: formatHolderSentence(primary, agentNames),
+    sentence,
+    evidence,
     holders: group,
   };
+}
+
+function worstHolder(
+  group: readonly WorktreeBusyHolder[],
+): WorktreeBusyHolder {
+  const working = group.find((holder) => holder.activity === "working");
+  return working ?? group[0];
 }
 
 export function formatHolderSentence(
@@ -138,6 +170,16 @@ function resolveAgentName(
   const stripped = holder.label
     .replace(/\s+is (working|idle|running).*$/i, "")
     .trim();
-  if (stripped.length > 0) return stripped;
-  return holder.ownerRef.ownerId;
+  if (stripped.length > 0 && !isMechanismLabel(stripped)) return stripped;
+  return UNNAMED_AGENT_FALLBACK;
+}
+
+function isMechanismLabel(label: string): boolean {
+  const normalized = label.trim().toLowerCase();
+  return (
+    normalized === "run directory" ||
+    normalized === "pty" ||
+    normalized === "holder" ||
+    normalized === "busy"
+  );
 }

@@ -96,6 +96,30 @@ describe("TeardownDisclosure", () => {
     expect(screen.queryByText(/busy/i)).toBeNull();
   });
 
+  it("falls back to This agent for active-run-cwd when names are absent", () => {
+    render(
+      <TeardownDisclosure
+        holders={[
+          holder({
+            holdKind: "active-run-cwd",
+            activity: "working",
+            label: "Run directory",
+            ownerRef: {
+              epicId: "epic-1",
+              ownerKind: "chat",
+              ownerId: "chat-1",
+            },
+          }),
+        ]}
+        agentNames={undefined}
+      />,
+    );
+    expect(screen.getByTestId("teardown-disclosure").textContent).toContain(
+      "Agent “This agent” is still running from this worktree — will be stopped",
+    );
+    expect(screen.queryByText("Run directory")).toBeNull();
+  });
+
   it("names a stop failure on the matching holder row", () => {
     const shell = holder({
       holdKind: "supervised-shell",

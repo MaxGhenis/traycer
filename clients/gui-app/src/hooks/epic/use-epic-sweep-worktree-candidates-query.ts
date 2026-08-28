@@ -90,8 +90,11 @@ export interface EpicSweepWorktreeCandidatesResult {
   readonly checkedAt: number | null;
   /** The selected host is ready for another forced proof. */
   readonly canRefresh: boolean;
-  /** Re-runs the same bounded, forced proof used when the dialog opens. */
-  readonly refresh: () => Promise<void>;
+  /**
+   * Re-runs the same bounded, forced proof used when the dialog opens and
+   * resolves with the freshly classified rows (not a stale render closure).
+   */
+  readonly refresh: () => Promise<ReadonlyArray<EpicSweepWorktreeRow>>;
 }
 
 const EMPTY_ROWS: ReadonlyArray<EpicSweepWorktreeRow> = [];
@@ -221,11 +224,18 @@ export function useEpicSweepWorktreeCandidatesForClient(
     }),
   );
 
-  const refresh = async (): Promise<void> => {
+  const refresh = async (): Promise<ReadonlyArray<EpicSweepWorktreeRow>> => {
     const result = await refetch();
-    if (result.error === null) return;
-    toastFromHostError(result.error, "Couldn't refresh worktree details.");
-    throw result.error;
+    if (result.error !== null) {
+      toastFromHostError(result.error, "Couldn't refresh worktree details.");
+      throw result.error;
+    }
+    if (selectedEpicIds === null || result.data === undefined) return [];
+    return classifyOwnedSweepRows(
+      selectedEpicIds,
+      result.data.listing.worktrees,
+      result.data.holdersByPath,
+    );
   };
 
   const isPending =

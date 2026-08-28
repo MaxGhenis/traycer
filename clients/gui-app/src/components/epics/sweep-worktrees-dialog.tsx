@@ -24,7 +24,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
-import type { WorktreeBusyHolder } from "@traycer/protocol/framework/worktree-busy-holders";
 import { WorktreePrPills } from "@/components/worktree/worktree-pr-metadata";
 import { SelectAllToggle } from "@/components/ui/select-all-toggle";
 import { TeardownInlineDisclosure } from "@/components/worktree/teardown-disclosure";
@@ -39,7 +38,9 @@ import {
   type SweepWorktreesResult,
 } from "@/hooks/epic/use-epic-sweep-worktrees-mutation";
 import { useRefreshSpinner } from "@/hooks/use-refresh-spinner";
+import { useWorktreeTaskTitles } from "@/components/settings/panels/use-worktree-task-titles";
 import { useBareKeyClaimer } from "@/lib/keybindings/use-bare-key-claimer";
+import { isEditableEventTarget } from "@/lib/keybindings/editable-target";
 import { useCompactRelativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
 import {
@@ -53,6 +54,7 @@ import {
   unknownConsequenceForRow,
   type SweepReviewSnapshot,
 } from "@/lib/epics/sweep-consequences";
+import { useTeardownAgentNames } from "@/lib/worktree/teardown-agent-names";
 import {
   formatUncheckedInUseKnown,
   formatUncheckedInUseUnknown,
@@ -133,7 +135,9 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
   const taskCount = epicIds?.length ?? 0;
   const sweepMutation = useEpicSweepWorktrees();
   const refresh = useRefreshSpinner({
-    onRefresh: refreshCandidates,
+    onRefresh: async () => {
+      await refreshCandidates();
+    },
     externalRefreshing: isPending,
     timeoutMs: SWEEP_WORKTREES_REFRESH_TIMEOUT_MS,
   });
@@ -203,6 +207,7 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
     bulkRows.length > 0 && bulkSelectedCount === bulkRows.length;
   const inUseRowCount = rows.filter((row) => row.note === "in-use").length;
   const claimSelectAllKey = useBareKeyClaimer("a", (event) => {
+    if (isEditableEventTarget(event.target)) return;
     event.preventDefault();
     toggleSweepSelectAll({
       allBulkSelected,
@@ -219,16 +224,27 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
     [claimSelectAllKey, step, taskCount],
   );
   const selectedEpicIds = new Set(epicIds ?? []);
+  const disclosedHolders = rows.flatMap((row) =>
+    row.note === "in-use" ? [...row.holders] : [],
+  );
+  const agentNames = useTeardownAgentNames(disclosedHolders);
+  const taskTitles = useWorktreeTaskTitles(
+    props.hostClient,
+    rows.map((row) => row.entry),
+  );
   const kickoff = (targets: ReadonlyArray<EpicSweepWorktreeRow>): void => {
     startSweepKickoff({
       hostId,
       targets,
       mutate: sweepMutation.mutate,
       onClose: () => onOpenChange(false),
-      onHoldersChanged: (changed) => {
+      onSweepOutcome: (result) => {
         setInventoryChanged(true);
         setTypedSweep("");
-        setReviewSnapshot((current) => applyHoldersChanged(current, changed));
+        setCheckOverrides((current) =>
+          withoutOverridePaths(current, result.removed),
+        );
+        setReviewSnapshot((current) => applySweepOutcome(current, result));
       },
     });
   };
@@ -257,6 +273,8 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
           <SweepWorktreesReview
             snapshot={reviewSnapshot}
             selectedEpicIds={selectedEpicIds}
+            agentNames={agentNames}
+            taskTitles={taskTitles}
             typedValue={typedSweep}
             inventoryChanged={inventoryChanged}
             submitting={isSweeping}
@@ -322,6 +340,7 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
             elevated={!selectionIsSafeOnly(checkedRows)}
             isSweeping={isSweeping}
             selectedEpicIds={selectedEpicIds}
+            agentNames={agentNames}
           />
         )}
       </DialogContent>
@@ -382,7 +401,7 @@ function startSweepPrimary(input: {
   readonly proofReady: boolean;
   readonly hostId: string | null;
   readonly checkedRows: ReadonlyArray<EpicSweepWorktreeRow>;
-  readonly refreshCandidates: () => Promise<void>;
+  readonly refreshCandidates: () => Promise<ReadonlyArray<EpicSweepWorktreeRow>>;
   readonly kickoff: (targets: ReadonlyArray<EpicSweepWorktreeRow>) => void;
   readonly setReviewSnapshot: (next: SweepReviewSnapshot | null) => void;
   readonly setTypedSweep: (value: string) => void;
@@ -396,8 +415,29 @@ function startSweepPrimary(input: {
     input.kickoff(input.checkedRows);
     return;
   }
-  void input.refreshCandidates().then(() => {
-    input.setReviewSnapshot(captureReviewSnapshot(input.checkedRows));
+  const selectedPaths = new Set(
+    input.checkedRows.map((row) => row.entry.worktreePath),
+  );
+  const previouslyInUse = new Set(
+    input.checkedRows
+      .filter((row) => row.note === "in-use")
+      .map((row) => row.entry.worktreePath),
+  );
+  void input.refreshCandidates().then((freshRows) => {
+    const selected = freshRows.filter((row) => {
+      if (!selectedPaths.has(row.entry.worktreePath) || row.disabled) {
+        return false;
+      }
+      if (
+        row.note === "in-use" &&
+        !previouslyInUse.has(row.entry.worktreePath)
+      ) {
+        return false;
+      }
+      return true;
+    });
+    if (selected.length === 0 || selectionIsSafeOnly(selected)) return;
+    input.setReviewSnapshot(captureReviewSnapshot(selected));
     input.setTypedSweep("");
     input.setInventoryChanged(false);
     input.setStep("review");
@@ -409,9 +449,7 @@ function startSweepKickoff(input: {
   readonly targets: ReadonlyArray<EpicSweepWorktreeRow>;
   readonly mutate: ReturnType<typeof useEpicSweepWorktrees>["mutate"];
   readonly onClose: () => void;
-  readonly onHoldersChanged: (
-    changed: SweepWorktreesResult["holdersChanged"],
-  ) => void;
+  readonly onSweepOutcome: (result: SweepWorktreesResult) => void;
 }): void {
   if (input.hostId === null) return;
   input.mutate(
@@ -434,7 +472,7 @@ function startSweepKickoff(input: {
           input.onClose();
           return;
         }
-        input.onHoldersChanged(result.holdersChanged);
+        input.onSweepOutcome(result);
       },
     },
   );
@@ -465,19 +503,20 @@ function toggleSweepSelectAll(input: {
   input.setCheckOverrides(next);
 }
 
-function applyHoldersChanged(
+function applySweepOutcome(
   current: SweepReviewSnapshot | null,
-  changed: ReadonlyArray<{
-    readonly worktreePath: string;
-    readonly holders: readonly WorktreeBusyHolder[];
-    readonly holdersRevision: string | undefined;
-  }>,
+  result: SweepWorktreesResult,
 ): SweepReviewSnapshot | null {
   if (current === null) return current;
-  const byPath = new Map(
-    changed.map((entry) => [entry.worktreePath, entry]),
+  const removed = new Set(result.removed);
+  const remaining = current.all.filter(
+    (row) => !removed.has(row.entry.worktreePath),
   );
-  const inUse = current.inUse.map((row) => {
+  if (remaining.length === 0) return null;
+  const byPath = new Map(
+    result.holdersChanged.map((entry) => [entry.worktreePath, entry]),
+  );
+  const updated = remaining.map((row) => {
     const update = byPath.get(row.entry.worktreePath);
     if (update === undefined) return row;
     const holdersRevision = sanitizeHoldersRevision(update.holdersRevision);
@@ -496,17 +535,7 @@ function applyHoldersChanged(
       holdersRevision,
     };
   });
-  return captureReviewSnapshot([
-    ...current.unproven,
-    ...inUse,
-    ...current.shared,
-    ...current.all.filter(
-      (row) =>
-        row.note !== "not-landed" &&
-        row.note !== "in-use" &&
-        row.note !== "shared",
-    ),
-  ]);
+  return captureReviewSnapshot(updated);
 }
 
 function SweepWorktreesChoose(props: {
@@ -537,6 +566,7 @@ function SweepWorktreesChoose(props: {
   readonly elevated: boolean;
   readonly isSweeping: boolean;
   readonly selectedEpicIds: ReadonlySet<string>;
+  readonly agentNames: ReadonlyMap<string, string>;
 }): ReactNode {
   return (
     <>
@@ -595,6 +625,7 @@ function SweepWorktreesChoose(props: {
             isRowSweeping={props.isRowSweeping}
             interactionDisabled={props.interactionDisabled}
             selectedEpicIds={props.selectedEpicIds}
+            agentNames={props.agentNames}
             onToggle={props.onToggle}
           />
           {!props.elevated &&
@@ -818,6 +849,7 @@ function SweepRowList(props: {
   readonly isRowSweeping: (row: EpicSweepWorktreeRow) => boolean;
   readonly interactionDisabled: boolean;
   readonly selectedEpicIds: ReadonlySet<string>;
+  readonly agentNames: ReadonlyMap<string, string>;
   readonly onToggle: (worktreePath: string, checked: boolean) => void;
 }) {
   if (props.isPending && props.rows.length === 0) {
@@ -854,6 +886,7 @@ function SweepRowList(props: {
           isSweeping={props.isRowSweeping(row)}
           interactionDisabled={props.interactionDisabled}
           selectedEpicIds={props.selectedEpicIds}
+          agentNames={props.agentNames}
           onToggle={props.onToggle}
         />
       ))}
@@ -868,6 +901,7 @@ function SweepWorktreeRowItem(props: {
   readonly isSweeping: boolean;
   readonly interactionDisabled: boolean;
   readonly selectedEpicIds: ReadonlySet<string>;
+  readonly agentNames: ReadonlyMap<string, string>;
   readonly onToggle: (worktreePath: string, checked: boolean) => void;
 }) {
   const { row, checked, isSweeping, interactionDisabled, onToggle } = props;
@@ -945,7 +979,7 @@ function SweepWorktreeRowItem(props: {
           <TeardownInlineDisclosure
             holders={row.holders}
             heading="Stopping work on this worktree"
-            agentNames={undefined}
+            agentNames={props.agentNames}
             unknownConsequence={unknownConsequenceForRow(row)}
           />
         ) : null}

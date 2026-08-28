@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  distinctExternalEpicIds,
   finalSweepButtonLabel,
   selectAllCountCopy,
   selectionIsSafeOnly,
@@ -72,5 +73,53 @@ describe("sweep consequence copy", () => {
     expect(
       selectAllCountCopy({ selected: 5, total: 7, inUse: 2 }),
     ).toBe("5 of 7 selected · 2 in-use worktrees require individual selection");
+  });
+
+  it("counts distinct external Tasks, not bindings", () => {
+    const sharedA = row({
+      note: "shared",
+      entry: {
+        ...row({ note: "shared" }).entry,
+        worktreePath: "/wt/a",
+        owners: [
+          {
+            epicId: "epic-1",
+            ownerKind: "chat",
+            ownerId: "c1",
+            updatedAt: 1,
+          },
+          {
+            epicId: "epic-ext",
+            ownerKind: "chat",
+            ownerId: "c2",
+            updatedAt: 1,
+          },
+        ],
+      },
+    });
+    const sharedB = row({
+      note: "shared",
+      entry: {
+        ...row({ note: "shared" }).entry,
+        worktreePath: "/wt/b",
+        owners: [
+          {
+            epicId: "epic-1",
+            ownerKind: "chat",
+            ownerId: "c1",
+            updatedAt: 1,
+          },
+          {
+            epicId: "epic-ext",
+            ownerKind: "chat",
+            ownerId: "c3",
+            updatedAt: 1,
+          },
+        ],
+      },
+    });
+    expect(
+      distinctExternalEpicIds([sharedA, sharedB], new Set(["epic-1"])),
+    ).toEqual(["epic-ext"]);
   });
 });
