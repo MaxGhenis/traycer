@@ -65,6 +65,11 @@ import type {
   StreamConnectionStatus,
 } from "@traycer-clients/shared/host-transport/i-stream-session";
 import type { JsonContent } from "@traycer/protocol/common/registry";
+import { buildAttachmentsFromJSONContent } from "@/lib/composer/tiptap-json-content";
+import type { Attachment } from "@/lib/composer/types";
+import type { BrowserAnnotationRecord } from "@/lib/browser-view/annotation/browser-annotation-record";
+import { collectAnnotationImageHashes } from "@/lib/browser-view/annotation/browser-annotation-record";
+import { registerExtraImageRootSource } from "@/lib/composer/landing-image-budget";
 import { addWithFifoEviction } from "@/lib/bounded-set";
 import type {
   RuntimeApprovalDecision,
@@ -77,6 +82,10 @@ import {
   reopenStreamingSubagentBlocks,
   type FinalizedActionStatus,
 } from "@traycer/protocol/host/agent/gui/agent-runtime-accumulator";
+import {
+  applyInterviewSettlement,
+  type InterviewSettlementSource,
+} from "@traycer/protocol/host/agent/gui/interview-settlement";
 import type {
   HeldManagedCommandUpdate,
   ManagedCommand,
@@ -125,7 +134,10 @@ import { create, type StoreApi, type UseBoundStore } from "zustand";
 type ChatStreamClientHandle = Pick<
   ChatStreamClient,
   "sendAction" | "close" | "sameTurnSteeringProtocolSupported"
->;
+> &
+  Partial<
+    Pick<ChatStreamClient, "interviewSettlementActionsProtocolSupported">
+  >;
 
 export type ChatStreamClientFactory = (
   epicId: string,
@@ -148,13 +160,30 @@ type SendActionInput = {
   readonly pendingUserMessage: PendingUserMessage | null;
 };
 
+/**
+ * What a send hands back to the composer if it never lands - the pre-submit
+ * document plus the annotation cards that left with it. One value so a new
+ * restorable composer artifact costs no call-site edits.
+ */
+export interface ChatSendRestore {
+  readonly content: JsonContent;
+  readonly browserAnnotations: ReadonlyArray<BrowserAnnotationRecord>;
+}
+
 export interface PendingUserMessage {
   readonly clientActionId: string;
   readonly messageId: string;
   readonly content: JsonContent;
+  readonly attachments: ReadonlyArray<Attachment>;
   readonly sender: UserMessageSender;
   readonly settings: ChatRunSettings;
   readonly timestamp: number;
+  /**
+   * Pre-submit composer document (no crop atoms) plus its annotation cards.
+   * Used when a settled turn never recorded the send, so restore does not
+   * inline the wire image atoms or drop the records.
+   */
+  readonly restore: ChatSendRestore;
   /**
    * The billing context this send was stamped with at dispatch. Retained for
    * the same reason `settings` is: it dies with the action, so a resend picks
@@ -183,6 +212,18 @@ export interface PendingUserMessage {
   readonly restoreWorktreeIntent: WorktreeIntent | null;
 }
 
+/**
+ * The durable outbox tuple a retry may requeue. `generation` is the compare-
+ * and-swap guard that prevents a stale card from requeueing a newer attempt;
+ * a later host projection also supersedes the accepted renderer action.
+ */
+export interface InterviewDeliveryRetryIdentity {
+  readonly blockId: string;
+  readonly settlementId: string;
+  readonly deliveryId: string;
+  readonly generation: number;
+}
+
 export interface PendingChatAction {
   readonly clientActionId: string;
   readonly action: ChatOwnerActionFrame["kind"];
@@ -191,8 +232,10 @@ export interface PendingChatAction {
   // whose answer/skip is in flight (or accepted-but-unresolved) rather than all
   // interviews, and lets lifecycle resolution drop this block's stale actions.
   readonly interviewBlockId: string | null;
+  /** Immutable retry identity; null for all non-delivery-retry actions. */
+  readonly interviewDeliveryRetry: InterviewDeliveryRetryIdentity | null;
   readonly messageId: string | null;
-  readonly restoreContent: JsonContent | null;
+  readonly restore: ChatSendRestore | null;
   readonly sender: UserMessageSender | null;
   readonly settings: ChatRunSettings | null;
   /** See {@link PendingUserMessage.accountContext}. */
@@ -233,6 +276,7 @@ export type PendingChatActionSeed = Omit<PendingChatAction, "connectionEpoch">;
 export interface FailedSendRestorationState {
   readonly clientActionId: string;
   readonly content: JsonContent;
+  readonly browserAnnotations: ReadonlyArray<BrowserAnnotationRecord>;
   readonly reason: string;
   /**
    * Whether the path that created this slot ALREADY said the reason on a
@@ -313,6 +357,7 @@ export interface AcceptedChatAction {
   // unresolved interview answer/skip keeps gating its card. `null` for every
   // non-interview action.
   readonly interviewBlockId: string | null;
+  readonly interviewDeliveryRetry: InterviewDeliveryRetryIdentity | null;
   readonly messageId: string | null;
   readonly acceptedAt: number;
   /**
@@ -325,7 +370,7 @@ export interface AcceptedChatAction {
    * {@link reconcileSnapshotChange}. `null` for non-`send` actions and after
    * the content has been consumed once by `takeSetupFailedRestoration`.
    */
-  readonly restoreContent: JsonContent | null;
+  readonly restore: ChatSendRestore | null;
   /**
    * The rest of the recovery tuple, for `send` records only.
    *
@@ -497,6 +542,8 @@ export interface ChatSessionState {
    * the plain-Enter queue alias until steer support is confirmed.
    */
   readonly steerProtocolSupported: boolean;
+  /** `chat.subscribe@1.7` support for detached interview delivery retries. */
+  readonly interviewDeliveryRetryProtocolSupported: boolean;
   /**
    * The host's own `isTurnInProgress()`: is a turn genuinely active or
    * activating right now? Narrower than `runStatus !== "idle"`, which also
@@ -659,12 +706,14 @@ export interface ChatSessionState {
    * the tile error state's retry affordance.
    */
   retry: () => void;
-  sendMessage: (
-    content: JsonContent,
-    sender: UserMessageSender,
-    settings: ChatRunSettings,
-    deliveryPolicy: ChatQueueDeliveryPolicy,
-  ) => SentChatMessageAction | null;
+  sendMessage: (input: {
+    readonly content: JsonContent;
+    readonly sender: UserMessageSender;
+    readonly settings: ChatRunSettings;
+    readonly attachments: ReadonlyArray<Attachment>;
+    readonly deliveryPolicy: ChatQueueDeliveryPolicy;
+    readonly restore: ChatSendRestore;
+  }) => SentChatMessageAction | null;
   /**
    * Sends the initial handoff message reusing its pre-minted ids (shared with
    * the host turn-overlap idempotency gate). The driver's fallback `send`
@@ -748,7 +797,14 @@ export interface ChatSessionState {
     blockId: string,
     answers: ReadonlyArray<InterviewAnswer>,
   ) => string | null;
-  interviewError: (blockId: string, reason: string) => string | null;
+  interviewSkip: (
+    blockId: string,
+    reason: string,
+    draftAnswers: ReadonlyArray<InterviewAnswer> | undefined,
+  ) => string | null;
+  interviewDeliveryRetry: (
+    identity: InterviewDeliveryRetryIdentity,
+  ) => string | null;
   ackAcceptedAction: (clientActionId: string) => void;
   ackFailedSendRestoration: (clientActionId: string) => void;
   /**
@@ -780,7 +836,7 @@ export interface ChatSessionState {
    *
    * Subsequent calls for the same `messageId` return `null` (the
    * `pendingUserMessages` entry is removed; `pendingActions` /
-   * `acceptedActions` entries have their `restoreContent` field nulled
+   * `acceptedActions` entries have their `restore` field nulled
    * out) so a duplicate or replayed `setup.failed` event does not
    * double-restore. The matching action records stay in their slots so
    * downstream ack/accept reconciliation continues to work.
@@ -1121,11 +1177,11 @@ function rejectionNotice(input: {
     input.displaced &&
     pending !== null &&
     pending.action === "send" &&
-    pending.restoreContent !== null
+    pending.restore !== null
   ) {
     return unrecoverableSendNotice({
       clientActionId: input.frame.clientActionId,
-      content: pending.restoreContent,
+      content: pending.restore.content,
       circumstance: `A message was not accepted (${reason.replace(/\.$/, "")})`,
       account: input.account ?? EMPTY_DEAD_SEND_ACCOUNT,
     });
@@ -1160,7 +1216,7 @@ function rejectionEvidence(
   currentSettings: ChatRunSettings | null,
 ): DeadSendAccount | null {
   if (pending === null || pending.action !== "send") return null;
-  if (pending.restoreContent === null) return null;
+  if (pending.restore === null) return null;
   return {
     worktree: { ...worktree, superseded },
     sentSettings: pending.settings,
@@ -1190,12 +1246,13 @@ function rejectionRestoration(input: {
 }): FailedSendRestorationState | null {
   const { state, pending, frame } = input;
   if (state.failedSendRestoration !== null) return null;
-  if (pending?.action !== "send" || pending.restoreContent === null) {
+  if (pending?.action !== "send" || pending.restore === null) {
     return null;
   }
   return {
     clientActionId: frame.clientActionId,
-    content: pending.restoreContent,
+    content: pending.restore.content,
+    browserAnnotations: pending.restore.browserAnnotations,
     reason: `${frame.reason ?? "Message was not accepted."}${
       input.account === null ? "" : deadSendAccountClauses(input.account, true)
     }`,
@@ -1362,6 +1419,33 @@ function restoreStagedWorktreeIntent(
     .restoreIntentForDispatch(stagingKey, survivors, source.clientActionId);
   return true;
 }
+
+const liveChatSessionStores = new Set<{
+  getState: () => ChatSessionState;
+}>();
+
+function collectPendingAnnotationImageHashes(): ReadonlyArray<string> {
+  const records: BrowserAnnotationRecord[] = [];
+  for (const sessionStore of liveChatSessionStores) {
+    const state = sessionStore.getState();
+    for (const pending of Object.values(state.pendingActions)) {
+      if (pending.restore !== null) {
+        records.push(...pending.restore.browserAnnotations);
+      }
+    }
+    for (const message of state.pendingUserMessages) {
+      records.push(...message.restore.browserAnnotations);
+    }
+    if (state.failedSendRestoration !== null) {
+      records.push(...state.failedSendRestoration.browserAnnotations);
+    }
+  }
+  return collectAnnotationImageHashes(records);
+}
+
+registerExtraImageRootSource({
+  hashes: collectPendingAnnotationImageHashes,
+});
 
 export function createChatSessionStore(
   options: ChatSessionStoreOptions,
@@ -1671,7 +1755,22 @@ export function createChatSessionStoreWithNotificationDependencies(
           }
           merged = { ...merged, ...partial };
         }
-        return merged;
+        const pendingActions = withoutSupersededInterviewDeliveryRetryActions(
+          merged.pendingActions,
+          merged.messages,
+          merged.liveAssistantMessage,
+          null,
+        );
+        const acceptedActions = withoutSupersededInterviewDeliveryRetryActions(
+          merged.acceptedActions,
+          merged.messages,
+          merged.liveAssistantMessage,
+          null,
+        );
+        return pendingActions === merged.pendingActions &&
+          acceptedActions === merged.acceptedActions
+          ? merged
+          : { ...merged, pendingActions, acceptedActions };
       });
     };
 
@@ -1803,6 +1902,37 @@ export function createChatSessionStoreWithNotificationDependencies(
           );
           restoredWorktreeIntentForSnapshot =
             settled.restoredWorktreeIntent ?? pending.restoredWorktreeIntent;
+          const pendingActions = withoutSupersededInterviewDeliveryRetryActions(
+            pending.pendingActions,
+            messages,
+            state.liveAssistantMessage,
+            null,
+          );
+          const acceptedActions =
+            withoutSupersededInterviewDeliveryRetryActions(
+              pruneAcceptedActions(
+                {
+                  ...withoutSettledAcceptedActions(
+                    state.acceptedActions,
+                    // BOTH passes retire records: the snapshot pass for sends it
+                    // settled itself, the settled pass for rows it recovered.
+                    new Set([
+                      ...pending.settledAcceptedActionIds,
+                      ...settled.settledAcceptedActionIds,
+                    ]),
+                  ),
+                  // Confirmation stamps first, then this pass's own additions -
+                  // an id cannot be in both, but ordering the merge makes that
+                  // independent of whether it ever could be.
+                  ...pending.confirmedAcceptedActions,
+                  ...pending.acceptedActions,
+                },
+                now,
+              ),
+              messages,
+              state.liveAssistantMessage,
+              connectionEpoch,
+            );
           return {
             chat: {
               ...frame.snapshot.chat,
@@ -1866,26 +1996,8 @@ export function createChatSessionStoreWithNotificationDependencies(
               )
                 ? null
                 : state.pendingBackgroundSessionStop,
-            pendingActions: pending.pendingActions,
-            acceptedActions: pruneAcceptedActions(
-              {
-                ...withoutSettledAcceptedActions(
-                  state.acceptedActions,
-                  // BOTH passes retire records: the snapshot pass for sends it
-                  // settled itself, the settled pass for rows it recovered.
-                  new Set([
-                    ...pending.settledAcceptedActionIds,
-                    ...settled.settledAcceptedActionIds,
-                  ]),
-                ),
-                // Confirmation stamps first, then this pass's own additions -
-                // an id cannot be in both, but ordering the merge makes that
-                // independent of whether it ever could be.
-                ...pending.confirmedAcceptedActions,
-                ...pending.acceptedActions,
-              },
-              now,
-            ),
+            pendingActions,
+            acceptedActions,
             pendingUserMessages: settled.pendingUserMessages,
             failedSendRestoration: settled.failedSendRestoration,
             // Statements both reconcile passes owe the user: a send whose
@@ -2532,52 +2644,117 @@ export function createChatSessionStoreWithNotificationDependencies(
         if (disposed || !matchesChat(options, frame.epicId, frame.chatId)) {
           return;
         }
-        // Authoritative resolution boundary: the host accepted the answer, so
-        // the retained draft is now safe to discard (the card unmounts as the
-        // interview leaves the pending set). Also drop this block's pending/
-        // accepted actions so their busy gate can never outlive the interview.
-        useInterviewDraftStore
-          .getState()
-          .clearDraft(frame.chatId, frame.blockId);
-        set((state) => ({
-          pendingInterviews: withoutPendingInterview(
-            state.pendingInterviews,
-            frame.blockId,
+        const state = get();
+        const lifecycle = withInterviewLifecycleState(
+          state.messages,
+          state.liveAssistantMessage,
+          {
+            kind: "answered",
+            blockId: frame.blockId,
+            settlementId: frame.settlementId,
+            settlementSource: frame.settlementSource,
+            resolvedAt: frame.resolvedAt,
+            answers: frame.answers,
+            reason: null,
+            outcome: "answered",
+            draftAnswers: [],
+            delivery: frame.delivery,
+          },
+        );
+        const resolvedPendingOwner =
+          lifecycle.resolvedPendingOwner ||
+          (!lifecycle.matchedOwner &&
+            state.pendingInterviews.some(
+              (interview) => interview.blockId === frame.blockId,
+            ));
+        const { messages, liveAssistantMessage } = lifecycle;
+        set({
+          messages,
+          liveAssistantMessage,
+          pendingInterviews: resolvedPendingOwner
+            ? withoutPendingInterview(state.pendingInterviews, frame.blockId)
+            : state.pendingInterviews,
+          pendingActions: resolvedPendingOwner
+            ? withoutInterviewActionsForBlock(
+                state.pendingActions,
+                frame.blockId,
+              )
+            : state.pendingActions,
+          acceptedActions: withoutSupersededInterviewDeliveryRetryActions(
+            resolvedPendingOwner
+              ? withoutInterviewActionsForBlock(
+                  state.acceptedActions,
+                  frame.blockId,
+                )
+              : state.acceptedActions,
+            messages,
+            liveAssistantMessage,
+            null,
           ),
-          pendingActions: withoutInterviewActionsForBlock(
-            state.pendingActions,
-            frame.blockId,
-          ),
-          acceptedActions: withoutInterviewActionsForBlock(
-            state.acceptedActions,
-            frame.blockId,
-          ),
-        }));
+        });
+        if (resolvedPendingOwner) {
+          useInterviewDraftStore
+            .getState()
+            .clearDraft(frame.chatId, frame.blockId);
+        }
       },
       onInterviewErrored: (frame) => {
         if (disposed || !matchesChat(options, frame.epicId, frame.chatId)) {
           return;
         }
-        // The interview is resolved (skipped/errored) authoritatively; drop the
-        // retained draft and this block's actions on the same lifecycle
-        // boundary as an accepted answer.
-        useInterviewDraftStore
-          .getState()
-          .clearDraft(frame.chatId, frame.blockId);
-        set((state) => ({
-          pendingInterviews: withoutPendingInterview(
-            state.pendingInterviews,
-            frame.blockId,
+        const state = get();
+        const lifecycle = withInterviewLifecycleState(
+          state.messages,
+          state.liveAssistantMessage,
+          {
+            kind: "errored",
+            blockId: frame.blockId,
+            settlementId: frame.settlementId,
+            settlementSource: frame.settlementSource,
+            resolvedAt: frame.resolvedAt,
+            answers: [],
+            reason: frame.reason,
+            outcome: frame.outcome,
+            draftAnswers: frame.draftAnswers,
+            delivery: frame.delivery,
+          },
+        );
+        const resolvedPendingOwner =
+          lifecycle.resolvedPendingOwner ||
+          (!lifecycle.matchedOwner &&
+            state.pendingInterviews.some(
+              (interview) => interview.blockId === frame.blockId,
+            ));
+        const { messages, liveAssistantMessage } = lifecycle;
+        set({
+          messages,
+          liveAssistantMessage,
+          pendingInterviews: resolvedPendingOwner
+            ? withoutPendingInterview(state.pendingInterviews, frame.blockId)
+            : state.pendingInterviews,
+          pendingActions: resolvedPendingOwner
+            ? withoutInterviewActionsForBlock(
+                state.pendingActions,
+                frame.blockId,
+              )
+            : state.pendingActions,
+          acceptedActions: withoutSupersededInterviewDeliveryRetryActions(
+            resolvedPendingOwner
+              ? withoutInterviewActionsForBlock(
+                  state.acceptedActions,
+                  frame.blockId,
+                )
+              : state.acceptedActions,
+            messages,
+            liveAssistantMessage,
+            null,
           ),
-          pendingActions: withoutInterviewActionsForBlock(
-            state.pendingActions,
-            frame.blockId,
-          ),
-          acceptedActions: withoutInterviewActionsForBlock(
-            state.acceptedActions,
-            frame.blockId,
-          ),
-        }));
+        });
+        if (resolvedPendingOwner) {
+          useInterviewDraftStore
+            .getState()
+            .clearDraft(frame.chatId, frame.blockId);
+        }
       },
       onEventAppended: (frame) => {
         if (disposed || !matchesChat(options, frame.epicId, frame.chatId)) {
@@ -2690,11 +2867,22 @@ export function createChatSessionStoreWithNotificationDependencies(
             }
             return false;
           };
+          const resolveInterviewDeliveryRetryProtocolSupported = () => {
+            if (status === "open") {
+              return (
+                streamClient?.interviewSettlementActionsProtocolSupported?.() ??
+                false
+              );
+            }
+            return false;
+          };
           return {
             connectionStatus: status,
             runStatus: status === "closed" ? "idle" : state.runStatus,
             activeTurn: status === "closed" ? null : state.activeTurn,
             steerProtocolSupported: resolveSteerProtocolSupported(),
+            interviewDeliveryRetryProtocolSupported:
+              resolveInterviewDeliveryRetryProtocolSupported(),
             fatalClose: resolveFatalClose(),
           };
         });
@@ -2868,6 +3056,7 @@ export function createChatSessionStoreWithNotificationDependencies(
       runStatus: "idle",
       activeTurn: null,
       steerProtocolSupported: false,
+      interviewDeliveryRetryProtocolSupported: false,
       turnInProgress: undefined,
       pendingApprovals: [],
       pendingFileEditApprovals: [],
@@ -2900,6 +3089,7 @@ export function createChatSessionStoreWithNotificationDependencies(
         set({
           connectionStatus: "connecting",
           steerProtocolSupported: false,
+          interviewDeliveryRetryProtocolSupported: false,
           fatalClose: null,
           snapshotLoaded: false,
         });
@@ -2937,7 +3127,7 @@ export function createChatSessionStoreWithNotificationDependencies(
         }
         set({ missingWorktreePaths: next });
       },
-      sendMessage: (content, sender, settings, deliveryPolicy) => {
+      sendMessage: (input) => {
         const clientActionId = uuidv4();
         const messageId = uuidv4();
         // A worktree staged mid-chat ("Create new worktree") rides on this send;
@@ -2952,6 +3142,10 @@ export function createChatSessionStoreWithNotificationDependencies(
         };
         if (stagedWorktreeIntentIsSuspended(stagedKey)) return null;
         const worktreeIntent = readStagedWorktreeIntent(stagedKey);
+        const browserAnnotations = input.attachments.filter(
+          (attachment): attachment is BrowserAnnotationRecord =>
+            attachment.kind === "browser-annotation",
+        );
         const frame: ChatOwnerActionFrame = {
           kind: "send",
           hasBinaryPayload: false,
@@ -2959,12 +3153,13 @@ export function createChatSessionStoreWithNotificationDependencies(
           chatId: options.chatId,
           clientActionId,
           messageId,
-          content,
-          sender,
-          settings,
+          content: input.content,
+          sender: input.sender,
+          settings: input.settings,
           accountContext: useAccountContextStore.getState().accountContext,
-          deliveryPolicy,
+          deliveryPolicy: input.deliveryPolicy,
           worktreeIntent,
+          browserAnnotations,
         };
         // Consume before dispatch so the pending action captures precisely the
         // revision it may later restore. A synchronous action rejection cannot
@@ -2993,10 +3188,11 @@ export function createChatSessionStoreWithNotificationDependencies(
             clientActionId,
             action: "send",
             interviewBlockId: null,
+            interviewDeliveryRetry: null,
             messageId,
-            restoreContent: content,
-            sender,
-            settings,
+            restore: input.restore,
+            sender: input.sender,
+            settings: input.settings,
             accountContext: frame.accountContext,
             restoreWorktreeIntent: worktreeIntent,
             deliveryPolicy: frame.deliveryPolicy,
@@ -3016,10 +3212,12 @@ export function createChatSessionStoreWithNotificationDependencies(
             ? {
                 clientActionId,
                 messageId,
-                content,
-                sender,
-                settings,
+                content: input.content,
+                attachments: input.attachments,
+                sender: input.sender,
+                settings: input.settings,
                 timestamp: Date.now(),
+                restore: input.restore,
                 accountContext: frame.accountContext,
                 deliveryPolicy: frame.deliveryPolicy,
                 restoreWorktreeIntent: worktreeIntent,
@@ -3040,9 +3238,9 @@ export function createChatSessionStoreWithNotificationDependencies(
           state: get(),
           clientActionId,
           messageId,
-          content,
-          sender,
-          settings,
+          content: input.content,
+          sender: input.sender,
+          settings: input.settings,
         });
         if (optimisticQueuedItem !== null) {
           set((state) => ({
@@ -3102,6 +3300,7 @@ export function createChatSessionStoreWithNotificationDependencies(
           // The landing handoff carries its worktree intent via `epic.create`,
           // not the send frame.
           worktreeIntent: null,
+          browserAnnotations: [],
         };
         const sentClientActionId = sendAction({
           set,
@@ -3111,8 +3310,9 @@ export function createChatSessionStoreWithNotificationDependencies(
             clientActionId: input.clientActionId,
             action: "send",
             interviewBlockId: null,
+            interviewDeliveryRetry: null,
             messageId: input.messageId,
-            restoreContent: input.content,
+            restore: { content: input.content, browserAnnotations: [] },
             sender: input.sender,
             settings: input.settings,
             restoreWorktreeIntent: null,
@@ -3128,11 +3328,13 @@ export function createChatSessionStoreWithNotificationDependencies(
             clientActionId: input.clientActionId,
             messageId: input.messageId,
             content: input.content,
+            attachments: buildAttachmentsFromJSONContent(input.content),
             sender: input.sender,
             settings: input.settings,
             accountContext: frame.accountContext,
             deliveryPolicy: frame.deliveryPolicy,
             timestamp: Date.now(),
+            restore: { content: input.content, browserAnnotations: [] },
             // The landing handoff's worktree rides `epic.create`, not this
             // send, so there is no staged slot for it to give back.
             restoreWorktreeIntent: null,
@@ -3213,8 +3415,9 @@ export function createChatSessionStoreWithNotificationDependencies(
             clientActionId,
             action: "editUserMessage",
             interviewBlockId: null,
+            interviewDeliveryRetry: null,
             messageId,
-            restoreContent: null,
+            restore: null,
             sender: null,
             settings: null,
             restoreWorktreeIntent: worktreeIntent,
@@ -3284,8 +3487,9 @@ export function createChatSessionStoreWithNotificationDependencies(
             clientActionId,
             action: "stop",
             interviewBlockId: null,
+            interviewDeliveryRetry: null,
             messageId: null,
-            restoreContent: null,
+            restore: null,
             sender: null,
             settings: null,
             restoreWorktreeIntent: null,
@@ -3708,7 +3912,7 @@ export function createChatSessionStoreWithNotificationDependencies(
         });
         return sentClientActionId;
       },
-      interviewError: (blockId, reason) => {
+      interviewSkip: (blockId, reason, draftAnswers) => {
         const existing = existingInterviewActionId(get(), blockId);
         if (existing !== null) return existing;
         const clientActionId = uuidv4();
@@ -3720,6 +3924,10 @@ export function createChatSessionStoreWithNotificationDependencies(
           clientActionId,
           blockId,
           reason,
+          settlement:
+            draftAnswers === undefined
+              ? null
+              : { outcome: "skipped", draftAnswers: [...draftAnswers] },
         };
         const sentClientActionId = sendAction({
           set,
@@ -3732,6 +3940,38 @@ export function createChatSessionStoreWithNotificationDependencies(
           pendingUserMessage: null,
         });
         return sentClientActionId;
+      },
+      interviewDeliveryRetry: (identity) => {
+        // The retry action is additive in protocol 1.7. Do not let a renderer
+        // paired with an older host emit an unknown frame.
+        if (!get().interviewDeliveryRetryProtocolSupported) return null;
+        const existing = existingInterviewDeliveryRetryActionId(
+          get(),
+          identity,
+        );
+        if (existing !== null) return existing;
+        const clientActionId = uuidv4();
+        const frame: ChatOwnerActionFrame = {
+          kind: "interviewDeliveryRetry",
+          hasBinaryPayload: false,
+          epicId: options.epicId,
+          chatId: options.chatId,
+          clientActionId,
+          blockId: identity.blockId,
+          settlementId: identity.settlementId,
+          deliveryId: identity.deliveryId,
+          generation: identity.generation,
+        };
+        return sendAction({
+          set,
+          get,
+          frame,
+          pending: {
+            ...basicPending(clientActionId, "interviewDeliveryRetry"),
+            interviewDeliveryRetry: identity,
+          },
+          pendingUserMessage: null,
+        });
       },
       ackAcceptedAction: (clientActionId) => {
         set((state) => {
@@ -3857,7 +4097,7 @@ export function createChatSessionStoreWithNotificationDependencies(
         if (restored === null) return null;
         // Clear every restorable slot in lockstep so a duplicate
         // `setup.failed` event cannot double-restore. The action records
-        // themselves stay in place - only their `restoreContent` slot is
+        // themselves stay in place - only their `restore` slot is
         // nulled - so downstream ack/accept reconciliation continues to
         // work.
         set({
@@ -3874,7 +4114,7 @@ export function createChatSessionStoreWithNotificationDependencies(
                   ...state.pendingActions,
                   [pendingActionMatch.entry.clientActionId]: {
                     ...pendingActionMatch.entry,
-                    restoreContent: null,
+                    restore: null,
                   },
                 },
           acceptedActions:
@@ -3884,7 +4124,7 @@ export function createChatSessionStoreWithNotificationDependencies(
                   ...state.acceptedActions,
                   [acceptedActionMatch.entry.clientActionId]: {
                     ...acceptedActionMatch.entry,
-                    restoreContent: null,
+                    restore: null,
                   },
                 },
         });
@@ -3893,6 +4133,7 @@ export function createChatSessionStoreWithNotificationDependencies(
       dispose: () => {
         if (disposed) return;
         disposed = true;
+        liveChatSessionStores.delete(store);
         unsubscribeLiveCompletionAcknowledgements();
         lease.unregister();
         clearBufferedDeltas();
@@ -3934,6 +4175,8 @@ export function createChatSessionStoreWithNotificationDependencies(
         },
       );
   }
+
+  liveChatSessionStores.add(store);
 
   return {
     epicId: options.epicId,
@@ -3987,8 +4230,9 @@ function basicPending(
     clientActionId,
     action,
     interviewBlockId: null,
+    interviewDeliveryRetry: null,
     messageId: null,
-    restoreContent: null,
+    restore: null,
     sender: null,
     settings: null,
     restoreWorktreeIntent: null,
@@ -4015,6 +4259,39 @@ function existingInterviewActionId(
   return accepted?.clientActionId ?? null;
 }
 
+function sameInterviewDeliveryRetryIdentity(
+  left: InterviewDeliveryRetryIdentity,
+  right: InterviewDeliveryRetryIdentity,
+): boolean {
+  return (
+    left.blockId === right.blockId &&
+    left.settlementId === right.settlementId &&
+    left.deliveryId === right.deliveryId &&
+    left.generation === right.generation
+  );
+}
+
+// Delivery retry is deliberately independent of answer/skip's block-wide
+// guard. A historical retry may only dedupe the exact settled outbox attempt.
+function existingInterviewDeliveryRetryActionId(
+  state: ChatSessionState,
+  identity: InterviewDeliveryRetryIdentity,
+): string | null {
+  const actions = [
+    ...Object.values(state.pendingActions),
+    ...Object.values(state.acceptedActions),
+  ];
+  const existing = actions.find(
+    (action) =>
+      action.interviewDeliveryRetry !== null &&
+      sameInterviewDeliveryRetryIdentity(
+        action.interviewDeliveryRetry,
+        identity,
+      ),
+  );
+  return existing?.clientActionId ?? null;
+}
+
 // Drop every pending/accepted action targeting `blockId`'s interview. Called
 // when the host authoritatively resolves the interview so a lingering
 // accepted-but-unacked entry can never keep a later card gated. Returns the
@@ -4027,6 +4304,59 @@ function withoutInterviewActionsForBlock<
 ): Readonly<Record<string, T>> {
   const entries = Object.entries(actions).filter(
     ([, action]) => action.interviewBlockId !== blockId,
+  );
+  if (entries.length === Object.keys(actions).length) return actions;
+  return Object.fromEntries(entries);
+}
+
+function isCurrentRetryableInterviewDelivery(
+  messages: ReadonlyArray<Message>,
+  liveAssistantMessage: LiveAssistantMessage | null,
+  identity: InterviewDeliveryRetryIdentity,
+): boolean {
+  const matchesBlock = (block: ContentBlock): boolean =>
+    block.type === "interview" &&
+    block.blockId === identity.blockId &&
+    block.settlement?.settlementId === identity.settlementId &&
+    block.delivery?.deliveryId === identity.deliveryId &&
+    block.delivery.generation === identity.generation &&
+    block.delivery.status === "failed" &&
+    block.delivery.retryable;
+  return (
+    messages.some(
+      (message) =>
+        message.role === "assistant" && message.blocks.some(matchesBlock),
+    ) ||
+    (liveAssistantMessage?.blocks.some(matchesBlock) ?? false)
+  );
+}
+
+// An accepted retry is not its own terminal state. The card's authoritative
+// delivery projection is: any status, generation, or identity change retires
+// the old action. A later retryable failure has a new generation and therefore
+// renders a fresh Retry affordance instead of reviving a stale accepted id.
+function withoutSupersededInterviewDeliveryRetryActions<
+  T extends {
+    readonly interviewDeliveryRetry: InterviewDeliveryRetryIdentity | null;
+    readonly connectionEpoch: number;
+  },
+>(
+  actions: Readonly<Record<string, T>>,
+  messages: ReadonlyArray<Message>,
+  liveAssistantMessage: LiveAssistantMessage | null,
+  retireBeforeConnectionEpoch: number | null,
+): Readonly<Record<string, T>> {
+  const entries = Object.entries(actions).filter(
+    ([, action]) =>
+      action.interviewDeliveryRetry === null ||
+      (retireBeforeConnectionEpoch !== null &&
+      action.connectionEpoch < retireBeforeConnectionEpoch
+        ? false
+        : isCurrentRetryableInterviewDelivery(
+            messages,
+            liveAssistantMessage,
+            action.interviewDeliveryRetry,
+          )),
   );
   if (entries.length === Object.keys(actions).length) return actions;
   return Object.fromEntries(entries);
@@ -4227,7 +4557,7 @@ function findRestorableSendByMessageId<
     readonly clientActionId: string;
     readonly action: ChatOwnerActionFrame["kind"];
     readonly messageId: string | null;
-    readonly restoreContent: JsonContent | null;
+    readonly restore: ChatSendRestore | null;
   },
 >(
   entries: ReadonlyArray<T>,
@@ -4237,9 +4567,9 @@ function findRestorableSendByMessageId<
     if (
       entry.action === "send" &&
       entry.messageId === messageId &&
-      entry.restoreContent !== null
+      entry.restore !== null
     ) {
-      return { entry, content: entry.restoreContent };
+      return { entry, content: entry.restore.content };
     }
   }
   return null;
@@ -4291,6 +4621,9 @@ function optimisticQueuedItemForSend(
     message: {
       kind: "user",
       content: input.content,
+      // Optimistic local echo only - the real `queue.added` event reconciles
+      // this row once it arrives.
+      browserAnnotations: [],
     },
     sender: input.sender,
     settings: input.settings,
@@ -4555,6 +4888,239 @@ function detachedSubagentOwnerTarget(
     return { ownerBlockId: parentBlockId, mandatory: true };
   }
   return null;
+}
+
+type InterviewBlock = Extract<ContentBlock, { readonly type: "interview" }>;
+type InterviewLifecycleProjection = {
+  readonly kind: "answered" | "errored";
+  readonly blockId: string;
+  readonly settlementId: string | null;
+  readonly settlementSource: InterviewSettlementSource | null;
+  readonly resolvedAt: number;
+  readonly answers: ReadonlyArray<InterviewAnswer>;
+  readonly reason: string | null;
+  readonly outcome: InterviewBlock["outcome"];
+  readonly draftAnswers: ReadonlyArray<InterviewAnswer>;
+  readonly delivery: InterviewBlock["delivery"];
+};
+
+function withInterviewLifecycleBlocks(
+  blocks: ReadonlyArray<ContentBlock>,
+  projection: InterviewLifecycleProjection,
+  allowUnresolvedFallback: boolean,
+): ReadonlyArray<ContentBlock> {
+  const targetIndex = interviewLifecycleBlockIndex(
+    blocks,
+    projection,
+    allowUnresolvedFallback,
+  );
+  if (targetIndex < 0) return blocks;
+  const block = blocks[targetIndex];
+  if (block.type !== "interview") return blocks;
+  let updated: ContentBlock;
+  if (
+    projection.settlementId !== null &&
+    projection.settlementSource !== null &&
+    projection.outcome !== null
+  ) {
+    const reduced = applyInterviewSettlement(block, {
+      settlementId: projection.settlementId,
+      source: projection.settlementSource,
+      outcome: projection.outcome,
+      answers: [...projection.answers],
+      draftAnswers: [...projection.draftAnswers],
+      reason: projection.reason,
+      diagnostic: null,
+      delivery: projection.delivery,
+      timestamp: projection.resolvedAt,
+    });
+    updated = reduced.changed ? { ...block, ...reduced.patch } : block;
+  } else if (block.settlement !== null || block.outcome !== null) {
+    // A partial legacy tuple cannot weaken a terminal fact already projected
+    // for this row. This also makes duplicate legacy cleanup frames monotonic.
+    updated = block;
+  } else {
+    const delivery = block.delivery;
+    updated =
+      projection.kind === "answered"
+        ? {
+            ...block,
+            status: "completed",
+            answers: [...projection.answers],
+            error: null,
+            outcome: "answered",
+            draftAnswers: [],
+            delivery,
+          }
+        : {
+            ...block,
+            status: "errored",
+            error: projection.reason,
+            outcome: projection.outcome,
+            draftAnswers:
+              projection.outcome === "skipped"
+                ? [...projection.draftAnswers]
+                : [],
+            delivery,
+          };
+  }
+  if (updated === block) return blocks;
+  const next = blocks.slice();
+  next[targetIndex] = updated;
+  return next;
+}
+
+function interviewLifecycleBlockIndex(
+  blocks: ReadonlyArray<ContentBlock>,
+  projection: InterviewLifecycleProjection,
+  allowUnresolvedFallback: boolean,
+): number {
+  if (projection.settlementId !== null) {
+    for (let index = blocks.length - 1; index >= 0; index -= 1) {
+      const block = blocks[index];
+      if (
+        block.type === "interview" &&
+        block.blockId === projection.blockId &&
+        block.settlement?.settlementId === projection.settlementId
+      ) {
+        return index;
+      }
+    }
+  }
+  if (!allowUnresolvedFallback) return -1;
+  // A first lifecycle frame installs authority only on the newest unresolved
+  // owner. Never fall back to an older terminal row that merely reused the id.
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (
+      block.type === "interview" &&
+      block.blockId === projection.blockId &&
+      block.status === "streaming" &&
+      block.settlement === null
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function withInterviewLifecycleProjectionPass(
+  messages: ReadonlyArray<Message>,
+  projection: InterviewLifecycleProjection,
+  allowUnresolvedFallback: boolean,
+): {
+  readonly messages: ReadonlyArray<Message>;
+  readonly matched: boolean;
+} {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    if (
+      interviewLifecycleBlockIndex(
+        message.blocks,
+        projection,
+        allowUnresolvedFallback,
+      ) < 0
+    ) {
+      continue;
+    }
+    const blocks = withInterviewLifecycleBlocks(
+      message.blocks,
+      projection,
+      allowUnresolvedFallback,
+    );
+    if (blocks === message.blocks) return { messages, matched: true };
+    const next = messages.slice();
+    next[index] = { ...message, blocks: [...blocks] };
+    return { messages: next, matched: true };
+  }
+  return { messages, matched: false };
+}
+
+function withInterviewLifecycleState(
+  messages: ReadonlyArray<Message>,
+  liveAssistantMessage: LiveAssistantMessage | null,
+  projection: InterviewLifecycleProjection,
+): {
+  readonly messages: ReadonlyArray<Message>;
+  readonly liveAssistantMessage: LiveAssistantMessage | null;
+  readonly matchedOwner: boolean;
+  readonly resolvedPendingOwner: boolean;
+} {
+  if (projection.settlementId !== null) {
+    const exactMessages = withInterviewLifecycleProjectionPass(
+      messages,
+      projection,
+      false,
+    );
+    if (exactMessages.matched) {
+      return {
+        messages: exactMessages.messages,
+        liveAssistantMessage,
+        matchedOwner: true,
+        resolvedPendingOwner: false,
+      };
+    }
+    if (liveAssistantMessage !== null) {
+      const exactLiveMatched =
+        interviewLifecycleBlockIndex(
+          liveAssistantMessage.blocks,
+          projection,
+          false,
+        ) >= 0;
+      const exactLiveBlocks = withInterviewLifecycleBlocks(
+        liveAssistantMessage.blocks,
+        projection,
+        false,
+      );
+      if (exactLiveMatched) {
+        return {
+          messages,
+          liveAssistantMessage:
+            exactLiveBlocks === liveAssistantMessage.blocks
+              ? liveAssistantMessage
+              : { ...liveAssistantMessage, blocks: exactLiveBlocks },
+          matchedOwner: true,
+          resolvedPendingOwner: false,
+        };
+      }
+    }
+  }
+  if (liveAssistantMessage !== null) {
+    const liveMatched =
+      interviewLifecycleBlockIndex(
+        liveAssistantMessage.blocks,
+        projection,
+        true,
+      ) >= 0;
+    const liveBlocks = withInterviewLifecycleBlocks(
+      liveAssistantMessage.blocks,
+      projection,
+      true,
+    );
+    if (liveMatched) {
+      return {
+        messages,
+        liveAssistantMessage:
+          liveBlocks === liveAssistantMessage.blocks
+            ? liveAssistantMessage
+            : { ...liveAssistantMessage, blocks: liveBlocks },
+        matchedOwner: true,
+        resolvedPendingOwner: true,
+      };
+    }
+  }
+  const unresolvedMessages = withInterviewLifecycleProjectionPass(
+    messages,
+    projection,
+    true,
+  );
+  return {
+    messages: unresolvedMessages.messages,
+    liveAssistantMessage,
+    matchedOwner: unresolvedMessages.matched,
+    resolvedPendingOwner: unresolvedMessages.matched,
+  };
 }
 
 function assistantMessageOwnsBlock(message: Message, blockId: string): boolean {

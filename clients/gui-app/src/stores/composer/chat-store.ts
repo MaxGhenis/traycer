@@ -9,11 +9,15 @@ import type {
   ChatSessionAnchor,
   GuiHarnessId,
   InterviewAnswer,
+  InterviewDeliveryProjection,
+  InterviewOutcome,
   InterviewQuestion,
+  InterviewSettlementAuthority,
   ImageResolutionEntry,
   ImageGenerationResult,
   TodoItem,
   AgentUserMessage,
+  BrowserAnnotationRecord,
 } from "@traycer/protocol/persistence/epic/schemas";
 import type {
   AgentMessageSend,
@@ -474,7 +478,11 @@ export interface InterviewSegment {
   description: string | null;
   questions: ReadonlyArray<InterviewQuestion>;
   answers: ReadonlyArray<InterviewAnswer>;
+  draftAnswers: ReadonlyArray<InterviewAnswer>;
+  outcome: InterviewOutcome | null;
+  settlement: InterviewSettlementAuthority | null;
   error: string | null;
+  delivery: InterviewDeliveryProjection | null;
   /**
    * True when this question was carried into a Cross Question fork without
    * being answered (the host settles the copied block with a
@@ -596,6 +604,7 @@ export interface ChatMessage {
   segments: ReadonlyArray<MessageSegment>;
   structuredContent: JsonContent | null;
   attachments: ReadonlyArray<Attachment>;
+  browserAnnotations?: ReadonlyArray<BrowserAnnotationRecord>;
   settings: ChatRunSettings | null;
   createdAt: number;
   /**

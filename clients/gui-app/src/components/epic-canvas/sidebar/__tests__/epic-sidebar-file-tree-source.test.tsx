@@ -17,7 +17,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useSyncExternalStore, type ReactNode } from "react";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
 import type {
   IStreamSession,
   ServerFrameHandler,
@@ -205,6 +205,16 @@ const modelListeners = new Set<() => void>();
 // invoke it directly, the same way Pierre invokes it on a real row click.
 let capturedOnSelectionChange: ((paths: ReadonlyArray<string>) => void) | null =
   null;
+// Row geometry the panel asked Pierre for. Only observable here: `useFileTree`
+// reads its options once, at construction, and the model exposes no getter the
+// panel could be asked afterwards.
+let capturedItemHeight: number | undefined = undefined;
+let capturedDensity: string | undefined = undefined;
+// How many times the model was CONSTRUCTED. The panel used to remount across
+// the breakpoint to rebuild a touch-sized model; with one geometry everywhere
+// there is nothing to rebuild, and this is what tells a surviving tree apart
+// from a rebuilt one now that both viewports report the same geometry.
+let modelConstructionCount = 0;
 
 function notifyModel(): void {
   for (const listener of modelListeners) listener();
@@ -279,7 +289,8 @@ const mockModel = {
   resetPaths: (
     paths: ReadonlyArray<string>,
     options:
-      { readonly initialExpandedPaths?: ReadonlyArray<string> } | undefined,
+      | { readonly initialExpandedPaths?: ReadonlyArray<string> }
+      | undefined,
   ) => {
     resetPathsCalls.push({
       paths,
@@ -350,8 +361,20 @@ vi.mock("@pierre/trees/react", () => ({
     useSyncExternalStore(subscribeToSearchSnapshot, getSearchSnapshot),
   useFileTree: (options: {
     readonly onSelectionChange: (paths: ReadonlyArray<string>) => void;
+    readonly itemHeight: number | undefined;
+    readonly density: string;
   }) => {
     capturedOnSelectionChange = options.onSelectionChange;
+    // Mount-captured, exactly like the real hook's `useState(() => new
+    // FileTree(options))`. Recording it per RENDER instead would make the row
+    // geometry look reactive here when it is not, and the viewport-transition
+    // case below would pass without the body ever having been rebuilt.
+    const [geometryAtConstruction] = useState(() => {
+      modelConstructionCount += 1;
+      return { itemHeight: options.itemHeight, density: options.density };
+    });
+    capturedItemHeight = geometryAtConstruction.itemHeight;
+    capturedDensity = geometryAtConstruction.density;
     return { model: mockModel };
   },
 }));
@@ -616,6 +639,59 @@ describe("sidebar file tree source selection", () => {
 
     expect(pinned.subscribedMethods).toEqual(["workspace.subscribeFileList"]);
     expect(ambient.subscribedMethods).toEqual([]);
+  });
+
+  /**
+   * Inside the mobile switcher sheet this tree is a vaul drawer descendant.
+   * vaul's `shouldDrag` walks up from the touch target and, finding no
+   * scrollable ancestor, returns true - it drags the drawer instead of letting
+   * the content scroll. Pierre's scroller is inside a shadow root and a touch
+   * inside one retargets to the host, so that walk starts outside the shadow
+   * tree and can never see it. The attribute is what tells vaul to stay out.
+   *
+   * This is the WORKSPACE tree - the surface actually reported - and it needs
+   * its own arm: the git-diff tree's assertion passes with this marker deleted,
+   * so without this the coverage claim would be true of the wrong mount.
+   *
+   * It pins the marker, not the scrolling. Whether a finger scrolls is touch
+   * arbitration, which jsdom cannot decide.
+   */
+  it("marks the tree wrapper as not a drawer-drag surface", () => {
+    renderPanel(new MockWsStreamClient("unknown"));
+
+    const tree = screen.getByTestId("pierre-file-tree-stub");
+    expect(tree.closest("[data-vaul-no-drag]")).not.toBeNull();
+  });
+
+  /**
+   * The tree's light-DOM wrapper carries `useShadowScrollerTouchShield`'s ref
+   * (see `use-shadow-scroller-touch-shield.ts`), which stops a `touchmove`
+   * bubbling out of Pierre's shadow-rooted scroller before it reaches a
+   * document BUBBLE listener - the modal scroll lock a vaul drawer registers
+   * while open. jsdom has no `TouchEvent`, so a plain bubbling `Event` stands
+   * in; the hook only calls `stopPropagation()`, which does not care about
+   * the event's concrete type. `touchstart` is the control: it is untouched
+   * by this hook, so it must still reach the document. Deleting
+   * `ref={touchShieldRef}` from the wrapper must fail this test.
+   */
+  it("shields a bubbling touchmove from the pierre tree so it never reaches the document", () => {
+    renderPanel(new MockWsStreamClient("unknown"));
+
+    const documentTouchMove = vi.fn();
+    const documentTouchStart = vi.fn();
+    document.addEventListener("touchmove", documentTouchMove);
+    document.addEventListener("touchstart", documentTouchStart);
+    try {
+      const tree = screen.getByTestId("pierre-file-tree-stub");
+      tree.dispatchEvent(new Event("touchmove", { bubbles: true }));
+      tree.dispatchEvent(new Event("touchstart", { bubbles: true }));
+
+      expect(documentTouchMove).not.toHaveBeenCalled();
+      expect(documentTouchStart).toHaveBeenCalledTimes(1);
+    } finally {
+      document.removeEventListener("touchmove", documentTouchMove);
+      document.removeEventListener("touchstart", documentTouchStart);
+    }
   });
 
   it("builds the tree from the live stream and leaves the unary path disabled", async () => {
@@ -1351,5 +1427,202 @@ describe("reveal in sidebar", () => {
         { path: "a.ts", options: { offset: "nearest" } },
       ]);
     });
+  });
+});
+
+/**
+ * The same panel body under the phone tab switcher, where it is the File tree
+ * category rather than a sidebar column. `useIsMobileViewport` reads
+ * `window.innerWidth` directly, so overriding it before render is what forces
+ * the touch presentation - same pattern as the composer-menu and providers
+ * panel mobile suites.
+ */
+describe("file tree on a touch viewport", () => {
+  const TAB_ID = "tab-1";
+  const MOBILE_WIDTH = 390;
+  const DESKTOP_WIDTH = 1024;
+
+  // The shared setup's `matchMedia` never notifies, which is right for suites
+  // that only need one width. Crossing the breakpoint mid-test needs a real
+  // one: `useIsMobileViewport` is a `useSyncExternalStore` over this event, so
+  // without it a width change reaches no render at all.
+  const breakpointListeners = new Set<() => void>();
+  function installLiveMatchMedia(): void {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: (query: string) => ({
+        matches: window.innerWidth < 768,
+        media: query,
+        onchange: null,
+        addEventListener: (_type: string, listener: () => void) => {
+          breakpointListeners.add(listener);
+        },
+        removeEventListener: (_type: string, listener: () => void) => {
+          breakpointListeners.delete(listener);
+        },
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        dispatchEvent: () => false,
+      }),
+    });
+  }
+  function restoreInertMatchMedia(): void {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: (query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        dispatchEvent: () => false,
+      }),
+    });
+  }
+  function setViewportWidth(width: number): void {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: width,
+    });
+    for (const listener of [...breakpointListeners]) listener();
+  }
+
+  let openPermanentSpy: Mock<
+    (tabId: string, node: EpicCanvasTileRef) => NestedFocusTarget | null
+  >;
+  let openPreviewSpy: Mock<
+    (tabId: string, node: EpicCanvasTileRef) => NestedFocusTarget | null
+  >;
+
+  beforeEach(() => {
+    useSettingsStore.setState({
+      diffViewerPreferences: {
+        ...DEFAULT_DIFF_VIEWER_PREFERENCES,
+        ignoreWhitespace: false,
+      },
+    });
+    mockListedPaths = [];
+    mockSearchValue = "";
+    mockSearchSnapshot = { isOpen: false, value: "", matchingPaths: [] };
+    searchSnapshotListeners.clear();
+    listFileTreeCalls.length = 0;
+    resetPathsCalls.length = 0;
+    setSearchCalls.length = 0;
+    searchCalls.length = 0;
+    expandedInModel.clear();
+    expandedAtLastReset.clear();
+    selectedInModel.clear();
+    scrollToPathCalls.length = 0;
+    modelListeners.clear();
+    capturedOnSelectionChange = null;
+    capturedItemHeight = undefined;
+    capturedDensity = undefined;
+    modelConstructionCount = 0;
+    installSearchHost({});
+    __resetWorkspaceFileListSubscriptionsForTesting();
+    useFileTreeStore.setState({ expandedPathsByScope: {} });
+    openPermanentSpy = vi.fn(() => null);
+    openPreviewSpy = vi.fn(() => null);
+    useEpicCanvasStore.setState({
+      prepareOpenTileInTabFocusTarget: openPermanentSpy,
+      prepareOpenTilePreviewInTabFocusTarget: openPreviewSpy,
+    });
+    breakpointListeners.clear();
+    installLiveMatchMedia();
+    setViewportWidth(MOBILE_WIDTH);
+  });
+
+  afterEach(() => {
+    cleanup();
+    __resetWorkspaceFileListSubscriptionsForTesting();
+    useFileTreeStore.setState({ expandedPathsByScope: {} });
+    useEpicCanvasStore.setState(useEpicCanvasStore.getInitialState(), true);
+    pinnedStreamBindingRef.value = null;
+    breakpointListeners.clear();
+    restoreInertMatchMedia();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: DESKTOP_WIDTH,
+    });
+  });
+
+  /**
+   * The phone shows the desktop's tree, pitch included. Touch used to inflate
+   * rows to a 44px hit target because pierre's rows sit in a shadow root the
+   * mobile hit-area stylesheet cannot reach; the compact pitch is deliberately
+   * kept instead, so the two viewports render one geometry.
+   *
+   * Both options are asserted because either alone leaves the pitch forked:
+   * `density` scales pierre's padding and radius, `itemHeight` overrides the
+   * row box.
+   */
+  it("builds the phone tree with the desktop's row geometry", () => {
+    renderPanel(new MockWsStreamClient("unknown"));
+
+    expect(capturedItemHeight).toBeUndefined();
+    expect(capturedDensity).toBe("compact");
+  });
+
+  it("recycles the single preview tile for a tapped row rather than accumulating one per file", () => {
+    const client = new MockWsStreamClient("unknown");
+    renderPanel(client);
+    act(() => {
+      client.sessions[0].emitFrame({
+        kind: "listing",
+        directoryPath: "",
+        entries: [
+          {
+            path: "readme.md",
+            name: "readme.md",
+            kind: "file",
+            ignored: false,
+          },
+        ],
+        truncated: false,
+        hasBinaryPayload: false,
+      });
+    });
+
+    act(() => {
+      capturedOnSelectionChange?.(["readme.md"]);
+    });
+
+    expect(openPermanentSpy).not.toHaveBeenCalled();
+    expect(openPreviewSpy).toHaveBeenCalledTimes(1);
+    expect(openPreviewSpy).toHaveBeenCalledWith(
+      TAB_ID,
+      expect.objectContaining({ filePath: "readme.md" }),
+    );
+  });
+
+  /**
+   * The inverse of what this used to assert. The body was keyed on the
+   * viewport class so it would REBUILD across the breakpoint, because pierre
+   * bakes geometry at construction and a touch model differed from a pointer
+   * one. With one geometry everywhere there is nothing to rebuild, and the
+   * remount was not free - it drops the filter query.
+   *
+   * The construction count is what makes this discriminating: now that both
+   * viewports report the same `itemHeight` and `density`, comparing geometry
+   * across the crossing would pass whether the tree survived or was rebuilt.
+   */
+  it("keeps the same tree across a breakpoint crossing instead of rebuilding it", () => {
+    setViewportWidth(DESKTOP_WIDTH);
+    renderPanel(new MockWsStreamClient("unknown"));
+    expect(modelConstructionCount).toBe(1);
+    expect(capturedItemHeight).toBeUndefined();
+    expect(capturedDensity).toBe("compact");
+
+    act(() => {
+      setViewportWidth(MOBILE_WIDTH);
+    });
+
+    expect(modelConstructionCount).toBe(1);
+    expect(capturedItemHeight).toBeUndefined();
+    expect(capturedDensity).toBe("compact");
   });
 });

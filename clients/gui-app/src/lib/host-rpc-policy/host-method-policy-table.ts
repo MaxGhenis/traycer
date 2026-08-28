@@ -34,16 +34,12 @@ export type ErasedConditionPollPolicy<
   readonly resetLaneIds: ReadonlySet<string>;
 };
 
-export type HostMethodPollPolicy<
-  Method extends keyof HostRpcRegistry & string,
-> =
+type HostMethodPollPolicy<Method extends keyof HostRpcRegistry & string> =
   | null
   | { readonly kind: "fixed"; readonly intervalMs: number }
   | ErasedConditionPollPolicy<Method>;
 
-export type HostMethodScheduling<
-  Method extends keyof HostRpcRegistry & string,
-> = {
+type HostMethodScheduling<Method extends keyof HostRpcRegistry & string> = {
   readonly mode:
     | RpcSchedulingMode
     | ((params: RequestOfMethod<HostRpcRegistry, Method>) => RpcSchedulingMode);
@@ -51,7 +47,7 @@ export type HostMethodScheduling<
   readonly poll: HostMethodPollPolicy<Method>;
 };
 
-export type HostMethodPolicyTable = {
+type HostMethodPolicyTable = {
   readonly [
     Method in keyof HostRpcRegistry & string
   ]: HostMethodScheduling<Method>;
@@ -431,6 +427,14 @@ export const HOST_METHOD_POLL_TABLE = {
     joinResponseTimeoutMs: null,
     poll: null,
   },
+  // An explicit human maintenance action may probe one disabled profile.
+  // It can spawn the same long-running CLI usage probe as the ordinary read,
+  // but is never polled or coalesced with another profile's action.
+  "providers.refreshProfileStatus": {
+    mode: "fifo",
+    joinResponseTimeoutMs: RATE_LIMIT_USAGE_RESPONSE_TIMEOUT_MS,
+    poll: null,
+  },
   "host.notifications.list": { ...LATEST_SCHEDULING, poll: null },
   "host.notificationHooks.status": { ...LATEST_SCHEDULING, poll: null },
   // Testing a hook sends a real notification.
@@ -529,6 +533,10 @@ export const HOST_METHOD_POLL_TABLE = {
   },
   // Killing a process tree from the resource monitor is a destructive command.
   "resources.kill": { mode: "fifo", joinResponseTimeoutMs: null, poll: null },
+  "resources.listLocalServers": {
+    ...LATEST_SCHEDULING,
+    poll: { kind: "fixed", intervalMs: 3 * SECOND_MS },
+  },
   // Shell lifecycle from the Shells list and the output window header. `fifo`
   // is what buys these three the guarantees the
   // coordinator reserves for commands: `selectJob` refuses to coalesce a fifo
@@ -987,6 +995,10 @@ export const HOST_METHOD_POLL_TABLE = {
   // cache's own retry ladder (`use-image-blob-url.ts`), not by a cadence. An
   // interval here would re-fetch megabytes to re-learn a constant.
   "epic.readChatAttachment": { ...LATEST_SCHEDULING, poll: null },
+  // Like the chat attachment read, artifact attachment bytes are addressed by
+  // their content hash and the image cache owns retry after a transient miss.
+  // Polling this unary method would only re-fetch immutable bytes.
+  "epic.fetchArtifactAttachment": { ...LATEST_SCHEDULING, poll: null },
   // Not polled, and this is a deliberate freshness choice rather than a copy of
   // the row above it. The answer is "which cloud row does this local chat
   // publish into", which changes exactly once in a chat's life - when a fork
@@ -1373,6 +1385,12 @@ export const HOST_METHOD_POLL_TABLE = {
     joinResponseTimeoutMs: null,
     poll: null,
   },
+  // Profile eligibility is persisted provider configuration.
+  "providers.setProfileEnabled": {
+    mode: "fifo",
+    joinResponseTimeoutMs: null,
+    poll: null,
+  },
   // Native MCP/plugins/skills mutations write provider config files, so they
   // are `fifo` for the same reason as the classic provider mutations above:
   // two rapid toggles must both land, in order, not be coalesced into one.
@@ -1470,6 +1488,9 @@ export const HOST_METHOD_POLL_TABLE = {
     poll: null,
   },
   "worktree.listBindingsForEpic": { ...LATEST_SCHEDULING, poll: null },
+  // Pure holder read for teardown disclosures - fetched at gesture time by
+  // the delete/rebind confirm flows, never on a cadence.
+  "worktree.listHolders": { ...LATEST_SCHEDULING, poll: null },
   "speech.getModelStatus": {
     ...LATEST_SCHEDULING,
     poll: defineConditionPolicy("speech.getModelStatus", {
@@ -1570,7 +1591,7 @@ export const hostRpcSchedulingPolicy: RpcSchedulingPolicy<HostRpcRegistry> = {
   },
 };
 
-export type HostRpcMethodMeta<Method extends keyof HostRpcRegistry & string> = {
+type HostRpcMethodMeta<Method extends keyof HostRpcRegistry & string> = {
   readonly hostRpcMethod: Method;
 };
 

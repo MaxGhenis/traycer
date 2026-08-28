@@ -1,5 +1,6 @@
 export * from "./agent";
 export * from "./asset-stream-schemas";
+export * from "./browser";
 export * from "./chat-fork";
 export * from "./comments";
 export * from "./config";
@@ -31,6 +32,7 @@ export * from "./terminal";
 export * from "./usage-analytics";
 export * from "./workspace";
 export * from "./worktree-changed-stream";
+export * from "./providers-changed-stream";
 
 export {
   hostRpcRegistry,
@@ -43,6 +45,9 @@ export {
   worktreeCreateV10,
   worktreeCreatePathsV10,
   worktreeDeleteV10,
+  worktreeDeleteV11,
+  worktreeDeleteUpgradeV10ToV11,
+  worktreeListHoldersV10,
   worktreeListAllForHostV10,
   worktreeListAllForHostV12,
   worktreeListAllForHostV11,
@@ -71,6 +76,9 @@ export {
   worktreeListByWorkspacePathsUpgradeV10ToV11,
   workspacePrepareFoldersUpgradeV10ToV11,
   workspacePrepareFoldersUpgradeV11ToV12,
+  workspacePrepareFoldersUpgradeV12ToV13,
+  workspacePrepareFoldersUpgradeV13ToV14,
+  workspaceBrowseFoldersUpgradeV10ToV11,
   worktreeListByWorkspacePathsUpgradeV11ToV12,
   worktreeListByWorkspacePathsUpgradeV12ToV13,
   worktreeListByWorkspacePathsUpgradeV13ToV14,
@@ -88,6 +96,13 @@ export {
   diskWorktreeEntrySchema,
   osScriptSchema,
   workspaceScriptsSchema,
+  worktreeBusyErrorDetailsSchema,
+  worktreeBusyHoldKindSchema,
+  worktreeBusyHolderActivitySchema,
+  worktreeBusyHolderSchema,
+  worktreeBusyHoldersSchema,
+  worktreeBusyOwnerKindSchema,
+  worktreeBusyOwnerRefSchema,
   worktreeBindingEntryModeSchema,
   worktreeBindingEntrySchema,
   worktreeBindingOwnerKindSchema,
@@ -101,7 +116,10 @@ export {
   worktreeCreateRequestSchema,
   worktreeCreateResponseSchema,
   worktreeDeleteRequestSchema,
+  worktreeDeleteRequestSchemaV11,
   worktreeDeleteResponseSchema,
+  worktreeListHoldersRequestSchema,
+  worktreeListHoldersResponseSchema,
   worktreeHostEntrySchema,
   worktreeHostEntryOwnerSchema,
   worktreeBranchStatusSchema,
@@ -178,6 +196,13 @@ export {
   type DiskWorktreeEntry,
   type OsScript,
   type WorkspaceScripts,
+  type WorktreeBusyErrorDetails,
+  type WorktreeBusyHoldKind,
+  type WorktreeBusyHolder,
+  type WorktreeBusyHolderActivity,
+  type WorktreeBusyHolders,
+  type WorktreeBusyOwnerKind,
+  type WorktreeBusyOwnerRef,
   type WorktreeBinding,
   type WorktreeBindingEntry,
   type WorktreeBindingEntryMode,
@@ -190,7 +215,10 @@ export {
   type WorktreeCreateRequest,
   type WorktreeCreateResponse,
   type WorktreeDeleteRequest,
+  type WorktreeDeleteRequestV11,
   type WorktreeDeleteResponse,
+  type WorktreeListHoldersRequest,
+  type WorktreeListHoldersResponse,
   type WorktreeHostEntry,
   type WorktreeHostEntryOwner,
   type WorktreeBranchStatus,

@@ -49,6 +49,7 @@ import type {
   LocalHostSnapshot,
   MigrationRunningSnapshot,
   RegisteredHostsChange,
+  SystemResumeEvent,
   TrayEpic,
   TrayIndicatorState,
   TraycerHostStatusSnapshot,
@@ -60,14 +61,16 @@ import type {
 } from "@traycer-clients/shared/platform/runner-host";
 import type {
   HostGetInstallationInfoResponse,
-  HostUpdateCheckResponse,
+  HostUpdateCheckResponseV11,
 } from "../ipc-contracts/host-management-types";
 import type {
   AccessibilityThemeSnapshot,
   BackgroundMaterial,
+  CertificateTrustScope,
   DisplaySnapshot,
   DisplayTopology,
   FileSaveInput,
+  FileSaveResult,
   InstalledFont,
   PendingCertificateError,
   ProcessMetricsSnapshot,
@@ -83,6 +86,7 @@ import {
 export type {
   AccessibilityThemeSnapshot,
   BackgroundMaterial as DesktopBackgroundMaterial,
+  CertificateTrustScope,
   DisplaySnapshot,
   DisplayTopology,
   PendingCertificateError,
@@ -102,6 +106,14 @@ import type {
   StepUpChallengeFetchResult,
   RetainedStepUpVerifyFetchResult,
 } from "@traycer-clients/shared/auth/devices-sessions-fetcher";
+import {
+  linkLoginStatusViaHttp,
+  mintLinkLoginCodeViaHttp,
+  respondLinkLoginViaHttp,
+  type LinkLoginStatusFetchResult,
+  type MintLinkLoginCodeFetchResult,
+  type RespondLinkLoginFetchResult,
+} from "@traycer-clients/shared/auth/link-login";
 import type { MintHostCredentialRequest } from "@traycer/protocol/auth/devices-sessions";
 import type {
   UpdateHostVersionPolicyFetchResult,
@@ -140,6 +152,7 @@ import type {
   WindowSummary,
 } from "../ipc-contracts/window-types";
 import type { ZoomPercent } from "../ipc-contracts/zoom-types";
+import type { BrowserViewBridge } from "@traycer-clients/shared/platform/browser-view";
 
 /**
  * Shape of the `window.runnerHost` object installed by the Electron preload
@@ -247,6 +260,7 @@ export interface DesktopPreloadBridge {
   platform: DesktopPlatformBridge;
   power: DesktopPowerBridge;
   zoom: DesktopZoomBridge;
+  browserView: BrowserViewBridge;
   hostManagement: DesktopHostManagementBridge;
   hostTray: DesktopHostTrayBridge;
   hostControllerStatus: DesktopHostControllerStatusBridge;
@@ -268,7 +282,8 @@ export interface DesktopFileDropsBridge {
   }): Promise<string>;
   copyTemporaryFiles(paths: readonly string[]): Promise<readonly string[]>;
   readNativeClipboardFilePaths(): Promise<readonly string[]>;
-  saveFile(input: FileSaveInput): Promise<string | null>;
+  saveFile(input: FileSaveInput): Promise<FileSaveResult | null>;
+  openSavedFile(path: string): Promise<void>;
 }
 
 /**
@@ -321,7 +336,7 @@ export interface DesktopHostManagementBridge {
   cliManifest(): Promise<CliInstallManifestSnapshot | null>;
   maintenanceUpdateCheck(
     input: HostAvailableVersionsInput & { readonly expectedHostId: string },
-  ): Promise<HostUpdateCheckResponse>;
+  ): Promise<HostUpdateCheckResponseV11>;
   maintenanceDoctor(input: {
     readonly expectedHostId: string;
   }): Promise<MaintenanceDoctorProjection>;
@@ -430,7 +445,11 @@ export interface DesktopPlatformBridge {
   certTrust: {
     list(): Promise<ReadonlyArray<TrustedCertificateEntry>>;
     trust(hostname: string, certificate: unknown): Promise<unknown>;
-    untrust(fingerprint: string, hostname: string): Promise<void>;
+    untrust(
+      scope: CertificateTrustScope,
+      fingerprint: string,
+      hostname: string,
+    ): Promise<void>;
     listPending(): Promise<ReadonlyArray<PendingCertificateError>>;
     dismissPending(id: string): Promise<void>;
     showSystemDialog(certificate: unknown, message: string): Promise<boolean>;
@@ -443,7 +462,9 @@ export interface DesktopPlatformBridge {
     onTopologyChange(
       handler: (event: {
         readonly reason:
-          "display-added" | "display-removed" | "display-metrics-changed";
+          | "display-added"
+          | "display-removed"
+          | "display-metrics-changed";
         readonly topology: DisplayTopology;
       }) => void,
     ): { dispose: () => void };
@@ -644,8 +665,12 @@ export class DesktopRunnerHost implements IRunnerHost {
   readonly platform: DesktopPlatformBridge;
   readonly power: DesktopPowerBridge;
   readonly zoom: IZoomHost;
+  readonly browserView: BrowserViewBridge;
   readonly hostManagement: IHostManagement;
   readonly hostTray: IHostTray;
+  // No OS push on the desktop: notifications here are native `show` calls, not
+  // an APNs/FCM permission the user can revoke from a settings app.
+  readonly pushPermission: null = null;
   readonly hostControllerStatus: DesktopHostControllerStatusBridge;
   readonly selectionAuthority: SelectionAuthorityClient;
   private readonly refreshSelectionFleet: () => Promise<void>;
@@ -656,7 +681,9 @@ export class DesktopRunnerHost implements IRunnerHost {
   private readonly localHostHandlers = new Set<
     (snapshot: LocalHostSnapshot | null) => void
   >();
-  private readonly systemResumedHandlers = new Set<() => void>();
+  private readonly systemResumedHandlers = new Set<
+    (event: SystemResumeEvent) => void
+  >();
   private readonly bridgeSubscriptions: Disposable[] = [];
 
   constructor(options: DesktopRunnerHostOptions) {
@@ -671,6 +698,7 @@ export class DesktopRunnerHost implements IRunnerHost {
     this.support = options.bridge.support;
     this.platform = options.bridge.platform;
     this.power = options.bridge.power;
+    this.browserView = options.bridge.browserView;
     // Passed straight through: the client instance, its issued attach
     // generation and its buffering all belong to the preload load, so
     // re-wrapping it here could only add a second identity for the same
@@ -697,7 +725,9 @@ export class DesktopRunnerHost implements IRunnerHost {
       }),
       this.bridge.onSystemResumed(() => {
         for (const handler of this.systemResumedHandlers) {
-          handler();
+          // `powerMonitor` reports no sleep duration, so this shell cannot
+          // measure how long the runtime was actually suspended.
+          handler({ backgroundedForMs: null });
         }
       }),
     );
@@ -922,6 +952,50 @@ export class DesktopRunnerHost implements IRunnerHost {
     return this.bridge.revokeAllSessions(bearerToken);
   }
 
+  // No camera on the desktop shell; sign-in by link code is a phone surface.
+  readonly linkCodeScanner = null;
+  readonly deviceDescriber = null;
+  readonly linkLoginDeepLinks = null;
+
+  mintLinkLoginCode(
+    bearerToken: string,
+    signal: AbortSignal,
+  ): Promise<MintLinkLoginCodeFetchResult> {
+    // Runs in the renderer rather than behind the preload bridge, and that is
+    // fine in a PACKAGED build too: authn allows the renderer's own origin
+    // unconditionally, not just in dev. `registerPlugins` unions the env
+    // allowlist with `corsOrigins(...)`, which always contains
+    // `DESKTOP_RENDERER_ORIGIN` = `app://renderer` — the privileged scheme
+    // Electron serves the packaged GUI from. The dev Vite origin arrives
+    // through the same union's `desktopDevOrigin`.
+    //
+    // The bridge is what `listUserSessions` needs for a different reason: it
+    // handles retained step-up credentials, which must not cross into the
+    // renderer. Nothing here touches those, so there is no second reason to
+    // pay for a main-process hop.
+    return mintLinkLoginCodeViaHttp(this.authnBaseUrl, bearerToken, signal);
+  }
+  linkLoginStatus(
+    bearerToken: string,
+    code: string,
+    signal: AbortSignal,
+  ): Promise<LinkLoginStatusFetchResult> {
+    return linkLoginStatusViaHttp(this.authnBaseUrl, bearerToken, code, signal);
+  }
+
+  respondLinkLogin(
+    bearerToken: string,
+    code: string,
+    approve: boolean,
+  ): Promise<RespondLinkLoginFetchResult> {
+    return respondLinkLoginViaHttp(
+      this.authnBaseUrl,
+      bearerToken,
+      code,
+      approve,
+    );
+  }
+
   mintHostCredential(
     bearerToken: string,
     request: MintHostCredentialRequest,
@@ -981,12 +1055,22 @@ export class DesktopRunnerHost implements IRunnerHost {
     return this.bridge.getLastKnownLocalHostId();
   }
 
-  onSystemResumed(handler: () => void): Disposable {
+  onSystemResumed(handler: (event: SystemResumeEvent) => void): Disposable {
     this.systemResumedHandlers.add(handler);
     return {
       dispose: () => {
         this.systemResumedHandlers.delete(handler);
       },
+    };
+  }
+
+  onNetworkPathChanged(handler: () => void): Disposable {
+    // Desktop has no native reachability edge to bridge; its consumers cover
+    // the equivalent transitions with `window 'online'` and the OS-wake
+    // signal above. No-op subscription per the IRunnerHost contract.
+    void handler;
+    return {
+      dispose: () => undefined,
     };
   }
 

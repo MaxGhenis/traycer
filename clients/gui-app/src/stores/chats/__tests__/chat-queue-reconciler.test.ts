@@ -57,8 +57,9 @@ function createPendingAction(
     clientActionId,
     action,
     interviewBlockId: null,
+    interviewDeliveryRetry: null,
     messageId,
-    restoreContent: isSendOrEdit ? CONTENT : null,
+    restore: isSendOrEdit ? { content: CONTENT, browserAnnotations: [] } : null,
     sender: isSendOrEdit ? SENDER : null,
     settings: isSendOrEdit ? SETTINGS : null,
     restoreWorktreeIntent: null,
@@ -78,9 +79,10 @@ function createAcceptedAction(
     clientActionId,
     action: interviewBlockId === null ? "send" : "interviewAnswer",
     interviewBlockId,
+    interviewDeliveryRetry: null,
     messageId: null,
     acceptedAt,
-    restoreContent: null,
+    restore: null,
     sender: null,
     settings: null,
     accountContext: null,
@@ -99,11 +101,13 @@ function createPendingUserMessage(
     clientActionId,
     messageId,
     content: CONTENT,
+    attachments: [],
     sender: SENDER,
     settings: SETTINGS,
     accountContext: { type: "PERSONAL" },
     deliveryPolicy: null,
     timestamp: 1000,
+    restore: { content: CONTENT, browserAnnotations: [] },
     restoreWorktreeIntent: null,
   };
 }
@@ -119,6 +123,7 @@ function createQueueItem(
     message: {
       kind: "user",
       content,
+      browserAnnotations: [],
     },
     sender: SENDER,
     settings: SETTINGS,
@@ -199,8 +204,9 @@ describe("chat-queue-reconciler", () => {
         clientActionId: "action-2",
         action: "send",
         interviewBlockId: null,
+        interviewDeliveryRetry: null,
         messageId: "msg-2",
-        restoreContent: CONTENT_2,
+        restore: { content: CONTENT_2, browserAnnotations: [] },
         sender: SENDER,
         settings: SETTINGS,
         restoreWorktreeIntent: null,
@@ -214,11 +220,13 @@ describe("chat-queue-reconciler", () => {
         clientActionId: "action-2",
         messageId: "msg-2",
         content: CONTENT_2,
+        attachments: [],
         sender: SENDER,
         settings: SETTINGS,
         accountContext: { type: "PERSONAL" },
         deliveryPolicy: null,
         timestamp: 1000,
+        restore: { content: CONTENT_2, browserAnnotations: [] },
         restoreWorktreeIntent: null,
       };
       const input: ReconcileQueueInput = {
@@ -263,8 +271,9 @@ describe("chat-queue-reconciler", () => {
         clientActionId: "action-2",
         action: "send",
         interviewBlockId: null,
+        interviewDeliveryRetry: null,
         messageId: "msg-2",
-        restoreContent: CONTENT_2,
+        restore: { content: CONTENT_2, browserAnnotations: [] },
         sender: SENDER,
         settings: SETTINGS,
         restoreWorktreeIntent: null,
@@ -287,11 +296,13 @@ describe("chat-queue-reconciler", () => {
             clientActionId: "action-2",
             messageId: "msg-2",
             content: CONTENT_2,
+            attachments: [],
             sender: SENDER,
             settings: SETTINGS,
             accountContext: { type: "PERSONAL" },
             deliveryPolicy: null,
             timestamp: 1000,
+            restore: { content: CONTENT_2, browserAnnotations: [] },
             restoreWorktreeIntent: null,
           },
         ],
@@ -321,6 +332,7 @@ describe("chat-queue-reconciler", () => {
         message: {
           kind: "user",
           content: CONTENT,
+          browserAnnotations: [],
         },
         timestamp: 1000,
         sessionAnchor: null,
@@ -394,6 +406,7 @@ describe("chat-queue-reconciler", () => {
       expect(result.failedSendRestoration).not.toBeNull();
       expect(result.failedSendRestoration?.clientActionId).toBe("action-1");
       expect(result.failedSendRestoration?.content).toEqual(CONTENT);
+      expect(result.failedSendRestoration?.browserAnnotations).toEqual([]);
     });
 
     it("keeps an unconfirmed send from the snapshot's own connection pending, without restoration", () => {
@@ -456,6 +469,7 @@ describe("chat-queue-reconciler", () => {
       const existingRestore = {
         clientActionId: "action-0",
         content: CONTENT,
+        browserAnnotations: [],
         reason: "Prior failure",
         displacedReason: "Prior failure",
         stated: false,
@@ -550,7 +564,11 @@ describe("chat-queue-reconciler", () => {
         role: "user",
         messageId: "msg-1",
         sender: SENDER,
-        message: { kind: "user", content: CONTENT },
+        message: {
+          kind: "user",
+          content: CONTENT,
+          browserAnnotations: [],
+        },
         timestamp: 1000,
         sessionAnchor: null,
       };
@@ -603,8 +621,9 @@ describe("chat-queue-reconciler", () => {
         clientActionId: "action-2",
         action: "send",
         interviewBlockId: null,
+        interviewDeliveryRetry: null,
         messageId: "msg-2",
-        restoreContent: CONTENT_2,
+        restore: { content: CONTENT_2, browserAnnotations: [] },
         sender: SENDER,
         settings: SETTINGS,
         restoreWorktreeIntent: null,
@@ -620,6 +639,7 @@ describe("chat-queue-reconciler", () => {
         message: {
           kind: "user",
           content: CONTENT,
+          browserAnnotations: [],
         },
         timestamp: 1000,
         sessionAnchor: null,
@@ -632,11 +652,13 @@ describe("chat-queue-reconciler", () => {
             clientActionId: "action-2",
             messageId: "msg-2",
             content: CONTENT_2,
+            attachments: [],
             sender: SENDER,
             settings: SETTINGS,
             accountContext: { type: "PERSONAL" },
             deliveryPolicy: null,
             timestamp: 1000,
+            restore: { content: CONTENT_2, browserAnnotations: [] },
             restoreWorktreeIntent: null,
           },
         ],
@@ -673,6 +695,7 @@ describe("chat-queue-reconciler", () => {
         message: {
           kind: "user",
           content: CONTENT,
+          browserAnnotations: [],
         },
         timestamp: 1000,
         sessionAnchor: null,
@@ -697,13 +720,14 @@ describe("chat-queue-reconciler", () => {
       expect(result.acceptedActions).toHaveProperty("action-1");
     });
 
-    it("does not restore send with null restoreContent, keeps as pending", () => {
+    it("does not restore send with a null restore slot, keeps as pending", () => {
       const pendingAction: PendingChatAction = {
         clientActionId: "action-1",
         action: "send",
         interviewBlockId: null,
+        interviewDeliveryRetry: null,
         messageId: "msg-1",
-        restoreContent: null, // null restore content
+        restore: null,
         sender: SENDER,
         settings: SETTINGS,
         restoreWorktreeIntent: null,
@@ -742,6 +766,7 @@ describe("chat-queue-reconciler", () => {
         message: {
           kind: "user",
           content: CONTENT,
+          browserAnnotations: [],
         },
         timestamp: 1000,
         sessionAnchor: null,
@@ -954,7 +979,7 @@ describe("chat-queue-reconciler", () => {
         ...createPendingAction("action-send", "msg-1", "send"),
         connectionEpoch: 0,
       };
-      // A stale EDIT has no restoration path (restoreContent is null and its
+      // A stale EDIT has no restoration path (restore is null and its
       // fresh messageId never appears in the snapshot when the frame died
       // with the connection), so it IS swept - otherwise it wedges the edit
       // affordances forever.
@@ -1031,6 +1056,73 @@ describe("chat-queue-reconciler", () => {
       expect(result.failedSendRestoration).toEqual({
         clientActionId: "action-1",
         content: CONTENT,
+        browserAnnotations: [],
+        reason: "The message was not recorded before the turn stopped.",
+        displacedReason:
+          "The message was not recorded before the turn stopped.",
+        stated: false,
+      });
+    });
+
+    it("restores pre-submit content and annotation records, not wire crop atoms", () => {
+      const editorContent: JsonContent = {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "editor" }] },
+        ],
+      };
+      const wireContent: JsonContent = {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "wire" }] },
+        ],
+      };
+      const annotations = [
+        {
+          kind: "browser-annotation" as const,
+          annotationId: "ann-restore",
+          tabId: "tab-1",
+          sessionId: "session-1",
+          origin: "https://example.com",
+          pageUrl: "https://example.com/",
+          pageTitle: "Example",
+          capturedAt: 1,
+          comment: "restore me",
+          counts: { elements: 1, regions: 0, strokes: 0 },
+          elements: [],
+          imageFileName: "browser-annotation-ann-restore.png",
+          imageHash: "hash-restore",
+          droppedElementCount: 0,
+        },
+      ];
+      const result = reconcileTurnSettled(
+        true,
+        settledInput({
+          pendingUserMessages: [
+            {
+              clientActionId: "action-ann",
+              messageId: "msg-ann",
+              content: wireContent,
+              attachments: [],
+              sender: SENDER,
+              settings: SETTINGS,
+              accountContext: { type: "PERSONAL" },
+              deliveryPolicy: null,
+              timestamp: 1000,
+              restore: {
+                content: editorContent,
+                browserAnnotations: annotations,
+              },
+              restoreWorktreeIntent: null,
+            },
+          ],
+        }),
+      );
+
+      expect(result.failedSendRestoration).toEqual({
+        clientActionId: "action-ann",
+        content: editorContent,
+        browserAnnotations: annotations,
         reason: "The message was not recorded before the turn stopped.",
         displacedReason:
           "The message was not recorded before the turn stopped.",
@@ -1056,7 +1148,11 @@ describe("chat-queue-reconciler", () => {
         role: "user",
         messageId: "msg-1",
         sender: SENDER,
-        message: { kind: "user", content: CONTENT },
+        message: {
+          kind: "user",
+          content: CONTENT,
+          browserAnnotations: [],
+        },
         timestamp: 1000,
         sessionAnchor: null,
       };
@@ -1084,7 +1180,11 @@ describe("chat-queue-reconciler", () => {
         role: "user",
         messageId: "msg-1",
         sender: SENDER,
-        message: { kind: "user", content: CONTENT },
+        message: {
+          kind: "user",
+          content: CONTENT,
+          browserAnnotations: [],
+        },
         timestamp: 1000,
         sessionAnchor: null,
       };
@@ -1092,11 +1192,13 @@ describe("chat-queue-reconciler", () => {
         clientActionId: "action-2",
         messageId: "msg-2",
         content: CONTENT_2,
+        attachments: [],
         sender: SENDER,
         settings: SETTINGS,
         accountContext: { type: "PERSONAL" },
         deliveryPolicy: null,
         timestamp: 1000,
+        restore: { content: CONTENT_2, browserAnnotations: [] },
         restoreWorktreeIntent: null,
       };
       const result = reconcileTurnSettled(
@@ -1114,6 +1216,7 @@ describe("chat-queue-reconciler", () => {
       expect(result.failedSendRestoration).toEqual({
         clientActionId: "action-2",
         content: CONTENT_2,
+        browserAnnotations: [],
         reason: "The message was not recorded before the turn stopped.",
         displacedReason:
           "The message was not recorded before the turn stopped.",
@@ -1134,6 +1237,7 @@ describe("chat-queue-reconciler", () => {
       const occupied = {
         clientActionId: "action-0",
         content: CONTENT_2,
+        browserAnnotations: [],
         reason: "Message was not accepted.",
         displacedReason: "Message was not accepted.",
         stated: false,
@@ -1161,7 +1265,11 @@ describe("chat-queue-reconciler", () => {
         role: "user",
         messageId: "msg-1",
         sender: SENDER,
-        message: { kind: "user", content: CONTENT },
+        message: {
+          kind: "user",
+          content: CONTENT,
+          browserAnnotations: [],
+        },
         timestamp: 1000,
         sessionAnchor: null,
       };
@@ -1172,6 +1280,7 @@ describe("chat-queue-reconciler", () => {
           failedSendRestoration: {
             clientActionId: "action-0",
             content: CONTENT_2,
+            browserAnnotations: [],
             reason: "Message was not accepted.",
             displacedReason: "Message was not accepted.",
             stated: false,

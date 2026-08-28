@@ -203,6 +203,7 @@ function createSupportBridgeHarness(overrides: {
 
 function createBaseRunnerHost(): IRunnerHost {
   return {
+    browserView: null,
     selectionAuthority: createInertSelectionAuthorityClient(),
     refreshHostFleet: () => Promise.resolve(),
     onRegisteredHostsChange: () => null,
@@ -229,6 +230,13 @@ function createBaseRunnerHost(): IRunnerHost {
       Promise.resolve({ kind: "network-error" as const }),
     verifyStepUpChallenge: () =>
       Promise.resolve({ kind: "network-error" as const }),
+    mintLinkLoginCode: () =>
+      Promise.resolve({ kind: "network-error" as const }),
+    linkLoginStatus: () => Promise.resolve({ kind: "network-error" as const }),
+    respondLinkLogin: () => Promise.resolve({ kind: "network-error" as const }),
+    linkCodeScanner: null,
+    deviceDescriber: null,
+    linkLoginDeepLinks: null,
     openExternalLink: () => Promise.resolve(),
     getRegisteredUrlSchemes: () => Promise.resolve([]),
     requestMicrophoneAccess: () => Promise.resolve("granted" as const),
@@ -266,12 +274,14 @@ function createBaseRunnerHost(): IRunnerHost {
       rotate: () =>
         Promise.resolve({ outcome: "deleted" as const, pair: null }),
       delete: () => Promise.resolve(),
+      deleteIfToken: () => Promise.resolve("kept" as const),
       subscribe: () => ({ dispose: () => undefined }),
       migrateLegacyCredentials: () =>
         Promise.resolve("identity-unknown" as const),
     },
     onLocalHostChange: () => ({ dispose: () => undefined }),
     onSystemResumed: () => ({ dispose: () => undefined }),
+    onNetworkPathChanged: () => ({ dispose: () => undefined }),
     requestHostRespawn: () => Promise.resolve({ kind: "restarted" as const }),
     getLastKnownLocalHostId: () => Promise.resolve(null),
     service: null,
@@ -280,6 +290,7 @@ function createBaseRunnerHost(): IRunnerHost {
     hostManagement: null,
     hostTray: null,
     zoom: null,
+    pushPermission: null,
   };
 }
 

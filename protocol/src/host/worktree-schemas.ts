@@ -10,6 +10,28 @@
  * folders.
  */
 import { z } from "zod";
+import {
+  worktreeBusyHoldersSchema,
+  worktreeBusyOwnerRefSchema,
+} from "@traycer/protocol/framework/worktree-busy-holders";
+export {
+  worktreeBusyErrorDetailsSchema,
+  worktreeBusyHoldKindSchema,
+  worktreeBusyHolderActivitySchema,
+  worktreeBusyHolderSchema,
+  worktreeBusyHoldersSchema,
+  worktreeBusyOwnerKindSchema,
+  worktreeBusyOwnerRefSchema,
+} from "@traycer/protocol/framework/worktree-busy-holders";
+export type {
+  WorktreeBusyErrorDetails,
+  WorktreeBusyHoldKind,
+  WorktreeBusyHolder,
+  WorktreeBusyHolderActivity,
+  WorktreeBusyHolders,
+  WorktreeBusyOwnerKind,
+  WorktreeBusyOwnerRef,
+} from "@traycer/protocol/framework/worktree-busy-holders";
 
 // Inlined to avoid a circular import with `epic-schemas.ts` (which
 // references `worktreeIntentSchema`). Structurally compatible with
@@ -839,11 +861,58 @@ export const worktreeDeleteRequestSchema = z.object({
 });
 export type WorktreeDeleteRequest = z.infer<typeof worktreeDeleteRequestSchema>;
 
+/**
+ * `worktree.delete@1.1` request. `stopOwners` defaults to `false` so a 1.1
+ * parse of a 1.0-shaped request is refuse-on-busy — today's behavior.
+ * `true` asks the host to stop enumerated holders, then delete.
+ *
+ * Degrade: a 1.0 host's request schema strips `stopOwners`, so an old host
+ * always refuses on busy. A 1.0 client talking to a 1.1 host is upgraded
+ * with `stopOwners: false`.
+ */
+export const worktreeDeleteRequestSchemaV11 =
+  worktreeDeleteRequestSchema.extend({
+    stopOwners: z.boolean().default(false),
+  });
+export type WorktreeDeleteRequestV11 = z.infer<
+  typeof worktreeDeleteRequestSchemaV11
+>;
+
 export const worktreeDeleteResponseSchema = z.object({
   deleted: z.boolean(),
 });
 export type WorktreeDeleteResponse = z.infer<
   typeof worktreeDeleteResponseSchema
+>;
+
+/**
+ * `worktree.listHolders@1.0` — path-scoped holder inventory with an optional
+ * owner filter. Bridges the host's holder-inventory engine:
+ *
+ * - `owner` absent/null: holders of `worktreePath`
+ *   (`listHoldersForWorktreePath`).
+ * - `owner` present: that owner's holders (`listHoldersForOwner`). The path
+ *   is still required so the method stays path-scoped on the wire; it does
+ *   not filter the owner inventory (rebind disclosure needs dropped-path
+ *   holders too).
+ *
+ * Unknown path or owner → `{ holders: [] }`. Brand-new method, outside the
+ * released floor: an old host simply lacks it (`degrade: unsupported`) and
+ * an old client never calls it.
+ */
+export const worktreeListHoldersRequestSchema = z.object({
+  worktreePath: z.string(),
+  owner: worktreeBusyOwnerRefSchema.nullable().default(null),
+});
+export type WorktreeListHoldersRequest = z.infer<
+  typeof worktreeListHoldersRequestSchema
+>;
+
+export const worktreeListHoldersResponseSchema = z.object({
+  holders: worktreeBusyHoldersSchema,
+});
+export type WorktreeListHoldersResponse = z.infer<
+  typeof worktreeListHoldersResponseSchema
 >;
 
 /**

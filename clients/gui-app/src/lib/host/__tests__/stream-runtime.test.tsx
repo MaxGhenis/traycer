@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook, act } from "@testing-library/react";
+import { resetRemoteResumeSweepForTest } from "@/lib/host/stream-wake-reconnect";
 import { StrictMode, useLayoutEffect, type ReactNode } from "react";
 import { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock-host-messenger";
@@ -45,14 +46,19 @@ const authServiceRef = vi.hoisted(() => ({
 }));
 
 const runnerHostRef = vi.hoisted(() => {
-  const handlers = new Set<() => void>();
+  const handlers = new Set<
+    (event: { backgroundedForMs: number | null }) => void
+  >();
   return {
     handlers,
     host: {
-      onSystemResumed: (handler: () => void) => {
+      onSystemResumed: (
+        handler: (event: { backgroundedForMs: number | null }) => void,
+      ) => {
         handlers.add(handler);
         return { dispose: () => handlers.delete(handler) };
       },
+      onNetworkPathChanged: () => ({ dispose: () => undefined }),
     },
   };
 });
@@ -385,6 +391,8 @@ function fakeRemoteSession(): FakeRemoteSession {
       throw new Error("not exercised by this test");
     }),
     notifyBearerRotated: vi.fn(),
+    wake: vi.fn(),
+    forceReconnect: vi.fn(),
     onClosed: () => () => undefined,
     subscribeAvailabilityRecovered: () => () => undefined,
     subscribeReadinessLost: () => () => undefined,
@@ -438,6 +446,7 @@ function installRemoteTransport(sessionsByKey: {
           authRecovery: "revalidate",
           authEpoch: FIXTURE_AUTH_EPOCH,
         },
+        { proactiveWakeEligible: true },
         () => sessionsByKey[options.hostPublicKey] ?? fakeRemoteSession(),
       );
       return {
@@ -490,6 +499,10 @@ describe("HostStreamProvider", () => {
     bindingRef.value = null;
     useSelectionAuthorityStore.getState().reset();
     runnerHostRef.handlers.clear();
+    // Cleared together with the handler set: the sweep is a module-level
+    // singleton, so leaving it believed-installed would hand every later test
+    // one fewer registration than production has.
+    resetRemoteResumeSweepForTest();
     mocks.createRemoteHostTransport.mockReset();
     streamFactorySpy.build.mockReset();
     backoffSpy.markBuilt.mockReset();
@@ -506,11 +519,17 @@ describe("HostStreamProvider", () => {
 
     const { result } = renderHook(() => useWsStreamClient(), { wrapper });
     expect(result.current).toBeInstanceOf(WsStreamClient);
-    expect(runnerHostRef.handlers.size).toBe(1);
+    // TWO registrants, and they answer different questions. One is this
+    // client's own wake subscription, which re-dials the client that owns it.
+    // The other is the process-wide remote-session resume sweep, installed
+    // once on the first subscription, which reaches every held remote session
+    // - including ones no stream client speaks for. Neither subsumes the
+    // other, so this is 2, not 1.
+    expect(runnerHostRef.handlers.size).toBe(2);
 
     act(() => {
       for (const handler of runnerHostRef.handlers) {
-        handler();
+        handler({ backgroundedForMs: null });
       }
     });
 
@@ -519,6 +538,7 @@ describe("HostStreamProvider", () => {
     // stream's open against a machine whose Wi-Fi is still re-associating.
     expect(reconnectSpy).toHaveBeenCalledWith("wake-resume", {
       probeFirst: true,
+      wakeProbe: null,
     });
   });
 
@@ -553,6 +573,7 @@ describe("HostStreamProvider", () => {
     // answers. Probing here would keep a socket to nowhere alive.
     expect(reconnectSpy).toHaveBeenCalledWith("host-endpoint-change", {
       probeFirst: false,
+      wakeProbe: null,
     });
   });
 
@@ -802,6 +823,7 @@ describe("HostStreamProvider", () => {
     expect(reconnectSpy).toHaveBeenCalledTimes(1);
     expect(reconnectSpy).toHaveBeenCalledWith("host-endpoint-change", {
       probeFirst: false,
+      wakeProbe: null,
     });
   });
 

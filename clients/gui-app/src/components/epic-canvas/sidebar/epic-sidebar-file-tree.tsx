@@ -29,7 +29,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
   type MouseEvent,
   type RefObject,
 } from "react";
@@ -41,7 +40,6 @@ import type {
   FileTreeItemHandle,
   GitStatusEntry,
 } from "@pierre/trees";
-import { Search } from "lucide-react";
 import type { GitChangedFile } from "@traycer/protocol/host";
 import type {
   WorkspaceListFileTreeResponse,
@@ -62,15 +60,12 @@ import { PIERRE_FILE_TREE_THEME_STYLE } from "@/components/epic-canvas/pierre-tr
 import { workspaceFileRefFromTreePath } from "@/components/epic-canvas/workspace-file/workspace-file-ref";
 import { getBasename } from "@/lib/path/cross-platform-path";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@/components/ui/input-group";
+import { PanelSearchField } from "@/components/epic-canvas/sidebar/epic-sidebar-search-field";
 import { ReportIssueAction } from "@/components/report-issue/report-issue-action";
 import { useEpicNestedFocusNavigation } from "@/hooks/epic/use-epic-nested-focus-navigation";
 import { useGitListChangedFilesSubscription } from "@/hooks/git/use-git-list-changed-files-subscription";
 import { useDebouncedValue } from "@/hooks/ui/use-debounced-value";
+import { useShadowScrollerTouchShield } from "@/hooks/ui/use-shadow-scroller-touch-shield";
 import { useWorkspaceListFileTree } from "@/hooks/workspace/use-list-file-tree-query";
 import {
   useWorkspaceFileListSubscription,
@@ -81,6 +76,7 @@ import {
   useWorkspaceSearchPaths,
 } from "@/hooks/workspace/use-workspace-search-paths-query";
 import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
+import { useIsMobileViewport } from "@/hooks/ui/use-mobile-viewport";
 import { gitChangedFileToPierreStatusEntry } from "@/lib/git/panel-file-rendering";
 import {
   StreamRuntimeContext,
@@ -208,6 +204,9 @@ function useFileTreeSource(args: {
     hostId: args.hostId,
     workspacePath: args.workspacePath,
     enabled: !useUnaryFallback,
+    streamClient: undefined,
+    expandedPathsOverride: null,
+    onPrunedOverride: null,
   });
   const search = useHostPathSearch({
     epicId: args.epicId,
@@ -494,6 +493,11 @@ export function FileTreePanelBodyForWorkspace(
   // The value to PROVIDE: ambient while following, the pin's own binding once
   // built, null while pending - never the ambient socket for a pinned host.
   const pinnedStreamBinding = useSurfaceHostStreamBinding(props.hostId);
+  // No viewport key: pierre bakes `density` / `itemHeight` at construction and
+  // offers no setter, so this body used to remount across the breakpoint to
+  // rebuild a touch-sized model. Both viewports now build the same geometry,
+  // leaving nothing to rebuild - and a remount is not free, since it drops the
+  // filter query.
   return (
     <StreamRuntimeContext.Provider value={pinnedStreamBinding}>
       <FileTreeBodyForResolvedHost {...props} />
@@ -509,6 +513,7 @@ function FileTreeBodyForResolvedHost(
   // so they keep resolving against the same host after a later swap
   // (CLAUDE.md: tabs are bound to a host for life).
   const { hostId, onLatchHost } = props;
+  const isMobileViewport = useIsMobileViewport();
   // The box is a filter, not a search field: the query is applied on a pause,
   // and the same debounced value gates both the host RPC and the local row
   // filter so the two can never disagree about what is being filtered for.
@@ -571,6 +576,13 @@ function FileTreeBodyForResolvedHost(
       onLatchHost();
       navigateNested(props.epicId, props.tabId, () => open(props.tabId, ref));
     };
+    // Preview is right on a touch viewport too, even though the double-click
+    // that promotes it there has no touch equivalent: that viewport shows ONE
+    // tile at a time, none of its lists surfaces an open workspace-file tile,
+    // and nothing there can close one - so a permanent open buys nothing
+    // visible and leaves an unreachable tile behind. Recycling the single
+    // preview is what browsing a tree by tap wants, and the row itself is the
+    // way back to a file already visited.
     handlersRef.current.onSelect = (treePath) => {
       openInTab(treePath, prepareOpenTilePreviewInTabFocusTarget);
     };
@@ -600,7 +612,15 @@ function FileTreeBodyForResolvedHost(
   const { model } = useFileTree({
     paths: treePaths,
     initialExpansion: "closed",
+    // One geometry everywhere: the tree is the desktop tree, and its row pitch
+    // is pierre's own on every viewport. Touch used to inflate this to a 44px
+    // row because the rows are in a shadow root the mobile hit-area stylesheet
+    // cannot reach - the compact pitch is deliberately kept instead, so the
+    // phone shows the same tree as the desktop app. If the rows ever need to be
+    // easier to hit, the lever is pierre's `--trees-item-padding`, which grows
+    // the target without forking the pitch.
     density: "compact",
+    itemHeight: undefined,
     icons: "complete",
     stickyFolders: true,
     gitStatus,
@@ -614,12 +634,9 @@ function FileTreeBodyForResolvedHost(
       handlersRef.current.onSelect(selectedPath);
     },
   });
-  const handleSearchQueryChange = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      setSearchQuery(event.target.value);
-    },
-    [],
-  );
+  const handleSearchQueryChange = useCallback((next: string) => {
+    setSearchQuery(next);
+  }, []);
 
   // Runs BEFORE the path reset below, deliberately. Clearing the tree
   // adapter's filter restores the expansion it captured when the filter was
@@ -687,11 +704,19 @@ function FileTreeBodyForResolvedHost(
         pierreSearch.value.length > 0 &&
         pierreSearch.matchingPaths.length === 0;
 
-  const handleDoubleClick = useCallback((event: MouseEvent<HTMLElement>) => {
-    const treePath = extractPierreItemPathFromEvent(event);
-    if (treePath === null) return;
-    handlersRef.current.onOpen(treePath);
-  }, []);
+  const handleDoubleClick = useCallback(
+    (event: MouseEvent<HTMLElement>) => {
+      // A touch browser synthesises `dblclick` from a rapid double tap, which
+      // would promote the preview to a permanent tile - the one outcome this
+      // viewport cannot undo, since nothing there lists or closes an open
+      // workspace-file tile. Promotion stays a pointer gesture.
+      if (isMobileViewport) return;
+      const treePath = extractPierreItemPathFromEvent(event);
+      if (treePath === null) return;
+      handlersRef.current.onOpen(treePath);
+    },
+    [isMobileViewport],
+  );
 
   // Bridge Pierre's shadow-DOM rows into the root dnd-kit drag flow. Files keep
   // their canvas-openable source; directory rows carry a composer-only mention
@@ -737,26 +762,53 @@ function FileTreeBodyForResolvedHost(
     ),
     resolveSourceData: resolveDragSourceData,
   });
+  const touchShieldRef = useShadowScrollerTouchShield();
 
   return (
     <div
       className="relative flex min-h-0 flex-1 flex-col px-2 pb-2"
       onDoubleClickCapture={handleDoubleClick}
     >
-      <InputGroup className="mb-1.5 h-7 shrink-0">
-        <InputGroupAddon align="inline-start">
-          <Search className="size-3.5" aria-hidden />
-        </InputGroupAddon>
-        <InputGroupInput
-          type="text"
+      {/* The sidebar's 28px filter row is below the touch target every other
+          phone control meets, and this one is a text field the user has to hit
+          precisely rather than a control with room for invisible hit-slop. */}
+      <div className="mb-1.5 shrink-0">
+        <PanelSearchField
           value={searchQuery}
-          onChange={handleSearchQueryChange}
+          onValueChange={handleSearchQueryChange}
+          onClear={clearSearchQuery}
+          onClose={null}
+          onKeyDown={null}
+          ref={null}
+          combobox={null}
           placeholder="Filter files by name…"
-          aria-label="Filter files by name"
-          className="text-ui-sm"
+          label="Filter files by name"
+          clearLabel="Clear file filter"
+          closeLabel=""
+          testIdPrefix="epic-file-tree-filter"
+          className="h-7"
         />
-      </InputGroup>
-      <div {...bridge.wrapperProps} className="relative min-h-0 flex-1">
+      </div>
+      {/* `data-vaul-no-drag`: inside the mobile switcher sheet this tree is a
+          vaul drawer descendant, and vaul's `shouldDrag` walks up from the
+          touch target looking for a scroller. Pierre's scroller lives in a
+          SHADOW ROOT and a touch inside one retargets to the host, so that walk
+          sees nothing scrollable and would claim a downward swipe as a drawer
+          dismiss. The attribute states what vaul cannot observe: this subtree
+          owns its own scrolling.
+
+          It governs the DISMISS path only. An upward finger returns earlier via
+          `isDraggingInDirection` and never reaches the walk - and this marker is
+          NOT what makes the tree scroll on touch: that is `touchShieldRef`,
+          which keeps the sheet's modal scroll lock from freezing the
+          shadow-rooted scroller (see `useShadowScrollerTouchShield`). Both are
+          inert on desktop, which mounts no drawer. */}
+      <div
+        {...bridge.wrapperProps}
+        ref={touchShieldRef}
+        data-vaul-no-drag=""
+        className="relative min-h-0 flex-1"
+      >
         {/* `invisible`, not unmount: the model keeps its DOM/state for the
             instant the query changes to something that does match. */}
         <div className={cn("h-full", noMatches && "invisible")}>

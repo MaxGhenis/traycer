@@ -9,6 +9,9 @@ import { v4 as uuidv4 } from "uuid";
 import type { ChatRunSettings } from "@traycer/protocol/host/agent/gui/subscribe";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import { chatRunSettingsSchema } from "@traycer/protocol/persistence/epic/schemas";
+import { containsImageAtoms } from "@/lib/composer/image-atoms";
+import { extractPlainTextFromComposerJSONContent } from "@/lib/composer/tiptap-json-content";
+import { isMobileApp } from "@/lib/mobile-app";
 import type { DraftSelection } from "@/stores/composer/composer-draft-store";
 import {
   selectWorkspaceFoldersBucket,
@@ -80,9 +83,18 @@ export interface LandingDraftWorkspaceSnapshot {
 interface LandingDraftStoreState {
   readonly drafts: ReadonlyArray<LandingDraftTab>;
   readonly activeDraftId: string | null;
-  /** Always creates a fresh draft, sets it as active, returns its id. */
+  /**
+   * Returns an active draft id. Desktop/browser: always creates a fresh
+   * draft and sets it active. In the INSTALLED MOBILE APP (`isMobileApp()`),
+   * returns the newest existing draft instead - the phone has one stable
+   * composer.
+   */
   createDraft: (settings: ChatRunSettings | null) => string;
-  /** Coordinator-only stable-id source creation. */
+  /**
+   * Coordinator-only stable-id source creation (restore/sync, landing
+   * null-draft mount key stability) - explicit ids always mint, on every
+   * shell.
+   */
   createDraftWithId: (id: string, settings: ChatRunSettings | null) => string;
   /** Remove a draft by id. If it was the active draft, clears `activeDraftId`;
    *  strip-neighbor navigation in the close-flow handles where the user lands. */
@@ -119,6 +131,8 @@ interface LandingDraftStoreState {
   ) => ReadonlyArray<string>;
   removeDraftFolder: (id: string, folderPath: string) => void;
   setDraftWorkspacePrimary: (id: string, folderPath: string) => void;
+  /** Replace the draft workspace with one host's remembered folder bucket. */
+  restoreDraftWorkspaceForHost: (id: string, hostId: string | null) => void;
 }
 
 export const LANDING_DRAFT_PERSIST_KEY = persistKey(STORE_KEYS.landingDraft);
@@ -334,6 +348,41 @@ function parsePersistedComposerMode(value: unknown): ComposerMode {
     : DEFAULT_COMPOSER_MODE;
 }
 
+/**
+ * Content-derived emptiness: no typed text AND no image atoms. An image-only
+ * draft is real content - discarding or replacing it would drop the image.
+ */
+export function isLandingDraftEmpty(draft: LandingDraftTab): boolean {
+  if (
+    extractPlainTextFromComposerJSONContent(draft.content).trim().length > 0
+  ) {
+    return false;
+  }
+  return !containsImageAtoms(draft.content);
+}
+
+/**
+ * Newest existing landing draft, for the installed mobile app's single stable
+ * composer: an id-less "new draft" activation reuses this instead of minting
+ * (see `createDraft`). `null` when no draft exists yet.
+ */
+export function newestLandingDraftId(): string | null {
+  return newestDraft(useLandingDraftStore.getState().drafts);
+}
+
+function newestDraft(drafts: ReadonlyArray<LandingDraftTab>): string | null {
+  let newest: LandingDraftTab | null = null;
+  for (const draft of drafts) {
+    // >= so the LATER array entry wins a millisecond tie: drafts are
+    // append-ordered, and same-ms timestamps are realistic (restore paths
+    // stamp several drafts in one tick).
+    if (newest === null || draft.lastTouchedAt >= newest.lastTouchedAt) {
+      newest = draft;
+    }
+  }
+  return newest === null ? null : newest.id;
+}
+
 export const useLandingDraftStore = create<LandingDraftStoreState>()(
   persist(
     (set, get) => ({
@@ -341,6 +390,21 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
       activeDraftId: null,
 
       createDraft: (settings) => {
+        // The installed mobile app has ONE stable composer: its header has
+        // no tab strip, so a second draft tab could never be closed. "New
+        // task" therefore lands back on the existing draft - whatever its
+        // content - instead of minting another. Keyed on the PRODUCT flag,
+        // never the viewport (see `@/lib/mobile-app`): a responsively-narrow
+        // desktop browser keeps normal multi-draft behavior. Explicit-id
+        // creation (`createDraftWithId`) is a restore/sync path and always
+        // mints exactly that draft.
+        if (isMobileApp()) {
+          const existing = newestDraft(get().drafts);
+          if (existing !== null) {
+            set({ activeDraftId: existing });
+            return existing;
+          }
+        }
         return get().createDraftWithId(uuidv4(), settings);
       },
 
@@ -456,6 +520,24 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
             d.id === id ? { ...d, composerMode: mode } : d,
           ),
         }));
+      },
+
+      restoreDraftWorkspaceForHost: (id, hostId) => {
+        const bucket = selectWorkspaceFoldersBucket(
+          useWorkspaceFoldersStore.getState(),
+          hostId,
+        );
+        set((state) =>
+          updateDraftWorkspace(state, id, () =>
+            normalizeLandingDraftWorkspace({
+              folders: [...bucket.folders],
+              folderInfoByPath: copyWorkspaceFolderInfoByPath(
+                bucket.folderInfoByPath,
+              ),
+              primaryPath: bucket.primaryPath,
+            }),
+          ),
+        );
       },
 
       addDraftResolvedFolders: (id, folders) => {

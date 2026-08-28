@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { buildStreamManifest } from "@traycer/protocol/framework/stream-compat";
+import { CLIENT_SERVED_STREAM_MAJORS } from "../served-stream-majors";
 import type { ChatSubscribeClientFrame } from "@traycer/protocol/host/agent/gui/subscribe";
 import {
   createRequestContext,
@@ -182,6 +183,139 @@ function frozenPreImageAssistantMessage(): Record<string, unknown> {
   };
 }
 
+/**
+ * A `chat.subscribe@1.6` assistant message carrying a pre-settlement
+ * interview block: no outcome/drafts/settlement/diagnostics/delivery, and
+ * answers without `selection`. A 1.6 shallow parse leaves those keys
+ * absent; `normalizeV16MessagesInShallowSnapshot` is what fills them.
+ * Also omits `imageResolutions` so the test can tell shallow from deep.
+ */
+function frozenV16InterviewAssistantMessage(): Record<string, unknown> {
+  return {
+    role: "assistant",
+    messageId: "assistant-interview-1",
+    sender: {
+      type: "agent",
+      harnessId: "codex",
+      agentId: "agent-1",
+      displayName: "Coder",
+      reply: { expectsReply: false },
+      inReplyTo: null,
+    },
+    blocks: [
+      {
+        blockId: "text-1",
+        status: "completed",
+        timestamp: 10,
+        parentBlockId: null,
+        type: "text",
+        text: "hello",
+      },
+      {
+        blockId: "iv-1",
+        status: "completed",
+        timestamp: 20,
+        parentBlockId: null,
+        type: "interview",
+        toolName: "AskUserQuestion",
+        title: "Library",
+        description: "Pick one",
+        questions: [
+          {
+            questionId: "q1",
+            question: "Which library?",
+            header: "Library",
+            options: [{ label: "date-fns", description: null, preview: null }],
+            multiSelect: false,
+          },
+        ],
+        answers: [
+          {
+            questionId: "q1",
+            question: "Which library?",
+            values: ["date-fns"],
+            notes: null,
+          },
+        ],
+        error: null,
+        metadata: null,
+      },
+    ],
+    startedAt: 10,
+    timestamp: 20,
+    turnId: "turn-1",
+    usage: null,
+    reasoningEffort: null,
+    serviceTier: null,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function interviewBlockFromMessage(message: unknown): Record<string, unknown> {
+  if (!isRecord(message)) {
+    throw new Error("expected assistant message");
+  }
+  if (!Array.isArray(message.blocks)) {
+    throw new Error("expected blocks");
+  }
+  for (const block of message.blocks) {
+    if (isRecord(block) && block.type === "interview") return block;
+  }
+  throw new Error("expected interview block");
+}
+
+function interviewAnswerAction(): ChatSubscribeClientFrame {
+  return {
+    kind: "interviewAnswer",
+    hasBinaryPayload: false,
+    epicId: "epic-1",
+    chatId: "chat-1",
+    clientActionId: "action-answer",
+    blockId: "iv-1",
+    answers: [
+      {
+        questionId: "q1",
+        question: "Which library?",
+        values: ["date-fns"],
+        notes: null,
+        selection: {
+          questionIndex: 0,
+          optionIndices: [0],
+          optionLabels: ["date-fns"],
+          customText: null,
+        },
+      },
+    ],
+  };
+}
+
+function interviewErrorAction(): ChatSubscribeClientFrame {
+  return {
+    kind: "interviewError",
+    hasBinaryPayload: false,
+    epicId: "epic-1",
+    chatId: "chat-1",
+    clientActionId: "action-error",
+    blockId: "iv-1",
+    reason: "Not now",
+    settlement: {
+      outcome: "skipped",
+      draftAnswers: [
+        {
+          questionId: "q1",
+          question: "Which library?",
+          values: ["lodash"],
+          notes: null,
+          selection: null,
+        },
+      ],
+    },
+  };
+}
+
 function snapshotFrameWithAssistantMessage(
   assistantMessage: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -219,11 +353,40 @@ function snapshotFrameWithAssistantMessage(
 }
 
 function parseText(raw: string): Record<string, unknown> {
-  const value = JSON.parse(raw);
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  const value: unknown = JSON.parse(raw);
+  if (!isRecord(value)) {
     throw new Error("Expected object text frame");
   }
-  return value as Record<string, unknown>;
+  return value;
+}
+
+function makeNoopCallbacks(
+  onSnapshot: ChatStreamCallbacks["onSnapshot"],
+): ChatStreamCallbacks {
+  return {
+    onSnapshot,
+    onActionAck: () => undefined,
+    onMessageAccepted: () => undefined,
+    onQueueChanged: () => undefined,
+    onTurnStateChanged: () => undefined,
+    onBlockDelta: () => undefined,
+    onApprovalRequested: () => undefined,
+    onApprovalResolved: () => undefined,
+    onFileEditApprovalRequested: () => undefined,
+    onFileEditApprovalResolved: () => undefined,
+    onInterviewRequested: () => undefined,
+    onInterviewAnswered: () => undefined,
+    onInterviewErrored: () => undefined,
+    onEventAppended: () => undefined,
+    onRestoreStarted: () => undefined,
+    onRestoreProgress: () => undefined,
+    onRestoreCompleted: () => undefined,
+    onErrorNotice: () => undefined,
+    onWorktreeStateChanged: () => undefined,
+    onManagedCommandsChanged: () => undefined,
+    onHeldUpdatesChanged: () => undefined,
+    onConnectionStatus: () => undefined,
+  };
 }
 
 describe("ChatStreamClient", () => {
@@ -314,9 +477,10 @@ describe("ChatStreamClient", () => {
     expect(parseText(sockets[0].textSent[1])).toEqual({
       kind: "subscribe",
       method: "chat.subscribe",
-      schemaVersion: buildStreamManifest(hostStreamRpcRegistry)[
-        "chat.subscribe"
-      ],
+      schemaVersion: buildStreamManifest(
+        hostStreamRpcRegistry,
+        CLIENT_SERVED_STREAM_MAJORS,
+      )["chat.subscribe"],
       params: { epicId: "epic-1", chatId: "chat-1" },
     });
 
@@ -549,35 +713,6 @@ describe("ChatStreamClient", () => {
 });
 
 describe("ChatStreamClient shallow-vs-deep snapshot parse gating", () => {
-  function makeNoopCallbacks(
-    onSnapshot: ChatStreamCallbacks["onSnapshot"],
-  ): ChatStreamCallbacks {
-    return {
-      onSnapshot,
-      onActionAck: () => undefined,
-      onMessageAccepted: () => undefined,
-      onQueueChanged: () => undefined,
-      onTurnStateChanged: () => undefined,
-      onBlockDelta: () => undefined,
-      onApprovalRequested: () => undefined,
-      onApprovalResolved: () => undefined,
-      onFileEditApprovalRequested: () => undefined,
-      onFileEditApprovalResolved: () => undefined,
-      onInterviewRequested: () => undefined,
-      onInterviewAnswered: () => undefined,
-      onInterviewErrored: () => undefined,
-      onEventAppended: () => undefined,
-      onRestoreStarted: () => undefined,
-      onRestoreProgress: () => undefined,
-      onRestoreCompleted: () => undefined,
-      onErrorNotice: () => undefined,
-      onWorktreeStateChanged: () => undefined,
-      onManagedCommandsChanged: () => undefined,
-      onHeldUpdatesChanged: () => undefined,
-      onConnectionStatus: () => undefined,
-    };
-  }
-
   it("takes the deep parse path and up-converts a down-negotiated (1.5) snapshot's pre-image assistant message", () => {
     const { factory, sockets } = makeFactory();
     const deliveredMessages: unknown[] = [];
@@ -609,7 +744,7 @@ describe("ChatStreamClient shallow-vs-deep snapshot parse gating", () => {
     client.close();
   });
 
-  it("takes the shallow parse path and passes a live (1.6) snapshot's message through structurally unchanged", () => {
+  it("takes the live (1.7) shallow parse path and passes the message through structurally unchanged", () => {
     const { factory, sockets } = makeFactory();
     const deliveredMessages: unknown[] = [];
 
@@ -623,7 +758,8 @@ describe("ChatStreamClient shallow-vs-deep snapshot parse gating", () => {
     });
     // Default handshake echoes the client's own manifest verbatim, which
     // negotiates to the client's canonical chat.subscribe version - today
-    // exactly `chatSubscribeLiveSchemaVersion` ({major:1, minor:6}).
+    // exactly `chatSubscribeLiveSchemaVersion` ({major:1, minor:7}). The live
+    // shallow path does NOT run the 1.6 interview normalizer.
     completeHandshake(sockets[0]);
 
     sockets[0].fireText(
@@ -639,5 +775,337 @@ describe("ChatStreamClient shallow-vs-deep snapshot parse gating", () => {
     expect(assistant).toMatchObject({ messageId: "assistant-1" });
 
     client.close();
+  });
+
+  // `1.6` is a RELEASED line that is not the live one, and it emits live-SHAPED
+  // frames. Gating the shallow path on exact equality with
+  // `chatSubscribeLiveSchemaVersion` would silently deep-parse every snapshot
+  // from a current `1.6` host the moment `1.7` opened - "seconds of
+  // render-thread CPU per snapshot" by the shallow schema's own doc, on the
+  // routine new-app-before-new-host pairing. Hence the per-line fast path.
+  it("takes the 1.6 shallow path and delivers a normalized interview snapshot", () => {
+    const { factory, sockets } = makeFactory();
+    const deliveredMessages: unknown[] = [];
+
+    const client = new ChatStreamClient({
+      wsStreamClient: makeWsStreamClient(factory),
+      epicId: "epic-1",
+      chatId: "chat-1",
+      callbacks: makeNoopCallbacks((frame) => {
+        deliveredMessages.push(...frame.snapshot.chat.messages);
+      }),
+    });
+    completeHandshakeAtVersion(sockets[0], { major: 1, minor: 6 });
+
+    sockets[0].fireText(
+      snapshotFrameWithAssistantMessage(frozenV16InterviewAssistantMessage()),
+    );
+
+    expect(deliveredMessages).toHaveLength(1);
+    const [assistant] = deliveredMessages;
+    // Shallow: the 1.6 envelope did not walk histories, so the deep
+    // schema's `imageResolutions: []` default was never applied.
+    expect(assistant).not.toHaveProperty("imageResolutions");
+    const interview = interviewBlockFromMessage(assistant);
+    expect(interview.outcome).toBeNull();
+    expect(interview.draftAnswers).toEqual([]);
+    expect(interview.settlement).toBeNull();
+    expect(interview.diagnostics).toEqual([]);
+    expect(interview.delivery).toBeNull();
+    expect(interview.settlementExtensions).toEqual({});
+    if (!Array.isArray(interview.answers) || !isRecord(interview.answers[0])) {
+      throw new Error("expected interview answers");
+    }
+    expect(interview.answers[0].selection).toBeNull();
+    expect(interview.answers[0].values).toEqual(["date-fns"]);
+
+    client.close();
+  });
+});
+
+describe("ChatStreamClient.sendAction interview projection", () => {
+  it("sends interviewAnswer/interviewError verbatim on a 1.7 session", () => {
+    const { factory, sockets } = makeFactory();
+    const client = new ChatStreamClient({
+      wsStreamClient: makeWsStreamClient(factory),
+      epicId: "epic-1",
+      chatId: "chat-1",
+      callbacks: makeNoopCallbacks(() => undefined),
+    });
+    completeHandshake(sockets[0]);
+
+    const answer = interviewAnswerAction();
+    const error = interviewErrorAction();
+    client.sendAction(answer);
+    client.sendAction(error);
+
+    const sentAnswer = parseText(sockets[0].textSent[2]);
+    const sentError = parseText(sockets[0].textSent[3]);
+    expect(sentAnswer).toEqual(answer);
+    expect(sentError).toEqual(error);
+    if (
+      !Array.isArray(sentAnswer.answers) ||
+      !isRecord(sentAnswer.answers[0])
+    ) {
+      throw new Error("expected projected answers");
+    }
+    expect(Object.hasOwn(sentAnswer.answers[0], "selection")).toBe(true);
+    expect(Object.hasOwn(sentError, "settlement")).toBe(true);
+
+    client.close();
+  });
+
+  it("strips selection and settlement before sending on a 1.6 session", () => {
+    const { factory, sockets } = makeFactory();
+    const client = new ChatStreamClient({
+      wsStreamClient: makeWsStreamClient(factory),
+      epicId: "epic-1",
+      chatId: "chat-1",
+      callbacks: makeNoopCallbacks(() => undefined),
+    });
+    completeHandshakeAtVersion(sockets[0], { major: 1, minor: 6 });
+
+    client.sendAction(interviewAnswerAction());
+    client.sendAction(interviewErrorAction());
+
+    const sentAnswer = parseText(sockets[0].textSent[2]);
+    const sentError = parseText(sockets[0].textSent[3]);
+    if (
+      !Array.isArray(sentAnswer.answers) ||
+      !isRecord(sentAnswer.answers[0])
+    ) {
+      throw new Error("expected projected answers");
+    }
+    expect(Object.hasOwn(sentAnswer.answers[0], "selection")).toBe(false);
+    expect(sentAnswer.answers[0].values).toEqual(["date-fns"]);
+    expect(Object.hasOwn(sentError, "settlement")).toBe(false);
+    expect(sentError.reason).toBe("Not now");
+
+    client.close();
+  });
+});
+
+/**
+ * Browser payloads on the frames that arrive OUTSIDE a snapshot.
+ *
+ * A snapshot from a `1.6` host is parsed against the FROZEN `1.6` schemas
+ * first, so a browser payload on it is stripped as an unknown key. Every other
+ * frame kind takes the LIVE union whatever line was negotiated - so without a
+ * normalize pass, a mislabeled, stale or hostile "1.6" peer's browser payload
+ * arrives VALIDATED on `messageAccepted` / `queueChanged` and is written into
+ * history as canonical. Same smuggling the snapshot path refuses, through the
+ * door beside it.
+ *
+ * Both directions are pinned here: neutralized to `[]` on `1.6`, passed through
+ * on the live line. `[]` and not `undefined` matters as much as the stripping -
+ * consumers are typed as if the array is present.
+ */
+function smuggledBrowserPayload(): Record<string, unknown> {
+  return {
+    kind: "user",
+    content: { type: "doc", content: [] },
+    // Deliberately VALID records: the point is that they survive the live
+    // parse, so only a normalize pass can keep them off a 1.6 consumer.
+    browserAnnotations: [
+      {
+        kind: "browser-annotation",
+        annotationId: "ann-1",
+        tabId: "tab-1",
+        sessionId: "session-1",
+        origin: "https://example.com",
+        pageUrl: "https://example.com/app",
+        pageTitle: "App",
+        capturedAt: 5,
+        comment: "look here",
+        counts: { elements: 0, regions: 0, strokes: 0 },
+        elements: [],
+        imageFileName: "shot.png",
+        imageHash: "hash-1",
+      },
+    ],
+  };
+}
+
+function messageAcceptedFrame(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    kind: "messageAccepted",
+    hasBinaryPayload: false,
+    epicId: "epic-1",
+    chatId: "chat-1",
+    message: {
+      role: "user",
+      messageId: "user-1",
+      sender: { type: "user", userId: "user-1" },
+      message: payload,
+      timestamp: 5,
+      sessionAnchor: null,
+    },
+  };
+}
+
+function queueChangedFrame(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    kind: "queueChanged",
+    hasBinaryPayload: false,
+    epicId: "epic-1",
+    chatId: "chat-1",
+    queue: {
+      status: "idle",
+      items: [
+        {
+          kind: "prompt",
+          queueItemId: "queue-1",
+          messageId: "user-1",
+          message: payload,
+          sender: { type: "user", userId: "user-1" },
+          settings: {
+            harnessId: "codex",
+            model: "gpt-5.4",
+            permissionMode: "supervised",
+            reasoningEffort: "high",
+            agentMode: "epic",
+          },
+          accountContext: { type: "PERSONAL" },
+          delivery: "next_turn",
+          status: "pending",
+          targetTurnId: null,
+          steerRequest: null,
+          fallbackReason: null,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    },
+  };
+}
+
+function browserPayloadArrays(value: unknown): {
+  readonly annotations: unknown;
+} {
+  if (!isRecord(value)) {
+    throw new Error("expected user-authored payload");
+  }
+  return {
+    annotations: value.browserAnnotations,
+  };
+}
+
+function acceptedPayload(value: unknown): unknown {
+  if (!isRecord(value)) {
+    throw new Error("expected messageAccepted frame");
+  }
+  if (!isRecord(value.message)) {
+    throw new Error("expected user message");
+  }
+  return value.message.message;
+}
+
+function queuedPayload(value: unknown): unknown {
+  if (!isRecord(value)) {
+    throw new Error("expected queueChanged frame");
+  }
+  if (!isRecord(value.queue) || !Array.isArray(value.queue.items)) {
+    throw new Error("expected queue items");
+  }
+  const [item] = value.queue.items;
+  if (!isRecord(item)) {
+    throw new Error("expected queue item");
+  }
+  return item.message;
+}
+
+function runBrowserPayloadSession(
+  schemaVersion: {
+    readonly major: number;
+    readonly minor: number;
+  } | null,
+): {
+  readonly accepted: unknown[];
+  readonly queued: unknown[];
+} {
+  const { factory, sockets } = makeFactory();
+  const accepted: unknown[] = [];
+  const queued: unknown[] = [];
+  const client = new ChatStreamClient({
+    wsStreamClient: makeWsStreamClient(factory),
+    epicId: "epic-1",
+    chatId: "chat-1",
+    callbacks: {
+      ...makeNoopCallbacks(() => undefined),
+      onMessageAccepted: (frame) => {
+        accepted.push(frame);
+      },
+      onQueueChanged: (frame) => {
+        queued.push(frame);
+      },
+    },
+  });
+  if (schemaVersion === null) {
+    completeHandshake(sockets[0]);
+  } else {
+    completeHandshakeAtVersion(sockets[0], schemaVersion);
+  }
+
+  sockets[0].fireText(messageAcceptedFrame(smuggledBrowserPayload()));
+  sockets[0].fireText(queueChangedFrame(smuggledBrowserPayload()));
+  client.close();
+  return { accepted, queued };
+}
+
+describe("ChatStreamClient pre-1.7 browser payload neutralization", () => {
+  it("empties smuggled browser arrays on messageAccepted and queueChanged from a 1.6 host", () => {
+    const { accepted, queued } = runBrowserPayloadSession({
+      major: 1,
+      minor: 6,
+    });
+
+    expect(accepted).toHaveLength(1);
+    expect(queued).toHaveLength(1);
+    // Empty, not absent: consumers are typed as if the array is present.
+    expect(browserPayloadArrays(acceptedPayload(accepted[0]))).toEqual({
+      annotations: [],
+    });
+    expect(browserPayloadArrays(queuedPayload(queued[0]))).toEqual({
+      annotations: [],
+    });
+  });
+
+  it("empties it on a pre-1.6 line too - every line below 1.7 predates the field", () => {
+    const { accepted, queued } = runBrowserPayloadSession({
+      major: 1,
+      minor: 2,
+    });
+
+    expect(browserPayloadArrays(acceptedPayload(accepted[0]))).toEqual({
+      annotations: [],
+    });
+    expect(browserPayloadArrays(queuedPayload(queued[0]))).toEqual({
+      annotations: [],
+    });
+  });
+
+  it("passes the same validated browser payload through on the live line", () => {
+    // Default handshake negotiates the client's canonical version (1.7), where
+    // this array is legal, deep-validated content rather than smuggled.
+    const { accepted, queued } = runBrowserPayloadSession(null);
+
+    const acceptedArrays = browserPayloadArrays(acceptedPayload(accepted[0]));
+    const queuedArrays = browserPayloadArrays(queuedPayload(queued[0]));
+    for (const arrays of [acceptedArrays, queuedArrays]) {
+      if (!Array.isArray(arrays.annotations)) {
+        throw new Error("expected browser payload array");
+      }
+      expect(arrays.annotations).toHaveLength(1);
+      // `.default(0)` on a live-only field, applied by the deep parse -
+      // proof this really is the validated live shape, not a pass-through.
+      expect(arrays.annotations[0]).toMatchObject({
+        annotationId: "ann-1",
+        droppedElementCount: 0,
+      });
+    }
   });
 });

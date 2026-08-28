@@ -3,6 +3,7 @@ import { guiHarnessIdSchema } from "@traycer/protocol/persistence/epic/foundatio
 import {
   userMessageSenderSchema,
   userMessageSenderSchemaPreInReplyTo,
+  userMessageSenderSchemaPreReasonix,
 } from "@traycer/protocol/persistence/epic/senders";
 
 /**
@@ -150,11 +151,35 @@ export const chatEventSchemaPreInReplyTo = z.object({
   metadata: z.record(z.string(), z.unknown()).nullable(),
 });
 
+// Wire-freeze copy bound to `chat.subscribe@1.4`/`@1.5` serverFrames
+// (`eventAppended` + snapshot `chat.events`), frozen on BOTH axes a released
+// peer's strict schema pins: `actor` on the pre-Reasonix sender (those lines
+// shipped after `inReplyTo`, so that field stays) and `type` on the
+// pre-`chat.imported` enum - the released lines predate both additions, and
+// either one alone would let `eventAppended` carry a value a released client
+// rejects. Hand-frozen, not derived.
+export const chatEventSchemaPreReasonix = z.object({
+  eventId: z.string(),
+  type: chatEventTypeSchemaPreImported,
+  timestamp: z.number(),
+  clientActionId: z.string().nullable(),
+  actor: userMessageSenderSchemaPreReasonix.nullable(),
+  message: z.string().nullable(),
+  turnId: z.string().nullable(),
+  messageId: z.string().nullable(),
+  queueItemId: z.string().nullable(),
+  approvalId: z.string().nullable(),
+  blockId: z.string().nullable(),
+  severity: chatEventSeveritySchema,
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+});
+
 /**
- * Wire-freeze copy bound to `chat.subscribe@1.4–1.5`: the live sender tree
- * (`inReplyTo` shipped in `1.4`) with the pre-`chat.imported` type enum. See
- * {@link chatEventTypeSchemaPreImported} for why the enum is the half that has
- * to stay frozen.
+ * The pre-`chat.imported` event shape on the LIVE sender tree: only the type
+ * enum is pinned. This is the epic RECORD's freeze (`chatSchemaPreImported`),
+ * which deliberately keeps following every other chat change - unlike the
+ * wire freezes above, which pin the actor axis too because their released
+ * peers' strict schemas do.
  */
 export const chatEventSchemaPreImported = z.object({
   eventId: z.string(),

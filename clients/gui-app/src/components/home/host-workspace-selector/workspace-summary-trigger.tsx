@@ -31,10 +31,19 @@ export function WorkspaceSummaryTrigger(
     readonly items: ReadonlyArray<WorkspaceRunItem>;
     readonly readOnly: boolean;
     readonly bindingResolved: boolean;
+    readonly draftPending?: boolean;
     readonly ref?: Ref<HTMLButtonElement>;
   },
 ) {
-  const { items, readOnly, bindingResolved, className, ref, ...rest } = props;
+  const {
+    items,
+    readOnly,
+    bindingResolved,
+    draftPending,
+    className,
+    ref,
+    ...rest
+  } = props;
   // Resolve by the marked `isPrimary` row, not array order: the host
   // normalizes binding flags without reordering entries, so the collapsed
   // chip must agree with the primary pin/row rather than always reading
@@ -93,6 +102,13 @@ export function WorkspaceSummaryTrigger(
               +{extraCount}
             </span>
           ) : null}
+          {draftPending === true ? (
+            <span
+              className="size-1.5 shrink-0 rounded-full bg-foreground"
+              data-testid="workspace-summary-draft"
+              aria-label="Uncommitted workspace draft"
+            />
+          ) : null}
         </>
       )}
       <ChevronDown className="size-3.5 shrink-0 text-current" />
@@ -133,7 +149,9 @@ export function WorkspaceSummaryTrigger(
           side="bottom"
           align="start"
           collisionPadding={12}
-          className="w-[min(92vw,42rem)] max-w-[var(--radix-popover-content-available-width)] max-h-[min(var(--radix-popover-content-available-height),32rem)] gap-0 overflow-y-auto p-3"
+          // Same desktop-scrolls-here / phone-scrolls-the-list split as the
+          // editable panel in `WorkspaceFolderSummaryControl` - see the note there.
+          className="w-[min(92vw,42rem)] max-w-[var(--radix-popover-content-available-width)] max-h-[min(var(--radix-popover-content-available-height),32rem)] gap-0 overflow-y-auto p-3 max-md:overflow-hidden"
           data-testid="workspace-readonly-folders-popover"
           onOpenAutoFocus={(event) => event.preventDefault()}
         >
@@ -147,6 +165,7 @@ export function WorkspaceSummaryTrigger(
             onUpdate={null}
             updateEnabled={false}
             updatePending={false}
+            discardDisabled={false}
             onEditEnvironment={NOOP}
             readOnly
             nestedInPopover={false}

@@ -60,6 +60,7 @@ import {
   useHostOverviewStatusQuery,
   useHostRestart,
   useHostServiceStatusQuery,
+  useRefreshOverviewStatusOnSessionActivity,
 } from "@/components/settings/panels/host-overview-rpc";
 import { newTransitionId } from "@/components/settings/panels/host-overview-transition-id";
 import { useClipboardCopy } from "@/hooks/ui/use-clipboard-copy";
@@ -263,7 +264,15 @@ export function HostOverviewPanel(props: {
     restartForceRoute: forceRestartLocalHostId !== null,
   });
 
-  const statusQuery = useHostOverviewStatusQuery({ client, enabled: usable });
+  const statusQuery = useHostOverviewStatusQuery({
+    client,
+    enabled: usable,
+    hostId: scope.hostId,
+  });
+  useRefreshOverviewStatusOnSessionActivity({
+    hostId: scope.hostId,
+    enabled: usable,
+  });
   const identityQuery = useHostIdentityQuery({
     client,
     enabled: usable && identityDegrade === null,
@@ -583,6 +592,10 @@ export function HostOverviewPanel(props: {
   const updates = useHostOverviewUpdates({
     client,
     hostName: displayName,
+    // Identifies whose filter the RC override belongs to. `HostScopeGate` can
+    // swap the scoped host under a mounted subtree, and an override carried
+    // across that swap would apply one machine's decision to another.
+    hostId: scope.hostId,
     installedVersion: view.hostVersion,
     platformKey: host?.platform ?? null,
     // The check reads on its own now, so this gate is load-bearing rather than

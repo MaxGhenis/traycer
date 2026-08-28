@@ -25,9 +25,14 @@ export {
   hasReadyRemoteSession,
   remoteSessionCacheKey,
   retireAllRemoteSessions,
+  wakeHeldRemoteSessions,
   subscribeRemoteSessionReadiness,
   resetRemoteSessionReadinessListenersForTest,
 } from "./active-remote-sessions";
+export {
+  RELAY_WAKE_PROBE_TIMEOUT_BACKGROUNDED_MS,
+  WAKE_FORCE_RECONNECT_AFTER_BACKGROUND_MS,
+} from "./config";
 export {
   mintAttachGrantViaHttp,
   createAttachGrantProvider,

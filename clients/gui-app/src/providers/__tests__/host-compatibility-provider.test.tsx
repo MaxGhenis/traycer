@@ -123,7 +123,8 @@ interface StartupConsumersOptions {
     params: GetTaskContextsRequest,
   ) => Promise<GetTaskContextsResponse> | GetTaskContextsResponse;
   readonly listHarnesses: () =>
-    Promise<ListHarnessesResponse> | ListHarnessesResponse;
+    | Promise<ListHarnessesResponse>
+    | ListHarnessesResponse;
   readonly onMethod: (method: string) => void;
 }
 
@@ -1300,7 +1301,7 @@ describe("HostCompatibilityProvider startup consumers", () => {
     act(() => {
       useEpicCanvasStore.getState().openEpicTab(FRESH_EPIC_ID, "Fresh");
       useEpicCanvasStore.getState().openEpicTab(STALE_EPIC_ID, "Stale");
-      markEpicCreatedThisSession(FRESH_EPIC_ID);
+      markEpicCreatedThisSession(FRESH_EPIC_ID, "host-1");
     });
 
     await waitFor(() => {

@@ -24,6 +24,7 @@ import {
   turnCheckpointManifestSchema,
   type TurnCheckpointManifest,
 } from "@traycer/protocol/persistence/epic/checkpoint-manifests";
+
 import {
   buildAttachmentsFromJSONContent,
   extractPlainTextFromComposerJSONContent,
@@ -3008,6 +3009,8 @@ function renderUserMessage(
         : [],
     structuredContent: message.message.content,
     attachments: buildAttachmentsFromJSONContent(message.message.content),
+    browserAnnotations:
+      message.message.kind === "user" ? message.message.browserAnnotations : [],
     settings: null,
     createdAt: message.timestamp,
     completedAt: null,
@@ -3048,7 +3051,10 @@ function renderPendingUserMessage(
           ]
         : [],
     structuredContent: message.content,
-    attachments: buildAttachmentsFromJSONContent(message.content),
+    attachments: message.attachments,
+    browserAnnotations: message.attachments.filter(
+      (attachment) => attachment.kind === "browser-annotation",
+    ),
     settings: message.settings,
     createdAt: message.timestamp,
     completedAt: null,
@@ -4079,7 +4085,11 @@ const BLOCK_HANDLERS: {
     description: block.description,
     questions: block.questions,
     answers: block.answers,
+    draftAnswers: block.draftAnswers,
+    outcome: block.outcome,
+    settlement: block.settlement,
     error: block.error,
+    delivery: block.delivery,
     forkedWithoutAnswer: block.metadata?.["forkedWithoutAnswer"] === true,
   }),
   // Artifact-operation cards render top-level regardless of the authoring agent
@@ -4126,7 +4136,8 @@ function planContentIdentity(
 
 function blockToSegment(block: ContentBlock): MessageSegment | null {
   const handler = BLOCK_HANDLERS[block.type] as
-    ((b: ContentBlock) => Omit<MessageSegment, "id"> | null) | undefined;
+    | ((b: ContentBlock) => Omit<MessageSegment, "id"> | null)
+    | undefined;
   if (handler === undefined) {
     // Forward-compat: a newer host may emit a block.type the current GUI
     // bundle does not know about. Drop it instead of crashing the chat.
