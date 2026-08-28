@@ -553,6 +553,7 @@ import { worktreeDeleteBatchByPathStreamV10 } from "@traycer/protocol/host/workt
 import {
   worktreeDeleteByPathStreamV10,
   worktreeDeleteByPathStreamV11,
+  worktreeDeleteByPathStreamV12,
 } from "@traycer/protocol/host/worktree-delete-stream";
 import { worktreeChangedV10 } from "@traycer/protocol/host/worktree-changed-stream";
 import { providersChangedV10 } from "@traycer/protocol/host/providers-changed-stream";
@@ -599,6 +600,7 @@ import {
   worktreeCreatePathsResponseSchema,
   worktreeDeleteRequestSchema,
   worktreeDeleteRequestSchemaV11,
+  worktreeDeleteRequestSchemaV12,
   worktreeDeleteResponseSchema,
   worktreeListHoldersRequestSchema,
   worktreeListHoldersResponseSchema,
@@ -1123,6 +1125,31 @@ export const worktreeDeleteUpgradeV10ToV11 = defineUpgradePath<
   upgradeRequest: (request) => ({
     ...request,
     stopOwners: false,
+  }),
+  upgradeResponse: (response) => response,
+});
+
+/**
+ * `worktree.delete@1.2` - optional `expectedHolderIds`. Absent reproduces
+ * @1.1 (stop whatever the fresh inventory finds). Present with
+ * `stopOwners: true` is a set-equality compare before teardown.
+ */
+export const worktreeDeleteV12 = defineRpcContract({
+  method: "worktree.delete",
+  schemaVersion: { major: 1, minor: 2 } as const,
+  requestSchema: worktreeDeleteRequestSchemaV12,
+  responseSchema: worktreeDeleteResponseSchema,
+});
+
+export const worktreeDeleteUpgradeV11ToV12 = defineUpgradePath<
+  typeof worktreeDeleteV11,
+  typeof worktreeDeleteV12
+>({
+  from: worktreeDeleteV11.schemaVersion,
+  to: worktreeDeleteV12.schemaVersion,
+  upgradeRequest: (request) => ({
+    ...request,
+    expectedHolderIds: undefined,
   }),
   upgradeResponse: (response) => response,
 });
@@ -7115,7 +7142,7 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
   },
   "worktree.delete": {
     1: {
-      latestMinor: 1,
+      latestMinor: 2,
       versions: {
         0: {
           contract: worktreeDeleteV10,
@@ -7124,6 +7151,10 @@ const HOST_RPC_REGISTRY_BASE_TAIL_DEFINITION = {
         1: {
           contract: worktreeDeleteV11,
           upgradeFromPreviousVersion: worktreeDeleteUpgradeV10ToV11,
+        },
+        2: {
+          contract: worktreeDeleteV12,
+          upgradeFromPreviousVersion: worktreeDeleteUpgradeV11ToV12,
         },
       },
       downgradePathsFromLatest: {},
@@ -8763,13 +8794,16 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
   },
   "worktree.deleteByPath": {
     1: {
-      latestMinor: 1,
+      latestMinor: 2,
       versions: {
         0: {
           contract: worktreeDeleteByPathStreamV10,
         },
         1: {
           contract: worktreeDeleteByPathStreamV11,
+        },
+        2: {
+          contract: worktreeDeleteByPathStreamV12,
         },
       },
     },

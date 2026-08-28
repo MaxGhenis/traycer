@@ -62,6 +62,20 @@ export type WorktreeDeleteByPathOpenRequestV11 = z.infer<
   typeof worktreeDeleteByPathOpenRequestSchemaV11
 >;
 
+/**
+ * `worktree.deleteByPath@1.2` open request. `expectedHolderIds` matches
+ * unary `worktree.delete@1.2`: present with `stopOwners: true` is a
+ * set-equality compare against the fresh inventory before teardown.
+ * Absent reproduces @1.1.
+ */
+export const worktreeDeleteByPathOpenRequestSchemaV12 =
+  worktreeDeleteByPathOpenRequestSchemaV11.extend({
+    expectedHolderIds: z.array(z.string()).optional(),
+  });
+export type WorktreeDeleteByPathOpenRequestV12 = z.infer<
+  typeof worktreeDeleteByPathOpenRequestSchemaV12
+>;
+
 const worktreeDeletePhaseSchema = z.enum(["teardown", "remove"]);
 export type WorktreeDeletePhase = z.infer<typeof worktreeDeletePhaseSchema>;
 
@@ -175,5 +189,62 @@ export const worktreeDeleteByPathStreamV11 = defineStreamRpcContract({
   schemaVersion: { major: 1, minor: 1 } as const,
   openRequestSchema: worktreeDeleteByPathOpenRequestSchemaV11,
   serverFrameSchema: worktreeDeleteByPathServerFrameSchemaV11,
+  clientFrameSchema: worktreeDeleteByPathClientFrameSchema,
+});
+
+/**
+ * @1.2 failed frames may carry the unary refusal `code` so a current
+ * GUI can distinguish `WORKTREE_HOLDERS_CHANGED` from `WORKTREE_BUSY`
+ * without parsing `reason`. Absent on a 1.1 host; a 1.1 client schema
+ * strips it.
+ */
+export const worktreeDeleteByPathServerFrameSchemaV12 = z.discriminatedUnion(
+  "kind",
+  [
+    z.object({
+      kind: z.literal("started"),
+      hasTeardown: z.boolean(),
+      hasBinaryPayload: z.literal(false),
+    }),
+    z.object({
+      kind: z.literal("phase"),
+      phase: worktreeDeletePhaseSchema,
+      hasBinaryPayload: z.literal(false),
+    }),
+    z.object({
+      kind: z.literal("output"),
+      channel: worktreeDeleteOutputChannelSchema,
+      chunk: z.string(),
+      hasBinaryPayload: z.literal(false),
+    }),
+    z.object({
+      kind: z.literal("complete"),
+      deleted: z.boolean(),
+      hasBinaryPayload: z.literal(false),
+    }),
+    z.object({
+      kind: z.literal("failed"),
+      reason: z.string(),
+      holders: worktreeBusyHoldersWireFieldSchema,
+      code: z
+        .enum(["WORKTREE_BUSY", "WORKTREE_HOLDERS_CHANGED"])
+        .optional(),
+      hasBinaryPayload: z.literal(false),
+    }),
+    z.object({
+      kind: z.literal("pong"),
+      hasBinaryPayload: z.literal(false),
+    }),
+  ],
+);
+export type WorktreeDeleteByPathServerFrameV12 = z.infer<
+  typeof worktreeDeleteByPathServerFrameSchemaV12
+>;
+
+export const worktreeDeleteByPathStreamV12 = defineStreamRpcContract({
+  method: "worktree.deleteByPath",
+  schemaVersion: { major: 1, minor: 2 } as const,
+  openRequestSchema: worktreeDeleteByPathOpenRequestSchemaV12,
+  serverFrameSchema: worktreeDeleteByPathServerFrameSchemaV12,
   clientFrameSchema: worktreeDeleteByPathClientFrameSchema,
 });

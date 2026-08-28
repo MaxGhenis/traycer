@@ -61,6 +61,7 @@ export type {
   WorktreeBusyHolders,
   WorktreeBusyOwnerKind,
   WorktreeBusyOwnerRef,
+  WorktreeHoldersChangedErrorDetails,
 } from "./worktree-busy-holders";
 export {
   worktreeBusyErrorDetailsSchema,
@@ -71,6 +72,7 @@ export {
   worktreeBusyHoldersWireFieldSchema,
   worktreeBusyOwnerKindSchema,
   worktreeBusyOwnerRefSchema,
+  worktreeHoldersChangedErrorDetailsSchema,
 } from "./worktree-busy-holders";
 
 export type {
