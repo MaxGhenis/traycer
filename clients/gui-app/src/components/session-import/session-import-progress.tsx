@@ -116,9 +116,16 @@ export function SessionImportProgress(props: {
   return (
     <div
       data-testid="session-import-summary"
-      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-6"
     >
-      <div className="flex flex-col items-center gap-1 text-center">
+      {/* Centered only when the run ended clean: over left-aligned failure
+          cards a centered headline reads as two layouts on one screen. */}
+      <div
+        className={cn(
+          "flex flex-col gap-1",
+          failures.length === 0 && "items-center text-center",
+        )}
+      >
         <p className={cn("text-ui-sm font-medium", tone.strong)}>
           {counts.imported === 0
             ? "Nothing was imported"

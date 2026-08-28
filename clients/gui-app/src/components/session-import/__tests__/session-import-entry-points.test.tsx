@@ -155,7 +155,7 @@ describe("SessionImportPromptRow", () => {
     expect(row).toBeTruthy();
     expect(
       screen.getByText(
-        "Sessions from Claude Code and Codex can be imported as tasks.",
+        "Work from Claude Code, Codex, and OpenCode can be imported as tasks.",
       ),
     ).toBeTruthy();
     // No digit anywhere in the row's copy: counting would require a
@@ -218,10 +218,10 @@ describe("SessionImportSettingsRow (via GeneralSettingsPanel)", () => {
     renderPanel();
 
     expect(
-      screen.queryByRole("button", { name: "Import sessions" }),
+      screen.queryByRole("button", { name: "Import" }),
     ).toBeNull();
     // The row's label too, not just its control: the whole row is gone.
-    expect(screen.queryByText("Import sessions")).toBeNull();
+    expect(screen.queryByText("Import your work")).toBeNull();
   });
 
   it("shows the idle description when nothing is running and nothing has completed", () => {
@@ -230,11 +230,11 @@ describe("SessionImportSettingsRow (via GeneralSettingsPanel)", () => {
     renderPanel();
 
     expect(
-      screen.getByRole("button", { name: "Import sessions" }),
+      screen.getByRole("button", { name: "Import" }),
     ).toBeTruthy();
     expect(
       screen.getByText(
-        "Bring sessions you have already run in Claude Code or Codex into Traycer as tasks.",
+        "Bring work you already started in Claude Code, Codex, or OpenCode into Traycer as tasks.",
       ),
     ).toBeTruthy();
   });

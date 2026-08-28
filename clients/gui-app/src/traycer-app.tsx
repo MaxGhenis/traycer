@@ -4,6 +4,7 @@ import { DesktopZoomController } from "@/components/layout/bridges/desktop-zoom-
 import { HostControllerStatusListener } from "@/components/layout/bridges/host-controller-status-listener";
 import { RunnerHostBridges } from "@/components/layout/bridges/runner-host-bridges";
 import { WorktreeDeleteProgressToastBridge } from "@/components/layout/bridges/worktree-delete-progress-toast-bridge";
+import { SessionImportProgressToastBridge } from "@/components/layout/bridges/session-import-progress-toast-bridge";
 import { ReportIssueDialogHost } from "@/components/layout/dialogs/report-issue-dialog-host";
 import { HostRuntimeBootFallback } from "@/components/host/host-runtime-boot-fallback";
 import { RootErrorBoundary } from "@/components/errors/root-error-boundary";
@@ -296,6 +297,7 @@ function TraycerAppRuntimeSurface(props: TraycerAppRuntimeSurfaceProps) {
       <HostControllerStatusListener />
       <AppUpdateToastController />
       <WorktreeDeleteProgressToastBridge />
+      <SessionImportProgressToastBridge />
       <HarnessCatalogPrefetcher />
       <RateLimitQueueProvider />
       <HistoryPruneProvider router={props.router} />

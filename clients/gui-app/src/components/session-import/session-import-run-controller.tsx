@@ -15,6 +15,7 @@ import {
   progressEntryFrom,
   useSessionImportRunStore,
 } from "@/stores/session-import/session-import-run-store";
+import { useImportedUnseenStore } from "@/stores/session-import/imported-unseen-store";
 import {
   getSessionImportStartHandle,
   setSessionImportStartHandle,
@@ -74,9 +75,15 @@ export function SessionImportRunController(): null {
             });
           },
           onProgress: (payload: SessionImportRunProgressPayload) => {
-            useSessionImportRunStore
-              .getState()
-              .applyProgress(progressEntryFrom(payload));
+            const entry = progressEntryFrom(payload);
+            useSessionImportRunStore.getState().applyProgress(entry);
+            // The task list's unread dot: each landed task is unseen until its
+            // epic is first opened.
+            if (entry.outcome.kind === "imported") {
+              useImportedUnseenStore
+                .getState()
+                .markImported(entry.outcome.epicId, entry.harness);
+            }
           },
           onComplete: (payload: SessionImportRunCompletePayload) => {
             useSessionImportRunStore.getState().applyComplete({

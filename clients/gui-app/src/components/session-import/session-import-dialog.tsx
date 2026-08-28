@@ -26,17 +26,26 @@ export function SessionImportDialog(props: { readonly onClose: () => void }) {
         className="flex h-[min(80dvh,calc(100dvh-2rem))] w-[min(92vw,48rem)] flex-col gap-4 sm:max-w-[min(92vw,48rem)]"
       >
         <DialogHeader>
-          <DialogTitle>Import sessions</DialogTitle>
+          <DialogTitle>Import your work</DialogTitle>
           <DialogDescription>
-            Bring sessions you have already run in Claude Code or Codex into
-            Traycer as tasks.
+            Bring work you already started in Claude Code, Codex, or OpenCode
+            into Traycer as tasks.
           </DialogDescription>
         </DialogHeader>
-        <SessionImportWizard
-          surface="dialog"
-          onImportStarted={() => undefined}
-          secondaryAction={{ label: "Close", onSelect: onClose }}
-        />
+        {/* Bled to the dialog's edges so the wizard's pinned header and footer
+            rules run the full width and the footer sits flush in the corner -
+            the dialog's chrome, not a panel floating inside its padding. */}
+        <div className="-mx-4 -mb-4 flex min-h-0 flex-1 flex-col">
+          <SessionImportWizard
+            surface="dialog"
+            // Submit means go: the dialog gets out of the way and the app-wide
+            // progress toast takes over. Reopening while the run is live shows
+            // the inline progress view - this closes a surface, never a run.
+            onImportStarted={onClose}
+            secondaryAction={{ label: "Close", onSelect: onClose }}
+            registerSubmit={null}
+          />
+        </div>
       </DialogContent>
     </Dialog>
   );

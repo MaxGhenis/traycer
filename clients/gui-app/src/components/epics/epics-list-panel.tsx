@@ -86,6 +86,7 @@ import { useHistoryListKeyboardNav } from "@/components/epics/use-history-list-k
 import { NotificationIndicatorIcon } from "@/components/notifications/notification-indicator-icon";
 import { useSurfaceNotificationIndicatorState } from "@/components/notifications/notification-indicator-context";
 import { SessionImportPromptRow } from "@/components/session-import/session-import-prompt-row";
+import { ImportedUnseenDot } from "@/components/session-import/imported-unseen-dot";
 import { NotificationIndicatorsProvider } from "@/components/notifications/notification-indicators-provider";
 import {
   useHistoryQuery,
@@ -1521,6 +1522,7 @@ const EpicsListRow = memo(function EpicsListRow(props: EpicsListRowProps) {
               <span className="truncate font-medium text-foreground">
                 {displayTitle}
               </span>
+              <ImportedUnseenDot epicId={item.epicId} />
               <HistoryOpenBadge epicId={item.epicId} isOpen={isOpen} />
               {pinControl}
               {titleEditControl}

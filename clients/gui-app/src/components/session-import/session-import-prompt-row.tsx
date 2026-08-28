@@ -41,13 +41,17 @@ export function SessionImportPromptRow() {
         className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/50 px-2.5 py-2 text-ui-xs text-muted-foreground"
       >
         <span className="min-w-0 flex-1">
-          Sessions from Claude Code and Codex can be imported as tasks.
+          Work from Claude Code, Codex, and OpenCode can be imported as tasks.
         </span>
         <span className="flex shrink-0 items-center gap-1">
+          {/* size xs, matching the row's own text-ui-xs: at sm these two
+              buttons are the loudest thing in a line that is meant to whisper. */}
           <Button
             type="button"
             variant="ghost"
-            size="sm"
+            size="xs"
+            // The one word in this quiet row the eye should land on.
+            className="text-foreground"
             data-testid="session-import-prompt-open"
             onClick={() => setImportOpen(true)}
           >
@@ -56,7 +60,7 @@ export function SessionImportPromptRow() {
           <Button
             type="button"
             variant="ghost"
-            size="sm"
+            size="xs"
             data-testid="session-import-prompt-dismiss"
             onClick={dismiss}
           >

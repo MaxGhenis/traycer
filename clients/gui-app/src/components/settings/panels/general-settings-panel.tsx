@@ -325,8 +325,8 @@ export function GeneralSettingsPanel() {
 }
 
 /**
- * The single "Import sessions" entry (spec §5): one row for both providers, not
- * one per provider and not in the Providers panel. Hidden entirely on a host
+ * The single "Import your work" entry (spec §5): one row for every provider,
+ * not one per provider and not in the Providers panel. Hidden entirely on a host
  * that predates the feature - it is deliberately de-emphasised, so there is
  * nothing worth explaining in its absence.
  *
@@ -355,7 +355,7 @@ function SessionImportSettingsRow() {
   const lastCompleted = status?.lastCompleted ?? null;
 
   let description =
-    "Bring sessions you have already run in Claude Code or Codex into Traycer as tasks.";
+    "Bring work you already started in Claude Code, Codex, or OpenCode into Traycer as tasks.";
   if (active !== null) {
     // A run is active from the moment it is submitted, but its size is the
     // host's answer to that submission - so between the two there is a real
@@ -373,7 +373,7 @@ function SessionImportSettingsRow() {
   return (
     <>
       <SettingsRow
-        label="Import sessions"
+        label="Import your work"
         description={description}
         control={
           <Button
@@ -390,7 +390,7 @@ function SessionImportSettingsRow() {
                 variant={undefined}
               />
             ) : null}
-            Import sessions
+            Import
           </Button>
         }
       />
