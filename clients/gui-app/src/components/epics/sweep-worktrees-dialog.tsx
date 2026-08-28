@@ -44,15 +44,20 @@ import { isEditableEventTarget } from "@/lib/keybindings/editable-target";
 import { useCompactRelativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
 import {
+  bannersFromSessionOutcomes,
   captureReviewSnapshot,
   isBulkScopeRow,
+  mergeSessionOutcomes,
+  reconcileSessionOutcomes,
   safeSummaryCopy,
   selectionIsSafeOnly,
   selectAllCountCopy,
   sharedRowHint,
   unprovenRowHint,
   unknownConsequenceForRow,
+  worktreeIdentity,
   type SweepReviewSnapshot,
+  type SweepSessionOutcome,
 } from "@/lib/epics/sweep-consequences";
 import { useTeardownAgentNames } from "@/lib/worktree/teardown-agent-names";
 import {
@@ -136,7 +141,10 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
   const sweepMutation = useEpicSweepWorktrees();
   const refresh = useRefreshSpinner({
     onRefresh: async () => {
-      await refreshCandidates();
+      const fresh = await refreshCandidates();
+      setSessionOutcomes((current) =>
+        reconcileSessionOutcomes(current, fresh),
+      );
     },
     externalRefreshing: isPending,
     timeoutMs: SWEEP_WORKTREES_REFRESH_TIMEOUT_MS,
@@ -147,6 +155,9 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
     useState<SweepReviewSnapshot | null>(null);
   const [typedSweep, setTypedSweep] = useState("");
   const [inventoryChanged, setInventoryChanged] = useState(false);
+  const [sessionOutcomes, setSessionOutcomes] = useState<
+    ReadonlyMap<string, SweepSessionOutcome>
+  >(() => new Map());
   const reviewRefreshGate = useRef(false);
   const claimRefreshKey = useBareKeyClaimer("r", (event) => {
     event.preventDefault();
@@ -180,6 +191,7 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
     setReviewSnapshot,
     setTypedSweep,
     setInventoryChanged,
+    setSessionOutcomes,
   });
   applyInUseConsentDrop({
     previousInUseByPath,
@@ -193,15 +205,22 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
   const sweepingPaths = useSweepingWorktreePaths(hostId);
   const isRowSweeping = (row: EpicSweepWorktreeRow): boolean =>
     sweepingPaths.has(row.entry.worktreePath);
+  const sessionOutcomeOf = (
+    row: EpicSweepWorktreeRow,
+  ): SweepSessionOutcome | undefined =>
+    sessionOutcomes.get(row.entry.worktreePath);
+  const isRowUncertain = (row: EpicSweepWorktreeRow): boolean =>
+    sessionOutcomeOf(row)?.kind === "uncertain";
   const isRowChecked = (row: EpicSweepWorktreeRow): boolean => {
-    if (row.disabled || isRowSweeping(row)) return false;
+    if (row.disabled || isRowSweeping(row) || isRowUncertain(row)) return false;
     return checkOverrides.get(row.entry.worktreePath) ?? row.defaultChecked;
   };
   const checkedRows = rows.filter(isRowChecked);
   const isSweeping = sweepMutation.isPending;
   const proofReady = !isPending && !isError;
   const bulkRows = rows.filter(
-    (row) => isBulkScopeRow(row) && !isRowSweeping(row),
+    (row) =>
+      isBulkScopeRow(row) && !isRowSweeping(row) && !isRowUncertain(row),
   );
   const bulkSelectedCount = bulkRows.filter(isRowChecked).length;
   const allBulkSelected =
@@ -245,7 +264,16 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
         setCheckOverrides((current) =>
           uncheckNonResubmittableOverrides(current, result),
         );
-        setReviewSnapshot((current) => applySweepOutcome(current, result));
+        const identityByPath = identityByPathFromRows(rows, reviewSnapshot);
+        const nextOutcomes = mergeSessionOutcomes(
+          sessionOutcomes,
+          result,
+          identityByPath,
+        );
+        setSessionOutcomes(nextOutcomes);
+        setReviewSnapshot((current) =>
+          applySweepOutcome(current, result, nextOutcomes),
+        );
       },
     });
   };
@@ -257,6 +285,8 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
       refreshCandidates,
       kickoff,
       reviewRefreshGate,
+      sessionOutcomes,
+      setSessionOutcomes,
       setReviewSnapshot,
       setTypedSweep,
       setInventoryChanged,
@@ -288,7 +318,15 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
               setInventoryChanged(false);
             }}
             onCancel={() => onOpenChange(false)}
-            onConfirm={() => kickoff(reviewSnapshot.all)}
+            onConfirm={() =>
+              kickoff(
+                reviewSnapshot.all.filter(
+                  (row) =>
+                    sessionOutcomes.get(row.entry.worktreePath)?.kind !==
+                    "uncertain",
+                ),
+              )
+            }
           />
         ) : (
           <SweepWorktreesChoose
@@ -343,6 +381,7 @@ export function SweepWorktreesDialog(props: SweepWorktreesDialogProps) {
             isSweeping={isSweeping}
             selectedEpicIds={selectedEpicIds}
             agentNames={agentNames}
+            sessionOutcomes={sessionOutcomes}
           />
         )}
       </DialogContent>
@@ -362,6 +401,9 @@ function applySelectionRetarget(input: {
   readonly setReviewSnapshot: (next: SweepReviewSnapshot | null) => void;
   readonly setTypedSweep: (value: string) => void;
   readonly setInventoryChanged: (value: boolean) => void;
+  readonly setSessionOutcomes: (
+    next: ReadonlyMap<string, SweepSessionOutcome>,
+  ) => void;
 }): void {
   if (!input.selectionRetargeted) return;
   input.setPreviousSelectionKey(input.selectionKey);
@@ -371,6 +413,7 @@ function applySelectionRetarget(input: {
   input.setReviewSnapshot(null);
   input.setTypedSweep("");
   input.setInventoryChanged(false);
+  input.setSessionOutcomes(new Map());
 }
 
 function applyInUseConsentDrop(input: {
@@ -406,6 +449,10 @@ function startSweepPrimary(input: {
   readonly refreshCandidates: () => Promise<ReadonlyArray<EpicSweepWorktreeRow>>;
   readonly kickoff: (targets: ReadonlyArray<EpicSweepWorktreeRow>) => void;
   readonly reviewRefreshGate: { current: boolean };
+  readonly sessionOutcomes: ReadonlyMap<string, SweepSessionOutcome>;
+  readonly setSessionOutcomes: (
+    next: ReadonlyMap<string, SweepSessionOutcome>,
+  ) => void;
   readonly setReviewSnapshot: (next: SweepReviewSnapshot | null) => void;
   readonly setTypedSweep: (value: string) => void;
   readonly setInventoryChanged: (value: boolean) => void;
@@ -431,8 +478,16 @@ function startSweepPrimary(input: {
   void input
     .refreshCandidates()
     .then((freshRows) => {
+      const nextOutcomes = reconcileSessionOutcomes(
+        input.sessionOutcomes,
+        freshRows,
+      );
+      input.setSessionOutcomes(nextOutcomes);
       const selected = freshRows.filter((row) => {
         if (!selectedPaths.has(row.entry.worktreePath) || row.disabled) {
+          return false;
+        }
+        if (nextOutcomes.get(row.entry.worktreePath)?.kind === "uncertain") {
           return false;
         }
         if (
@@ -444,7 +499,12 @@ function startSweepPrimary(input: {
         return true;
       });
       if (selected.length === 0 || selectionIsSafeOnly(selected)) return;
-      input.setReviewSnapshot(captureReviewSnapshot(selected, undefined));
+      input.setReviewSnapshot(
+        captureReviewSnapshot(
+          selected,
+          bannersFromSessionOutcomes(nextOutcomes),
+        ),
+      );
       input.setTypedSweep("");
       input.setInventoryChanged(false);
       input.setStep("review");
@@ -519,14 +579,17 @@ function toggleSweepSelectAll(input: {
 function applySweepOutcome(
   current: SweepReviewSnapshot | null,
   result: SweepWorktreesResult,
+  sessionOutcomes: ReadonlyMap<string, SweepSessionOutcome>,
 ): SweepReviewSnapshot | null {
   if (current === null) return current;
   const removed = new Set(result.removed);
-  const uncertain = new Set(result.uncertain);
-  const failed = new Set(result.failed);
   const remaining = current.all.filter((row) => {
     const path = row.entry.worktreePath;
-    return !removed.has(path) && !uncertain.has(path) && !failed.has(path);
+    if (removed.has(path)) return false;
+    const outcome = sessionOutcomes.get(path);
+    if (outcome?.kind === "uncertain") return false;
+    if (result.failed.includes(path)) return false;
+    return true;
   });
   if (remaining.length === 0) return null;
   const byPath = new Map(
@@ -551,14 +614,27 @@ function applySweepOutcome(
       holdersRevision,
     };
   });
-  return captureReviewSnapshot(updated, {
-    pendingUncertain: current.all.filter((row) =>
-      uncertain.has(row.entry.worktreePath),
-    ),
-    retryableFailed: current.all.filter((row) =>
-      failed.has(row.entry.worktreePath),
-    ),
-  });
+  return captureReviewSnapshot(
+    updated,
+    bannersFromSessionOutcomes(sessionOutcomes),
+  );
+}
+
+function identityByPathFromRows(
+  liveRows: ReadonlyArray<EpicSweepWorktreeRow>,
+  snapshot: SweepReviewSnapshot | null,
+): ReadonlyMap<string, string> {
+  const next = new Map<string, string>();
+  for (const row of liveRows) {
+    next.set(row.entry.worktreePath, worktreeIdentity(row));
+  }
+  if (snapshot === null) return next;
+  for (const row of snapshot.all) {
+    if (!next.has(row.entry.worktreePath)) {
+      next.set(row.entry.worktreePath, worktreeIdentity(row));
+    }
+  }
+  return next;
 }
 
 function SweepWorktreesChoose(props: {
@@ -590,6 +666,7 @@ function SweepWorktreesChoose(props: {
   readonly isSweeping: boolean;
   readonly selectedEpicIds: ReadonlySet<string>;
   readonly agentNames: ReadonlyMap<string, string>;
+  readonly sessionOutcomes: ReadonlyMap<string, SweepSessionOutcome>;
 }): ReactNode {
   return (
     <>
@@ -649,6 +726,7 @@ function SweepWorktreesChoose(props: {
             interactionDisabled={props.interactionDisabled}
             selectedEpicIds={props.selectedEpicIds}
             agentNames={props.agentNames}
+            sessionOutcomes={props.sessionOutcomes}
             onToggle={props.onToggle}
           />
           {!props.elevated &&
@@ -887,6 +965,7 @@ function SweepRowList(props: {
   readonly interactionDisabled: boolean;
   readonly selectedEpicIds: ReadonlySet<string>;
   readonly agentNames: ReadonlyMap<string, string>;
+  readonly sessionOutcomes: ReadonlyMap<string, SweepSessionOutcome>;
   readonly onToggle: (worktreePath: string, checked: boolean) => void;
 }) {
   if (props.isPending && props.rows.length === 0) {
@@ -924,6 +1003,7 @@ function SweepRowList(props: {
           interactionDisabled={props.interactionDisabled}
           selectedEpicIds={props.selectedEpicIds}
           agentNames={props.agentNames}
+          sessionOutcome={props.sessionOutcomes.get(row.entry.worktreePath)}
           onToggle={props.onToggle}
         />
       ))}
@@ -939,12 +1019,15 @@ function SweepWorktreeRowItem(props: {
   readonly interactionDisabled: boolean;
   readonly selectedEpicIds: ReadonlySet<string>;
   readonly agentNames: ReadonlyMap<string, string>;
+  readonly sessionOutcome: SweepSessionOutcome | undefined;
   readonly onToggle: (worktreePath: string, checked: boolean) => void;
 }) {
   const { row, checked, isSweeping, interactionDisabled, onToggle } = props;
   const entry = row.entry;
   const branch = entry.branch ?? "detached HEAD";
-  const disabled = row.disabled || interactionDisabled || isSweeping;
+  const uncertainLocked = props.sessionOutcome?.kind === "uncertain";
+  const disabled =
+    row.disabled || interactionDisabled || isSweeping || uncertainLocked;
   // Derived from `useId`, never from the path: a worktree path can contain
   // spaces (routine on Windows, e.g. `C:\\Users\\John Doe\\wt`), which makes an
   // invalid HTML id and silently breaks the `htmlFor` association below - the
@@ -1011,6 +1094,7 @@ function SweepWorktreeRowItem(props: {
           row={row}
           checked={checked}
           selectedEpicIds={props.selectedEpicIds}
+          sessionOutcome={props.sessionOutcome}
         />
         {checked && row.note === "in-use" ? (
           <TeardownInlineDisclosure
@@ -1052,12 +1136,45 @@ function SweepTierPill(props: { readonly row: EpicSweepWorktreeRow }) {
  * Review blockers (uncommitted counts, unmerged commits, submodule branches)
  * so an unchecked row names exactly what checking it would lose.
  */
+function sessionOutcomeHint(
+  outcome: SweepSessionOutcome | undefined,
+): ReactNode {
+  if (outcome === undefined) return null;
+  if (outcome.kind === "uncertain") {
+    return (
+      <span
+        className="mt-0.5 flex items-start gap-1 text-ui-xs text-amber-600 dark:text-amber-400"
+        data-testid="sweep-worktrees-row-outcome"
+      >
+        <AlertTriangle className="mt-0.5 size-3 shrink-0" aria-hidden />
+        <span className="min-w-0 wrap-anywhere">
+          Unconfirmed — check the worktree. This deletion is not being retried.
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span
+      className="mt-0.5 flex items-start gap-1 text-ui-xs text-destructive"
+      data-testid="sweep-worktrees-row-outcome"
+    >
+      <AlertTriangle className="mt-0.5 size-3 shrink-0" aria-hidden />
+      <span className="min-w-0 wrap-anywhere">
+        {`Couldn't be removed — select again to retry.`}
+      </span>
+    </span>
+  );
+}
+
 function SweepRowHint(props: {
   readonly row: EpicSweepWorktreeRow;
   readonly checked: boolean;
   readonly selectedEpicIds: ReadonlySet<string>;
+  readonly sessionOutcome: SweepSessionOutcome | undefined;
 }): ReactNode {
   const { row } = props;
+  const outcomeHint = sessionOutcomeHint(props.sessionOutcome);
+  if (outcomeHint !== null) return outcomeHint;
   if (row.note === null) return null;
   let detail: string = NOTE_COPY[row.note];
   if (row.note === "not-landed") {

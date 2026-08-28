@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   distinctExternalEpicIds,
   finalSweepButtonLabel,
+  mergeSessionOutcomes,
+  reconcileSessionOutcomes,
   selectAllCountCopy,
   selectionIsSafeOnly,
 } from "@/lib/epics/sweep-consequences";
@@ -121,5 +123,38 @@ describe("sweep consequence copy", () => {
     expect(
       distinctExternalEpicIds([sharedA, sharedB], new Set(["epic-1"])),
     ).toEqual(["epic-ext"]);
+  });
+
+  it("merges new uncertain/failed outcomes without dropping prior deferred paths", () => {
+    const current = new Map([
+      ["/wt/maybe", { kind: "uncertain" as const, identity: "feat-maybe" }],
+    ]);
+    const merged = mergeSessionOutcomes(
+      current,
+      {
+        removed: [],
+        uncertain: [],
+        failed: ["/wt/fail"],
+      },
+      new Map([["/wt/fail", "feat-fail"]]),
+    );
+    expect(merged.get("/wt/maybe")?.kind).toBe("uncertain");
+    expect(merged.get("/wt/fail")).toEqual({
+      kind: "failed",
+      identity: "feat-fail",
+    });
+  });
+
+  it("re-enables still-listed uncertain paths after a proof refresh", () => {
+    const current = new Map([
+      ["/wt/maybe", { kind: "uncertain" as const, identity: "feat-maybe" }],
+      ["/wt/fail", { kind: "failed" as const, identity: "feat-fail" }],
+    ]);
+    const reconciled = reconcileSessionOutcomes(current, [
+      row({ note: "in-use", entry: { ...row({ note: "in-use" }).entry, worktreePath: "/wt/maybe" } }),
+      row({ note: "in-use", entry: { ...row({ note: "in-use" }).entry, worktreePath: "/wt/fail" } }),
+    ]);
+    expect(reconciled.has("/wt/maybe")).toBe(false);
+    expect(reconciled.get("/wt/fail")?.kind).toBe("failed");
   });
 });

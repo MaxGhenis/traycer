@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { WorktreeHostEntryV14 } from "@traycer/protocol/host/index";
 
 const testState = vi.hoisted(() => ({
-  refresh: vi.fn(() => Promise.resolve()),
+  refresh: vi.fn(() => Promise.resolve([])),
   isPending: false,
   isError: false,
   checkedAt: Date.now(),

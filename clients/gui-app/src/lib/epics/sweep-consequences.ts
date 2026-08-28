@@ -138,6 +138,17 @@ export function bindingHeading(taskCount: number): string {
   return `${String(taskCount)} other Tasks are affected`;
 }
 
+export type SweepSessionOutcomeKind = "uncertain" | "failed";
+
+/**
+ * Per-path sweep outcome that outlives the disposable review snapshot
+ * (Back, Choose re-render, later HOLDERS_CHANGED receipts).
+ */
+export interface SweepSessionOutcome {
+  readonly kind: SweepSessionOutcomeKind;
+  readonly identity: string;
+}
+
 export interface SweepReviewSnapshot {
   readonly paths: readonly string[];
   readonly unproven: readonly EpicSweepWorktreeRow[];
@@ -151,18 +162,18 @@ export interface SweepReviewSnapshot {
   readonly all: readonly EpicSweepWorktreeRow[];
   readonly disclosedHolders: readonly WorktreeBusyHolder[];
   readonly branchNames: readonly string[];
-  /** Host may still be deleting these; shown, never resubmitted. */
-  readonly pendingUncertain: readonly EpicSweepWorktreeRow[];
-  /** Visible failures that require a deliberate re-check to retry. */
-  readonly retryableFailed: readonly EpicSweepWorktreeRow[];
+  /** Identities of session-uncertain paths; merge, never rebuild from `all`. */
+  readonly pendingUncertain: readonly string[];
+  /** Identities of session-failed paths still awaiting a deliberate retry. */
+  readonly retryableFailed: readonly string[];
 }
 
 export function captureReviewSnapshot(
   rows: ReadonlyArray<EpicSweepWorktreeRow>,
   deferred:
     | {
-        readonly pendingUncertain: readonly EpicSweepWorktreeRow[];
-        readonly retryableFailed: readonly EpicSweepWorktreeRow[];
+        readonly pendingUncertain: readonly string[];
+        readonly retryableFailed: readonly string[];
       }
     | undefined,
 ): SweepReviewSnapshot {
@@ -182,6 +193,73 @@ export function captureReviewSnapshot(
     pendingUncertain: deferred?.pendingUncertain ?? [],
     retryableFailed: deferred?.retryableFailed ?? [],
   };
+}
+
+export function bannersFromSessionOutcomes(
+  outcomes: ReadonlyMap<string, SweepSessionOutcome>,
+): {
+  readonly pendingUncertain: readonly string[];
+  readonly retryableFailed: readonly string[];
+} {
+  const pendingUncertain: string[] = [];
+  const retryableFailed: string[] = [];
+  for (const outcome of outcomes.values()) {
+    if (outcome.kind === "uncertain") {
+      pendingUncertain.push(outcome.identity);
+    } else {
+      retryableFailed.push(outcome.identity);
+    }
+  }
+  return { pendingUncertain, retryableFailed };
+}
+
+export function mergeSessionOutcomes(
+  current: ReadonlyMap<string, SweepSessionOutcome>,
+  result: {
+    readonly removed: ReadonlyArray<string>;
+    readonly uncertain: ReadonlyArray<string>;
+    readonly failed: ReadonlyArray<string>;
+  },
+  identityByPath: ReadonlyMap<string, string>,
+): ReadonlyMap<string, SweepSessionOutcome> {
+  const next = new Map(current);
+  for (const path of result.removed) {
+    next.delete(path);
+  }
+  for (const path of result.uncertain) {
+    next.set(path, {
+      kind: "uncertain",
+      identity: identityByPath.get(path) ?? path,
+    });
+  }
+  for (const path of result.failed) {
+    if (next.get(path)?.kind === "uncertain") continue;
+    next.set(path, {
+      kind: "failed",
+      identity: identityByPath.get(path) ?? path,
+    });
+  }
+  return next;
+}
+
+/**
+ * After a completed proof/refresh: vanished uncertain paths drop (deletion
+ * finished); still-listed uncertain paths re-enable (deletion did not happen).
+ * Failed paths stay while listed and drop when gone.
+ */
+export function reconcileSessionOutcomes(
+  current: ReadonlyMap<string, SweepSessionOutcome>,
+  freshRows: ReadonlyArray<EpicSweepWorktreeRow>,
+): ReadonlyMap<string, SweepSessionOutcome> {
+  if (current.size === 0) return current;
+  const listed = new Set(freshRows.map((row) => row.entry.worktreePath));
+  const next = new Map<string, SweepSessionOutcome>();
+  for (const [path, outcome] of current) {
+    if (outcome.kind === "uncertain") continue;
+    if (!listed.has(path)) continue;
+    next.set(path, outcome);
+  }
+  return next.size === current.size ? current : next;
 }
 
 export function unknownConsequenceForRow(
