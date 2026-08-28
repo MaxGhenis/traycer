@@ -87,6 +87,7 @@ Traycer-launched agent sessions receive environment variables such as `TRAYCER_A
 
 ```sh
 traycer agent list
+traycer agent binding --agent-id <agent-id> --json
 traycer agent inbox
 traycer agent send --to <agent-id> --message "Can you review this change?"
 traycer workspace list
