@@ -1,23 +1,22 @@
 /**
- * The wizard is one component on two very different grounds: the onboarding
- * act's fixed dark stage, which paints its own colours because it does not
- * follow the user's theme, and a Settings dialog, which is nothing but the
- * user's theme.
+ * The wizard is one component on two surfaces: the onboarding act, where it
+ * fills a mini-app window on the tour's stage, and a Settings dialog.
  *
- * Rather than fork the markup, every surface-dependent class is named here
- * once per ground. The dialog side deliberately avoids `bg-muted` fills - on a
- * popover surface `--muted` collapses into the surface in every preset theme's
- * dark variant (see gui-app AGENTS.md), so tints are alphas of the foreground,
- * which cannot collapse.
+ * Both grounds are the user's own theme - the tour's window renders the real
+ * app the same way the diorama beside it does - so there is one colour bundle
+ * rather than one per surface. The surface is still carried, because COPY
+ * differs by it: "your tasks are in the list on the left" is a lie during the
+ * tour, where the task list is several acts away.
+ *
+ * The colours deliberately avoid `bg-muted` fills: on a raised surface
+ * `--muted` collapses into the surface in every preset theme's dark variant
+ * (see gui-app AGENTS.md), so tints are alphas of the foreground, which cannot
+ * collapse.
  */
 export type SessionImportSurface = "onboarding" | "dialog";
 
 export interface SessionImportTone {
-  /**
-   * The ground this bundle was built for. Copy differs by surface as well as
-   * colour - "your tasks are in the list on the left" is a lie during the
-   * tour, where the task list is still several acts away.
-   */
+  /** The ground this bundle was built for; drives copy, not colour. */
   readonly surface: SessionImportSurface;
   /** Row and header titles. */
   readonly strong: string;
@@ -29,59 +28,31 @@ export interface SessionImportTone {
   readonly rowHover: string;
   /** The collapsed group header's own fill. */
   readonly groupSurface: string;
-  readonly chip: string;
   readonly warningSurface: string;
-  readonly input: string;
-  readonly filterActive: string;
-  readonly filterIdle: string;
+  /** A provider pill whose work is in scope, and one switched out of it. */
+  readonly pillOn: string;
+  readonly pillOff: string;
   /** The ticked/indeterminate checkbox fill. */
   readonly checkboxFilled: string;
-  readonly primaryButton: string;
-  readonly secondaryButton: string;
 }
 
-const ONBOARDING_TONE: SessionImportTone = {
-  surface: "onboarding",
-  strong: "text-white",
-  muted: "text-white/60",
-  faint: "text-white/40",
-  border: "border-white/12",
-  rowHover: "hover:bg-white/[0.07]",
-  groupSurface: "bg-white/[0.04]",
-  chip: "bg-white/10 text-white/70",
-  warningSurface: "bg-amber-300/10 text-amber-100/90",
-  input:
-    "border-white/15 bg-white/[0.06] text-white placeholder:text-white/35 focus-visible:border-white/35 focus-visible:ring-white/20",
-  filterActive: "bg-white/15 text-white",
-  filterIdle: "text-white/55 hover:bg-white/10 hover:text-white/85",
-  checkboxFilled: "border-white bg-white text-black",
-  primaryButton:
-    "bg-white text-black hover:bg-white/85 disabled:pointer-events-none disabled:opacity-45",
-  secondaryButton: "text-white/70 hover:bg-white/10 hover:text-white",
-};
-
-const DIALOG_TONE: SessionImportTone = {
-  surface: "dialog",
+const THEME_COLOURS = {
   strong: "text-foreground",
   muted: "text-muted-foreground",
   faint: "text-muted-foreground/70",
   border: "border-border/60",
   rowHover: "hover:bg-foreground/6",
   groupSurface: "bg-foreground/[0.04]",
-  chip: "bg-foreground/8 text-muted-foreground",
   warningSurface:
     "bg-amber-500/10 text-amber-700 dark:bg-amber-400/10 dark:text-amber-300",
-  input: "",
-  filterActive: "bg-foreground/10 text-foreground",
-  filterIdle:
-    "text-muted-foreground hover:bg-foreground/6 hover:text-foreground",
+  pillOn: "border-transparent bg-foreground/10 text-foreground",
+  pillOff:
+    "border-border/60 text-muted-foreground/70 hover:bg-foreground/6 hover:text-muted-foreground",
   checkboxFilled: "border-primary bg-primary text-primary-foreground",
-  primaryButton: "",
-  secondaryButton: "",
-};
+} as const;
 
 export function sessionImportTone(
   surface: SessionImportSurface,
 ): SessionImportTone {
-  return surface === "onboarding" ? ONBOARDING_TONE : DIALOG_TONE;
+  return { surface, ...THEME_COLOURS };
 }

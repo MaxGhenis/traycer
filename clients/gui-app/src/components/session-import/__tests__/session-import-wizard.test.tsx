@@ -29,10 +29,7 @@ import type {
   SessionImportScanClientOptions,
 } from "@traycer-clients/shared/host-transport/session-import-scan-client";
 import type { SessionImportRunRequest } from "@/components/session-import/session-import-run-handle";
-import {
-  harnessDisplayName,
-  sessionImportGroupKey,
-} from "@/components/session-import/session-import-model";
+import { sessionImportGroupKey } from "@/components/session-import/session-import-model";
 
 /**
  * Captures the callbacks the REAL `useSessionImportScan` hook hands to
@@ -44,11 +41,13 @@ import {
  */
 interface ScanClientHarness {
   callbacks: SessionImportScanCallbacks | null;
+  updatedAfter: number | null | undefined;
   readonly close: Mock<() => void>;
 }
 
 const scanClient = vi.hoisted((): ScanClientHarness => ({
   callbacks: null,
+  updatedAfter: undefined,
   close: vi.fn(),
 }));
 
@@ -63,6 +62,7 @@ vi.mock(
     SessionImportScanClient: class {
       constructor(options: SessionImportScanClientOptions) {
         scanClient.callbacks = options.callbacks;
+        scanClient.updatedAfter = options.updatedAfter;
       }
 
       close(): void {
@@ -107,36 +107,6 @@ vi.mock("@/lib/analytics", () => ({
   Analytics: { getInstance: () => ({ track: analyticsTrackMock }) },
   AnalyticsEvent: { SessionImportStarted: "session_import_started" },
 }));
-
-/**
- * The wizard navigates through the shared epic-open helper, so the assertion
- * that matters here is "the row asked for that epic" - the helper's own
- * empty-draft/tab-intent behaviour is covered where it lives.
- */
-const openEpicFromListMock = vi.hoisted(() =>
-  vi.fn<
-    (
-      navigate: unknown,
-      epicId: string,
-      pathname: string,
-      options: { readonly title: string | undefined; readonly source: string },
-    ) => void
-  >(),
-);
-vi.mock("@/lib/commands/actions/open-epic-from-list", () => ({
-  openEpicFromList: openEpicFromListMock,
-}));
-
-const navigateMock = vi.hoisted(() => vi.fn());
-vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@tanstack/react-router")>();
-  return {
-    ...actual,
-    useNavigate: () => navigateMock,
-    useRouter: () => ({ state: { location: { pathname: "/tasks" } } }),
-  };
-});
 
 import { SessionImportWizard } from "@/components/session-import/session-import-wizard";
 import { useSessionImportRunStore } from "@/stores/session-import/session-import-run-store";
@@ -227,6 +197,7 @@ function folderGroup(input: {
 }): SessionImportGroup {
   return {
     location: { kind: "folder", path: input.path, workspaceId: null },
+    gitBacked: false,
     sessions: [...input.sessions],
   };
 }
@@ -237,6 +208,7 @@ function missingFolderGroup(input: {
 }): SessionImportGroup {
   return {
     location: { kind: "missing_folder", path: input.path },
+    gitBacked: false,
     sessions: [...input.sessions],
   };
 }
@@ -247,8 +219,19 @@ function renderWizard(onImportStarted: () => void): RenderResult {
       surface="dialog"
       onImportStarted={onImportStarted}
       secondaryAction={null}
+      registerSubmit={null}
     />,
   );
+}
+
+function findProviderPill(harness: GuiHarnessId): HTMLElement {
+  const pill = screen
+    .getAllByTestId("session-import-provider-pill")
+    .find((element) => element.getAttribute("data-harness") === harness);
+  if (pill === undefined) {
+    throw new Error(`Expected a provider pill for harness ${harness}`);
+  }
+  return pill;
 }
 
 /**
@@ -267,6 +250,7 @@ function replaceStreamClient(
       surface="dialog"
       onImportStarted={vi.fn()}
       secondaryAction={null}
+      registerSubmit={null}
     />,
   );
 }
@@ -303,9 +287,8 @@ function requireGroupElement(groupKey: string): HTMLElement {
 beforeEach(() => {
   streamBinding.client = { stream: "host-a" };
   streamBinding.hostId = "host-a";
-  openEpicFromListMock.mockClear();
-  navigateMock.mockClear();
   scanClient.callbacks = null;
+  scanClient.updatedAfter = undefined;
   scanClient.close.mockClear();
   startSessionImportRunMock.mockClear();
   analyticsTrackMock.mockClear();
@@ -400,7 +383,7 @@ describe("<SessionImportWizard />", () => {
     expect(screen.getByTestId("session-import-missing-folder")).toBeTruthy();
   });
 
-  it("marks non-importable rows disabled and unticked, the importable one ticked", () => {
+  it("marks the unreadable row disabled and unticked, the importable one ticked", () => {
     renderWizard(vi.fn());
     const callbacks = requireCallbacks();
 
@@ -410,7 +393,6 @@ describe("<SessionImportWizard />", () => {
           path: "/repo/a",
           sessions: [
             importableCandidate("claude", "s1", "Importable session"),
-            alreadyInTraycerCandidate("claude", "s2", "Already imported"),
             unreadableCandidate("claude", "s3", "Broken session"),
           ],
         }),
@@ -419,12 +401,12 @@ describe("<SessionImportWizard />", () => {
     fireEvent.click(screen.getByTestId("session-import-group-toggle"));
 
     const rows = screen.getAllByTestId("session-import-row");
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(2);
 
     const unavailableRows = rows.filter(
       (row) => row.getAttribute("data-selectable") === "false",
     );
-    expect(unavailableRows).toHaveLength(2);
+    expect(unavailableRows).toHaveLength(1);
     for (const row of unavailableRows) {
       expect(row.getAttribute("aria-checked")).not.toBe("true");
     }
@@ -471,15 +453,10 @@ describe("<SessionImportWizard />", () => {
     );
   });
 
-  it("opens the task an already-imported session became, letting the dialog close first", () => {
-    const onClose = vi.fn();
-    render(
-      <SessionImportWizard
-        surface="dialog"
-        onImportStarted={vi.fn()}
-        secondaryAction={{ label: "Close", onSelect: onClose }}
-      />,
-    );
+  it("never renders an already-imported session, whichever host sent it", () => {
+    // A current host hides these at the scan; this is the client-side backstop
+    // for an older host that still streams them.
+    renderWizard(vi.fn());
     const callbacks = requireCallbacks();
 
     act(() => {
@@ -487,21 +464,31 @@ describe("<SessionImportWizard />", () => {
         folderGroup({
           path: "/repo/a",
           sessions: [
-            alreadyInTraycerCandidate("claude", "s1", "Already there"),
+            importableCandidate("claude", "s1", "New session"),
+            alreadyInTraycerCandidate("claude", "s2", "Already there"),
           ],
         }),
       );
     });
     fireEvent.click(screen.getByTestId("session-import-group-toggle"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Already there" }));
+    expect(screen.getAllByTestId("session-import-row")).toHaveLength(1);
+    expect(screen.queryByText("Already there")).toBeNull();
+    expect(screen.queryByText("In Traycer")).toBeNull();
+  });
 
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(openEpicFromListMock).toHaveBeenCalledTimes(1);
-    const [, epicId, pathname, options] = openEpicFromListMock.mock.calls[0];
-    expect(epicId).toBe("epic-1");
-    expect(pathname).toBe("/tasks");
-    expect(options.title).toBe("Already there");
+  it("opens the scan bounded to the default two-week window", () => {
+    const before = Date.now();
+    renderWizard(vi.fn());
+    const after = Date.now();
+
+    const twoWeeksMs = 14 * 24 * 60 * 60 * 1000;
+    const bound = scanClient.updatedAfter;
+    if (typeof bound !== "number") {
+      throw new Error("scan opened with no updatedAfter bound");
+    }
+    expect(bound).toBeGreaterThanOrEqual(before - twoWeeksMs);
+    expect(bound).toBeLessThanOrEqual(after - twoWeeksMs);
   });
 
   it("counts only pickable sessions in the footer's denominator", () => {
@@ -639,7 +626,7 @@ describe("<SessionImportWizard />", () => {
     expect(screen.getAllByTestId("session-import-group")).toHaveLength(2);
   });
 
-  it("shows the provider filter only once a second harness appears, and narrows on selection", () => {
+  it("shows a pill per harness with live counts, and switching one off hides its group and drops it from the submission", () => {
     renderWizard(vi.fn());
     const callbacks = requireCallbacks();
 
@@ -652,32 +639,49 @@ describe("<SessionImportWizard />", () => {
       );
     });
 
-    expect(
-      screen.queryAllByTestId("session-import-provider-filter"),
-    ).toHaveLength(0);
+    expect(screen.getAllByTestId("session-import-provider-pill")).toHaveLength(
+      1,
+    );
 
     act(() => {
       callbacks.onGroup(
         folderGroup({
           path: "/repo/b",
-          sessions: [importableCandidate("codex", "s2", "Codex session")],
+          sessions: [
+            importableCandidate("codex", "s2", "Codex session"),
+            importableCandidate("codex", "s3", "Second codex session"),
+          ],
         }),
       );
     });
 
-    expect(
-      screen.getAllByTestId("session-import-provider-filter").length,
-    ).toBeGreaterThan(1);
+    // The app's provider order puts codex ahead of claude regardless of which
+    // one the scan happened to report first.
+    const pills = screen.getAllByTestId("session-import-provider-pill");
+    expect(pills.map((pill) => pill.getAttribute("data-harness"))).toEqual([
+      "codex",
+      "claude",
+    ]);
+    expect(findProviderPill("codex").textContent).toContain("2");
+    expect(findProviderPill("claude").textContent).toContain("1");
     expect(screen.getAllByTestId("session-import-group")).toHaveLength(2);
 
-    const providerFilterGroup = screen.getByRole("radiogroup", {
-      name: "Filter by provider",
-    });
-    fireEvent.click(
-      within(providerFilterGroup).getByText(harnessDisplayName("codex")),
-    );
+    fireEvent.click(findProviderPill("codex"));
 
     expect(screen.getAllByTestId("session-import-group")).toHaveLength(1);
+    expect(findProviderPill("codex").getAttribute("aria-checked")).toBe(
+      "false",
+    );
+    // The pill still reports what the scan actually found - switching a
+    // provider out is scope, not amnesia about its count.
+    expect(findProviderPill("codex").textContent).toContain("2");
+
+    fireEvent.click(screen.getByTestId("session-import-submit"));
+
+    expect(startSessionImportRunMock).toHaveBeenCalledTimes(1);
+    expect(startSessionImportRunMock.mock.calls[0][0].selections).toEqual([
+      { harness: "claude", nativeSessionId: "s1" },
+    ]);
   });
 
   it("shows an inline provider-failure notice without blocking groups delivered after it", () => {
@@ -800,7 +804,7 @@ describe("<SessionImportWizard />", () => {
     expect(screen.getByTestId("session-import-scan-spinner")).toBeTruthy();
   });
 
-  it("keeps an active provider filter clearable when the rescan returns only the other harness", () => {
+  it("keeps a switched-off harness's pill after a rescan returns nothing for it, and restores its rows once switched back on", () => {
     const { rerender } = renderWizard(vi.fn());
     const callbacks = requireCallbacks();
 
@@ -821,15 +825,13 @@ describe("<SessionImportWizard />", () => {
       );
     });
 
-    fireEvent.click(
-      within(
-        screen.getByRole("radiogroup", { name: "Filter by provider" }),
-      ).getByText(harnessDisplayName("codex")),
-    );
+    fireEvent.click(findProviderPill("codex"));
     expect(screen.getAllByTestId("session-import-group")).toHaveLength(1);
 
-    // A fresh scan keeps the typed filters and nothing else, so this one lands
-    // with "Codex" still selected and no Codex session in sight.
+    // A fresh scan (a host switch) keeps disabledHarnesses and nothing else,
+    // so this one lands with codex still switched out and no codex session in
+    // sight - yet the pill has to survive with no group left to read a count
+    // off, because it is the only way back to turning codex on again.
     replaceStreamClient(rerender, "host-b");
     const rescanned = requireCallbacks();
     act(() => {
@@ -844,15 +846,38 @@ describe("<SessionImportWizard />", () => {
       rescanned.onComplete(ZERO_TOTALS);
     });
 
-    expect(screen.queryAllByTestId("session-import-group")).toHaveLength(0);
-    expect(screen.getByTestId("session-import-empty")).toBeTruthy();
+    const codexPillAfterRescan = findProviderPill("codex");
+    expect(codexPillAfterRescan.getAttribute("aria-checked")).toBe("false");
+    expect(codexPillAfterRescan.textContent).toContain("—");
 
-    const filterGroup = screen.getByRole("radiogroup", {
-      name: "Filter by provider",
+    fireEvent.click(codexPillAfterRescan);
+    act(() => {
+      rescanned.onGroup(
+        folderGroup({
+          path: "/repo/c",
+          sessions: [
+            importableCandidate("codex", "s4", "Codex session restored"),
+          ],
+        }),
+      );
     });
-    fireEvent.click(within(filterGroup).getByText("All"));
 
-    expect(screen.getAllByTestId("session-import-group")).toHaveLength(1);
+    expect(screen.getAllByTestId("session-import-group")).toHaveLength(2);
+    const restoredGroupKey = sessionImportGroupKey({
+      kind: "folder",
+      path: "/repo/c",
+      workspaceId: null,
+    });
+    fireEvent.click(
+      within(requireGroupElement(restoredGroupKey)).getByTestId(
+        "session-import-group-toggle",
+      ),
+    );
+    expect(
+      screen
+        .getByRole("checkbox", { name: "Codex session restored" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
   });
 
   it("reports the groups the submission covers, not every group the scan found", () => {
@@ -919,5 +944,50 @@ describe("<SessionImportWizard />", () => {
 
     expect(screen.getByTestId("session-import-empty")).toBeTruthy();
     expect(screen.queryAllByTestId("session-import-group")).toHaveLength(0);
+  });
+
+  it("on the onboarding surface, renders no submit button and lets the caller's registered submit start the run", () => {
+    const registerSubmit = vi.fn<(submit: () => void) => void>();
+    render(
+      <SessionImportWizard
+        surface="onboarding"
+        onImportStarted={vi.fn()}
+        secondaryAction={null}
+        registerSubmit={registerSubmit}
+      />,
+    );
+    const callbacks = requireCallbacks();
+
+    act(() => {
+      callbacks.onGroup(
+        folderGroup({
+          path: "/repo/a",
+          sessions: [importableCandidate("claude", "s1", "Onboarding session")],
+        }),
+      );
+    });
+
+    // The tour has one forward control; a second Import button here would be
+    // a second way to do the same thing.
+    expect(screen.queryByTestId("session-import-submit")).toBeNull();
+    expect(
+      screen.getByTestId("session-import-selection-count").textContent,
+    ).toBe("1 of 1 selected");
+
+    // Re-registered on every render, so Continue always presses whichever
+    // submit closed over the latest selection.
+    expect(registerSubmit).toHaveBeenCalled();
+    const latestSubmit = registerSubmit.mock.calls.at(-1)?.[0];
+    if (latestSubmit === undefined) {
+      throw new Error("Expected registerSubmit to have been called");
+    }
+    act(() => {
+      latestSubmit();
+    });
+
+    expect(startSessionImportRunMock).toHaveBeenCalledTimes(1);
+    expect(startSessionImportRunMock.mock.calls[0][0].selections).toEqual([
+      { harness: "claude", nativeSessionId: "s1" },
+    ]);
   });
 });

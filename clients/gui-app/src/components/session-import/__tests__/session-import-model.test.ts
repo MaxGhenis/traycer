@@ -13,6 +13,7 @@ import {
   buildSessionImportView,
   candidateDisplayTitle,
   groupSessionImportFailures,
+  harnessDisplayName,
   sessionImportFailureLabel,
   sessionImportGroupKey,
   sessionImportSelectionKey,
@@ -53,7 +54,7 @@ function group(
   location: SessionImportGroupLocation,
   sessions: ReadonlyArray<SessionImportCandidate>,
 ): SessionImportGroup {
-  return { location, sessions: [...sessions] };
+  return { location, gitBacked: false, sessions: [...sessions] };
 }
 
 function folderLocation(path: string): SessionImportGroupLocation {
@@ -102,6 +103,11 @@ describe("sessionImportWizardReducer - selection defaults as groups stream in", 
         sessionImportSelectionKey("claude", "s2"),
       ]),
     );
+    // The already-imported row is not merely unticked - it never enters the
+    // state at all (older hosts still send it; current ones hide it).
+    expect(
+      state.groups[0]?.sessions.map((one) => one.nativeSessionId),
+    ).toEqual(["s1", "s2", "s4"]);
   });
 
   it("pre-selects importable candidates in a missing_folder group too", () => {
@@ -166,7 +172,10 @@ describe("sessionImportWizardReducer - selection defaults as groups stream in", 
 });
 
 describe("buildSessionImportView - disabled rows", () => {
-  it("projects an already_in_traycer row as unselectable with an 'In Traycer' label", () => {
+  it("drops an arriving group that holds nothing but already-imported rows", () => {
+    // An older host still sends already_in_traycer rows; a current one hides
+    // them at the scan. Either way the wizard shows only what is new, so a
+    // group with nothing new never appears.
     const alreadyImported = candidate({
       nativeSessionId: "s1",
       state: { kind: "already_in_traycer", epicId: "epic-1", chatId: "chat-1" },
@@ -178,15 +187,8 @@ describe("buildSessionImportView - disabled rows", () => {
       },
     ]);
 
-    const view = buildSessionImportView(state);
-    expect(view.groups[0]?.rows).toHaveLength(1);
-    const row = view.groups[0]?.rows[0];
-
-    expect(row.selectable).toBe(false);
-    expect(row.selected).toBe(false);
-    expect(row.unavailableLabel).toBe("In Traycer");
-    // The row is unselectable but not inert: it opens the task it became.
-    expect(row.epicId).toBe("epic-1");
+    expect(state.groups).toHaveLength(0);
+    expect(buildSessionImportView(state).groups).toHaveLength(0);
   });
 
   it("projects an unreadable row's unavailableDetail with both the reason label and the raw detail", () => {
@@ -210,7 +212,6 @@ describe("buildSessionImportView - disabled rows", () => {
     const row = view.groups[0]?.rows[0];
 
     expect(row.selectable).toBe(false);
-    expect(row.epicId).toBeNull();
     expect(row.unavailableDetail).toContain(
       sessionImportFailureLabel("source_unreadable"),
     );
@@ -260,9 +261,8 @@ describe("buildSessionImportView - group header counts and tri-state", () => {
     expect(view.groups.find((g) => g.path === "/repo/a")?.selectionState).toBe(
       "all",
     );
-    expect(view.groups.find((g) => g.path === "/repo/b")?.selectionState).toBe(
-      "none",
-    );
+    // Its only row was already imported, so the group never arrived at all.
+    expect(view.groups.find((g) => g.path === "/repo/b")).toBeUndefined();
 
     state = sessionImportWizardReducer(state, {
       kind: "sessionToggled",
@@ -308,9 +308,9 @@ describe("buildSessionImportView - group header counts and tri-state", () => {
   });
 
   // Both folders below hold the same two providers and differ only in the
-  // order the host reported them, so a header that chipped them in arrival
+  // order the host reported them, so a pill row that reshuffled with arrival
   // order would render the same fact two different ways on one screen.
-  it("chips provider counts in the app's harness order, not the order the host reported", () => {
+  it("pills providers in the app's harness order, with counts summed across every group, not the order the host reported", () => {
     const claudeFirst = group(folderLocation("/repo/a"), [
       candidate({ harness: "claude", nativeSessionId: "a1" }),
       candidate({ harness: "codex", nativeSessionId: "a2" }),
@@ -328,13 +328,22 @@ describe("buildSessionImportView - group header counts and tri-state", () => {
       ]),
     );
 
-    expect(view.groups[0]?.providerCounts).toEqual([
-      { harness: "codex", count: 1 },
-      { harness: "claude", count: 2 },
+    // 3 claude sessions (a1, a3, b2) and 2 codex sessions (a2, b1), summed
+    // over both groups - there are no per-group provider counts any more.
+    expect(view.providers).toEqual([
+      {
+        harness: "codex",
+        name: harnessDisplayName("codex"),
+        count: 2,
+        enabled: true,
+      },
+      {
+        harness: "claude",
+        name: harnessDisplayName("claude"),
+        count: 3,
+        enabled: true,
+      },
     ]);
-    expect(
-      view.groups[1]?.providerCounts.map((entry) => entry.harness),
-    ).toEqual(["codex", "claude"]);
   });
 });
 
@@ -405,7 +414,7 @@ describe("buildSessionImportView - search + provider filter", () => {
     expect(view.groups[0]?.rows).toHaveLength(1);
   });
 
-  it("narrows matchedSessions via the provider filter without changing totalSessions or selectedCount", () => {
+  it("narrows matchedSessions via a disabled provider without changing totalSessions, but drops that provider's picks from selectedCount", () => {
     const claudeCandidate = candidate({
       harness: "claude",
       nativeSessionId: "c1",
@@ -421,13 +430,16 @@ describe("buildSessionImportView - search + provider filter", () => {
 
     const state = applyActions([
       { kind: "scanGroupArrived", group: arrivingGroup },
-      { kind: "providerFilterChanged", providerFilter: "claude" },
+      { kind: "providerScopeToggled", harness: "codex" },
     ]);
     const view = buildSessionImportView(state);
 
+    // Scope is not a view filter: switching codex out both hides its row and
+    // unticks it, so totalSessions (everything the scan produced) holds at 2
+    // while matchedSessions and selectedCount both drop to the claude-only 1.
     expect(view.matchedSessions).toBe(1);
     expect(view.totalSessions).toBe(2);
-    expect(view.selectedCount).toBe(2);
+    expect(view.selectedCount).toBe(1);
   });
 
   it("counts only pickable sessions in selectableSessions, whatever the filters hide", () => {
@@ -456,7 +468,7 @@ describe("buildSessionImportView - search + provider filter", () => {
     ]);
     const view = buildSessionImportView(state);
 
-    expect(view.totalSessions).toBe(3);
+    expect(view.totalSessions).toBe(2);
     expect(view.selectableSessions).toBe(1);
     expect(view.selectedCount).toBe(1);
   });
@@ -483,7 +495,7 @@ describe("buildSessionImportView - search + provider filter", () => {
 
     let state = applyActions([
       { kind: "scanGroupArrived", group: arrivingGroup },
-      { kind: "providerFilterChanged", providerFilter: "claude" },
+      { kind: "providerScopeToggled", harness: "codex" },
     ]);
     const view = buildSessionImportView(state);
     expect(view.visibleSelectionKeys).toEqual([
@@ -499,9 +511,10 @@ describe("buildSessionImportView - search + provider filter", () => {
     expect(state.selected.has(sessionImportSelectionKey("claude", "c1"))).toBe(
       false,
     );
-    // Filtered out of the view by the provider filter - untouched by the toggle.
+    // Out of scope from the providerScopeToggled above, not merely filtered
+    // out of the view - so it was already untouched by ITS toggle too.
     expect(state.selected.has(sessionImportSelectionKey("codex", "x1"))).toBe(
-      true,
+      false,
     );
   });
 
@@ -517,6 +530,124 @@ describe("buildSessionImportView - search + provider filter", () => {
 
     const view = buildSessionImportView(state);
     expect(view.groups).toHaveLength(0);
+  });
+});
+
+describe("sessionImportWizardReducer - provider scope toggling", () => {
+  it("switching a provider out drops its rows from the view AND from the submission, in one move", () => {
+    const claudeCandidate = candidate({
+      harness: "claude",
+      nativeSessionId: "c1",
+    });
+    const codexCandidate = candidate({
+      harness: "codex",
+      nativeSessionId: "x1",
+    });
+    const arrivingGroup = group(folderLocation("/repo/a"), [
+      claudeCandidate,
+      codexCandidate,
+    ]);
+
+    const state = applyActions([
+      { kind: "scanGroupArrived", group: arrivingGroup },
+      { kind: "providerScopeToggled", harness: "codex" },
+    ]);
+
+    const view = buildSessionImportView(state);
+    expect(view.groups[0]?.rows.map((row) => row.selectionKey)).toEqual([
+      sessionImportSelectionKey("claude", "c1"),
+    ]);
+    expect(view.groups[0]?.totalCount).toBe(1);
+
+    // Scope, not a view filter: an out-of-scope row cannot ride along in the
+    // submission just because nobody unticked it by hand.
+    const submission = buildSessionImportSubmission(state);
+    expect(submission.selections).toEqual([
+      { harness: "claude", nativeSessionId: "c1" },
+    ]);
+  });
+
+  it("switching a provider back in re-selects its importable rows, but not one already imported or unreadable", () => {
+    const importable = candidate({
+      harness: "codex",
+      nativeSessionId: "x1",
+    });
+    const alreadyImported = candidate({
+      harness: "codex",
+      nativeSessionId: "x2",
+      state: { kind: "already_in_traycer", epicId: "epic-1", chatId: "chat-1" },
+    });
+    const unreadable = candidate({
+      harness: "codex",
+      nativeSessionId: "x3",
+      state: {
+        kind: "unreadable",
+        reason: "source_unreadable",
+        detail: "corrupt",
+      },
+    });
+    const arrivingGroup = group(folderLocation("/repo/a"), [
+      importable,
+      alreadyImported,
+      unreadable,
+    ]);
+
+    const state = applyActions([
+      { kind: "scanGroupArrived", group: arrivingGroup },
+      { kind: "providerScopeToggled", harness: "codex" },
+      { kind: "providerScopeToggled", harness: "codex" },
+    ]);
+
+    // A pill turned off and back on lands where a fresh arrival would have:
+    // pre-selected, minus the two rows nothing can ever tick.
+    expect(state.selected).toEqual(
+      new Set([sessionImportSelectionKey("codex", "x1")]),
+    );
+  });
+
+  it("does not pre-select a group's candidates for a harness the user already switched out", () => {
+    const claudeCandidate = candidate({
+      harness: "claude",
+      nativeSessionId: "c1",
+    });
+    const codexCandidate = candidate({
+      harness: "codex",
+      nativeSessionId: "x1",
+    });
+
+    const state = applyActions([
+      { kind: "providerScopeToggled", harness: "codex" },
+      {
+        kind: "scanGroupArrived",
+        group: group(folderLocation("/repo/a"), [
+          claudeCandidate,
+          codexCandidate,
+        ]),
+      },
+    ]);
+
+    expect(state.selected).toEqual(
+      new Set([sessionImportSelectionKey("claude", "c1")]),
+    );
+  });
+
+  it("keeps a disabled provider's pill at count 0 even when the groups on hand hold nothing for it", () => {
+    // Nothing has arrived for codex - or anything else - yet, but the user
+    // already switched it out; the pill has to survive that with no group to
+    // read a count off, because it's the only way back to turning it on.
+    const state = applyActions([
+      { kind: "providerScopeToggled", harness: "codex" },
+    ]);
+
+    const view = buildSessionImportView(state);
+    expect(view.providers).toEqual([
+      {
+        harness: "codex",
+        name: harnessDisplayName("codex"),
+        count: 0,
+        enabled: false,
+      },
+    ]);
   });
 });
 
@@ -632,7 +763,7 @@ describe("sessionImportWizardReducer - frame folding into view state", () => {
     expect(state.totals).toBeNull();
   });
 
-  it("clears groups/selection/expansion/phase on a fresh scanRestarted but preserves query and providerFilter", () => {
+  it("clears groups/selection/expansion/phase on a fresh scanRestarted but preserves query, disabledHarnesses, and scanWindow", () => {
     const arrivingGroup = group(folderLocation("/repo/a"), [
       candidate({ nativeSessionId: "s1" }),
     ]);
@@ -644,7 +775,8 @@ describe("sessionImportWizardReducer - frame folding into view state", () => {
         groupKey: sessionImportGroupKey(arrivingGroup.location),
       },
       { kind: "queryChanged", query: "login" },
-      { kind: "providerFilterChanged", providerFilter: "codex" },
+      { kind: "providerScopeToggled", harness: "codex" },
+      { kind: "windowChanged", window: 30 },
       {
         kind: "scanCompleted",
         totals: {
@@ -664,7 +796,68 @@ describe("sessionImportWizardReducer - frame folding into view state", () => {
     expect(state.phase).toBe("scanning");
     expect(state.totals).toBeNull();
     expect(state.query).toBe("login");
-    expect(state.providerFilter).toBe("codex");
+    expect(state.disabledHarnesses).toEqual(new Set(["codex"]));
+    expect(state.scanWindow).toBe(30);
+  });
+});
+
+describe("buildSessionImportView - group ordering", () => {
+  it("orders repos before loose folders before missing ones, by in-scope count within a tier", () => {
+    const busyRepo = {
+      ...group(folderLocation("/repo/busy"), [
+        candidate({ nativeSessionId: "r1" }),
+        candidate({ nativeSessionId: "r2" }),
+      ]),
+      gitBacked: true,
+    };
+    const quietRepo = {
+      ...group(folderLocation("/repo/quiet"), [
+        candidate({ nativeSessionId: "r3" }),
+      ]),
+      gitBacked: true,
+    };
+    const looseFolder = group(folderLocation("/home/loose"), [
+      candidate({ nativeSessionId: "l1" }),
+      candidate({ nativeSessionId: "l2" }),
+      candidate({ nativeSessionId: "l3" }),
+    ]);
+    const missingFolder = group({ kind: "missing_folder", path: "/gone" }, [
+      candidate({ nativeSessionId: "m1" }),
+      candidate({ nativeSessionId: "m2" }),
+      candidate({ nativeSessionId: "m3" }),
+      candidate({ nativeSessionId: "m4" }),
+    ]);
+
+    // Arrival order is adversarial on purpose: the busiest loose folder and
+    // the missing one land first, and the tiers still win.
+    const state = applyActions([
+      { kind: "scanGroupArrived", group: missingFolder },
+      { kind: "scanGroupArrived", group: looseFolder },
+      { kind: "scanGroupArrived", group: quietRepo },
+      { kind: "scanGroupArrived", group: busyRepo },
+    ]);
+
+    expect(buildSessionImportView(state).groups.map((one) => one.path)).toEqual(
+      ["/repo/busy", "/repo/quiet", "/home/loose", "/gone"],
+    );
+  });
+
+  it("breaks a count tie by the group's most recent session", () => {
+    const stale = group(folderLocation("/home/stale"), [
+      candidate({ nativeSessionId: "s1", updatedAt: 100 }),
+    ]);
+    const fresh = group(folderLocation("/home/fresh"), [
+      candidate({ nativeSessionId: "f1", updatedAt: 900 }),
+    ]);
+
+    const state = applyActions([
+      { kind: "scanGroupArrived", group: stale },
+      { kind: "scanGroupArrived", group: fresh },
+    ]);
+
+    expect(buildSessionImportView(state).groups.map((one) => one.path)).toEqual(
+      ["/home/fresh", "/home/stale"],
+    );
   });
 });
 

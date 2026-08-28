@@ -24,9 +24,9 @@ import {
  * the component can compute once from a finished list; it is a rule the
  * reducer applies to each group as it lands, without disturbing the choices
  * the user has already made about the groups that landed before it. And the
- * rendered shape (a folder header with per-provider counts and a tri-state
- * checkbox over rows that may be filtered out from under it) is a projection
- * of that state, not a copy of it.
+ * rendered shape (provider pills counting a whole scan, a folder header with a
+ * tri-state checkbox over rows that may be searched out from under it) is a
+ * projection of that state, not a copy of it.
  */
 
 /** `(harness, nativeSessionId)` is the import's identity everywhere. */
@@ -43,13 +43,41 @@ export function sessionImportGroupKey(
   return `${location.kind}:${location.path}`;
 }
 
-export type SessionImportProviderFilter = GuiHarnessId | "all";
-
 export type SessionImportScanPhase = "scanning" | "complete" | "failed";
+
+/**
+ * The scan's recency bound, in days; `null` scans everything. A bound is the
+ * cheap path end to end - the host skips old sessions on their own timestamps
+ * before reading anything - so it is part of the scan request, never a
+ * client-side filter over a full scan.
+ */
+export type SessionImportScanWindow = 7 | 14 | 30 | null;
+
+/** Two weeks: recent enough to be "what I'm working on", the act's premise. */
+export const SESSION_IMPORT_DEFAULT_SCAN_WINDOW: SessionImportScanWindow = 14;
+
+export const SESSION_IMPORT_SCAN_WINDOW_OPTIONS: ReadonlyArray<{
+  readonly window: SessionImportScanWindow;
+  readonly label: string;
+}> = [
+  { window: 7, label: "Last 7 days" },
+  { window: 14, label: "Last 2 weeks" },
+  { window: 30, label: "Last 30 days" },
+  { window: null, label: "All work" },
+];
+
+export function sessionImportScanWindowLabel(
+  window: SessionImportScanWindow,
+): string {
+  const option = SESSION_IMPORT_SCAN_WINDOW_OPTIONS.find(
+    (candidate) => candidate.window === window,
+  );
+  return option === undefined ? "All work" : option.label;
+}
 
 export interface SessionImportWizardState {
   readonly phase: SessionImportScanPhase;
-  /** Groups in arrival order; the scan already orders them usefully. */
+  /** Groups in arrival order; the projection sorts them for display. */
   readonly groups: ReadonlyArray<SessionImportGroup>;
   readonly providerFailures: ReadonlyArray<SessionImportProviderFailure>;
   readonly totals: SessionImportScanTotals | null;
@@ -58,7 +86,14 @@ export interface SessionImportWizardState {
   readonly selected: ReadonlySet<string>;
   readonly expandedGroups: ReadonlySet<string>;
   readonly query: string;
-  readonly providerFilter: SessionImportProviderFilter;
+  /**
+   * Providers the user has switched OUT of the import. This is scope, not a
+   * view filter: a harness in here is hidden from the list AND unticked, so
+   * nothing can be imported from a provider whose rows are off screen.
+   */
+  readonly disabledHarnesses: ReadonlySet<GuiHarnessId>;
+  /** How far back the current scan looks; the control the toolbar renders. */
+  readonly scanWindow: SessionImportScanWindow;
 }
 
 export const SESSION_IMPORT_INITIAL_STATE: SessionImportWizardState = {
@@ -70,7 +105,8 @@ export const SESSION_IMPORT_INITIAL_STATE: SessionImportWizardState = {
   selected: new Set(),
   expandedGroups: new Set(),
   query: "",
-  providerFilter: "all",
+  disabledHarnesses: new Set(),
+  scanWindow: SESSION_IMPORT_DEFAULT_SCAN_WINDOW,
 };
 
 /**
@@ -109,8 +145,12 @@ export type SessionImportWizardAction =
     }
   | { readonly kind: "queryChanged"; readonly query: string }
   | {
-      readonly kind: "providerFilterChanged";
-      readonly providerFilter: SessionImportProviderFilter;
+      readonly kind: "providerScopeToggled";
+      readonly harness: GuiHarnessId;
+    }
+  | {
+      readonly kind: "windowChanged";
+      readonly window: SessionImportScanWindow;
     };
 
 export function isImportable(candidate: SessionImportCandidate): boolean {
@@ -170,11 +210,14 @@ function applyScanFrame(
         };
       }
       // A fresh scan starts clean: last visit's picks may already have been
-      // imported. Only the filters the user typed survive.
+      // imported. Only what the user narrowed the picker to survives - the
+      // scan window included, because a window change is itself what starts
+      // most fresh scans.
       return {
         ...SESSION_IMPORT_INITIAL_STATE,
         query: state.query,
-        providerFilter: state.providerFilter,
+        disabledHarnesses: state.disabledHarnesses,
+        scanWindow: state.scanWindow,
       };
     }
     case "scanGroupArrived": {
@@ -186,11 +229,22 @@ function applyScanFrame(
       ) {
         return state;
       }
+      // A current host hides already-imported sessions from the scan; an older
+      // one still sends them as `already_in_traycer` rows. Discard those here
+      // so both hosts produce the same wizard: only what is new to bring over.
+      const sessions = action.group.sessions.filter(
+        (candidate) => candidate.state.kind !== "already_in_traycer",
+      );
+      if (sessions.length === 0) return state;
+      const group = { ...action.group, sessions };
       // Everything importable arrives pre-selected, missing folders included
-      // (spec §5): those still import, just without a workspace.
+      // (spec §5): those still import, just without a workspace. A provider the
+      // user has switched out of the import is the one exception - its rows are
+      // not on screen, so ticking them would import work the user cannot see.
       const selected = new Set(state.selected);
-      for (const candidate of action.group.sessions) {
+      for (const candidate of group.sessions) {
         if (!isImportable(candidate)) continue;
+        if (state.disabledHarnesses.has(candidate.harness)) continue;
         selected.add(
           sessionImportSelectionKey(
             candidate.harness,
@@ -200,7 +254,7 @@ function applyScanFrame(
       }
       return {
         ...state,
-        groups: [...state.groups, action.group],
+        groups: [...state.groups, group],
         selected,
       };
     }
@@ -252,6 +306,7 @@ function applyUserAction(
       const selected = new Set(state.selected);
       for (const candidate of group.sessions) {
         if (!isImportable(candidate)) continue;
+        if (state.disabledHarnesses.has(candidate.harness)) continue;
         const key = sessionImportSelectionKey(
           candidate.harness,
           candidate.nativeSessionId,
@@ -281,10 +336,45 @@ function applyUserAction(
     case "queryChanged": {
       return { ...state, query: action.query };
     }
-    case "providerFilterChanged": {
-      return { ...state, providerFilter: action.providerFilter };
+    case "providerScopeToggled": {
+      return applyProviderScopeToggle(state, action.harness);
+    }
+    case "windowChanged": {
+      // Only the choice is recorded here; the scan hook watches it and starts
+      // the fresh scan, whose `scanRestarted` resets everything else.
+      return { ...state, scanWindow: action.window };
     }
   }
+}
+
+/**
+ * Scope and selection move together, in both directions: switching a provider
+ * out unticks everything it contributed, and switching it back in re-ticks what
+ * could be imported - the same rule arrival applies, so a pill turned off and
+ * on again lands where it started.
+ */
+function applyProviderScopeToggle(
+  state: SessionImportWizardState,
+  harness: GuiHarnessId,
+): SessionImportWizardState {
+  const disabledHarnesses = new Set(state.disabledHarnesses);
+  const selected = new Set(state.selected);
+  const removing = !disabledHarnesses.has(harness);
+  if (removing) disabledHarnesses.add(harness);
+  else disabledHarnesses.delete(harness);
+  for (const group of state.groups) {
+    for (const candidate of group.sessions) {
+      if (candidate.harness !== harness) continue;
+      if (!isImportable(candidate)) continue;
+      const key = sessionImportSelectionKey(
+        candidate.harness,
+        candidate.nativeSessionId,
+      );
+      if (removing) selected.delete(key);
+      else selected.add(key);
+    }
+  }
+  return { ...state, disabledHarnesses, selected };
 }
 
 /* ------------------------------------------------------------------ */
@@ -297,9 +387,7 @@ export interface SessionImportRowView {
   readonly title: string;
   readonly selected: boolean;
   readonly selectable: boolean;
-  /** The task an already-imported session became, so the row can open it. */
-  readonly epicId: string | null;
-  /** Short reason a row is not selectable, e.g. "In Traycer". */
+  /** Short reason a row is not selectable, e.g. "Unreadable". */
   readonly unavailableLabel: string | null;
   /** The long form, for the row's tooltip. */
   readonly unavailableDetail: string | null;
@@ -307,9 +395,12 @@ export interface SessionImportRowView {
 
 export type SessionImportGroupSelectionState = "none" | "partial" | "all";
 
-export interface SessionImportProviderCount {
+/** One provider pill: what the scan found for it, and whether it is in scope. */
+export interface SessionImportProviderView {
   readonly harness: GuiHarnessId;
+  readonly name: string;
   readonly count: number;
+  readonly enabled: boolean;
 }
 
 export interface SessionImportGroupView {
@@ -318,8 +409,9 @@ export interface SessionImportGroupView {
   readonly path: string;
   readonly missingFolder: boolean;
   readonly expanded: boolean;
-  readonly providerCounts: ReadonlyArray<SessionImportProviderCount>;
   readonly rows: ReadonlyArray<SessionImportRowView>;
+  /** Everything in scope this folder holds, pickable or not. */
+  readonly totalCount: number;
   readonly selectableCount: number;
   readonly selectedCount: number;
   readonly selectionState: SessionImportGroupSelectionState;
@@ -327,21 +419,24 @@ export interface SessionImportGroupView {
 
 export interface SessionImportWizardView {
   readonly groups: ReadonlyArray<SessionImportGroupView>;
-  /** Every session the scan has produced, before search / provider filter. */
+  /** One pill per harness the scan has produced, in the app's provider order. */
+  readonly providers: ReadonlyArray<SessionImportProviderView>;
+  /** Every session the scan has produced, before scope and search. */
   readonly totalSessions: number;
   /**
-   * How many of those could ever be ticked. The footer's denominator, because
-   * counting rows the user is not allowed to pick makes "3 of 40 selected"
+   * How many in-scope sessions could ever be ticked. The footer's denominator,
+   * because counting rows the user is not allowed to pick makes "3 of 40"
    * read as an unfinished job when it is in fact everything on offer.
    */
   readonly selectableSessions: number;
-  /** How many survive the current filters. */
+  /** How many survive scope and search. */
   readonly matchedSessions: number;
-  /** Everything ticked, filtered-out rows included - that is what submits. */
+  /** Everything ticked - search-hidden rows included - is what submits. */
   readonly selectedCount: number;
-  readonly filtered: boolean;
-  /** Ticked rows currently on screen, for the Select all / Clear pair. */
+  /** Selectable rows currently on screen, for the Select all / Clear action. */
   readonly visibleSelectionKeys: ReadonlyArray<string>;
+  /** How many of those are ticked, which is what the action toggles between. */
+  readonly visibleSelectedCount: number;
 }
 
 const UNTITLED_SESSION = "Untitled session";
@@ -407,18 +502,9 @@ function rowView(
   );
   const title = candidateDisplayTitle(candidate);
   const state = candidate.state;
-  if (state.kind === "already_in_traycer") {
-    return {
-      selectionKey,
-      candidate,
-      title,
-      selected: false,
-      selectable: false,
-      epicId: state.epicId,
-      unavailableLabel: "In Traycer",
-      unavailableDetail: "Already imported - open the task it became.",
-    };
-  }
+  // `already_in_traycer` never reaches here: those rows are dropped at
+  // arrival (see `scanGroupArrived`), so the only unavailable rows are
+  // unreadable ones.
   if (state.kind === "unreadable") {
     return {
       selectionKey,
@@ -426,7 +512,6 @@ function rowView(
       title,
       selected: false,
       selectable: false,
-      epicId: null,
       unavailableLabel: "Unreadable",
       unavailableDetail: `${sessionImportFailureLabel(state.reason)}: ${state.detail}`,
     };
@@ -437,7 +522,6 @@ function rowView(
     title,
     selected: selected.has(selectionKey),
     selectable: true,
-    epicId: null,
     unavailableLabel: null,
     unavailableDetail: null,
   };
@@ -455,22 +539,36 @@ function matchesQuery(
   );
 }
 
-function providerCountsFor(
-  sessions: ReadonlyArray<SessionImportCandidate>,
-): ReadonlyArray<SessionImportProviderCount> {
+/**
+ * The pill row: every harness this scan has produced work for, plus any the
+ * user has switched off. A switched-off harness has to keep its pill even when
+ * a rescan found nothing for it - the unlit pill is the only thing on screen
+ * that explains why those rows are missing, and the only way back.
+ */
+function providerViewsFor(
+  state: SessionImportWizardState,
+): ReadonlyArray<SessionImportProviderView> {
   const counts = new Map<GuiHarnessId, number>();
-  for (const candidate of sessions) {
-    counts.set(candidate.harness, (counts.get(candidate.harness) ?? 0) + 1);
+  for (const harness of state.disabledHarnesses) counts.set(harness, 0);
+  for (const group of state.groups) {
+    for (const candidate of group.sessions) {
+      counts.set(candidate.harness, (counts.get(candidate.harness) ?? 0) + 1);
+    }
   }
-  // Map order is whatever order the host reported this folder's sessions in,
-  // which would chip two folders holding the same providers differently. The
-  // app's one harness order settles it; it keys on `id`, hence the hop.
+  // Map order is whatever order the host reported sessions in, which would
+  // reshuffle the pills as the scan streams. The app's one harness order
+  // settles it; it keys on `id`, hence the hop.
   return sortGuiHarnessesByProviderOrder(
     [...counts].map(([harness, count]) => ({ id: harness, count })),
-  ).map((entry) => ({ harness: entry.id, count: entry.count }));
+  ).map((entry) => ({
+    harness: entry.id,
+    name: harnessDisplayName(entry.id),
+    count: entry.count,
+    enabled: !state.disabledHarnesses.has(entry.id),
+  }));
 }
 
-function selectionStateFor(
+export function selectionStateFor(
   selectableCount: number,
   selectedCount: number,
 ): SessionImportGroupSelectionState {
@@ -481,32 +579,42 @@ function selectionStateFor(
 /**
  * Projects state into what the list renders.
  *
- * The counts on a group header describe the WHOLE group, not the filtered
- * slice: the header's checkbox toggles the whole group (that is the only way
- * to clear a folder without expanding it), so a header claiming "2" while
- * ticking 40 would be lying about its own control.
+ * The counts on a group header describe the whole IN-SCOPE group, not the
+ * searched slice: the header's checkbox toggles exactly those rows (that is the
+ * only way to clear a folder without expanding it), so a header claiming "2"
+ * while ticking 40 would be lying about its own control. Scope is a different
+ * matter - a provider the user switched off is not part of this import at all,
+ * so it leaves the counts as well as the list.
  */
 export function buildSessionImportView(
   state: SessionImportWizardState,
 ): SessionImportWizardView {
   const needle = state.query.trim().toLowerCase();
-  const groups: SessionImportGroupView[] = [];
+  const sortable: Array<{
+    readonly view: SessionImportGroupView;
+    /** Repos first, then loose folders, then folders gone from disk. */
+    readonly tier: number;
+    readonly count: number;
+    readonly latest: number;
+  }> = [];
   const visibleSelectionKeys: string[] = [];
   let totalSessions = 0;
   let selectableSessions = 0;
   let matchedSessions = 0;
+  let visibleSelectedCount = 0;
 
   for (const group of state.groups) {
     const path = group.location.path;
-    const selectable = group.sessions.filter(isImportable);
     totalSessions += group.sessions.length;
+
+    const inScope = group.sessions.filter(
+      (candidate) => !state.disabledHarnesses.has(candidate.harness),
+    );
+    const selectable = inScope.filter(isImportable);
     selectableSessions += selectable.length;
 
-    const matching = group.sessions.filter(
-      (candidate) =>
-        (state.providerFilter === "all" ||
-          candidate.harness === state.providerFilter) &&
-        matchesQuery(candidate, path, needle),
+    const matching = inScope.filter((candidate) =>
+      matchesQuery(candidate, path, needle),
     );
     matchedSessions += matching.length;
     if (matching.length === 0) continue;
@@ -515,7 +623,9 @@ export function buildSessionImportView(
       rowView(candidate, state.selected),
     );
     for (const row of rows) {
-      if (row.selectable) visibleSelectionKeys.push(row.selectionKey);
+      if (!row.selectable) continue;
+      visibleSelectionKeys.push(row.selectionKey);
+      if (row.selected) visibleSelectedCount += 1;
     }
 
     const selectedCount = selectable.filter((candidate) =>
@@ -524,28 +634,51 @@ export function buildSessionImportView(
       ),
     ).length;
 
-    groups.push({
-      groupKey: sessionImportGroupKey(group.location),
-      name: folderDisplayName(path),
-      path,
-      missingFolder: group.location.kind === "missing_folder",
-      expanded: state.expandedGroups.has(sessionImportGroupKey(group.location)),
-      providerCounts: providerCountsFor(group.sessions),
-      rows,
-      selectableCount: selectable.length,
-      selectedCount,
-      selectionState: selectionStateFor(selectable.length, selectedCount),
+    const missingFolder = group.location.kind === "missing_folder";
+    sortable.push({
+      view: {
+        groupKey: sessionImportGroupKey(group.location),
+        name: folderDisplayName(path),
+        path,
+        missingFolder,
+        expanded: state.expandedGroups.has(
+          sessionImportGroupKey(group.location),
+        ),
+        rows,
+        totalCount: inScope.length,
+        selectableCount: selectable.length,
+        selectedCount,
+        selectionState: selectionStateFor(selectable.length, selectedCount),
+      },
+      tier: missingFolder ? 2 : group.gitBacked ? 0 : 1,
+      count: inScope.length,
+      latest: Math.max(
+        0,
+        ...inScope.map((candidate) => candidate.updatedAt),
+      ),
     });
   }
 
+  // Repos over loose folders over missing ones; the busiest folder first
+  // within a tier, because repeated work is what the user came back for.
+  // Recency breaks ties so two one-session folders keep a stable, sensible
+  // order.
+  sortable.sort(
+    (left, right) =>
+      left.tier - right.tier ||
+      right.count - left.count ||
+      right.latest - left.latest,
+  );
+
   return {
-    groups,
+    groups: sortable.map((entry) => entry.view),
+    providers: providerViewsFor(state),
     totalSessions,
     selectableSessions,
     matchedSessions,
     selectedCount: state.selected.size,
-    filtered: needle.length > 0 || state.providerFilter !== "all",
     visibleSelectionKeys,
+    visibleSelectedCount,
   };
 }
 

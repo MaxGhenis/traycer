@@ -27,7 +27,7 @@ export interface OnboardingAct {
  * act cannot half-land.
  */
 export function actUsesSoloStage(act: OnboardingAct): boolean {
-  return act.addon === "agents" || act.addon === "session-import";
+  return act.addon === "agents";
 }
 
 /**
@@ -74,8 +74,8 @@ export const ONBOARDING_ACTS: ReadonlyArray<OnboardingAct> = [
   {
     id: "session-import",
     eyebrowLabel: "YOUR WORK",
-    title: "Bring your\nsessions with you",
-    body: "Work you already started in Claude Code or Codex can come with you as tasks. Pick what to bring; the import runs while you carry on.",
+    title: "Bring your\nwork with you",
+    body: "Work you started in Claude Code, Codex, or OpenCode comes with you as tasks. Pick what to bring; the import runs while you carry on.",
     addon: "session-import",
   },
   {

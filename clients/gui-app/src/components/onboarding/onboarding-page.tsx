@@ -23,7 +23,7 @@ import {
   type OnboardingAct,
 } from "@/components/onboarding/onboarding-acts";
 import { OnboardingDetectedAgents } from "@/components/onboarding/onboarding-detected-agents";
-import { SessionImportWizard } from "@/components/session-import/session-import-wizard";
+import { OnboardingSessionImportStage } from "@/components/onboarding/onboarding-session-import-stage";
 import {
   OnboardingDiorama,
   type OnboardingAgentGuideState,
@@ -39,6 +39,7 @@ import {
   isLastOnboardingStep,
   useOnboardingStore,
 } from "@/stores/onboarding/onboarding-store";
+import { useOnboardingTourOpenStore } from "@/stores/onboarding/onboarding-tour-open-store";
 import { cn } from "@/lib/utils";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 
@@ -301,10 +302,8 @@ const ONBOARDING_STYLE = `
 function ActCopy(props: {
   readonly act: OnboardingAct;
   readonly eyebrow: string;
-  /** Advances the tour once the import is under way; it runs in background. */
-  readonly onSessionImportStarted: () => void;
 }) {
-  const { act, eyebrow, onSessionImportStarted } = props;
+  const { act, eyebrow } = props;
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const isSoloAct = actUsesSoloStage(act);
 
@@ -343,15 +342,6 @@ function ActCopy(props: {
       {act.addon === "agents" ? (
         <div className="onboarding-addon flex min-h-0 w-full flex-1 flex-col self-center overflow-hidden pt-1 text-left lg:self-start">
           <OnboardingDetectedAgents />
-        </div>
-      ) : null}
-      {act.addon === "session-import" ? (
-        <div className="onboarding-addon flex min-h-0 w-full flex-1 flex-col self-center overflow-hidden pt-2 text-left lg:self-start">
-          <SessionImportWizard
-            surface="onboarding"
-            onImportStarted={onSessionImportStarted}
-            secondaryAction={null}
-          />
         </div>
       ) : null}
       {act.addon === "theme" ? (
@@ -431,6 +421,13 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
   const agentGuideInitializedRef = useRef(false);
   const agentGuideAutoDefaultRef = useRef(false);
   const agentGuideLastDefaultRef = useRef("");
+  // The live wizard's submit, handed over while the session-import act is on
+  // screen. A ref rather than state: it changes on every render of a streaming
+  // scan, and nothing renders off it - Continue only reads it when pressed.
+  const sessionImportSubmitRef = useRef<(() => void) | null>(null);
+  const registerSessionImportSubmit = useCallback((submit: () => void) => {
+    sessionImportSubmitRef.current = submit;
+  }, []);
   const navigate = useNavigate();
   const router = useRouter();
   const { replay } = props;
@@ -475,6 +472,14 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
   useLayoutEffect(() => {
     restart();
   }, [restart]);
+
+  // Presence, for app-level ambient surfaces: while the tour has the screen,
+  // the import-progress toast holds instead of floating over the stage.
+  const setTourOpen = useOnboardingTourOpenStore((state) => state.setOpen);
+  useEffect(() => {
+    setTourOpen(true);
+    return () => setTourOpen(false);
+  }, [setTourOpen]);
 
   useEffect(() => {
     Analytics.getInstance().track(AnalyticsEvent.OnboardingStarted, {
@@ -628,6 +633,11 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
 
   const advance = useCallback((): void => {
     if (advanceDisabled) return;
+    // The session-import act has one forward control, and it does both jobs:
+    // start the import for whatever is ticked (nothing ticked is a no-op), then
+    // move on. The run is owned by the app-wide controller, so it outlives this
+    // act and keeps going while the user finishes the tour.
+    if (act.addon === "session-import") sessionImportSubmitRef.current?.();
     const advancePastCurrent = (): void => {
       if (isLastAct) {
         finish("completed");
@@ -730,7 +740,6 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
                       key={act.id}
                       act={act}
                       eyebrow={actEyebrow(act, step)}
-                      onSessionImportStarted={advance}
                     />
                   </AnimatePresence>
                 </div>
@@ -748,9 +757,6 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
                   // mini-app when stacked. (Command-theme keeps its diorama,
                   // which itself shows just the Cmd+K palette when stacked.)
                   act.addon === "agents" && "max-lg:hidden",
-                  // Session import has no mini-app to preview: its stage IS the
-                  // real wizard, reading the user's real machine.
-                  act.addon === "session-import" && "hidden",
                 )}
               >
                 {/* Fade the mini-app in place on each act so it never slides up
@@ -762,10 +768,18 @@ export function OnboardingPage(props: { readonly replay: boolean }) {
                   transition={{ duration: 0.25, ease: ACT_EASE }}
                   className="w-full min-w-0"
                 >
-                  <OnboardingDiorama
-                    actId={act.id}
-                    agentGuide={agentGuideState}
-                  />
+                  {/* Session import has no mock-up to preview: this window holds
+                      the real wizard, reading the user's real machine. */}
+                  {act.addon === "session-import" ? (
+                    <OnboardingSessionImportStage
+                      registerSubmit={registerSessionImportSubmit}
+                    />
+                  ) : (
+                    <OnboardingDiorama
+                      actId={act.id}
+                      agentGuide={agentGuideState}
+                    />
+                  )}
                 </m.div>
               </div>
             </div>

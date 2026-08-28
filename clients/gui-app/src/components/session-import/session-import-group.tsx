@@ -11,14 +11,15 @@ import type {
 import type { SessionImportTone } from "@/components/session-import/session-import-tone";
 
 const MISSING_FOLDER_HINT =
-  "This folder no longer exists - these sessions import without a workspace.";
+  "This folder no longer exists - this work imports without a workspace.";
 
 /**
  * Checkbox visual with no interactive element of its own: the row around it is
  * the control (`role="checkbox"`), so the whole row is the hit target and
- * nothing nests a button inside a button.
+ * nothing nests a button inside a button. Exported for the wizard's
+ * master checkbox, which heads the same column these boxes form.
  */
-function SelectionBox(props: {
+export function SelectionBox(props: {
   readonly state: SessionImportGroupSelectionState;
   readonly disabled: boolean;
   readonly tone: SessionImportTone;
@@ -29,7 +30,7 @@ function SelectionBox(props: {
     <span
       aria-hidden
       className={cn(
-        "flex size-4 shrink-0 items-center justify-center rounded-[0.25rem] border transition-colors",
+        "flex size-4 shrink-0 items-center justify-center rounded-sm border transition-colors",
         filled ? tone.checkboxFilled : cn("border-current/40", tone.faint),
         disabled && "opacity-40",
       )}
@@ -66,28 +67,9 @@ function SessionRow(props: {
   readonly row: SessionImportRowView;
   readonly tone: SessionImportTone;
   readonly onToggle: (selectionKey: string) => void;
-  readonly onOpenEpic: (epicId: string, title: string) => void;
 }) {
-  const { row, tone, onToggle, onOpenEpic } = props;
+  const { row, tone, onToggle } = props;
   const { candidate } = row;
-  const meta: string[] = [];
-  if (candidate.messageCount !== null) {
-    meta.push(`${candidate.messageCount} messages`);
-  }
-  if (candidate.hasSubagents) meta.push("with sub-agents");
-
-  // An already-imported session cannot be ticked, but it is not a dead end
-  // either: the whole row is the way back to the task it became. Keeping that
-  // on the row rather than on the "In Traycer" label keeps the file's rule
-  // that nothing nests a button inside a button.
-  const opensEpic = !row.selectable && row.epicId !== null;
-  const activate = (): void => {
-    if (row.selectable) {
-      onToggle(row.selectionKey);
-      return;
-    }
-    if (row.epicId !== null) onOpenEpic(row.epicId, row.title);
-  };
 
   return (
     <TooltipWrapper
@@ -98,20 +80,25 @@ function SessionRow(props: {
     >
       <button
         type="button"
-        role={opensEpic ? "button" : "checkbox"}
-        aria-checked={opensEpic ? undefined : row.selected}
+        role="checkbox"
+        aria-checked={row.selected}
         // `aria-disabled`, never the `disabled` attribute: a disabled button
         // emits no pointer events, so the tooltip explaining WHY the row is
         // unavailable could never open - which is the only explanation the
         // user gets.
-        aria-disabled={!row.selectable && !opensEpic}
+        aria-disabled={!row.selectable}
         aria-label={row.title}
         data-testid="session-import-row"
         data-selectable={row.selectable}
-        onClick={activate}
+        onClick={() => {
+          if (row.selectable) onToggle(row.selectionKey);
+        }}
+        // px-1.5 under the list's own p-1 lands this checkbox on the group
+        // header's 10px left edge; the chevron up there and the harness icon
+        // here then share a column, and the titles start flush with each other.
         className={cn(
-          "flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors",
-          row.selectable || opensEpic ? tone.rowHover : "cursor-default",
+          "flex w-full min-w-0 items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+          row.selectable ? tone.rowHover : "cursor-default",
           !row.selectable && "opacity-55",
         )}
       >
@@ -127,22 +114,8 @@ function SessionRow(props: {
         <span className={cn("min-w-0 flex-1 truncate text-ui-sm", tone.strong)}>
           {row.title}
         </span>
-        {meta.length > 0 ? (
-          <span className={cn("shrink-0 text-ui-xs", tone.faint)}>
-            {meta.join(" · ")}
-          </span>
-        ) : null}
         {row.unavailableLabel !== null ? (
-          <span
-            className={cn(
-              "shrink-0 text-ui-xs",
-              tone.faint,
-              // Underlined only when there is somewhere to go, so "In Traycer"
-              // reads as the link it is - clicking it lands on the row, which
-              // is what opens the task.
-              opensEpic && "underline underline-offset-2",
-            )}
-          >
+          <span className={cn("shrink-0 text-ui-xs", tone.faint)}>
             {row.unavailableLabel}
           </span>
         ) : null}
@@ -158,22 +131,19 @@ export function SessionImportGroupItem(props: {
   readonly onToggleExpanded: (groupKey: string) => void;
   readonly onSetGroupSelection: (groupKey: string, selected: boolean) => void;
   readonly onToggleSession: (selectionKey: string) => void;
-  readonly onOpenEpic: (epicId: string, title: string) => void;
 }) {
-  const {
-    group,
-    tone,
-    onToggleExpanded,
-    onSetGroupSelection,
-    onToggleSession,
-    onOpenEpic,
-  } = props;
+  const { group, tone, onToggleExpanded, onSetGroupSelection, onToggleSession } =
+    props;
 
   return (
     <div
       data-testid="session-import-group"
       data-group-key={group.groupKey}
-      className={cn("overflow-hidden rounded-lg border", tone.border)}
+      // shrink-0 is load-bearing: overflow-hidden drops a flex item's automatic
+      // minimum size to zero, so inside the wizard's scrolling column every
+      // card would compress to a sliver (many groups) or swallow its own rows
+      // (one tall group) instead of making the column overflow and scroll.
+      className={cn("shrink-0 overflow-hidden rounded-lg border", tone.border)}
     >
       <div
         className={cn("flex w-full min-w-0 items-center", tone.groupSurface)}
@@ -186,13 +156,21 @@ export function SessionImportGroupItem(props: {
               ? "mixed"
               : group.selectionState === "all"
           }
-          aria-label={`Select every session in ${group.name}`}
+          aria-label={`Select all work in ${group.name}`}
           disabled={group.selectableCount === 0}
           data-testid="session-import-group-select"
           onClick={() =>
             onSetGroupSelection(group.groupKey, group.selectionState !== "all")
           }
-          className="flex shrink-0 items-center py-2.5 pr-1.5 pl-2.5"
+          // ring-inset on both header controls: the card clips at its rounded
+          // border, so an outset ring would render cut off. p-2.5 all round
+          // keeps this checkbox on the same left edge - and the same distance
+          // from what follows it - as the row checkboxes below (4px list
+          // padding + 6px row padding = the same 10px).
+          className={cn(
+            "flex shrink-0 items-center rounded-md p-2.5 outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset",
+            group.selectableCount > 0 && tone.rowHover,
+          )}
         >
           <SelectionBox
             state={group.selectionState}
@@ -206,7 +184,7 @@ export function SessionImportGroupItem(props: {
           data-testid="session-import-group-toggle"
           onClick={() => onToggleExpanded(group.groupKey)}
           className={cn(
-            "flex min-w-0 flex-1 items-center gap-2 py-2.5 pr-2.5 text-left transition-colors",
+            "flex min-w-0 flex-1 items-center gap-2.5 py-2.5 pr-2.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset",
             tone.rowHover,
           )}
         >
@@ -252,22 +230,18 @@ export function SessionImportGroupItem(props: {
               {group.path}
             </span>
           </span>
-          <span className="flex shrink-0 items-center gap-2">
-            {group.providerCounts.map((entry) => (
-              <span
-                key={entry.harness}
-                className={cn(
-                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-xs",
-                  tone.chip,
-                )}
-              >
-                <HarnessIcon harnessId={entry.harness} className="size-3" />
-                {entry.count}
-              </span>
-            ))}
-            <span className={cn("text-ui-xs", tone.muted)}>
-              {group.selectedCount}/{group.selectableCount}
-            </span>
+          {/*
+            One number, not a fraction: a folder the user has not touched is
+            fully picked, so "431 of 431" is noise on every row. The fraction
+            appears exactly when it says something - the folder is half in.
+          */}
+          <span
+            data-testid="session-import-group-count"
+            className={cn("shrink-0 text-ui-xs tabular-nums", tone.muted)}
+          >
+            {group.selectionState === "partial"
+              ? `${group.selectedCount.toLocaleString()} of ${group.selectableCount.toLocaleString()}`
+              : group.totalCount.toLocaleString()}
           </span>
         </button>
       </div>
@@ -279,7 +253,6 @@ export function SessionImportGroupItem(props: {
               row={row}
               tone={tone}
               onToggle={onToggleSession}
-              onOpenEpic={onOpenEpic}
             />
           ))}
         </div>

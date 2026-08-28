@@ -378,6 +378,12 @@ describe("OnboardingPage", () => {
 
     expect(currentActId()).toBe("session-import");
     expect(screen.getByTestId("session-import-wizard-stub")).not.toBeNull();
+    // This act has no mock-up to preview: its diorama slot holds the live
+    // wizard's own stage, not the shared `OnboardingDiorama`.
+    expect(
+      screen.getByTestId("onboarding-session-import-stage"),
+    ).not.toBeNull();
+    expect(screen.queryByTestId("onboarding-diorama-stub")).toBeNull();
   });
 
   it("first-run finish (no replay flag) marks complete and opens a fresh draft tab", async () => {

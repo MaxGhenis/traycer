@@ -36,35 +36,40 @@ export function useSessionImportScan(active: boolean): SessionImportScanHandle {
     SESSION_IMPORT_INITIAL_STATE,
   );
   const clientRef = useRef<SessionImportScanClient | null>(null);
-  // The machine the live subscription is reading, or `null` while there is no
-  // subscription. It is what tells the two restarts apart, and the host is the
-  // load-bearing half: a replacement client dialing the SAME machine is the
-  // transport coming back under a user halfway through picking rows, so their
-  // groups and ticks survive it, while one dialing a DIFFERENT machine is a
-  // different set of sessions entirely. Keeping the old host's groups there
-  // would leave path-keyed folders the new host may not have and submit native
-  // session ids it has never seen. An unnameable host falls to the clearing
-  // restart on purpose - unable to prove it is the same machine is not
-  // evidence that it is.
-  const scannedHostIdRef = useRef<string | null>(null);
+  // What the live subscription is reading - the machine AND the scan window -
+  // or `null` while there is no subscription. It is what tells the two
+  // restarts apart, and both halves are load-bearing: a replacement client
+  // dialing the SAME machine over the SAME window is the transport coming
+  // back under a user halfway through picking rows, so their groups and ticks
+  // survive it, while a different machine is a different set of sessions
+  // entirely and a different window is a different question - both start
+  // clean. An unnameable host falls to the clearing restart on purpose -
+  // unable to prove it is the same machine is not evidence that it is.
+  const scannedKeyRef = useRef<string | null>(null);
+  const scanWindow = state.scanWindow;
 
   useEffect(() => {
     if (!active) {
-      scannedHostIdRef.current = null;
+      scannedKeyRef.current = null;
       return;
     }
     if (wsStreamClient === null) return;
 
-    const sameHost =
-      streamHostId !== null && streamHostId === scannedHostIdRef.current;
+    const scanKey =
+      streamHostId === null
+        ? null
+        : `${streamHostId}::${scanWindow ?? "all"}`;
+    const sameScan = scanKey !== null && scanKey === scannedKeyRef.current;
     dispatch({
       kind: "scanRestarted",
-      reason: sameHost ? "reconnect" : "fresh",
+      reason: sameScan ? "reconnect" : "fresh",
     });
-    scannedHostIdRef.current = streamHostId;
+    scannedKeyRef.current = scanKey;
     const client = new SessionImportScanClient({
       wsStreamClient,
       providers: null,
+      updatedAfter:
+        scanWindow === null ? null : Date.now() - scanWindow * DAY_IN_MS,
       callbacks: {
         onStarted: () => {
           // `started` names the providers being scanned; the wizard's own
@@ -93,7 +98,9 @@ export function useSessionImportScan(active: boolean): SessionImportScanHandle {
       clientRef.current = null;
       client.close();
     };
-  }, [active, wsStreamClient, streamHostId]);
+  }, [active, wsStreamClient, streamHostId, scanWindow]);
 
   return { state, dispatch };
 }
+
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
