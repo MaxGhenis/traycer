@@ -330,9 +330,11 @@ describe("<EpicSurface />", () => {
     expect(screen.getByTestId("mobile-epic-switcher-trigger")).not.toBeNull();
   });
 
-  // Only the focused pane registers, so a second Epic pane mounted beside it
-  // contributes nothing for the header to resolve.
-  it("registers nothing from an unfocused pane", () => {
+  // A retained-but-unfocused pane registers too: a focus switch onto an
+  // already-retained tab must resolve its trigger in that same commit, so the
+  // entry has to exist BEFORE the focus flip. Keeping it off the header while
+  // unfocused is resolution's job, not the writer's.
+  it("registers its entry from a retained unfocused pane", () => {
     viewport.mobile = true;
     render(
       <TabSurfaceActivityProvider activity={{ visible: true, focused: false }}>
@@ -340,7 +342,11 @@ describe("<EpicSurface />", () => {
       </TabSurfaceActivityProvider>,
     );
 
-    expect(useMobileHeaderStore.getState().rightActionEntries.size).toBe(0);
+    expect(
+      useMobileHeaderStore
+        .getState()
+        .rightActionEntries.get(epicTabRightActionsKey("tab-b")),
+    ).not.toBeUndefined();
   });
 
   it("registers nothing on desktop", () => {

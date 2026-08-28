@@ -218,9 +218,11 @@ export function MobileEpicHeaderTitle(props: {
 
 /**
  * Registers this epic tab's header actions (the tab switcher trigger) while
- * the surface is mounted, self-gated on `useIsMobileViewport()`. Whether they
- * appear is the header's resolution from the presented surface, not this
- * binder's concern. The registry stores a `ReactNode` element: this is safe
+ * the pane is mounted - focused or merely retained - self-gated on
+ * `useIsMobileViewport()`. Whether they appear is the header's resolution from
+ * the presented surface, not this binder's concern; registering while retained
+ * is what lets a focus switch onto this tab resolve its trigger in the same
+ * commit. The registry stores a `ReactNode` element: this is safe
  * because the element is a self-contained component keyed only on the stable
  * tab id - it re-reads volatile state from its own hooks each header render,
  * so nothing goes stale. A render-fn entry would be isomorphic (a fn returning

@@ -39,11 +39,15 @@ export function resolveMobileHeaderRightActionsKey(
  * The right-actions node the mobile header should render right now: the
  * presented surface's registered entry, or nothing.
  *
- * A pure read over (tab layout, registry), so it is correct in the same commit
- * the presented surface changes - no writer has to observe the change, and a
- * surface presented again after being backgrounded shows its controls with no
- * re-publish. An entry whose surface is not presented resolves to nothing,
- * however its teardown is ordered.
+ * A pure read over (tab layout, registry), so a presentation change lands in
+ * the same commit for every surface that is already registered - no writer has
+ * to observe the change, and a surface presented again after being
+ * backgrounded shows its controls with no re-publish. That is why writers
+ * register while RETAINED, not on focus: an entry that only appeared on focus
+ * would trail the focus commit by its own effect flush. A surface whose first
+ * mount IS the transition still registers an effect-flush later - there is
+ * nothing to resolve before it exists. An entry whose surface is not presented
+ * resolves to nothing, however its teardown is ordered.
  */
 export function useMobileHeaderRightActions(): ReactNode | null {
   const key = useTabsStore((state) =>
