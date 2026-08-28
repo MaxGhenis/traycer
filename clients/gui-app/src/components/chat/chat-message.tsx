@@ -155,9 +155,6 @@ function renderAssistantMessage(props: ChatMessageProps): ReactElement {
         runState={message.runState}
         messageId={message.id}
         elapsedStartedAt={message.elapsedStartedAt ?? message.createdAt}
-        turnHasOnlyAutonomousResumeSegments={
-          message.turnHasOnlyAutonomousResumeSegments ?? false
-        }
         showCompletionFooter={message.showCompletionFooter ?? true}
         pausedDurationMs={message.pausedDurationMs ?? 0}
         pausedSinceMs={message.pausedSinceMs ?? null}

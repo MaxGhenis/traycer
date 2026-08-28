@@ -11,8 +11,13 @@ import {
   deriveInterviewCollapsibleKey,
   derivePromotedSubagentRenderId,
   deriveSubagentCollapsibleKey,
+  deriveWakeStreakCollapsibleKey,
   type ChatCollapsibleKey,
 } from "@/components/chat/chat-collapsible-key";
+import {
+  computeWakeStreakLayout,
+  EMPTY_WAKE_STREAK_LAYOUT,
+} from "@/components/chat/chat-wake-streaks";
 import { deriveInterviewReviewModel } from "@/components/chat/segments/interview-review-model";
 import {
   adjacentDedupedProgressItems,
@@ -95,15 +100,35 @@ export function buildChatFindRows(
    */
   promotedToolBlockIds: ReadonlySet<string>,
 ): ReadonlyArray<ChatFindRow> {
+  // Same pure derivation the renderer uses (`ChatTimeline`), so the fold
+  // grouping and the chains can never disagree: a unit inside a folded wake
+  // streak carries that streak's key as its OUTERMOST disclosure - a reveal
+  // opens the streak first, making the member row (and any inner disclosure)
+  // paintable.
+  const wakeStreakLayout = computeWakeStreakLayout(
+    messages,
+    EMPTY_WAKE_STREAK_LAYOUT,
+  );
   return messages.map((message) => {
     const units = chatFindUnitsForMessage(
       message,
       tileInstanceId,
       promotedToolBlockIds,
     );
+    const membership = wakeStreakLayout.membershipByRowId.get(message.id);
+    if (membership === undefined) {
+      return { messageId: message.id, units };
+    }
+    const streakKey = deriveWakeStreakCollapsibleKey(
+      tileInstanceId,
+      membership.streak.id,
+    );
     return {
       messageId: message.id,
-      units,
+      units: units.map((unit) => ({
+        ...unit,
+        owningChain: [streakKey, ...unit.owningChain],
+      })),
     };
   });
 }

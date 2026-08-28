@@ -76,7 +76,10 @@ describe("<AutonomousResumeSegment />", () => {
 
     expect(screen.queryByText("Shell completed")).toBeNull();
     expect(screen.getByText("Command still running")).toBeTruthy();
-    expect(screen.getByText("still running - 12 new log lines")).toBeTruthy();
+    // The host's "still running - " prefix is redundant with the icon (which
+    // already carries liveness), so the dimmed detail slot strips it.
+    expect(screen.queryByText("still running - 12 new log lines")).toBeNull();
+    expect(screen.getByText("12 new log lines")).toBeTruthy();
   });
 
   it("still reports a terminal outcome once the producer has stopped", () => {

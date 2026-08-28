@@ -36,6 +36,14 @@ import {
   type StableChatTimelineRowsState,
 } from "./chat-stable-rows";
 import {
+  computeWakeStreakLayout,
+  EMPTY_WAKE_STREAK_LAYOUT,
+  type WakeStreakLayout,
+  type WakeStreakMembership,
+} from "./chat-wake-streaks";
+import { useWakeStreakSectionOpen } from "@/stores/chats/wake-streak-open-store";
+import { WakeStreakHeader } from "./chat-wake-streak-header";
+import {
   useChatTimelineFollowLatch,
   type ChatTimelineFollowLatch,
   type ChatTimelineReaderGestureIntent,
@@ -141,6 +149,18 @@ interface ChatTimelineRowSharedState {
 
 const ChatTimelineRowCtx = createContext<ChatTimelineRowSharedState | null>(
   null,
+);
+
+/**
+ * Wake-streak fold layout (`chat-wake-streaks.ts`), in its own context rather
+ * than `ChatTimelineRowSharedState`: a context change re-renders every mounted
+ * row past its memo, and the layout object - unlike the shared-state object -
+ * keeps its identity across streaming tokens (structural sharing returns the
+ * previous layout while no settled row changed), so this context fires only
+ * when a turn actually settles or a streak actually changes shape.
+ */
+const WakeStreakLayoutCtx = createContext<WakeStreakLayout>(
+  EMPTY_WAKE_STREAK_LAYOUT,
 );
 
 /** decision #5: "isNearEnd (library default 10% threshold)". */
@@ -280,6 +300,8 @@ export const ChatTimeline = memo(function ChatTimeline({
 }: ChatTimelineProps) {
   const rows = useStableChatTimelineRows(listRef, messages);
 
+  const wakeStreakLayout = useWakeStreakLayout(listRef, rows);
+
   const keySequenceChanged = useCommittedKeySequenceChanged(listRef, rows);
 
   // Fixup (fix-detached-streaming-yank/callback-synchronous-follow): see the
@@ -401,80 +423,82 @@ export const ChatTimeline = memo(function ChatTimeline({
 
   return (
     <ChatTimelineRowCtx value={sharedState}>
-      <LegendList<ChatMessageModel>
-        ref={listRef}
-        data={rows}
-        keyExtractor={chatTimelineKeyExtractor}
-        getItemType={chatTimelineGetItemType}
-        renderItem={renderItem}
-        estimatedItemSize={90}
-        // Keep LegendList's proximity threshold explicit for onEndReached and
-        // presentation consumers. Follow ownership deliberately reads only
-        // fresh DOM geometry inside the latch; this 10% band can never
-        // re-attach a detached reader.
-        onEndReachedThreshold={CHAT_TIMELINE_NEAR_END_THRESHOLD}
-        initialScrollAtEnd={initialScrollAtEnd}
-        initialScrollIndex={initialScrollIndex ?? undefined}
-        contentInsetEndAdjustment={contentInsetEndAdjustment}
-        // Fixup (callback-synchronous-follow): the library's own
-        // `maintainScrollAtEnd` is never passed - every one of its internal
-        // call sites (data/item/footer/layout) no-ops when this prop is
-        // falsy, so leaving it unset makes them categorically unreachable.
-        // Bottom-follow is reimplemented in `chat-timeline-follow-latch.ts`
-        // and driven imperatively from the callbacks below instead - see
-        // that module's doc comment for why the library's own cached
-        // threshold could not be trusted, render-gated or not.
-        //
-        // The explicit zero still narrows `isWithinMaintainScrollAtEndThreshold`
-        // (used internally by the library's own content-inset compensation)
-        // to `distanceFromEnd <= 0` rather than its 10%-of-viewport default.
-        // The separate `isAtEnd` calculation owns the 1px edge tolerance.
-        maintainScrollAtEndThreshold={0}
-        // SIZE is always on: it keeps a detached reader pixel-stable when
-        // content above the viewport changes HEIGHT - a nested chain-open in
-        // find, a row remeasuring above the reader.
-        //
-        // DATA rides the key sequence, because the two things it is asked to
-        // tell apart arrive on the same signal. The library treats any row
-        // object it cannot prove equal as a structural data change, and while
-        // that channel is on it arms an MVCP anchor lock on every such pass.
-        // A held lock stops the library recalculating item positions inline
-        // and defers them to an animation frame; a row that grows is laid out
-        // by the browser immediately while the offsets of the rows after it
-        // are only rewritten a frame later, so the frame in between paints
-        // those rows inside the grown row's band. A streaming reply hands over
-        // a changed array on every token, well inside the lock's 300ms expiry,
-        // so leaving DATA on holds that lock - and that overlap - for the
-        // whole stream.
-        //
-        // The rows themselves distinguish the two: a streaming token changes a
-        // row's CONTENT in place, while an insert, a removal, or a move
-        // changes the sequence of row KEYS. Only the latter can shift what a
-        // detached reader is looking at, and only the latter needs the anchor,
-        // so the channel is on for exactly those commits. Off, positions are
-        // recalculated inline and stay coherent before the browser paints.
-        //
-        // Deliberately NOT `itemsAreEqual`: the library reuses that same
-        // comparator to decide whether a mounted container refreshes its item
-        // data, so calling same-key rows equal would freeze a streaming row's
-        // rendered content in place.
-        maintainVisibleContentPosition={resolveChatTimelineMvcp(
-          keySequenceChanged,
-        )}
-        onItemSizeChanged={handleItemSizeChanged}
-        onScroll={handleScroll}
-        onMetricsChange={handleMetricsChange}
-        showsVerticalScrollIndicator
-        className={cn(
-          // The Legend List node is the sole scroll owner. It deliberately uses
-          // the app-wide thin, transparent-track scrollbar theme from index.css.
-          "h-full overflow-x-hidden overflow-y-auto overscroll-y-contain [overflow-anchor:none]",
-          className,
-        )}
-        ListHeaderComponent={CHAT_TIMELINE_LIST_HEADER}
-        ListFooterComponent={CHAT_TIMELINE_LIST_FOOTER}
-        {...rest}
-      />
+      <WakeStreakLayoutCtx value={wakeStreakLayout}>
+        <LegendList<ChatMessageModel>
+          ref={listRef}
+          data={rows}
+          keyExtractor={chatTimelineKeyExtractor}
+          getItemType={chatTimelineGetItemType}
+          renderItem={renderItem}
+          estimatedItemSize={90}
+          // Keep LegendList's proximity threshold explicit for onEndReached and
+          // presentation consumers. Follow ownership deliberately reads only
+          // fresh DOM geometry inside the latch; this 10% band can never
+          // re-attach a detached reader.
+          onEndReachedThreshold={CHAT_TIMELINE_NEAR_END_THRESHOLD}
+          initialScrollAtEnd={initialScrollAtEnd}
+          initialScrollIndex={initialScrollIndex ?? undefined}
+          contentInsetEndAdjustment={contentInsetEndAdjustment}
+          // Fixup (callback-synchronous-follow): the library's own
+          // `maintainScrollAtEnd` is never passed - every one of its internal
+          // call sites (data/item/footer/layout) no-ops when this prop is
+          // falsy, so leaving it unset makes them categorically unreachable.
+          // Bottom-follow is reimplemented in `chat-timeline-follow-latch.ts`
+          // and driven imperatively from the callbacks below instead - see
+          // that module's doc comment for why the library's own cached
+          // threshold could not be trusted, render-gated or not.
+          //
+          // The explicit zero still narrows `isWithinMaintainScrollAtEndThreshold`
+          // (used internally by the library's own content-inset compensation)
+          // to `distanceFromEnd <= 0` rather than its 10%-of-viewport default.
+          // The separate `isAtEnd` calculation owns the 1px edge tolerance.
+          maintainScrollAtEndThreshold={0}
+          // SIZE is always on: it keeps a detached reader pixel-stable when
+          // content above the viewport changes HEIGHT - a nested chain-open in
+          // find, a row remeasuring above the reader.
+          //
+          // DATA rides the key sequence, because the two things it is asked to
+          // tell apart arrive on the same signal. The library treats any row
+          // object it cannot prove equal as a structural data change, and while
+          // that channel is on it arms an MVCP anchor lock on every such pass.
+          // A held lock stops the library recalculating item positions inline
+          // and defers them to an animation frame; a row that grows is laid out
+          // by the browser immediately while the offsets of the rows after it
+          // are only rewritten a frame later, so the frame in between paints
+          // those rows inside the grown row's band. A streaming reply hands over
+          // a changed array on every token, well inside the lock's 300ms expiry,
+          // so leaving DATA on holds that lock - and that overlap - for the
+          // whole stream.
+          //
+          // The rows themselves distinguish the two: a streaming token changes a
+          // row's CONTENT in place, while an insert, a removal, or a move
+          // changes the sequence of row KEYS. Only the latter can shift what a
+          // detached reader is looking at, and only the latter needs the anchor,
+          // so the channel is on for exactly those commits. Off, positions are
+          // recalculated inline and stay coherent before the browser paints.
+          //
+          // Deliberately NOT `itemsAreEqual`: the library reuses that same
+          // comparator to decide whether a mounted container refreshes its item
+          // data, so calling same-key rows equal would freeze a streaming row's
+          // rendered content in place.
+          maintainVisibleContentPosition={resolveChatTimelineMvcp(
+            keySequenceChanged,
+          )}
+          onItemSizeChanged={handleItemSizeChanged}
+          onScroll={handleScroll}
+          onMetricsChange={handleMetricsChange}
+          showsVerticalScrollIndicator
+          className={cn(
+            // The Legend List node is the sole scroll owner. It deliberately uses
+            // the app-wide thin, transparent-track scrollbar theme from index.css.
+            "h-full overflow-x-hidden overflow-y-auto overscroll-y-contain [overflow-anchor:none]",
+            className,
+          )}
+          ListHeaderComponent={CHAT_TIMELINE_LIST_HEADER}
+          ListFooterComponent={CHAT_TIMELINE_LIST_FOOTER}
+          {...rest}
+        />
+      </WakeStreakLayoutCtx>
     </ChatTimelineRowCtx>
   );
 });
@@ -532,6 +556,31 @@ const stableChatTimelineRowsCache = new WeakMap<
   RefObject<LegendListRef | null>,
   StableChatTimelineRowsState
 >();
+
+/**
+ * Per-mount wake-streak layout cache, keyed by `listRef` exactly as
+ * `stableChatTimelineRowsCache` is and safe under discarded renders for the
+ * same reason: `computeWakeStreakLayout` only reuses a cached streak object
+ * after verifying it against the CURRENT rows, so a polluted entry can cost a
+ * missed reuse (one extra member-row re-render), never wrong content.
+ */
+const wakeStreakLayoutCache = new WeakMap<
+  RefObject<LegendListRef | null>,
+  WakeStreakLayout
+>();
+
+function useWakeStreakLayout(
+  listRef: RefObject<LegendListRef | null>,
+  rows: ReadonlyArray<ChatMessageModel>,
+): WakeStreakLayout {
+  return useMemo(() => {
+    const previous =
+      wakeStreakLayoutCache.get(listRef) ?? EMPTY_WAKE_STREAK_LAYOUT;
+    const next = computeWakeStreakLayout(rows, previous);
+    wakeStreakLayoutCache.set(listRef, next);
+    return next;
+  }, [rows, listRef]);
+}
 
 /**
  * The row key sequence each mounted timeline last RENDERED, keyed by that
@@ -639,6 +688,8 @@ const ChatTimelineRow = memo(function ChatTimelineRow({
     throw new Error("ChatTimelineRow must render inside ChatTimeline");
   }
   const { onRowMount } = ctx;
+  const wakeStreakMembership =
+    use(WakeStreakLayoutCtx).membershipByRowId.get(message.id) ?? null;
   const isNavigationHighlighted = useIsNavigationHighlighted(
     ctx.navigationHighlightStore,
     message.id,
@@ -650,6 +701,17 @@ const ChatTimelineRow = memo(function ChatTimelineRow({
   useLayoutEffect(() => {
     onRowMount?.(message.id);
   }, [message.id, onRowMount]);
+
+  if (wakeStreakMembership !== null) {
+    return (
+      <WakeStreakMemberRow
+        message={message}
+        membership={wakeStreakMembership}
+        isNavigationHighlighted={isNavigationHighlighted}
+        shared={ctx}
+      />
+    );
+  }
 
   return (
     <div
@@ -671,3 +733,55 @@ const ChatTimelineRow = memo(function ChatTimelineRow({
     </div>
   );
 });
+
+/**
+ * A row folded into a wake streak (`chat-wake-streaks.ts`). The row stays in
+ * the list - its id keeps resolving for find, navigation, and restore
+ * anchors - but renders nothing while the section is collapsed; the streak's
+ * first member renders the fold header. Expanded members carry a left rule so
+ * the span reads as one contained section between the header and the streak's
+ * visible tail. Collapse/expand is a pure height change on unchanged row
+ * keys, which the timeline's always-on MVCP SIZE channel absorbs without an
+ * anchor event.
+ */
+function WakeStreakMemberRow(props: {
+  readonly message: ChatMessageModel;
+  readonly membership: WakeStreakMembership;
+  readonly isNavigationHighlighted: boolean;
+  readonly shared: ChatTimelineRowSharedState;
+}) {
+  const { message, membership, isNavigationHighlighted, shared } = props;
+  const open = useWakeStreakSectionOpen(membership.streak.id);
+  return (
+    <div
+      data-message-id={message.id}
+      data-navigation-highlighted={isNavigationHighlighted ? "true" : undefined}
+      className={cn(
+        "mx-auto w-full max-w-3xl rounded-lg px-6 transition-[background-color,box-shadow] duration-300 [contain:layout_paint_style] [.traycer-panel-resizing_&:not([data-panel-resize-visible])]:[content-visibility:hidden]",
+        open || membership.rendersHeader ? "pb-2" : "pb-0",
+        isNavigationHighlighted &&
+          "bg-primary/15 ring-2 ring-inset ring-primary/80 motion-safe:animate-pulse",
+        chatTimelineRowSizeHintClassName(message.role),
+      )}
+    >
+      {membership.rendersHeader ? (
+        <WakeStreakHeader streak={membership.streak} />
+      ) : null}
+      {open ? (
+        <div
+          className={cn(
+            "border-l-2 border-border/50 pl-3",
+            membership.rendersHeader && "mt-2",
+          )}
+        >
+          <ChatMessage
+            message={message}
+            actions={shared.getMessageActions(message)}
+            backgroundToolBlockIds={shared.backgroundToolBlockIds}
+            nextStepActions={shared.nextStepActions}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}

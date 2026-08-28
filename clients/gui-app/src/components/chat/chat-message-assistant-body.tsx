@@ -1,4 +1,5 @@
 import { buildChatActivityTimeline } from "@/components/chat/chat-activity-groups";
+import { isWakeAcknowledgmentSegments } from "@/components/chat/chat-wake-streaks";
 import { chatFindSegmentUnitId } from "@/components/chat/chat-find";
 import {
   WorkingVerbContext,
@@ -70,8 +71,6 @@ interface AssistantBodyProps {
   messageId: string;
   /** Wall-clock turn start used only for elapsed-duration calculations. */
   elapsedStartedAt: number;
-  /** Whether the complete turn contains only autonomous-resume dividers. */
-  turnHasOnlyAutonomousResumeSegments: boolean;
   /** Whether this terminal row should render its elapsed completion footer. */
   showCompletionFooter: boolean;
   /** User-wait time already accumulated during this assistant turn. */
@@ -108,7 +107,6 @@ export function AssistantMessageBody({
   runState,
   messageId,
   elapsedStartedAt,
-  turnHasOnlyAutonomousResumeSegments,
   showCompletionFooter,
   pausedDurationMs,
   pausedSinceMs,
@@ -141,16 +139,18 @@ export function AssistantMessageBody({
         : collectAssistantReplyText(segments),
     [segments, stopped],
   );
-  // A completed turn whose only visible segment is the autonomous-resume
-  // divider genuinely woke the agent but produced no reply. Give that case
-  // explicit footer copy so it cannot be mistaken for the notification-only
-  // row that exists when the provider never resumed (that row suppresses its
-  // footer while retaining a terminal `completedAt`).
-  const silentAutonomousResume =
-    stopped === null && turnHasOnlyAutonomousResumeSegments;
+  // A wake acknowledgment turn - the resume divider plus at most text and
+  // reasoning - did no work, so the footer's "worked for" framing has nothing
+  // to describe. The trigger row and reply speak for themselves, and dropping
+  // the footer is what keeps these turns two elements tall for the wake-streak
+  // fold (`chat-wake-streaks.ts`). A stopped turn keeps its footer: a user
+  // Stop is an event the transcript must explain.
+  const wakeAcknowledgment =
+    stopped === null && isWakeAcknowledgmentSegments(segments);
   const stoppedBeforeResponding = stopped !== null && !stopped.turnHadOutput;
   const showElapsedFooter =
     !stoppedBeforeResponding &&
+    !wakeAcknowledgment &&
     showCompletionFooter &&
     shouldShowElapsedFooter(runState, completedAt, segments, stopped);
   // No content yet. While the turn is live (`runState` non-null) show the
@@ -246,7 +246,6 @@ export function AssistantMessageBody({
           meta={meta}
           replyText={replyText}
           forkAction={forkAction}
-          silentAutonomousResume={silentAutonomousResume}
         />
       ) : null}
     </div>
@@ -338,7 +337,6 @@ function AssistantElapsedFooter({
   meta,
   replyText,
   forkAction,
-  silentAutonomousResume,
 }: {
   messageId: string;
   createdAt: number;
@@ -348,7 +346,6 @@ function AssistantElapsedFooter({
   meta: AssistantTurnMeta | null;
   replyText: string;
   forkAction: ChatMessageForkAction | null;
-  silentAutonomousResume: boolean;
 }) {
   if (completedAt === null) return null;
   // Wind-down time counts toward the elapsed duration - a Stop doesn't get a
@@ -356,9 +353,7 @@ function AssistantElapsedFooter({
   // `completedAt - createdAt - pausedDurationMs` rule as a natural finish.
   const elapsedMs = completedAt - createdAt - pausedDurationMs;
   const verb = pickElapsedVerb(messageId);
-  const nonStoppedElapsedLabel = silentAutonomousResume
-    ? `Resumed · no response · ${formatWorkedFor(elapsedMs)}`
-    : `${verb} for ${formatWorkedFor(elapsedMs)}`;
+  const nonStoppedElapsedLabel = `${verb} for ${formatWorkedFor(elapsedMs)}`;
   const elapsedContent = (
     <>
       <AssistantElapsedFooterIcon stopped={stopped} meta={meta} />

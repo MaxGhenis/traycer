@@ -1,5 +1,10 @@
 export type ChatCollapsibleKind =
-  "subagent" | "activity-group" | "a2a-send" | "a2a-received" | "interview";
+  | "subagent"
+  | "activity-group"
+  | "a2a-send"
+  | "a2a-received"
+  | "interview"
+  | "wake-streak";
 
 export interface ChatCollapsibleKey {
   readonly tileInstanceId: string;
@@ -62,4 +67,11 @@ export function deriveInterviewCollapsibleKey(
   blockId: string,
 ): ChatCollapsibleKey {
   return createChatCollapsibleKey(tileInstanceId, "interview", blockId);
+}
+
+export function deriveWakeStreakCollapsibleKey(
+  tileInstanceId: string,
+  streakId: string,
+): ChatCollapsibleKey {
+  return createChatCollapsibleKey(tileInstanceId, "wake-streak", streakId);
 }

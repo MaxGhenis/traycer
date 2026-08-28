@@ -92,6 +92,24 @@ const ERROR_SEGMENT: MessageSegment = {
   code: "PROVIDER_STREAM_ERROR",
 };
 
+// Real work - a wake turn carrying one of these is not an acknowledgment,
+// even alongside an `autonomous_resume` divider (`isWakeAcknowledgmentSegments`
+// only admits autonomous_resume/text/reasoning).
+const COMMAND_SEGMENT: MessageSegment = {
+  id: "seg-cmd",
+  kind: "command",
+  command: "echo hi",
+  cwd: null,
+  exitCode: 0,
+  isStreaming: false,
+  endState: null,
+  progress: null,
+  startedAt: 0,
+  backgroundTask: null,
+  stopped: false,
+  parentId: null,
+};
+
 const STOPPED: ChatMessageStoppedInfo = {
   stoppedAt: 1_700_000_000_000,
   reason: "Stop requested by owner.",
@@ -129,7 +147,6 @@ interface BodyPropsOverrides {
   readonly segments?: ReadonlyArray<MessageSegment>;
   readonly runState?: ChatMessageRunState | null;
   readonly elapsedStartedAt?: number;
-  readonly turnHasOnlyAutonomousResumeSegments?: boolean;
   readonly showCompletionFooter?: boolean;
   readonly completedAt?: number | null;
   readonly stopped?: ChatMessageStoppedInfo | null;
@@ -143,8 +160,6 @@ function bodyProps(overrides: BodyPropsOverrides) {
     runState: overrides.runState ?? null,
     messageId: "assistant:turn-1",
     elapsedStartedAt: overrides.elapsedStartedAt ?? 0,
-    turnHasOnlyAutonomousResumeSegments:
-      overrides.turnHasOnlyAutonomousResumeSegments ?? false,
     showCompletionFooter: overrides.showCompletionFooter ?? true,
     pausedDurationMs: 0,
     pausedSinceMs: null,
@@ -163,7 +178,6 @@ describe("AssistantMessageBody autonomous resume rendering", () => {
       <AssistantMessageBody
         {...bodyProps({
           segments: [AUTONOMOUS_RESUME_SEGMENT],
-          turnHasOnlyAutonomousResumeSegments: true,
           showCompletionFooter: false,
           completedAt: 8_000,
         })}
@@ -173,30 +187,40 @@ describe("AssistantMessageBody autonomous resume rendering", () => {
     expect(screen.queryByTestId("assistant-elapsed-footer")).toBeNull();
   });
 
-  it('renders "Resumed · no response · {elapsed}" for a completed silent autonomous resume', () => {
+  it("renders no elapsed footer for a completed resume-only turn (a wake acknowledgment did no work to report)", () => {
     render(
       <AssistantMessageBody
         {...bodyProps({
           segments: [AUTONOMOUS_RESUME_SEGMENT],
           elapsedStartedAt: 3_000,
-          turnHasOnlyAutonomousResumeSegments: true,
           completedAt: 8_000,
         })}
       />,
     );
 
-    expect(screen.getByTestId("assistant-elapsed-footer").textContent).toBe(
-      "Resumed · no response · 5s",
-    );
+    expect(screen.queryByTestId("assistant-elapsed-footer")).toBeNull();
   });
 
-  it("does not infer a silent resume from one autonomous-resume-only slice", () => {
+  it("renders no elapsed footer for a wake turn whose reply is plain text (resume + text is still an acknowledgment)", () => {
     render(
       <AssistantMessageBody
         {...bodyProps({
-          segments: [AUTONOMOUS_RESUME_SEGMENT],
+          segments: [AUTONOMOUS_RESUME_SEGMENT, TEXT_SEGMENT],
           elapsedStartedAt: 3_000,
-          turnHasOnlyAutonomousResumeSegments: false,
+          completedAt: 8_000,
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId("assistant-elapsed-footer")).toBeNull();
+  });
+
+  it("keeps the elapsed footer for a wake turn that also did real work (a command segment breaks the acknowledgment run)", () => {
+    render(
+      <AssistantMessageBody
+        {...bodyProps({
+          segments: [AUTONOMOUS_RESUME_SEGMENT, COMMAND_SEGMENT],
+          elapsedStartedAt: 3_000,
           completedAt: 8_000,
         })}
       />,
@@ -204,7 +228,33 @@ describe("AssistantMessageBody autonomous resume rendering", () => {
 
     const footer = screen.getByTestId("assistant-elapsed-footer");
     expect(footer.textContent).toMatch(/ for 5s$/);
-    expect(footer.textContent).not.toContain("Resumed · no response");
+  });
+
+  // A content-less boundary row (this row's own `segments` are empty; the
+  // turn's real content lives on an earlier row) must never be misclassified
+  // as a wake acknowledgment just because the TURN's aggregated reply happens
+  // to be resume-only - `isWakeAcknowledgmentSegments` reads only this row's
+  // own segments, and an empty array can never satisfy it (it requires at
+  // least one `autonomous_resume` segment), so the row keeps its normal
+  // "Stopped · {elapsed}" footer.
+  it("does not classify a content-less boundary row as a wake acknowledgment, even when the turn's reply was resume-only elsewhere", () => {
+    render(
+      <AssistantMessageBody
+        {...bodyProps({
+          segments: [],
+          runState: null,
+          elapsedStartedAt: 3_000,
+          completedAt: 8_000,
+          stopped: {
+            ...STOPPED,
+            turnReplySegments: [AUTONOMOUS_RESUME_SEGMENT],
+          },
+        })}
+      />,
+    );
+
+    const footer = screen.getByTestId("assistant-elapsed-footer");
+    expect(footer.textContent).toBe("Stopped · 5s");
   });
 });
 
@@ -293,7 +343,6 @@ describe("AssistantMessageBody stopped turn rendering", () => {
       <AssistantMessageBody
         {...bodyProps({
           segments: [AUTONOMOUS_RESUME_SEGMENT],
-          turnHasOnlyAutonomousResumeSegments: true,
           completedAt: 5_000,
           stopped: STOPPED_NO_OUTPUT,
         })}

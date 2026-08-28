@@ -55,6 +55,7 @@ import {
   subagentOpenInitializedScopes,
   useSubagentOpenStore,
 } from "@/stores/chats/subagent-open-store";
+import { useWakeStreakOpenStore } from "@/stores/chats/wake-streak-open-store";
 import { evictTileFindUi } from "@/stores/tile-find/tile-find-store";
 import { promoteChatTabPersistenceToDurable } from "@/stores/chats/chat-tab-persistence-eviction";
 import type { ChatTabPersistenceIdentity } from "@/stores/chats/chat-tab-persistence-key";
@@ -3430,6 +3431,7 @@ useEpicCanvasStore.subscribe((state) => {
     removed.forEach((instanceId) => {
       useToolOpenStore.getState().reset(instanceId);
       useSubagentOpenStore.getState().reset(instanceId);
+      useWakeStreakOpenStore.getState().reset(instanceId);
       // Ticket 15 review round 3: bounds the initialized-scope markers -
       // this tileInstanceId can never be seen again (a reopen always mints
       // a fresh one), so nothing else will ever need this entry.

@@ -50,9 +50,13 @@ export function AutonomousResumeSegment(props: AutonomousResumeSegmentProps) {
 }
 
 /**
- * Card for a trigger that resumed an autonomous turn. Subagents render their
- * markdown result inline; output-backed triggers fetch their output file on
- * expand through workspace.readFile.
+ * One-line receipt for a trigger that resumed an autonomous turn: state icon,
+ * the producer's own title, and the delivery note dimmed - the agent's reply
+ * below carries the actual news, so the row spends no words on status prose
+ * ("Monitor still running") that the icon already tells. The full detail
+ * (output panel, subagent result) stays one click away: subagents render
+ * their markdown result inline; output-backed triggers fetch their output
+ * file on expand through workspace.readFile.
  */
 function ResumeCompletionCard(props: {
   readonly trigger: AutonomousResumeTrigger;
@@ -71,27 +75,28 @@ function ResumeCompletionCard(props: {
     maxLength: 60,
     ellipsis: "…",
   });
+  const detail = resumeDetailText(trigger);
   const header = (
     <>
       {resumeStatusIcon(trigger)}
-      <span className="shrink-0 text-ui-sm font-medium text-foreground/85">
-        {resumeStatusTitle(trigger)}
-      </span>
-      <span aria-hidden className="shrink-0 text-muted-foreground/40">
-        ·
-      </span>
-      <span className="min-w-0 flex-1 truncate text-ui-sm font-medium text-foreground/85">
+      {/* The icon is the only visual state channel, so keep the old status
+          wording for screen readers. */}
+      <span className="sr-only">{resumeStatusTitle(trigger)}</span>
+      <span className="min-w-0 shrink truncate text-ui-sm font-medium text-foreground/85">
         {title}
       </span>
+      {detail.length > 0 ? (
+        <>
+          <span aria-hidden className="shrink-0 text-muted-foreground/40">
+            ·
+          </span>
+          <span className="min-w-0 flex-1 truncate text-ui-sm text-muted-foreground">
+            {detail}
+          </span>
+        </>
+      ) : null}
     </>
   );
-
-  const preview =
-    trigger.summary.trim().length > 0 ? (
-      <p className="m-0 line-clamp-2 text-ui-sm leading-6 text-foreground/85">
-        {formatSingleLine(trigger.summary, { maxLength: 180, ellipsis: "…" })}
-      </p>
-    ) : null;
 
   const body = open ? (
     <div className="flex flex-col gap-2">
@@ -113,7 +118,7 @@ function ResumeCompletionCard(props: {
         onOpenChange={setOpen}
         header={header}
         headerAction={<ResumeManagedCommandDoor trigger={props.trigger} />}
-        collapsedPreview={preview}
+        collapsedPreview={null}
         body={body}
         tone="default"
         headerPosition="normal"
@@ -125,6 +130,26 @@ function ResumeCompletionCard(props: {
       />
     </div>
   );
+}
+
+/**
+ * The dimmed clause after the title. The host prefixes a live delivery's
+ * summary with "still running - " for readers that predate the `live` flag;
+ * this renderer shows liveness through the icon, so the prefix would say it
+ * twice and is stripped. Terminal non-completed wakes lead with their outcome
+ * word - a failure is news the dim slot must not bury.
+ */
+function resumeDetailText(trigger: AutonomousResumeTrigger): string {
+  const summary = formatSingleLine(trigger.summary.trim(), {
+    maxLength: 140,
+    ellipsis: "…",
+  });
+  if (trigger.live) {
+    return summary.replace(/^still running\s*-\s*/i, "");
+  }
+  if (trigger.status === "completed") return summary;
+  const outcome = trigger.status === "failed" ? "failed" : "stopped";
+  return summary.length === 0 ? outcome : `${outcome} · ${summary}`;
 }
 
 function ResumeCompletionCardBody(props: {
