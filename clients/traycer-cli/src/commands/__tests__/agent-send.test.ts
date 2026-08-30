@@ -236,6 +236,19 @@ describe("agent send prompt sources", () => {
     expectNoPromptLeak(privatePath, error);
   });
 
+  it("preserves a leading UTF-8 BOM from --message-file", async () => {
+    const prompt = "\uFEFFprompt whose leading marker must survive";
+    const directory = await mkdtemp(join(tmpdir(), "traycer-agent-send-"));
+    tempDirs.push(directory);
+    const path = join(directory, "prompt.txt");
+    await writeFile(path, prompt, "utf8");
+
+    const result = await buildCommand({ messageFile: path })(makeCtx());
+
+    expect(lastSentPrompt()).toBe(prompt);
+    expectNoPromptLeak(prompt, result);
+  });
+
   it("reads --stdin exactly and does not return or log its prompt", async () => {
     const prompt = "piped prompt\nwith formatting";
     stubStdin({ isTTY: false, chunks: ["piped ", "prompt\nwith formatting"] });

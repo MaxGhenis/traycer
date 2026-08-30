@@ -179,7 +179,7 @@ async function readBoundedPrompt(input: BoundedPromptInput): Promise<string> {
   if (oversized) throw promptTooLargeError();
   let prompt: string;
   try {
-    prompt = new TextDecoder("utf-8", { fatal: true }).decode(
+    prompt = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
       captured.subarray(0, capturedBytes),
     );
   } catch {
