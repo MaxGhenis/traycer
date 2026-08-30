@@ -90,6 +90,7 @@ function buildCommand(
 function stubStdin(value: {
   readonly isTTY: boolean;
   readonly chunks?: readonly (Buffer | string)[];
+  readonly onChunkRead?: (index: number) => void;
   readonly reject?: boolean;
 }): Mock {
   const destroy = vi.fn();
@@ -99,7 +100,8 @@ function stubStdin(value: {
       isTTY: value.isTTY,
       destroy,
       async *[Symbol.asyncIterator]() {
-        for (const chunk of value.chunks ?? []) {
+        for (const [index, chunk] of (value.chunks ?? []).entries()) {
+          value.onChunkRead?.(index);
           yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         }
         if (value.reject === true) throw new Error("private stream failure");
@@ -253,7 +255,12 @@ describe("agent send prompt sources", () => {
       Buffer.from(privatePrefix),
       Buffer.alloc(A2A_MESSAGE_MAX_UTF8_BYTES + 1 - privatePrefix.length, 0x73),
     ]);
-    const destroy = stubStdin({ isTTY: false, chunks: [prompt] });
+    const onChunkRead = vi.fn();
+    const destroy = stubStdin({
+      isTTY: false,
+      chunks: [prompt, "sentinel chunk must not be consumed"],
+      onChunkRead,
+    });
 
     const error = await captureError(buildCommand({ stdin: true }));
 
@@ -263,6 +270,8 @@ describe("agent send prompt sources", () => {
       details: null,
     });
     expect(destroy).toHaveBeenCalledTimes(1);
+    expect(onChunkRead).toHaveBeenCalledTimes(1);
+    expect(onChunkRead).toHaveBeenCalledWith(0);
     expect(rpcMock).not.toHaveBeenCalled();
     expectNoPromptLeak(privatePrefix, error);
   });
