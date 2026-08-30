@@ -209,6 +209,31 @@ describe("agent send prompt sources", () => {
     expectNoPromptLeak(privatePrefix, error);
   });
 
+  it("rejects malformed UTF-8 from --message-file without echoing content or path", async () => {
+    const privatePrefix = "private malformed file prompt";
+    const directory = await mkdtemp(join(tmpdir(), "traycer-agent-send-"));
+    tempDirs.push(directory);
+    const privatePath = join(directory, "private-prompt-name.txt");
+    await writeFile(
+      privatePath,
+      Buffer.concat([Buffer.from(privatePrefix), Buffer.from([0xc3, 0x28])]),
+    );
+
+    const error = await captureError(
+      buildCommand({ messageFile: privatePath }),
+    );
+
+    expect(error).toMatchObject({
+      code: CLI_ERROR_CODES.INVALID_ARGUMENT,
+      message: "traycer agent send: --message-file must contain valid UTF-8.",
+      details: null,
+      exitCode: 1,
+    });
+    expect(rpcMock).not.toHaveBeenCalled();
+    expectNoPromptLeak(privatePrefix, error);
+    expectNoPromptLeak(privatePath, error);
+  });
+
   it("reads --stdin exactly and does not return or log its prompt", async () => {
     const prompt = "piped prompt\nwith formatting";
     stubStdin({ isTTY: false, chunks: ["piped ", "prompt\nwith formatting"] });
@@ -257,6 +282,30 @@ describe("agent send prompt sources", () => {
     const prompt = lastSentPrompt();
     expect(prompt.endsWith("é")).toBe(true);
     expect(utf8ByteLength(prompt)).toBe(A2A_MESSAGE_MAX_UTF8_BYTES);
+  });
+
+  it("rejects malformed UTF-8 split across stdin chunks without echoing content", async () => {
+    const privatePrefix = "private malformed stdin prompt";
+    stubStdin({
+      isTTY: false,
+      chunks: [
+        Buffer.from(privatePrefix),
+        Buffer.from([0xe2]),
+        Buffer.from([0x28, 0xa1]),
+      ],
+    });
+
+    const error = await captureError(buildCommand({ stdin: true }));
+
+    expect(error).toMatchObject({
+      code: CLI_ERROR_CODES.INVALID_ARGUMENT,
+      message:
+        "traycer agent send: the prompt from stdin must contain valid UTF-8.",
+      details: null,
+      exitCode: 1,
+    });
+    expect(rpcMock).not.toHaveBeenCalled();
+    expectNoPromptLeak(privatePrefix, error);
   });
 
   it("rejects a multibyte character that crosses the byte limit", async () => {
