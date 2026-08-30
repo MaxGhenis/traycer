@@ -25,6 +25,7 @@ interface BoundedPromptInput {
   readonly stream: AsyncIterable<Buffer | string>;
   readonly stop: () => void;
   readonly readErrorMessage: string;
+  readonly invalidUtf8Message: string;
 }
 
 /**
@@ -101,6 +102,8 @@ async function resolvePrompt(opts: AgentSendPromptOptions): Promise<string> {
       stream,
       stop: () => stream.destroy(),
       readErrorMessage: "traycer agent send: could not read --message-file.",
+      invalidUtf8Message:
+        "traycer agent send: --message-file must contain valid UTF-8.",
     });
   }
   return readPromptFromStdin();
@@ -121,6 +124,8 @@ async function readPromptFromStdin(): Promise<string> {
     stop: () => process.stdin.destroy(),
     readErrorMessage:
       "traycer agent send: could not read the prompt from stdin.",
+    invalidUtf8Message:
+      "traycer agent send: the prompt from stdin must contain valid UTF-8.",
   });
 }
 
@@ -172,9 +177,20 @@ async function readBoundedPrompt(input: BoundedPromptInput): Promise<string> {
   }
 
   if (oversized) throw promptTooLargeError();
-  return validatePromptSize(
-    captured.subarray(0, capturedBytes).toString("utf8"),
-  );
+  let prompt: string;
+  try {
+    prompt = new TextDecoder("utf-8", { fatal: true }).decode(
+      captured.subarray(0, capturedBytes),
+    );
+  } catch {
+    throw cliError({
+      code: CLI_ERROR_CODES.INVALID_ARGUMENT,
+      message: input.invalidUtf8Message,
+      details: null,
+      exitCode: 1,
+    });
+  }
+  return validatePromptSize(prompt);
 }
 
 function validatePromptSize(prompt: string): string {
