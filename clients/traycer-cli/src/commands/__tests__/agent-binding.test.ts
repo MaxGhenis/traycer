@@ -81,6 +81,7 @@ function agentList(overrides: Record<string, unknown> | undefined) {
 
 function tuiRecord(overrides: Record<string, unknown> | undefined) {
   return {
+    origin: "registry" as const,
     tuiAgentId: "agent-target",
     ownerUserId: "user-private",
     hostId: "host-local",
@@ -105,6 +106,23 @@ function tuiRecord(overrides: Record<string, unknown> | undefined) {
     revision: 1,
     docResident: false,
     ...(overrides ?? {}),
+  };
+}
+
+function cloudTuiRecord() {
+  return {
+    origin: "cloud" as const,
+    tuiAgentId: "agent-cloud",
+    ownerUserId: "user-private",
+    hostId: "host-remote",
+    harnessId: "codex",
+    parentId: null,
+    title: "Remote agent",
+    isTitleEditedByUser: false,
+    createdAt: 1,
+    updatedAt: 2,
+    archived: false,
+    revision: 1,
   };
 }
 
@@ -308,6 +326,28 @@ describe("agent binding", () => {
       "agent.list",
       "epic.listTuiAgents",
     ]);
+  });
+
+  it("ignores unrelated cloud replicas in the released Host record read", async () => {
+    rpcMock.mockRejectedValueOnce(
+      hostError(
+        "E_HOST_UNSUPPORTED",
+        "This host does not support 'agent.getNativeSessionBinding'.",
+      ),
+    );
+    rpcAtEndpointMock
+      .mockResolvedValueOnce(agentList(undefined))
+      .mockResolvedValueOnce({
+        tuiAgents: [cloudTuiRecord(), tuiRecord(undefined)],
+      });
+
+    const result = await buildCommand()(makeCtx());
+
+    expect(result.data).toMatchObject({
+      agentId: "agent-target",
+      harnessId: "claude",
+      harnessSessionId: "native-session-456",
+    });
   });
 
   it("recovers a pending ambient TUI binding", async () => {

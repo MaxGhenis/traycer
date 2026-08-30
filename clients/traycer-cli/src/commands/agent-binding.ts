@@ -4,7 +4,7 @@ import {
   listAgentsResponseSchema,
   type GetAgentNativeSessionBindingResponse,
 } from "@traycer/protocol/host/agent/shared";
-import { listTuiAgentsResponseV11Schema } from "@traycer/protocol/host/epic/tui-agent-records";
+import { listTuiAgentsResponseV12Schema } from "@traycer/protocol/host/epic/tui-agent-records";
 import {
   callHostRpc,
   callHostRpcAtEndpoint,
@@ -137,7 +137,7 @@ async function resolveReleasedHostTuiBinding(input: {
   );
   const tuiRecords = parseCanonicalHostResponse(
     "epic.listTuiAgents",
-    listTuiAgentsResponseV11Schema,
+    listTuiAgentsResponseV12Schema,
     tuiResult,
   );
   const records = tuiRecords.tuiAgents.filter(
@@ -172,6 +172,7 @@ async function resolveReleasedHostTuiBinding(input: {
   if (
     records.length !== 1 ||
     record === undefined ||
+    record.origin !== "registry" ||
     record.docResident ||
     record.hostId !== target.hostId ||
     record.harnessId !== target.harnessId
